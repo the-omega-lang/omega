@@ -2,7 +2,7 @@
 
 Rdbo's Omega programming language
 
-*“I am Alpha and Omega, the First and the Last, the Beginning and the End.”* - Revelations 22:13
+*“I am Alpha and Omega, the First and the Last, the Beginning and the End.”* - **Revelations 22:13**
 
 ## License
 
