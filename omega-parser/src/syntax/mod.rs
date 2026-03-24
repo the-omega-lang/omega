@@ -1,0 +1,19 @@
+pub mod identifier;
+pub mod r#type;
+
+pub use chumsky::extra::Err as ParseErr;
+use chumsky::{ParseResult, Parser, error::Rich};
+
+pub type ParseError<'a> = chumsky::extra::Err<Rich<'a, char>>;
+
+// All syntaxes, from most simple to most complex
+// must implement the following trait
+pub trait SyntaxParser
+where
+    Self: Sized,
+{
+    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>>;
+    fn parse<'a>(input: &str) -> Result<Self, Vec<Rich<'_, char>>> {
+        Self::parser().parse(input).into_result()
+    }
+}
