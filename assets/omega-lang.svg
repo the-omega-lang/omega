@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+
+<svg
+   width="1080"
+   height="1080"
+   viewBox="0 0 32.4 32.4"
+   version="1.1"
+   id="svg2"
+   sodipodi:docname="omega-own.svg"
+   inkscape:version="1.4.2 (ebf0e940d0, 2025-05-08)"
+   inkscape:export-filename="omega-own.png"
+   inkscape:export-xdpi="96"
+   inkscape:export-ydpi="96"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs2" />
+  <sodipodi:namedview
+     id="namedview2"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="0.51"
+     inkscape:cx="431.37255"
+     inkscape:cy="584.31373"
+     inkscape:window-width="1904"
+     inkscape:window-height="1002"
+     inkscape:window-x="20"
+     inkscape:window-y="20"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="svg2" />
+  <circle
+     style="fill:#ececec;fill-opacity:1;stroke:#408080;stroke-width:0.566929;stroke-dasharray:none;stroke-opacity:1;paint-order:markers stroke fill"
+     id="path3"
+     cx="16.200001"
+     cy="16.200001"
+     r="14.894058"
+     inkscape:label="background" />
+  <path
+     id="path0"
+     d="M 15.285944,6.9569208 C 13.239357,7.1656272 11.319948,8.0678595 9.8972646,9.4897226 6.0113196,13.373699 6.7917107,19.841791 11.544828,23.144721 l 0.444179,0.308709 -2.7934781,0.0082 -2.7933983,0.0082 v 1.010034 1.010116 h 4.0890674 4.089151 l -3.29e-4,-1.050327 -2.46e-4,-1.050346 -0.392618,-0.261909 c -4.3698595,-2.91565 -5.2678224,-9.15804 -1.809555,-12.58002 3.06204,-3.0298561 7.890613,-1.6251521 9.35402,2.721229 1.203798,3.575513 -0.303946,7.761546 -3.567302,9.904194 L 17.85167,23.378059 V 24.43407 25.49 h 4.073058 4.073141 V 24.479884 23.46985 l -2.780015,-0.0082 -2.779933,-0.0082 0.398693,-0.286623 C 24.28807,20.685073 25.74885,16.767189 24.620916,13.017371 23.438547,9.0866786 19.496361,6.527357 15.285944,6.9569211"
+     stroke="none"
+     fill="#141413"
+     fill-rule="evenodd"
+     data-darkreader-inline-fill=""
+     data-darkreader-inline-stroke=""
+     sodipodi:nodetypes="cccccccccccccccccccccccccccc"
+     style="fill:#408080;fill-opacity:1;stroke-width:0.0821032"
+     inkscape:label="omega" />
+</svg>
