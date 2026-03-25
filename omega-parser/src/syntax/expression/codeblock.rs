@@ -5,7 +5,7 @@ use crate::{
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
-pub struct CodeblockExpr(Vec<Statement>);
+pub struct CodeblockExpr(pub Vec<Statement>);
 
 impl SyntaxParser for CodeblockExpr {
     fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {

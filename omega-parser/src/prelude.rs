@@ -3,5 +3,6 @@ pub use crate::syntax::expression::{Expression, codeblock::CodeblockExpr, string
 pub use crate::syntax::identifier::Ident;
 pub use crate::syntax::statement::{
     Statement, declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
+    function_definition::FunctionDefinitionStmt,
 };
 pub use crate::syntax::r#type::Type;

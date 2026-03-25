@@ -2,7 +2,7 @@ use crate::syntax::{ParseError, SyntaxParser};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
-pub struct Ident(String);
+pub struct Ident(pub String);
 
 // Helpers for string integration
 impl AsRef<str> for Ident {

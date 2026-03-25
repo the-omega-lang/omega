@@ -19,5 +19,6 @@ impl SyntaxParser for Expression {
             StringExpr::parser().map(Expression::String),
             CodeblockExpr::parser().map(Expression::Codeblock),
         ))
+        .padded()
     }
 }
