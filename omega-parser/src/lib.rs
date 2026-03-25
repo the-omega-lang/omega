@@ -1,17 +1,20 @@
-use crate::syntax::SyntaxParser;
-
+pub mod prelude;
 pub mod syntax;
+
+use prelude::*;
 
 pub fn parse(input: &str) -> () {
     println!("You called parse with the input: {}", input);
     println!("Parse Identifier");
-    println!("Result: {:?}", syntax::identifier::Ident::parse(input));
+    println!("Result: {:?}", Ident::parse(input));
 
     println!();
 
     println!("Parse Type");
-    println!("Result: {:?}", syntax::r#type::Type::parse(input));
+    println!("Result: {:?}", Type::parse(input));
+
+    println!();
 
     println!("Parse Statement");
-    println!("Result: {:?}", syntax::statement::Statement::parse(input));
+    println!("Result: {:?}", Statement::parse(input));
 }

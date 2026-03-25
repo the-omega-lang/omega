@@ -2,7 +2,6 @@ pub mod identifier;
 pub mod statement;
 pub mod r#type;
 
-pub use chumsky::extra::Err as ParseErr;
 use chumsky::{ParseResult, Parser, error::Rich};
 
 pub type ParseError<'a> = chumsky::extra::Err<Rich<'a, char>>;

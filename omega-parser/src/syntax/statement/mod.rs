@@ -1,4 +1,4 @@
-mod declaration;
+pub mod declaration;
 pub mod extern_declaration;
 
 use crate::syntax::{
