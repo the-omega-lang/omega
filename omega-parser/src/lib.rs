@@ -11,4 +11,10 @@ pub fn parse(input: &str) -> () {
 
     println!("Parse Type");
     println!("Result: {:?}", syntax::r#type::Type::parse(input));
+
+    println!("Parse Extern");
+    println!(
+        "Result: {:?}",
+        syntax::statement::extern_declaration::ExternDeclaration::parse(input)
+    );
 }
