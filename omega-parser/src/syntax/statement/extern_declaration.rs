@@ -1,19 +1,20 @@
 use crate::syntax::{
-    ParseError, SyntaxParser, identifier::Ident, statement::declaration::Declaration, r#type::Type,
+    ParseError, SyntaxParser, identifier::Ident, statement::declaration::DeclarationStmt,
+    r#type::Type,
 };
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
-pub struct ExternDeclaration {
+pub struct ExternDeclarationStmt {
     pub ident: Ident,
     pub r#type: Type,
 }
 
-impl SyntaxParser for ExternDeclaration {
+impl SyntaxParser for ExternDeclarationStmt {
     fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
         just("extern")
             .padded()
-            .ignore_then(Declaration::parser())
+            .ignore_then(DeclarationStmt::parser())
             .map(|decl| Self {
                 ident: decl.ident,
                 r#type: decl.r#type,

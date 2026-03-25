@@ -3,21 +3,21 @@ pub mod extern_declaration;
 
 use crate::syntax::{
     ParseError, SyntaxParser,
-    statement::{declaration::Declaration, extern_declaration::ExternDeclaration},
+    statement::{declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt},
 };
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    Declaration(Declaration),
-    ExternDeclaration(ExternDeclaration),
+    Declaration(DeclarationStmt),
+    ExternDeclaration(ExternDeclarationStmt),
 }
 
 impl SyntaxParser for Statement {
     fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
         choice((
-            Declaration::parser().map(Statement::Declaration),
-            ExternDeclaration::parser().map(Statement::ExternDeclaration),
+            DeclarationStmt::parser().map(Statement::Declaration),
+            ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
         ))
         .then_ignore(just(';').padded())
     }
