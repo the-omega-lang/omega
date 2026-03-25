@@ -1,8 +1,24 @@
-mod base_declaration;
+mod declaration;
 pub mod extern_declaration;
 
-use crate::syntax::statement::extern_declaration::ExternDeclaration;
+use crate::syntax::{
+    ParseError, SyntaxParser,
+    statement::{declaration::Declaration, extern_declaration::ExternDeclaration},
+};
+use chumsky::prelude::*;
 
+#[derive(Debug, Clone)]
 pub enum Statement {
+    Declaration(Declaration),
     ExternDeclaration(ExternDeclaration),
+}
+
+impl SyntaxParser for Statement {
+    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+        choice((
+            Declaration::parser().map(Statement::Declaration),
+            ExternDeclaration::parser().map(Statement::ExternDeclaration),
+        ))
+        .then_ignore(just(';').padded())
+    }
 }
