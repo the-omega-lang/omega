@@ -19,9 +19,7 @@ impl AsRef<String> for Ident {
 
 // Parser
 impl SyntaxParser for Ident {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> {
-        text::ascii::ident()
-            .padded()
-            .map(|s: &str| Ident(s.to_string()))
+    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+        text::ascii::ident().map(|s: &str| Ident(s.to_string()))
     }
 }

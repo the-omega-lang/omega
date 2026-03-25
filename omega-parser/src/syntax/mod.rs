@@ -12,7 +12,7 @@ pub trait SyntaxParser
 where
     Self: Sized,
 {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>>;
+    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone;
     fn parse<'a>(input: &str) -> Result<Self, Vec<Rich<'_, char>>> {
         Self::parser().parse(input).into_result()
     }
