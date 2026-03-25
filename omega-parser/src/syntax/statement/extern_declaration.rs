@@ -12,7 +12,7 @@ pub struct ExternDeclarationStmt {
 
 impl SyntaxParser for ExternDeclarationStmt {
     fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
-        just("extern")
+        text::ascii::keyword("extern")
             .padded()
             .ignore_then(DeclarationStmt::parser())
             .map(|decl| Self {

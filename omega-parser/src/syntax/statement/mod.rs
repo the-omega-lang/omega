@@ -11,11 +11,33 @@ use crate::syntax::{
 };
 use chumsky::prelude::*;
 
+// Top level/global scope statements
+#[derive(Debug, Clone)]
+pub enum RootStatement {
+    Declaration(DeclarationStmt),
+    ExternDeclaration(ExternDeclarationStmt),
+    FunctionDefinition(FunctionDefinitionStmt),
+}
+
 #[derive(Debug, Clone)]
 pub enum Statement {
     Declaration(DeclarationStmt),
     ExternDeclaration(ExternDeclarationStmt),
-    FunctionDefinition(FunctionDefinitionStmt),
+}
+
+impl SyntaxParser for RootStatement {
+    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+        let semicolon_statements = choice((
+            DeclarationStmt::parser().map(RootStatement::Declaration),
+            ExternDeclarationStmt::parser().map(RootStatement::ExternDeclaration),
+        ))
+        .then_ignore(just(';').padded());
+        choice((
+            semicolon_statements,
+            FunctionDefinitionStmt::parser().map(RootStatement::FunctionDefinition),
+        ))
+        .padded()
+    }
 }
 
 impl SyntaxParser for Statement {
@@ -23,8 +45,8 @@ impl SyntaxParser for Statement {
         choice((
             DeclarationStmt::parser().map(Statement::Declaration),
             ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
-            FunctionDefinitionStmt::parser().map(Statement::FunctionDefinition),
         ))
+        .then_ignore(just(';').padded())
         .padded()
     }
 }
