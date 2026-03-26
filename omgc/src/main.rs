@@ -11,6 +11,8 @@ fn main() {
         main(argc: i32, argv: **char) => void {
             a : i32;
             b : i32;
+
+            puts("hello world!");
         }
         
     "###,

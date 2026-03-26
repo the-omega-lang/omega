@@ -2,11 +2,14 @@ pub mod declaration;
 pub mod extern_declaration;
 pub mod function_definition;
 
-use crate::syntax::{
-    ParseError, SyntaxParser,
-    statement::{
-        declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
-        function_definition::FunctionDefinitionStmt,
+use crate::{
+    prelude::Expression,
+    syntax::{
+        ParseError, SyntaxParser,
+        statement::{
+            declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
+            function_definition::FunctionDefinitionStmt,
+        },
     },
 };
 use chumsky::prelude::*;
@@ -17,12 +20,6 @@ pub enum RootStatement {
     Declaration(DeclarationStmt),
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
-}
-
-#[derive(Debug, Clone)]
-pub enum Statement {
-    Declaration(DeclarationStmt),
-    ExternDeclaration(ExternDeclarationStmt),
 }
 
 impl SyntaxParser for RootStatement {
@@ -40,11 +37,20 @@ impl SyntaxParser for RootStatement {
     }
 }
 
+// Function scope statements
+#[derive(Debug, Clone)]
+pub enum Statement {
+    Declaration(DeclarationStmt),
+    ExternDeclaration(ExternDeclarationStmt),
+    Expression(Expression),
+}
+
 impl SyntaxParser for Statement {
     fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
         choice((
             DeclarationStmt::parser().map(Statement::Declaration),
             ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
+            Expression::parser().map(Statement::Expression),
         ))
         .then_ignore(just(';').padded())
         .padded()
