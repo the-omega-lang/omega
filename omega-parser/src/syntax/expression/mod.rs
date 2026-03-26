@@ -2,8 +2,6 @@ pub mod codeblock;
 pub mod function_call;
 pub mod string;
 
-use std::rc::Rc;
-
 use crate::{
     parser,
     prelude::Statement,
