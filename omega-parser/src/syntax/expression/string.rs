@@ -2,7 +2,7 @@ use crate::syntax::{ParseError, SyntaxParser};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
-pub struct StringExpr(String);
+pub struct StringExpr(pub String);
 
 impl SyntaxParser for StringExpr {
     fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
@@ -23,5 +23,15 @@ impl SyntaxParser for StringExpr {
         // };
 
         // quote_start_parser.then(str_remainder_parser);
+
+        // NOTE: The below implementation may be closer to what is required to be done
+        // let quotes = just('"').repeated();
+        // let delim_start = quotes.count();
+        // let delim_end = quotes.configure(|cfg, ctx| cfg.exactly(*ctx));
+        // let content = any().and_is(delim_end.not()).repeated().collect::<String>();
+
+        // delim_start
+        //     .ignore_with_ctx(content.then_ignore(delim_end))
+        //     .map(|s| StringExpr(s));
     }
 }
