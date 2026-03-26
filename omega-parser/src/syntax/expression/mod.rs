@@ -2,7 +2,10 @@ pub mod codeblock;
 pub mod function_call;
 pub mod string;
 
+use std::rc::Rc;
+
 use crate::{
+    parser,
     prelude::Statement,
     syntax::{
         ParseError, SyntaxParser,
@@ -20,16 +23,16 @@ pub enum Expression {
     FunctionCall(FunctionCallExpr),
 }
 
-impl SyntaxParser for Expression {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
-        choice((
-            // TODO: Fix recursion and remove boxed()
-            StringExpr::parser().map(Expression::String),
-            CodeblockExpr::parser().map(Expression::Codeblock).boxed(),
-            FunctionCallExpr::parser()
-                .map(Expression::FunctionCall)
-                .boxed(),
-        ))
+impl Expression {
+    parser!((stmt_parser => Statement) -> Self {
+        recursive(|expr_parser| {
+            choice((
+                StringExpr::parser().map(Expression::String),
+                CodeblockExpr::parser(stmt_parser.clone()).map(Expression::Codeblock),
+                FunctionCallExpr::parser(expr_parser)
+                    .map(Expression::FunctionCall),
+            ))
+        })
         .padded()
-    }
+    });
 }

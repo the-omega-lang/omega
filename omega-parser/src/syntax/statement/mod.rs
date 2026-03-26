@@ -3,6 +3,7 @@ pub mod extern_declaration;
 pub mod function_definition;
 
 use crate::{
+    parser,
     prelude::Expression,
     syntax::{
         ParseError, SyntaxParser,
@@ -31,7 +32,10 @@ impl SyntaxParser for RootStatement {
         .then_ignore(just(';').padded());
         choice((
             semicolon_statements,
-            FunctionDefinitionStmt::parser().map(RootStatement::FunctionDefinition),
+            FunctionDefinitionStmt::parser(recursive(|stmt_parser| {
+                Statement::parser(Expression::parser(stmt_parser))
+            }))
+            .map(RootStatement::FunctionDefinition),
         ))
         .padded()
     }
@@ -45,14 +49,14 @@ pub enum Statement {
     Expression(Expression),
 }
 
-impl SyntaxParser for Statement {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
-        choice((
-            DeclarationStmt::parser().map(Statement::Declaration),
-            ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
-            Expression::parser().map(Statement::Expression),
-        ))
+impl Statement {
+    parser!((expr_parser => Expression) -> Self {
+            choice((
+                DeclarationStmt::parser().map(Statement::Declaration),
+                ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
+                expr_parser.map(Statement::Expression),
+            ))
         .then_ignore(just(';').padded())
         .padded()
-    }
+    });
 }

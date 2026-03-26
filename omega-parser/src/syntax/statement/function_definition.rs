@@ -1,4 +1,5 @@
 use crate::{
+    parser,
     prelude::{CodeblockExpr, Statement},
     syntax::{
         ParseError, SyntaxParser, identifier::Ident, statement::declaration::DeclarationStmt,
@@ -15,8 +16,8 @@ pub struct FunctionDefinitionStmt {
     pub codeblock: CodeblockExpr,
 }
 
-impl SyntaxParser for FunctionDefinitionStmt {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+impl FunctionDefinitionStmt {
+    parser!((stmt_parser => Statement) -> Self {
         Ident::parser()
             .then_ignore(just('(').padded())
             .then(
@@ -27,7 +28,7 @@ impl SyntaxParser for FunctionDefinitionStmt {
             .then_ignore(just(')').padded())
             .then_ignore(just("=>").padded())
             .then(Type::parser().padded())
-            .then(CodeblockExpr::parser().padded())
+            .then(CodeblockExpr::parser(stmt_parser).padded())
             .map(
                 |(((function_name, params), return_type), codeblock)| FunctionDefinitionStmt {
                     function_name,
@@ -36,5 +37,5 @@ impl SyntaxParser for FunctionDefinitionStmt {
                     codeblock,
                 },
             )
-    }
+    });
 }

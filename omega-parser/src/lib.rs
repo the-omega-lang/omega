@@ -1,6 +1,7 @@
 pub mod prelude;
 pub mod syntax;
 
+use chumsky::prelude::*;
 use prelude::*;
 
 pub fn parse(input: &str) -> () {
@@ -8,25 +9,28 @@ pub fn parse(input: &str) -> () {
 
     println!();
 
-    println!("Parse Identifier");
-    println!("Result: {:#?}", Ident::parse(input));
+    // println!("Parse Identifier");
+    // println!("Result: {:#?}", Ident::parse(input));
 
-    println!();
+    // println!();
 
-    println!("Parse Type");
-    println!("Result: {:#?}", Type::parse(input));
+    // println!("Parse Type");
+    // println!("Result: {:#?}", Type::parse(input));
 
-    println!();
+    // println!();
 
-    println!("Parse Statement");
-    println!("Result: {:#?}", Statement::parse(input));
+    // println!("Parse Statement");
+    // println!("Result: {:#?}", Statement::parse(input));
 
-    println!();
+    // println!();
 
-    println!("Parse Expression");
-    println!("Result: {:#?}", Expression::parse(input));
+    // println!("Parse Expression");
+    // println!(
+    //     "Result: {:#?}",
+    //     Expression::parser(recursive(|s| Statement::parser(Expression::parser(s)))).parse(input)
+    // );
 
-    println!();
+    // println!();
 
     println!("Parse Root Statement");
     println!("Result: {:#?}", RootStatement::parse(input));

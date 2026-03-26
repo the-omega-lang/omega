@@ -1,4 +1,5 @@
 use crate::{
+    parser,
     prelude::{Expression, Statement},
     syntax::{ParseError, SyntaxParser, identifier::Ident, r#type::Type},
 };
@@ -10,12 +11,12 @@ pub struct FunctionCallExpr {
     pub args: Vec<Expression>,
 }
 
-impl SyntaxParser for FunctionCallExpr {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+impl FunctionCallExpr {
+    parser!((expr_parser => Expression) -> Self {
         Ident::parser()
             .then_ignore(just('('))
             .then(
-                Expression::parser()
+                expr_parser
                     .separated_by(just(',').padded())
                     .collect::<Vec<_>>(),
             )
@@ -23,5 +24,6 @@ impl SyntaxParser for FunctionCallExpr {
                 function_ident,
                 args,
             })
-    }
+            .then_ignore(just(')').padded())
+    });
 }
