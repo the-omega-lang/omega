@@ -18,3 +18,10 @@ where
         Self::parser().parse(input).into_result()
     }
 }
+
+#[macro_export]
+macro_rules! parser {
+    (($($arg:ident : $t:ty),*) -> $rt:ty $code:block) => {
+        pub fn parser<'a>($($arg: impl Parser<'a, &'a str, $t, ParseError<'a>> + Clone),*) -> impl Parser<'a, &'a str, $rt, ParseError<'a>> + Clone $code
+    };
+}
