@@ -12,7 +12,7 @@ pub struct FunctionCallExpr {
 }
 
 impl FunctionCallExpr {
-    parser!((expr_parser => Expression) -> Self {
+    parser!((expr_parser => Expression) => Self {
         Ident::parser()
             .then_ignore(just('('))
             .then(

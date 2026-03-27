@@ -16,7 +16,7 @@ pub struct FunctionDefinitionStmt {
 }
 
 impl FunctionDefinitionStmt {
-    parser!((stmt_parser => Statement) -> Self {
+    parser!((stmt_parser => Statement) => Self {
         Ident::parser()
             .then_ignore(just('(').padded())
             .then(

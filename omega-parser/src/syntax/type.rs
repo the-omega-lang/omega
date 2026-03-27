@@ -18,7 +18,7 @@ pub enum Type {
 }
 
 impl Type {
-    parser!(() -> Self {
+    parser!(() => Self {
         recursive(|parser| {
             let ident_parser = Ident::parser();
             let named_type_parser = ident_parser.clone().map(|ident| Type::Named(ident));

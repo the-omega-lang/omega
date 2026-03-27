@@ -5,7 +5,7 @@ use chumsky::prelude::*;
 pub struct CodeblockExpr(pub Vec<Statement>);
 
 impl CodeblockExpr {
-    parser!((stmt_parser => Statement) -> Self {
+    parser!((stmt_parser => Statement) => Self {
         just('{')
             .padded()
             .ignore_then(stmt_parser.repeated().collect::<Vec<_>>())

@@ -11,7 +11,7 @@ pub struct DeclarationStmt {
 }
 
 impl DeclarationStmt {
-    parser!(() -> Self {
+    parser!(() => Self {
         Ident::parser()
             .padded()
             .then_ignore(just(':').padded())

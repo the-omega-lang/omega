@@ -19,7 +19,7 @@ impl AsRef<String> for Ident {
 
 // Parser
 impl Ident {
-    parser!(() -> Self {
+    parser!(() => Self {
         text::ascii::ident().map(|s: &str| Ident(s.to_string()))
     });
 }

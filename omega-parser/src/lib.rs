@@ -4,8 +4,6 @@ pub mod syntax;
 use chumsky::prelude::*;
 use prelude::*;
 
-use crate::syntax::ParseError;
-
 pub struct OmegaParser;
 
 impl OmegaParser {

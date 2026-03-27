@@ -11,7 +11,7 @@ pub struct ExternDeclarationStmt {
 }
 
 impl ExternDeclarationStmt {
-    parser!(() -> Self {
+    parser!(() => Self {
         text::ascii::keyword("extern")
             .padded()
             .ignore_then(DeclarationStmt::parser())

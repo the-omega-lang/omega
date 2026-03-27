@@ -22,7 +22,7 @@ pub enum Expression {
 }
 
 impl Expression {
-    parser!((stmt_parser => Statement) -> Self {
+    parser!((stmt_parser => Statement) => Self {
         recursive(|expr_parser| {
             choice((
                 StringExpr::parser().map(Expression::String),

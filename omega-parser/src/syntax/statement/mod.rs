@@ -24,7 +24,7 @@ pub enum RootStatement {
 }
 
 impl RootStatement {
-    parser!(() -> Self {
+    parser!(() => Self {
         let semicolon_statements = choice((
             DeclarationStmt::parser().map(RootStatement::Declaration),
             ExternDeclarationStmt::parser().map(RootStatement::ExternDeclaration),
@@ -50,7 +50,7 @@ pub enum Statement {
 }
 
 impl Statement {
-    parser!((expr_parser => Expression) -> Self {
+    parser!((expr_parser => Expression) => Self {
             choice((
                 DeclarationStmt::parser().map(Statement::Declaration),
                 ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),

@@ -5,7 +5,7 @@ use chumsky::prelude::*;
 pub struct StringExpr(pub String);
 
 impl StringExpr {
-    parser!(() -> Self {
+    parser!(() => Self {
         just('"')
             .ignore_then(none_of('"').repeated().to_slice().map(ToString::to_string))
             .then_ignore(just('"'))

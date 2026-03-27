@@ -22,6 +22,4 @@ fn main() {
     .expect("Failed to parse");
 
     println!("{:#?}", ast);
-
-    let rich_ast = ast;
 }
