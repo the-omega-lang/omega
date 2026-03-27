@@ -3,7 +3,7 @@ use omega_parser::prelude::*;
 fn main() {
     println!("[Omega Compiler]");
 
-    let abc = StringExpr::parser().parse(r#####"   """""this is a """" string ok"""""  "#####);
+    let abc = StringExpr::parser().parse(r#####"   """this is a "" string ok"""  "#####);
     println!("abc: {:#?}", abc);
 
     // parse("extern puts : (fmt: *char) => i32;");
