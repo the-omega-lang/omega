@@ -6,10 +6,10 @@ pub struct StringExpr(pub String);
 
 impl StringExpr {
     parser!(() => Self {
-        just('"')
-            .ignore_then(none_of('"').repeated().to_slice().map(ToString::to_string))
-            .then_ignore(just('"'))
-            .map(|s| Self(s))
+        // just('"')
+        //     .ignore_then(none_of('"').repeated().to_slice().map(ToString::to_string))
+        //     .then_ignore(just('"'))
+        //     .map(|s| Self(s))
 
         // TODO: Implement odd-lengthed delimiter strings, similar to as follows
         // let quote_start_parser = just('"').repeated().at_least(1).count();
@@ -32,6 +32,15 @@ impl StringExpr {
 
         // delim_start
         //     .ignore_with_ctx(content.then_ignore(delim_end))
-        //     .map(|s| StringExpr(s));
+        //     .map(|s| StringExpr(s))
+
+        let delim_start = just('"').repeated().count();
+        let delim_end = just('"').repeated().configure(|cfg, ctx| cfg.exactly(*ctx));
+        let content = any().and_is(delim_end.not()).repeated().collect::<String>();
+
+        delim_start
+            .ignore_with_ctx(content.then_ignore(delim_end))
+            .padded()
+            .map(|s| StringExpr(s))
     });
 }

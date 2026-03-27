@@ -1,3 +1,4 @@
+pub use crate::OmegaParser;
 pub use crate::syntax::expression::{
     Expression, codeblock::CodeblockExpr, function_call::FunctionCallExpr, string::StringExpr,
 };
@@ -7,3 +8,4 @@ pub use crate::syntax::statement::{
     extern_declaration::ExternDeclarationStmt, function_definition::FunctionDefinitionStmt,
 };
 pub use crate::syntax::r#type::{FunctionType, Type};
+pub use chumsky::Parser;
