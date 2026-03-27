@@ -3,12 +3,7 @@ use omega_parser::prelude::*;
 fn main() {
     println!("[Omega Compiler]");
 
-    let abc = StringExpr::parser().parse(
-        r#####"
-            """""this is my string"" it didnt end yet...
-                """ also not yet... """" ok time to end it"""""
-        "#####,
-    );
+    let abc = StringExpr::parser().parse(r#####"   """""this is a """" string ok"""""  "#####);
     println!("abc: {:#?}", abc);
 
     // parse("extern puts : (fmt: *char) => i32;");

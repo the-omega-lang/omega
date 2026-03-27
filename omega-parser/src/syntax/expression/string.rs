@@ -34,13 +34,19 @@ impl StringExpr {
         //     .ignore_with_ctx(content.then_ignore(delim_end))
         //     .map(|s| StringExpr(s))
 
-        let delim_start = just('"').repeated().count();
-        let delim_end = just('"').repeated().configure(|cfg, ctx| cfg.exactly(*ctx));
-        let content = any().and_is(delim_end.not()).repeated().collect::<String>();
 
-        delim_start
+        let empty_string = just("\"\"").padded().map(|_| StringExpr("".to_owned()));
+
+        let delim_start = just("\"\"\"").ignore_then(just("\"\"").repeated().count().map(|count| count * 2 + 3)).or(just('"').not().map(|_| 0));
+        let delim_end = just('"').repeated().configure(|cfg, ctx| cfg.exactly(*ctx));
+        let content = any().and_is(just('"').not()).then(any().and_is(delim_end.not()).repeated().collect::<String>()).map(|(first, remainder)| format!("{}{}", first, remainder));
+        let longquote_string = delim_start
             .ignore_with_ctx(content.then_ignore(delim_end))
             .padded()
-            .map(|s| StringExpr(s))
+            .map(|s| StringExpr(s));
+
+        choice(
+            (longquote_string, empty_string)
+        )
     });
 }
