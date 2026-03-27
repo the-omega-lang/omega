@@ -1,11 +1,11 @@
-use omega_parser::Omega;
+use omega_parser::OmegaParser;
 
 fn main() {
     println!("[Omega Compiler]");
     // parse("extern puts : (fmt: *char) => i32;");
     // parse(r#""hello""#);
     // parse("{ a : i32; b : i32; c: u64; }");
-    let ast = Omega::parse_module(
+    let ast = OmegaParser::parse_module(
         r###"
 
         extern puts : (fmt: *char) => i32;
@@ -18,7 +18,10 @@ fn main() {
         }
         
     "###,
-    );
+    )
+    .expect("Failed to parse");
 
     println!("{:#?}", ast);
+
+    let rich_ast = ast;
 }

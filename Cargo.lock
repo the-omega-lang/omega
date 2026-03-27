@@ -107,6 +107,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omega-analyzer"
+version = "0.1.0"
+dependencies = [
+ "omega-parser",
+]
+
+[[package]]
 name = "omega-parser"
 version = "0.1.0"
 dependencies = [
@@ -117,6 +124,7 @@ dependencies = [
 name = "omgc"
 version = "0.1.0"
 dependencies = [
+ "omega-analyzer",
  "omega-parser",
 ]
 

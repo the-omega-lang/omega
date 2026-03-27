@@ -6,9 +6,9 @@ use prelude::*;
 
 use crate::syntax::ParseError;
 
-pub struct Omega;
+pub struct OmegaParser;
 
-impl Omega {
+impl OmegaParser {
     pub fn parse_module(source_code: &str) -> Result<Vec<RootStatement>, Vec<Rich<'_, char>>> {
         RootStatement::parser()
             .repeated()

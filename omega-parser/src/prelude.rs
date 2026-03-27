@@ -7,4 +7,4 @@ pub use crate::syntax::statement::{
     RootStatement, Statement, declaration::DeclarationStmt,
     extern_declaration::ExternDeclarationStmt, function_definition::FunctionDefinitionStmt,
 };
-pub use crate::syntax::r#type::Type;
+pub use crate::syntax::r#type::{FunctionType, Type};

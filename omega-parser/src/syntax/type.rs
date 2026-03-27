@@ -2,13 +2,16 @@ use crate::syntax::{ParseError, SyntaxParser, identifier::Ident};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
+pub struct FunctionType {
+    pub params: Vec<(Ident, Type)>,
+    pub return_type: Box<Type>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Type {
     Named(Ident), // Identifier types. Example: void, i32, i64, char, ...
     Pointer(Box<Type>),
-    Function {
-        params: Vec<(Ident, Type)>,
-        return_type: Box<Type>,
-    },
+    Function(FunctionType),
 }
 
 impl SyntaxParser for Type {
@@ -33,9 +36,11 @@ impl SyntaxParser for Type {
                 .then_ignore(just(')').padded())
                 .then_ignore(just("=>").padded())
                 .then(parser)
-                .map(|(params, rettype)| Type::Function {
-                    params: params,
-                    return_type: Box::new(rettype),
+                .map(|(params, rettype)| {
+                    Type::Function(FunctionType {
+                        params: params,
+                        return_type: Box::new(rettype),
+                    })
                 });
 
             choice((named_type_parser, pointer_parser, function_parser)).padded()
