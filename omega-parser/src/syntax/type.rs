@@ -1,4 +1,7 @@
-use crate::syntax::{ParseError, SyntaxParser, identifier::Ident};
+use crate::{
+    parser,
+    syntax::{ParseError, identifier::Ident},
+};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -14,8 +17,8 @@ pub enum Type {
     Function(FunctionType),
 }
 
-impl SyntaxParser for Type {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+impl Type {
+    parser!(() -> Self {
         recursive(|parser| {
             let ident_parser = Ident::parser();
             let named_type_parser = ident_parser.clone().map(|ident| Type::Named(ident));
@@ -45,5 +48,5 @@ impl SyntaxParser for Type {
 
             choice((named_type_parser, pointer_parser, function_parser)).padded()
         })
-    }
+    });
 }

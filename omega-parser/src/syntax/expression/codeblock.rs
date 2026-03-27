@@ -1,8 +1,4 @@
-use crate::{
-    parser,
-    prelude::Statement,
-    syntax::{ParseError, SyntaxParser, identifier::Ident, r#type::Type},
-};
+use crate::{parser, prelude::Statement, syntax::ParseError};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]

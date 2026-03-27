@@ -6,7 +6,7 @@ use crate::{
     parser,
     prelude::Expression,
     syntax::{
-        ParseError, SyntaxParser,
+        ParseError,
         statement::{
             declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
             function_definition::FunctionDefinitionStmt,
@@ -23,8 +23,8 @@ pub enum RootStatement {
     FunctionDefinition(FunctionDefinitionStmt),
 }
 
-impl SyntaxParser for RootStatement {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+impl RootStatement {
+    parser!(() -> Self {
         let semicolon_statements = choice((
             DeclarationStmt::parser().map(RootStatement::Declaration),
             ExternDeclarationStmt::parser().map(RootStatement::ExternDeclaration),
@@ -38,7 +38,7 @@ impl SyntaxParser for RootStatement {
             .map(RootStatement::FunctionDefinition),
         ))
         .padded()
-    }
+    });
 }
 
 // Function scope statements

@@ -6,7 +6,7 @@ use crate::{
     parser,
     prelude::Statement,
     syntax::{
-        ParseError, SyntaxParser,
+        ParseError,
         expression::{
             codeblock::CodeblockExpr, function_call::FunctionCallExpr, string::StringExpr,
         },

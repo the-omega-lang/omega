@@ -1,7 +1,7 @@
 use crate::{
     parser,
-    prelude::{Expression, Statement},
-    syntax::{ParseError, SyntaxParser, identifier::Ident, r#type::Type},
+    prelude::Expression,
+    syntax::{ParseError, identifier::Ident},
 };
 use chumsky::prelude::*;
 

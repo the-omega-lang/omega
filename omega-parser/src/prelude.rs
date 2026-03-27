@@ -1,4 +1,3 @@
-pub use crate::syntax::SyntaxParser;
 pub use crate::syntax::expression::{
     Expression, codeblock::CodeblockExpr, function_call::FunctionCallExpr, string::StringExpr,
 };

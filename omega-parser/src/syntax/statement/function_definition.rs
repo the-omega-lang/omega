@@ -2,8 +2,7 @@ use crate::{
     parser,
     prelude::{CodeblockExpr, Statement},
     syntax::{
-        ParseError, SyntaxParser, identifier::Ident, statement::declaration::DeclarationStmt,
-        r#type::Type,
+        ParseError, identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
     },
 };
 use chumsky::prelude::*;

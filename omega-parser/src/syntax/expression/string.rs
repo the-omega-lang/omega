@@ -1,11 +1,11 @@
-use crate::syntax::{ParseError, SyntaxParser};
+use crate::{parser, syntax::ParseError};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct StringExpr(pub String);
 
-impl SyntaxParser for StringExpr {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+impl StringExpr {
+    parser!(() -> Self {
         just('"')
             .ignore_then(none_of('"').repeated().to_slice().map(ToString::to_string))
             .then_ignore(just('"'))
@@ -33,5 +33,5 @@ impl SyntaxParser for StringExpr {
         // delim_start
         //     .ignore_with_ctx(content.then_ignore(delim_end))
         //     .map(|s| StringExpr(s));
-    }
+    });
 }

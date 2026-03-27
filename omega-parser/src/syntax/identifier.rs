@@ -1,4 +1,4 @@
-use crate::syntax::{ParseError, SyntaxParser};
+use crate::{parser, syntax::ParseError};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -18,8 +18,8 @@ impl AsRef<String> for Ident {
 }
 
 // Parser
-impl SyntaxParser for Ident {
-    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+impl Ident {
+    parser!(() -> Self {
         text::ascii::ident().map(|s: &str| Ident(s.to_string()))
-    }
+    });
 }
