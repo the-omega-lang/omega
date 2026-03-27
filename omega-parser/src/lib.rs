@@ -4,34 +4,16 @@ pub mod syntax;
 use chumsky::prelude::*;
 use prelude::*;
 
-pub fn parse(input: &str) -> () {
-    println!("You called parse with the input: {}", input);
+use crate::syntax::ParseError;
 
-    println!();
+pub struct Omega;
 
-    // println!("Parse Identifier");
-    // println!("Result: {:#?}", Ident::parse(input));
-
-    // println!();
-
-    // println!("Parse Type");
-    // println!("Result: {:#?}", Type::parse(input));
-
-    // println!();
-
-    // println!("Parse Statement");
-    // println!("Result: {:#?}", Statement::parse(input));
-
-    // println!();
-
-    // println!("Parse Expression");
-    // println!(
-    //     "Result: {:#?}",
-    //     Expression::parser(recursive(|s| Statement::parser(Expression::parser(s)))).parse(input)
-    // );
-
-    // println!();
-
-    println!("Parse Root Statement");
-    println!("Result: {:#?}", RootStatement::parse(input));
+impl Omega {
+    pub fn parse_module(source_code: &str) -> Result<Vec<RootStatement>, Vec<Rich<'_, char>>> {
+        RootStatement::parser()
+            .repeated()
+            .collect::<Vec<_>>()
+            .parse(source_code)
+            .into_result()
+    }
 }
