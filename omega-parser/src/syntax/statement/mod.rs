@@ -51,11 +51,11 @@ pub enum Statement {
 
 impl Statement {
     parser!((expr_parser => Expression) => Self {
-            choice((
-                DeclarationStmt::parser().map(Statement::Declaration),
-                ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
-                expr_parser.map(Statement::Expression),
-            ))
+        choice((
+            DeclarationStmt::parser().map(Statement::Declaration),
+            ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
+            expr_parser.map(Statement::Expression),
+        ))
         .then_ignore(just(';').padded())
         .padded()
     });

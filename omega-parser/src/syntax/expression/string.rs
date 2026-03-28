@@ -37,7 +37,7 @@ impl StringExpr {
 
         let empty_string = just('"').repeated().exactly(2).padded().map(|_| StringExpr("".to_owned()));
 
-        let delim_start = just('"').repeated().exactly(3).ignore_then(just("\"\"").repeated().count().map(|count| count * 2 + 3)).or(just('"').not().map(|_| 0));
+        let delim_start = just('"').repeated().exactly(1).ignore_then(just("\"\"").repeated().count().map(|count| count * 2 + 1)).or(just('"').not().map(|_| 0));
         let delim_end = just('"').repeated().configure(|cfg, ctx| cfg.exactly(*ctx));
         let content = any().and_is(just('"').not()).then(any().and_is(delim_end.not()).repeated().collect::<String>()).map(|(first, remainder)| format!("{}{}", first, remainder));
         let longquote_string = delim_start

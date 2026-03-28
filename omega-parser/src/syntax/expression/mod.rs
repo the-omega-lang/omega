@@ -25,10 +25,10 @@ impl Expression {
     parser!((stmt_parser => Statement) => Self {
         recursive(|expr_parser| {
             choice((
-                StringExpr::parser().map(Expression::String),
-                CodeblockExpr::parser(stmt_parser.clone()).map(Expression::Codeblock),
+                CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
                 FunctionCallExpr::parser(expr_parser)
                     .map(Expression::FunctionCall),
+                StringExpr::parser().map(Expression::String),
             ))
         })
         .padded()

@@ -18,6 +18,7 @@ impl FunctionCallExpr {
             .then(
                 expr_parser
                     .separated_by(just(',').padded())
+                    .at_least(0)
                     .collect::<Vec<_>>(),
             )
             .map(|(function_ident, args)| Self {
