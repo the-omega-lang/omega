@@ -3,30 +3,19 @@ use omega_parser::prelude::*;
 fn main() {
     println!("[Omega Compiler]");
 
-    let abc = StringExpr::parser().parse(r#####" """hello""" "#####);
-    println!("abc: {:#?}", abc);
+    let source = r###"
 
-    // parse("extern puts : (fmt: *char) => i32;");
-    // parse(r#""hello""#);
-    // parse("{ a : i32; b : i32; c: u64; }");
-    // let ast = OmegaParser::parse_module(
-    //     r###"
+        extern puts : (fmt: *char) => i32;
 
-    //     extern puts : (fmt: *char) => i32;
+        main(argc: i32, argv: **char) => void {
+            a : i32;
+            b : i32;
 
-    //     main(argc: i32, argv: **char) => void {
-    //         a : i32;
-    //         b : i32;
+            puts("hello world!");
+        }
 
-    //         puts("hello world!");
-    //     }
-
-    // "###,
-    // )
-    // .expect("Failed to parse");
-
-    let source = r###"main()=>void{puts("abc");}"###;
-    println!("source: {}", source);
+    "###;
+    println!("{}", source);
     let ast = OmegaParser::parse_module(source).expect("Failed to parse");
 
     println!("{:#?}", ast);
