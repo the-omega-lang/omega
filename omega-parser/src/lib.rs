@@ -22,8 +22,8 @@ fn next_node_id() -> NodeId {
 pub struct OmegaParser;
 
 impl OmegaParser {
-    pub fn parse_module(source_code: &str) -> Result<Vec<RootStatement>, Vec<Rich<'_, char>>> {
-        RootStatement::parser()
+    pub fn parse_module(source_code: &str) -> Result<Vec<RootStatementNode>, Vec<Rich<'_, char>>> {
+        RootStatementNode::parser()
             .repeated()
             .collect::<Vec<_>>()
             .parse(source_code)

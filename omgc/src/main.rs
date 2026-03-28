@@ -4,17 +4,16 @@ fn main() {
     println!("[Omega Compiler]");
 
     let source = r###"
+extern puts : (fmt: *char) => i32;
 
-        extern puts : (fmt: *char) => i32;
+main(argc: i32, argv: **char) => void {
+    a : i32;
+    b : i32;
 
-        main(argc: i32, argv: **char) => void {
-            a : i32;
-            b : i32;
+    puts("hello world!");
+}
 
-            puts("hello world!");
-        }
-
-    "###;
+"###;
     println!("{}", source);
     let ast = OmegaParser::parse_module(source).expect("Failed to parse");
 

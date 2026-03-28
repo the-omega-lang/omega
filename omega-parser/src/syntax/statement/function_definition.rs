@@ -1,6 +1,6 @@
 use crate::{
     parser,
-    prelude::{CodeblockExpr, Statement},
+    prelude::{CodeblockExpr, Statement, StatementNode},
     syntax::{
         ParseError, identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
     },
@@ -16,7 +16,7 @@ pub struct FunctionDefinitionStmt {
 }
 
 impl FunctionDefinitionStmt {
-    parser!((stmt_parser => Statement) => Self {
+    parser!((stmt_parser => StatementNode) => Self {
         Ident::parser()
             .then_ignore(just('(').padded())
             .then(

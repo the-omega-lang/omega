@@ -3,7 +3,7 @@ pub mod extern_declaration;
 pub mod function_definition;
 
 use crate::{
-    parser,
+    NodeId, next_node_id, parser,
     prelude::Expression,
     syntax::{
         ParseError,
@@ -24,7 +24,14 @@ pub enum RootStatement {
     FunctionDefinition(FunctionDefinitionStmt),
 }
 
-impl RootStatement {
+#[derive(Debug, Clone)]
+pub struct RootStatementNode {
+    pub id: NodeId,
+    pub root_stmt: RootStatement,
+    pub span: SimpleSpan,
+}
+
+impl RootStatementNode {
     parser!(() => Self {
         let semicolon_statements = choice((
             DeclarationStmt::parser().map(RootStatement::Declaration),
@@ -34,10 +41,14 @@ impl RootStatement {
         choice((
             semicolon_statements,
             FunctionDefinitionStmt::parser(recursive(|stmt_parser| {
-                Statement::parser(ExpressionNode::parser(stmt_parser))
-            }))
-            .map(RootStatement::FunctionDefinition),
+                StatementNode::parser(ExpressionNode::parser(stmt_parser))
+            })).map(RootStatement::FunctionDefinition),
         ))
+        .map_with(|root_stmt, extra| RootStatementNode {
+            id: next_node_id(),
+            root_stmt, span:
+            extra.span()
+        })
         .padded()
     });
 }
@@ -50,13 +61,20 @@ pub enum Statement {
     Expression(ExpressionNode),
 }
 
-impl Statement {
+#[derive(Debug, Clone)]
+pub struct StatementNode {
+    pub id: NodeId,
+    pub statement: Statement,
+    pub span: SimpleSpan,
+}
+
+impl StatementNode {
     parser!((expr_parser => ExpressionNode) => Self {
         choice((
             DeclarationStmt::parser().map(Statement::Declaration),
             ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
             expr_parser.map(Statement::Expression),
-        ))
+        )).map_with(|statement, extra| StatementNode { id: next_node_id(), statement, span: extra.span() })
         .then_ignore(just(';').padded())
         .padded()
     });

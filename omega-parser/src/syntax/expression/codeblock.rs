@@ -1,11 +1,15 @@
-use crate::{parser, prelude::Statement, syntax::ParseError};
+use crate::{
+    parser,
+    prelude::Statement,
+    syntax::{ParseError, statement::StatementNode},
+};
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
-pub struct CodeblockExpr(pub Vec<Statement>);
+pub struct CodeblockExpr(pub Vec<StatementNode>);
 
 impl CodeblockExpr {
-    parser!((stmt_parser => Statement) => Self {
+    parser!((stmt_parser => StatementNode) => Self {
         just('{')
             .padded()
             .ignore_then(stmt_parser.repeated().collect::<Vec<_>>())

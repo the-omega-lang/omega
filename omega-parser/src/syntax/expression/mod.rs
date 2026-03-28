@@ -10,6 +10,7 @@ use crate::{
         expression::{
             codeblock::CodeblockExpr, function_call::FunctionCallExpr, string::StringExpr,
         },
+        statement::StatementNode,
     },
 };
 use chumsky::prelude::*;
@@ -31,7 +32,7 @@ pub struct ExpressionNode {
 }
 
 impl ExpressionNode {
-    parser!((stmt_parser => Statement) => Self {
+    parser!((stmt_parser => StatementNode) => Self {
         recursive(|expr_parser| {
             choice((
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
