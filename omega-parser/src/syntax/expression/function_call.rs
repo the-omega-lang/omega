@@ -1,18 +1,18 @@
 use crate::{
     parser,
     prelude::Expression,
-    syntax::{ParseError, identifier::Ident},
+    syntax::{ParseError, expression::ExpressionNode, identifier::Ident},
 };
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct FunctionCallExpr {
     pub function_ident: Ident,
-    pub args: Vec<Expression>,
+    pub args: Vec<ExpressionNode>,
 }
 
 impl FunctionCallExpr {
-    parser!((expr_parser => Expression) => Self {
+    parser!((expr_parser => ExpressionNode) => Self {
         Ident::parser()
             .then_ignore(just('('))
             .then(

@@ -3,7 +3,7 @@ pub mod function_call;
 pub mod string;
 
 use crate::{
-    parser,
+    next_node_id, parser,
     prelude::Statement,
     syntax::{
         ParseError,
@@ -21,7 +21,16 @@ pub enum Expression {
     FunctionCall(FunctionCallExpr),
 }
 
-impl Expression {
+pub type NodeId = u64;
+
+#[derive(Debug, Clone)]
+pub struct ExpressionNode {
+    pub id: NodeId,
+    pub expression: Expression,
+    pub span: SimpleSpan,
+}
+
+impl ExpressionNode {
     parser!((stmt_parser => Statement) => Self {
         recursive(|expr_parser| {
             choice((
@@ -29,7 +38,9 @@ impl Expression {
                 FunctionCallExpr::parser(expr_parser)
                     .map(Expression::FunctionCall),
                 StringExpr::parser().map(Expression::String),
-            ))
+            )).map_with(|expression, extra| ExpressionNode {
+                id: next_node_id(), expression, span: extra.span()
+            })
         })
         .padded()
     });
