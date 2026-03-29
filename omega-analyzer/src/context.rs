@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use omega_parser::prelude::*;
 
+#[derive(Debug, Clone)]
 pub struct ScopeContext {
-    pub declared_functions: HashMap<String, FunctionType>,
-    pub declared_variables: HashMap<String, Type>,
+    pub declared_functions: HashMap<Ident, FunctionType>,
+    pub declared_variables: HashMap<Ident, Type>,
 }
 
 impl ScopeContext {
@@ -16,6 +17,7 @@ impl ScopeContext {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Context {
     scopes: Vec<ScopeContext>,
 }
@@ -28,7 +30,7 @@ impl Context {
     }
 
     // Finder functions
-    pub fn find_variable_type(&self, name: &str) -> Option<&Type> {
+    pub fn find_variable_type(&self, name: &Ident) -> Option<&Type> {
         for scope in self.scopes.iter().rev() {
             if let Some(typ) = scope.declared_variables.get(name) {
                 return Some(typ);
@@ -38,7 +40,7 @@ impl Context {
         None
     }
 
-    pub fn find_function_type(&self, name: &str) -> Option<&FunctionType> {
+    pub fn find_function_type(&self, name: &Ident) -> Option<&FunctionType> {
         for scope in self.scopes.iter().rev() {
             if let Some(typ) = scope.declared_functions.get(name) {
                 return Some(typ);
@@ -49,13 +51,13 @@ impl Context {
     }
 
     // Scope helpers
-    pub fn current_scope(&self) -> &ScopeContext {
-        self.scopes.last().unwrap()
+    pub fn current_scope(&mut self) -> &mut ScopeContext {
+        self.scopes.last_mut().unwrap()
     }
 
-    pub fn enter_scope(&mut self) -> &ScopeContext {
+    pub fn enter_scope(&mut self) -> &mut ScopeContext {
         self.scopes.push(ScopeContext::new());
-        self.scopes.last().unwrap()
+        self.current_scope()
     }
 
     pub fn leave_scope(&mut self) -> ScopeContext {
@@ -69,6 +71,6 @@ impl Context {
 
         self.scopes
             .pop()
-            .expect("BAD: Context does not have a scope")
+            .expect("BAD: Context does not have a scope. This should NEVER happen.")
     }
 }

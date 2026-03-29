@@ -1,7 +1,7 @@
 use crate::{parser, syntax::ParseError};
 use chumsky::prelude::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Ident(pub String);
 
 // Helpers for string integration

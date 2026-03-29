@@ -1,6 +1,6 @@
 use crate::{
     parser,
-    prelude::{CodeblockExpr, Statement, StatementNode},
+    prelude::{CodeblockExpr, FunctionType, Statement, StatementNode},
     syntax::{
         ParseError, identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
     },
@@ -37,4 +37,16 @@ impl FunctionDefinitionStmt {
                 },
             )
     });
+
+    pub fn function_type(&self) -> FunctionType {
+        let params = self
+            .params
+            .iter()
+            .map(|p| (p.ident.to_owned(), p.r#type.to_owned()))
+            .collect::<Vec<_>>();
+        FunctionType {
+            params,
+            return_type: Box::new(self.return_type.clone()),
+        }
+    }
 }

@@ -1,3 +1,4 @@
+use omega_analyzer::analysis::{Analysis, Analyzer};
 use omega_parser::{SourceModule, prelude::*};
 
 fn main() {
@@ -16,6 +17,9 @@ main(argc: i32, argv: **char) => void {
 "###;
     println!("{}", source);
     let ast = SourceModule::parse(source).expect("Failed to parse");
-
     println!("{:#?}", ast);
+
+    let analyzer = Analyzer::new();
+    let object_module = analyzer.analyze(&ast).expect("Failed to analyze");
+    println!("{:#?}", object_module);
 }
