@@ -4,13 +4,13 @@ use crate::{
 };
 use chumsky::prelude::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
     pub params: Vec<(Ident, Type)>,
     pub return_type: Box<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Named(Ident), // Identifier types. Example: void, i32, i64, char, ...
     Pointer(Box<Type>),

@@ -2,8 +2,8 @@ use crate::context::{Context, ScopeContext};
 use omega_parser::{
     NodeId, SourceModule,
     prelude::{
-        CodeblockExpr, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt, FunctionType,
-        Ident, RootStatement, RootStatementNode, Statement, StatementNode, Type,
+        CodeblockExpr, Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt,
+        FunctionType, Ident, RootStatement, RootStatementNode, Statement, StatementNode, Type,
     },
 };
 use std::collections::HashMap;
@@ -46,21 +46,33 @@ impl Analyzer {
 
     // Utils
 
-    fn expression_types(&mut self) -> &mut HashMap<NodeId, Type> {
+    fn expression_types(&self) -> &HashMap<NodeId, Type> {
+        &self.analysis.expression_types
+    }
+
+    fn expression_types_mut(&mut self) -> &mut HashMap<NodeId, Type> {
         &mut self.analysis.expression_types
     }
 
-    fn context(&mut self) -> &mut Context {
+    fn context(&self) -> &Context {
+        &self.analysis.context
+    }
+
+    fn context_mut(&mut self) -> &mut Context {
         &mut self.analysis.context
     }
 
-    fn codeblock_scopes(&mut self) -> &mut HashMap<NodeId, ScopeContext> {
+    fn codeblock_scopes(&self) -> &HashMap<NodeId, ScopeContext> {
+        &self.analysis.codeblock_scopes
+    }
+
+    fn codeblock_scopes_mut(&mut self) -> &mut HashMap<NodeId, ScopeContext> {
         &mut self.analysis.codeblock_scopes
     }
 
     // Analysis
     fn analyze_declaration(&mut self, ident: Ident, typ: Type) {
-        let scope = self.context().current_scope();
+        let scope = self.context_mut().current_scope();
         match typ {
             Type::Function(fntype) => {
                 scope
@@ -79,7 +91,71 @@ impl Analyzer {
         self.analyze_declaration(extern_decl.ident.to_owned(), extern_decl.r#type.to_owned());
     }
 
-    fn analyze_expression(&mut self, node: &ExpressionNode) {}
+    fn analyze_expression(&mut self, node: &ExpressionNode) {
+        let expr = &node.expression;
+        let node_id = node.id;
+
+        match expr {
+            Expression::String(_) => {
+                // TODO: Dont hardcode string type here
+                self.expression_types_mut().insert(
+                    node.id,
+                    Type::Pointer(Box::new(Type::Named(Ident("char".to_owned())))),
+                );
+            }
+            Expression::FunctionCall(call_expr) => {
+                let Some(function_type) =
+                    self.context().find_function_type(&call_expr.function_ident)
+                else {
+                    self.errors.push(AnalysisError {
+                        node_id,
+                        message: format!("Undefined function '{}'", call_expr.function_ident.0),
+                    });
+                    return;
+                };
+
+                // Store function call expression type
+                let function_type = function_type.to_owned();
+                self.expression_types_mut()
+                    .insert(node_id, *function_type.return_type);
+
+                // Check types for arguments of the function call
+                for i in 0..call_expr.args.len() {
+                    let arg = &call_expr.args[i];
+                    if i >= function_type.params.len() {
+                        self.errors.push(AnalysisError {
+                            node_id: arg.id,
+                            message: format!(
+                                "Too many arguments for function '{}'. Expected: {}",
+                                call_expr.function_ident.0,
+                                function_type.params.len()
+                            ),
+                        });
+                        return;
+                    }
+
+                    self.analyze_expression(arg);
+
+                    // If the arg was successfully analyzed, lets check
+                    // if the expression type matches the parameter type
+                    if let Some(typ) = self.expression_types().get(&arg.id) {
+                        let expected_type = &function_type.params[i].1;
+                        if typ != expected_type {
+                            self.errors.push(AnalysisError {
+                                node_id: arg.id,
+                                message: format!(
+                                    "Expected type '{:?}' for argument, found: {:?}",
+                                    expected_type, typ
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
 
     fn analyze_statement(&mut self, node: &StatementNode) {
         let stmt = &node.statement;
@@ -100,7 +176,7 @@ impl Analyzer {
     }
 
     fn analyze_function_def(&mut self, node_id: NodeId, function_def: &FunctionDefinitionStmt) {
-        let scope = self.context().enter_scope();
+        let scope = self.context_mut().enter_scope();
 
         // Add function parameters to new scope
         // and analyze its codeblock
@@ -112,14 +188,17 @@ impl Analyzer {
         self.analyze_codeblock(&function_def.codeblock);
 
         // Save function scope analysis
-        let scope = self.context().leave_scope();
-        self.codeblock_scopes().insert(node_id, scope);
+        let scope = self.context_mut().leave_scope();
+        self.codeblock_scopes_mut().insert(node_id, scope);
 
         // Store function return type information
-        self.context().current_scope().declared_functions.insert(
-            function_def.function_name.to_owned(),
-            function_def.function_type(),
-        );
+        self.context_mut()
+            .current_scope()
+            .declared_functions
+            .insert(
+                function_def.function_name.to_owned(),
+                function_def.function_type(),
+            );
     }
 
     fn analyze_root_stmt(&mut self, node: &RootStatementNode) {
