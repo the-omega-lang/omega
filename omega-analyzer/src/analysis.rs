@@ -1,4 +1,7 @@
-use crate::context::{Context, ScopeContext};
+use crate::{
+    context::{Context, ScopeContext},
+    resolved_type::{ResolvedFunctionType, ResolvedType},
+};
 use omega_parser::{
     NodeId, SourceModule,
     prelude::{
@@ -16,7 +19,7 @@ pub struct AnalysisError {
 
 #[derive(Debug, Clone)]
 pub struct Analysis {
-    pub expression_types: HashMap<NodeId, Type>,
+    pub expression_types: HashMap<NodeId, ResolvedType>,
     pub context: Context,
     pub codeblock_scopes: HashMap<NodeId, ScopeContext>,
 }
@@ -29,10 +32,10 @@ pub struct Analyzer {
 
 impl Analyzer {
     pub fn new() -> Self {
-        let mut errors = vec![];
-        let mut expression_types = HashMap::new();
-        let mut context = Context::new();
-        let mut codeblock_scopes = HashMap::new();
+        let errors = vec![];
+        let expression_types = HashMap::new();
+        let context = Context::new();
+        let codeblock_scopes = HashMap::new();
 
         Self {
             errors,
@@ -46,11 +49,11 @@ impl Analyzer {
 
     // Utils
 
-    fn expression_types(&self) -> &HashMap<NodeId, Type> {
+    fn expression_types(&self) -> &HashMap<NodeId, ResolvedType> {
         &self.analysis.expression_types
     }
 
-    fn expression_types_mut(&mut self) -> &mut HashMap<NodeId, Type> {
+    fn expression_types_mut(&mut self) -> &mut HashMap<NodeId, ResolvedType> {
         &mut self.analysis.expression_types
     }
 
@@ -71,13 +74,18 @@ impl Analyzer {
     }
 
     // Analysis
-    fn analyze_declaration(&mut self, ident: Ident, typ: Type) {
+    fn analyze_declaration(&mut self, node_id: NodeId, ident: Ident, typ: Type) {
         let scope = self.context_mut().current_scope();
-        match typ {
+        match &typ {
             Type::Function(fntype) => {
-                scope
-                    .declared_functions
-                    .insert(ident.to_owned(), fntype.to_owned());
+                match ResolvedFunctionType::try_from(fntype.to_owned()) {
+                    Ok(resolved) => {
+                        scope.declared_functions.insert(ident, resolved);
+                    }
+                    Err(message) => {
+                        self.errors.push(AnalysisError { node_id, message });
+                    }
+                };
             }
             typ => {
                 scope
@@ -87,8 +95,12 @@ impl Analyzer {
         }
     }
 
-    fn analyze_extern_decl(&mut self, extern_decl: &ExternDeclarationStmt) {
-        self.analyze_declaration(extern_decl.ident.to_owned(), extern_decl.r#type.to_owned());
+    fn analyze_extern_decl(&mut self, node_id: NodeId, extern_decl: &ExternDeclarationStmt) {
+        self.analyze_declaration(
+            node_id,
+            extern_decl.ident.to_owned(),
+            extern_decl.r#type.to_owned(),
+        );
     }
 
     fn analyze_expression(&mut self, node: &ExpressionNode) {
@@ -97,11 +109,8 @@ impl Analyzer {
 
         match expr {
             Expression::String(_) => {
-                // TODO: Dont hardcode string type here
-                self.expression_types_mut().insert(
-                    node.id,
-                    Type::Pointer(Box::new(Type::Named(Ident("char".to_owned())))),
-                );
+                self.expression_types_mut()
+                    .insert(node.id, ResolvedType::Pointer(Box::new(ResolvedType::Char)));
             }
             Expression::FunctionCall(call_expr) => {
                 let Some(function_type) =
@@ -116,8 +125,18 @@ impl Analyzer {
 
                 // Store function call expression type
                 let function_type = function_type.to_owned();
-                self.expression_types_mut()
-                    .insert(node_id, *function_type.return_type);
+                match ResolvedType::try_from(*function_type.return_type) {
+                    Ok(rettype) => {
+                        self.expression_types_mut().insert(node_id, rettype);
+                    }
+                    Err(message) => {
+                        self.errors.push(AnalysisError {
+                            node_id,
+                            message: message.to_string(),
+                        });
+                        return;
+                    }
+                }
 
                 // Check types for arguments of the function call
                 for i in 0..call_expr.args.len() {
@@ -161,7 +180,7 @@ impl Analyzer {
         let stmt = &node.statement;
         match stmt {
             Statement::Declaration(decl) => {
-                self.analyze_declaration(decl.ident.clone(), decl.r#type.clone())
+                self.analyze_declaration(node.id, decl.ident.clone(), decl.r#type.clone())
             }
             Statement::Expression(expr) => self.analyze_expression(expr),
             _ => {}
@@ -192,13 +211,17 @@ impl Analyzer {
         self.codeblock_scopes_mut().insert(node_id, scope);
 
         // Store function return type information
+        let fn_type = match ResolvedFunctionType::try_from(function_def.function_type()) {
+            Ok(typ) => typ,
+            Err(message) => {
+                self.errors.push(AnalysisError { node_id, message });
+                return;
+            }
+        };
         self.context_mut()
             .current_scope()
             .declared_functions
-            .insert(
-                function_def.function_name.to_owned(),
-                function_def.function_type(),
-            );
+            .insert(function_def.function_name.to_owned(), fn_type);
     }
 
     fn analyze_root_stmt(&mut self, node: &RootStatementNode) {
@@ -206,7 +229,7 @@ impl Analyzer {
         let node_id = node.id;
 
         match root_stmt {
-            RootStatement::ExternDeclaration(stmt) => self.analyze_extern_decl(stmt),
+            RootStatement::ExternDeclaration(stmt) => self.analyze_extern_decl(node_id, stmt),
             RootStatement::FunctionDefinition(stmt) => self.analyze_function_def(node_id, stmt),
             _ => {}
         }

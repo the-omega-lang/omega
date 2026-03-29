@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-
+use crate::resolved_type::ResolvedFunctionType;
 use omega_parser::prelude::*;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ScopeContext {
-    pub declared_functions: HashMap<Ident, FunctionType>,
+    pub declared_functions: HashMap<Ident, ResolvedFunctionType>,
     pub declared_variables: HashMap<Ident, Type>,
 }
 
@@ -40,7 +40,7 @@ impl Context {
         None
     }
 
-    pub fn find_function_type(&self, name: &Ident) -> Option<&FunctionType> {
+    pub fn find_function_type(&self, name: &Ident) -> Option<&ResolvedFunctionType> {
         for scope in self.scopes.iter().rev() {
             if let Some(typ) = scope.declared_functions.get(name) {
                 return Some(typ);
