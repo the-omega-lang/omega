@@ -1,4 +1,4 @@
-use omega_parser::prelude::*;
+use omega_parser::{SourceModule, prelude::*};
 
 fn main() {
     println!("[Omega Compiler]");
@@ -15,7 +15,7 @@ main(argc: i32, argv: **char) => void {
 
 "###;
     println!("{}", source);
-    let ast = OmegaParser::parse_module(source).expect("Failed to parse");
+    let ast = SourceModule::parse(source).expect("Failed to parse");
 
     println!("{:#?}", ast);
 }

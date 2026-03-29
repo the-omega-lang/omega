@@ -19,14 +19,19 @@ fn next_node_id() -> NodeId {
     })
 }
 
-pub struct OmegaParser;
+#[derive(Debug, Clone)]
+pub struct SourceModule {
+    pub nodes: Vec<RootStatementNode>,
+}
 
-impl OmegaParser {
-    pub fn parse_module(source_code: &str) -> Result<Vec<RootStatementNode>, Vec<Rich<'_, char>>> {
-        RootStatementNode::parser()
+impl SourceModule {
+    pub fn parse(source_code: &str) -> Result<Self, Vec<Rich<'_, char>>> {
+        let nodes = RootStatementNode::parser()
             .repeated()
             .collect::<Vec<_>>()
             .parse(source_code)
-            .into_result()
+            .into_result()?;
+
+        Ok(Self { nodes })
     }
 }

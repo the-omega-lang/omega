@@ -8,5 +8,5 @@ pub use crate::syntax::statement::{
     extern_declaration::ExternDeclarationStmt, function_definition::FunctionDefinitionStmt,
 };
 pub use crate::syntax::r#type::{FunctionType, Type};
-pub use crate::{NodeId, OmegaParser};
+pub use crate::{NodeId, SourceModule};
 pub use chumsky::Parser;
