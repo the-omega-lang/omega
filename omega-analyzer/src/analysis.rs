@@ -88,9 +88,17 @@ impl Analyzer {
                 };
             }
             typ => {
+                let resolved_type = match ResolvedType::try_from(typ.to_owned()) {
+                    Ok(t) => t,
+                    Err(message) => {
+                        self.errors.push(AnalysisError { node_id, message });
+                        return;
+                    }
+                };
+
                 scope
                     .declared_variables
-                    .insert(ident.to_owned(), typ.to_owned());
+                    .insert(ident.to_owned(), resolved_type);
             }
         }
     }
@@ -200,9 +208,16 @@ impl Analyzer {
         // Add function parameters to new scope
         // and analyze its codeblock
         for param in &function_def.params {
+            let resolved_type = match ResolvedType::try_from(param.r#type.to_owned()) {
+                Ok(t) => t,
+                Err(message) => {
+                    self.errors.push(AnalysisError { node_id, message });
+                    return;
+                }
+            };
             scope
                 .declared_variables
-                .insert(param.ident.to_owned(), param.r#type.to_owned());
+                .insert(param.ident.to_owned(), resolved_type);
         }
         self.analyze_codeblock(&function_def.codeblock);
 
