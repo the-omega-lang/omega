@@ -366,6 +366,8 @@ dependencies = [
  "cranelift",
  "cranelift-module",
  "cranelift-object",
+ "omega-analyzer",
+ "omega-parser",
 ]
 
 [[package]]

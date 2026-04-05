@@ -24,6 +24,12 @@ pub struct Analysis {
     pub codeblock_scopes: HashMap<NodeId, ScopeContext>,
 }
 
+impl Analysis {
+    pub fn get_global_function_type(&self, name: &Ident) -> Option<&ResolvedFunctionType> {
+        self.context.find_function_type(name)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Analyzer {
     errors: Vec<AnalysisError>,
