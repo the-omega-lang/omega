@@ -1,0 +1,17 @@
+run-exec DEBUGGER="": build-asm build-exe
+    ld target/hello.o target/shims.o -o target/example
+    {{DEBUGGER}} ./target/example; echo -e "\nexit code: $?"
+
+build-exe:
+    cargo run
+
+run-asm: build-asm
+    ld target/shims.o -o target/shims
+    ./target/shims; echo -e "\nexit code: $?"
+
+build-asm:
+    rm target/shims target/shims.o || true
+    as omega-shims/x86_64-unknown-linux.S -o target/shims.o
+
+clean:
+    rm -rf target
