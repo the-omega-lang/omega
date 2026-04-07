@@ -11,12 +11,6 @@ impl AsRef<str> for Ident {
     }
 }
 
-impl AsRef<String> for Ident {
-    fn as_ref(&self) -> &String {
-        &self.0
-    }
-}
-
 // Parser
 impl Ident {
     parser!(() => Self {

@@ -1,10 +1,11 @@
 use cranelift::{
-    codegen::{self, ir::FuncRef},
+    codegen::{self, ir::FuncRef, packed_option::ReservedValue, verifier::VerifierErrors},
     prelude::{
-        AbiParam, Configurable, FunctionBuilderContext, Type as IRType, Value, isa, settings, types,
+        AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder,
+        Type as IRType, Value, isa, settings, types,
     },
 };
-use cranelift_module::{DataId, FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{analysis::Analysis, resolved_type::ResolvedType};
 use omega_parser::prelude::*;
@@ -14,6 +15,7 @@ use std::{collections::HashMap, sync::Arc};
 pub enum CodegenError {
     NotImplemented(NodeId),
     UnresolvedType(NodeId, Ident),
+    VerifierErrors(NodeId, VerifierErrors),
 }
 
 pub struct Codegen {
@@ -134,9 +136,11 @@ impl Codegen {
                     sig.params.push(AbiParam::new(param));
                 }
 
-                sig.returns.push(AbiParam::new(
-                    resolved_fntype.return_type.into_ir_type(&self),
-                ));
+                if *resolved_fntype.return_type != ResolvedType::Void {
+                    sig.returns.push(AbiParam::new(
+                        resolved_fntype.return_type.into_ir_type(&self),
+                    ));
+                }
 
                 let function_id = self
                     .module
@@ -152,164 +156,218 @@ impl Codegen {
         }
     }
 
-    // fn unique_symbol(&mut self) -> String {
-    //     let sym = format!("__sym_{}", self.counter);
-    //     self.counter += 1;
-    //     sym
-    // }
+    fn unique_symbol(&mut self) -> String {
+        let sym = format!("__sym_{}", self.counter);
+        self.counter += 1;
+        sym
+    }
 
-    // fn get_or_declare_global_string(&mut self, s: String) -> DataId {
-    //     let sym = self.unique_symbol();
-    //     let id = self
-    //         .module
-    //         .declare_data(&sym, Linkage::Local, false, false)
-    //         .unwrap();
+    fn get_or_declare_global_string(&mut self, s: String) -> DataId {
+        let sym = self.unique_symbol();
+        let id = self
+            .module
+            .declare_data(&sym, Linkage::Local, false, false)
+            .unwrap();
 
-    //     let mut str_desc = DataDescription::new();
-    //     let mut str_bytes = s.clone().into_bytes();
-    //     str_bytes.push(b'\0'); // null terminator
-    //     str_desc.define(str_bytes.into_boxed_slice());
-    //     self.module.define_data(id, &str_desc).unwrap();
+        let mut str_desc = DataDescription::new();
+        let mut str_bytes = s.clone().into_bytes();
+        str_bytes.push(b'\0'); // null terminator
+        str_desc.define(str_bytes.into_boxed_slice());
+        self.module.define_data(id, &str_desc).unwrap();
 
-    //     self.strings.insert(s, id.clone());
+        self.strings.insert(s, id.clone());
 
-    //     id
-    // }
+        id
+    }
 
-    // fn process_expr(&mut self, builder: &mut FunctionBuilder, expr: Expr) -> Value {
-    //     match expr {
-    //         Expr::Str(s) => {
-    //             if let Some(local_value) = self.local_strings.get(&s) {
-    //                 return local_value.to_owned();
-    //             }
+    fn process_expr(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        node: ExpressionNode,
+    ) -> Result<Value, CodegenError> {
+        match node.expression {
+            Expression::String(s) => {
+                if let Some(local_value) = self.local_strings.get(&s.0) {
+                    return Ok(local_value.to_owned());
+                }
 
-    //             let ptr_type = self.module.target_config().pointer_type();
-    //             let str_id = if let Some(id) = self.strings.get(&s) {
-    //                 id.to_owned()
-    //             } else {
-    //                 self.get_or_declare_global_string(s.clone())
-    //             };
+                let ptr_type = self.module.target_config().pointer_type();
+                let str_id = if let Some(id) = self.strings.get(&s.0) {
+                    id.to_owned()
+                } else {
+                    self.get_or_declare_global_string(s.0.clone())
+                };
 
-    //             let global_value = self.module.declare_data_in_func(str_id, &mut builder.func);
-    //             let str_ptr = builder.ins().global_value(ptr_type, global_value);
+                let global_value = self.module.declare_data_in_func(str_id, &mut builder.func);
+                let str_ptr = builder.ins().global_value(ptr_type, global_value);
 
-    //             self.local_strings.insert(s, str_ptr.clone());
+                self.local_strings.insert(s.0, str_ptr.clone());
 
-    //             str_ptr
-    //         }
-    //         Expr::I32(i) => builder.ins().iconst::<i64>(types::I32, (i as i64).into()),
-    //     }
-    // }
-
-    // fn process_statement(&mut self, builder: &mut FunctionBuilder, stmt: Statement) {
-    //     match stmt {
-    //         Statement::Call {
-    //             function_name,
-    //             args,
-    //         } => {
-    //             let func_ref = if let Some(fnref) = self.local_functions.get(&function_name) {
-    //                 fnref.to_owned()
-    //             } else {
-    //                 let global_id = self
-    //                     .functions
-    //                     .get(&function_name)
-    //                     .expect(&format!("Function not declared: {}", function_name))
-    //                     .to_owned();
-
-    //                 let fnref = self
-    //                     .module
-    //                     .declare_func_in_func(global_id, &mut builder.func);
-
-    //                 self.local_functions.insert(function_name, fnref.clone());
-
-    //                 fnref
-    //             };
-
-    //             let mut ir_args = vec![];
-    //             for arg in args {
-    //                 let value = self.process_expr(builder, arg);
-    //                 ir_args.push(value);
-    //             }
-
-    //             let call = builder.ins().call(func_ref, &ir_args);
-    //             let _retval = builder.inst_results(call)[0];
-    //         }
-
-    //         Statement::Return(expr) => {
-    //             let value = self.process_expr(builder, expr);
-    //             builder.ins().return_(&[value]);
-    //         }
-    //     }
-    // }
-
-    // fn update_function_def(&mut self, function_def: FunctionDef) {
-    //     let mut sig = self.module.make_signature();
-    //     let ident = function_def.ident;
-    //     let return_type = function_def.return_type.into_ir(&self.module);
-
-    //     sig.returns.push(AbiParam::new(return_type.clone()));
-
-    //     let function_id = self
-    //         .module
-    //         .declare_function(&ident, Linkage::Import, &sig)
-    //         .unwrap();
-
-    //     self.module
-    //         .declare_function(&ident, Linkage::Export, &sig)
-    //         .unwrap();
-
-    //     // not sure how to bypass this issue of
-    //     // double mutability as of now, other than this
-    //     // forgive me.
-    //     let ctx_func_ref = unsafe {
-    //         let ptr = &mut self.ctx.func as *mut codegen::ir::Function;
-    //         &mut *ptr
-    //     };
-    //     let fbctx_ref = unsafe {
-    //         let ptr = &mut self.fbctx as *mut FunctionBuilderContext;
-    //         &mut *ptr
-    //     };
-
-    //     let mut builder = FunctionBuilder::new(ctx_func_ref, fbctx_ref);
-    //     builder.func.signature = sig;
-
-    //     let entry_block = builder.create_block();
-    //     builder.switch_to_block(entry_block);
-    //     // builder.seal_block(entry_block);
-
-    //     for stmt in function_def.codeblock.statements {
-    //         self.process_statement(&mut builder, stmt);
-    //     }
-
-    //     if let Err(err) = codegen::verify_function(&builder.func, self.isa.as_ref()) {
-    //         panic!("Verifier error on function '{ident}': {err}");
-    //     }
-
-    //     builder.seal_block(entry_block);
-    //     builder.finalize();
-
-    //     self.module
-    //         .define_function(function_id, &mut self.ctx)
-    //         .unwrap();
-    //     self.functions.insert(ident, function_id);
-
-    //     self.clear_local();
-    // }
-
-    fn update(&mut self, node: RootStatementNode) -> Result<(), CodegenError> {
-        match node.root_stmt {
-            RootStatement::ExternDeclaration(extern_decl) => {
-                self.update_extern_decl(node.id, extern_decl)
+                Ok(str_ptr)
             }
-            // RootStatement::FunctionDefinition(fn_def) => self.update_function_def(fn_def),
+            // Expression::Number(i) => Ok(builder.ins().iconst::<i64>(types::I32, (i as i64).into())),
+            Expression::FunctionCall(FunctionCallExpr {
+                function_name,
+                args,
+            }) => {
+                let func_ref = if let Some(fnref) = self.local_functions.get(&function_name) {
+                    fnref.to_owned()
+                } else {
+                    let global_id = self
+                        .functions
+                        .get(&function_name)
+                        .expect(&format!(
+                            "Function not declared: {}",
+                            function_name.as_ref()
+                        ))
+                        .to_owned();
+
+                    let fnref = self
+                        .module
+                        .declare_func_in_func(global_id, &mut builder.func);
+
+                    self.local_functions
+                        .insert(function_name.clone(), fnref.clone());
+
+                    fnref
+                };
+
+                let mut ir_args = vec![];
+                for arg in args {
+                    let value = self.process_expr(builder, arg)?;
+                    ir_args.push(value);
+                }
+
+                let call = builder.ins().call(func_ref, &ir_args);
+
+                // TODO: Handle function resolution at the scope level instead of global
+                // let scope_ctx = &self.analysis.codeblock_scopes[&node.id];
+                let fntype = self
+                    .analysis
+                    .get_global_function_type(&function_name)
+                    .ok_or_else(|| CodegenError::UnresolvedType(node.id, function_name.clone()))?;
+
+                if *fntype.return_type == ResolvedType::Void {
+                    return Ok(Value::reserved_value());
+                }
+
+                Ok(builder.inst_results(call)[0])
+            }
+
             _ => Err(CodegenError::NotImplemented(node.id)),
+        }
+    }
+
+    fn process_statement(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        node: StatementNode,
+    ) -> Result<(), CodegenError> {
+        match node.statement {
+            Statement::Expression(expr) => self.process_expr(builder, expr).map(|_| {
+                println!("WARNING: Discarted value for node: {}", node.id);
+                ()
+            }),
+            _ => Err(CodegenError::NotImplemented(node.id)),
+        }
+        // Statement::Return(expr) => {
+        //     let value = self.process_expr(builder, expr);
+        //     builder.ins().return_(&[value]);
+        // }
+    }
+
+    fn update_function_def(
+        &mut self,
+        node_id: NodeId,
+        function_def: FunctionDefinitionStmt,
+    ) -> Result<(), Vec<CodegenError>> {
+        let mut sig = self.module.make_signature();
+        let ident = function_def.function_name;
+        let fntype = self
+            .analysis
+            .get_global_function_type(&ident)
+            .ok_or_else(|| vec![CodegenError::UnresolvedType(node_id, ident.clone())])?
+            .to_owned();
+
+        if *fntype.return_type != ResolvedType::Void {
+            let return_type = fntype.return_type.clone().into_ir_type(&self);
+            sig.returns.push(AbiParam::new(return_type.clone()));
+        }
+
+        let function_id = self
+            .module
+            .declare_function(ident.as_ref(), Linkage::Import, &sig)
+            .unwrap();
+
+        self.module
+            .declare_function(ident.as_ref(), Linkage::Export, &sig)
+            .unwrap();
+
+        // not sure how to bypass this issue of
+        // double mutability as of now, other than this
+        // forgive me.
+        let ctx_func_ref = unsafe {
+            let ptr = &mut self.ctx.func as *mut codegen::ir::Function;
+            &mut *ptr
+        };
+        let fbctx_ref = unsafe {
+            let ptr = &mut self.fbctx as *mut FunctionBuilderContext;
+            &mut *ptr
+        };
+
+        let mut builder = FunctionBuilder::new(ctx_func_ref, fbctx_ref);
+        builder.func.signature = sig;
+
+        let entry_block = builder.create_block();
+        builder.switch_to_block(entry_block);
+        // builder.seal_block(entry_block);
+
+        let mut errors = vec![];
+        for stmt in function_def.codeblock.0 {
+            match self.process_statement(&mut builder, stmt) {
+                Err(e) => errors.push(e),
+                _ => {}
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        if *fntype.return_type == ResolvedType::Void {
+            builder.ins().return_(&[]);
+        }
+
+        if let Err(err) = codegen::verify_function(&builder.func, self.isa.as_ref()) {
+            return Err(vec![CodegenError::VerifierErrors(node_id, err)]);
+        }
+
+        builder.seal_block(entry_block);
+        builder.finalize();
+
+        self.module
+            .define_function(function_id, &mut self.ctx)
+            .unwrap();
+        self.functions.insert(ident, function_id);
+
+        self.clear_local();
+
+        Ok(())
+    }
+
+    fn update(&mut self, node: RootStatementNode) -> Result<(), Vec<CodegenError>> {
+        match node.root_stmt {
+            RootStatement::ExternDeclaration(extern_decl) => self
+                .update_extern_decl(node.id, extern_decl)
+                .map_err(|x| vec![x]),
+            RootStatement::FunctionDefinition(fn_def) => self.update_function_def(node.id, fn_def),
+            _ => Err(vec![CodegenError::NotImplemented(node.id)]),
         }
     }
 
     fn update_all(&mut self, source: SourceModule) {
         for node in source.nodes {
             match self.update(node) {
-                Err(e) => self.errors.push(e),
+                Err(e) => self.errors.extend(e),
                 _ => {}
             }
         }

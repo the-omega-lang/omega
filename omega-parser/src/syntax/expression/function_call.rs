@@ -7,7 +7,7 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct FunctionCallExpr {
-    pub function_ident: Ident,
+    pub function_name: Ident,
     pub args: Vec<ExpressionNode>,
 }
 
@@ -21,8 +21,8 @@ impl FunctionCallExpr {
                     .at_least(0)
                     .collect::<Vec<_>>(),
             )
-            .map(|(function_ident, args)| Self {
-                function_ident,
+            .map(|(function_name, args)| Self {
+                function_name,
                 args,
             })
             .then_ignore(just(')').padded())

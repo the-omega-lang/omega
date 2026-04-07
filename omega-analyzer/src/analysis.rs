@@ -128,11 +128,11 @@ impl Analyzer {
             }
             Expression::FunctionCall(call_expr) => {
                 let Some(function_type) =
-                    self.context().find_function_type(&call_expr.function_ident)
+                    self.context().find_function_type(&call_expr.function_name)
                 else {
                     self.errors.push(AnalysisError {
                         node_id,
-                        message: format!("Undefined function '{}'", call_expr.function_ident.0),
+                        message: format!("Undefined function '{}'", call_expr.function_name.0),
                     });
                     return;
                 };
@@ -160,7 +160,7 @@ impl Analyzer {
                             node_id: arg.id,
                             message: format!(
                                 "Too many arguments for function '{}'. Expected: {}",
-                                call_expr.function_ident.0,
+                                call_expr.function_name.0,
                                 function_type.params.len()
                             ),
                         });
