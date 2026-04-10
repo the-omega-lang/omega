@@ -10,6 +10,7 @@ run-asm: build-asm
     ./target/shims; echo -e "\nexit code: $?"
 
 build-asm:
+    mkdir -p target
     rm target/shims target/shims.o || true
     as omega-shims/x86_64-unknown-linux.S -o target/shims.o
 

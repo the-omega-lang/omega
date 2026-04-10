@@ -81,4 +81,8 @@ impl StatementNode {
         .then_ignore(just(';').padded())
         .padded()
     });
+
+    pub fn configured_parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+        recursive(|stmt_parser| Self::parser(ExpressionNode::parser(stmt_parser)))
+    }
 }

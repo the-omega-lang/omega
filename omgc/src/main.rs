@@ -8,15 +8,24 @@ fn main() {
     let source = r###"
     extern puts : (fmt: *char) => i32;
 
+    print_message() => i32 {
+        return puts("hello world");
+    }
+
     main(argc: i32, argv: **char) => i32 {
-        puts("hello world!");
-        return 123;
+        return print_message();
     }
 
     "###;
-    //     let source = r###"
-    // extern puts : (fmt: *char) => i32;
-    // "###;
+
+    // TEST
+    // let source = "hello()";
+    // println!("{}", source);
+    // let parser = FunctionCallExpr::parser(ExpressionNode::configured_parser());
+    // println!("Parsed: {:?}", parser.parse(source).unwrap());
+    // return;
+    // ENDTEST
+
     println!("{}", source);
     let ast = SourceModule::parse(source).expect("Failed to parse");
     println!("{:#?}", ast);

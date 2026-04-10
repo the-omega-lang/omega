@@ -49,4 +49,8 @@ impl ExpressionNode {
         })
         .padded()
     });
+
+    pub fn configured_parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
+        recursive(|expr_parser| Self::parser(StatementNode::parser(expr_parser)))
+    }
 }
