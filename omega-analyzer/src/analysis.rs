@@ -1,12 +1,13 @@
 use crate::{
     context::{Context, ScopeContext},
-    resolved_type::{ResolvedFunctionType, ResolvedType},
+    resolved_type::{self, ResolvedFunctionType, ResolvedType},
 };
 use omega_parser::{
     NodeId, SourceModule,
     prelude::{
         CodeblockExpr, Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt,
-        FunctionType, Ident, RootStatement, RootStatementNode, Statement, StatementNode, Type,
+        FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode, Statement,
+        StatementNode, Type,
     },
 };
 use std::collections::HashMap;
@@ -186,8 +187,35 @@ impl Analyzer {
                 }
             }
 
+            Expression::Number(number_expr) => {
+                if let Some(explicit_type) = &number_expr.explicit_type {
+                    let Ok(resolved_type) =
+                        ResolvedType::try_from(Type::Named(explicit_type.clone()))
+                    else {
+                        self.errors.push(AnalysisError {
+                            node_id,
+                            message: format!(
+                                "Invalid type for number expression: {:?}",
+                                explicit_type
+                            ),
+                        });
+                        return;
+                    };
+                    self.expression_types_mut().insert(node.id, resolved_type);
+                    return;
+                }
+
+                // TODO: Handle floats and unsigned integers
+                self.expression_types_mut()
+                    .insert(node.id, ResolvedType::I32);
+            }
+
             _ => {}
         }
+    }
+
+    fn analyze_return(&mut self, return_stmt: &ReturnStmt) {
+        self.analyze_expression(&return_stmt.return_value);
     }
 
     fn analyze_statement(&mut self, node: &StatementNode) {
@@ -197,6 +225,7 @@ impl Analyzer {
                 self.analyze_declaration(node.id, decl.ident.clone(), decl.r#type.clone())
             }
             Statement::Expression(expr) => self.analyze_expression(expr),
+            Statement::Return(ret) => self.analyze_return(ret),
             _ => {}
         }
     }
