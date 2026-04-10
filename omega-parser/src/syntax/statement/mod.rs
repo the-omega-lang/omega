@@ -41,9 +41,8 @@ impl RootStatementNode {
         .then_ignore(just(';').padded());
         choice((
             semicolon_statements,
-            FunctionDefinitionStmt::parser(recursive(|stmt_parser| {
-                StatementNode::parser(ExpressionNode::parser(stmt_parser))
-            })).map(RootStatement::FunctionDefinition),
+            FunctionDefinitionStmt::parser(StatementNode::configured_parser())
+                .map(RootStatement::FunctionDefinition),
         ))
         .map_with(|root_stmt, extra| RootStatementNode {
             id: next_node_id(),
