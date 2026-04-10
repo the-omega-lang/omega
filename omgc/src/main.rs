@@ -8,8 +8,9 @@ fn main() {
     let source = r###"
     extern puts : (fmt: *char) => i32;
 
-    main(argc: i32, argv: **char) => void {
+    main(argc: i32, argv: **char) => i32 {
         puts("hello world!");
+        return 102030.459f69420;
     }
 
     "###;

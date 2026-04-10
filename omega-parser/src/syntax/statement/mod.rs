@@ -1,6 +1,7 @@
 pub mod declaration;
 pub mod extern_declaration;
 pub mod function_definition;
+pub mod r#return;
 
 use crate::{
     NodeId, next_node_id, parser,
@@ -10,7 +11,7 @@ use crate::{
         expression::ExpressionNode,
         statement::{
             declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
-            function_definition::FunctionDefinitionStmt,
+            function_definition::FunctionDefinitionStmt, r#return::ReturnStmt,
         },
     },
 };
@@ -59,6 +60,7 @@ pub enum Statement {
     Declaration(DeclarationStmt),
     ExternDeclaration(ExternDeclarationStmt),
     Expression(ExpressionNode),
+    Return(ReturnStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +75,7 @@ impl StatementNode {
         choice((
             DeclarationStmt::parser().map(Statement::Declaration),
             ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
+            ReturnStmt::parser(expr_parser.clone()).map(Statement::Return),
             expr_parser.map(Statement::Expression),
         )).map_with(|statement, extra| StatementNode { id: next_node_id(), statement, span: extra.span() })
         .then_ignore(just(';').padded())

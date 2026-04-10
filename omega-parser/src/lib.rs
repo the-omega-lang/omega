@@ -9,10 +9,10 @@ use prelude::*;
 pub type NodeId = u64;
 fn next_node_id() -> NodeId {
     thread_local! {
-        static THREAD_ID_COUNTER: RefCell<NodeId> = RefCell::new(1);
+        static LOCAL_ID_COUNTER: RefCell<NodeId> = RefCell::new(1);
     }
 
-    THREAD_ID_COUNTER.with(|counter| {
+    LOCAL_ID_COUNTER.with(|counter| {
         let current = *counter.borrow();
         *counter.borrow_mut() += 1;
         current

@@ -1,5 +1,6 @@
 pub mod codeblock;
 pub mod function_call;
+pub mod number;
 pub mod string;
 
 use crate::{
@@ -8,7 +9,8 @@ use crate::{
     syntax::{
         ParseError,
         expression::{
-            codeblock::CodeblockExpr, function_call::FunctionCallExpr, string::StringExpr,
+            codeblock::CodeblockExpr, function_call::FunctionCallExpr, number::NumberExpr,
+            string::StringExpr,
         },
         statement::StatementNode,
     },
@@ -17,6 +19,7 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
+    Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
     FunctionCall(FunctionCallExpr),
@@ -38,7 +41,8 @@ impl ExpressionNode {
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
                 FunctionCallExpr::parser(expr_parser)
                     .map(Expression::FunctionCall),
-                StringExpr::parser().map(Expression::String),
+                NumberExpr::parser().map(Expression::Number),
+                StringExpr::parser().map(Expression::String)
             )).map_with(|expression, extra| ExpressionNode {
                 id: next_node_id(), expression, span: extra.span()
             })
