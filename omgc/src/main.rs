@@ -10,7 +10,7 @@ fn main() {
 
     main(argc: i32, argv: **char) => i32 {
         puts("hello world!");
-        return 0;
+        return 123;
     }
 
     "###;

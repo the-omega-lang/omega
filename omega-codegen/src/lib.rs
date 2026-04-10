@@ -15,6 +15,7 @@ use std::{collections::HashMap, sync::Arc};
 pub enum CodegenError {
     NotImplemented(NodeId),
     UnresolvedType(NodeId, Ident),
+    InvalidNumber(NodeId),
     VerifierErrors(NodeId, VerifierErrors),
 }
 
@@ -42,16 +43,16 @@ pub struct Codegen {
 }
 
 trait IntoIRType {
-    fn into_ir_type(self, codegen: &Codegen) -> IRType;
+    fn into_ir_type(self, codegen: &Codegen) -> Vec<IRType>;
 }
 
 impl IntoIRType for ResolvedType {
-    fn into_ir_type(self, codegen: &Codegen) -> IRType {
+    fn into_ir_type(self, codegen: &Codegen) -> Vec<IRType> {
         match self {
-            ResolvedType::Void => types::INVALID,
-            ResolvedType::I32 => types::I32,
-            ResolvedType::Char => types::I8,
-            _ => codegen.module.target_config().pointer_type(),
+            ResolvedType::Void => vec![],
+            ResolvedType::I32 => vec![types::I32],
+            ResolvedType::Char => vec![types::I8],
+            _ => vec![codegen.module.target_config().pointer_type()],
         }
     }
 }
@@ -129,7 +130,8 @@ impl Codegen {
                 let ir_params = resolved_fntype
                     .params
                     .into_iter()
-                    .map(|param| param.1.into_ir_type(&self));
+                    .map(|param| param.1.into_ir_type(&self))
+                    .flatten();
 
                 let mut sig = self.module.make_signature();
                 for param in ir_params {
@@ -137,9 +139,9 @@ impl Codegen {
                 }
 
                 if *resolved_fntype.return_type != ResolvedType::Void {
-                    sig.returns.push(AbiParam::new(
-                        resolved_fntype.return_type.into_ir_type(&self),
-                    ));
+                    for param in resolved_fntype.return_type.into_ir_type(&self) {
+                        sig.returns.push(AbiParam::new(param));
+                    }
                 }
 
                 let function_id = self
@@ -152,7 +154,7 @@ impl Codegen {
                 Ok(())
             }
 
-            other => Err(CodegenError::NotImplemented(node_id)),
+            _ => Err(CodegenError::NotImplemented(node_id)),
         }
     }
 
@@ -254,6 +256,27 @@ impl Codegen {
                 Ok(builder.inst_results(call)[0])
             }
 
+            Expression::Number(number_expr) => {
+                let resolved_type = self
+                    .analysis
+                    .expression_types
+                    .get(&node.id)
+                    .ok_or_else(|| CodegenError::InvalidNumber(node.id))?;
+
+                match resolved_type {
+                    ResolvedType::I32 => {
+                        let integer = &number_expr.integer_part.parse::<i32>().expect(&format!(
+                            "Parser and analyzer claimed 'i32' for '{:?}'. It was not a valid 'i32'.",
+                            number_expr
+                        ));
+
+                        Ok(builder.ins().iconst::<i64>(types::I32, *integer as i64))
+                    }
+
+                    _ => Err(CodegenError::InvalidNumber(node.id)),
+                }
+            }
+
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
     }
@@ -266,8 +289,12 @@ impl Codegen {
         match node.statement {
             Statement::Expression(expr) => self.process_expr(builder, expr).map(|_| {
                 println!("WARNING: Discarted value for node: {}", node.id);
-                ()
             }),
+            Statement::Return(ret) => {
+                let retval = self.process_expr(builder, ret.return_value)?;
+                builder.ins().return_(&[retval]);
+                Ok(())
+            }
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
         // Statement::Return(expr) => {
@@ -291,7 +318,9 @@ impl Codegen {
 
         if *fntype.return_type != ResolvedType::Void {
             let return_type = fntype.return_type.clone().into_ir_type(&self);
-            sig.returns.push(AbiParam::new(return_type.clone()));
+            return_type
+                .into_iter()
+                .for_each(|param| sig.returns.push(AbiParam::new(param)));
         }
 
         let function_id = self
