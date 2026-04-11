@@ -1,3 +1,4 @@
+pub mod assignment;
 pub mod codeblock;
 pub mod function_call;
 pub mod number;
@@ -5,12 +6,12 @@ pub mod string;
 
 use crate::{
     next_node_id, parser,
-    prelude::Statement,
+    prelude::{Ident, Statement},
     syntax::{
         ParseError,
         expression::{
-            codeblock::CodeblockExpr, function_call::FunctionCallExpr, number::NumberExpr,
-            string::StringExpr,
+            assignment::AssignmentExpr, codeblock::CodeblockExpr, function_call::FunctionCallExpr,
+            number::NumberExpr, string::StringExpr,
         },
         statement::StatementNode,
     },
@@ -19,10 +20,12 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
+    Ident(Ident),
     Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
     FunctionCall(FunctionCallExpr),
+    Assignment(AssignmentExpr),
 }
 
 pub type NodeId = u64;
@@ -39,8 +42,10 @@ impl ExpressionNode {
         recursive(|expr_parser| {
             choice((
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
-                FunctionCallExpr::parser(expr_parser)
+                FunctionCallExpr::parser(expr_parser.clone())
                     .map(Expression::FunctionCall),
+                AssignmentExpr::parser(expr_parser).map(Expression::Assignment),
+                Ident::parser().map(Expression::Ident),
                 NumberExpr::parser().map(Expression::Number),
                 StringExpr::parser().map(Expression::String)
             )).map_with(|expression, extra| ExpressionNode {

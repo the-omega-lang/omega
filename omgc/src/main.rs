@@ -16,7 +16,9 @@ fn main() {
 
     main(argc: i32, argv: **char) => i32 {
         a : i32;
-        return print_message();
+        a = 69;
+        print_message();
+        return a;
     }
 
     "###;

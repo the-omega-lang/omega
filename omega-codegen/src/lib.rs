@@ -24,6 +24,7 @@ pub enum CodegenError {
     VerifierErrors(NodeId, VerifierErrors),
     UnresolvedScope(NodeId),
     Redeclaration(NodeId, Ident),
+    Undeclared(NodeId, Ident),
 }
 
 pub struct Codegen {
@@ -48,7 +49,7 @@ pub struct Codegen {
     local_functions: HashMap<Ident, FuncRef>,
     local_strings: HashMap<String, Value>,
     codeblock_nodes: Vec<NodeId>,
-    stack_slots: HashMap<Ident, StackSlot>,
+    stack_slots: HashMap<Ident, (IRType, StackSlot)>,
 }
 
 trait IntoIRType {
@@ -288,6 +289,25 @@ impl Codegen {
                 }
             }
 
+            Expression::Ident(ident) => {
+                let Some((typ, slot)) = self.stack_slots.get(&ident) else {
+                    return Err(CodegenError::Undeclared(node.id, ident));
+                };
+
+                Ok(builder.ins().stack_load(typ.clone(), slot.clone(), 0))
+            }
+
+            Expression::Assignment(assignment) => {
+                let Some((_typ, slot)) = self.stack_slots.get(&assignment.ident).map(|x| x.clone())
+                else {
+                    return Err(CodegenError::Undeclared(node.id, assignment.ident));
+                };
+
+                let value = self.process_expr(builder, *assignment.value)?;
+                builder.ins().stack_store(value.clone(), slot, 0);
+                Ok(value)
+            }
+
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
     }
@@ -321,7 +341,7 @@ impl Codegen {
             16,
         ));
 
-        self.stack_slots.insert(decl.ident, stack_slot);
+        self.stack_slots.insert(decl.ident, (ir_type, stack_slot));
 
         Ok(())
     }

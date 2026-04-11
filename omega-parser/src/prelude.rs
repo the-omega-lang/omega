@@ -1,6 +1,6 @@
 pub use crate::syntax::expression::{
-    Expression, ExpressionNode, codeblock::CodeblockExpr, function_call::FunctionCallExpr,
-    number::NumberExpr, string::StringExpr,
+    Expression, ExpressionNode, assignment::AssignmentExpr, codeblock::CodeblockExpr,
+    function_call::FunctionCallExpr, number::NumberExpr, string::StringExpr,
 };
 pub use crate::syntax::identifier::Ident;
 pub use crate::syntax::statement::{

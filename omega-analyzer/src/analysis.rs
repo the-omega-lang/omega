@@ -218,6 +218,20 @@ impl Analyzer {
                     .insert(node.id, ResolvedType::I32);
             }
 
+            Expression::Assignment(assignment) => {
+                self.analyze_expression(&assignment.value);
+                let Some(typ) = self.expression_types().get(&assignment.value.id) else {
+                    self.errors.push(AnalysisError {
+                        node_id,
+                        message: "Inner expression not resolved".to_string(),
+                    });
+                    return;
+                };
+                let typ = typ.clone();
+
+                self.expression_types_mut().insert(node.id, typ);
+            }
+
             _ => {}
         }
     }
