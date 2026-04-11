@@ -9,7 +9,9 @@ fn main() {
     extern puts : (fmt: *char) => i32;
 
     print_message() => i32 {
-        return puts("hello world");
+        return puts("""
+            hello world
+        """);
     }
 
     main(argc: i32, argv: **char) => i32 {
