@@ -1,8 +1,13 @@
 use cranelift::{
-    codegen::{self, ir::FuncRef, packed_option::ReservedValue, verifier::VerifierErrors},
+    codegen::{
+        self,
+        ir::{FuncRef, StackSlot},
+        packed_option::ReservedValue,
+        verifier::VerifierErrors,
+    },
     prelude::{
         AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder,
-        Type as IRType, Value, isa, settings, types,
+        StackSlotData, StackSlotKind, Type as IRType, Value, isa, settings, types,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -17,6 +22,8 @@ pub enum CodegenError {
     UnresolvedType(NodeId, Ident),
     InvalidNumber(NodeId),
     VerifierErrors(NodeId, VerifierErrors),
+    UnresolvedScope(NodeId),
+    Redeclaration(NodeId, Ident),
 }
 
 pub struct Codegen {
@@ -40,6 +47,8 @@ pub struct Codegen {
     // Local state (must be cleared per scope)
     local_functions: HashMap<Ident, FuncRef>,
     local_strings: HashMap<String, Value>,
+    codeblock_nodes: Vec<NodeId>,
+    stack_slots: HashMap<Ident, StackSlot>,
 }
 
 trait IntoIRType {
@@ -101,6 +110,8 @@ impl Codegen {
 
             local_functions: HashMap::new(),
             local_strings: HashMap::new(),
+            codeblock_nodes: vec![],
+            stack_slots: HashMap::new(),
         };
 
         codegen.update_all(source);
@@ -112,6 +123,7 @@ impl Codegen {
         self.local_functions.clear();
         self.local_strings.clear();
         self.ctx.clear();
+        self.stack_slots.clear();
     }
 
     fn update_extern_decl(
@@ -259,8 +271,7 @@ impl Codegen {
             Expression::Number(number_expr) => {
                 let resolved_type = self
                     .analysis
-                    .expression_types
-                    .get(&node.id)
+                    .get_expression_type(&node.id)
                     .ok_or_else(|| CodegenError::InvalidNumber(node.id))?;
 
                 match resolved_type {
@@ -281,6 +292,40 @@ impl Codegen {
         }
     }
 
+    fn process_decl(
+        &mut self,
+        node_id: NodeId,
+        builder: &mut FunctionBuilder,
+        decl: DeclarationStmt,
+    ) -> Result<(), CodegenError> {
+        if self.stack_slots.get(&decl.ident).is_some() {
+            return Err(CodegenError::Redeclaration(node_id, decl.ident));
+        }
+
+        let scope_id = self.codeblock_nodes.last().unwrap();
+        let Some(scope) = self.analysis.get_codeblock_scope(scope_id) else {
+            return Err(CodegenError::UnresolvedScope(node_id));
+        };
+
+        let Some(variable_type) = scope.declared_variables.get(&decl.ident) else {
+            return Err(CodegenError::UnresolvedType(node_id, decl.ident));
+        };
+
+        let Some(ir_type) = variable_type.clone().into_ir_type(&self).pop() else {
+            return Err(CodegenError::UnresolvedType(node_id, decl.ident));
+        };
+
+        let stack_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            ir_type.bytes(),
+            16,
+        ));
+
+        self.stack_slots.insert(decl.ident, stack_slot);
+
+        Ok(())
+    }
+
     fn process_statement(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -295,6 +340,7 @@ impl Codegen {
                 builder.ins().return_(&[retval]);
                 Ok(())
             }
+            Statement::Declaration(decl) => self.process_decl(node.id, builder, decl),
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
         // Statement::Return(expr) => {
@@ -352,12 +398,17 @@ impl Codegen {
         // builder.seal_block(entry_block);
 
         let mut errors = vec![];
+
+        // Parse codeblock
+        self.codeblock_nodes.push(node_id);
         for stmt in function_def.codeblock.0 {
             match self.process_statement(&mut builder, stmt) {
                 Err(e) => errors.push(e),
                 _ => {}
             }
         }
+        self.codeblock_nodes.pop();
+
         if !errors.is_empty() {
             return Err(errors);
         }

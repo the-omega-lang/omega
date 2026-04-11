@@ -29,6 +29,14 @@ impl Analysis {
     pub fn get_global_function_type(&self, name: &Ident) -> Option<&ResolvedFunctionType> {
         self.context.find_function_type(name)
     }
+
+    pub fn get_expression_type(&self, node_id: &NodeId) -> Option<&ResolvedType> {
+        self.expression_types.get(&node_id)
+    }
+
+    pub fn get_codeblock_scope(&self, codeblock_node_id: &NodeId) -> Option<&ScopeContext> {
+        self.codeblock_scopes.get(&codeblock_node_id)
+    }
 }
 
 #[derive(Debug, Clone)]

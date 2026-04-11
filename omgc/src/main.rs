@@ -15,6 +15,7 @@ fn main() {
     }
 
     main(argc: i32, argv: **char) => i32 {
+        a : i32;
         return print_message();
     }
 
