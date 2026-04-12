@@ -49,6 +49,7 @@ pub struct Codegen {
     local_functions: HashMap<Ident, FuncRef>,
     local_strings: HashMap<String, Value>,
     codeblock_nodes: Vec<NodeId>,
+    local_args: HashMap<Ident, Value>,
     stack_slots: HashMap<Ident, (IRType, StackSlot)>,
 }
 
@@ -113,6 +114,7 @@ impl Codegen {
             local_strings: HashMap::new(),
             codeblock_nodes: vec![],
             stack_slots: HashMap::new(),
+            local_args: HashMap::new(),
         };
 
         codegen.update_all(source);
@@ -125,6 +127,7 @@ impl Codegen {
         self.local_strings.clear();
         self.ctx.clear();
         self.stack_slots.clear();
+        self.local_args.clear();
     }
 
     fn update_extern_decl(
@@ -290,11 +293,15 @@ impl Codegen {
             }
 
             Expression::Ident(ident) => {
-                let Some((typ, slot)) = self.stack_slots.get(&ident) else {
-                    return Err(CodegenError::Undeclared(node.id, ident));
+                if let Some((typ, slot)) = self.stack_slots.get(&ident) {
+                    return Ok(builder.ins().stack_load(typ.clone(), slot.clone(), 0));
                 };
 
-                Ok(builder.ins().stack_load(typ.clone(), slot.clone(), 0))
+                if let Some(value) = self.local_args.get(&ident) {
+                    return Ok(value.clone());
+                }
+
+                return Err(CodegenError::Undeclared(node.id, ident));
             }
 
             Expression::Assignment(assignment) => {
@@ -363,10 +370,6 @@ impl Codegen {
             Statement::Declaration(decl) => self.process_decl(node.id, builder, decl),
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
-        // Statement::Return(expr) => {
-        //     let value = self.process_expr(builder, expr);
-        //     builder.ins().return_(&[value]);
-        // }
     }
 
     fn update_function_def(
@@ -387,6 +390,29 @@ impl Codegen {
             return_type
                 .into_iter()
                 .for_each(|param| sig.returns.push(AbiParam::new(param)));
+        }
+
+        let scope = self
+            .analysis
+            .get_codeblock_scope(&node_id)
+            .ok_or_else(|| vec![CodegenError::UnresolvedScope(node_id)])?;
+        let resolved_params = function_def
+            .params
+            .clone()
+            .into_iter()
+            .map(|param| {
+                scope
+                    .declared_variables
+                    .get(&param.ident)
+                    .and_then(|resolved_type| Some(resolved_type.clone().into_ir_type(&self)))
+                    .ok_or(CodegenError::UnresolvedType(node_id, param.ident))
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()
+            .map_err(|e| vec![e])?;
+
+        // Add parameters to signature
+        for param in resolved_params {
+            sig.params.push(AbiParam::new(param[0])) // Simple types only for now. TODO: Fix.
         }
 
         let function_id = self
@@ -414,8 +440,14 @@ impl Codegen {
         builder.func.signature = sig;
 
         let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        let block_params = builder.block_params(entry_block);
+        for i in 0..block_params.len() {
+            let ident = function_def.params[i].ident.clone();
+            let arg = block_params[i];
+            self.local_args.insert(ident, arg);
+        }
         builder.switch_to_block(entry_block);
-        // builder.seal_block(entry_block);
 
         let mut errors = vec![];
 

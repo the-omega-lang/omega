@@ -8,16 +8,16 @@ fn main() {
     let source = r###"
     extern puts : (fmt: *char) => i32;
 
-    print_message() => i32 {
-        return puts("""
-            hello world
-        """);
+    print_message(msg: *char) => i32 {
+        return puts(msg);
     }
 
     main(argc: i32, argv: **char) => i32 {
         a : i32;
         a = 69;
-        print_message();
+        msg : *char;
+        msg = "hello worlderino";
+        print_message(msg);
         return a;
     }
 
