@@ -5,23 +5,8 @@ use omega_parser::{SourceModule, prelude::*};
 fn main() {
     println!("[Omega Compiler]");
 
-    let source = r###"
-    extern puts : (fmt: *char) => i32;
-
-    print_message(msg: *char) => i32 {
-        return puts(msg);
-    }
-
-    main(argc: i32, argv: **char) => i32 {
-        a : i32;
-        a = 69;
-        msg : *char;
-        msg = "hello worlderino";
-        print_message(msg);
-        return a;
-    }
-
-    "###;
+    let source =
+        std::fs::read_to_string("examples/dev/main.omg").expect("Failed to read source file");
 
     // TEST
     // let source = "hello()";
@@ -32,7 +17,7 @@ fn main() {
     // ENDTEST
 
     println!("{}", source);
-    let ast = SourceModule::parse(source).expect("Failed to parse");
+    let ast = SourceModule::parse(&source).expect("Failed to parse");
     println!("{:#?}", ast);
 
     let analyzer = Analyzer::new();
