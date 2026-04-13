@@ -27,6 +27,17 @@ puts:
         mov $1, %rdi
         syscall
 
+        mov $10, %rax /* new line */
+        push %rax
+
+        mov $1, %rax
+        mov $1, %rdi
+        mov %rsp, %rsi
+        mov $1, %rdx
+        syscall
+
+        add $8, %rsp
+
         ret
 
 /* TODO: Handle void functions */
