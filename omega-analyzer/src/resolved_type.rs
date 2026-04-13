@@ -4,6 +4,7 @@ use omega_parser::prelude::{FunctionType, Ident, Type};
 pub struct ResolvedFunctionType {
     pub params: Vec<(Ident, ResolvedType)>,
     pub return_type: Box<ResolvedType>,
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,7 @@ impl TryFrom<FunctionType> for ResolvedFunctionType {
                 .map(|(ident, typ)| ResolvedType::try_from(typ).map(|resolved| (ident, resolved)))
                 .collect::<Result<Vec<(Ident, ResolvedType)>, Self::Error>>()?,
             return_type: Box::new(ResolvedType::try_from(*value.return_type)?),
+            is_variadic: value.is_variadic,
         })
     }
 }

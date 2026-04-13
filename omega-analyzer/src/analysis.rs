@@ -164,7 +164,7 @@ impl Analyzer {
                 // Check types for arguments of the function call
                 for i in 0..call_expr.args.len() {
                     let arg = &call_expr.args[i];
-                    if i >= function_type.params.len() {
+                    if i >= function_type.params.len() && !function_type.is_variadic {
                         self.errors.push(AnalysisError {
                             node_id: arg.id,
                             message: format!(

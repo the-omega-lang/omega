@@ -1,5 +1,6 @@
 run-exec DEBUGGER="": build-asm build-exe
-    ld target/hello.o target/shims.o -o target/example
+    # ld target/hello.o target/shims.o -o target/example # no libc
+    cc target/hello.o -o target/example   # with libc
     {{DEBUGGER}} ./target/example; echo -e "\nexit code: $?"
 
 build-exe:

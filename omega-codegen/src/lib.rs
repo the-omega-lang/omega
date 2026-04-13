@@ -6,13 +6,16 @@ use cranelift::{
         verifier::VerifierErrors,
     },
     prelude::{
-        AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder,
+        AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature,
         StackSlotData, StackSlotKind, Type as IRType, Value, isa, settings, types,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use omega_analyzer::{analysis::Analysis, resolved_type::ResolvedType};
+use omega_analyzer::{
+    analysis::Analysis,
+    resolved_type::{ResolvedFunctionType, ResolvedType},
+};
 use omega_parser::prelude::*;
 use std::{collections::HashMap, sync::Arc};
 
@@ -130,6 +133,31 @@ impl Codegen {
         self.local_args.clear();
     }
 
+    fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
+        let ir_params = resolved_fntype
+            .params
+            .into_iter()
+            .map(|param| param.1.into_ir_type(&self))
+            .flatten();
+
+        let mut sig = self.module.make_signature();
+        for param in ir_params {
+            sig.params.push(AbiParam::new(param));
+        }
+
+        if resolved_fntype.is_variadic {
+            sig.call_conv = isa::CallConv::SystemV;
+        }
+
+        if *resolved_fntype.return_type != ResolvedType::Void {
+            for param in resolved_fntype.return_type.into_ir_type(&self) {
+                sig.returns.push(AbiParam::new(param));
+            }
+        }
+
+        sig
+    }
+
     fn update_extern_decl(
         &mut self,
         node_id: NodeId,
@@ -143,22 +171,8 @@ impl Codegen {
                     .get_global_function_type(&ident)
                     .ok_or_else(|| CodegenError::UnresolvedType(node_id, ident.clone()))?
                     .to_owned();
-                let ir_params = resolved_fntype
-                    .params
-                    .into_iter()
-                    .map(|param| param.1.into_ir_type(&self))
-                    .flatten();
 
-                let mut sig = self.module.make_signature();
-                for param in ir_params {
-                    sig.params.push(AbiParam::new(param));
-                }
-
-                if *resolved_fntype.return_type != ResolvedType::Void {
-                    for param in resolved_fntype.return_type.into_ir_type(&self) {
-                        sig.returns.push(AbiParam::new(param));
-                    }
-                }
+                let sig = self.make_function_sig(resolved_fntype);
 
                 let function_id = self
                     .module
@@ -256,14 +270,33 @@ impl Codegen {
                     ir_args.push(value);
                 }
 
-                let call = builder.ins().call(func_ref, &ir_args);
-
                 // TODO: Handle function resolution at the scope level instead of global
                 // let scope_ctx = &self.analysis.codeblock_scopes[&node.id];
                 let fntype = self
                     .analysis
                     .get_global_function_type(&function_name)
                     .ok_or_else(|| CodegenError::UnresolvedType(node.id, function_name.clone()))?;
+
+                let call = if fntype.is_variadic {
+                    // Cranelift does not currently support variadic functions.
+                    // To bypass that, we previously set the call convention to SysV
+                    // and we are now going to "cast" the function pointer according
+                    // to which arguments are being passed after the pre-determined params.
+                    let mut sig = self.make_function_sig(fntype.clone());
+                    if ir_args.len() > sig.params.len() {
+                        for arg in &ir_args[sig.params.len()..] {
+                            sig.params
+                                .push(AbiParam::new(builder.func.dfg.value_type(arg.clone())))
+                        }
+                    }
+                    let fnaddr = builder
+                        .ins()
+                        .func_addr(self.module.isa().pointer_type(), func_ref);
+                    let sigref = builder.import_signature(sig);
+                    builder.ins().call_indirect(sigref, fnaddr, &ir_args)
+                } else {
+                    builder.ins().call(func_ref, &ir_args)
+                };
 
                 if *fntype.return_type == ResolvedType::Void {
                     return Ok(Value::reserved_value());

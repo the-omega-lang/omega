@@ -1,4 +1,5 @@
 extern puts : (fmt: *char) => i32;
+extern printf : (fmt: *char, ...) => i32;
 
 print_message(msg: *char, msg2: *char) => i32 {
     puts(msg);
@@ -12,5 +13,6 @@ main(argc : i32, argv : **char) => i32 {
     msg : *char;
     msg = "hello worlderino";
     print_message(msg, "abcdef");
+    printf("Number: %d", a);
     return a;
 }

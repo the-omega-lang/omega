@@ -44,9 +44,11 @@ impl FunctionDefinitionStmt {
             .iter()
             .map(|p| (p.ident.to_owned(), p.r#type.to_owned()))
             .collect::<Vec<_>>();
+
         FunctionType {
             params,
             return_type: Box::new(self.return_type.clone()),
+            is_variadic: false,
         }
     }
 }

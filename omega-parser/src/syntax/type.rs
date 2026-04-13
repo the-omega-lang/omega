@@ -8,6 +8,7 @@ use chumsky::prelude::*;
 pub struct FunctionType {
     pub params: Vec<(Ident, Type)>,
     pub return_type: Box<Type>,
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,13 +37,15 @@ impl Type {
             let function_parser = just('(')
                 .padded()
                 .ignore_then(param_parser.separated_by(just(',').padded()).collect())
+                .then(just(',').padded().ignore_then(just("...").padded().ignored()).or_not())
                 .then_ignore(just(')').padded())
                 .then_ignore(just("=>").padded())
                 .then(parser)
-                .map(|(params, rettype)| {
+                .map(|((params, is_variadic), rettype)| {
                     Type::Function(FunctionType {
                         params: params,
                         return_type: Box::new(rettype),
+                        is_variadic: is_variadic.is_some()
                     })
                 });
 
