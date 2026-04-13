@@ -14,5 +14,8 @@ main(argc : i32, argv : **char) => i32 {
     msg = "hello worlderino";
     print_message(msg, "abcdef");
     printf("Number: %d", a);
+    puts("");
+    printf("Argc: %d", argc);
+    puts("");
     return a;
 }
