@@ -69,30 +69,57 @@ pub struct ExpressionNode {
     pub span: SimpleSpan,
 }
 
+macro_rules! primary_expr_generator {
+    ($stmt_parser:expr, $custom_expr_parser:expr) => {
+        choice((
+            CodeblockExpr::parser($stmt_parser).map(Expression::Codeblock),
+            FunctionCallExpr::parser($custom_expr_parser.clone()).map(Expression::FunctionCall),
+            AssignmentExpr::parser($custom_expr_parser.clone()).map(Expression::Assignment),
+            Ident::parser().map(Expression::Ident),
+            NumberExpr::parser().map(Expression::Number),
+            StringExpr::parser().map(Expression::String),
+        ))
+        .map_with(|expression, extra| ExpressionNode {
+            id: next_node_id(),
+            expression,
+            span: extra.span(),
+        })
+    };
+}
+
+macro_rules! lookahead_expr_generator {
+    ($custom_expr_parser:expr) => {
+        choice((LookaheadIndexExpr::parser($custom_expr_parser)
+            .map(|lookahead| LookaheadExpression::Index(lookahead)),))
+    };
+}
+
+macro_rules! primary_with_lookahead_expr_generator {
+    ($primary_parser:expr, $lookahead_parser:expr) => {
+        $primary_parser
+            .then($lookahead_parser.or_not())
+            .map(|(expr, extended_expr_opt)| match extended_expr_opt {
+                Some(lookahead) => lookahead.into_expression_node(expr),
+                None => expr,
+            })
+    };
+}
+
 impl ExpressionNode {
     parser!((stmt_parser => StatementNode) => Self {
         recursive(|expr_parser| {
-            choice((
-                CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
-                FunctionCallExpr::parser(expr_parser.clone())
-                    .map(Expression::FunctionCall),
-                AssignmentExpr::parser(expr_parser.clone()).map(Expression::Assignment),
-                Ident::parser().map(Expression::Ident),
-                NumberExpr::parser().map(Expression::Number),
-                StringExpr::parser().map(Expression::String)
-            )).map_with(|expression, extra| ExpressionNode {
-                id: next_node_id(), expression, span: extra.span()
-            }).then(
-                // Lookahead parsers
-                choice((LookaheadIndexExpr::parser(expr_parser).map(|lookahead| {
-                    LookaheadExpression::Index(lookahead)
-                }),)).or_not()
-            ).map(|(expr, extended_expr_opt)| {
-                match extended_expr_opt {
-                    Some(lookahead) => lookahead.into_expression_node(expr),
-                    None => expr
-                }
-            })
+            let primary = primary_expr_generator!(stmt_parser.clone(), expr_parser);
+
+            let lookahead = lookahead_expr_generator!(primary.clone());
+
+            let recursing_lookahead = recursive(|lookahead_expr| {
+                let primary = primary_expr_generator!(stmt_parser.clone(), lookahead_expr.clone());
+                let lookahead = lookahead_expr_generator!(lookahead_expr.clone());
+                primary_with_lookahead_expr_generator!(primary, lookahead)
+            });
+
+            // Primary expressions dont have lookahead and inner expressions do have lookahead
+            recursing_lookahead
         })
         .padded()
     });
