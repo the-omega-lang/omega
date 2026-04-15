@@ -6,8 +6,8 @@ use cranelift::{
         verifier::VerifierErrors,
     },
     prelude::{
-        AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature,
-        StackSlotData, StackSlotKind, Type as IRType, Value, isa, settings, types,
+        AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags,
+        Signature, StackSlotData, StackSlotKind, Type as IRType, Value, isa, settings, types,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -23,6 +23,7 @@ use std::{collections::HashMap, sync::Arc};
 pub enum CodegenError {
     NotImplemented(NodeId),
     UnresolvedType(NodeId, Ident),
+    UnresolvedExpression(NodeId),
     InvalidNumber(NodeId),
     VerifierErrors(NodeId, VerifierErrors),
     UnresolvedScope(NodeId),
@@ -66,7 +67,7 @@ impl IntoIRType for ResolvedType {
             ResolvedType::Void => vec![],
             ResolvedType::I32 => vec![types::I32],
             ResolvedType::Char => vec![types::I8],
-            _ => vec![codegen.module.target_config().pointer_type()],
+            _ => vec![codegen.pointer_type()],
         }
     }
 }
@@ -223,7 +224,7 @@ impl Codegen {
                     return Ok(local_value.to_owned());
                 }
 
-                let ptr_type = self.module.target_config().pointer_type();
+                let ptr_type = self.pointer_type();
                 let str_id = if let Some(id) = self.strings.get(&s.0) {
                     id.to_owned()
                 } else {
@@ -289,9 +290,7 @@ impl Codegen {
                                 .push(AbiParam::new(builder.func.dfg.value_type(arg.clone())))
                         }
                     }
-                    let fnaddr = builder
-                        .ins()
-                        .func_addr(self.module.isa().pointer_type(), func_ref);
+                    let fnaddr = builder.ins().func_addr(self.pointer_type(), func_ref);
                     let sigref = builder.import_signature(sig);
                     builder.ins().call_indirect(sigref, fnaddr, &ir_args)
                 } else {
@@ -346,6 +345,39 @@ impl Codegen {
                 let value = self.process_expr(builder, *assignment.value)?;
                 builder.ins().stack_store(value.clone(), slot, 0);
                 Ok(value)
+            }
+
+            Expression::Index(index_expr) => {
+                let index_type = self
+                    .analysis
+                    .get_expression_type(&index_expr.indexed.id)
+                    .ok_or_else(|| CodegenError::UnresolvedExpression(node.id))?
+                    .to_owned();
+                let element_ir_type = index_type.into_ir_type(&self)[0];
+                let element_ir_size = element_ir_type.bytes();
+
+                let mut base = self.process_expr(builder, index_expr.indexed)?;
+                let mut index = self.process_expr(builder, index_expr.index)?;
+
+                let ptr_type = self.pointer_type();
+
+                if builder.func.dfg.value_type(base) != ptr_type {
+                    base = builder.ins().uextend(ptr_type, base);
+                }
+                if builder.func.dfg.value_type(index) != ptr_type {
+                    index = builder.ins().uextend(ptr_type, index);
+                }
+
+                let element_size = builder
+                    .ins()
+                    .iconst(self.pointer_type(), element_ir_size as i64);
+                let offset = builder.ins().imul(index, element_size);
+                let element_addr = builder.ins().iadd(base, offset);
+                let deref = builder
+                    .ins()
+                    .load(element_ir_type, MemFlags::new(), element_addr, 0);
+
+                Ok(deref)
             }
 
             _ => Err(CodegenError::NotImplemented(node.id)),
@@ -536,6 +568,10 @@ impl Codegen {
                 _ => {}
             }
         }
+    }
+
+    pub fn pointer_type(&self) -> IRType {
+        self.module.target_config().pointer_type()
     }
 
     pub fn emit_object(self) -> Result<Vec<u8>, Vec<CodegenError>> {

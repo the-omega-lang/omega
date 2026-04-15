@@ -14,6 +14,7 @@ pub enum ResolvedType {
     I32,
     Pointer(Box<ResolvedType>),
     Function(ResolvedFunctionType),
+    Array(Box<ResolvedType>),
 }
 
 impl TryFrom<FunctionType> for ResolvedFunctionType {
@@ -41,8 +42,11 @@ impl TryFrom<Type> for ResolvedType {
                 "char" => ResolvedType::Char,
                 _ => return Err(format!("Unrecognized named type: {}", name)),
             },
-            Type::Pointer(typ) => ResolvedType::Pointer(Box::new(Self::try_from(*typ.to_owned())?)),
+            Type::Pointer(typ) => ResolvedType::Pointer(Box::new(Self::try_from(*typ)?)),
             Type::Function(fntyp) => ResolvedType::Function(ResolvedFunctionType::try_from(fntyp)?),
+            Type::Array(item_type) => {
+                ResolvedType::Array(Box::new(ResolvedType::try_from(*item_type)?))
+            }
         };
 
         Ok(resolved)

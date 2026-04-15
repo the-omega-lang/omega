@@ -16,6 +16,7 @@ pub enum Type {
     Named(Ident), // Identifier types. Example: void, i32, i64, char, ...
     Pointer(Box<Type>),
     Function(FunctionType),
+    Array(Box<Type>),
 }
 
 impl Type {
@@ -27,6 +28,11 @@ impl Type {
             let pointer_parser = just('*')
                 .ignore_then(parser.clone())
                 .map(|ptr: Type| Type::Pointer(Box::new(ptr)));
+
+            let array_parser = just('[')
+                .ignore_then(parser.clone())
+                .then_ignore(just(']'))
+                .map(|subtype| Type::Array(Box::new(subtype)));
 
             let param_parser = ident_parser
                 .clone()
@@ -49,7 +55,7 @@ impl Type {
                     })
                 });
 
-            choice((named_type_parser, pointer_parser, function_parser)).padded()
+            choice((pointer_parser, array_parser, function_parser, named_type_parser)).padded()
         })
     });
 }

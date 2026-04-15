@@ -164,6 +164,7 @@ impl Analyzer {
                 // Check types for arguments of the function call
                 for i in 0..call_expr.args.len() {
                     let arg = &call_expr.args[i];
+                    println!("I: {}. Function params: {:?}", i, function_type.params);
                     if i >= function_type.params.len() && !function_type.is_variadic {
                         self.errors.push(AnalysisError {
                             node_id: arg.id,
@@ -179,7 +180,12 @@ impl Analyzer {
                     self.analyze_expression(arg);
 
                     // If the arg was successfully analyzed, lets check
-                    // if the expression type matches the parameter type
+                    // if the expression type matches the parameter type.
+                    // ONLY if the function is not variadic.
+                    if i >= function_type.params.len() && function_type.is_variadic {
+                        continue;
+                    }
+
                     if let Some(typ) = self.expression_types().get(&arg.id) {
                         let expected_type = &function_type.params[i].1;
                         if typ != expected_type {
@@ -230,6 +236,43 @@ impl Analyzer {
                 let typ = typ.clone();
 
                 self.expression_types_mut().insert(node.id, typ);
+            }
+
+            Expression::Index(index) => {
+                self.analyze_expression(&index.indexed);
+                self.analyze_expression(&index.index);
+
+                let Some(array_type) = self.expression_types().get(&index.indexed.id) else {
+                    self.errors.push(AnalysisError {
+                        node_id,
+                        message: "Inner expression not resolved".to_string(),
+                    });
+                    return;
+                };
+
+                let ResolvedType::Array(item_type) = array_type else {
+                    self.errors.push(AnalysisError {
+                        node_id,
+                        message: "Indexed expression is not an array".to_string(),
+                    });
+                    return;
+                };
+
+                let typ = *item_type.to_owned();
+                self.expression_types_mut().insert(node.id, typ);
+            }
+
+            Expression::Ident(ident) => {
+                let Some(typ) = self.context().find_variable_type(&ident) else {
+                    self.errors.push(AnalysisError {
+                        node_id,
+                        message: "Unknown variable type".to_string(),
+                    });
+                    return;
+                };
+                let typ = typ.to_owned();
+
+                self.expression_types_mut().insert(node_id, typ);
             }
 
             _ => {}

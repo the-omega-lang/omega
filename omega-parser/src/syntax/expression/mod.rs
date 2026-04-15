@@ -41,7 +41,7 @@ pub enum LookaheadExpression {
 
 impl LookaheadExpression {
     fn into_expression_node(self, expr: ExpressionNode) -> ExpressionNode {
-        let id = expr.id;
+        let id = next_node_id();
         let mut span = expr.span;
         let extended_expr = match self {
             Self::Index(lookahead) => {
