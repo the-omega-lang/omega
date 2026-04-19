@@ -2,10 +2,11 @@ pub mod declaration;
 pub mod extern_declaration;
 pub mod function_definition;
 pub mod r#return;
+pub mod r#struct;
 
 use crate::{
     NodeId, next_node_id, parser,
-    prelude::Expression,
+    prelude::{Expression, StructStmt},
     syntax::{
         ParseError,
         expression::ExpressionNode,
@@ -23,6 +24,7 @@ pub enum RootStatement {
     Declaration(DeclarationStmt),
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
+    Struct(StructStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,7 @@ impl RootStatementNode {
             semicolon_statements,
             FunctionDefinitionStmt::parser(StatementNode::configured_parser())
                 .map(RootStatement::FunctionDefinition),
+            StructStmt::parser(DeclarationStmt::parser()).map(RootStatement::Struct),
         ))
         .map_with(|root_stmt, extra| RootStatementNode {
             id: next_node_id(),
@@ -60,6 +63,7 @@ pub enum Statement {
     ExternDeclaration(ExternDeclarationStmt),
     Expression(ExpressionNode),
     Return(ReturnStmt),
+    Struct(StructStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -71,14 +75,24 @@ pub struct StatementNode {
 
 impl StatementNode {
     parser!((expr_parser => ExpressionNode) => Self {
-        choice((
+        let nonterminal = choice((
+            // Non-terminal statements
             DeclarationStmt::parser().map(Statement::Declaration),
             ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
             ReturnStmt::parser(expr_parser.clone()).map(Statement::Return),
-            expr_parser.map(Statement::Expression),
-        )).map_with(|statement, extra| StatementNode { id: next_node_id(), statement, span: extra.span() })
+            expr_parser.map(Statement::Expression), // TODO: Move expression to terminal in order to handle codeblocks
+        ))
         .then_ignore(just(';').padded())
-        .padded()
+        .padded();
+
+        let terminal = choice((
+            // Terminal statements
+            StructStmt::parser(DeclarationStmt::parser()).map(Statement::Struct),
+        ));
+
+        choice((terminal, nonterminal))
+            .map_with(|statement, extra| StatementNode { id: next_node_id(), statement, span: extra.span() })
+            .padded()
     });
 
     pub fn configured_parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {

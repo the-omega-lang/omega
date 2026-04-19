@@ -1,6 +1,11 @@
 extern puts : (fmt: *char) => i32;
 extern printf : (fmt: *char, ...) => i32;
 
+struct MyString {
+    buffer: *[char];
+    length: i32;
+}
+
 print_message(msg: *char) => i32 {
     puts(msg);
     return 0;
