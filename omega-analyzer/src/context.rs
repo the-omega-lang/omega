@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub struct ScopeContext {
     pub declared_functions: HashMap<Ident, ResolvedFunctionType>,
     pub declared_variables: HashMap<Ident, ResolvedType>,
+    pub defined_types: HashMap<Ident, ResolvedType>,
 }
 
 impl ScopeContext {
@@ -13,6 +14,7 @@ impl ScopeContext {
         Self {
             declared_functions: HashMap::new(),
             declared_variables: HashMap::new(),
+            defined_types: HashMap::new(),
         }
     }
 }
@@ -24,8 +26,15 @@ pub struct Context {
 
 impl Context {
     pub fn new() -> Self {
+        let mut global_scope = ScopeContext::new();
+        global_scope.defined_types.extend([
+            // Standard types
+            (Ident("void".into()), ResolvedType::Void),
+            (Ident("char".into()), ResolvedType::Char),
+            (Ident("i32".into()), ResolvedType::I32),
+        ]);
         Self {
-            scopes: vec![ScopeContext::new()],
+            scopes: vec![global_scope],
         }
     }
 
@@ -48,6 +57,51 @@ impl Context {
         }
 
         None
+    }
+
+    pub fn find_defined_type(&self, name: &Ident) -> Option<&ResolvedType> {
+        println!("TYPE: {:?}", name);
+        for scope in self.scopes.iter().rev() {
+            println!("SCOPE: {:?}", scope.defined_types);
+            if let Some(typ) = scope.defined_types.get(name) {
+                println!("TYPE FOUND");
+                return Some(typ);
+            }
+        }
+
+        println!("TYPE NOT FOUND");
+        None
+    }
+
+    pub fn resolve_function_type(
+        &self,
+        fntype: FunctionType,
+    ) -> Result<ResolvedFunctionType, String> {
+        Ok(ResolvedFunctionType {
+            params: fntype
+                .params
+                .into_iter()
+                .map(|(ident, typ)| self.resolve_type(typ).map(|resolved| (ident, resolved)))
+                .collect::<Result<Vec<(Ident, ResolvedType)>, String>>()?,
+            return_type: Box::new(self.resolve_type(*fntype.return_type)?),
+            is_variadic: fntype.is_variadic,
+        })
+    }
+
+    pub fn resolve_type(&self, typ: Type) -> Result<ResolvedType, String> {
+        let resolved = match typ {
+            Type::Named(name) => self
+                .find_defined_type(&name)
+                .ok_or_else(|| format!("Unrecognized named type: {}", name.0))?
+                .to_owned(),
+            Type::Pointer(pointee_type) => {
+                ResolvedType::Pointer(Box::new(self.resolve_type(*pointee_type)?))
+            }
+            Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp)?),
+            Type::Array(item_type) => ResolvedType::Array(Box::new(self.resolve_type(*item_type)?)),
+        };
+
+        Ok(resolved)
     }
 
     // Scope helpers

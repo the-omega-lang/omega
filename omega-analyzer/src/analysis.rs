@@ -1,13 +1,13 @@
 use crate::{
     context::{Context, ScopeContext},
-    resolved_type::{self, ResolvedFunctionType, ResolvedType},
+    resolved_type::{self, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
 use omega_parser::{
     NodeId, SourceModule,
     prelude::{
         CodeblockExpr, Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt,
         FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode, Statement,
-        StatementNode, Type,
+        StatementNode, StructStmt, Type,
     },
 };
 use std::collections::HashMap;
@@ -90,11 +90,12 @@ impl Analyzer {
 
     // Analysis
     fn analyze_declaration(&mut self, node_id: NodeId, ident: Ident, typ: Type) {
-        let scope = self.context_mut().current_scope();
+        let ctx = self.context_mut();
         match &typ {
             Type::Function(fntype) => {
-                match ResolvedFunctionType::try_from(fntype.to_owned()) {
+                match ctx.resolve_function_type(fntype.to_owned()) {
                     Ok(resolved) => {
+                        let scope = ctx.current_scope();
                         scope.declared_functions.insert(ident, resolved);
                     }
                     Err(message) => {
@@ -103,7 +104,7 @@ impl Analyzer {
                 };
             }
             typ => {
-                let resolved_type = match ResolvedType::try_from(typ.to_owned()) {
+                let resolved_type = match ctx.resolve_type(typ.to_owned()) {
                     Ok(t) => t,
                     Err(message) => {
                         self.errors.push(AnalysisError { node_id, message });
@@ -111,6 +112,7 @@ impl Analyzer {
                     }
                 };
 
+                let scope = ctx.current_scope();
                 scope
                     .declared_variables
                     .insert(ident.to_owned(), resolved_type);
@@ -148,18 +150,8 @@ impl Analyzer {
 
                 // Store function call expression type
                 let function_type = function_type.to_owned();
-                match ResolvedType::try_from(*function_type.return_type) {
-                    Ok(rettype) => {
-                        self.expression_types_mut().insert(node_id, rettype);
-                    }
-                    Err(message) => {
-                        self.errors.push(AnalysisError {
-                            node_id,
-                            message: message.to_string(),
-                        });
-                        return;
-                    }
-                }
+                self.expression_types_mut()
+                    .insert(node_id, *function_type.return_type);
 
                 // Check types for arguments of the function call
                 for i in 0..call_expr.args.len() {
@@ -203,8 +195,9 @@ impl Analyzer {
 
             Expression::Number(number_expr) => {
                 if let Some(explicit_type) = &number_expr.explicit_type {
-                    let Ok(resolved_type) =
-                        ResolvedType::try_from(Type::Named(explicit_type.clone()))
+                    let Ok(resolved_type) = self
+                        .context()
+                        .resolve_type(Type::Named(explicit_type.clone()))
                     else {
                         self.errors.push(AnalysisError {
                             node_id,
@@ -283,6 +276,35 @@ impl Analyzer {
         self.analyze_expression(&return_stmt.return_value);
     }
 
+    fn analyze_struct_def(&mut self, node_id: NodeId, struct_stmt: &StructStmt) {
+        let resolved_fields = match struct_stmt
+            .fields
+            .iter()
+            .map(|field| {
+                self.context()
+                    .resolve_type(field.r#type.to_owned())
+                    .map(|resolved_type| (field.ident.to_owned(), resolved_type))
+            })
+            .collect::<Result<Vec<(Ident, ResolvedType)>, _>>()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.errors.push(AnalysisError {
+                    node_id,
+                    message: e,
+                });
+                return;
+            }
+        };
+
+        self.context_mut().current_scope().defined_types.insert(
+            struct_stmt.ident.to_owned(),
+            ResolvedType::Struct(ResolvedStructType {
+                fields: resolved_fields,
+            }),
+        );
+    }
+
     fn analyze_statement(&mut self, node: &StatementNode) {
         let stmt = &node.statement;
         match stmt {
@@ -291,6 +313,7 @@ impl Analyzer {
             }
             Statement::Expression(expr) => self.analyze_expression(expr),
             Statement::Return(ret) => self.analyze_return(ret),
+            Statement::Struct(stmt) => self.analyze_struct_def(node.id, stmt),
             _ => {}
         }
     }
@@ -303,19 +326,19 @@ impl Analyzer {
     }
 
     fn analyze_function_def(&mut self, node_id: NodeId, function_def: &FunctionDefinitionStmt) {
-        let scope = self.context_mut().enter_scope();
-
         // Add function parameters to new scope
         // and analyze its codeblock
+        self.context_mut().enter_scope();
         for param in &function_def.params {
-            let resolved_type = match ResolvedType::try_from(param.r#type.to_owned()) {
+            let resolved_type = match self.context().resolve_type(param.r#type.to_owned()) {
                 Ok(t) => t,
                 Err(message) => {
                     self.errors.push(AnalysisError { node_id, message });
                     return;
                 }
             };
-            scope
+            self.context_mut()
+                .current_scope()
                 .declared_variables
                 .insert(param.ident.to_owned(), resolved_type);
         }
@@ -326,7 +349,10 @@ impl Analyzer {
         self.codeblock_scopes_mut().insert(node_id, scope);
 
         // Store function return type information
-        let fn_type = match ResolvedFunctionType::try_from(function_def.function_type()) {
+        let fn_type = match self
+            .context()
+            .resolve_function_type(function_def.function_type())
+        {
             Ok(typ) => typ,
             Err(message) => {
                 self.errors.push(AnalysisError { node_id, message });
@@ -346,6 +372,7 @@ impl Analyzer {
         match root_stmt {
             RootStatement::ExternDeclaration(stmt) => self.analyze_extern_decl(node_id, stmt),
             RootStatement::FunctionDefinition(stmt) => self.analyze_function_def(node_id, stmt),
+            RootStatement::Struct(stmt) => self.analyze_struct_def(node_id, stmt),
             _ => {}
         }
     }
