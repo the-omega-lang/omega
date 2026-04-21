@@ -29,6 +29,7 @@ pub enum CodegenError {
     UnresolvedScope(NodeId),
     Redeclaration(NodeId, Ident),
     Undeclared(NodeId, Ident),
+    TypeMismatch(NodeId),
 }
 
 pub struct Codegen {
@@ -53,8 +54,8 @@ pub struct Codegen {
     local_functions: HashMap<Ident, FuncRef>,
     local_strings: HashMap<String, Value>,
     codeblock_nodes: Vec<NodeId>,
-    local_args: HashMap<Ident, Value>,
-    stack_slots: HashMap<Ident, (IRType, StackSlot)>,
+    local_args: HashMap<Ident, Vec<Value>>,
+    stack_slots: HashMap<Ident, Vec<(IRType, StackSlot)>>,
 }
 
 trait IntoIRType {
@@ -67,6 +68,12 @@ impl IntoIRType for ResolvedType {
             ResolvedType::Void => vec![],
             ResolvedType::I32 => vec![types::I32],
             ResolvedType::Char => vec![types::I8],
+            ResolvedType::Struct(struct_type) => struct_type
+                .fields
+                .into_iter()
+                .map(|x| x.1.into_ir_type(codegen))
+                .flatten()
+                .collect(),
             _ => vec![codegen.pointer_type()],
         }
     }
@@ -217,11 +224,11 @@ impl Codegen {
         &mut self,
         builder: &mut FunctionBuilder,
         node: ExpressionNode,
-    ) -> Result<Value, CodegenError> {
+    ) -> Result<Vec<Value>, CodegenError> {
         match node.expression {
             Expression::String(s) => {
                 if let Some(local_value) = self.local_strings.get(&s.0) {
-                    return Ok(local_value.to_owned());
+                    return Ok(vec![local_value.to_owned()]);
                 }
 
                 let ptr_type = self.pointer_type();
@@ -236,7 +243,7 @@ impl Codegen {
 
                 self.local_strings.insert(s.0, str_ptr.clone());
 
-                Ok(str_ptr)
+                Ok(vec![str_ptr])
             }
             // Expression::Number(i) => Ok(builder.ins().iconst::<i64>(types::I32, (i as i64).into())),
             Expression::FunctionCall(FunctionCallExpr {
@@ -270,6 +277,7 @@ impl Codegen {
                     let value = self.process_expr(builder, arg)?;
                     ir_args.push(value);
                 }
+                let ir_args = ir_args.into_iter().flatten().collect::<Vec<_>>();
 
                 // TODO: Handle function resolution at the scope level instead of global
                 // let scope_ctx = &self.analysis.codeblock_scopes[&node.id];
@@ -298,10 +306,10 @@ impl Codegen {
                 };
 
                 if *fntype.return_type == ResolvedType::Void {
-                    return Ok(Value::reserved_value());
+                    return Ok(vec![]);
                 }
 
-                Ok(builder.inst_results(call)[0])
+                Ok(builder.inst_results(call).to_vec())
             }
 
             Expression::Number(number_expr) => {
@@ -317,7 +325,9 @@ impl Codegen {
                             number_expr
                         ));
 
-                        Ok(builder.ins().iconst::<i64>(types::I32, *integer as i64))
+                        Ok(vec![
+                            builder.ins().iconst::<i64>(types::I32, *integer as i64),
+                        ])
                     }
 
                     _ => Err(CodegenError::InvalidNumber(node.id)),
@@ -325,8 +335,11 @@ impl Codegen {
             }
 
             Expression::Ident(ident) => {
-                if let Some((typ, slot)) = self.stack_slots.get(&ident) {
-                    return Ok(builder.ins().stack_load(typ.clone(), slot.clone(), 0));
+                if let Some(slots) = self.stack_slots.get(&ident) {
+                    return Ok(slots
+                        .iter()
+                        .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
+                        .collect());
                 };
 
                 if let Some(value) = self.local_args.get(&ident) {
@@ -337,14 +350,23 @@ impl Codegen {
             }
 
             Expression::Assignment(assignment) => {
-                let Some((_typ, slot)) = self.stack_slots.get(&assignment.ident).map(|x| x.clone())
-                else {
+                let Some(slots) = self.stack_slots.get(&assignment.ident).map(|x| x.clone()) else {
                     return Err(CodegenError::Undeclared(node.id, assignment.ident));
                 };
 
-                let value = self.process_expr(builder, *assignment.value)?;
-                builder.ins().stack_store(value.clone(), slot, 0);
-                Ok(value)
+                let values = self.process_expr(builder, *assignment.value)?;
+
+                if values.len() != slots.len() {
+                    return Err(CodegenError::TypeMismatch(node.id));
+                }
+
+                for i in 0..values.len() {
+                    let value = values[i];
+                    let slot = slots[i].1;
+                    let store = builder.ins().stack_store(value.clone(), slot, 0);
+                }
+
+                Ok(values)
             }
 
             Expression::Index(index_expr) => {
@@ -353,11 +375,11 @@ impl Codegen {
                     .get_expression_type(&index_expr.indexed.id)
                     .ok_or_else(|| CodegenError::UnresolvedExpression(node.id))?
                     .to_owned();
-                let element_ir_type = index_type.into_ir_type(&self)[0];
-                let element_ir_size = element_ir_type.bytes();
+                let element_ir_type = index_type.into_ir_type(&self);
+                let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
 
-                let mut base = self.process_expr(builder, index_expr.indexed)?;
-                let mut index = self.process_expr(builder, index_expr.index)?;
+                let mut base = self.process_expr(builder, index_expr.indexed)?[0];
+                let mut index = self.process_expr(builder, index_expr.index)?[0];
 
                 let ptr_type = self.pointer_type();
 
@@ -373,11 +395,19 @@ impl Codegen {
                     .iconst(self.pointer_type(), element_ir_size as i64);
                 let offset = builder.ins().imul(index, element_size);
                 let element_addr = builder.ins().iadd(base, offset);
-                let deref = builder
-                    .ins()
-                    .load(element_ir_type, MemFlags::new(), element_addr, 0);
+                let deref = element_ir_type
+                    .into_iter()
+                    .fold((vec![], 0u32), |mut acc, typ| {
+                        let result =
+                            builder
+                                .ins()
+                                .load(typ, MemFlags::new(), element_addr, acc.1 as i32);
+                        acc.0.push(result);
+                        acc.1 += typ.bytes();
+                        acc
+                    });
 
-                Ok(deref)
+                Ok(deref.0)
             }
 
             _ => Err(CodegenError::NotImplemented(node.id)),
@@ -403,17 +433,22 @@ impl Codegen {
             return Err(CodegenError::UnresolvedType(node_id, decl.ident));
         };
 
-        let Some(ir_type) = variable_type.clone().into_ir_type(&self).pop() else {
-            return Err(CodegenError::UnresolvedType(node_id, decl.ident));
-        };
+        let ir_type = variable_type.clone().into_ir_type(&self);
 
-        let stack_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            ir_type.bytes(),
-            16,
-        ));
-
-        self.stack_slots.insert(decl.ident, (ir_type, stack_slot));
+        let stack_slots = ir_type
+            .into_iter()
+            .map(|typ| {
+                (
+                    typ,
+                    builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        typ.bytes(),
+                        16,
+                    )),
+                )
+            })
+            .collect();
+        self.stack_slots.insert(decl.ident, stack_slots);
 
         Ok(())
     }
@@ -429,10 +464,11 @@ impl Codegen {
             }),
             Statement::Return(ret) => {
                 let retval = self.process_expr(builder, ret.return_value)?;
-                builder.ins().return_(&[retval]);
+                builder.ins().return_(&retval);
                 Ok(())
             }
             Statement::Declaration(decl) => self.process_decl(node.id, builder, decl),
+            Statement::Struct(_struct_def) => Ok(()), // Only analysis is necessary
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
     }
@@ -507,10 +543,28 @@ impl Codegen {
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
         let block_params = builder.block_params(entry_block);
+
+        // Some identifiers (e.g structs) have more than one value per identifier.
+        // For that reason, lets make a helper array that repeats the identifier
+        // N times, where N is the amount of values it has.
+        let argmap = fntype
+            .params
+            .iter()
+            .map(|param| {
+                let value_count = param.1.clone().into_ir_type(&self).len();
+                vec![&param.0].repeat(value_count)
+            })
+            .flatten()
+            .collect::<Vec<_>>();
         for i in 0..block_params.len() {
-            let ident = function_def.params[i].ident.clone();
+            let ident = argmap[i];
             let arg = block_params[i];
-            self.local_args.insert(ident, arg);
+            if let Some(entry) = self.local_args.get_mut(ident) {
+                entry.push(arg);
+                continue;
+            }
+
+            self.local_args.insert(ident.clone(), vec![arg]);
         }
         builder.switch_to_block(entry_block);
 
@@ -557,6 +611,7 @@ impl Codegen {
                 .update_extern_decl(node.id, extern_decl)
                 .map_err(|x| vec![x]),
             RootStatement::FunctionDefinition(fn_def) => self.update_function_def(node.id, fn_def),
+            RootStatement::Struct(_struct_def) => Ok(()), // Only analysis is necessary
             _ => Err(vec![CodegenError::NotImplemented(node.id)]),
         }
     }
