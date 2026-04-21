@@ -60,16 +60,12 @@ impl Context {
     }
 
     pub fn find_defined_type(&self, name: &Ident) -> Option<&ResolvedType> {
-        println!("TYPE: {:?}", name);
         for scope in self.scopes.iter().rev() {
-            println!("SCOPE: {:?}", scope.defined_types);
             if let Some(typ) = scope.defined_types.get(name) {
-                println!("TYPE FOUND");
                 return Some(typ);
             }
         }
 
-        println!("TYPE NOT FOUND");
         None
     }
 
