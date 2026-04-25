@@ -1,5 +1,6 @@
 pub mod expression;
 pub mod identifier;
+pub mod place;
 pub mod statement;
 pub mod r#type;
 

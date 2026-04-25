@@ -16,9 +16,10 @@ use omega_analyzer::{
     analysis::Analysis,
     resolved_type::{ResolvedFunctionType, ResolvedType},
 };
-use omega_parser::prelude::*;
+use omega_parser::{prelude::*, syntax::place::Place};
 use std::{collections::HashMap, sync::Arc};
 
+// TODO: Replace Strings with Places once the codebase is better structured
 #[derive(Debug, Clone)]
 pub enum CodegenError {
     NotImplemented(NodeId),
@@ -28,7 +29,7 @@ pub enum CodegenError {
     VerifierErrors(NodeId, VerifierErrors),
     UnresolvedScope(NodeId),
     Redeclaration(NodeId, Ident),
-    Undeclared(NodeId, Ident),
+    Undeclared(NodeId, String),
     TypeMismatch(NodeId),
 }
 
@@ -55,7 +56,7 @@ pub struct Codegen {
     local_strings: HashMap<String, Value>,
     codeblock_nodes: Vec<NodeId>,
     local_args: HashMap<Ident, Vec<Value>>,
-    stack_slots: HashMap<Ident, Vec<(IRType, StackSlot)>>,
+    stack_slots: HashMap<String, Vec<(IRType, StackSlot)>>,
 }
 
 trait IntoIRType {
@@ -139,6 +140,10 @@ impl Codegen {
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();
+    }
+
+    fn get_place(&self, place: &Place) -> Option<&Vec<(IRType, StackSlot)>> {
+        self.stack_slots.get(&place.to_string())
     }
 
     fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
@@ -335,7 +340,7 @@ impl Codegen {
             }
 
             Expression::Ident(ident) => {
-                if let Some(slots) = self.stack_slots.get(&ident) {
+                if let Some(slots) = self.get_place(&Place::Ident(ident.clone())) {
                     return Ok(slots
                         .iter()
                         .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
@@ -346,12 +351,15 @@ impl Codegen {
                     return Ok(value.clone());
                 }
 
-                return Err(CodegenError::Undeclared(node.id, ident));
+                return Err(CodegenError::Undeclared(node.id, ident.to_string()));
             }
 
             Expression::Assignment(assignment) => {
-                let Some(slots) = self.stack_slots.get(&assignment.ident).map(|x| x.clone()) else {
-                    return Err(CodegenError::Undeclared(node.id, assignment.ident));
+                let Some(slots) = self.get_place(&assignment.place.place).map(|x| x.clone()) else {
+                    return Err(CodegenError::Undeclared(
+                        node.id,
+                        assignment.place.place.to_string(),
+                    ));
                 };
 
                 let values = self.process_expr(builder, *assignment.value)?;
@@ -420,7 +428,7 @@ impl Codegen {
         builder: &mut FunctionBuilder,
         decl: DeclarationStmt,
     ) -> Result<(), CodegenError> {
-        if self.stack_slots.get(&decl.ident).is_some() {
+        if self.stack_slots.get(&decl.ident.to_string()).is_some() {
             return Err(CodegenError::Redeclaration(node_id, decl.ident));
         }
 
@@ -447,8 +455,23 @@ impl Codegen {
                     )),
                 )
             })
-            .collect();
-        self.stack_slots.insert(decl.ident, stack_slots);
+            .collect::<Vec<_>>();
+        self.stack_slots
+            .insert(decl.ident.to_string(), stack_slots.clone());
+
+        if let ResolvedType::Struct(struct_type) = variable_type {
+            let mut counter = 0;
+            for field in struct_type.fields.clone() {
+                let ident = field.0;
+                let irtype = field.1.into_ir_type(&self);
+                let slots = &stack_slots[counter..counter + irtype.len()];
+                self.stack_slots.insert(
+                    format!("{}.{}", decl.ident.as_ref(), ident.as_ref()),
+                    slots.to_vec(),
+                );
+                counter += irtype.len();
+            }
+        }
 
         Ok(())
     }

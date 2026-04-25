@@ -11,6 +11,13 @@ impl AsRef<str> for Ident {
     }
 }
 
+// Helpers for string integration
+impl ToString for Ident {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
+
 // Parser
 impl Ident {
     parser!(() => Self {
