@@ -2,7 +2,7 @@ extern puts : (fmt: *char) => i32;
 extern printf : (fmt: *char, ...) => i32;
 
 struct MyString {
-    buffer: *[char];
+    buffer: *char;
     length: i32;
 }
 
@@ -30,6 +30,9 @@ main(argc : i32, argv : [*char]) => i32 {
 
     mystr : MyString;
     mystr.length = 10;
+
+    mystr.buffer = "this is my other string";
+    print_message(mystr.buffer);
 
     return 69;
 }

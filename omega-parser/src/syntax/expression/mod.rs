@@ -18,6 +18,7 @@ use crate::{
             number::NumberExpr,
             string::StringExpr,
         },
+        place::PlaceNode,
         statement::StatementNode,
     },
 };
@@ -25,7 +26,7 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Ident(Ident),
+    Place(PlaceNode),
     Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
@@ -77,9 +78,9 @@ impl ExpressionNode {
                 FunctionCallExpr::parser(expr_parser.clone())
                     .map(Expression::FunctionCall),
                 AssignmentExpr::parser(expr_parser.clone()).map(Expression::Assignment),
-                Ident::parser().map(Expression::Ident),
                 NumberExpr::parser().map(Expression::Number),
-                StringExpr::parser().map(Expression::String)
+                StringExpr::parser().map(Expression::String),
+                PlaceNode::parser().map(Expression::Place),
             )).map_with(|expression, extra| ExpressionNode {
                 id: next_node_id(), expression, span: extra.span()
             }).then(

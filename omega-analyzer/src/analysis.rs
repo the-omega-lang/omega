@@ -9,6 +9,7 @@ use omega_parser::{
         FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode, Statement,
         StatementNode, StructStmt, Type,
     },
+    syntax::place::Place,
 };
 use std::collections::HashMap;
 
@@ -115,7 +116,22 @@ impl Analyzer {
                 let scope = ctx.current_scope();
                 scope
                     .declared_variables
-                    .insert(ident.to_owned(), resolved_type);
+                    .insert(Place::Ident(ident.to_owned()), resolved_type.clone());
+
+                let mut handle_possible_struct = |struct_typ, parents: Vec<Ident>| {
+                    if let ResolvedType::Struct(ResolvedStructType { fields }) = struct_typ {
+                        for field in fields {
+                            let mut parent = parents.clone();
+                            parent.push(field.0);
+                            scope
+                                .declared_variables
+                                .insert(Place::FieldAccess(parent), field.1);
+                            // TODO: Recursion for each field.
+                        }
+                    }
+                };
+
+                handle_possible_struct(resolved_type, vec![ident]);
             }
         }
     }
@@ -254,8 +270,13 @@ impl Analyzer {
                 self.expression_types_mut().insert(node.id, typ);
             }
 
-            Expression::Ident(ident) => {
-                let Some(typ) = self.context().find_variable_type(&ident) else {
+            Expression::Place(place) => {
+                println!("PLACE: {:?}", place);
+                println!(
+                    "VARIABLES: {:?}",
+                    self.context().current_scope_not_mut().declared_variables
+                );
+                let Some(typ) = self.context().find_variable_type(&place.place) else {
                     self.errors.push(AnalysisError {
                         node_id,
                         message: "Unknown variable type".to_string(),
@@ -339,7 +360,7 @@ impl Analyzer {
             self.context_mut()
                 .current_scope()
                 .declared_variables
-                .insert(param.ident.to_owned(), resolved_type);
+                .insert(Place::Ident(param.ident.to_owned()), resolved_type);
         }
         self.analyze_codeblock(&function_def.codeblock);
 

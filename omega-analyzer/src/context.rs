@@ -1,11 +1,11 @@
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
-use omega_parser::prelude::*;
+use omega_parser::{prelude::*, syntax::place::Place};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ScopeContext {
     pub declared_functions: HashMap<Ident, ResolvedFunctionType>,
-    pub declared_variables: HashMap<Ident, ResolvedType>,
+    pub declared_variables: HashMap<Place, ResolvedType>,
     pub defined_types: HashMap<Ident, ResolvedType>,
 }
 
@@ -39,9 +39,9 @@ impl Context {
     }
 
     // Finder functions
-    pub fn find_variable_type(&self, name: &Ident) -> Option<&ResolvedType> {
+    pub fn find_variable_type(&self, place: &Place) -> Option<&ResolvedType> {
         for scope in self.scopes.iter().rev() {
-            if let Some(typ) = scope.declared_variables.get(name) {
+            if let Some(typ) = scope.declared_variables.get(place) {
                 return Some(typ);
             }
         }
@@ -103,6 +103,10 @@ impl Context {
     // Scope helpers
     pub fn current_scope(&mut self) -> &mut ScopeContext {
         self.scopes.last_mut().unwrap()
+    }
+
+    pub fn current_scope_not_mut(&self) -> &ScopeContext {
+        self.scopes.last().unwrap()
     }
 
     pub fn enter_scope(&mut self) -> &mut ScopeContext {

@@ -55,7 +55,7 @@ pub struct Codegen {
     local_functions: HashMap<Ident, FuncRef>,
     local_strings: HashMap<String, Value>,
     codeblock_nodes: Vec<NodeId>,
-    local_args: HashMap<Ident, Vec<Value>>,
+    local_args: HashMap<String, Vec<Value>>,
     stack_slots: HashMap<String, Vec<(IRType, StackSlot)>>,
 }
 
@@ -144,6 +144,10 @@ impl Codegen {
 
     fn get_place(&self, place: &Place) -> Option<&Vec<(IRType, StackSlot)>> {
         self.stack_slots.get(&place.to_string())
+    }
+
+    fn get_local_arg(&self, place: &Place) -> Option<&Vec<Value>> {
+        self.local_args.get(&place.to_string())
     }
 
     fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
@@ -339,19 +343,19 @@ impl Codegen {
                 }
             }
 
-            Expression::Ident(ident) => {
-                if let Some(slots) = self.get_place(&Place::Ident(ident.clone())) {
+            Expression::Place(place) => {
+                if let Some(slots) = self.get_place(&place.place) {
                     return Ok(slots
                         .iter()
                         .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
                         .collect());
                 };
 
-                if let Some(value) = self.local_args.get(&ident) {
+                if let Some(value) = self.get_local_arg(&place.place) {
                     return Ok(value.clone());
                 }
 
-                return Err(CodegenError::Undeclared(node.id, ident.to_string()));
+                return Err(CodegenError::Undeclared(node.id, place.place.to_string()));
             }
 
             Expression::Assignment(assignment) => {
@@ -437,7 +441,10 @@ impl Codegen {
             return Err(CodegenError::UnresolvedScope(node_id));
         };
 
-        let Some(variable_type) = scope.declared_variables.get(&decl.ident) else {
+        let Some(variable_type) = scope
+            .declared_variables
+            .get(&Place::Ident(decl.ident.clone()))
+        else {
             return Err(CodegenError::UnresolvedType(node_id, decl.ident));
         };
 
@@ -527,7 +534,7 @@ impl Codegen {
             .map(|param| {
                 scope
                     .declared_variables
-                    .get(&param.ident)
+                    .get(&Place::Ident(param.ident.clone()))
                     .and_then(|resolved_type| Some(resolved_type.clone().into_ir_type(&self)))
                     .ok_or(CodegenError::UnresolvedType(node_id, param.ident))
             })
@@ -582,12 +589,12 @@ impl Codegen {
         for i in 0..block_params.len() {
             let ident = argmap[i];
             let arg = block_params[i];
-            if let Some(entry) = self.local_args.get_mut(ident) {
+            if let Some(entry) = self.local_args.get_mut(&ident.to_string()) {
                 entry.push(arg);
                 continue;
             }
 
-            self.local_args.insert(ident.clone(), vec![arg]);
+            self.local_args.insert(ident.to_string(), vec![arg]);
         }
         builder.switch_to_block(entry_block);
 

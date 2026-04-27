@@ -2,7 +2,7 @@ use chumsky::prelude::*;
 
 use crate::{NodeId, next_node_id, parser, prelude::Ident};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Place {
     Ident(Ident),
     FieldAccess(Vec<Ident>),
@@ -18,7 +18,7 @@ pub struct PlaceNode {
 impl PlaceNode {
     parser!(() => Self {
         choice((
-            Ident::parser().separated_by(just('.')).collect().map(|idents| Place::FieldAccess(idents)),
+            Ident::parser().separated_by(just('.')).at_least(2).collect().map(|idents| Place::FieldAccess(idents)),
             Ident::parser().map(|ident| Place::Ident(ident)),
         ))
             .map_with(|place, extra| PlaceNode {
