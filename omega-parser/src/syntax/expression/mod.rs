@@ -1,7 +1,6 @@
 pub mod assignment;
 pub mod codeblock;
 pub mod function_call;
-pub mod index;
 pub mod number;
 pub mod string;
 
@@ -11,12 +10,8 @@ use crate::{
     syntax::{
         ParseError,
         expression::{
-            assignment::AssignmentExpr,
-            codeblock::CodeblockExpr,
-            function_call::FunctionCallExpr,
-            index::{IndexExpr, LookaheadIndexExpr},
-            number::NumberExpr,
-            string::StringExpr,
+            assignment::AssignmentExpr, codeblock::CodeblockExpr, function_call::FunctionCallExpr,
+            number::NumberExpr, string::StringExpr,
         },
         place::PlaceNode,
         statement::StatementNode,
@@ -26,39 +21,12 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Place(PlaceNode),
+    Place(Box<PlaceNode>),
     Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
     FunctionCall(FunctionCallExpr),
-    Assignment(AssignmentExpr),
-    Index(Box<IndexExpr>),
-}
-
-#[derive(Debug, Clone)]
-pub enum LookaheadExpression {
-    Index(LookaheadIndexExpr),
-}
-
-impl LookaheadExpression {
-    fn into_expression_node(self, expr: ExpressionNode) -> ExpressionNode {
-        let id = next_node_id();
-        let mut span = expr.span;
-        let extended_expr = match self {
-            Self::Index(lookahead) => {
-                span.end = lookahead.index.span.end;
-                Expression::Index(Box::new(IndexExpr {
-                    indexed: expr,
-                    index: lookahead.index,
-                }))
-            }
-        };
-        ExpressionNode {
-            id,
-            expression: extended_expr,
-            span,
-        }
-    }
+    Assignment(Box<AssignmentExpr>),
 }
 
 pub type NodeId = u64;
@@ -77,22 +45,12 @@ impl ExpressionNode {
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
                 FunctionCallExpr::parser(expr_parser.clone())
                     .map(Expression::FunctionCall),
-                AssignmentExpr::parser(expr_parser.clone()).map(Expression::Assignment),
+                AssignmentExpr::parser(expr_parser.clone()).map(|x| Expression::Assignment(Box::new(x))),
                 NumberExpr::parser().map(Expression::Number),
                 StringExpr::parser().map(Expression::String),
-                PlaceNode::parser().map(Expression::Place),
+                PlaceNode::parser(expr_parser.clone()).map(|x| Expression::Place(Box::new(x))),
             )).map_with(|expression, extra| ExpressionNode {
                 id: next_node_id(), expression, span: extra.span()
-            }).then(
-                // Lookahead parsers
-                choice((LookaheadIndexExpr::parser(expr_parser).map(|lookahead| {
-                    LookaheadExpression::Index(lookahead)
-                }),)).or_not()
-            ).map(|(expr, extended_expr_opt)| {
-                match extended_expr_opt {
-                    Some(lookahead) => lookahead.into_expression_node(expr),
-                    None => expr
-                }
             })
         })
         .padded()

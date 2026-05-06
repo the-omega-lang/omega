@@ -18,7 +18,7 @@ pub struct AssignmentExpr {
 
 impl AssignmentExpr {
     parser!((expr_parser => ExpressionNode) => Self {
-        PlaceNode::parser()
+        PlaceNode::parser(expr_parser.clone())
             .padded()
             .then_ignore(just('=').padded())
             .then(expr_parser)

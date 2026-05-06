@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct ScopeContext {
     pub declared_functions: HashMap<Ident, ResolvedFunctionType>,
-    pub declared_variables: HashMap<Place, ResolvedType>,
+    pub declared_variables: HashMap<Ident, ResolvedType>,
     pub defined_types: HashMap<Ident, ResolvedType>,
 }
 
@@ -39,9 +39,9 @@ impl Context {
     }
 
     // Finder functions
-    pub fn find_variable_type(&self, place: &Place) -> Option<&ResolvedType> {
+    pub fn find_variable_type(&self, ident: &Ident) -> Option<&ResolvedType> {
         for scope in self.scopes.iter().rev() {
-            if let Some(typ) = scope.declared_variables.get(place) {
+            if let Some(typ) = scope.declared_variables.get(ident) {
                 return Some(typ);
             }
         }

@@ -9,7 +9,7 @@ use omega_parser::{
         FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode, Statement,
         StatementNode, StructStmt, Type,
     },
-    syntax::place::Place,
+    syntax::place::{Place, PlaceModifier},
 };
 use std::collections::HashMap;
 
@@ -21,7 +21,7 @@ pub struct AnalysisError {
 
 #[derive(Debug, Clone)]
 pub struct Analysis {
-    pub expression_types: HashMap<NodeId, ResolvedType>,
+    pub node_types: HashMap<NodeId, ResolvedType>,
     pub context: Context,
     pub codeblock_scopes: HashMap<NodeId, ScopeContext>,
 }
@@ -31,8 +31,8 @@ impl Analysis {
         self.context.find_function_type(name)
     }
 
-    pub fn get_expression_type(&self, node_id: &NodeId) -> Option<&ResolvedType> {
-        self.expression_types.get(&node_id)
+    pub fn get_node_type(&self, node_id: &NodeId) -> Option<&ResolvedType> {
+        self.node_types.get(&node_id)
     }
 
     pub fn get_codeblock_scope(&self, codeblock_node_id: &NodeId) -> Option<&ScopeContext> {
@@ -56,7 +56,7 @@ impl Analyzer {
         Self {
             errors,
             analysis: Analysis {
-                expression_types,
+                node_types: expression_types,
                 context,
                 codeblock_scopes,
             },
@@ -65,12 +65,12 @@ impl Analyzer {
 
     // Utils
 
-    fn expression_types(&self) -> &HashMap<NodeId, ResolvedType> {
-        &self.analysis.expression_types
+    fn node_types(&self) -> &HashMap<NodeId, ResolvedType> {
+        &self.analysis.node_types
     }
 
-    fn expression_types_mut(&mut self) -> &mut HashMap<NodeId, ResolvedType> {
-        &mut self.analysis.expression_types
+    fn node_types_mut(&mut self) -> &mut HashMap<NodeId, ResolvedType> {
+        &mut self.analysis.node_types
     }
 
     fn context(&self) -> &Context {
@@ -116,22 +116,7 @@ impl Analyzer {
                 let scope = ctx.current_scope();
                 scope
                     .declared_variables
-                    .insert(Place::Ident(ident.to_owned()), resolved_type.clone());
-
-                let mut handle_possible_struct = |struct_typ, parents: Vec<Ident>| {
-                    if let ResolvedType::Struct(ResolvedStructType { fields }) = struct_typ {
-                        for field in fields {
-                            let mut parent = parents.clone();
-                            parent.push(field.0);
-                            scope
-                                .declared_variables
-                                .insert(Place::FieldAccess(parent), field.1);
-                            // TODO: Recursion for each field.
-                        }
-                    }
-                };
-
-                handle_possible_struct(resolved_type, vec![ident]);
+                    .insert(ident, resolved_type.clone());
             }
         }
     }
@@ -150,7 +135,7 @@ impl Analyzer {
 
         match expr {
             Expression::String(_) => {
-                self.expression_types_mut()
+                self.node_types_mut()
                     .insert(node.id, ResolvedType::Pointer(Box::new(ResolvedType::Char)));
             }
             Expression::FunctionCall(call_expr) => {
@@ -166,7 +151,7 @@ impl Analyzer {
 
                 // Store function call expression type
                 let function_type = function_type.to_owned();
-                self.expression_types_mut()
+                self.node_types_mut()
                     .insert(node_id, *function_type.return_type);
 
                 // Check types for arguments of the function call
@@ -193,7 +178,7 @@ impl Analyzer {
                         continue;
                     }
 
-                    if let Some(typ) = self.expression_types().get(&arg.id) {
+                    if let Some(typ) = self.node_types().get(&arg.id) {
                         let expected_type = &function_type.params[i].1;
                         if typ != expected_type {
                             self.errors.push(AnalysisError {
@@ -223,18 +208,17 @@ impl Analyzer {
                         });
                         return;
                     };
-                    self.expression_types_mut().insert(node.id, resolved_type);
+                    self.node_types_mut().insert(node.id, resolved_type);
                     return;
                 }
 
                 // TODO: Handle floats and unsigned integers
-                self.expression_types_mut()
-                    .insert(node.id, ResolvedType::I32);
+                self.node_types_mut().insert(node.id, ResolvedType::I32);
             }
 
             Expression::Assignment(assignment) => {
                 self.analyze_expression(&assignment.value);
-                let Some(typ) = self.expression_types().get(&assignment.value.id) else {
+                let Some(typ) = self.node_types().get(&assignment.value.id) else {
                     self.errors.push(AnalysisError {
                         node_id,
                         message: "Inner expression not resolved".to_string(),
@@ -243,40 +227,11 @@ impl Analyzer {
                 };
                 let typ = typ.clone();
 
-                self.expression_types_mut().insert(node.id, typ);
-            }
-
-            Expression::Index(index) => {
-                self.analyze_expression(&index.indexed);
-                self.analyze_expression(&index.index);
-
-                let Some(array_type) = self.expression_types().get(&index.indexed.id) else {
-                    self.errors.push(AnalysisError {
-                        node_id,
-                        message: "Inner expression not resolved".to_string(),
-                    });
-                    return;
-                };
-
-                let ResolvedType::Array(item_type) = array_type else {
-                    self.errors.push(AnalysisError {
-                        node_id,
-                        message: "Indexed expression is not an array".to_string(),
-                    });
-                    return;
-                };
-
-                let typ = *item_type.to_owned();
-                self.expression_types_mut().insert(node.id, typ);
+                self.node_types_mut().insert(node.id, typ);
             }
 
             Expression::Place(place) => {
-                println!("PLACE: {:?}", place);
-                println!(
-                    "VARIABLES: {:?}",
-                    self.context().current_scope_not_mut().declared_variables
-                );
-                let Some(typ) = self.context().find_variable_type(&place.place) else {
+                let Some(typ) = self.context().find_variable_type(&place.place.0) else {
                     self.errors.push(AnalysisError {
                         node_id,
                         message: "Unknown variable type".to_string(),
@@ -285,7 +240,42 @@ impl Analyzer {
                 };
                 let typ = typ.to_owned();
 
-                self.expression_types_mut().insert(node_id, typ);
+                let mut last_type = typ;
+                for modifier in place.place.1.clone() {
+                    match modifier {
+                        PlaceModifier::FieldAccess(ident) => {
+                            let ResolvedType::Struct(struct_type) = last_type else {
+                                self.errors.push(AnalysisError {
+                                    node_id: place.id,
+                                    message: "Not a struct".to_string(),
+                                });
+                                return;
+                            };
+                            let Some(field_type) = struct_type.fields.iter().find(|x| x.0 == ident)
+                            else {
+                                self.errors.push(AnalysisError {
+                                    node_id: place.id,
+                                    message: "No such field in the struct".to_string(),
+                                });
+                                return;
+                            };
+
+                            last_type = field_type.1.clone();
+                        }
+                        PlaceModifier::Index(_expr) => {
+                            let ResolvedType::Array(array_item_type) = last_type else {
+                                self.errors.push(AnalysisError {
+                                    node_id: place.id,
+                                    message: "Not an array".to_string(),
+                                });
+                                return;
+                            };
+                            last_type = *array_item_type;
+                        }
+                    }
+                }
+
+                self.node_types_mut().insert(node_id, last_type);
             }
 
             _ => {}
@@ -360,7 +350,7 @@ impl Analyzer {
             self.context_mut()
                 .current_scope()
                 .declared_variables
-                .insert(Place::Ident(param.ident.to_owned()), resolved_type);
+                .insert(param.ident.to_owned(), resolved_type);
         }
         self.analyze_codeblock(&function_def.codeblock);
 

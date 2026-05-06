@@ -324,7 +324,7 @@ impl Codegen {
             Expression::Number(number_expr) => {
                 let resolved_type = self
                     .analysis
-                    .get_expression_type(&node.id)
+                    .get_node_type(&node.id)
                     .ok_or_else(|| CodegenError::InvalidNumber(node.id))?;
 
                 match resolved_type {
@@ -384,7 +384,7 @@ impl Codegen {
             Expression::Index(index_expr) => {
                 let index_type = self
                     .analysis
-                    .get_expression_type(&index_expr.indexed.id)
+                    .get_node_type(&index_expr.indexed.id)
                     .ok_or_else(|| CodegenError::UnresolvedExpression(node.id))?
                     .to_owned();
                 let element_ir_type = index_type.into_ir_type(&self);

@@ -1,7 +1,7 @@
 use crate::{parser, prelude::Ident, syntax::ParseError};
 use chumsky::prelude::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NumberExpr {
     pub integer_part: String,
     pub fractional_part: Option<String>,

@@ -1,7 +1,7 @@
 use crate::{parser, syntax::ParseError};
 use chumsky::prelude::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StringExpr(pub String);
 
 impl StringExpr {
