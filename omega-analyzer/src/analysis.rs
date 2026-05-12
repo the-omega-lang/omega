@@ -9,7 +9,7 @@ use omega_parser::{
         FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode, Statement,
         StatementNode, StructStmt, Type,
     },
-    syntax::place::{Place, PlaceModifier},
+    syntax::place::{Place, PlaceModifier, PlaceNode},
 };
 use std::collections::HashMap;
 
@@ -129,6 +129,54 @@ impl Analyzer {
         );
     }
 
+    fn analyze_place(&mut self, place: &PlaceNode) {
+        let node_id = place.id;
+        let Some(typ) = self.context().find_variable_type(&place.place.0) else {
+            self.errors.push(AnalysisError {
+                node_id,
+                message: "Unknown variable type".to_string(),
+            });
+            return;
+        };
+        let typ = typ.to_owned();
+
+        let mut last_type = typ;
+        for modifier in place.place.1.clone() {
+            match modifier {
+                PlaceModifier::FieldAccess(ident) => {
+                    let ResolvedType::Struct(struct_type) = last_type else {
+                        self.errors.push(AnalysisError {
+                            node_id: place.id,
+                            message: "Not a struct".to_string(),
+                        });
+                        return;
+                    };
+                    let Some(field_type) = struct_type.fields.iter().find(|x| x.0 == ident) else {
+                        self.errors.push(AnalysisError {
+                            node_id: place.id,
+                            message: "No such field in the struct".to_string(),
+                        });
+                        return;
+                    };
+
+                    last_type = field_type.1.clone();
+                }
+                PlaceModifier::Index(_expr) => {
+                    let ResolvedType::Array(array_item_type) = last_type else {
+                        self.errors.push(AnalysisError {
+                            node_id: place.id,
+                            message: "Not an array".to_string(),
+                        });
+                        return;
+                    };
+                    last_type = *array_item_type;
+                }
+            }
+        }
+
+        self.node_types_mut().insert(node_id, last_type);
+    }
+
     fn analyze_expression(&mut self, node: &ExpressionNode) {
         let expr = &node.expression;
         let node_id = node.id;
@@ -227,58 +275,25 @@ impl Analyzer {
                 };
                 let typ = typ.clone();
 
+                self.analyze_place(&assignment.place);
+
                 self.node_types_mut().insert(node.id, typ);
             }
 
             Expression::Place(place) => {
-                let Some(typ) = self.context().find_variable_type(&place.place.0) else {
+                self.analyze_place(&place);
+                let Some(typ) = self.node_types().get(&place.id) else {
                     self.errors.push(AnalysisError {
                         node_id,
-                        message: "Unknown variable type".to_string(),
+                        message: format!("Failed to analyze Place ({})", place.id),
                     });
                     return;
                 };
-                let typ = typ.to_owned();
-
-                let mut last_type = typ;
-                for modifier in place.place.1.clone() {
-                    match modifier {
-                        PlaceModifier::FieldAccess(ident) => {
-                            let ResolvedType::Struct(struct_type) = last_type else {
-                                self.errors.push(AnalysisError {
-                                    node_id: place.id,
-                                    message: "Not a struct".to_string(),
-                                });
-                                return;
-                            };
-                            let Some(field_type) = struct_type.fields.iter().find(|x| x.0 == ident)
-                            else {
-                                self.errors.push(AnalysisError {
-                                    node_id: place.id,
-                                    message: "No such field in the struct".to_string(),
-                                });
-                                return;
-                            };
-
-                            last_type = field_type.1.clone();
-                        }
-                        PlaceModifier::Index(_expr) => {
-                            let ResolvedType::Array(array_item_type) = last_type else {
-                                self.errors.push(AnalysisError {
-                                    node_id: place.id,
-                                    message: "Not an array".to_string(),
-                                });
-                                return;
-                            };
-                            last_type = *array_item_type;
-                        }
-                    }
-                }
-
-                self.node_types_mut().insert(node_id, last_type);
+                let typ = typ.clone();
+                self.node_types_mut().insert(node.id, typ);
             }
 
-            _ => {}
+            Expression::Codeblock(_) => {}
         }
     }
 

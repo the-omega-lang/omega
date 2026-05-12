@@ -16,7 +16,10 @@ use omega_analyzer::{
     analysis::Analysis,
     resolved_type::{ResolvedFunctionType, ResolvedType},
 };
-use omega_parser::{prelude::*, syntax::place::Place};
+use omega_parser::{
+    prelude::*,
+    syntax::place::{Place, PlaceModifier, PlaceNode},
+};
 use std::{collections::HashMap, sync::Arc};
 
 // TODO: Replace Strings with Places once the codebase is better structured
@@ -29,7 +32,7 @@ pub enum CodegenError {
     VerifierErrors(NodeId, VerifierErrors),
     UnresolvedScope(NodeId),
     Redeclaration(NodeId, Ident),
-    Undeclared(NodeId, String),
+    Undeclared(NodeId, Place),
     TypeMismatch(NodeId),
 }
 
@@ -142,12 +145,118 @@ impl Codegen {
         self.local_args.clear();
     }
 
-    fn get_place(&self, place: &Place) -> Option<&Vec<(IRType, StackSlot)>> {
-        self.stack_slots.get(&place.to_string())
+    // TODO: Return result in this function instead, and give
+    //       proper error reasons.
+    fn get_place(&self, place: &PlaceNode) -> Option<&[(IRType, StackSlot)]> {
+        let id = place.id;
+        let place = &place.place;
+
+        let mut variable = self.stack_slots.get(place.0.as_ref())?.as_slice();
+        let mut current_type = self.analysis.get_node_type(&id)?.clone();
+        for modifier in &place.1 {
+            match modifier {
+                PlaceModifier::FieldAccess(field) => {
+                    let ResolvedType::Struct(struct_type) = current_type else {
+                        return None;
+                    };
+
+                    let (index, accessed_field, ir_type) = struct_type
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_index, x)| &x.0 == field)
+                        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(&self)))?;
+                    current_type = accessed_field.1.clone();
+
+                    variable = &variable[index..(index + ir_type.len())];
+                }
+
+                PlaceModifier::Index(expr) => {
+                    todo!("NOT IMPLEMENTED YET!!!!!");
+                }
+            }
+        }
+
+        Some(variable)
     }
 
-    fn get_local_arg(&self, place: &Place) -> Option<&Vec<Value>> {
-        self.local_args.get(&place.to_string())
+    // TODO: Reuse place code algorithm here in an abstracted manner.
+    // TODO: Return result
+    fn get_local_arg(
+        &mut self,
+        place: &PlaceNode,
+        builder: &mut FunctionBuilder,
+    ) -> Option<Vec<Value>> {
+        let id = place.id;
+        let place = &place.place;
+
+        let mut values = self.local_args.get(place.0.as_ref())?.to_vec();
+        let mut current_type = self.analysis.get_node_type(&id)?.clone();
+        for modifier in &place.1 {
+            match modifier {
+                PlaceModifier::FieldAccess(field) => {
+                    let ResolvedType::Struct(struct_type) = current_type else {
+                        return None;
+                    };
+
+                    let (index, accessed_field, ir_type) = struct_type
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_index, x)| &x.0 == field)
+                        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(&self)))?;
+                    current_type = accessed_field.1.clone();
+
+                    values = values[index..(index + ir_type.len())].to_vec();
+                }
+
+                PlaceModifier::Index(expr) => {
+                    let index_type = self
+                        .analysis
+                        .get_node_type(&expr.id)
+                        .ok_or_else(|| CodegenError::UnresolvedExpression(expr.id))
+                        .ok()?
+                        .to_owned();
+                    let element_ir_type = index_type.into_ir_type(&self);
+                    let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
+
+                    let mut base = values[0];
+                    let mut index = self.process_expr(builder, expr.clone()).ok()?[0];
+
+                    let ptr_type = self.pointer_type();
+
+                    if builder.func.dfg.value_type(base) != ptr_type {
+                        base = builder.ins().uextend(ptr_type, base);
+                    }
+                    if builder.func.dfg.value_type(index) != ptr_type {
+                        index = builder.ins().uextend(ptr_type, index);
+                    }
+
+                    let element_size = builder
+                        .ins()
+                        .iconst(self.pointer_type(), element_ir_size as i64);
+                    let offset = builder.ins().imul(index, element_size);
+                    let element_addr = builder.ins().iadd(base, offset);
+                    let deref = element_ir_type
+                        .into_iter()
+                        .fold((vec![], 0u32), |mut acc, typ| {
+                            let result = builder.ins().load(
+                                typ,
+                                MemFlags::new(),
+                                element_addr,
+                                acc.1 as i32,
+                            );
+                            acc.0.push(result);
+                            acc.1 += typ.bytes();
+                            acc
+                        });
+
+                    values = deref.0;
+                }
+            }
+        }
+
+        Some(values)
     }
 
     fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
@@ -344,29 +453,25 @@ impl Codegen {
             }
 
             Expression::Place(place) => {
-                if let Some(slots) = self.get_place(&place.place) {
+                if let Some(slots) = self.get_place(&place) {
                     return Ok(slots
                         .iter()
                         .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
                         .collect());
                 };
 
-                if let Some(value) = self.get_local_arg(&place.place) {
-                    return Ok(value.clone());
+                if let Some(value) = self.get_local_arg(&place, builder) {
+                    return Ok(value.to_vec());
                 }
 
-                return Err(CodegenError::Undeclared(node.id, place.place.to_string()));
+                return Err(CodegenError::Undeclared(node.id, place.place));
             }
 
             Expression::Assignment(assignment) => {
-                let Some(slots) = self.get_place(&assignment.place.place).map(|x| x.clone()) else {
-                    return Err(CodegenError::Undeclared(
-                        node.id,
-                        assignment.place.place.to_string(),
-                    ));
-                };
-
                 let values = self.process_expr(builder, *assignment.value)?;
+                let Some(slots) = self.get_place(&assignment.place) else {
+                    return Err(CodegenError::Undeclared(node.id, assignment.place.place));
+                };
 
                 if values.len() != slots.len() {
                     return Err(CodegenError::TypeMismatch(node.id));
@@ -381,47 +486,46 @@ impl Codegen {
                 Ok(values)
             }
 
-            Expression::Index(index_expr) => {
-                let index_type = self
-                    .analysis
-                    .get_node_type(&index_expr.indexed.id)
-                    .ok_or_else(|| CodegenError::UnresolvedExpression(node.id))?
-                    .to_owned();
-                let element_ir_type = index_type.into_ir_type(&self);
-                let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
+            // Expression::Index(index_expr) => {
+            // let index_type = self
+            //     .analysis
+            //     .get_node_type(&index_expr.indexed.id)
+            //     .ok_or_else(|| CodegenError::UnresolvedExpression(node.id))?
+            //     .to_owned();
+            // let element_ir_type = index_type.into_ir_type(&self);
+            // let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
 
-                let mut base = self.process_expr(builder, index_expr.indexed)?[0];
-                let mut index = self.process_expr(builder, index_expr.index)?[0];
+            // let mut base = self.process_expr(builder, index_expr.indexed)?[0];
+            // let mut index = self.process_expr(builder, index_expr.index)?[0];
 
-                let ptr_type = self.pointer_type();
+            // let ptr_type = self.pointer_type();
 
-                if builder.func.dfg.value_type(base) != ptr_type {
-                    base = builder.ins().uextend(ptr_type, base);
-                }
-                if builder.func.dfg.value_type(index) != ptr_type {
-                    index = builder.ins().uextend(ptr_type, index);
-                }
+            // if builder.func.dfg.value_type(base) != ptr_type {
+            //     base = builder.ins().uextend(ptr_type, base);
+            // }
+            // if builder.func.dfg.value_type(index) != ptr_type {
+            //     index = builder.ins().uextend(ptr_type, index);
+            // }
 
-                let element_size = builder
-                    .ins()
-                    .iconst(self.pointer_type(), element_ir_size as i64);
-                let offset = builder.ins().imul(index, element_size);
-                let element_addr = builder.ins().iadd(base, offset);
-                let deref = element_ir_type
-                    .into_iter()
-                    .fold((vec![], 0u32), |mut acc, typ| {
-                        let result =
-                            builder
-                                .ins()
-                                .load(typ, MemFlags::new(), element_addr, acc.1 as i32);
-                        acc.0.push(result);
-                        acc.1 += typ.bytes();
-                        acc
-                    });
+            // let element_size = builder
+            //     .ins()
+            //     .iconst(self.pointer_type(), element_ir_size as i64);
+            // let offset = builder.ins().imul(index, element_size);
+            // let element_addr = builder.ins().iadd(base, offset);
+            // let deref = element_ir_type
+            //     .into_iter()
+            //     .fold((vec![], 0u32), |mut acc, typ| {
+            //         let result =
+            //             builder
+            //                 .ins()
+            //                 .load(typ, MemFlags::new(), element_addr, acc.1 as i32);
+            //         acc.0.push(result);
+            //         acc.1 += typ.bytes();
+            //         acc
+            //     });
 
-                Ok(deref.0)
-            }
-
+            // Ok(deref.0)
+            // }
             _ => Err(CodegenError::NotImplemented(node.id)),
         }
     }
@@ -441,10 +545,7 @@ impl Codegen {
             return Err(CodegenError::UnresolvedScope(node_id));
         };
 
-        let Some(variable_type) = scope
-            .declared_variables
-            .get(&Place::Ident(decl.ident.clone()))
-        else {
+        let Some(variable_type) = scope.declared_variables.get(&decl.ident) else {
             return Err(CodegenError::UnresolvedType(node_id, decl.ident));
         };
 
@@ -465,20 +566,6 @@ impl Codegen {
             .collect::<Vec<_>>();
         self.stack_slots
             .insert(decl.ident.to_string(), stack_slots.clone());
-
-        if let ResolvedType::Struct(struct_type) = variable_type {
-            let mut counter = 0;
-            for field in struct_type.fields.clone() {
-                let ident = field.0;
-                let irtype = field.1.into_ir_type(&self);
-                let slots = &stack_slots[counter..counter + irtype.len()];
-                self.stack_slots.insert(
-                    format!("{}.{}", decl.ident.as_ref(), ident.as_ref()),
-                    slots.to_vec(),
-                );
-                counter += irtype.len();
-            }
-        }
 
         Ok(())
     }
@@ -534,7 +621,7 @@ impl Codegen {
             .map(|param| {
                 scope
                     .declared_variables
-                    .get(&Place::Ident(param.ident.clone()))
+                    .get(&param.ident)
                     .and_then(|resolved_type| Some(resolved_type.clone().into_ir_type(&self)))
                     .ok_or(CodegenError::UnresolvedType(node_id, param.ident))
             })
