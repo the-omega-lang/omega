@@ -291,6 +291,16 @@ impl Analyzer {
                 };
                 let typ = typ.clone();
                 self.node_types_mut().insert(node.id, typ);
+
+                for modifier in &place.place.1 {
+                    match modifier {
+                        PlaceModifier::Index(expr) => {
+                            self.analyze_expression(expr);
+                        }
+
+                        _ => {}
+                    }
+                }
             }
 
             Expression::Codeblock(_) => {}

@@ -34,6 +34,7 @@ pub enum CodegenError {
     Redeclaration(NodeId, Ident),
     Undeclared(NodeId, Place),
     TypeMismatch(NodeId),
+    BadPlaceModifier(NodeId, PlaceModifier),
 }
 
 pub struct Codegen {
@@ -145,19 +146,29 @@ impl Codegen {
         self.local_args.clear();
     }
 
-    // TODO: Return result in this function instead, and give
-    //       proper error reasons.
-    fn get_place(&self, place: &PlaceNode) -> Option<&[(IRType, StackSlot)]> {
+    fn get_place_from_stack(
+        &mut self,
+        place: &PlaceNode,
+        builder: &mut FunctionBuilder,
+    ) -> Result<&[(IRType, StackSlot)], CodegenError> {
         let id = place.id;
         let place = &place.place;
 
-        let mut variable = self.stack_slots.get(place.0.as_ref())?.as_slice();
-        let mut current_type = self.analysis.get_node_type(&id)?.clone();
+        let mut variable = self
+            .stack_slots
+            .get(place.0.as_ref())
+            .ok_or_else(|| CodegenError::Undeclared(id, place.clone()))?
+            .as_slice();
+        let mut current_type = self
+            .analysis
+            .get_node_type(&id)
+            .ok_or_else(|| CodegenError::UnresolvedType(id, place.0.clone()))?
+            .clone();
         for modifier in &place.1 {
             match modifier {
                 PlaceModifier::FieldAccess(field) => {
                     let ResolvedType::Struct(struct_type) = current_type else {
-                        return None;
+                        return Err(CodegenError::BadPlaceModifier(id, modifier.clone()));
                     };
 
                     let (index, accessed_field, ir_type) = struct_type
@@ -165,7 +176,8 @@ impl Codegen {
                         .iter()
                         .enumerate()
                         .find(|(_index, x)| &x.0 == field)
-                        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(&self)))?;
+                        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(&self)))
+                        .ok_or_else(|| CodegenError::BadPlaceModifier(id, modifier.clone()))?;
                     current_type = accessed_field.1.clone();
 
                     variable = &variable[index..(index + ir_type.len())];
@@ -177,26 +189,34 @@ impl Codegen {
             }
         }
 
-        Some(variable)
+        Ok(variable)
     }
 
     // TODO: Reuse place code algorithm here in an abstracted manner.
     // TODO: Return result
-    fn get_local_arg(
+    fn get_place_from_args(
         &mut self,
         place: &PlaceNode,
         builder: &mut FunctionBuilder,
-    ) -> Option<Vec<Value>> {
+    ) -> Result<Vec<Value>, CodegenError> {
         let id = place.id;
         let place = &place.place;
 
-        let mut values = self.local_args.get(place.0.as_ref())?.to_vec();
-        let mut current_type = self.analysis.get_node_type(&id)?.clone();
+        let mut values = self
+            .local_args
+            .get(place.0.as_ref())
+            .ok_or_else(|| CodegenError::Undeclared(id, place.clone()))?
+            .to_vec();
+        let mut current_type = self
+            .analysis
+            .get_node_type(&id)
+            .ok_or_else(|| CodegenError::UnresolvedType(id, place.0.clone()))?
+            .clone();
         for modifier in &place.1 {
             match modifier {
                 PlaceModifier::FieldAccess(field) => {
                     let ResolvedType::Struct(struct_type) = current_type else {
-                        return None;
+                        return Err(CodegenError::BadPlaceModifier(id, modifier.clone()));
                     };
 
                     let (index, accessed_field, ir_type) = struct_type
@@ -204,7 +224,8 @@ impl Codegen {
                         .iter()
                         .enumerate()
                         .find(|(_index, x)| &x.0 == field)
-                        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(&self)))?;
+                        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(&self)))
+                        .ok_or_else(|| CodegenError::BadPlaceModifier(id, modifier.clone()))?;
                     current_type = accessed_field.1.clone();
 
                     values = values[index..(index + ir_type.len())].to_vec();
@@ -214,14 +235,13 @@ impl Codegen {
                     let index_type = self
                         .analysis
                         .get_node_type(&expr.id)
-                        .ok_or_else(|| CodegenError::UnresolvedExpression(expr.id))
-                        .ok()?
+                        .ok_or_else(|| CodegenError::UnresolvedExpression(expr.id))?
                         .to_owned();
                     let element_ir_type = index_type.into_ir_type(&self);
                     let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
 
                     let mut base = values[0];
-                    let mut index = self.process_expr(builder, expr.clone()).ok()?[0];
+                    let mut index = self.process_expr(builder, expr.clone())?[0];
 
                     let ptr_type = self.pointer_type();
 
@@ -256,7 +276,33 @@ impl Codegen {
             }
         }
 
-        Some(values)
+        Ok(values)
+    }
+
+    fn get_place_value(
+        &mut self,
+        place_node: &PlaceNode,
+        builder: &mut FunctionBuilder,
+    ) -> Result<Vec<Value>, CodegenError> {
+        let id = place_node.id;
+        let place = &place_node.place;
+
+        // TODO: Maybe reuse these in the actual functions.
+        //       Maybe bring some of their code here since its mostly duplicated.
+        let variable = self.stack_slots.get(place.0.as_ref());
+        let values = self.local_args.get(place.0.as_ref());
+
+        match (variable, values) {
+            (Some(_), None) => {
+                let slots = self.get_place_from_stack(place_node, builder)?;
+                Ok(slots
+                    .iter()
+                    .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
+                    .collect())
+            }
+            (None, Some(_)) => self.get_place_from_args(place_node, builder),
+            _ => Err(CodegenError::Undeclared(id, place.clone())),
+        }
     }
 
     fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
@@ -452,26 +498,11 @@ impl Codegen {
                 }
             }
 
-            Expression::Place(place) => {
-                if let Some(slots) = self.get_place(&place) {
-                    return Ok(slots
-                        .iter()
-                        .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
-                        .collect());
-                };
-
-                if let Some(value) = self.get_local_arg(&place, builder) {
-                    return Ok(value.to_vec());
-                }
-
-                return Err(CodegenError::Undeclared(node.id, place.place));
-            }
+            Expression::Place(place) => self.get_place_value(&place, builder),
 
             Expression::Assignment(assignment) => {
                 let values = self.process_expr(builder, *assignment.value)?;
-                let Some(slots) = self.get_place(&assignment.place) else {
-                    return Err(CodegenError::Undeclared(node.id, assignment.place.place));
-                };
+                let slots = self.get_place_from_stack(&assignment.place, builder)?;
 
                 if values.len() != slots.len() {
                     return Err(CodegenError::TypeMismatch(node.id));
