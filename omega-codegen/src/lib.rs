@@ -1,7 +1,7 @@
 use cranelift::{
     codegen::{
         self,
-        ir::{FuncRef, StackSlot},
+        ir::{FuncRef, StackSlot, function::DisplayFunction},
         packed_option::ReservedValue,
         verifier::VerifierErrors,
     },
@@ -237,7 +237,8 @@ impl Codegen {
                         .get_node_type(&expr.id)
                         .ok_or_else(|| CodegenError::UnresolvedExpression(expr.id))?
                         .to_owned();
-                    let element_ir_type = index_type.into_ir_type(&self);
+                    // let element_ir_type = index_type.into_ir_type(&self);
+                    let element_ir_type = current_type.clone().into_ir_type(&self);
                     let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
 
                     let mut base = values[0];
@@ -747,6 +748,8 @@ impl Codegen {
             .define_function(function_id, &mut self.ctx)
             .unwrap();
         self.functions.insert(ident, function_id);
+
+        println!("FUNCTION: {}", self.ctx.func.display());
 
         self.clear_local();
 
