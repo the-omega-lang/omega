@@ -159,11 +159,17 @@ impl Codegen {
             .get(place.0.as_ref())
             .ok_or_else(|| CodegenError::Undeclared(id, place.clone()))?
             .as_slice();
-        let mut current_type = self
-            .analysis
-            .get_node_type(&id)
+
+        let scope_id = self.codeblock_nodes.last().unwrap();
+        let Some(scope) = self.analysis.get_codeblock_scope(scope_id) else {
+            return Err(CodegenError::UnresolvedScope(id));
+        };
+        let mut current_type = scope
+            .declared_variables
+            .get(&place.0)
             .ok_or_else(|| CodegenError::UnresolvedType(id, place.0.clone()))?
             .clone();
+
         for modifier in &place.1 {
             match modifier {
                 PlaceModifier::FieldAccess(field) => {
@@ -184,7 +190,7 @@ impl Codegen {
                 }
 
                 PlaceModifier::Index(expr) => {
-                    todo!("NOT IMPLEMENTED YET!!!!!");
+                    todo!("IMPLEMENT");
                 }
             }
         }
@@ -207,11 +213,17 @@ impl Codegen {
             .get(place.0.as_ref())
             .ok_or_else(|| CodegenError::Undeclared(id, place.clone()))?
             .to_vec();
-        let mut current_type = self
-            .analysis
-            .get_node_type(&id)
+
+        let scope_id = self.codeblock_nodes.last().unwrap();
+        let Some(scope) = self.analysis.get_codeblock_scope(scope_id) else {
+            return Err(CodegenError::UnresolvedScope(id));
+        };
+        let mut current_type = scope
+            .declared_variables
+            .get(&place.0)
             .ok_or_else(|| CodegenError::UnresolvedType(id, place.0.clone()))?
             .clone();
+
         for modifier in &place.1 {
             match modifier {
                 PlaceModifier::FieldAccess(field) => {
@@ -232,11 +244,11 @@ impl Codegen {
                 }
 
                 PlaceModifier::Index(expr) => {
-                    let index_type = self
-                        .analysis
-                        .get_node_type(&expr.id)
-                        .ok_or_else(|| CodegenError::UnresolvedExpression(expr.id))?
-                        .to_owned();
+                    // let index_type = self
+                    //     .analysis
+                    //     .get_node_type(&expr.id)
+                    //     .ok_or_else(|| CodegenError::UnresolvedExpression(expr.id))?
+                    //     .to_owned();
                     // let element_ir_type = index_type.into_ir_type(&self);
                     let element_ir_type = current_type.clone().into_ir_type(&self);
                     let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
