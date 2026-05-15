@@ -1,15 +1,13 @@
-struct MyString {
-    buffer: *char;
-    length: i32;
+extern puts : (s: *char) => i32;
 
-    new(ptr: *char) => MyString {
-        obj : MyString;
-        obj.buffer = ptr;
-        obj.length = 123;
-        return obj;
-    }
+struct Interface {
+    do_thing: (s: *char) => i32;
 }
 
 main(argc : i32, argv : [*char]) => i32 {
+    iface : Interface;
+    iface.do_thing = puts;
+    iface.do_thing("HELLO WORLD");
+    iface.do_thing("");
     return 69;
 }

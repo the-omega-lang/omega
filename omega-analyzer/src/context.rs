@@ -41,7 +41,10 @@ impl Context {
     // Finder functions
     pub fn find_variable_type(&self, ident: &Ident) -> Option<&ResolvedType> {
         for scope in self.scopes.iter().rev() {
+            println!("SCOPE: {:#?}", scope);
+            println!("IDENT: {}", ident.as_ref());
             if let Some(typ) = scope.declared_variables.get(ident) {
+                println!("FOUND");
                 return Some(typ);
             }
         }

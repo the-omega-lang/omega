@@ -121,7 +121,12 @@ impl Analyzer {
                 match ctx.resolve_function_type(fntype.to_owned()) {
                     Ok(resolved) => {
                         let scope = ctx.current_scope();
-                        scope.declared_functions.insert(ident, resolved);
+                        scope
+                            .declared_functions
+                            .insert(ident.clone(), resolved.clone());
+                        scope
+                            .declared_variables
+                            .insert(ident, ResolvedType::Function(resolved));
                     }
                     Err(message) => {
                         self.errors.push(AnalysisError { node_id, message });
@@ -156,6 +161,7 @@ impl Analyzer {
     fn analyze_place(&mut self, place: &PlaceNode) {
         let node_id = place.id;
         let Some(typ) = self.context().find_variable_type(&place.place.0) else {
+            println!("OOPSIE");
             self.errors.push(AnalysisError {
                 node_id,
                 message: "Unknown variable type".to_string(),

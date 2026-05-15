@@ -304,16 +304,22 @@ impl Codegen {
         //       Maybe bring some of their code here since its mostly duplicated.
         let variable = self.stack_slots.get(place.0.as_ref());
         let values = self.local_args.get(place.0.as_ref());
+        let function = self.functions.get(place.0.as_ref());
 
-        match (variable, values) {
-            (Some(_), None) => {
+        match (variable, values, function) {
+            (Some(_), None, None) => {
                 let slots = self.get_place_from_stack(place_node, builder)?;
                 Ok(slots
                     .iter()
                     .map(|slot| builder.ins().stack_load(slot.0.clone(), slot.1.clone(), 0))
                     .collect())
             }
-            (None, Some(_)) => self.get_place_from_args(place_node, builder),
+            (None, Some(_), None) => self.get_place_from_args(place_node, builder),
+            (None, None, Some(function)) => {
+                // TODO: Implement properly.
+                let func = self.get_func_ref_from_id(builder, function.clone());
+                Ok(vec![builder.ins().func_addr(self.pointer_type(), func)])
+            }
             _ => Err(CodegenError::Undeclared(id, place.clone())),
         }
     }
@@ -397,6 +403,40 @@ impl Codegen {
         id
     }
 
+    fn get_func_ref_from_name(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        function_name: &Ident,
+    ) -> FuncRef {
+        let func_ref = if let Some(fnref) = self.local_functions.get(function_name) {
+            fnref.to_owned()
+        } else {
+            let global_id = self
+                .functions
+                .get(&function_name.0)
+                .expect(&format!(
+                    "Function not declared: {}",
+                    function_name.as_ref()
+                ))
+                .to_owned();
+
+            let fnref = self
+                .module
+                .declare_func_in_func(global_id, &mut builder.func);
+
+            self.local_functions
+                .insert(function_name.clone(), fnref.clone());
+
+            fnref
+        };
+
+        func_ref
+    }
+
+    fn get_func_ref_from_id(&mut self, builder: &mut FunctionBuilder, func_id: FuncId) -> FuncRef {
+        self.module.declare_func_in_func(func_id, &mut builder.func)
+    }
+
     fn process_expr(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -427,27 +467,7 @@ impl Codegen {
                 function_name,
                 args,
             }) => {
-                let func_ref = if let Some(fnref) = self.local_functions.get(&function_name) {
-                    fnref.to_owned()
-                } else {
-                    let global_id = self
-                        .functions
-                        .get(&function_name.0)
-                        .expect(&format!(
-                            "Function not declared: {}",
-                            function_name.as_ref()
-                        ))
-                        .to_owned();
-
-                    let fnref = self
-                        .module
-                        .declare_func_in_func(global_id, &mut builder.func);
-
-                    self.local_functions
-                        .insert(function_name.clone(), fnref.clone());
-
-                    fnref
-                };
+                let func_ref = self.get_func_ref_from_name(builder, &function_name);
 
                 let mut ir_args = vec![];
                 for arg in args {
