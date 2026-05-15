@@ -47,7 +47,7 @@ pub struct Codegen {
     // Backend
     isa: Arc<dyn isa::TargetIsa>,
     pub module: ObjectModule,
-    functions: HashMap<Ident, FuncId>,
+    functions: HashMap<String, FuncId>,
     ctx: codegen::Context,
     fbctx: FunctionBuilderContext,
 
@@ -364,7 +364,7 @@ impl Codegen {
                     .declare_function(&ident.0, Linkage::Import, &sig)
                     .unwrap();
 
-                self.functions.insert(ident, function_id);
+                self.functions.insert(ident.0, function_id);
 
                 Ok(())
             }
@@ -432,7 +432,7 @@ impl Codegen {
                 } else {
                     let global_id = self
                         .functions
-                        .get(&function_name)
+                        .get(&function_name.0)
                         .expect(&format!(
                             "Function not declared: {}",
                             function_name.as_ref()
@@ -634,19 +634,22 @@ impl Codegen {
         }
     }
 
+    fn demangle(symbol: &str) -> String {
+        if !symbol.contains("::") {
+            return symbol.to_owned();
+        }
+
+        format!("___omg_{}", symbol.replace("::", "_"))
+    }
+
     fn update_function_def(
         &mut self,
         node_id: NodeId,
         function_def: FunctionDefinitionStmt,
+        fntype: ResolvedFunctionType,
+        mangled_symbol: String,
     ) -> Result<(), Vec<CodegenError>> {
         let mut sig = self.module.make_signature();
-        let ident = function_def.function_name;
-        let fntype = self
-            .analysis
-            .get_global_function_type(&ident)
-            .ok_or_else(|| vec![CodegenError::UnresolvedType(node_id, ident.clone())])?
-            .to_owned();
-
         if *fntype.return_type != ResolvedType::Void {
             let return_type = fntype.return_type.clone().into_ir_type(&self);
             return_type
@@ -677,13 +680,15 @@ impl Codegen {
             sig.params.push(AbiParam::new(param[0])) // Simple types only for now. TODO: Fix.
         }
 
+        let demangled_symbol = Self::demangle(&mangled_symbol);
+
         let function_id = self
             .module
-            .declare_function(ident.as_ref(), Linkage::Import, &sig)
+            .declare_function(&demangled_symbol, Linkage::Import, &sig)
             .unwrap();
 
         self.module
-            .declare_function(ident.as_ref(), Linkage::Export, &sig)
+            .declare_function(&demangled_symbol, Linkage::Export, &sig)
             .unwrap();
 
         // not sure how to bypass this issue of
@@ -759,11 +764,62 @@ impl Codegen {
         self.module
             .define_function(function_id, &mut self.ctx)
             .unwrap();
-        self.functions.insert(ident, function_id);
+        self.functions.insert(mangled_symbol, function_id);
 
         println!("FUNCTION: {}", self.ctx.func.display());
 
         self.clear_local();
+
+        Ok(())
+    }
+
+    fn update_global_function_def(
+        &mut self,
+        node_id: NodeId,
+        function_def: FunctionDefinitionStmt,
+    ) -> Result<(), Vec<CodegenError>> {
+        let ident = function_def.function_name.clone();
+        let fntype = self
+            .analysis
+            .get_global_function_type(&ident)
+            .ok_or_else(|| vec![CodegenError::UnresolvedType(node_id, ident.clone())])?
+            .to_owned();
+
+        self.update_function_def(node_id, function_def, fntype, ident.0)
+    }
+
+    fn update_struct_def(
+        &mut self,
+        node_id: NodeId,
+        mut struct_def: StructStmt,
+    ) -> Result<(), Vec<CodegenError>> {
+        let mut errors = vec![];
+
+        for (id, mut function) in struct_def.functions {
+            let fntype = self
+                .analysis
+                .get_struct_function_type(node_id, &function.function_name)
+                .ok_or_else(|| {
+                    vec![CodegenError::UnresolvedType(
+                        node_id,
+                        function.function_name.clone(),
+                    )]
+                })?
+                .to_owned();
+
+            let mangled_symbol = format!(
+                "{}::{}",
+                struct_def.ident.as_ref(),
+                function.function_name.as_ref()
+            );
+            match self.update_function_def(id, function, fntype, mangled_symbol) {
+                Err(e) => errors.extend(e),
+                _ => {}
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
 
         Ok(())
     }
@@ -773,8 +829,10 @@ impl Codegen {
             RootStatement::ExternDeclaration(extern_decl) => self
                 .update_extern_decl(node.id, extern_decl)
                 .map_err(|x| vec![x]),
-            RootStatement::FunctionDefinition(fn_def) => self.update_function_def(node.id, fn_def),
-            RootStatement::Struct(_struct_def) => Ok(()), // Only analysis is necessary
+            RootStatement::FunctionDefinition(fn_def) => {
+                self.update_global_function_def(node.id, fn_def)
+            }
+            RootStatement::Struct(struct_def) => self.update_struct_def(node.id, struct_def), // Only analysis is necessary
             _ => Err(vec![CodegenError::NotImplemented(node.id)]),
         }
     }

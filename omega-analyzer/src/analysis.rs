@@ -24,6 +24,7 @@ pub struct Analysis {
     pub node_types: HashMap<NodeId, ResolvedType>,
     pub context: Context,
     pub codeblock_scopes: HashMap<NodeId, ScopeContext>,
+    pub struct_scopes: HashMap<NodeId, ScopeContext>,
 }
 
 impl Analysis {
@@ -37,6 +38,19 @@ impl Analysis {
 
     pub fn get_codeblock_scope(&self, codeblock_node_id: &NodeId) -> Option<&ScopeContext> {
         self.codeblock_scopes.get(&codeblock_node_id)
+    }
+
+    pub fn get_struct_scope(&self, codeblock_node_id: &NodeId) -> Option<&ScopeContext> {
+        self.struct_scopes.get(&codeblock_node_id)
+    }
+
+    pub fn get_struct_function_type(
+        &self,
+        struct_node_id: NodeId,
+        name: &Ident,
+    ) -> Option<&ResolvedFunctionType> {
+        let scope = self.struct_scopes.get(&struct_node_id)?;
+        scope.declared_functions.get(name)
     }
 }
 
@@ -52,6 +66,7 @@ impl Analyzer {
         let expression_types = HashMap::new();
         let context = Context::new();
         let codeblock_scopes = HashMap::new();
+        let struct_scopes = HashMap::new();
 
         Self {
             errors,
@@ -59,6 +74,7 @@ impl Analyzer {
                 node_types: expression_types,
                 context,
                 codeblock_scopes,
+                struct_scopes,
             },
         }
     }
@@ -87,6 +103,14 @@ impl Analyzer {
 
     fn codeblock_scopes_mut(&mut self) -> &mut HashMap<NodeId, ScopeContext> {
         &mut self.analysis.codeblock_scopes
+    }
+
+    fn struct_scopes(&self) -> &HashMap<NodeId, ScopeContext> {
+        &self.analysis.struct_scopes
+    }
+
+    fn struct_scopes_mut(&mut self) -> &mut HashMap<NodeId, ScopeContext> {
+        &mut self.analysis.struct_scopes
     }
 
     // Analysis
@@ -338,6 +362,14 @@ impl Analyzer {
                 fields: resolved_fields,
             }),
         );
+
+        self.context_mut().enter_scope();
+        for (node_id, function_def) in &struct_stmt.functions {
+            self.analyze_function_def(node_id.clone(), function_def);
+        }
+
+        let scope = self.context_mut().leave_scope();
+        self.struct_scopes_mut().insert(node_id, scope);
     }
 
     fn analyze_statement(&mut self, node: &StatementNode) {
