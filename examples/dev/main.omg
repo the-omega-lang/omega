@@ -2,6 +2,18 @@ extern puts : (s: *char) => i32;
 
 struct Interface {
     do_thing: (s: *char) => i32;
+
+    call_the_thing(self) => void {
+    }
+
+    call_the_thing_two(self, abc: i32) => void {
+    }
+
+    static_thing() => void {
+    }
+
+    another_static_thing(zzz : i32) => void {
+    }
 }
 
 main(argc : i32, argv : [*char]) => i32 {

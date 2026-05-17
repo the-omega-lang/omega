@@ -10,6 +10,7 @@ use chumsky::prelude::*;
 #[derive(Debug, Clone)]
 pub struct FunctionDefinitionStmt {
     pub function_name: Ident,
+    pub is_member_function: bool,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,
     pub codeblock: CodeblockExpr,
@@ -17,20 +18,33 @@ pub struct FunctionDefinitionStmt {
 
 impl FunctionDefinitionStmt {
     parser!((stmt_parser => StatementNode) => Self {
+        let decls_parser = DeclarationStmt::parser()
+            .separated_by(just(',').padded())
+            .collect::<Vec<_>>()
+            .or_not()
+            .map(|opt| opt.unwrap_or_default());
+
+        let param_parser = choice((
+            text::keyword("self")
+                .padded()
+                .then(just(',').padded().ignore_then(decls_parser.clone()).or_not())
+                .map(|(_, rest)| {
+                    (true, rest.unwrap_or_default())
+                }),
+            decls_parser.map(|decls| (false, decls)),
+        ));
+
         Ident::parser()
             .then_ignore(just('(').padded())
-            .then(
-                DeclarationStmt::parser()
-                    .separated_by(just(','))
-                    .collect::<Vec<_>>(),
-            )
+            .then(param_parser)
             .then_ignore(just(')').padded())
             .then_ignore(just("=>").padded())
             .then(Type::parser().padded())
             .then(CodeblockExpr::parser(stmt_parser).padded())
             .map(
-                |(((function_name, params), return_type), codeblock)| FunctionDefinitionStmt {
+                |(((function_name, (is_member_function, params)), return_type), codeblock)| FunctionDefinitionStmt {
                     function_name,
+                    is_member_function,
                     params,
                     return_type,
                     codeblock,
