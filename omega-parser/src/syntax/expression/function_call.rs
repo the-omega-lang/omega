@@ -1,27 +1,33 @@
 use crate::{
-    parser,
+    next_node_id, parser,
     prelude::Expression,
-    syntax::{ParseError, expression::ExpressionNode, identifier::Ident},
+    syntax::{
+        ParseError,
+        expression::{ExpressionNode, Postfix},
+        identifier::Ident,
+    },
 };
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct FunctionCallExpr {
-    pub function_name: Ident,
+    pub callee: Box<ExpressionNode>,
     pub args: Vec<ExpressionNode>,
 }
 
-impl FunctionCallExpr {
+pub struct FunctionCallPostfix {
+    pub args: Vec<ExpressionNode>,
+}
+
+impl FunctionCallPostfix {
     parser!((expr_parser => ExpressionNode) => Self {
-        Ident::parser()
-            .then_ignore(just('('))
-            .then(
+        just('(').padded()
+            .ignore_then(
                 expr_parser
                     .separated_by(just(',').padded())
                     .collect::<Vec<_>>()
             )
-            .map(|(function_name, args)| Self {
-                function_name,
+            .map(|args| Self {
                 args,
             })
             .then_ignore(just(')').padded())

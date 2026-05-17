@@ -35,6 +35,8 @@ pub enum CodegenError {
     Undeclared(NodeId, Place),
     TypeMismatch(NodeId),
     BadPlaceModifier(NodeId, PlaceModifier),
+    NotAFunction(NodeId),
+    BadExpression(NodeId),
 }
 
 pub struct Codegen {
@@ -463,11 +465,20 @@ impl Codegen {
                 Ok(vec![str_ptr])
             }
             // Expression::Number(i) => Ok(builder.ins().iconst::<i64>(types::I32, (i as i64).into())),
-            Expression::FunctionCall(FunctionCallExpr {
-                function_name,
-                args,
-            }) => {
-                let func_ref = self.get_func_ref_from_name(builder, &function_name);
+            Expression::FunctionCall(FunctionCallExpr { callee, args }) => {
+                // let func_ref = self.get_func_ref_from_name(builder, &function_name);
+                let Some(ResolvedType::Function(fntype)) = self.analysis.get_node_type(&callee.id)
+                else {
+                    return Err(CodegenError::NotAFunction(callee.id));
+                };
+                let fntype = fntype.clone();
+
+                let Ok(func_addr) = self.process_expr(builder, *callee.clone()) else {
+                    return Err(CodegenError::BadExpression(callee.id));
+                };
+                let Some(fnaddr) = func_addr.first() else {
+                    return Err(CodegenError::NotAFunction(callee.id));
+                };
 
                 let mut ir_args = vec![];
                 for arg in args {
@@ -475,13 +486,6 @@ impl Codegen {
                     ir_args.push(value);
                 }
                 let ir_args = ir_args.into_iter().flatten().collect::<Vec<_>>();
-
-                // TODO: Handle function resolution at the scope level instead of global
-                // let scope_ctx = &self.analysis.codeblock_scopes[&node.id];
-                let fntype = self
-                    .analysis
-                    .get_global_function_type(&function_name)
-                    .ok_or_else(|| CodegenError::UnresolvedType(node.id, function_name.clone()))?;
 
                 let call = if fntype.is_variadic {
                     // Cranelift does not currently support variadic functions.
@@ -495,11 +499,19 @@ impl Codegen {
                                 .push(AbiParam::new(builder.func.dfg.value_type(arg.clone())))
                         }
                     }
-                    let fnaddr = builder.ins().func_addr(self.pointer_type(), func_ref);
                     let sigref = builder.import_signature(sig);
-                    builder.ins().call_indirect(sigref, fnaddr, &ir_args)
+                    builder.ins().call_indirect(sigref, *fnaddr, &ir_args)
                 } else {
-                    builder.ins().call(func_ref, &ir_args)
+                    // TODO: Actually build a proper signature here
+                    let mut sig = self.make_function_sig(fntype.clone());
+                    if ir_args.len() > sig.params.len() {
+                        for arg in &ir_args[sig.params.len()..] {
+                            sig.params
+                                .push(AbiParam::new(builder.func.dfg.value_type(arg.clone())))
+                        }
+                    }
+                    let sigref = builder.import_signature(sig);
+                    builder.ins().call_indirect(sigref, *fnaddr, &ir_args)
                 };
 
                 if *fntype.return_type == ResolvedType::Void {

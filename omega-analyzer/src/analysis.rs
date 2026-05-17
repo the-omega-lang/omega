@@ -217,12 +217,16 @@ impl Analyzer {
                     .insert(node.id, ResolvedType::Pointer(Box::new(ResolvedType::Char)));
             }
             Expression::FunctionCall(call_expr) => {
-                let Some(function_type) =
-                    self.context().find_function_type(&call_expr.function_name)
+                self.analyze_expression(call_expr.callee.as_ref());
+                let Some(ResolvedType::Function(function_type)) =
+                    self.node_types().get(&call_expr.callee.id)
                 else {
                     self.errors.push(AnalysisError {
                         node_id,
-                        message: format!("Undefined function '{}'", call_expr.function_name.0),
+                        message: format!(
+                            "Unknown or invalid type for callee: '{:?}'",
+                            call_expr.callee
+                        ),
                     });
                     return;
                 };
@@ -239,8 +243,7 @@ impl Analyzer {
                         self.errors.push(AnalysisError {
                             node_id: arg.id,
                             message: format!(
-                                "Too many arguments for function '{}'. Expected: {}",
-                                call_expr.function_name.0,
+                                "Too many arguments for function. Expected: {}",
                                 function_type.params.len()
                             ),
                         });
