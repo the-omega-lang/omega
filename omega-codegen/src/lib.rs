@@ -502,14 +502,7 @@ impl Codegen {
                     let sigref = builder.import_signature(sig);
                     builder.ins().call_indirect(sigref, *fnaddr, &ir_args)
                 } else {
-                    // TODO: Actually build a proper signature here
-                    let mut sig = self.make_function_sig(fntype.clone());
-                    if ir_args.len() > sig.params.len() {
-                        for arg in &ir_args[sig.params.len()..] {
-                            sig.params
-                                .push(AbiParam::new(builder.func.dfg.value_type(arg.clone())))
-                        }
-                    }
+                    let sig = self.make_function_sig(fntype.clone());
                     let sigref = builder.import_signature(sig);
                     builder.ins().call_indirect(sigref, *fnaddr, &ir_args)
                 };
@@ -693,19 +686,36 @@ impl Codegen {
             .analysis
             .get_codeblock_scope(&node_id)
             .ok_or_else(|| vec![CodegenError::UnresolvedScope(node_id)])?;
-        let resolved_params = function_def
+        // let resolved_params = function_def
+        //     .params
+        //     .clone()
+        //     .into_iter()
+        //     .map(|param| {
+        //         scope
+        //             .declared_variables
+        //             .get(&param.ident)
+        //             .and_then(|resolved_type| Some(resolved_type.clone().into_ir_type(&self)))
+        //             .ok_or(CodegenError::UnresolvedType(node_id, param.ident))
+        //     })
+        //     .collect::<Result<Vec<_>, CodegenError>>()
+        //     .map_err(|e| vec![e])?;
+
+        let resolved_params = fntype
             .params
             .clone()
             .into_iter()
             .map(|param| {
                 scope
                     .declared_variables
-                    .get(&param.ident)
+                    .get(&param.0)
                     .and_then(|resolved_type| Some(resolved_type.clone().into_ir_type(&self)))
-                    .ok_or(CodegenError::UnresolvedType(node_id, param.ident))
+                    .ok_or(CodegenError::UnresolvedType(node_id, param.0))
             })
             .collect::<Result<Vec<_>, CodegenError>>()
             .map_err(|e| vec![e])?;
+
+        println!("FUNCTION NAME: {:?}", function_def.function_name);
+        println!("FUNCTION PARAMS: {:?}", resolved_params);
 
         // Add parameters to signature
         for param in resolved_params {

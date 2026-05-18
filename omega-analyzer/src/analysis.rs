@@ -5,9 +5,9 @@ use crate::{
 use omega_parser::{
     NodeId, SourceModule,
     prelude::{
-        CodeblockExpr, Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt,
-        FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode, Statement,
-        StatementNode, StructStmt, Type,
+        CodeblockExpr, DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt,
+        FunctionDefinitionStmt, FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode,
+        Statement, StatementNode, StructStmt, Type,
     },
     syntax::place::{Place, PlaceModifier, PlaceNode},
 };
@@ -365,16 +365,58 @@ impl Analyzer {
             }
         };
 
+        // TODO: Make sure type does not already exist
         self.context_mut().current_scope().defined_types.insert(
             struct_stmt.ident.to_owned(),
             ResolvedType::Struct(ResolvedStructType {
                 fields: resolved_fields,
+                functions: vec![],
             }),
         );
 
         self.context_mut().enter_scope();
-        for (node_id, function_def) in &struct_stmt.functions {
-            self.analyze_function_def(node_id.clone(), function_def);
+        for (node_id, mut function_def) in struct_stmt.functions.clone() {
+            // Add "self" pointer to member functions
+            if function_def.is_member_function {
+                function_def.params.insert(
+                    0,
+                    DeclarationStmt {
+                        ident: Ident("self".to_string()),
+                        r#type: Type::Pointer(Box::new(Type::Named(struct_stmt.ident.clone()))),
+                    },
+                )
+            }
+
+            self.analyze_function_def(node_id.clone(), &function_def);
+            let Some(function_type) = self
+                .context()
+                .current_scope_not_mut()
+                .declared_functions
+                .get(&function_def.function_name)
+            else {
+                self.errors.push(AnalysisError {
+                    node_id,
+                    message: "Failed to get function type".to_owned(),
+                });
+                continue;
+            };
+            let function_type = function_type.clone();
+
+            let ResolvedType::Struct(resolved_struct_type) = self
+                .context_mut()
+                .parent_scope()
+                .defined_types
+                .get_mut(&struct_stmt.ident)
+                .unwrap()
+            else {
+                panic!(
+                    "This should never happen. If it did, congrats. No idea how you've done it."
+                );
+            };
+
+            resolved_struct_type
+                .functions
+                .push((function_def.function_name, function_type));
         }
 
         let scope = self.context_mut().leave_scope();

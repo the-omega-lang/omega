@@ -63,6 +63,7 @@ impl FunctionDefinitionStmt {
             params,
             return_type: Box::new(self.return_type.clone()),
             is_variadic: false,
+            is_member_function: self.is_member_function,
         }
     }
 }

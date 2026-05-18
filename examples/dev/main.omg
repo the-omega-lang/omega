@@ -1,25 +1,21 @@
 extern puts : (s: *char) => i32;
 
 struct Interface {
-    do_thing: (s: *char) => i32;
-
-    call_the_thing(self) => void {
-    }
-
-    call_the_thing_two(self, abc: i32) => void {
-    }
-
-    static_thing() => void {
-    }
-
-    another_static_thing(zzz : i32) => void {
+    do_thing: (s : *char) => i32;
+    member_function(self) => void {
+        puts("You called the member function");
     }
 }
+
+
+extern ___omg_Interface_member_function : (ptr: *Interface) => void;
 
 main(argc : i32, argv : [*char]) => i32 {
     iface : Interface;
     iface.do_thing = puts;
     iface.do_thing("HELLO WORLD");
     iface.do_thing("");
+    ptr : *Interface;
+    ___omg_Interface_member_function(ptr);
     return 69;
 }

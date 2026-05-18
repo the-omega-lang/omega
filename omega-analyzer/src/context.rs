@@ -76,14 +76,16 @@ impl Context {
         &self,
         fntype: FunctionType,
     ) -> Result<ResolvedFunctionType, String> {
+        let params = fntype
+            .params
+            .into_iter()
+            .map(|(ident, typ)| self.resolve_type(typ).map(|resolved| (ident, resolved)))
+            .collect::<Result<Vec<(Ident, ResolvedType)>, String>>()?;
         Ok(ResolvedFunctionType {
-            params: fntype
-                .params
-                .into_iter()
-                .map(|(ident, typ)| self.resolve_type(typ).map(|resolved| (ident, resolved)))
-                .collect::<Result<Vec<(Ident, ResolvedType)>, String>>()?,
+            params,
             return_type: Box::new(self.resolve_type(*fntype.return_type)?),
             is_variadic: fntype.is_variadic,
+            is_member_function: fntype.is_member_function,
         })
     }
 
@@ -106,6 +108,11 @@ impl Context {
     // Scope helpers
     pub fn current_scope(&mut self) -> &mut ScopeContext {
         self.scopes.last_mut().unwrap()
+    }
+
+    pub fn parent_scope(&mut self) -> &mut ScopeContext {
+        let index = (self.scopes.len() as isize - 2).min(0) as usize;
+        self.scopes.get_mut(index).unwrap()
     }
 
     pub fn current_scope_not_mut(&self) -> &ScopeContext {
