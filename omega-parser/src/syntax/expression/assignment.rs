@@ -1,27 +1,25 @@
 use crate::{
-    parser,
-    prelude::ExpressionNode,
-    syntax::{
-        ParseError,
-        identifier::Ident,
-        place::{Place, PlaceNode},
-        r#type::Type,
-    },
+    NodeId, parser,
+    prelude::{ExpressionNode, PlaceExpr},
+    syntax::{ParseError, identifier::Ident, r#type::Type},
 };
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentExpr {
-    pub place: PlaceNode,
+    pub place: ExpressionNode,
     pub value: Box<ExpressionNode>,
 }
 
-impl AssignmentExpr {
+#[derive(Debug, Clone)]
+pub struct AssignmentPostfix {
+    pub value: ExpressionNode,
+}
+
+impl AssignmentPostfix {
     parser!((expr_parser => ExpressionNode) => Self {
-        PlaceNode::parser(expr_parser.clone())
-            .padded()
-            .then_ignore(just('=').padded())
-            .then(expr_parser)
-            .map(|(place, value)| Self { place, value: Box::new(value) })
+        just('=').padded()
+            .ignore_then(expr_parser)
+            .map(|value| Self { value })
     });
 }

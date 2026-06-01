@@ -6,36 +6,25 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct Place(pub Ident, pub Vec<PlaceModifier>);
-
-#[derive(Debug, Clone)]
-pub struct PlaceNode {
-    pub id: NodeId,
-    pub place: Place,
-    pub span: SimpleSpan,
+pub struct PlaceExpr {
+    pub base: ExpressionNode,
+    pub modifier: PlaceModifierPostfix,
 }
 
 #[derive(Debug, Clone)]
-pub enum PlaceModifier {
+pub enum PlaceModifierPostfix {
     FieldAccess(Ident),
     Index(ExpressionNode),
 }
 
-impl PlaceNode {
+impl PlaceModifierPostfix {
     parser!((expr_parser => ExpressionNode) => Self {
-        let place_modifier_parser =
-            choice((
-                just('.').padded().ignore_then(Ident::parser().padded()).map(|ident| PlaceModifier::FieldAccess(ident)),
-                just('[').padded()
-                    .ignore_then(expr_parser)
-                    .then_ignore(just(']').padded())
-                    .map(|expr| PlaceModifier::Index(expr))
-            ));
-
-        Ident::parser()
-            .then(place_modifier_parser.repeated().collect())
-            .map_with(|(ident, modifiers), extra| {
-                PlaceNode { id: next_node_id(), place: Place(ident, modifiers), span: extra.span() }
-            })
+        choice((
+            just('.').padded().ignore_then(Ident::parser().padded()).map(|ident| PlaceModifierPostfix::FieldAccess(ident)),
+            just('[').padded()
+                .ignore_then(expr_parser)
+                .then_ignore(just(']').padded())
+                .map(|expr| PlaceModifierPostfix::Index(expr))
+        ))
     });
 }

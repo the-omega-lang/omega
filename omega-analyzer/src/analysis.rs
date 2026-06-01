@@ -1,15 +1,16 @@
 use crate::{
     context::{Context, ScopeContext},
+    place::{Place, PlaceRoot},
     resolved_type::{self, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
 use omega_parser::{
     NodeId, SourceModule,
     prelude::{
         CodeblockExpr, DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt,
-        FunctionDefinitionStmt, FunctionType, Ident, ReturnStmt, RootStatement, RootStatementNode,
-        Statement, StatementNode, StructStmt, Type,
+        FunctionDefinitionStmt, FunctionType, Ident, PlaceExpr, ReturnStmt, RootStatement,
+        RootStatementNode, Statement, StatementNode, StructStmt, Type,
     },
-    syntax::place::{Place, PlaceModifier, PlaceNode},
+    syntax::place::PlaceModifierPostfix,
 };
 use std::collections::HashMap;
 
@@ -22,6 +23,7 @@ pub struct AnalysisError {
 #[derive(Debug, Clone)]
 pub struct Analysis {
     pub node_types: HashMap<NodeId, ResolvedType>,
+    pub places: HashMap<NodeId, Place>,
     pub context: Context,
     pub codeblock_scopes: HashMap<NodeId, ScopeContext>,
     pub struct_scopes: HashMap<NodeId, ScopeContext>,
@@ -42,6 +44,10 @@ impl Analysis {
 
     pub fn get_struct_scope(&self, codeblock_node_id: &NodeId) -> Option<&ScopeContext> {
         self.struct_scopes.get(&codeblock_node_id)
+    }
+
+    pub fn get_place(&self, node_id: &NodeId) -> Option<&Place> {
+        self.places.get(&node_id)
     }
 
     pub fn get_struct_function_type(
@@ -67,6 +73,7 @@ impl Analyzer {
         let context = Context::new();
         let codeblock_scopes = HashMap::new();
         let struct_scopes = HashMap::new();
+        let places = HashMap::new();
 
         Self {
             errors,
@@ -75,6 +82,7 @@ impl Analyzer {
                 context,
                 codeblock_scopes,
                 struct_scopes,
+                places,
             },
         }
     }
@@ -87,6 +95,14 @@ impl Analyzer {
 
     fn node_types_mut(&mut self) -> &mut HashMap<NodeId, ResolvedType> {
         &mut self.analysis.node_types
+    }
+
+    fn places(&self) -> &HashMap<NodeId, Place> {
+        &self.analysis.places
+    }
+
+    fn places_mut(&mut self) -> &mut HashMap<NodeId, Place> {
+        &mut self.analysis.places
     }
 
     fn context(&self) -> &Context {
@@ -158,10 +174,27 @@ impl Analyzer {
         );
     }
 
-    fn analyze_place(&mut self, place: &PlaceNode) {
-        let node_id = place.id;
-        let Some(typ) = self.context().find_variable_type(&place.place.0) else {
-            println!("OOPSIE");
+    fn analyze_place(&mut self, node_id: NodeId, place: &PlaceExpr) {
+        self.analyze_expression(&place.base);
+
+        let root = match self.places_mut().get_mut(&place.base.id) {
+            Some(r) => r,
+            None =>
+            // TODO: Properly handle derefs
+            {
+                let new_place = Place {
+                    root: PlaceRoot::Deref(place.base.clone()),
+                    modifiers: vec![],
+                };
+
+                self.places_mut().insert(place.base.id, new_place);
+                self.places_mut().get_mut(&place.base.id).unwrap()
+            }
+        };
+        let modifier = &place.modifier;
+        root.modifiers.push(modifier.clone());
+
+        let Some(typ) = self.analysis.get_node_type(&place.base.id) else {
             self.errors.push(AnalysisError {
                 node_id,
                 message: "Unknown variable type".to_string(),
@@ -171,36 +204,34 @@ impl Analyzer {
         let typ = typ.to_owned();
 
         let mut last_type = typ;
-        for modifier in place.place.1.clone() {
-            match modifier {
-                PlaceModifier::FieldAccess(ident) => {
-                    let ResolvedType::Struct(struct_type) = last_type else {
-                        self.errors.push(AnalysisError {
-                            node_id: place.id,
-                            message: "Not a struct".to_string(),
-                        });
-                        return;
-                    };
-                    let Some(field_type) = struct_type.fields.iter().find(|x| x.0 == ident) else {
-                        self.errors.push(AnalysisError {
-                            node_id: place.id,
-                            message: "No such field in the struct".to_string(),
-                        });
-                        return;
-                    };
+        match modifier {
+            PlaceModifierPostfix::FieldAccess(ident) => {
+                let ResolvedType::Struct(struct_type) = last_type else {
+                    self.errors.push(AnalysisError {
+                        node_id: node_id,
+                        message: "Not a struct".to_string(),
+                    });
+                    return;
+                };
+                let Some(field_type) = struct_type.fields.iter().find(|x| &x.0 == ident) else {
+                    self.errors.push(AnalysisError {
+                        node_id: node_id,
+                        message: "No such field in the struct".to_string(),
+                    });
+                    return;
+                };
 
-                    last_type = field_type.1.clone();
-                }
-                PlaceModifier::Index(_expr) => {
-                    let ResolvedType::Array(array_item_type) = last_type else {
-                        self.errors.push(AnalysisError {
-                            node_id: place.id,
-                            message: "Not an array".to_string(),
-                        });
-                        return;
-                    };
-                    last_type = *array_item_type;
-                }
+                last_type = field_type.1.clone();
+            }
+            PlaceModifierPostfix::Index(_expr) => {
+                let ResolvedType::Array(array_item_type) = last_type else {
+                    self.errors.push(AnalysisError {
+                        node_id: node_id,
+                        message: "Not an array".to_string(),
+                    });
+                    return;
+                };
+                last_type = *array_item_type;
             }
         }
 
@@ -308,32 +339,41 @@ impl Analyzer {
                 };
                 let typ = typ.clone();
 
-                self.analyze_place(&assignment.place);
+                self.analyze_expression(&assignment.place);
 
                 self.node_types_mut().insert(node.id, typ);
             }
 
             Expression::Place(place) => {
-                self.analyze_place(&place);
-                let Some(typ) = self.node_types().get(&place.id) else {
+                self.analyze_place(node_id, &place);
+                let Some(typ) = self.node_types().get(&node_id) else {
                     self.errors.push(AnalysisError {
                         node_id,
-                        message: format!("Failed to analyze Place ({})", place.id),
+                        message: format!("Failed to analyze Place ({})", node_id),
                     });
                     return;
                 };
                 let typ = typ.clone();
                 self.node_types_mut().insert(node.id, typ);
+            }
 
-                for modifier in &place.place.1 {
-                    match modifier {
-                        PlaceModifier::Index(expr) => {
-                            self.analyze_expression(expr);
-                        }
-
-                        _ => {}
-                    }
-                }
+            Expression::Ident(ident) => {
+                let Some(vartype) = self.context().find_variable_type(&ident) else {
+                    self.errors.push(AnalysisError {
+                        node_id,
+                        message: format!("Undefined variable '{}'", ident.as_ref()),
+                    });
+                    return;
+                };
+                let vartype = vartype.clone();
+                self.node_types_mut().insert(node.id, vartype);
+                self.places_mut().insert(
+                    node_id,
+                    Place {
+                        root: PlaceRoot::Ident(ident.clone()),
+                        modifiers: vec![],
+                    },
+                );
             }
 
             Expression::Codeblock(_) => {}

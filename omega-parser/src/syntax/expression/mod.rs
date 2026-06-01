@@ -10,13 +10,13 @@ use crate::{
     syntax::{
         ParseError,
         expression::{
-            assignment::AssignmentExpr,
+            assignment::{AssignmentExpr, AssignmentPostfix},
             codeblock::CodeblockExpr,
             function_call::{FunctionCallExpr, FunctionCallPostfix},
             number::NumberExpr,
             string::StringExpr,
         },
-        place::PlaceNode,
+        place::{PlaceExpr, PlaceModifierPostfix},
         statement::StatementNode,
     },
 };
@@ -24,7 +24,8 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Place(Box<PlaceNode>),
+    Ident(Ident), // Only used for places
+    Place(Box<PlaceExpr>),
     Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
@@ -43,6 +44,8 @@ pub struct ExpressionNode {
 
 pub enum Postfix {
     Call(FunctionCallPostfix),
+    Place(PlaceModifierPostfix),
+    Assignment(AssignmentPostfix),
 }
 
 impl Postfix {
@@ -52,6 +55,14 @@ impl Postfix {
                 callee: Box::new(expr),
                 args: x.args,
             }),
+            Self::Place(x) => Expression::Place(Box::new(PlaceExpr {
+                base: expr,
+                modifier: x,
+            })),
+            Self::Assignment(x) => Expression::Assignment(Box::new(AssignmentExpr {
+                place: expr,
+                value: Box::new(x.value),
+            })),
         }
     }
 }
@@ -61,16 +72,17 @@ impl ExpressionNode {
         recursive(|expr_parser| {
             let primary = choice((
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock),
-                AssignmentExpr::parser(expr_parser.clone()).map(|x| Expression::Assignment(Box::new(x))),
                 NumberExpr::parser().map(Expression::Number),
                 StringExpr::parser().map(Expression::String),
-                PlaceNode::parser(expr_parser.clone()).map(|x| Expression::Place(Box::new(x))),
+                Ident::parser().map(Expression::Ident)
             )).map_with(|expression, extra| ExpressionNode {
                 id: next_node_id(), expression, span: extra.span()
             });
 
             let postfix = choice((
                 FunctionCallPostfix::parser(expr_parser.clone()).map(Postfix::Call),
+                PlaceModifierPostfix::parser(expr_parser.clone()).map(Postfix::Place),
+                AssignmentPostfix::parser(expr_parser.clone()).map(Postfix::Assignment)
             ));
 
             primary

@@ -3,7 +3,7 @@ pub use crate::syntax::expression::{
     function_call::FunctionCallExpr, number::NumberExpr, string::StringExpr,
 };
 pub use crate::syntax::identifier::Ident;
-use crate::syntax::place::{Place, PlaceNode};
+pub use crate::syntax::place::{PlaceExpr, PlaceModifierPostfix};
 pub use crate::syntax::statement::{
     RootStatement, RootStatementNode, Statement, StatementNode, declaration::DeclarationStmt,
     extern_declaration::ExternDeclarationStmt, function_definition::FunctionDefinitionStmt,

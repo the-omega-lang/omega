@@ -14,12 +14,10 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     analysis::Analysis,
+    place::PlaceRoot,
     resolved_type::{ResolvedFunctionType, ResolvedType},
 };
-use omega_parser::{
-    prelude::*,
-    syntax::place::{Place, PlaceModifier, PlaceNode},
-};
+use omega_parser::{prelude::*, syntax::place::PlaceModifierPostfix};
 use std::{collections::HashMap, sync::Arc};
 
 // TODO: Replace Strings with Places once the codebase is better structured
@@ -32,11 +30,12 @@ pub enum CodegenError {
     VerifierErrors(NodeId, VerifierErrors),
     UnresolvedScope(NodeId),
     Redeclaration(NodeId, Ident),
-    Undeclared(NodeId, Place),
+    Undeclared(NodeId, Ident),
     TypeMismatch(NodeId),
-    BadPlaceModifier(NodeId, PlaceModifier),
+    BadPlaceModifier(NodeId, PlaceModifierPostfix),
     NotAFunction(NodeId),
     BadExpression(NodeId),
+    NotAPlace(NodeId),
 }
 
 pub struct Codegen {
@@ -150,16 +149,22 @@ impl Codegen {
 
     fn get_place_from_stack(
         &mut self,
-        place: &PlaceNode,
+        place: &ExpressionNode,
         builder: &mut FunctionBuilder,
     ) -> Result<&[(IRType, StackSlot)], CodegenError> {
         let id = place.id;
-        let place = &place.place;
+        let Some(place) = self.analysis.get_place(&id) else {
+            return Err(CodegenError::NotAPlace(id));
+        };
+
+        let PlaceRoot::Ident(ident) = place.root.clone() else {
+            todo!("Non-ident place roots are not implemented");
+        };
 
         let mut variable = self
             .stack_slots
-            .get(place.0.as_ref())
-            .ok_or_else(|| CodegenError::Undeclared(id, place.clone()))?
+            .get(ident.as_ref())
+            .ok_or_else(|| CodegenError::Undeclared(id, ident.clone()))?
             .as_slice();
 
         let scope_id = self.codeblock_nodes.last().unwrap();
@@ -168,13 +173,13 @@ impl Codegen {
         };
         let mut current_type = scope
             .declared_variables
-            .get(&place.0)
-            .ok_or_else(|| CodegenError::UnresolvedType(id, place.0.clone()))?
+            .get(&ident)
+            .ok_or_else(|| CodegenError::UnresolvedType(id, ident.clone()))?
             .clone();
 
-        for modifier in &place.1 {
+        for modifier in &place.modifiers {
             match modifier {
-                PlaceModifier::FieldAccess(field) => {
+                PlaceModifierPostfix::FieldAccess(field) => {
                     let ResolvedType::Struct(struct_type) = current_type else {
                         return Err(CodegenError::BadPlaceModifier(id, modifier.clone()));
                     };
@@ -191,7 +196,7 @@ impl Codegen {
                     variable = &variable[index..(index + ir_type.len())];
                 }
 
-                PlaceModifier::Index(expr) => {
+                PlaceModifierPostfix::Index(expr) => {
                     todo!("IMPLEMENT");
                 }
             }
@@ -204,16 +209,23 @@ impl Codegen {
     // TODO: Return result
     fn get_place_from_args(
         &mut self,
-        place: &PlaceNode,
+        place: &ExpressionNode,
         builder: &mut FunctionBuilder,
     ) -> Result<Vec<Value>, CodegenError> {
         let id = place.id;
-        let place = &place.place;
+        let Some(place) = self.analysis.get_place(&id) else {
+            return Err(CodegenError::NotAPlace(id));
+        };
+        let place = place.clone();
+
+        let PlaceRoot::Ident(ident) = place.root.clone() else {
+            todo!("Non-ident place roots are not implemented");
+        };
 
         let mut values = self
             .local_args
-            .get(place.0.as_ref())
-            .ok_or_else(|| CodegenError::Undeclared(id, place.clone()))?
+            .get(ident.as_ref())
+            .ok_or_else(|| CodegenError::Undeclared(id, ident.clone()))?
             .to_vec();
 
         let scope_id = self.codeblock_nodes.last().unwrap();
@@ -222,13 +234,13 @@ impl Codegen {
         };
         let mut current_type = scope
             .declared_variables
-            .get(&place.0)
-            .ok_or_else(|| CodegenError::UnresolvedType(id, place.0.clone()))?
+            .get(&ident)
+            .ok_or_else(|| CodegenError::UnresolvedType(id, ident.clone()))?
             .clone();
 
-        for modifier in &place.1 {
+        for modifier in &place.modifiers {
             match modifier {
-                PlaceModifier::FieldAccess(field) => {
+                PlaceModifierPostfix::FieldAccess(field) => {
                     let ResolvedType::Struct(struct_type) = current_type else {
                         return Err(CodegenError::BadPlaceModifier(id, modifier.clone()));
                     };
@@ -245,7 +257,7 @@ impl Codegen {
                     values = values[index..(index + ir_type.len())].to_vec();
                 }
 
-                PlaceModifier::Index(expr) => {
+                PlaceModifierPostfix::Index(expr) => {
                     // let index_type = self
                     //     .analysis
                     //     .get_node_type(&expr.id)
@@ -296,17 +308,23 @@ impl Codegen {
 
     fn get_place_value(
         &mut self,
-        place_node: &PlaceNode,
+        place_node: &ExpressionNode,
         builder: &mut FunctionBuilder,
     ) -> Result<Vec<Value>, CodegenError> {
         let id = place_node.id;
-        let place = &place_node.place;
+        let Some(place) = self.analysis.get_place(&id) else {
+            return Err(CodegenError::NotAPlace(id));
+        };
+        let place = place.clone();
+        let PlaceRoot::Ident(ident) = place.root.clone() else {
+            todo!("Non-ident place roots are not implemented");
+        };
 
         // TODO: Maybe reuse these in the actual functions.
         //       Maybe bring some of their code here since its mostly duplicated.
-        let variable = self.stack_slots.get(place.0.as_ref());
-        let values = self.local_args.get(place.0.as_ref());
-        let function = self.functions.get(place.0.as_ref());
+        let variable = self.stack_slots.get(ident.as_ref());
+        let values = self.local_args.get(ident.as_ref());
+        let function = self.functions.get(ident.as_ref());
 
         match (variable, values, function) {
             (Some(_), None, None) => {
@@ -322,7 +340,7 @@ impl Codegen {
                 let func = self.get_func_ref_from_id(builder, function.clone());
                 Ok(vec![builder.ins().func_addr(self.pointer_type(), func)])
             }
-            _ => Err(CodegenError::Undeclared(id, place.clone())),
+            _ => Err(CodegenError::Undeclared(id, ident.clone())),
         }
     }
 
@@ -536,7 +554,7 @@ impl Codegen {
                 }
             }
 
-            Expression::Place(place) => self.get_place_value(&place, builder),
+            Expression::Place(ref _place) => self.get_place_value(&node, builder),
 
             Expression::Assignment(assignment) => {
                 let values = self.process_expr(builder, *assignment.value)?;

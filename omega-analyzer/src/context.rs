@@ -1,5 +1,5 @@
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
-use omega_parser::{prelude::*, syntax::place::Place};
+use omega_parser::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
