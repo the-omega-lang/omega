@@ -9,11 +9,11 @@ fn main() {
         std::fs::read_to_string("examples/dev/main.omg").expect("Failed to read source file");
 
     // TEST
-    let source = "abc.def = 10";
-    println!("{}", source);
-    let parser = ExpressionNode::configured_parser();
-    println!("Parsed: {:?}", parser.parse(source).unwrap());
-    return;
+    // let source = "abc.def = 10";
+    // println!("{}", source);
+    // let parser = ExpressionNode::configured_parser();
+    // println!("Parsed: {:?}", parser.parse(source).unwrap());
+    // return;
     // ENDTEST
 
     println!("{}", source);

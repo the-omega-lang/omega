@@ -177,6 +177,7 @@ impl Analyzer {
     fn analyze_place(&mut self, node_id: NodeId, place: &PlaceExpr) {
         self.analyze_expression(&place.base);
 
+        // TODO: Dont do hacky mutations on places
         let root = match self.places_mut().get_mut(&place.base.id) {
             Some(r) => r,
             None =>
@@ -193,6 +194,9 @@ impl Analyzer {
         };
         let modifier = &place.modifier;
         root.modifiers.push(modifier.clone());
+        // This is a result of the hacky mutations instead of tracking each place
+        let root_copy = root.clone();
+        self.places_mut().insert(node_id, root_copy.clone());
 
         let Some(typ) = self.analysis.get_node_type(&place.base.id) else {
             self.errors.push(AnalysisError {

@@ -4,7 +4,8 @@ run-exec DEBUGGER="": build-asm build-exe
     {{DEBUGGER}} ./target/example firstarg secondarg; echo -e "\nexit code: $?"
 
 build-exe:
-    cargo run
+    rm target/example || true
+    RUST_BACKTRACE=1 cargo run
 
 run-asm: build-asm
     ld target/shims.o -o target/shims

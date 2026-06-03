@@ -554,6 +554,8 @@ impl Codegen {
                 }
             }
 
+            Expression::Ident(ref _ident) => self.get_place_value(&node, builder),
+
             Expression::Place(ref _place) => self.get_place_value(&node, builder),
 
             Expression::Assignment(assignment) => {
@@ -758,6 +760,7 @@ impl Codegen {
             let ptr = &mut self.ctx.func as *mut codegen::ir::Function;
             &mut *ptr
         };
+        self.fbctx = FunctionBuilderContext::new(); // clear fbctx
         let fbctx_ref = unsafe {
             let ptr = &mut self.fbctx as *mut FunctionBuilderContext;
             &mut *ptr
