@@ -3,7 +3,7 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentExpr {
-    pub place: ExpressionNode,
+    pub target: ExpressionNode,
     pub value: Box<ExpressionNode>,
 }
 

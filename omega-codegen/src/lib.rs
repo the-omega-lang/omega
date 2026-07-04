@@ -504,14 +504,14 @@ impl Codegen {
 
             HirExpr::Place(place) => self.get_place_value(node_id, &place, builder),
 
-            HirExpr::Assignment(HirAssignment { place, value }) => {
+            HirExpr::Assignment(HirAssignment { target, value }) => {
                 let values = self.process_expr(builder, *value)?;
 
-                let place_id = place.id;
-                let HirExpr::Place(place_shape) = &place.expr else {
-                    return Err(CodegenError::NotAPlace(place_id));
+                let target_id = target.id;
+                let HirExpr::Place(place_shape) = &target.expr else {
+                    return Err(CodegenError::NotAPlace(target_id));
                 };
-                let slots = self.get_place_from_stack(place_id, place_shape)?;
+                let slots = self.get_place_from_stack(target_id, place_shape)?;
 
                 if values.len() != slots.len() {
                     return Err(CodegenError::TypeMismatch(node_id));

@@ -305,7 +305,7 @@ impl Analyzer {
                 };
                 let typ = typ.clone();
 
-                self.analyze_expression(&assignment.place);
+                self.analyze_expression(&assignment.target);
 
                 self.node_types_mut().insert(node_id, typ);
             }

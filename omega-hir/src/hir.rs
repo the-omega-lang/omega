@@ -103,10 +103,12 @@ pub enum HirExpr {
     Assignment(HirAssignment),
 }
 
-/// Unifies what used to be the parser's separate `Expression::Ident` (a bare
-/// identifier, "only used for places") and `Expression::Place` (an explicit
-/// field/index chain) into a single shape: a root plus zero or more
-/// projections. A bare identifier is just a place with no projections.
+/// The parser has no notion of "places"/lvalues -- it only knows `Ident`,
+/// `FieldAccess`, and `Index` as plain expression-forming constructs (see
+/// `omega_parser::syntax::expression`). Lowering is what recognizes a chain
+/// of those as denoting an addressable location and flattens it into this
+/// single shape: a root plus zero or more projections, in source order. A
+/// bare identifier is just a place with no projections.
 #[derive(Debug, Clone)]
 pub struct HirPlace {
     pub root: HirPlaceRoot,
@@ -133,8 +135,12 @@ pub struct HirFunctionCall {
     pub args: Vec<HirExprNode>,
 }
 
+/// `target` is deliberately not typed as `HirPlace`: the parser doesn't
+/// guarantee an assignment's left-hand side is syntactically a place (e.g.
+/// `5 = 3` parses fine), so that's still validated downstream in semantic
+/// analysis, same as before this change.
 #[derive(Debug, Clone)]
 pub struct HirAssignment {
-    pub place: Box<HirExprNode>,
+    pub target: Box<HirExprNode>,
     pub value: Box<HirExprNode>,
 }

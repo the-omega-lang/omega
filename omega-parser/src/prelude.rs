@@ -1,9 +1,9 @@
 pub use crate::syntax::expression::{
     Expression, ExpressionNode, assignment::AssignmentExpr, codeblock::CodeblockExpr,
-    function_call::FunctionCallExpr, number::NumberExpr, string::StringExpr,
+    field_access::FieldAccessExpr, function_call::FunctionCallExpr, index::IndexExpr,
+    number::NumberExpr, string::StringExpr,
 };
 pub use crate::syntax::identifier::Ident;
-pub use crate::syntax::place::{PlaceExpr, PlaceModifierPostfix};
 pub use crate::syntax::statement::{
     RootStatement, RootStatementNode, Statement, StatementNode, declaration::DeclarationStmt,
     extern_declaration::ExternDeclarationStmt, function_definition::FunctionDefinitionStmt,

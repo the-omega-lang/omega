@@ -6,8 +6,8 @@ use crate::hir::{
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
     DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt,
-    Ident, PlaceModifierPostfix, RootStatement, RootStatementNode, SimpleSpan, SourceModule,
-    Statement, StatementNode, StructStmt, Type,
+    Ident, RootStatement, RootStatementNode, SimpleSpan, SourceModule, Statement, StatementNode,
+    StructStmt, Type,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -140,7 +140,7 @@ impl Lowerer {
 
     fn lower_expr(&mut self, node: &ExpressionNode) -> HirExprNode {
         match &node.expression {
-            Expression::Ident(_) | Expression::Place(_) => {
+            Expression::Ident(_) | Expression::FieldAccess(_) | Expression::Index(_) => {
                 let place = self.lower_place_chain(node);
                 HirExprNode {
                     id: self.ids.next(),
@@ -176,39 +176,44 @@ impl Lowerer {
                 }
             }
             Expression::Assignment(assign) => {
-                let place = Box::new(self.lower_expr(&assign.place));
+                let target = Box::new(self.lower_expr(&assign.target));
                 let value = Box::new(self.lower_expr(&assign.value));
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::Assignment(HirAssignment { place, value }),
+                    expr: HirExpr::Assignment(HirAssignment { target, value }),
                 }
             }
         }
     }
 
-    /// Flattens the parser's nested `PlaceExpr { base, modifier }` chain
+    /// Flattens the parser's nested `FieldAccessExpr`/`IndexExpr` chains
     /// (built left-to-right by postfix folding, e.g. `a.b.c` is
     /// `((a).b).c`) into one `HirPlace` with a flat `Vec<HirProjection>`, in
-    /// source order. This replaces `analyze_place`'s old "hacky mutation"
-    /// approach of building the place incrementally in a shared side-table.
+    /// source order. The parser itself has no idea any of this denotes an
+    /// addressable location -- `FieldAccess`/`Index`/`Ident` are just plain
+    /// expression-forming constructs to it (see `omega_parser::syntax::expression`).
+    /// Recognizing that a chain of them rooted in an identifier (or some other
+    /// base expression) is a "place" is entirely this function's job, and it
+    /// replaces `analyze_place`'s old "hacky mutation" approach of building
+    /// the place incrementally in a shared side-table.
     fn lower_place_chain(&mut self, expr: &ExpressionNode) -> HirPlace {
         match &expr.expression {
             Expression::Ident(ident) => HirPlace {
                 root: HirPlaceRoot::Ident(ident.clone()),
                 projections: vec![],
             },
-            Expression::Place(place_expr) => {
-                let mut place = self.lower_place_chain(&place_expr.base);
-                let projection = match &place_expr.modifier {
-                    PlaceModifierPostfix::FieldAccess(ident) => {
-                        HirProjection::FieldAccess(ident.clone())
-                    }
-                    PlaceModifierPostfix::Index(index_expr) => {
-                        HirProjection::Index(Box::new(self.lower_expr(index_expr)))
-                    }
-                };
-                place.projections.push(projection);
+            Expression::FieldAccess(access) => {
+                let mut place = self.lower_place_chain(&access.base);
+                place
+                    .projections
+                    .push(HirProjection::FieldAccess(access.field.clone()));
+                place
+            }
+            Expression::Index(index_expr) => {
+                let mut place = self.lower_place_chain(&index_expr.base);
+                let index = Box::new(self.lower_expr(&index_expr.index));
+                place.projections.push(HirProjection::Index(index));
                 place
             }
             // Base isn't syntactically a place (e.g. `foo().bar`) -- root is

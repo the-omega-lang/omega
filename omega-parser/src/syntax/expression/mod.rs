@@ -1,6 +1,8 @@
 pub mod assignment;
 pub mod codeblock;
+pub mod field_access;
 pub mod function_call;
+pub mod index;
 pub mod number;
 pub mod string;
 
@@ -12,20 +14,26 @@ use crate::{
         expression::{
             assignment::{AssignmentExpr, AssignmentPostfix},
             codeblock::CodeblockExpr,
+            field_access::{FieldAccessExpr, FieldAccessPostfix},
             function_call::{FunctionCallExpr, FunctionCallPostfix},
+            index::{IndexExpr, IndexPostfix},
             number::NumberExpr,
             string::StringExpr,
         },
-        place::{PlaceExpr, PlaceModifierPostfix},
         statement::StatementNode,
     },
 };
 use chumsky::prelude::*;
 
+/// The parser only knows syntax, not semantics: `FieldAccess`/`Index` are
+/// just expression-forming operators here, the same as `FunctionCall`. There
+/// is no "place"/lvalue concept at this layer -- deciding which expression
+/// shapes denote an addressable location is HIR lowering's job.
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Ident(Ident), // Only used for places
-    Place(Box<PlaceExpr>),
+    Ident(Ident),
+    FieldAccess(Box<FieldAccessExpr>),
+    Index(Box<IndexExpr>),
     Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
@@ -41,7 +49,8 @@ pub struct ExpressionNode {
 
 pub enum Postfix {
     Call(FunctionCallPostfix),
-    Place(PlaceModifierPostfix),
+    FieldAccess(FieldAccessPostfix),
+    Index(IndexPostfix),
     Assignment(AssignmentPostfix),
 }
 
@@ -52,12 +61,16 @@ impl Postfix {
                 callee: Box::new(expr),
                 args: x.args,
             }),
-            Self::Place(x) => Expression::Place(Box::new(PlaceExpr {
+            Self::FieldAccess(x) => Expression::FieldAccess(Box::new(FieldAccessExpr {
                 base: expr,
-                modifier: x,
+                field: x.field,
+            })),
+            Self::Index(x) => Expression::Index(Box::new(IndexExpr {
+                base: expr,
+                index: x.index,
             })),
             Self::Assignment(x) => Expression::Assignment(Box::new(AssignmentExpr {
-                place: expr,
+                target: expr,
                 value: Box::new(x.value),
             })),
         }
@@ -78,7 +91,8 @@ impl ExpressionNode {
 
             let postfix = choice((
                 FunctionCallPostfix::parser(expr_parser.clone()).map(Postfix::Call),
-                PlaceModifierPostfix::parser(expr_parser.clone()).map(Postfix::Place),
+                FieldAccessPostfix::parser().map(Postfix::FieldAccess),
+                IndexPostfix::parser(expr_parser.clone()).map(Postfix::Index),
                 AssignmentPostfix::parser(expr_parser.clone()).map(Postfix::Assignment)
             ));
 
