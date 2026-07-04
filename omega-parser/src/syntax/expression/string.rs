@@ -1,4 +1,5 @@
 use crate::parser;
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -36,7 +37,7 @@ impl StringExpr {
 
 
         // NOTE: The below implementation somewhat worked, but now sometimes it matches things that dont start with "
-        let empty_string = just('"').repeated().exactly(2).padded().map(|_| StringExpr("".to_owned()));
+        let empty_string = just('"').repeated().exactly(2).trivia_padded().map(|_| StringExpr("".to_owned()));
 
         let delim_start = just('"').repeated().exactly(1).ignore_then(
             just("\"\"").repeated().count().map(|count| count * 2 + 1)
@@ -47,7 +48,7 @@ impl StringExpr {
         let content = any().and_is(just('"').not()).then(any().and_is(delim_end.not()).repeated().collect::<String>()).map(|(first, remainder)| format!("{}{}", first, remainder));
         let longquote_string = delim_start
             .ignore_with_ctx(content.then_ignore(delim_end))
-            .padded()
+            .trivia_padded()
             .map(|s| StringExpr(s));
 
         choice(

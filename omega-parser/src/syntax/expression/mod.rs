@@ -1,10 +1,12 @@
 pub mod address_of;
 pub mod assignment;
+pub mod binary_op;
 pub mod codeblock;
 pub mod deref;
 pub mod field_access;
 pub mod function_call;
 pub mod index;
+pub mod negate;
 pub mod number;
 pub mod string;
 
@@ -16,23 +18,27 @@ use crate::{
         expression::{
             address_of::AddressOfExpr,
             assignment::AssignmentExpr,
+            binary_op::{BinaryOp, BinaryOpExpr},
             codeblock::CodeblockExpr,
             deref::DerefExpr,
             field_access::{FieldAccessExpr, FieldAccessPostfix},
             function_call::{FunctionCallExpr, FunctionCallPostfix},
             index::{IndexExpr, IndexPostfix},
+            negate::NegateExpr,
             number::NumberExpr,
             string::StringExpr,
         },
         statement::StatementNode,
     },
 };
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
-/// The parser only knows syntax, not semantics: `FieldAccess`/`Index`/`Deref`
-/// are just expression-forming operators here, the same as `FunctionCall`.
-/// There is no "place"/lvalue concept at this layer -- deciding which
-/// expression shapes denote an addressable location is HIR lowering's job.
+/// The parser only knows syntax, not semantics: `FieldAccess`/`Index`/`Deref`/
+/// `BinaryOp` are just expression-forming operators here, the same as
+/// `FunctionCall`. There is no "place"/lvalue concept at this layer --
+/// deciding which expression shapes denote an addressable location is HIR
+/// lowering's job, and no type-checking happens here either.
 #[derive(Debug, Clone)]
 pub enum Expression {
     Ident(Ident),
@@ -40,6 +46,8 @@ pub enum Expression {
     Index(Box<IndexExpr>),
     Deref(Box<DerefExpr>),
     AddressOf(Box<AddressOfExpr>),
+    Negate(Box<NegateExpr>),
+    BinaryOp(Box<BinaryOpExpr>),
     Number(NumberExpr),
     String(StringExpr),
     Codeblock(CodeblockExpr),
@@ -79,13 +87,15 @@ impl Postfix {
     }
 }
 
-/// Binds tighter than assignment but looser than postfix: `*base`/`&base`.
-/// So `*p.f` is `*(p.f)` (postfix first), while `(*p).f` needs explicit
-/// parens -- matching C/Rust precedence.
+/// Binds tighter than the arithmetic operators and assignment, but looser
+/// than postfix: `*base`/`&base`/`-base`. So `*p.f` is `*(p.f)` (postfix
+/// first), while `(*p).f` needs explicit parens, and `-a * b` is `(-a) * b`
+/// -- matching C/Rust precedence.
 #[derive(Clone)]
 enum Prefix {
     Deref,
     AddressOf,
+    Negate,
 }
 
 impl Prefix {
@@ -93,17 +103,22 @@ impl Prefix {
         match self {
             Self::Deref => Expression::Deref(Box::new(DerefExpr { base: expr })),
             Self::AddressOf => Expression::AddressOf(Box::new(AddressOfExpr { base: expr })),
+            Self::Negate => Expression::Negate(Box::new(NegateExpr { base: expr })),
         }
     }
+}
+
+fn binary_op_expression(left: ExpressionNode, op: BinaryOp, right: ExpressionNode) -> Expression {
+    Expression::BinaryOp(Box::new(BinaryOpExpr { left, op, right }))
 }
 
 impl ExpressionNode {
     parser!((stmt_parser => StatementNode) => Self {
         recursive(|expr_parser| {
             let primary = choice((
-                just('(').padded()
+                just('(').trivia_padded()
                     .ignore_then(expr_parser.clone())
-                    .then_ignore(just(')').padded()),
+                    .then_ignore(just(')').trivia_padded()),
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 NumberExpr::parser().map(Expression::Number)
@@ -120,44 +135,50 @@ impl ExpressionNode {
                 IndexPostfix::parser(expr_parser.clone()).map(Postfix::Index),
             ));
 
-            let postfixed = primary
-                .then(postfix.repeated().collect())
-                .map_with(|(expr, postfixes): (ExpressionNode, Vec<Postfix>), extra| {
-                    let mut expression = expr;
-                    for postfix in postfixes {
-                        let expr = postfix.into_expression(expression);
-                        expression = ExpressionNode {
-                            expression: expr, span: extra.span()
-                        }
-                    }
-
-                    expression
-                });
+            let postfixed = primary.foldl_with(postfix.repeated(), |expr, postfix, extra| {
+                ExpressionNode { expression: postfix.into_expression(expr), span: extra.span() }
+            });
 
             let prefix = choice((
-                just('*').padded().to(Prefix::Deref),
-                just('&').padded().to(Prefix::AddressOf),
+                just('*').trivia_padded().to(Prefix::Deref),
+                just('&').trivia_padded().to(Prefix::AddressOf),
+                just('-').trivia_padded().to(Prefix::Negate),
             ));
 
-            let unary = prefix.repeated().collect::<Vec<_>>()
-                .then(postfixed)
-                .map_with(|(prefixes, expr): (Vec<Prefix>, ExpressionNode), extra| {
-                    let mut expression = expr;
-                    // Prefixes bind right-to-left: `**p` collects `[Deref, Deref]`
-                    // (leftmost first), and the *rightmost* one (closest to `p`)
-                    // is applied first, so iterate in reverse.
-                    for prefix in prefixes.into_iter().rev() {
-                        let expr = prefix.into_expression(expression);
-                        expression = ExpressionNode {
-                            expression: expr, span: extra.span()
-                        }
-                    }
+            // Right-associative: `prefix.repeated()` collects leading
+            // operators left-to-right, and `foldr_with` applies them
+            // right-to-left onto `postfixed`, so `**p` is `Deref(Deref(p))`.
+            let unary = prefix.repeated().foldr_with(postfixed, |prefix, expr, extra| {
+                ExpressionNode { expression: prefix.into_expression(expr), span: extra.span() }
+            });
 
-                    expression
-                });
+            let mul_op = choice((
+                just('*').trivia_padded().to(BinaryOp::Mul),
+                just('/').trivia_padded().to(BinaryOp::Div),
+                just('%').trivia_padded().to(BinaryOp::Rem),
+            ));
+            let multiplicative = unary.clone().foldl_with(
+                mul_op.then(unary).repeated(),
+                |left, (op, right), extra| ExpressionNode {
+                    expression: binary_op_expression(left, op, right),
+                    span: extra.span(),
+                },
+            );
 
-            unary.clone()
-                .then(just('=').padded().ignore_then(expr_parser).or_not())
+            let add_op = choice((
+                just('+').trivia_padded().to(BinaryOp::Add),
+                just('-').trivia_padded().to(BinaryOp::Sub),
+            ));
+            let additive = multiplicative.clone().foldl_with(
+                add_op.then(multiplicative).repeated(),
+                |left, (op, right), extra| ExpressionNode {
+                    expression: binary_op_expression(left, op, right),
+                    span: extra.span(),
+                },
+            );
+
+            additive.clone()
+                .then(just('=').trivia_padded().ignore_then(expr_parser).or_not())
                 .map_with(|(target, value), extra| match value {
                     Some(value) => ExpressionNode {
                         expression: Expression::Assignment(Box::new(AssignmentExpr {
@@ -169,7 +190,7 @@ impl ExpressionNode {
                     None => target,
                 })
         })
-        .padded()
+        .trivia_padded()
     });
 
     pub fn configured_parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {

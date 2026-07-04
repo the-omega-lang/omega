@@ -1,6 +1,6 @@
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, SimpleSpan};
+use omega_parser::prelude::{BinaryOp, Ident, SimpleSpan};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -75,6 +75,10 @@ pub enum AnalysisErrorKind {
     NotAPointer,
     /// `&expr` where `expr` isn't syntactically a place (e.g. `&5`).
     AddressOfNotAPlace,
+    /// A `+ - * / %` operand isn't `i32` (the only numeric type today).
+    InvalidBinaryOperand { op: BinaryOp, r#type: ResolvedType },
+    /// A unary `-` operand isn't `i32`.
+    InvalidNegateOperand { r#type: ResolvedType },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -116,6 +120,14 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AddressOfNotAPlace => {
                 write!(f, "cannot take the address of an expression that is not an assignable place")
             }
+            Self::InvalidBinaryOperand { op, r#type } => write!(
+                f,
+                "cannot use operand of type '{type:?}' with operator '{op:?}' (only i32 is supported)"
+            ),
+            Self::InvalidNegateOperand { r#type } => write!(
+                f,
+                "cannot negate operand of type '{type:?}' (only i32 is supported)"
+            ),
         }
     }
 }

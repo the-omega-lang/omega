@@ -1,4 +1,5 @@
 use crate::{parser, prelude::ExpressionNode};
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -13,15 +14,15 @@ pub struct FunctionCallPostfix {
 
 impl FunctionCallPostfix {
     parser!((expr_parser => ExpressionNode) => Self {
-        just('(').padded()
+        just('(').trivia_padded()
             .ignore_then(
                 expr_parser
-                    .separated_by(just(',').padded())
+                    .separated_by(just(',').trivia_padded())
                     .collect::<Vec<_>>()
             )
             .map(|args| Self {
                 args,
             })
-            .then_ignore(just(')').padded())
+            .then_ignore(just(')').trivia_padded())
     });
 }

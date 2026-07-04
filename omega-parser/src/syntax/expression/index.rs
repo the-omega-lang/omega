@@ -1,4 +1,5 @@
 use crate::{parser, prelude::ExpressionNode};
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 /// `base[index]` -- a plain expression-forming operator, same rationale as
@@ -16,9 +17,9 @@ pub struct IndexPostfix {
 
 impl IndexPostfix {
     parser!((expr_parser => ExpressionNode) => Self {
-        just('[').padded()
+        just('[').trivia_padded()
             .ignore_then(expr_parser)
-            .then_ignore(just(']').padded())
+            .then_ignore(just(']').trivia_padded())
             .map(|index| Self { index })
     });
 }

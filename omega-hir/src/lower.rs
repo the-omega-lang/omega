@@ -1,7 +1,7 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirDeclaration, HirExprNode, HirExpr, HirExternDeclaration,
-    HirFunctionCall, HirFunctionDef, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot,
-    HirProjection, HirStmt, HirStructDef,
+    HirAddressOf, HirAssignment, HirBinaryOp, HirDeclaration, HirExprNode, HirExpr,
+    HirExternDeclaration, HirFunctionCall, HirFunctionDef, HirItem, HirModule, HirParam, HirPlace,
+    HirPlaceRoot, HirProjection, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -53,6 +53,12 @@ impl Lowerer {
             Statement::Expression(expr) => HirStmt::Expression(self.lower_expr(expr)),
             Statement::Return(ret) => HirStmt::Return(self.lower_expr(&ret.return_value)),
             Statement::Struct(s) => HirStmt::Struct(self.lower_struct_def(s, node.span)),
+            Statement::Walrus(w) => HirStmt::WalrusDeclaration(HirWalrusDeclaration {
+                id: self.ids.next(),
+                span: node.span,
+                ident: w.ident.clone(),
+                value: self.lower_expr(&w.value),
+            }),
         }
     }
 
@@ -203,6 +209,19 @@ impl Lowerer {
                     id: self.ids.next(),
                     span: node.span,
                     expr: HirExpr::AddressOf(HirAddressOf { base }),
+                }
+            }
+            Expression::Negate(neg) => {
+                let base = Box::new(self.lower_expr(&neg.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Negate(base) }
+            }
+            Expression::BinaryOp(bin) => {
+                let left = Box::new(self.lower_expr(&bin.left));
+                let right = Box::new(self.lower_expr(&bin.right));
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::BinaryOp(HirBinaryOp { op: bin.op, left, right }),
                 }
             }
         }

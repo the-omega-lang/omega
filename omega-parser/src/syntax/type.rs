@@ -2,6 +2,7 @@ use crate::{
     parser,
     syntax::identifier::Ident,
 };
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,32 +39,32 @@ impl Type {
             // TODO: Reuse the declaration parser here
             let decl_parser = ident_parser
                 .clone()
-                .then_ignore(just(':').padded())
+                .then_ignore(just(':').trivia_padded())
                 .then(parser.clone())
                 .map(|(ident, typ)| (ident, typ));
 
             let decls_parser = decl_parser
-                .separated_by(just(',').padded())
+                .separated_by(just(',').trivia_padded())
                 .collect::<Vec<_>>()
                 .or_not()
                 .map(|opt| opt.unwrap_or_default());
 
             let param_parser = choice((
                 text::keyword("self")
-                    .padded()
-                    .then(just(',').padded().ignore_then(decls_parser.clone()).or_not())
+                    .trivia_padded()
+                    .then(just(',').trivia_padded().ignore_then(decls_parser.clone()).or_not())
                     .map(|(_, rest)| {
                         (true, rest.unwrap_or_default())
                     }),
                 decls_parser.map(|decls| (false, decls)),
-            )).padded();
+            )).trivia_padded();
 
             let function_parser = just('(')
-                .padded()
+                .trivia_padded()
                 .ignore_then(param_parser)
-                .then(just(',').padded().ignore_then(just("...").padded().ignored()).or_not())
-                .then_ignore(just(')').padded())
-                .then_ignore(just("=>").padded())
+                .then(just(',').trivia_padded().ignore_then(just("...").trivia_padded().ignored()).or_not())
+                .then_ignore(just(')').trivia_padded())
+                .then_ignore(just("=>").trivia_padded())
                 .then(parser)
                 .map(|(((is_member_function, params), is_variadic), rettype)| {
                     Type::Function(FunctionType {
@@ -74,7 +75,7 @@ impl Type {
                     })
                 });
 
-            choice((pointer_parser, array_parser, function_parser, named_type_parser)).padded()
+            choice((pointer_parser, array_parser, function_parser, named_type_parser)).trivia_padded()
         })
     });
 }

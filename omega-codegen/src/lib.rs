@@ -12,13 +12,14 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
-        CheckedAddressOf, CheckedAssignment, CheckedDeclaration, CheckedExpr, CheckedExprNode,
-        CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem, CheckedModule,
-        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedStructDef, Storage,
+        CheckedAddressOf, CheckedAssignment, CheckedBinaryOp, CheckedDeclaration, CheckedExpr,
+        CheckedExprNode, CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem,
+        CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt,
+        CheckedStructDef, Storage,
     },
     resolved_type::{ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
-use omega_hir::HirId;
+use omega_hir::{BinaryOp, HirId};
 use std::{collections::HashMap, sync::Arc};
 
 /// Codegen never fails: everything it would otherwise need to reject was
@@ -507,6 +508,29 @@ impl Codegen {
                     }
                 };
                 vec![addr]
+            }
+
+            CheckedExpr::Negate(base) => {
+                let value = self.process_expr(builder, *base)[0];
+                vec![builder.ins().ineg(value)]
+            }
+
+            CheckedExpr::BinaryOp(CheckedBinaryOp { op, left, right }) => {
+                let left = self.process_expr(builder, *left)[0];
+                let right = self.process_expr(builder, *right)[0];
+                let result = match op {
+                    BinaryOp::Add => builder.ins().iadd(left, right),
+                    BinaryOp::Sub => builder.ins().isub(left, right),
+                    BinaryOp::Mul => builder.ins().imul(left, right),
+                    // Signed: `i32` is the only numeric type today, and it's
+                    // always signed. Division/modulo by zero traps at the
+                    // instruction level -- consistent with this language
+                    // having no other runtime safety net (no bounds checks
+                    // either), so no special handling is needed here.
+                    BinaryOp::Div => builder.ins().sdiv(left, right),
+                    BinaryOp::Rem => builder.ins().srem(left, right),
+                };
+                vec![result]
             }
 
             CheckedExpr::Codeblock(_) => todo!("codeblock expressions are not yet implemented"),

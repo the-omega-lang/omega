@@ -1,4 +1,5 @@
 use crate::{parser, prelude::ExpressionNode};
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -9,7 +10,7 @@ pub struct ReturnStmt {
 impl ReturnStmt {
     parser!((expr_parser => ExpressionNode) => Self {
         text::ascii::keyword("return")
-            .padded()
+            .trivia_padded()
             .ignore_then(expr_parser)
             .map(|expr| Self {
                 return_value: expr

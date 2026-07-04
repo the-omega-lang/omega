@@ -1,6 +1,6 @@
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_hir::{HirId, ModuleId};
-use omega_parser::prelude::{Ident, SimpleSpan};
+use omega_parser::prelude::{BinaryOp, Ident, SimpleSpan};
 
 /// The output of semantic analysis: a fully resolved and verified tree, not a
 /// side-table report. By the time a `CheckedModule` exists, every
@@ -135,6 +135,8 @@ pub enum CheckedExpr {
     FunctionCall(CheckedFunctionCall),
     Assignment(CheckedAssignment),
     AddressOf(CheckedAddressOf),
+    Negate(Box<CheckedExprNode>),
+    BinaryOp(CheckedBinaryOp),
     /// Block-expressions have no decided value/placement semantics yet (the
     /// grammar has no tail-expression-without-`;` to give one a value) --
     /// still walked and scope-checked by analysis for soundness, but codegen
@@ -188,6 +190,15 @@ pub struct CheckedFunctionCall {
     pub callee: Box<CheckedExprNode>,
     pub fn_type: ResolvedFunctionType,
     pub args: Vec<CheckedExprNode>,
+}
+
+/// Both operands are guaranteed `ResolvedType::I32` (the only numeric type
+/// today) by the time this is constructed -- codegen never re-checks it.
+#[derive(Debug, Clone)]
+pub struct CheckedBinaryOp {
+    pub op: BinaryOp,
+    pub left: Box<CheckedExprNode>,
+    pub right: Box<CheckedExprNode>,
 }
 
 /// `target` is a `CheckedPlace`, not a general expression: analysis rejects

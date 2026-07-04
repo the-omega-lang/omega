@@ -2,6 +2,7 @@ use crate::{
     parser,
     prelude::{ExpressionNode, Ident},
 };
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 /// `base.field` -- a plain expression-forming operator. The parser has no
@@ -21,8 +22,8 @@ pub struct FieldAccessPostfix {
 impl FieldAccessPostfix {
     parser!(() => Self {
         just('.')
-            .padded()
-            .ignore_then(Ident::parser().padded())
+            .trivia_padded()
+            .ignore_then(Ident::parser().trivia_padded())
             .map(|field| Self { field })
     });
 }

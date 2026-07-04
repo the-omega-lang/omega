@@ -1,6 +1,7 @@
 pub mod expression;
 pub mod identifier;
 pub mod statement;
+pub mod trivia;
 pub mod r#type;
 
 use chumsky::error::Rich;

@@ -5,6 +5,7 @@ use crate::{
         identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
     },
 };
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -19,15 +20,15 @@ pub struct FunctionDefinitionStmt {
 impl FunctionDefinitionStmt {
     parser!((stmt_parser => StatementNode) => Self {
         let decls_parser = DeclarationStmt::parser()
-            .separated_by(just(',').padded())
+            .separated_by(just(',').trivia_padded())
             .collect::<Vec<_>>()
             .or_not()
             .map(|opt| opt.unwrap_or_default());
 
         let param_parser = choice((
             text::keyword("self")
-                .padded()
-                .then(just(',').padded().ignore_then(decls_parser.clone()).or_not())
+                .trivia_padded()
+                .then(just(',').trivia_padded().ignore_then(decls_parser.clone()).or_not())
                 .map(|(_, rest)| {
                     (true, rest.unwrap_or_default())
                 }),
@@ -35,12 +36,12 @@ impl FunctionDefinitionStmt {
         ));
 
         Ident::parser()
-            .then_ignore(just('(').padded())
+            .then_ignore(just('(').trivia_padded())
             .then(param_parser)
-            .then_ignore(just(')').padded())
-            .then_ignore(just("=>").padded())
-            .then(Type::parser().padded())
-            .then(CodeblockExpr::parser(stmt_parser).padded())
+            .then_ignore(just(')').trivia_padded())
+            .then_ignore(just("=>").trivia_padded())
+            .then(Type::parser().trivia_padded())
+            .then(CodeblockExpr::parser(stmt_parser).trivia_padded())
             .map(
                 |(((function_name, (is_member_function, params)), return_type), codeblock)| FunctionDefinitionStmt {
                     function_name,

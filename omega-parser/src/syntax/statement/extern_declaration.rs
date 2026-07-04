@@ -2,6 +2,7 @@ use crate::parser;
 use crate::syntax::{
     identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
 };
+use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -13,7 +14,7 @@ pub struct ExternDeclarationStmt {
 impl ExternDeclarationStmt {
     parser!(() => Self {
         text::ascii::keyword("extern")
-            .padded()
+            .trivia_padded()
             .ignore_then(DeclarationStmt::parser())
             .map(|decl| Self {
                 ident: decl.ident,

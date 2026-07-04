@@ -1,4 +1,5 @@
 extern puts : (s: *char) => i32;
+extern printf : (s : *char, ...) => i32;
 
 struct Interface {
     do_thing: (s : *char) => i32;
@@ -17,5 +18,23 @@ main(argc : i32, argv : [*char]) => i32 {
     ptr = &iface;
     (*ptr).member_function();
     ptr.member_function();
+
+    a := 5;
+    b := 10;
+    c := a + b;
+    printf("%d + %d = %d", a, b, c);
+    puts("");
+
+    # this is a single line comment
+    a = 10;
+    b = 3; # this is also a comment
+    c = a * b;
+    printf("%d * %d = %d", a, b, c);
+    puts("");
+
+    ##### this is a
+    multine ###
+       ##comment #####
+    
     return 69;
 }

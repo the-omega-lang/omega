@@ -1,4 +1,10 @@
 use crate::ids::HirId;
+// Re-exported: `HirBinaryOp.op`'s type needs to be nameable by downstream
+// crates (codegen matches on its variants) without them depending on
+// omega-parser directly, the same way they never need to spell `Ident`/
+// `Type` because they only ever go through field access, never pattern
+// match on those.
+pub use omega_parser::prelude::BinaryOp;
 use omega_parser::prelude::{FunctionType, Ident, NumberExpr, SimpleSpan, StringExpr, Type};
 
 #[derive(Debug, Clone)]
@@ -94,6 +100,21 @@ pub enum HirStmt {
     Expression(HirExprNode),
     Return(HirExprNode),
     Struct(HirStructDef),
+    WalrusDeclaration(HirWalrusDeclaration),
+}
+
+/// `ident := value;` -- unlike `HirDeclaration`, there's no `Type` to carry
+/// here (there's nothing written down to carry): the declared variable's
+/// type is inferred from `value`'s resolved type, which only analysis can
+/// determine. Lowering can't desugar this into a plain `HirDeclaration` +
+/// assignment pair itself for exactly that reason; analysis does once it
+/// knows `value`'s type (see `analyze_stmt` in `omega-analyzer`).
+#[derive(Debug, Clone)]
+pub struct HirWalrusDeclaration {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub ident: Ident,
+    pub value: HirExprNode,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +133,8 @@ pub enum HirExpr {
     FunctionCall(HirFunctionCall),
     Assignment(HirAssignment),
     AddressOf(HirAddressOf),
+    Negate(Box<HirExprNode>),
+    BinaryOp(HirBinaryOp),
 }
 
 /// The parser has no notion of "places"/lvalues -- it only knows `Ident`,
@@ -149,6 +172,17 @@ pub enum HirProjection {
 pub struct HirFunctionCall {
     pub callee: Box<HirExprNode>,
     pub args: Vec<HirExprNode>,
+}
+
+/// `left op right` -- `BinaryOp` is a plain data tag with no
+/// parser-specific structure, so it's reused unchanged from
+/// `omega_parser::prelude` rather than re-wrapped at this layer, the same
+/// way `Ident`/`Type` already are.
+#[derive(Debug, Clone)]
+pub struct HirBinaryOp {
+    pub op: BinaryOp,
+    pub left: Box<HirExprNode>,
+    pub right: Box<HirExprNode>,
 }
 
 /// `&base` -- unlike `Deref`, this never denotes a place itself (it produces

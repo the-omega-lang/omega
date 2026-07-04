@@ -1,9 +1,9 @@
 use crate::{
     checked::{
-        CheckedAddressOf, CheckedAssignment, CheckedDeclaration, CheckedExpr, CheckedExprNode,
-        CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem, CheckedModule,
-        CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt,
-        CheckedStructDef, Storage,
+        CheckedAddressOf, CheckedAssignment, CheckedBinaryOp, CheckedDeclaration, CheckedExpr,
+        CheckedExprNode, CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem,
+        CheckedModule, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+        CheckedStmt, CheckedStructDef, Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind},
@@ -12,7 +12,7 @@ use crate::{
 use omega_hir::{
     HirAddressOf, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef,
     HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt,
-    HirStructDef,
+    HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, SimpleSpan, Type};
 use std::collections::HashSet;
@@ -570,21 +570,121 @@ impl Analyzer {
                     kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_place }),
                 })
             }
+
+            HirExpr::Negate(base) => {
+                let checked_base = self.analyze_expr(base)?;
+                if checked_base.r#type != ResolvedType::I32 {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::InvalidNegateOperand { r#type: checked_base.r#type },
+                    ));
+                    return None;
+                }
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::I32,
+                    kind: CheckedExpr::Negate(Box::new(checked_base)),
+                })
+            }
+
+            HirExpr::BinaryOp(bin) => {
+                let checked_left = self.analyze_expr(&bin.left)?;
+                let checked_right = self.analyze_expr(&bin.right)?;
+
+                for operand in [&checked_left, &checked_right] {
+                    if operand.r#type != ResolvedType::I32 {
+                        self.errors.push(AnalysisError::new(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::InvalidBinaryOperand {
+                                op: bin.op,
+                                r#type: operand.r#type.clone(),
+                            },
+                        ));
+                        return None;
+                    }
+                }
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::I32,
+                    kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                        op: bin.op,
+                        left: Box::new(checked_left),
+                        right: Box::new(checked_right),
+                    }),
+                })
+            }
         }
     }
 
-    fn analyze_stmt(&mut self, stmt: &HirStmt) -> Option<CheckedStmt> {
+    /// Desugars `ident := value;` into the same two `CheckedStmt`s writing
+    /// `ident : <inferred type>; ident = value;` by hand would produce --
+    /// analysis is the only place that can do this desugaring, since only it
+    /// knows `value`'s resolved type (there's nothing written down to carry
+    /// a type otherwise). `value` is analyzed exactly once and reused as the
+    /// assignment's value, rather than re-analyzed, to avoid double-reporting
+    /// any error inside it.
+    fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<[CheckedStmt; 2]> {
+        let checked_value = self.analyze_expr(&w.value)?;
+        let r#type = checked_value.r#type.clone();
+        self.declare_binding(w.id, w.span, &w.ident, r#type.clone(), Storage::Local)?;
+
+        let declaration = CheckedStmt::Declaration(CheckedDeclaration {
+            id: w.id,
+            span: w.span,
+            ident: w.ident.clone(),
+            r#type: r#type.clone(),
+        });
+        let assignment = CheckedStmt::Expression(CheckedExprNode {
+            id: w.id,
+            span: w.span,
+            r#type: r#type.clone(),
+            kind: CheckedExpr::Assignment(CheckedAssignment {
+                target: CheckedPlace {
+                    root: CheckedPlaceRoot::Variable { decl_id: w.id, storage: Storage::Local, r#type },
+                    projections: vec![],
+                },
+                value: Box::new(checked_value),
+            }),
+        });
+
+        Some([declaration, assignment])
+    }
+
+    /// Most statements analyze into exactly one `CheckedStmt`; a walrus
+    /// declaration desugars into two (see `analyze_walrus`), which is why
+    /// this returns a `Vec` rather than routing through the 1-to-1
+    /// `analyze_all` fold.
+    fn analyze_stmt(&mut self, stmt: &HirStmt) -> Option<Vec<CheckedStmt>> {
         match stmt {
-            HirStmt::Declaration(decl) => self.analyze_declaration(decl, Storage::Local).map(CheckedStmt::Declaration),
-            HirStmt::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(CheckedStmt::ExternDeclaration),
-            HirStmt::Expression(expr) => self.analyze_expr(expr).map(CheckedStmt::Expression),
-            HirStmt::Return(expr) => self.analyze_expr(expr).map(CheckedStmt::Return),
-            HirStmt::Struct(struct_def) => self.analyze_struct_def(struct_def).map(CheckedStmt::Struct),
+            HirStmt::Declaration(decl) => {
+                self.analyze_declaration(decl, Storage::Local).map(|d| vec![CheckedStmt::Declaration(d)])
+            }
+            HirStmt::ExternDeclaration(decl) => {
+                self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
+            }
+            HirStmt::Expression(expr) => self.analyze_expr(expr).map(|e| vec![CheckedStmt::Expression(e)]),
+            HirStmt::Return(expr) => self.analyze_expr(expr).map(|e| vec![CheckedStmt::Return(e)]),
+            HirStmt::Struct(struct_def) => self.analyze_struct_def(struct_def).map(|s| vec![CheckedStmt::Struct(s)]),
+            HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w).map(Vec::from),
         }
     }
 
     fn analyze_stmts(&mut self, stmts: &[HirStmt]) -> Option<Vec<CheckedStmt>> {
-        self.analyze_all(stmts, Self::analyze_stmt)
+        let mut checked = Vec::with_capacity(stmts.len());
+        let mut ok = true;
+        for stmt in stmts {
+            match self.analyze_stmt(stmt) {
+                Some(mut items) => checked.append(&mut items),
+                None => ok = false,
+            }
+        }
+        ok.then_some(checked)
     }
 
     fn analyze_function_def(&mut self, f: &HirFunctionDef) -> Option<CheckedFunctionDef> {
