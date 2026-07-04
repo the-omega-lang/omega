@@ -1,6 +1,6 @@
 use crate::hir::{
     HirAssignment, HirDeclaration, HirExprNode, HirExpr, HirExternDeclaration, HirFunctionCall,
-    HirFunctionDef, HirItem, HirModule, HirPlace, HirPlaceRoot, HirProjection, HirStmt,
+    HirFunctionDef, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt,
     HirStructDef,
 };
 use crate::ids::{HirIdGen, ModuleId};
@@ -95,18 +95,18 @@ impl Lowerer {
         span: SimpleSpan,
         enclosing_struct: Option<&Ident>,
     ) -> HirFunctionDef {
-        let mut params = f.params.clone();
+        let mut params = Vec::with_capacity(f.params.len() + 1);
         if f.is_member_function
             && let Some(struct_ident) = enclosing_struct
         {
-            params.insert(
-                0,
-                DeclarationStmt {
-                    ident: Ident("self".to_string()),
-                    r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone()))),
-                },
-            );
+            params.push(HirParam {
+                id: self.ids.next(),
+                span,
+                ident: Ident("self".to_string()),
+                r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone()))),
+            });
         }
+        params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
 
         let body = f.codeblock.0.iter().map(|s| self.lower_stmt(s)).collect();
 
@@ -121,8 +121,18 @@ impl Lowerer {
         }
     }
 
+    fn lower_param(&mut self, param: &DeclarationStmt, span: SimpleSpan) -> HirParam {
+        HirParam {
+            id: self.ids.next(),
+            span,
+            ident: param.ident.clone(),
+            r#type: param.r#type.clone(),
+        }
+    }
+
     fn lower_struct_def(&mut self, s: &StructStmt, span: SimpleSpan) -> HirStructDef {
         let id = self.ids.next();
+        let fields = s.fields.iter().map(|f| self.lower_param(f, span)).collect();
         let functions = s
             .functions
             .iter()
@@ -133,7 +143,7 @@ impl Lowerer {
             id,
             span,
             name: s.ident.clone(),
-            fields: s.fields.clone(),
+            fields,
             functions,
         }
     }

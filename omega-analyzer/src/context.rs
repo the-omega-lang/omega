@@ -1,22 +1,49 @@
+use crate::checked::Storage;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
+use omega_hir::HirId;
 use omega_parser::prelude::*;
 use std::collections::HashMap;
 
+/// What a name resolves to within a scope: the declaring node's own id (so
+/// codegen can key its storage maps by declaration identity instead of by
+/// name), where its value physically lives, and its resolved type. Anything
+/// callable by name -- extern function decls, local function defs, struct
+/// methods within their own struct scope -- is bound here too, with
+/// `storage: Storage::Function`; there is no separate function-only table.
+#[derive(Debug, Clone)]
+pub struct VarBinding {
+    pub decl_id: HirId,
+    pub storage: Storage,
+    pub r#type: ResolvedType,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScopeContext {
-    pub declared_functions: HashMap<Ident, ResolvedFunctionType>,
-    pub declared_variables: HashMap<Ident, ResolvedType>,
+    pub declared_variables: HashMap<Ident, VarBinding>,
     pub defined_types: HashMap<Ident, ResolvedType>,
 }
 
 impl ScopeContext {
     fn new() -> Self {
         Self {
-            declared_functions: HashMap::new(),
             declared_variables: HashMap::new(),
             defined_types: HashMap::new(),
         }
+    }
+
+    /// Binds `ident` in this scope, or returns it back as `Err` if it's
+    /// already declared *in this scope* -- shadowing an outer scope is
+    /// ordinary lexical scoping and stays allowed. Centralizes a check that
+    /// used to live, wrongly, in codegen (a name-keyed stack-slot map, which
+    /// only coincidentally caught same-function redeclaration and never
+    /// caught it for parameters at all).
+    pub fn declare(&mut self, ident: Ident, binding: VarBinding) -> Result<(), Ident> {
+        if self.declared_variables.contains_key(&ident) {
+            return Err(ident);
+        }
+        self.declared_variables.insert(ident, binding);
+        Ok(())
     }
 }
 
@@ -40,34 +67,18 @@ impl Context {
     }
 
     // Finder functions
-    pub fn find_variable_type(&self, ident: &Ident) -> Option<&ResolvedType> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(typ) = scope.declared_variables.get(ident) {
-                return Some(typ);
-            }
-        }
-
-        None
-    }
-
-    pub fn find_function_type(&self, name: &Ident) -> Option<&ResolvedFunctionType> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(typ) = scope.declared_functions.get(name) {
-                return Some(typ);
-            }
-        }
-
-        None
+    pub fn find_variable(&self, ident: &Ident) -> Option<&VarBinding> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.declared_variables.get(ident))
     }
 
     pub fn find_defined_type(&self, name: &Ident) -> Option<&ResolvedType> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(typ) = scope.defined_types.get(name) {
-                return Some(typ);
-            }
-        }
-
-        None
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.defined_types.get(name))
     }
 
     pub fn resolve_function_type(
@@ -106,15 +117,6 @@ impl Context {
     // Scope helpers
     pub fn current_scope(&mut self) -> &mut ScopeContext {
         self.scopes.last_mut().unwrap()
-    }
-
-    pub fn parent_scope(&mut self) -> &mut ScopeContext {
-        let index = self.scopes.len().saturating_sub(2);
-        self.scopes.get_mut(index).unwrap()
-    }
-
-    pub fn current_scope_not_mut(&self) -> &ScopeContext {
-        self.scopes.last().unwrap()
     }
 
     pub fn enter_scope(&mut self) -> &mut ScopeContext {

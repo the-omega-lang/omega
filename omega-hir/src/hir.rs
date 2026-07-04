@@ -1,7 +1,5 @@
 use crate::ids::HirId;
-use omega_parser::prelude::{
-    DeclarationStmt, FunctionType, Ident, NumberExpr, SimpleSpan, StringExpr, Type,
-};
+use omega_parser::prelude::{FunctionType, Ident, NumberExpr, SimpleSpan, StringExpr, Type};
 
 #[derive(Debug, Clone)]
 pub struct HirModule {
@@ -33,6 +31,18 @@ pub struct HirExternDeclaration {
     pub r#type: Type,
 }
 
+/// A function parameter or struct field -- structurally identical (a named,
+/// typed declaration slot), and both are self-identifying like every other
+/// declaration-shaped HIR node, unlike the raw `DeclarationStmt` they used to
+/// be lowered as verbatim (which had no id of its own).
+#[derive(Debug, Clone)]
+pub struct HirParam {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub ident: Ident,
+    pub r#type: Type,
+}
+
 /// A function definition, used identically whether it's a top-level item or
 /// a struct method (`HirStructDef::functions`) -- both are self-identifying,
 /// so there's no special-cased id-minting for methods like there used to be
@@ -46,7 +56,7 @@ pub struct HirFunctionDef {
     /// For member functions, the synthetic `self: *StructName` parameter is
     /// already inserted here by lowering -- downstream consumers never need
     /// to special-case it.
-    pub params: Vec<DeclarationStmt>,
+    pub params: Vec<HirParam>,
     pub return_type: Type,
     pub body: Vec<HirStmt>,
 }
@@ -73,7 +83,7 @@ pub struct HirStructDef {
     pub id: HirId,
     pub span: SimpleSpan,
     pub name: Ident,
-    pub fields: Vec<DeclarationStmt>,
+    pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
 }
 

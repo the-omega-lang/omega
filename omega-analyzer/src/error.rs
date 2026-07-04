@@ -57,7 +57,20 @@ pub enum AnalysisErrorKind {
     UnresolvedCallee,
     InvalidNumberType(Ident),
     UnresolvedInnerExpression,
-    FunctionTypeLookupFailed,
+    /// A name is declared twice in the same scope (a second parameter with
+    /// the same name, or a second local `ident: type;` in the same function
+    /// body). Shadowing an *outer* scope is fine and doesn't trigger this.
+    Redeclaration(Ident),
+    /// An assignment's left-hand side isn't syntactically a place (e.g.
+    /// `5 = 3;`) -- rejected here so `CheckedAssignment.target` can be typed
+    /// as `CheckedPlace` rather than a general expression.
+    AssignmentTargetNotAPlace,
+    /// An assignment's value doesn't have the same resolved type as its
+    /// target (e.g. assigning a pointer into an `i32` local).
+    AssignmentTypeMismatch { target: ResolvedType, value: ResolvedType },
+    /// A number literal doesn't fit in its resolved type (only `i32` is
+    /// supported today).
+    NumberLiteralOutOfRange { literal: String },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -82,8 +95,18 @@ impl fmt::Display for AnalysisErrorKind {
                 ident.as_ref()
             ),
             Self::UnresolvedInnerExpression => write!(f, "inner expression could not be resolved"),
-            Self::FunctionTypeLookupFailed => {
-                write!(f, "failed to look up the type of a just-analyzed function")
+            Self::Redeclaration(ident) => {
+                write!(f, "'{}' is already declared in this scope", ident.as_ref())
+            }
+            Self::AssignmentTargetNotAPlace => {
+                write!(f, "left-hand side of assignment is not an assignable place")
+            }
+            Self::AssignmentTypeMismatch { target, value } => write!(
+                f,
+                "cannot assign value of type '{value:?}' to target of type '{target:?}'"
+            ),
+            Self::NumberLiteralOutOfRange { literal } => {
+                write!(f, "number literal '{literal}' does not fit its resolved type")
             }
         }
     }

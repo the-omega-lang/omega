@@ -1,159 +1,179 @@
 use crate::{
-    context::{Context, ScopeContext},
+    checked::{
+        CheckedAssignment, CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl,
+        CheckedFunctionCall, CheckedFunctionDef, CheckedItem, CheckedModule, CheckedParam,
+        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedStructDef, Storage,
+    },
+    context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind},
-    resolved_type::{ResolvedFunctionType, ResolvedStructType, ResolvedType},
+    resolved_type::{ResolvedStructType, ResolvedType},
 };
 use omega_hir::{
-    HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef, HirId, HirItem, HirModule,
-    HirPlace, HirPlaceRoot, HirProjection, HirStmt, HirStructDef,
+    HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef, HirId, HirItem,
+    HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt, HirStructDef,
 };
 use omega_parser::prelude::{Ident, SimpleSpan, Type};
-use std::collections::HashMap;
-
-#[derive(Debug, Clone)]
-pub struct Analysis {
-    pub node_types: HashMap<HirId, ResolvedType>,
-    pub context: Context,
-    pub codeblock_scopes: HashMap<HirId, ScopeContext>,
-    pub struct_scopes: HashMap<HirId, ScopeContext>,
-}
-
-impl Analysis {
-    pub fn get_global_function_type(&self, name: &Ident) -> Option<&ResolvedFunctionType> {
-        self.context.find_function_type(name)
-    }
-
-    pub fn get_node_type(&self, node_id: &HirId) -> Option<&ResolvedType> {
-        self.node_types.get(node_id)
-    }
-
-    pub fn get_codeblock_scope(&self, node_id: &HirId) -> Option<&ScopeContext> {
-        self.codeblock_scopes.get(node_id)
-    }
-
-    pub fn get_struct_scope(&self, node_id: &HirId) -> Option<&ScopeContext> {
-        self.struct_scopes.get(node_id)
-    }
-
-    pub fn get_struct_function_type(
-        &self,
-        struct_node_id: HirId,
-        name: &Ident,
-    ) -> Option<&ResolvedFunctionType> {
-        let scope = self.struct_scopes.get(&struct_node_id)?;
-        scope.declared_functions.get(name)
-    }
-}
+use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct Analyzer {
     errors: Vec<AnalysisError>,
-    analysis: Analysis,
+    context: Context,
+}
+
+impl Default for Analyzer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Analyzer {
     pub fn new() -> Self {
         Self {
             errors: vec![],
-            analysis: Analysis {
-                node_types: HashMap::new(),
-                context: Context::new(),
-                codeblock_scopes: HashMap::new(),
-                struct_scopes: HashMap::new(),
-            },
+            context: Context::new(),
         }
     }
 
-    // Utils
-
-    fn node_types(&self) -> &HashMap<HirId, ResolvedType> {
-        &self.analysis.node_types
+    // Small generic fold used everywhere a list of HIR nodes is analyzed
+    // into a list of checked ones: unlike a short-circuiting `?`/`collect`,
+    // this keeps analyzing every item (so independent errors in the same
+    // function/struct/module are all reported in one pass), and only
+    // succeeds if every item did.
+    fn analyze_all<T, U>(
+        &mut self,
+        items: &[T],
+        mut f: impl FnMut(&mut Self, &T) -> Option<U>,
+    ) -> Option<Vec<U>> {
+        let mut checked = Vec::with_capacity(items.len());
+        let mut ok = true;
+        for item in items {
+            match f(self, item) {
+                Some(value) => checked.push(value),
+                None => ok = false,
+            }
+        }
+        ok.then_some(checked)
     }
 
-    fn node_types_mut(&mut self) -> &mut HashMap<HirId, ResolvedType> {
-        &mut self.analysis.node_types
-    }
-
-    fn context(&self) -> &Context {
-        &self.analysis.context
-    }
-
-    fn context_mut(&mut self) -> &mut Context {
-        &mut self.analysis.context
-    }
-
-    fn codeblock_scopes_mut(&mut self) -> &mut HashMap<HirId, ScopeContext> {
-        &mut self.analysis.codeblock_scopes
-    }
-
-    fn struct_scopes_mut(&mut self) -> &mut HashMap<HirId, ScopeContext> {
-        &mut self.analysis.struct_scopes
-    }
-
-    // Analysis
-    fn analyze_declaration(&mut self, node_id: HirId, span: SimpleSpan, ident: &Ident, typ: &Type) {
-        let ctx = self.context_mut();
-        match typ {
-            Type::Function(fntype) => match ctx.resolve_function_type(fntype.to_owned()) {
-                Ok(resolved) => {
-                    let scope = ctx.current_scope();
-                    scope
-                        .declared_functions
-                        .insert(ident.clone(), resolved.clone());
-                    scope
-                        .declared_variables
-                        .insert(ident.clone(), ResolvedType::Function(resolved));
-                }
-                Err(err) => {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::UnresolvedType(err),
-                    ));
-                }
-            },
-            typ => {
-                let resolved_type = match ctx.resolve_type(typ.to_owned()) {
-                    Ok(t) => t,
-                    Err(err) => {
-                        self.errors.push(AnalysisError::new(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::UnresolvedType(err),
-                        ));
-                        return;
-                    }
-                };
-
-                let scope = ctx.current_scope();
-                scope.declared_variables.insert(ident.clone(), resolved_type);
+    fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type) -> Option<ResolvedType> {
+        match self.context.resolve_type(typ.to_owned()) {
+            Ok(resolved) => Some(resolved),
+            Err(err) => {
+                self.errors
+                    .push(AnalysisError::new(id, span, AnalysisErrorKind::UnresolvedType(err)));
+                None
             }
         }
     }
 
-    fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) {
-        self.analyze_declaration(
+    /// Binds `ident` in the current scope, or records `Redeclaration` if
+    /// it's already bound there. Centralizes what used to be, incorrectly, a
+    /// codegen-side check on a name-keyed stack-slot map.
+    fn declare_binding(
+        &mut self,
+        id: HirId,
+        span: SimpleSpan,
+        ident: &Ident,
+        r#type: ResolvedType,
+        storage: Storage,
+    ) -> Option<()> {
+        let binding = VarBinding { decl_id: id, storage, r#type };
+        match self.context.current_scope().declare(ident.clone(), binding) {
+            Ok(()) => Some(()),
+            Err(dup) => {
+                self.errors
+                    .push(AnalysisError::new(id, span, AnalysisErrorKind::Redeclaration(dup)));
+                None
+            }
+        }
+    }
+
+    fn analyze_declaration(&mut self, decl: &HirDeclaration, storage: Storage) -> Option<CheckedDeclaration> {
+        let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type)?;
+        self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), storage)?;
+        Some(CheckedDeclaration {
+            id: decl.id,
+            span: decl.span,
+            ident: decl.ident.clone(),
+            r#type: resolved_type,
+        })
+    }
+
+    fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDecl> {
+        let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type)?;
+        // An extern of function type imports a callable symbol; anything
+        // else is extern *data*, whose storage isn't decided yet (see
+        // `Storage::Global`'s doc comment).
+        let storage = if matches!(resolved_type, ResolvedType::Function(_)) {
+            Storage::Function
+        } else {
+            Storage::Global
+        };
+        self.declare_binding(
             extern_decl.id,
             extern_decl.span,
             &extern_decl.ident,
-            &extern_decl.r#type,
-        );
+            resolved_type.clone(),
+            storage,
+        )?;
+        Some(CheckedExternDecl {
+            id: extern_decl.id,
+            span: extern_decl.span,
+            ident: extern_decl.ident.clone(),
+            r#type: resolved_type,
+        })
     }
 
-    /// Resolves the type of a place expression by looking up its root, then
-    /// folding over its projections in source order. Replaces the old
-    /// "hacky mutations" approach: `HirPlace` is already a settled, flat
-    /// structure by the time analysis sees it, so this is a plain fold with
-    /// no shared mutable side-table involved.
+    fn analyze_param(&mut self, param: &HirParam) -> Option<CheckedParam> {
+        let resolved_type = self.resolve_type_or_error(param.id, param.span, &param.r#type)?;
+        self.declare_binding(param.id, param.span, &param.ident, resolved_type.clone(), Storage::Parameter)?;
+        Some(CheckedParam {
+            id: param.id,
+            span: param.span,
+            ident: param.ident.clone(),
+            r#type: resolved_type,
+        })
+    }
+
+    /// Struct fields aren't scope-bound names (they're only ever reached
+    /// through a `FieldAccess` projection off a struct-typed base), so unlike
+    /// params they don't go through `declare_binding` -- but duplicate field
+    /// names are still rejected, via a plain per-struct name set.
+    fn analyze_struct_fields(&mut self, fields: &[HirParam]) -> Option<Vec<CheckedParam>> {
+        let mut seen = HashSet::new();
+        self.analyze_all(fields, |this, field| {
+            if !seen.insert(field.ident.clone()) {
+                this.errors.push(AnalysisError::new(
+                    field.id,
+                    field.span,
+                    AnalysisErrorKind::Redeclaration(field.ident.clone()),
+                ));
+                return None;
+            }
+            let resolved_type = this.resolve_type_or_error(field.id, field.span, &field.r#type)?;
+            Some(CheckedParam {
+                id: field.id,
+                span: field.span,
+                ident: field.ident.clone(),
+                r#type: resolved_type,
+            })
+        })
+    }
+
+    /// Resolves a place's root, then folds over its projections in source
+    /// order, resolving field/index projections against the running type
+    /// and recording the exact resolved shape (field index, item type) so
+    /// codegen never has to re-search or re-derive them.
     fn analyze_place(
         &mut self,
         node_id: HirId,
         span: SimpleSpan,
         place: &HirPlace,
-    ) -> Option<ResolvedType> {
-        let mut current_type = match &place.root {
+    ) -> Option<(CheckedPlace, ResolvedType)> {
+        let (root, mut current_type) = match &place.root {
             HirPlaceRoot::Ident(ident) => {
-                let Some(vartype) = self.context().find_variable_type(ident) else {
+                let Some(binding) = self.context.find_variable(ident) else {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -161,32 +181,36 @@ impl Analyzer {
                     ));
                     return None;
                 };
-                vartype.clone()
+                let root = CheckedPlaceRoot::Variable {
+                    decl_id: binding.decl_id,
+                    storage: binding.storage,
+                    r#type: binding.r#type.clone(),
+                };
+                (root, binding.r#type.clone())
             }
             HirPlaceRoot::Expr(expr) => {
-                self.analyze_expression(expr);
-                let Some(typ) = self.node_types().get(&expr.id) else {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::UnresolvedInnerExpression,
-                    ));
-                    return None;
-                };
-                typ.clone()
+                let checked_expr = self.analyze_expr(expr)?;
+                let r#type = checked_expr.r#type.clone();
+                (CheckedPlaceRoot::Expr(Box::new(checked_expr)), r#type)
             }
         };
 
+        let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
             match projection {
                 HirProjection::FieldAccess(field) => {
-                    let ResolvedType::Struct(struct_type) = current_type else {
+                    let ResolvedType::Struct(struct_type) = &current_type else {
                         self.errors
                             .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct));
                         return None;
                     };
-                    let Some(field_type) = struct_type.fields.iter().find(|x| &x.0 == field)
-                    else {
+                    let found = struct_type
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (name, _))| name == field)
+                        .map(|(index, (_, r#type))| (index, r#type.clone()));
+                    let Some((index, field_type)) = found else {
                         self.errors.push(AnalysisError::new(
                             node_id,
                             span,
@@ -194,282 +218,295 @@ impl Analyzer {
                         ));
                         return None;
                     };
-                    current_type = field_type.1.clone();
+                    projections.push(CheckedProjection::FieldAccess {
+                        field: field.clone(),
+                        index,
+                        r#type: field_type.clone(),
+                    });
+                    current_type = field_type;
                 }
                 HirProjection::Index(index_expr) => {
-                    self.analyze_expression(index_expr);
+                    let checked_index = self.analyze_expr(index_expr)?;
                     let ResolvedType::Array(item_type) = current_type else {
                         self.errors
                             .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAnArray));
                         return None;
                     };
-                    current_type = *item_type;
+                    let item_type = *item_type;
+                    projections.push(CheckedProjection::Index {
+                        index_expr: Box::new(checked_index),
+                        item_type: item_type.clone(),
+                    });
+                    current_type = item_type;
                 }
             }
         }
 
-        Some(current_type)
+        Some((CheckedPlace { root, projections }, current_type))
     }
 
-    fn analyze_expression(&mut self, node: &HirExprNode) {
+    fn analyze_expr(&mut self, node: &HirExprNode) -> Option<CheckedExprNode> {
         let node_id = node.id;
+        let span = node.span;
 
         match &node.expr {
-            HirExpr::String(_) => {
-                self.node_types_mut()
-                    .insert(node_id, ResolvedType::Pointer(Box::new(ResolvedType::Char)));
+            HirExpr::Place(place) => {
+                let (checked_place, r#type) = self.analyze_place(node_id, span, place)?;
+                Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
             }
 
-            HirExpr::FunctionCall(call_expr) => {
-                self.analyze_expression(&call_expr.callee);
-                let Some(ResolvedType::Function(function_type)) =
-                    self.node_types().get(&call_expr.callee.id)
-                else {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        node.span,
-                        AnalysisErrorKind::UnresolvedCallee,
-                    ));
-                    return;
+            HirExpr::Number(number_expr) => {
+                let resolved_type = match &number_expr.explicit_type {
+                    Some(explicit_type) => {
+                        // Only `i32` is a supported numeric type today (see
+                        // the parser's own "TODO: handle floats and unsigned
+                        // integers"); anything else -- unrecognized, or
+                        // recognized but non-numeric -- is invalid here.
+                        match self.context.resolve_type(Type::Named(explicit_type.clone())) {
+                            Ok(ResolvedType::I32) => ResolvedType::I32,
+                            _ => {
+                                self.errors.push(AnalysisError::new(
+                                    node_id,
+                                    span,
+                                    AnalysisErrorKind::InvalidNumberType(explicit_type.clone()),
+                                ));
+                                return None;
+                            }
+                        }
+                    }
+                    None => ResolvedType::I32,
                 };
 
-                let function_type = function_type.to_owned();
-                self.node_types_mut()
-                    .insert(node_id, *function_type.return_type.clone());
+                let Ok(value) = number_expr.integer_part.parse::<i32>() else {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::NumberLiteralOutOfRange {
+                            literal: number_expr.integer_part.clone(),
+                        },
+                    ));
+                    return None;
+                };
 
-                for i in 0..call_expr.args.len() {
-                    let arg = &call_expr.args[i];
-                    if i >= function_type.params.len() && !function_type.is_variadic {
+                Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
+            }
+
+            HirExpr::String(s) => Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: ResolvedType::Pointer(Box::new(ResolvedType::Char)),
+                kind: CheckedExpr::String(s.0.clone()),
+            }),
+
+            HirExpr::Codeblock(stmts) => {
+                self.context.enter_scope();
+                let checked_stmts = self.analyze_stmts(stmts);
+                self.context.leave_scope();
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::Void,
+                    kind: CheckedExpr::Codeblock(checked_stmts?),
+                })
+            }
+
+            HirExpr::FunctionCall(call) => {
+                let callee = self.analyze_expr(&call.callee)?;
+                let ResolvedType::Function(fn_type) = callee.r#type.clone() else {
+                    self.errors
+                        .push(AnalysisError::new(node_id, span, AnalysisErrorKind::UnresolvedCallee));
+                    return None;
+                };
+
+                let mut args = Vec::with_capacity(call.args.len());
+                for (i, arg) in call.args.iter().enumerate() {
+                    if i >= fn_type.params.len() && !fn_type.is_variadic {
                         self.errors.push(AnalysisError::new(
                             arg.id,
                             arg.span,
-                            AnalysisErrorKind::TooManyArguments {
-                                expected: function_type.params.len(),
-                            },
+                            AnalysisErrorKind::TooManyArguments { expected: fn_type.params.len() },
                         ));
-                        return;
+                        return None;
                     }
 
-                    self.analyze_expression(arg);
+                    let checked_arg = self.analyze_expr(arg)?;
 
-                    if i >= function_type.params.len() && function_type.is_variadic {
-                        continue;
-                    }
-
-                    if let Some(typ) = self.node_types().get(&arg.id) {
-                        let expected_type = &function_type.params[i].1;
-                        if typ != expected_type {
+                    if i < fn_type.params.len() {
+                        let expected_type = &fn_type.params[i].1;
+                        if &checked_arg.r#type != expected_type {
                             self.errors.push(AnalysisError::new(
                                 arg.id,
                                 arg.span,
                                 AnalysisErrorKind::ArgumentTypeMismatch {
                                     expected: expected_type.clone(),
-                                    found: typ.clone(),
+                                    found: checked_arg.r#type.clone(),
                                 },
                             ));
+                            return None;
                         }
                     }
-                }
-            }
 
-            HirExpr::Number(number_expr) => {
-                if let Some(explicit_type) = &number_expr.explicit_type {
-                    let Ok(resolved_type) = self
-                        .context()
-                        .resolve_type(Type::Named(explicit_type.clone()))
-                    else {
-                        self.errors.push(AnalysisError::new(
-                            node_id,
-                            node.span,
-                            AnalysisErrorKind::InvalidNumberType(explicit_type.clone()),
-                        ));
-                        return;
-                    };
-                    self.node_types_mut().insert(node_id, resolved_type);
-                    return;
+                    args.push(checked_arg);
                 }
 
-                // TODO: Handle floats and unsigned integers
-                self.node_types_mut().insert(node_id, ResolvedType::I32);
+                let return_type = *fn_type.return_type.clone();
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: return_type,
+                    kind: CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee), fn_type, args }),
+                })
             }
 
             HirExpr::Assignment(assignment) => {
-                self.analyze_expression(&assignment.value);
-                let Some(typ) = self.node_types().get(&assignment.value.id) else {
+                let checked_value = self.analyze_expr(&assignment.value)?;
+
+                let HirExpr::Place(place) = &assignment.target.expr else {
                     self.errors.push(AnalysisError::new(
                         node_id,
-                        node.span,
-                        AnalysisErrorKind::UnresolvedInnerExpression,
+                        span,
+                        AnalysisErrorKind::AssignmentTargetNotAPlace,
                     ));
-                    return;
+                    return None;
                 };
-                let typ = typ.clone();
+                let (checked_target, target_type) =
+                    self.analyze_place(assignment.target.id, assignment.target.span, place)?;
 
-                self.analyze_expression(&assignment.target);
-
-                self.node_types_mut().insert(node_id, typ);
-            }
-
-            HirExpr::Place(place) => {
-                if let Some(typ) = self.analyze_place(node_id, node.span, place) {
-                    self.node_types_mut().insert(node_id, typ);
+                if target_type != checked_value.r#type {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::AssignmentTypeMismatch {
+                            target: target_type,
+                            value: checked_value.r#type,
+                        },
+                    ));
+                    return None;
                 }
-            }
 
-            HirExpr::Codeblock(_) => {}
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: target_type,
+                    kind: CheckedExpr::Assignment(CheckedAssignment {
+                        target: checked_target,
+                        value: Box::new(checked_value),
+                    }),
+                })
+            }
         }
     }
 
-    fn analyze_struct_def(&mut self, struct_def: &HirStructDef) {
-        let resolved_fields = match struct_def
-            .fields
-            .iter()
-            .map(|field| {
-                self.context()
-                    .resolve_type(field.r#type.to_owned())
-                    .map(|resolved_type| (field.ident.to_owned(), resolved_type))
-            })
-            .collect::<Result<Vec<(Ident, ResolvedType)>, _>>()
-        {
-            Ok(r) => r,
-            Err(err) => {
-                self.errors.push(AnalysisError::new(
-                    struct_def.id,
-                    struct_def.span,
-                    AnalysisErrorKind::UnresolvedType(err),
-                ));
-                return;
-            }
+    fn analyze_stmt(&mut self, stmt: &HirStmt) -> Option<CheckedStmt> {
+        match stmt {
+            HirStmt::Declaration(decl) => self.analyze_declaration(decl, Storage::Local).map(CheckedStmt::Declaration),
+            HirStmt::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(CheckedStmt::ExternDeclaration),
+            HirStmt::Expression(expr) => self.analyze_expr(expr).map(CheckedStmt::Expression),
+            HirStmt::Return(expr) => self.analyze_expr(expr).map(CheckedStmt::Return),
+            HirStmt::Struct(struct_def) => self.analyze_struct_def(struct_def).map(CheckedStmt::Struct),
+        }
+    }
+
+    fn analyze_stmts(&mut self, stmts: &[HirStmt]) -> Option<Vec<CheckedStmt>> {
+        self.analyze_all(stmts, Self::analyze_stmt)
+    }
+
+    fn analyze_function_def(&mut self, f: &HirFunctionDef) -> Option<CheckedFunctionDef> {
+        self.context.enter_scope();
+        let params = self.analyze_all(&f.params, Self::analyze_param);
+        let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type);
+        let body = self.analyze_stmts(&f.body);
+        self.context.leave_scope();
+
+        let checked = CheckedFunctionDef {
+            id: f.id,
+            span: f.span,
+            name: f.name.clone(),
+            is_member_function: f.is_member_function,
+            is_variadic: false,
+            params: params?,
+            return_type: return_type?,
+            body: body?,
         };
 
+        // Register the function's own name in whatever scope is current now
+        // that its body scope has been popped -- the enclosing module scope
+        // for a top-level function, or the struct's dedicated method scope
+        // for a member function (see `analyze_struct_def`) -- so later
+        // top-level items, or sibling methods analyzed after this one, can
+        // call it by name.
+        let binding = VarBinding {
+            decl_id: f.id,
+            storage: Storage::Function,
+            r#type: ResolvedType::Function(checked.fn_type()),
+        };
+        if let Err(dup) = self.context.current_scope().declare(f.name.clone(), binding) {
+            self.errors
+                .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::Redeclaration(dup)));
+            return None;
+        }
+
+        Some(checked)
+    }
+
+    fn analyze_struct_def(&mut self, s: &HirStructDef) -> Option<CheckedStructDef> {
+        let fields = self.analyze_struct_fields(&s.fields)?;
+
+        // Insert the struct's type -- with an empty method list for now --
+        // *before* analyzing any method, since a member function's synthetic
+        // `self: *StructName` parameter needs the struct's own name to
+        // already resolve.
         // TODO: Make sure type does not already exist
-        self.context_mut().current_scope().defined_types.insert(
-            struct_def.name.to_owned(),
+        self.context.current_scope().defined_types.insert(
+            s.name.clone(),
             ResolvedType::Struct(ResolvedStructType {
-                fields: resolved_fields,
+                fields: fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect(),
                 functions: vec![],
             }),
         );
 
-        self.context_mut().enter_scope();
-        for function_def in &struct_def.functions {
-            self.analyze_function_def(function_def);
-            let Some(function_type) = self
-                .context()
-                .current_scope_not_mut()
-                .declared_functions
-                .get(&function_def.name)
-            else {
-                self.errors.push(AnalysisError::new(
-                    function_def.id,
-                    function_def.span,
-                    AnalysisErrorKind::FunctionTypeLookupFailed,
-                ));
-                continue;
-            };
-            let function_type = function_type.clone();
+        // Methods are bound in their own nested scope so they aren't
+        // globally callable; `resolve_type` still sees the struct's type
+        // just inserted above by walking outward through the scope stack.
+        self.context.enter_scope();
+        let functions = self.analyze_all(&s.functions, Self::analyze_function_def);
+        self.context.leave_scope();
+        let functions = functions?;
 
-            let ResolvedType::Struct(resolved_struct_type) = self
-                .context_mut()
-                .parent_scope()
-                .defined_types
-                .get_mut(&struct_def.name)
-                .unwrap()
-            else {
-                panic!(
-                    "This should never happen. If it did, congrats. No idea how you've done it."
-                );
-            };
-
-            resolved_struct_type
-                .functions
-                .push((function_def.name.clone(), function_type));
-        }
-
-        let scope = self.context_mut().leave_scope();
-        self.struct_scopes_mut().insert(struct_def.id, scope);
-    }
-
-    fn analyze_statement(&mut self, stmt: &HirStmt) {
-        match stmt {
-            HirStmt::Declaration(decl) => {
-                self.analyze_declaration(decl.id, decl.span, &decl.ident, &decl.r#type)
-            }
-            HirStmt::Expression(expr) => self.analyze_expression(expr),
-            HirStmt::Return(expr) => self.analyze_expression(expr),
-            HirStmt::Struct(struct_def) => self.analyze_struct_def(struct_def),
-            HirStmt::ExternDeclaration(_) => {}
-        }
-    }
-
-    fn analyze_function_def(&mut self, function_def: &HirFunctionDef) {
-        // Add function parameters to new scope
-        // and analyze its body
-        self.context_mut().enter_scope();
-        for param in &function_def.params {
-            let resolved_type = match self.context().resolve_type(param.r#type.to_owned()) {
-                Ok(t) => t,
-                Err(err) => {
-                    self.errors.push(AnalysisError::new(
-                        function_def.id,
-                        function_def.span,
-                        AnalysisErrorKind::UnresolvedType(err),
-                    ));
-                    return;
-                }
-            };
-            self.context_mut()
-                .current_scope()
-                .declared_variables
-                .insert(param.ident.to_owned(), resolved_type);
-        }
-        for stmt in &function_def.body {
-            self.analyze_statement(stmt);
-        }
-
-        // Save function scope analysis
-        let scope = self.context_mut().leave_scope();
-        self.codeblock_scopes_mut().insert(function_def.id, scope);
-
-        // Store function return type information
-        let fn_type = match self
-            .context()
-            .resolve_function_type(function_def.function_type())
-        {
-            Ok(typ) => typ,
-            Err(err) => {
-                self.errors.push(AnalysisError::new(
-                    function_def.id,
-                    function_def.span,
-                    AnalysisErrorKind::UnresolvedType(err),
-                ));
-                return;
-            }
-        };
-        self.context_mut()
+        // Back in the exact scope frame the struct's type was inserted into
+        // above (the enter/leave pair around the methods loop brackets
+        // symmetrically) -- patch in the now-resolved method list directly,
+        // no parent-scope depth arithmetic required.
+        let ResolvedType::Struct(resolved) = self
+            .context
             .current_scope()
-            .declared_functions
-            .insert(function_def.name.to_owned(), fn_type);
+            .defined_types
+            .get_mut(&s.name)
+            .expect("just inserted above, in this exact scope frame")
+        else {
+            unreachable!("just inserted as ResolvedType::Struct above");
+        };
+        resolved.functions = functions.iter().map(|f| (f.name.clone(), f.fn_type())).collect();
+
+        Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
     }
 
-    fn analyze_item(&mut self, item: &HirItem) {
+    fn analyze_item(&mut self, item: &HirItem) -> Option<CheckedItem> {
         match item {
-            HirItem::ExternDeclaration(stmt) => self.analyze_extern_decl(stmt),
-            HirItem::FunctionDefinition(stmt) => self.analyze_function_def(stmt),
-            HirItem::Struct(stmt) => self.analyze_struct_def(stmt),
-            HirItem::Declaration(_) => {}
+            HirItem::Declaration(decl) => self.analyze_declaration(decl, Storage::Global).map(CheckedItem::Declaration),
+            HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(CheckedItem::ExternDeclaration),
+            HirItem::FunctionDefinition(f) => self.analyze_function_def(f).map(CheckedItem::FunctionDefinition),
+            HirItem::Struct(s) => self.analyze_struct_def(s).map(CheckedItem::Struct),
         }
     }
 
-    pub fn analyze(mut self, hir_module: &HirModule) -> Result<Analysis, Vec<AnalysisError>> {
-        for item in &hir_module.items {
-            self.analyze_item(item);
-        }
+    pub fn analyze(mut self, hir_module: &HirModule) -> Result<CheckedModule, Vec<AnalysisError>> {
+        let items = self.analyze_all(&hir_module.items, Self::analyze_item);
 
-        if !self.errors.is_empty() {
-            return Err(self.errors);
+        match items {
+            Some(items) if self.errors.is_empty() => Ok(CheckedModule { id: hir_module.id, items }),
+            _ => Err(self.errors),
         }
-
-        Ok(self.analysis)
     }
 }
+

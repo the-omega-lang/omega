@@ -2,7 +2,6 @@ use cranelift::{
     codegen::{
         self,
         ir::{FuncRef, StackSlot},
-        verifier::VerifierErrors,
     },
     prelude::{
         AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags,
@@ -12,56 +11,38 @@ use cranelift::{
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
-    analysis::Analysis,
-    resolved_type::{ResolvedFunctionType, ResolvedType},
+    checked::{
+        CheckedAssignment, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
+        CheckedFunctionDef, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot,
+        CheckedProjection, CheckedStmt, CheckedStructDef, Storage,
+    },
+    resolved_type::{ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
-use omega_hir::{
-    HirAssignment, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionCall, HirFunctionDef,
-    HirId, HirItem, HirModule, HirPlace, HirPlaceRoot, HirProjection, HirStmt, HirStructDef,
-};
-use omega_parser::prelude::{Ident, Type};
+use omega_hir::HirId;
 use std::{collections::HashMap, sync::Arc};
 
-#[derive(Debug, Clone)]
-pub enum CodegenError {
-    NotImplemented(HirId),
-    UnresolvedType(HirId, Ident),
-    UnresolvedExpression(HirId),
-    InvalidNumber(HirId),
-    VerifierErrors(HirId, VerifierErrors),
-    UnresolvedScope(HirId),
-    Redeclaration(HirId, Ident),
-    Undeclared(HirId, Ident),
-    TypeMismatch(HirId),
-    BadFieldAccess(HirId, Ident),
-    NotAFunction(HirId),
-    BadExpression(HirId),
-    NotAPlace(HirId),
-}
-
+/// Codegen never fails: everything it would otherwise need to reject was
+/// already enforced while building the `CheckedModule` (place validity, type
+/// compatibility, field/index existence, redeclaration). What remains here
+/// are cases the language genuinely hasn't decided yet (array memory layout,
+/// global data storage, ...) -- those `panic!`/`todo!()` rather than
+/// returning an error, since there is no rejectable *user* input left by the
+/// time codegen runs, only unimplemented compiler features.
 pub struct Codegen {
-    // Errors
-    errors: Vec<CodegenError>,
-
-    // State from previous steps
-    analysis: Analysis,
-
     // Backend
     isa: Arc<dyn isa::TargetIsa>,
     pub module: ObjectModule,
-    functions: HashMap<String, FuncId>,
+    functions: HashMap<HirId, FuncId>,
     ctx: codegen::Context,
 
     // Global state
     counter: u64, // for unique things
     strings: HashMap<String, DataId>,
 
-    // Local state (must be cleared per scope)
-    local_functions: HashMap<Ident, FuncRef>,
+    // Local state (must be cleared per function)
     local_strings: HashMap<String, Value>,
-    codeblock_nodes: Vec<HirId>,
-    local_args: HashMap<String, Vec<Value>>,
-    stack_slots: HashMap<String, Vec<(IRType, StackSlot)>>,
+    local_args: HashMap<HirId, Vec<Value>>,
+    stack_slots: HashMap<HirId, Vec<(IRType, StackSlot)>>,
 }
 
 trait IntoIRType {
@@ -84,33 +65,28 @@ impl IntoIRType for ResolvedType {
     }
 }
 
-/// Walks a `FieldAccess` projection against an already-materialized value
-/// list (either stack-slot descriptors or SSA argument values -- the two
-/// callers below are otherwise identical here, which is why this is shared).
+/// Slices a `FieldAccess` projection's already-resolved `field_index` out of
+/// an already-materialized value list (either stack-slot descriptors or SSA
+/// argument values -- the two callers below are otherwise identical here,
+/// which is why this is shared). No name search, no failure path: the
+/// checked module already picked this exact index out of `struct_type`.
 fn project_field_access<T: Clone>(
     codegen: &Codegen,
-    node_id: HirId,
     values: &[T],
-    current_type: ResolvedType,
-    field: &Ident,
-) -> Result<(Vec<T>, ResolvedType), CodegenError> {
-    let ResolvedType::Struct(struct_type) = current_type else {
-        return Err(CodegenError::BadFieldAccess(node_id, field.clone()));
-    };
-
-    let (index, accessed_field, ir_type) = struct_type
-        .fields
+    struct_type: &ResolvedStructType,
+    field_index: usize,
+) -> Vec<T> {
+    let start: usize = struct_type.fields[..field_index]
         .iter()
-        .enumerate()
-        .find(|(_index, x)| &x.0 == field)
-        .map(|(index, x)| (index, x.clone(), x.1.clone().into_ir_type(codegen)))
-        .ok_or_else(|| CodegenError::BadFieldAccess(node_id, field.clone()))?;
+        .map(|(_, r#type)| r#type.clone().into_ir_type(codegen).len())
+        .sum();
+    let len = struct_type.fields[field_index].1.clone().into_ir_type(codegen).len();
 
-    Ok((values[index..(index + ir_type.len())].to_vec(), accessed_field.1))
+    values[start..start + len].to_vec()
 }
 
 impl Codegen {
-    pub fn generate(module_name: &str, isa: &str, hir: HirModule, analysis: Analysis) -> Self {
+    pub fn generate(module_name: &str, isa: &str, checked: CheckedModule) -> Self {
         let isa = {
             let mut builder = settings::builder();
 
@@ -134,9 +110,6 @@ impl Codegen {
         };
 
         let mut codegen = Self {
-            errors: vec![],
-            analysis,
-
             isa,
             module,
             functions: HashMap::new(),
@@ -145,117 +118,92 @@ impl Codegen {
             counter: 0,
             strings: HashMap::new(),
 
-            local_functions: HashMap::new(),
             local_strings: HashMap::new(),
-            codeblock_nodes: vec![],
             stack_slots: HashMap::new(),
             local_args: HashMap::new(),
         };
 
-        codegen.update_all(hir);
+        codegen.update_all(checked);
 
         codegen
     }
 
     fn clear_local(&mut self) {
-        self.local_functions.clear();
         self.local_strings.clear();
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();
     }
 
-    fn get_place_from_stack(
-        &mut self,
-        node_id: HirId,
-        place: &HirPlace,
-    ) -> Result<Vec<(IRType, StackSlot)>, CodegenError> {
-        let HirPlaceRoot::Ident(ident) = &place.root else {
-            todo!("Non-ident place roots are not implemented");
+    /// Resolves a place rooted in a stack-resident local (`Storage::Local`)
+    /// down to its underlying stack-slot descriptors.
+    fn get_place_from_stack(&mut self, place: &CheckedPlace) -> Vec<(IRType, StackSlot)> {
+        let CheckedPlaceRoot::Variable { decl_id, r#type, .. } = &place.root else {
+            todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
         };
 
         let mut variable = self
             .stack_slots
-            .get(ident.as_ref())
-            .cloned()
-            .ok_or_else(|| CodegenError::Undeclared(node_id, ident.clone()))?;
-
-        let scope_id = self.codeblock_nodes.last().unwrap();
-        let Some(scope) = self.analysis.get_codeblock_scope(scope_id) else {
-            return Err(CodegenError::UnresolvedScope(node_id));
-        };
-        let mut current_type = scope
-            .declared_variables
-            .get(ident)
-            .ok_or_else(|| CodegenError::UnresolvedType(node_id, ident.clone()))?
+            .get(decl_id)
+            .unwrap_or_else(|| panic!("checked module guarantees {decl_id:?} was declared before this use"))
             .clone();
+        let mut current_type = r#type.clone();
 
         for projection in &place.projections {
             match projection {
-                HirProjection::FieldAccess(field) => {
-                    let (sliced, next_type) =
-                        project_field_access(self, node_id, &variable, current_type, field)?;
-                    variable = sliced;
-                    current_type = next_type;
+                CheckedProjection::FieldAccess { index, r#type, .. } => {
+                    let ResolvedType::Struct(struct_type) = &current_type else {
+                        unreachable!("checked module guarantees field projections are only built against a struct type");
+                    };
+                    variable = project_field_access(self, &variable, struct_type, *index);
+                    current_type = r#type.clone();
                 }
 
-                HirProjection::Index(_) => {
-                    // Indexing through a stack-resident local requires deciding
-                    // how array locals are laid out in memory (packed inline vs.
-                    // a pointer to externally-allocated data) -- the language
-                    // doesn't specify this yet (`Type::Array` doesn't even carry
-                    // a length), so this stays a graceful error rather than a
-                    // guessed-at implementation.
-                    return Err(CodegenError::NotImplemented(node_id));
+                CheckedProjection::Index { .. } => {
+                    // Indexing through a stack-resident local requires
+                    // deciding how array locals are laid out in memory
+                    // (packed inline vs. a pointer to externally-allocated
+                    // data) -- the language doesn't specify this yet
+                    // (`ResolvedType::Array` doesn't even carry a length),
+                    // so this is a real gap, not a bug.
+                    todo!("stack-resident array indexing: array memory layout is not decided yet");
                 }
             }
         }
 
-        Ok(variable)
+        variable
     }
 
-    fn get_place_from_args(
-        &mut self,
-        node_id: HirId,
-        place: &HirPlace,
-        builder: &mut FunctionBuilder,
-    ) -> Result<Vec<Value>, CodegenError> {
-        let HirPlaceRoot::Ident(ident) = &place.root else {
-            todo!("Non-ident place roots are not implemented");
+    /// Resolves a place rooted in a function parameter (`Storage::Parameter`)
+    /// down to its underlying SSA value(s).
+    fn get_place_from_args(&mut self, place: &CheckedPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
+        let CheckedPlaceRoot::Variable { decl_id, r#type, .. } = &place.root else {
+            todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
         };
-        let ident = ident.clone();
 
         let mut values = self
             .local_args
-            .get(ident.as_ref())
-            .ok_or_else(|| CodegenError::Undeclared(node_id, ident.clone()))?
-            .to_vec();
-
-        let scope_id = self.codeblock_nodes.last().unwrap();
-        let Some(scope) = self.analysis.get_codeblock_scope(scope_id) else {
-            return Err(CodegenError::UnresolvedScope(node_id));
-        };
-        let mut current_type = scope
-            .declared_variables
-            .get(&ident)
-            .ok_or_else(|| CodegenError::UnresolvedType(node_id, ident.clone()))?
+            .get(decl_id)
+            .unwrap_or_else(|| panic!("checked module guarantees {decl_id:?} was bound as a parameter before this use"))
             .clone();
+        let mut current_type = r#type.clone();
 
         for projection in &place.projections {
             match projection {
-                HirProjection::FieldAccess(field) => {
-                    let (sliced, next_type) =
-                        project_field_access(self, node_id, &values, current_type, field)?;
-                    values = sliced;
-                    current_type = next_type;
+                CheckedProjection::FieldAccess { index, r#type, .. } => {
+                    let ResolvedType::Struct(struct_type) = &current_type else {
+                        unreachable!("checked module guarantees field projections are only built against a struct type");
+                    };
+                    values = project_field_access(self, &values, struct_type, *index);
+                    current_type = r#type.clone();
                 }
 
-                HirProjection::Index(index_expr) => {
+                CheckedProjection::Index { index_expr, item_type } => {
                     let element_ir_type = current_type.clone().into_ir_type(self);
                     let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
 
                     let mut base = values[0];
-                    let mut index = self.process_expr(builder, (**index_expr).clone())?[0];
+                    let mut index = self.process_expr(builder, (**index_expr).clone())[0];
 
                     let ptr_type = self.pointer_type();
 
@@ -286,43 +234,36 @@ impl Codegen {
                         });
 
                     values = deref.0;
+                    current_type = item_type.clone();
                 }
             }
         }
 
-        Ok(values)
+        values
     }
 
-    fn get_place_value(
-        &mut self,
-        node_id: HirId,
-        place: &HirPlace,
-        builder: &mut FunctionBuilder,
-    ) -> Result<Vec<Value>, CodegenError> {
-        let HirPlaceRoot::Ident(ident) = &place.root else {
-            todo!("Non-ident place roots are not implemented");
+    fn get_place_value(&mut self, place: &CheckedPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
+        let CheckedPlaceRoot::Variable { decl_id, storage, .. } = &place.root else {
+            todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
         };
-        let ident = ident.clone();
 
-        let variable = self.stack_slots.get(ident.as_ref());
-        let values = self.local_args.get(ident.as_ref());
-        let function = self.functions.get(ident.as_ref());
-
-        match (variable, values, function) {
-            (Some(_), None, None) => {
-                let slots = self.get_place_from_stack(node_id, place)?;
-                Ok(slots
+        match storage {
+            Storage::Local => {
+                let slots = self.get_place_from_stack(place);
+                slots
                     .iter()
                     .map(|slot| builder.ins().stack_load(slot.0, slot.1, 0))
-                    .collect())
+                    .collect()
             }
-            (None, Some(_), None) => self.get_place_from_args(node_id, place, builder),
-            (None, None, Some(function)) => {
-                let function = *function;
+            Storage::Parameter => self.get_place_from_args(place, builder),
+            Storage::Function => {
+                let function = *self.functions.get(decl_id).unwrap_or_else(|| {
+                    panic!("checked module guarantees {decl_id:?} was declared as a function before this use")
+                });
                 let func = self.get_func_ref_from_id(builder, function);
-                Ok(vec![builder.ins().func_addr(self.pointer_type(), func)])
+                vec![builder.ins().func_addr(self.pointer_type(), func)]
             }
-            _ => Err(CodegenError::Undeclared(node_id, ident.clone())),
+            Storage::Global => todo!("global/extern data storage is not yet implemented"),
         }
     }
 
@@ -350,30 +291,20 @@ impl Codegen {
         sig
     }
 
-    fn update_extern_decl(&mut self, extern_decl: HirExternDeclaration) -> Result<(), CodegenError> {
-        let node_id = extern_decl.id;
-        let ident = extern_decl.ident;
+    fn update_extern_decl(&mut self, extern_decl: CheckedExternDecl) {
         match extern_decl.r#type {
-            Type::Function(_) => {
-                let resolved_fntype = self
-                    .analysis
-                    .get_global_function_type(&ident)
-                    .ok_or_else(|| CodegenError::UnresolvedType(node_id, ident.clone()))?
-                    .to_owned();
-
+            ResolvedType::Function(resolved_fntype) => {
                 let sig = self.make_function_sig(resolved_fntype);
 
                 let function_id = self
                     .module
-                    .declare_function(&ident.0, Linkage::Import, &sig)
+                    .declare_function(&extern_decl.ident.0, Linkage::Import, &sig)
                     .unwrap();
 
-                self.functions.insert(ident.0, function_id);
-
-                Ok(())
+                self.functions.insert(extern_decl.id, function_id);
             }
 
-            _ => Err(CodegenError::NotImplemented(node_id)),
+            _ => todo!("extern data declarations (non-function externs) are not yet implemented"),
         }
     }
 
@@ -405,62 +336,48 @@ impl Codegen {
         self.module.declare_func_in_func(func_id, builder.func)
     }
 
-    fn process_expr(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        node: HirExprNode,
-    ) -> Result<Vec<Value>, CodegenError> {
-        let node_id = node.id;
-
-        match node.expr {
-            HirExpr::String(s) => {
-                if let Some(local_value) = self.local_strings.get(&s.0) {
-                    return Ok(vec![local_value.to_owned()]);
+    fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
+        match node.kind {
+            CheckedExpr::String(s) => {
+                if let Some(local_value) = self.local_strings.get(&s) {
+                    return vec![*local_value];
                 }
 
                 let ptr_type = self.pointer_type();
-                let str_id = if let Some(id) = self.strings.get(&s.0) {
-                    id.to_owned()
+                let str_id = if let Some(id) = self.strings.get(&s) {
+                    *id
                 } else {
-                    self.get_or_declare_global_string(s.0.clone())
+                    self.get_or_declare_global_string(s.clone())
                 };
 
                 let global_value = self.module.declare_data_in_func(str_id, builder.func);
                 let str_ptr = builder.ins().global_value(ptr_type, global_value);
 
-                self.local_strings.insert(s.0, str_ptr);
+                self.local_strings.insert(s, str_ptr);
 
-                Ok(vec![str_ptr])
+                vec![str_ptr]
             }
 
-            HirExpr::FunctionCall(HirFunctionCall { callee, args }) => {
-                let callee_id = callee.id;
-                let Some(ResolvedType::Function(fntype)) = self.analysis.get_node_type(&callee_id)
-                else {
-                    return Err(CodegenError::NotAFunction(callee_id));
-                };
-                let fntype = fntype.clone();
-
-                let Ok(func_addr) = self.process_expr(builder, *callee) else {
-                    return Err(CodegenError::BadExpression(callee_id));
-                };
-                let Some(fnaddr) = func_addr.first() else {
-                    return Err(CodegenError::NotAFunction(callee_id));
-                };
+            CheckedExpr::FunctionCall(CheckedFunctionCall { callee, fn_type, args }) => {
+                // Checked module guarantees the callee resolves to exactly
+                // one Function-typed value -- there is no way to construct a
+                // Function-typed expression other than a `Storage::Function`
+                // place root, which always yields a single address.
+                let fnaddr = self.process_expr(builder, *callee)[0];
 
                 let mut ir_args = vec![];
                 for arg in args {
-                    let value = self.process_expr(builder, arg)?;
+                    let value = self.process_expr(builder, arg);
                     ir_args.push(value);
                 }
                 let ir_args = ir_args.into_iter().flatten().collect::<Vec<_>>();
 
-                let call = if fntype.is_variadic {
+                let call = if fn_type.is_variadic {
                     // Cranelift does not currently support variadic functions.
                     // To bypass that, we previously set the call convention to SysV
                     // and we are now going to "cast" the function pointer according
                     // to which arguments are being passed after the pre-determined params.
-                    let mut sig = self.make_function_sig(fntype.clone());
+                    let mut sig = self.make_function_sig(fn_type.clone());
                     if ir_args.len() > sig.params.len() {
                         for arg in &ir_args[sig.params.len()..] {
                             sig.params
@@ -468,87 +385,64 @@ impl Codegen {
                         }
                     }
                     let sigref = builder.import_signature(sig);
-                    builder.ins().call_indirect(sigref, *fnaddr, &ir_args)
+                    builder.ins().call_indirect(sigref, fnaddr, &ir_args)
                 } else {
-                    let sig = self.make_function_sig(fntype.clone());
+                    let sig = self.make_function_sig(fn_type.clone());
                     let sigref = builder.import_signature(sig);
-                    builder.ins().call_indirect(sigref, *fnaddr, &ir_args)
+                    builder.ins().call_indirect(sigref, fnaddr, &ir_args)
                 };
 
-                if *fntype.return_type == ResolvedType::Void {
-                    return Ok(vec![]);
+                if *fn_type.return_type == ResolvedType::Void {
+                    return vec![];
                 }
 
-                Ok(builder.inst_results(call).to_vec())
+                builder.inst_results(call).to_vec()
             }
 
-            HirExpr::Number(number_expr) => {
-                let resolved_type = self
-                    .analysis
-                    .get_node_type(&node_id)
-                    .ok_or(CodegenError::InvalidNumber(node_id))?;
+            CheckedExpr::Number(value) => {
+                vec![builder.ins().iconst::<i64>(types::I32, value as i64)]
+            }
 
-                match resolved_type {
-                    ResolvedType::I32 => {
-                        let integer = &number_expr.integer_part.parse::<i32>().unwrap_or_else(|_| panic!("Parser and analyzer claimed 'i32' for '{:?}'. It was not a valid 'i32'.",
-                            number_expr));
+            CheckedExpr::Place(place) => self.get_place_value(&place, builder),
 
-                        Ok(vec![
-                            builder.ins().iconst::<i64>(types::I32, *integer as i64),
-                        ])
+            CheckedExpr::Assignment(CheckedAssignment { target, value }) => {
+                let values = self.process_expr(builder, *value);
+
+                let CheckedPlaceRoot::Variable { storage, .. } = &target.root else {
+                    todo!("assignment into a place rooted in a non-variable expression is not yet implemented");
+                };
+
+                match storage {
+                    Storage::Local => {
+                        let slots = self.get_place_from_stack(&target);
+                        // Checked module guarantees `values` and `slots` have
+                        // the same length: analysis only accepts an
+                        // assignment whose value has the exact same resolved
+                        // type as its target, and `into_ir_type` is a pure
+                        // function of that type.
+                        for (value, slot) in values.iter().zip(slots.iter()) {
+                            builder.ins().stack_store(*value, slot.1, 0);
+                        }
                     }
-
-                    _ => Err(CodegenError::InvalidNumber(node_id)),
+                    Storage::Parameter => {
+                        todo!("assignment into a function parameter is not yet implemented");
+                    }
+                    Storage::Function | Storage::Global => {
+                        unreachable!(
+                            "checked module guarantees an assignment target resolves to a mutable variable, not a function or global"
+                        );
+                    }
                 }
+
+                values
             }
 
-            HirExpr::Place(place) => self.get_place_value(node_id, &place, builder),
-
-            HirExpr::Assignment(HirAssignment { target, value }) => {
-                let values = self.process_expr(builder, *value)?;
-
-                let target_id = target.id;
-                let HirExpr::Place(place_shape) = &target.expr else {
-                    return Err(CodegenError::NotAPlace(target_id));
-                };
-                let slots = self.get_place_from_stack(target_id, place_shape)?;
-
-                if values.len() != slots.len() {
-                    return Err(CodegenError::TypeMismatch(node_id));
-                }
-
-                for i in 0..values.len() {
-                    let value = values[i];
-                    let slot = slots[i].1;
-                    builder.ins().stack_store(value, slot, 0);
-                }
-
-                Ok(values)
-            }
-
-            HirExpr::Codeblock(_) => Err(CodegenError::NotImplemented(node_id)),
+            CheckedExpr::Codeblock(_) => todo!("codeblock expressions are not yet implemented"),
         }
     }
 
-    fn process_decl(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        decl: omega_hir::HirDeclaration,
-    ) -> Result<(), CodegenError> {
-        if self.stack_slots.contains_key(&decl.ident.to_string()) {
-            return Err(CodegenError::Redeclaration(decl.id, decl.ident));
-        }
-
-        let scope_id = self.codeblock_nodes.last().unwrap();
-        let Some(scope) = self.analysis.get_codeblock_scope(scope_id) else {
-            return Err(CodegenError::UnresolvedScope(decl.id));
-        };
-
-        let Some(variable_type) = scope.declared_variables.get(&decl.ident) else {
-            return Err(CodegenError::UnresolvedType(decl.id, decl.ident));
-        };
-
-        let ir_type = variable_type.clone().into_ir_type(self);
+    fn process_decl(&mut self, builder: &mut FunctionBuilder, decl: omega_analyzer::checked::CheckedDeclaration) {
+        let ir_type = decl.r#type.into_ir_type(self);
 
         let stack_slots = ir_type
             .into_iter()
@@ -563,27 +457,24 @@ impl Codegen {
                 )
             })
             .collect::<Vec<_>>();
-        self.stack_slots
-            .insert(decl.ident.to_string(), stack_slots.clone());
 
-        Ok(())
+        self.stack_slots.insert(decl.id, stack_slots);
     }
 
-    fn process_statement(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        stmt: HirStmt,
-    ) -> Result<(), CodegenError> {
+    fn process_statement(&mut self, builder: &mut FunctionBuilder, stmt: CheckedStmt) {
         match stmt {
-            HirStmt::Expression(expr) => self.process_expr(builder, expr).map(|_| ()),
-            HirStmt::Return(expr) => {
-                let retval = self.process_expr(builder, expr)?;
-                builder.ins().return_(&retval);
-                Ok(())
+            CheckedStmt::Expression(expr) => {
+                self.process_expr(builder, expr);
             }
-            HirStmt::Declaration(decl) => self.process_decl(builder, decl),
-            HirStmt::Struct(_) => Ok(()), // Only analysis is necessary
-            HirStmt::ExternDeclaration(decl) => Err(CodegenError::NotImplemented(decl.id)),
+            CheckedStmt::Return(expr) => {
+                let retval = self.process_expr(builder, expr);
+                builder.ins().return_(&retval);
+            }
+            CheckedStmt::Declaration(decl) => self.process_decl(builder, decl),
+            CheckedStmt::Struct(_) => {} // Only analysis is necessary
+            CheckedStmt::ExternDeclaration(_) => {
+                todo!("extern declarations inside a function body are not yet implemented");
+            }
         }
     }
 
@@ -595,13 +486,10 @@ impl Codegen {
         format!("___omg_{}", symbol.replace("::", "_"))
     }
 
-    fn update_function_def(
-        &mut self,
-        function_def: HirFunctionDef,
-        fntype: ResolvedFunctionType,
-        mangled_symbol: String,
-    ) -> Result<(), Vec<CodegenError>> {
+    fn update_function_def(&mut self, function_def: CheckedFunctionDef, mangled_symbol: String) {
         let node_id = function_def.id;
+        let fntype = function_def.fn_type();
+
         let mut sig = self.module.make_signature();
         if *fntype.return_type != ResolvedType::Void {
             let return_type = fntype.return_type.clone().into_ir_type(self);
@@ -610,27 +498,10 @@ impl Codegen {
                 .for_each(|param| sig.returns.push(AbiParam::new(param)));
         }
 
-        let scope = self
-            .analysis
-            .get_codeblock_scope(&node_id)
-            .ok_or_else(|| vec![CodegenError::UnresolvedScope(node_id)])?;
-
-        let resolved_params = fntype
-            .params
-            .clone()
-            .into_iter()
-            .map(|param| {
-                scope
-                    .declared_variables
-                    .get(&param.0).map(|resolved_type| resolved_type.clone().into_ir_type(self))
-                    .ok_or(CodegenError::UnresolvedType(node_id, param.0))
-            })
-            .collect::<Result<Vec<_>, CodegenError>>()
-            .map_err(|e| vec![e])?;
-
         // Add parameters to signature
-        for param in resolved_params {
-            sig.params.push(AbiParam::new(param[0])) // Simple types only for now. TODO: Fix.
+        for param in &function_def.params {
+            let ir_type = param.r#type.clone().into_ir_type(self);
+            sig.params.push(AbiParam::new(ir_type[0])); // Simple types only for now. TODO: Fix.
         }
 
         let demangled_symbol = Self::demangle(&mangled_symbol);
@@ -644,6 +515,10 @@ impl Codegen {
             .declare_function(&demangled_symbol, Linkage::Export, &sig)
             .unwrap();
 
+        // Registered as soon as it's declared (not after its body is fully
+        // defined below) so a function can call itself recursively.
+        self.functions.insert(node_id, function_id);
+
         // Move `ctx` out of `self` for the duration of the build so the rest of
         // this function can still freely borrow `self` (e.g. `into_ir_type(&self)`,
         // `self.process_statement(...)`) while `builder` holds onto it.
@@ -654,45 +529,27 @@ impl Codegen {
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
-        let block_params = builder.block_params(entry_block);
+        let block_params = builder.block_params(entry_block).to_vec();
 
         // Some identifiers (e.g structs) have more than one value per identifier.
-        // For that reason, lets make a helper array that repeats the identifier
-        // N times, where N is the amount of values it has.
-        let argmap = fntype
+        // For that reason, lets make a helper array that repeats the param's own
+        // id N times, where N is the amount of values it has.
+        let argmap = function_def
             .params
             .iter()
             .flat_map(|param| {
-                let value_count = param.1.clone().into_ir_type(self).len();
-                [&param.0].repeat(value_count)
+                let value_count = param.r#type.clone().into_ir_type(self).len();
+                vec![param.id; value_count]
             })
             .collect::<Vec<_>>();
-        for i in 0..block_params.len() {
-            let ident = argmap[i];
-            let arg = block_params[i];
-            if let Some(entry) = self.local_args.get_mut(&ident.to_string()) {
-                entry.push(arg);
-                continue;
-            }
-
-            self.local_args.insert(ident.to_string(), vec![arg]);
+        for (i, arg) in block_params.iter().enumerate() {
+            self.local_args.entry(argmap[i]).or_default().push(*arg);
         }
         builder.switch_to_block(entry_block);
 
-        let mut errors = vec![];
-
         // Process function body
-        self.codeblock_nodes.push(node_id);
         for stmt in function_def.body {
-            if let Err(e) = self.process_statement(&mut builder, stmt) {
-                errors.push(e);
-            }
-        }
-        self.codeblock_nodes.pop();
-
-        if !errors.is_empty() {
-            self.ctx = ctx;
-            return Err(errors);
+            self.process_statement(&mut builder, stmt);
         }
 
         if *fntype.return_type == ResolvedType::Void {
@@ -700,8 +557,7 @@ impl Codegen {
         }
 
         if let Err(err) = codegen::verify_function(builder.func, self.isa.as_ref()) {
-            self.ctx = ctx;
-            return Err(vec![CodegenError::VerifierErrors(node_id, err)]);
+            panic!("cranelift verifier rejected generated IR for a function (internal codegen bug): {err:?}");
         }
 
         builder.seal_block(entry_block);
@@ -709,67 +565,36 @@ impl Codegen {
 
         self.module.define_function(function_id, &mut ctx).unwrap();
         self.ctx = ctx;
-        self.functions.insert(mangled_symbol, function_id);
 
         self.clear_local();
-
-        Ok(())
     }
 
-    fn update_global_function_def(
-        &mut self,
-        function_def: HirFunctionDef,
-    ) -> Result<(), Vec<CodegenError>> {
-        let node_id = function_def.id;
-        let ident = function_def.name.clone();
-        let fntype = self
-            .analysis
-            .get_global_function_type(&ident)
-            .ok_or_else(|| vec![CodegenError::UnresolvedType(node_id, ident.clone())])?
-            .to_owned();
-
-        self.update_function_def(function_def, fntype, ident.0)
+    fn update_global_function_def(&mut self, function_def: CheckedFunctionDef) {
+        let mangled_symbol = function_def.name.0.clone();
+        self.update_function_def(function_def, mangled_symbol);
     }
 
-    fn update_struct_def(&mut self, struct_def: HirStructDef) -> Result<(), Vec<CodegenError>> {
-        let node_id = struct_def.id;
-        let mut errors = vec![];
-
+    fn update_struct_def(&mut self, struct_def: CheckedStructDef) {
         for function in struct_def.functions {
-            let fntype = self
-                .analysis
-                .get_struct_function_type(node_id, &function.name)
-                .ok_or_else(|| vec![CodegenError::UnresolvedType(node_id, function.name.clone())])?
-                .to_owned();
-
             let mangled_symbol = format!("{}::{}", struct_def.name.as_ref(), function.name.as_ref());
-            if let Err(e) = self.update_function_def(function, fntype, mangled_symbol) {
-                errors.extend(e);
-            }
+            self.update_function_def(function, mangled_symbol);
         }
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-
-        Ok(())
     }
 
-    fn update(&mut self, item: HirItem) -> Result<(), Vec<CodegenError>> {
+    fn update(&mut self, item: CheckedItem) {
         match item {
-            HirItem::ExternDeclaration(extern_decl) => {
-                self.update_extern_decl(extern_decl).map_err(|x| vec![x])
+            CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl),
+            CheckedItem::FunctionDefinition(fn_def) => self.update_global_function_def(fn_def),
+            CheckedItem::Struct(struct_def) => self.update_struct_def(struct_def),
+            CheckedItem::Declaration(_) => {
+                todo!("global data declarations are not yet implemented");
             }
-            HirItem::FunctionDefinition(fn_def) => self.update_global_function_def(fn_def),
-            HirItem::Struct(struct_def) => self.update_struct_def(struct_def),
-            HirItem::Declaration(decl) => Err(vec![CodegenError::NotImplemented(decl.id)]),
         }
     }
 
-    fn update_all(&mut self, hir: HirModule) {
-        for item in hir.items {
-            if let Err(e) = self.update(item) {
-                self.errors.extend(e);
-            }
+    fn update_all(&mut self, checked: CheckedModule) {
+        for item in checked.items {
+            self.update(item);
         }
     }
 
@@ -777,12 +602,8 @@ impl Codegen {
         self.module.target_config().pointer_type()
     }
 
-    pub fn emit_object(self) -> Result<Vec<u8>, Vec<CodegenError>> {
-        if !self.errors.is_empty() {
-            return Err(self.errors);
-        }
-
+    pub fn emit_object(self) -> Vec<u8> {
         let product = self.module.finish();
-        Ok(product.emit().unwrap())
+        product.emit().unwrap()
     }
 }

@@ -14,11 +14,11 @@ fn main() {
     let hir = omega_hir::lower_module(ModuleId(0), &ast);
 
     let analyzer = Analyzer::new();
-    let analysis = analyzer.analyze(&hir).expect("Failed to analyze");
+    let checked = analyzer.analyze(&hir).expect("Failed to analyze");
 
     let modname = "hello";
-    let codegen = Codegen::generate(modname, "x86_64-unknown-linux", hir, analysis);
-    let object = codegen.emit_object().expect("Failed to codegen");
+    let codegen = Codegen::generate(modname, "x86_64-unknown-linux", checked);
+    let object = codegen.emit_object();
 
     let output_file = format!("target/{modname}.o");
     std::fs::write(&output_file, object).expect("Failed to write object");
