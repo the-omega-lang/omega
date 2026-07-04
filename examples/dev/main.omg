@@ -7,15 +7,15 @@ struct Interface {
     }
 }
 
-
-extern ___omg_Interface_member_function : (ptr: *Interface) => void;
-
 main(argc : i32, argv : [*char]) => i32 {
     iface : Interface;
     iface.do_thing = puts;
     iface.do_thing("HELLO WORLD");
     iface.do_thing("");
+    iface.member_function();
     ptr : *Interface;
-    ___omg_Interface_member_function(ptr);
+    ptr = &iface;
+    (*ptr).member_function();
+    ptr.member_function();
     return 69;
 }
