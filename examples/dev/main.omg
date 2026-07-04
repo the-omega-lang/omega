@@ -3,10 +3,7 @@ extern puts : (s: *char) => i32;
 struct Interface {
     do_thing: (s : *char) => i32;
     member_function(self) => void {
-        puts("You called the member function");
-    }
-    my_other_func(self) => void {
-        self.do_thing("i have called self.do_thing");
+        self.do_thing("You called the member function");
     }
 }
 
@@ -20,6 +17,5 @@ main(argc : i32, argv : [*char]) => i32 {
     ptr = &iface;
     (*ptr).member_function();
     ptr.member_function();
-    ptr.my_other_func();
     return 69;
 }
