@@ -1,4 +1,4 @@
-use omega_parser::prelude::{FunctionType, Ident, Type};
+use omega_parser::prelude::Ident;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedFunctionType {

@@ -1,7 +1,7 @@
 use chumsky::prelude::*;
 
 use crate::{
-    NodeId, next_node_id, parser,
+    parser,
     prelude::{ExpressionNode, Ident},
 };
 

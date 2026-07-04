@@ -1,3 +1,4 @@
+use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_parser::prelude::*;
 use std::collections::HashMap;
@@ -41,10 +42,7 @@ impl Context {
     // Finder functions
     pub fn find_variable_type(&self, ident: &Ident) -> Option<&ResolvedType> {
         for scope in self.scopes.iter().rev() {
-            println!("SCOPE: {:#?}", scope);
-            println!("IDENT: {}", ident.as_ref());
             if let Some(typ) = scope.declared_variables.get(ident) {
-                println!("FOUND");
                 return Some(typ);
             }
         }
@@ -75,12 +73,12 @@ impl Context {
     pub fn resolve_function_type(
         &self,
         fntype: FunctionType,
-    ) -> Result<ResolvedFunctionType, String> {
+    ) -> Result<ResolvedFunctionType, TypeResolutionError> {
         let params = fntype
             .params
             .into_iter()
             .map(|(ident, typ)| self.resolve_type(typ).map(|resolved| (ident, resolved)))
-            .collect::<Result<Vec<(Ident, ResolvedType)>, String>>()?;
+            .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
         Ok(ResolvedFunctionType {
             params,
             return_type: Box::new(self.resolve_type(*fntype.return_type)?),
@@ -89,11 +87,11 @@ impl Context {
         })
     }
 
-    pub fn resolve_type(&self, typ: Type) -> Result<ResolvedType, String> {
+    pub fn resolve_type(&self, typ: Type) -> Result<ResolvedType, TypeResolutionError> {
         let resolved = match typ {
             Type::Named(name) => self
                 .find_defined_type(&name)
-                .ok_or_else(|| format!("Unrecognized named type: {}", name.0))?
+                .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(name.clone()))?
                 .to_owned(),
             Type::Pointer(pointee_type) => {
                 ResolvedType::Pointer(Box::new(self.resolve_type(*pointee_type)?))
@@ -111,7 +109,7 @@ impl Context {
     }
 
     pub fn parent_scope(&mut self) -> &mut ScopeContext {
-        let index = (self.scopes.len() as isize - 2).min(0) as usize;
+        let index = self.scopes.len().saturating_sub(2);
         self.scopes.get_mut(index).unwrap()
     }
 

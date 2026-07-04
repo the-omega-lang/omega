@@ -5,8 +5,8 @@ pub mod number;
 pub mod string;
 
 use crate::{
-    next_node_id, parser,
-    prelude::{Ident, Statement},
+    parser,
+    prelude::Ident,
     syntax::{
         ParseError,
         expression::{
@@ -33,11 +33,8 @@ pub enum Expression {
     Assignment(Box<AssignmentExpr>),
 }
 
-pub type NodeId = u64;
-
 #[derive(Debug, Clone)]
 pub struct ExpressionNode {
-    pub id: NodeId,
     pub expression: Expression,
     pub span: SimpleSpan,
 }
@@ -76,7 +73,7 @@ impl ExpressionNode {
                 StringExpr::parser().map(Expression::String),
                 Ident::parser().map(Expression::Ident)
             )).map_with(|expression, extra| ExpressionNode {
-                id: next_node_id(), expression, span: extra.span()
+                expression, span: extra.span()
             });
 
             let postfix = choice((
@@ -92,7 +89,7 @@ impl ExpressionNode {
                     for postfix in postfixes {
                         let expr = postfix.into_expression(expression);
                         expression = ExpressionNode {
-                            id: next_node_id(), expression: expr, span: extra.span()
+                            expression: expr, span: extra.span()
                         }
                     }
 

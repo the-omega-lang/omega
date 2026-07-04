@@ -1,4 +1,4 @@
-use crate::{parser, syntax::ParseError};
+use crate::parser;
 use chumsky::prelude::*;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

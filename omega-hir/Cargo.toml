@@ -1,8 +1,7 @@
 [package]
-name = "omega-analyzer"
+name = "omega-hir"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-omega-hir = { path = "../omega-hir" }
 omega-parser = { path = "../omega-parser" }

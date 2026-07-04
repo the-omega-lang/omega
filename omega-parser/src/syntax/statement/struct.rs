@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-
 use crate::{
-    NodeId, next_node_id, parser,
+    parser,
     prelude::{DeclarationStmt, FunctionDefinitionStmt},
-    syntax::{ParseError, identifier::Ident, r#type::Type},
+    syntax::identifier::Ident,
 };
 use chumsky::{prelude::*, text::ascii::keyword};
 
@@ -11,14 +9,14 @@ use chumsky::{prelude::*, text::ascii::keyword};
 pub struct StructStmt {
     pub ident: Ident,
     pub fields: Vec<DeclarationStmt>,
-    pub functions: Vec<(NodeId, FunctionDefinitionStmt)>,
+    pub functions: Vec<FunctionDefinitionStmt>,
 }
 
 impl StructStmt {
     parser!((decl_parser => DeclarationStmt, fndef_parser => FunctionDefinitionStmt) => Self {
         let declaration_parser = decl_parser.padded().then_ignore(just(';').padded());
         let declarations_parser = declaration_parser.repeated().collect();
-        let functions_parser = fndef_parser.padded().map(|x| (next_node_id(), x)).repeated().collect();
+        let functions_parser = fndef_parser.padded().repeated().collect();
         keyword("struct").padded()
             .ignore_then(Ident::parser().padded())
             .then_ignore(just('{').padded())

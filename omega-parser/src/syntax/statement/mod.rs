@@ -5,8 +5,8 @@ pub mod r#return;
 pub mod r#struct;
 
 use crate::{
-    NodeId, next_node_id, parser,
-    prelude::{Expression, StructStmt},
+    parser,
+    prelude::StructStmt,
     syntax::{
         ParseError,
         expression::ExpressionNode,
@@ -29,7 +29,6 @@ pub enum RootStatement {
 
 #[derive(Debug, Clone)]
 pub struct RootStatementNode {
-    pub id: NodeId,
     pub root_stmt: RootStatement,
     pub span: SimpleSpan,
 }
@@ -49,7 +48,6 @@ impl RootStatementNode {
             StructStmt::parser(DeclarationStmt::parser(), function_def_parser).map(RootStatement::Struct),
         ))
         .map_with(|root_stmt, extra| RootStatementNode {
-            id: next_node_id(),
             root_stmt, span:
             extra.span()
         })
@@ -69,7 +67,6 @@ pub enum Statement {
 
 #[derive(Debug, Clone)]
 pub struct StatementNode {
-    pub id: NodeId,
     pub statement: Statement,
     pub span: SimpleSpan,
 }
@@ -93,7 +90,7 @@ impl StatementNode {
             ));
 
             choice((terminal, nonterminal))
-                .map_with(|statement, extra| StatementNode { id: next_node_id(), statement, span: extra.span() })
+                .map_with(|statement, extra| StatementNode { statement, span: extra.span() })
                 .padded()
         })
     });

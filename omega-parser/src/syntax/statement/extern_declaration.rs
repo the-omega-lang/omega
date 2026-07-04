@@ -1,6 +1,6 @@
 use crate::parser;
 use crate::syntax::{
-    ParseError, identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
+    identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
 };
 use chumsky::prelude::*;
 

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 omega-parser = { path = "../omega-parser" }
+omega-hir = { path = "../omega-hir" }
 omega-analyzer = { path = "../omega-analyzer" }
 cranelift = "0.131.1"
 cranelift-reader = "0.131.1"

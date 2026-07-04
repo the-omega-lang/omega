@@ -1,8 +1,8 @@
 use crate::{
     parser,
-    prelude::{CodeblockExpr, FunctionType, Statement, StatementNode},
+    prelude::{CodeblockExpr, FunctionType, StatementNode},
     syntax::{
-        ParseError, identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
+        identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
     },
 };
 use chumsky::prelude::*;

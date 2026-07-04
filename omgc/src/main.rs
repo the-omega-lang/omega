@@ -1,6 +1,7 @@
-use omega_analyzer::analysis::{Analysis, Analyzer};
+use omega_analyzer::analysis::Analyzer;
 use omega_codegen::Codegen;
-use omega_parser::{SourceModule, prelude::*};
+use omega_hir::ModuleId;
+use omega_parser::SourceModule;
 
 fn main() {
     println!("[Omega Compiler]");
@@ -8,24 +9,15 @@ fn main() {
     let source =
         std::fs::read_to_string("examples/dev/main.omg").expect("Failed to read source file");
 
-    // TEST
-    // let source = "abc.def = 10";
-    // println!("{}", source);
-    // let parser = ExpressionNode::configured_parser();
-    // println!("Parsed: {:?}", parser.parse(source).unwrap());
-    // return;
-    // ENDTEST
-
-    println!("{}", source);
     let ast = SourceModule::parse(&source).expect("Failed to parse");
-    println!("{:#?}", ast);
+
+    let hir = omega_hir::lower_module(ModuleId(0), &ast);
 
     let analyzer = Analyzer::new();
-    let analysis = analyzer.analyze(&ast).expect("Failed to analyze");
-    println!("{:#?}", analysis);
+    let analysis = analyzer.analyze(&hir).expect("Failed to analyze");
 
     let modname = "hello";
-    let codegen = Codegen::generate(modname, "x86_64-unknown-linux", ast, analysis);
+    let codegen = Codegen::generate(modname, "x86_64-unknown-linux", hir, analysis);
     let object = codegen.emit_object().expect("Failed to codegen");
 
     let output_file = format!("target/{modname}.o");

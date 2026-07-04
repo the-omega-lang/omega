@@ -10,5 +10,6 @@ pub use crate::syntax::statement::{
     r#return::ReturnStmt, r#struct::StructStmt,
 };
 pub use crate::syntax::r#type::{FunctionType, Type};
-pub use crate::{NodeId, SourceModule};
+pub use crate::SourceModule;
 pub use chumsky::Parser;
+pub use chumsky::span::SimpleSpan;
