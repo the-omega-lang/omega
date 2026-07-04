@@ -12,9 +12,9 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
-        CheckedAssignment, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
-        CheckedFunctionDef, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedStmt, CheckedStructDef, Storage,
+        CheckedAddressOf, CheckedAssignment, CheckedDeclaration, CheckedExpr, CheckedExprNode,
+        CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem, CheckedModule,
+        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedStructDef, Storage,
     },
     resolved_type::{ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
@@ -42,7 +42,29 @@ pub struct Codegen {
     // Local state (must be cleared per function)
     local_strings: HashMap<String, Value>,
     local_args: HashMap<HirId, Vec<Value>>,
-    stack_slots: HashMap<HirId, Vec<(IRType, StackSlot)>>,
+    /// One stack slot per local, sized to its type's total byte size (not
+    /// one slot per scalar leaf) -- a prerequisite for `&`/`*`: a local
+    /// needs a single address, and three independent per-leaf slots have
+    /// three unrelated addresses. Field access within it is a byte offset
+    /// (see `total_bytes`/`field_byte_offset`), not a leaf-count slice.
+    stack_slots: HashMap<HirId, StackSlot>,
+}
+
+/// Where a resolved place's underlying storage lives, for both the read
+/// (producing values) and write (storing values) case:
+enum PlaceStorage {
+    /// Already-materialized SSA values (a `Storage::Parameter` that hasn't
+    /// been dereferenced through) -- readable, but has no address: there is
+    /// no memory location backing a bare SSA value.
+    Values(Vec<Value>),
+    /// A byte offset into one compile-time-known stack slot (`Storage::Local`,
+    /// before any `Deref`).
+    Slot { slot: StackSlot, offset: u32 },
+    /// A byte offset from a runtime pointer value -- the state from the
+    /// first `Deref` projection onward (explicit `*`, or a seamless
+    /// pointer-to-struct field access), since the pointee isn't known until
+    /// runtime.
+    Address { base: Value, offset: u32 },
 }
 
 trait IntoIRType {
@@ -66,10 +88,11 @@ impl IntoIRType for ResolvedType {
 }
 
 /// Slices a `FieldAccess` projection's already-resolved `field_index` out of
-/// an already-materialized value list (either stack-slot descriptors or SSA
-/// argument values -- the two callers below are otherwise identical here,
-/// which is why this is shared). No name search, no failure path: the
-/// checked module already picked this exact index out of `struct_type`.
+/// an already-materialized value list (a `PlaceStorage::Values`, i.e. a
+/// `Storage::Parameter` that hasn't been dereferenced through -- positional,
+/// by leaf count, since there's no memory/byte offset for a bare SSA value).
+/// No name search, no failure path: the checked module already picked this
+/// exact index out of `struct_type`.
 fn project_field_access<T: Clone>(
     codegen: &Codegen,
     values: &[T],
@@ -83,6 +106,29 @@ fn project_field_access<T: Clone>(
     let len = struct_type.fields[field_index].1.clone().into_ir_type(codegen).len();
 
     values[start..start + len].to_vec()
+}
+
+/// A resolved type's total in-memory size, in bytes: the sum of its scalar
+/// leaves' sizes (`into_ir_type` already flattens a struct recursively into
+/// its leaves, so this needs no separate struct case). Layout is packed --
+/// each field is placed at the raw running byte sum of its predecessors,
+/// with no alignment padding. x86_64 tolerates unaligned loads/stores with
+/// no correctness issue, so this is safe; it's just not C-ABI-compatible
+/// layout, consistent with the rest of this codegen not implementing true
+/// C-ABI struct-passing conventions at function boundaries either (structs
+/// are passed as flattened positional scalars, not per SysV aggregate rules).
+fn total_bytes(r#type: ResolvedType, codegen: &Codegen) -> u32 {
+    r#type.into_ir_type(codegen).iter().map(|t| t.bytes()).sum()
+}
+
+/// A `FieldAccess` projection's already-resolved `field_index`'s packed byte
+/// offset within `struct_type` -- the memory-backed (`Slot`/`Address`)
+/// counterpart to `project_field_access`'s positional (`Values`) slicing.
+fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codegen: &Codegen) -> u32 {
+    struct_type.fields[..field_index]
+        .iter()
+        .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
+        .sum()
 }
 
 impl Codegen {
@@ -135,19 +181,43 @@ impl Codegen {
         self.local_args.clear();
     }
 
-    /// Resolves a place rooted in a stack-resident local (`Storage::Local`)
-    /// down to its underlying stack-slot descriptors.
-    fn get_place_from_stack(&mut self, place: &CheckedPlace) -> Vec<(IRType, StackSlot)> {
-        let CheckedPlaceRoot::Variable { decl_id, r#type, .. } = &place.root else {
+    /// Walks a place's root and projections once, tracking where its
+    /// storage currently lives -- switching from `Slot`/`Values` to
+    /// `Address` the moment a `Deref` (explicit, or an array `Index`'s
+    /// implicit pointer arithmetic) happens, since the pointee isn't known
+    /// until runtime. This is the one general mechanism behind reading,
+    /// writing, and taking the address of a place, regardless of how many
+    /// derefs/field accesses/indices got it there.
+    fn resolve_place_storage(
+        &mut self,
+        place: &CheckedPlace,
+        builder: &mut FunctionBuilder,
+    ) -> (PlaceStorage, ResolvedType) {
+        let CheckedPlaceRoot::Variable { decl_id, storage, r#type } = &place.root else {
             todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
         };
 
-        let mut variable = self
-            .stack_slots
-            .get(decl_id)
-            .unwrap_or_else(|| panic!("checked module guarantees {decl_id:?} was declared before this use"))
-            .clone();
         let mut current_type = r#type.clone();
+        let mut current = match storage {
+            Storage::Local => {
+                let slot = *self.stack_slots.get(decl_id).unwrap_or_else(|| {
+                    panic!("checked module guarantees {decl_id:?} was declared before this use")
+                });
+                PlaceStorage::Slot { slot, offset: 0 }
+            }
+            Storage::Parameter => {
+                let values = self.local_args.get(decl_id).cloned().unwrap_or_else(|| {
+                    panic!("checked module guarantees {decl_id:?} was bound as a parameter before this use")
+                });
+                PlaceStorage::Values(values)
+            }
+            Storage::Function => {
+                unreachable!(
+                    "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
+                );
+            }
+            Storage::Global => todo!("global/extern data storage is not yet implemented"),
+        };
 
         for projection in &place.projections {
             match projection {
@@ -155,46 +225,25 @@ impl Codegen {
                     let ResolvedType::Struct(struct_type) = &current_type else {
                         unreachable!("checked module guarantees field projections are only built against a struct type");
                     };
-                    variable = project_field_access(self, &variable, struct_type, *index);
+                    current = match current {
+                        PlaceStorage::Values(values) => {
+                            PlaceStorage::Values(project_field_access(self, &values, struct_type, *index))
+                        }
+                        PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                            slot,
+                            offset: offset + field_byte_offset(struct_type, *index, self),
+                        },
+                        PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                            base,
+                            offset: offset + field_byte_offset(struct_type, *index, self),
+                        },
+                    };
                     current_type = r#type.clone();
                 }
 
-                CheckedProjection::Index { .. } => {
-                    // Indexing through a stack-resident local requires
-                    // deciding how array locals are laid out in memory
-                    // (packed inline vs. a pointer to externally-allocated
-                    // data) -- the language doesn't specify this yet
-                    // (`ResolvedType::Array` doesn't even carry a length),
-                    // so this is a real gap, not a bug.
-                    todo!("stack-resident array indexing: array memory layout is not decided yet");
-                }
-            }
-        }
-
-        variable
-    }
-
-    /// Resolves a place rooted in a function parameter (`Storage::Parameter`)
-    /// down to its underlying SSA value(s).
-    fn get_place_from_args(&mut self, place: &CheckedPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
-        let CheckedPlaceRoot::Variable { decl_id, r#type, .. } = &place.root else {
-            todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
-        };
-
-        let mut values = self
-            .local_args
-            .get(decl_id)
-            .unwrap_or_else(|| panic!("checked module guarantees {decl_id:?} was bound as a parameter before this use"))
-            .clone();
-        let mut current_type = r#type.clone();
-
-        for projection in &place.projections {
-            match projection {
-                CheckedProjection::FieldAccess { index, r#type, .. } => {
-                    let ResolvedType::Struct(struct_type) = &current_type else {
-                        unreachable!("checked module guarantees field projections are only built against a struct type");
-                    };
-                    values = project_field_access(self, &values, struct_type, *index);
+                CheckedProjection::Deref { r#type } => {
+                    let ptr_value = self.load_scalars(builder, &current, &current_type)[0];
+                    current = PlaceStorage::Address { base: ptr_value, offset: 0 };
                     current_type = r#type.clone();
                 }
 
@@ -202,11 +251,10 @@ impl Codegen {
                     let element_ir_type = current_type.clone().into_ir_type(self);
                     let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
 
-                    let mut base = values[0];
+                    let mut base = self.load_scalars(builder, &current, &current_type)[0];
                     let mut index = self.process_expr(builder, (**index_expr).clone())[0];
 
                     let ptr_type = self.pointer_type();
-
                     if builder.func.dfg.value_type(base) != ptr_type {
                         base = builder.ins().uextend(ptr_type, base);
                     }
@@ -214,57 +262,83 @@ impl Codegen {
                         index = builder.ins().uextend(ptr_type, index);
                     }
 
-                    let element_size = builder
-                        .ins()
-                        .iconst(self.pointer_type(), element_ir_size as i64);
+                    let element_size = builder.ins().iconst(ptr_type, element_ir_size as i64);
                     let offset = builder.ins().imul(index, element_size);
                     let element_addr = builder.ins().iadd(base, offset);
-                    let deref = element_ir_type
-                        .into_iter()
-                        .fold((vec![], 0u32), |mut acc, typ| {
-                            let result = builder.ins().load(
-                                typ,
-                                MemFlags::new(),
-                                element_addr,
-                                acc.1 as i32,
-                            );
-                            acc.0.push(result);
-                            acc.1 += typ.bytes();
-                            acc
-                        });
 
-                    values = deref.0;
+                    current = PlaceStorage::Address { base: element_addr, offset: 0 };
                     current_type = item_type.clone();
                 }
             }
         }
 
-        values
+        (current, current_type)
+    }
+
+    /// Reads every scalar leaf of `r#type` out of `storage`, in leaf order.
+    fn load_scalars(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        storage: &PlaceStorage,
+        r#type: &ResolvedType,
+    ) -> Vec<Value> {
+        if let PlaceStorage::Values(values) = storage {
+            return values.clone();
+        }
+
+        let mut result = Vec::new();
+        let mut rel_offset = 0u32;
+        for leaf in r#type.clone().into_ir_type(self) {
+            let value = match storage {
+                PlaceStorage::Slot { slot, offset } => {
+                    builder.ins().stack_load(leaf, *slot, (*offset + rel_offset) as i32)
+                }
+                PlaceStorage::Address { base, offset } => {
+                    builder.ins().load(leaf, MemFlags::new(), *base, (*offset + rel_offset) as i32)
+                }
+                PlaceStorage::Values(_) => unreachable!("handled above"),
+            };
+            result.push(value);
+            rel_offset += leaf.bytes();
+        }
+        result
+    }
+
+    /// Writes `values` (one per scalar leaf, in leaf order) into `storage`.
+    fn store_scalars(&mut self, builder: &mut FunctionBuilder, storage: &PlaceStorage, values: &[Value]) {
+        let mut rel_offset = 0u32;
+        for value in values {
+            let leaf = builder.func.dfg.value_type(*value);
+            match storage {
+                PlaceStorage::Values(_) => {
+                    todo!("assignment into a function parameter is not yet implemented");
+                }
+                PlaceStorage::Slot { slot, offset } => {
+                    builder.ins().stack_store(*value, *slot, (*offset + rel_offset) as i32);
+                }
+                PlaceStorage::Address { base, offset } => {
+                    builder.ins().store(MemFlags::new(), *value, *base, (*offset + rel_offset) as i32);
+                }
+            }
+            rel_offset += leaf.bytes();
+        }
     }
 
     fn get_place_value(&mut self, place: &CheckedPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
-        let CheckedPlaceRoot::Variable { decl_id, storage, .. } = &place.root else {
-            todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
-        };
-
-        match storage {
-            Storage::Local => {
-                let slots = self.get_place_from_stack(place);
-                slots
-                    .iter()
-                    .map(|slot| builder.ins().stack_load(slot.0, slot.1, 0))
-                    .collect()
-            }
-            Storage::Parameter => self.get_place_from_args(place, builder),
-            Storage::Function => {
-                let function = *self.functions.get(decl_id).unwrap_or_else(|| {
-                    panic!("checked module guarantees {decl_id:?} was declared as a function before this use")
-                });
-                let func = self.get_func_ref_from_id(builder, function);
-                vec![builder.ins().func_addr(self.pointer_type(), func)]
-            }
-            Storage::Global => todo!("global/extern data storage is not yet implemented"),
+        // A function reference has no memory backing at all -- just a
+        // symbol address -- so it's handled before the general
+        // storage-resolution path (checked module guarantees this root
+        // never carries further projections, see `resolve_place_storage`).
+        if let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, .. } = &place.root {
+            let function = *self.functions.get(decl_id).unwrap_or_else(|| {
+                panic!("checked module guarantees {decl_id:?} was declared as a function before this use")
+            });
+            let func = self.get_func_ref_from_id(builder, function);
+            return vec![builder.ins().func_addr(self.pointer_type(), func)];
         }
+
+        let (storage, r#type) = self.resolve_place_storage(place, builder);
+        self.load_scalars(builder, &storage, &r#type)
     }
 
     fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
@@ -407,58 +481,42 @@ impl Codegen {
 
             CheckedExpr::Assignment(CheckedAssignment { target, value }) => {
                 let values = self.process_expr(builder, *value);
-
-                let CheckedPlaceRoot::Variable { storage, .. } = &target.root else {
-                    todo!("assignment into a place rooted in a non-variable expression is not yet implemented");
-                };
-
-                match storage {
-                    Storage::Local => {
-                        let slots = self.get_place_from_stack(&target);
-                        // Checked module guarantees `values` and `slots` have
-                        // the same length: analysis only accepts an
-                        // assignment whose value has the exact same resolved
-                        // type as its target, and `into_ir_type` is a pure
-                        // function of that type.
-                        for (value, slot) in values.iter().zip(slots.iter()) {
-                            builder.ins().stack_store(*value, slot.1, 0);
-                        }
-                    }
-                    Storage::Parameter => {
-                        todo!("assignment into a function parameter is not yet implemented");
-                    }
-                    Storage::Function | Storage::Global => {
-                        unreachable!(
-                            "checked module guarantees an assignment target resolves to a mutable variable, not a function or global"
-                        );
-                    }
-                }
-
+                // Uniformly covers assignment to a local, through any depth
+                // of explicit/seamless deref (`*ptr = 5;`, `ptr.field = 5;`),
+                // and through array indexing -- whatever `target` resolved
+                // to, `store_scalars` only cares whether it has an address
+                // (`todo!()`s itself for the one case that doesn't yet,
+                // `Storage::Parameter` with no deref in between).
+                let (storage, _) = self.resolve_place_storage(&target, builder);
+                self.store_scalars(builder, &storage, &values);
                 values
+            }
+
+            CheckedExpr::AddressOf(CheckedAddressOf { place }) => {
+                let (storage, _) = self.resolve_place_storage(&place, builder);
+                let ptr_type = self.pointer_type();
+                let addr = match storage {
+                    PlaceStorage::Values(_) => {
+                        todo!("taking the address of a function parameter is not yet implemented");
+                    }
+                    PlaceStorage::Slot { slot, offset } => builder.ins().stack_addr(ptr_type, slot, offset as i32),
+                    PlaceStorage::Address { base, offset: 0 } => base,
+                    PlaceStorage::Address { base, offset } => {
+                        let offset = builder.ins().iconst(ptr_type, offset as i64);
+                        builder.ins().iadd(base, offset)
+                    }
+                };
+                vec![addr]
             }
 
             CheckedExpr::Codeblock(_) => todo!("codeblock expressions are not yet implemented"),
         }
     }
 
-    fn process_decl(&mut self, builder: &mut FunctionBuilder, decl: omega_analyzer::checked::CheckedDeclaration) {
-        let ir_type = decl.r#type.into_ir_type(self);
-
-        let stack_slots = ir_type
-            .into_iter()
-            .map(|typ| {
-                (
-                    typ,
-                    builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        typ.bytes(),
-                        16,
-                    )),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        self.stack_slots.insert(decl.id, stack_slots);
+    fn process_decl(&mut self, builder: &mut FunctionBuilder, decl: CheckedDeclaration) {
+        let size = total_bytes(decl.r#type, self);
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 16));
+        self.stack_slots.insert(decl.id, slot);
     }
 
     fn process_statement(&mut self, builder: &mut FunctionBuilder, stmt: CheckedStmt) {

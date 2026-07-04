@@ -111,14 +111,16 @@ pub enum HirExpr {
     Codeblock(Vec<HirStmt>),
     FunctionCall(HirFunctionCall),
     Assignment(HirAssignment),
+    AddressOf(HirAddressOf),
 }
 
 /// The parser has no notion of "places"/lvalues -- it only knows `Ident`,
-/// `FieldAccess`, and `Index` as plain expression-forming constructs (see
-/// `omega_parser::syntax::expression`). Lowering is what recognizes a chain
-/// of those as denoting an addressable location and flattens it into this
-/// single shape: a root plus zero or more projections, in source order. A
-/// bare identifier is just a place with no projections.
+/// `FieldAccess`, `Index`, and `Deref` as plain expression-forming
+/// constructs (see `omega_parser::syntax::expression`). Lowering is what
+/// recognizes a chain of those as denoting an addressable location and
+/// flattens it into this single shape: a root plus zero or more
+/// projections, in source order. A bare identifier is just a place with no
+/// projections.
 #[derive(Debug, Clone)]
 pub struct HirPlace {
     pub root: HirPlaceRoot,
@@ -137,12 +139,25 @@ pub enum HirPlaceRoot {
 pub enum HirProjection {
     FieldAccess(Ident),
     Index(Box<HirExprNode>),
+    /// `*expr` as part of a place chain (e.g. `*ptr`, `(*ptr).field`) --
+    /// whether the pointer type is valid here is a question for analysis,
+    /// not lowering.
+    Deref,
 }
 
 #[derive(Debug, Clone)]
 pub struct HirFunctionCall {
     pub callee: Box<HirExprNode>,
     pub args: Vec<HirExprNode>,
+}
+
+/// `&base` -- unlike `Deref`, this never denotes a place itself (it produces
+/// a pointer *value*). `base` is lowered as an ordinary expression, not
+/// structurally guaranteed to be a place at this level -- same treatment as
+/// `HirAssignment.target`, validated during analysis.
+#[derive(Debug, Clone)]
+pub struct HirAddressOf {
+    pub base: Box<HirExprNode>,
 }
 
 /// `target` is deliberately not typed as `HirPlace`: the parser doesn't

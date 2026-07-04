@@ -1,7 +1,7 @@
 use crate::hir::{
-    HirAssignment, HirDeclaration, HirExprNode, HirExpr, HirExternDeclaration, HirFunctionCall,
-    HirFunctionDef, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt,
-    HirStructDef,
+    HirAddressOf, HirAssignment, HirDeclaration, HirExprNode, HirExpr, HirExternDeclaration,
+    HirFunctionCall, HirFunctionDef, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot,
+    HirProjection, HirStmt, HirStructDef,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -150,7 +150,10 @@ impl Lowerer {
 
     fn lower_expr(&mut self, node: &ExpressionNode) -> HirExprNode {
         match &node.expression {
-            Expression::Ident(_) | Expression::FieldAccess(_) | Expression::Index(_) => {
+            Expression::Ident(_)
+            | Expression::FieldAccess(_)
+            | Expression::Index(_)
+            | Expression::Deref(_) => {
                 let place = self.lower_place_chain(node);
                 HirExprNode {
                     id: self.ids.next(),
@@ -194,6 +197,14 @@ impl Lowerer {
                     expr: HirExpr::Assignment(HirAssignment { target, value }),
                 }
             }
+            Expression::AddressOf(addr) => {
+                let base = Box::new(self.lower_expr(&addr.base));
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::AddressOf(HirAddressOf { base }),
+                }
+            }
         }
     }
 
@@ -224,6 +235,11 @@ impl Lowerer {
                 let mut place = self.lower_place_chain(&index_expr.base);
                 let index = Box::new(self.lower_expr(&index_expr.index));
                 place.projections.push(HirProjection::Index(index));
+                place
+            }
+            Expression::Deref(deref) => {
+                let mut place = self.lower_place_chain(&deref.base);
+                place.projections.push(HirProjection::Deref);
                 place
             }
             // Base isn't syntactically a place (e.g. `foo().bar`) -- root is

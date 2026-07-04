@@ -134,6 +134,7 @@ pub enum CheckedExpr {
     String(String),
     FunctionCall(CheckedFunctionCall),
     Assignment(CheckedAssignment),
+    AddressOf(CheckedAddressOf),
     /// Block-expressions have no decided value/placement semantics yet (the
     /// grammar has no tail-expression-without-`;` to give one a value) --
     /// still walked and scope-checked by analysis for soundness, but codegen
@@ -174,6 +175,12 @@ pub enum CheckedProjection {
         index_expr: Box<CheckedExprNode>,
         item_type: ResolvedType,
     },
+    /// `*expr` (explicit), or a seamless one-level pointer-to-struct
+    /// autoderef inserted by analysis before a `FieldAccess` projection --
+    /// `r#type` is the pointee type.
+    Deref {
+        r#type: ResolvedType,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -192,4 +199,13 @@ pub struct CheckedFunctionCall {
 pub struct CheckedAssignment {
     pub target: CheckedPlace,
     pub value: Box<CheckedExprNode>,
+}
+
+/// `place` is a `CheckedPlace`, not a general expression, for the same
+/// reason `CheckedAssignment.target` is: analysis rejects
+/// (`AddressOfNotAPlace`) any `&expr` whose operand isn't syntactically a
+/// place before this is ever constructed.
+#[derive(Debug, Clone)]
+pub struct CheckedAddressOf {
+    pub place: CheckedPlace,
 }

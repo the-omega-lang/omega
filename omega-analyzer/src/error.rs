@@ -71,6 +71,10 @@ pub enum AnalysisErrorKind {
     /// A number literal doesn't fit in its resolved type (only `i32` is
     /// supported today).
     NumberLiteralOutOfRange { literal: String },
+    /// `*expr` where `expr`'s resolved type isn't a pointer.
+    NotAPointer,
+    /// `&expr` where `expr` isn't syntactically a place (e.g. `&5`).
+    AddressOfNotAPlace,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -107,6 +111,10 @@ impl fmt::Display for AnalysisErrorKind {
             ),
             Self::NumberLiteralOutOfRange { literal } => {
                 write!(f, "number literal '{literal}' does not fit its resolved type")
+            }
+            Self::NotAPointer => write!(f, "cannot dereference a non-pointer expression"),
+            Self::AddressOfNotAPlace => {
+                write!(f, "cannot take the address of an expression that is not an assignable place")
             }
         }
     }

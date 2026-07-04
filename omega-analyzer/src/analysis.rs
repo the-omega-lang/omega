@@ -1,19 +1,36 @@
 use crate::{
     checked::{
-        CheckedAssignment, CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl,
-        CheckedFunctionCall, CheckedFunctionDef, CheckedItem, CheckedModule, CheckedParam,
-        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedStructDef, Storage,
+        CheckedAddressOf, CheckedAssignment, CheckedDeclaration, CheckedExpr, CheckedExprNode,
+        CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem, CheckedModule,
+        CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt,
+        CheckedStructDef, Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind},
-    resolved_type::{ResolvedStructType, ResolvedType},
+    resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
 };
 use omega_hir::{
-    HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef, HirId, HirItem,
-    HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt, HirStructDef,
+    HirAddressOf, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef,
+    HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt,
+    HirStructDef,
 };
 use omega_parser::prelude::{Ident, SimpleSpan, Type};
 use std::collections::HashSet;
+
+/// A function-call's callee, resolved to either an ordinary value (whose
+/// type must be `Function`) or a bound method reference (a "thiscall"):
+/// `base.method(args)` where `method` names a struct method rather than a
+/// field becomes an ordinary call to the method with `&base` (or, if `base`
+/// was already a pointer, `base` itself) prepended as the first (`self`)
+/// argument -- `HirFunctionDef`'s synthetic `self` parameter (see
+/// `omega_hir::lower::lower_function_def`) already accounts for it in
+/// `fn_type`, so no special-casing is needed in the argument-checking loop
+/// in `FunctionCall` handling.
+struct ResolvedCallee {
+    callee: CheckedExprNode,
+    fn_type: ResolvedFunctionType,
+    implicit_self: Option<CheckedExprNode>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Analyzer {
@@ -161,10 +178,84 @@ impl Analyzer {
         })
     }
 
+    /// Resolves a single `.field` step against `current_type`, inserting a
+    /// seamless one-level pointer deref first if needed (`ptr.field` is
+    /// sugar for `(*ptr).field` when `ptr` is a pointer-to-struct, matching
+    /// Rust's autoderef -- exactly one level: `ptr.field` where `ptr` is
+    /// `**Struct` still needs an explicit `(*ptr).field`). Shared by
+    /// `analyze_place`'s projection loop and member-call resolution below,
+    /// so both plain field access and method access get this for free from
+    /// one implementation.
+    fn resolve_field_projection(
+        &mut self,
+        node_id: HirId,
+        span: SimpleSpan,
+        projections: &mut Vec<CheckedProjection>,
+        current_type: &ResolvedType,
+        field: &Ident,
+    ) -> Option<ResolvedType> {
+        let dereffed = match current_type {
+            ResolvedType::Pointer(inner) => {
+                projections.push(CheckedProjection::Deref { r#type: (**inner).clone() });
+                (**inner).clone()
+            }
+            other => other.clone(),
+        };
+
+        let ResolvedType::Struct(struct_type) = &dereffed else {
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct));
+            return None;
+        };
+
+        let found = struct_type
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, (name, _))| name == field)
+            .map(|(index, (_, r#type))| (index, r#type.clone()));
+        let Some((index, field_type)) = found else {
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NoSuchField(field.clone())));
+            return None;
+        };
+
+        projections.push(CheckedProjection::FieldAccess {
+            field: field.clone(),
+            index,
+            r#type: field_type.clone(),
+        });
+        Some(field_type)
+    }
+
+    /// Read-only peek at whether `field`, applied to `current_type` (after
+    /// the same up-to-one-level seamless deref `resolve_field_projection`
+    /// would apply), names a struct method rather than a field -- used to
+    /// detect a member call (`base.method(args)`) before committing to
+    /// resolving `field` as an ordinary field access. A field with this name
+    /// always shadows a method with the same name.
+    fn find_method(&self, current_type: &ResolvedType, field: &Ident) -> Option<ResolvedMethod> {
+        let dereffed = match current_type {
+            ResolvedType::Pointer(inner) => inner.as_ref(),
+            other => other,
+        };
+        let ResolvedType::Struct(struct_type) = dereffed else {
+            return None;
+        };
+        if struct_type.fields.iter().any(|(name, _)| name == field) {
+            return None;
+        }
+        struct_type
+            .functions
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, method)| method.clone())
+    }
+
     /// Resolves a place's root, then folds over its projections in source
-    /// order, resolving field/index projections against the running type
-    /// and recording the exact resolved shape (field index, item type) so
-    /// codegen never has to re-search or re-derive them.
+    /// order, resolving field/index/deref projections against the running
+    /// type and recording the exact resolved shape (field index, item/
+    /// pointee type) so codegen never has to re-search or re-derive them.
     fn analyze_place(
         &mut self,
         node_id: HirId,
@@ -199,31 +290,8 @@ impl Analyzer {
         for projection in &place.projections {
             match projection {
                 HirProjection::FieldAccess(field) => {
-                    let ResolvedType::Struct(struct_type) = &current_type else {
-                        self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct));
-                        return None;
-                    };
-                    let found = struct_type
-                        .fields
-                        .iter()
-                        .enumerate()
-                        .find(|(_, (name, _))| name == field)
-                        .map(|(index, (_, r#type))| (index, r#type.clone()));
-                    let Some((index, field_type)) = found else {
-                        self.errors.push(AnalysisError::new(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::NoSuchField(field.clone()),
-                        ));
-                        return None;
-                    };
-                    projections.push(CheckedProjection::FieldAccess {
-                        field: field.clone(),
-                        index,
-                        r#type: field_type.clone(),
-                    });
-                    current_type = field_type;
+                    current_type =
+                        self.resolve_field_projection(node_id, span, &mut projections, &current_type, field)?;
                 }
                 HirProjection::Index(index_expr) => {
                     let checked_index = self.analyze_expr(index_expr)?;
@@ -239,10 +307,104 @@ impl Analyzer {
                     });
                     current_type = item_type;
                 }
+                HirProjection::Deref => {
+                    let ResolvedType::Pointer(inner) = current_type else {
+                        self.errors
+                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAPointer));
+                        return None;
+                    };
+                    let inner_type = *inner;
+                    projections.push(CheckedProjection::Deref { r#type: inner_type.clone() });
+                    current_type = inner_type;
+                }
             }
         }
 
         Some((CheckedPlace { root, projections }, current_type))
+    }
+
+    fn resolve_callee(&mut self, callee: &HirExprNode) -> Option<ResolvedCallee> {
+        if let HirExpr::Place(place) = &callee.expr
+            && let Some(HirProjection::FieldAccess(field)) = place.projections.last()
+        {
+            let base_place = HirPlace {
+                root: place.root.clone(),
+                projections: place.projections[..place.projections.len() - 1].to_vec(),
+            };
+            let (checked_base, base_type) = self.analyze_place(callee.id, callee.span, &base_place)?;
+
+            if let Some(method) = self.find_method(&base_type, field) {
+                // `self` is `&base` -- or, if `base` is already a pointer,
+                // `base` itself (that's exactly what a seamless deref would
+                // have produced, so there's no need to materialize a
+                // Deref-then-AddressOf round trip just to get back the same
+                // pointer value).
+                let self_arg = if matches!(base_type, ResolvedType::Pointer(_)) {
+                    CheckedExprNode {
+                        id: callee.id,
+                        span: callee.span,
+                        r#type: base_type,
+                        kind: CheckedExpr::Place(checked_base),
+                    }
+                } else {
+                    let pointer_type = ResolvedType::Pointer(Box::new(base_type));
+                    CheckedExprNode {
+                        id: callee.id,
+                        span: callee.span,
+                        r#type: pointer_type,
+                        kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_base }),
+                    }
+                };
+
+                let callee_expr = CheckedExprNode {
+                    id: callee.id,
+                    span: callee.span,
+                    r#type: ResolvedType::Function(method.fn_type.clone()),
+                    kind: CheckedExpr::Place(CheckedPlace {
+                        root: CheckedPlaceRoot::Variable {
+                            decl_id: method.decl_id,
+                            storage: Storage::Function,
+                            r#type: ResolvedType::Function(method.fn_type.clone()),
+                        },
+                        projections: vec![],
+                    }),
+                };
+
+                return Some(ResolvedCallee {
+                    callee: callee_expr,
+                    fn_type: method.fn_type,
+                    implicit_self: Some(self_arg),
+                });
+            }
+
+            // Not a method -- finish resolving the ordinary field access
+            // using the base place we already have, instead of re-resolving
+            // the whole place from scratch (which would risk reporting the
+            // base's errors, e.g. an undefined variable, twice).
+            let CheckedPlace { root, mut projections } = checked_base;
+            let field_type =
+                self.resolve_field_projection(callee.id, callee.span, &mut projections, &base_type, field)?;
+            let checked_callee = CheckedExprNode {
+                id: callee.id,
+                span: callee.span,
+                r#type: field_type.clone(),
+                kind: CheckedExpr::Place(CheckedPlace { root, projections }),
+            };
+            let ResolvedType::Function(fn_type) = field_type else {
+                self.errors
+                    .push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::UnresolvedCallee));
+                return None;
+            };
+            return Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None });
+        }
+
+        let checked_callee = self.analyze_expr(callee)?;
+        let ResolvedType::Function(fn_type) = checked_callee.r#type.clone() else {
+            self.errors
+                .push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::UnresolvedCallee));
+            return None;
+        };
+        Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None })
     }
 
     fn analyze_expr(&mut self, node: &HirExprNode) -> Option<CheckedExprNode> {
@@ -311,16 +473,14 @@ impl Analyzer {
             }
 
             HirExpr::FunctionCall(call) => {
-                let callee = self.analyze_expr(&call.callee)?;
-                let ResolvedType::Function(fn_type) = callee.r#type.clone() else {
-                    self.errors
-                        .push(AnalysisError::new(node_id, span, AnalysisErrorKind::UnresolvedCallee));
-                    return None;
-                };
+                let ResolvedCallee { callee, fn_type, implicit_self } = self.resolve_callee(&call.callee)?;
 
-                let mut args = Vec::with_capacity(call.args.len());
-                for (i, arg) in call.args.iter().enumerate() {
-                    if i >= fn_type.params.len() && !fn_type.is_variadic {
+                let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
+                args.extend(implicit_self);
+
+                for arg in &call.args {
+                    let param_index = args.len();
+                    if param_index >= fn_type.params.len() && !fn_type.is_variadic {
                         self.errors.push(AnalysisError::new(
                             arg.id,
                             arg.span,
@@ -331,8 +491,8 @@ impl Analyzer {
 
                     let checked_arg = self.analyze_expr(arg)?;
 
-                    if i < fn_type.params.len() {
-                        let expected_type = &fn_type.params[i].1;
+                    if param_index < fn_type.params.len() {
+                        let expected_type = &fn_type.params[param_index].1;
                         if &checked_arg.r#type != expected_type {
                             self.errors.push(AnalysisError::new(
                                 arg.id,
@@ -392,6 +552,22 @@ impl Analyzer {
                         target: checked_target,
                         value: Box::new(checked_value),
                     }),
+                })
+            }
+
+            HirExpr::AddressOf(HirAddressOf { base }) => {
+                let HirExpr::Place(place) = &base.expr else {
+                    self.errors
+                        .push(AnalysisError::new(node_id, span, AnalysisErrorKind::AddressOfNotAPlace));
+                    return None;
+                };
+                let (checked_place, place_type) = self.analyze_place(base.id, base.span, place)?;
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::Pointer(Box::new(place_type)),
+                    kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_place }),
                 })
             }
         }
@@ -486,7 +662,10 @@ impl Analyzer {
         else {
             unreachable!("just inserted as ResolvedType::Struct above");
         };
-        resolved.functions = functions.iter().map(|f| (f.name.clone(), f.fn_type())).collect();
+        resolved.functions = functions
+            .iter()
+            .map(|f| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type: f.fn_type() }))
+            .collect();
 
         Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
     }

@@ -1,21 +1,11 @@
-use crate::{parser, prelude::ExpressionNode};
-use chumsky::prelude::*;
+use crate::prelude::ExpressionNode;
 
+/// Assignment is right-associative and has the lowest precedence of any
+/// expression form -- built directly as the outermost layer of
+/// `ExpressionNode::parser` (see `super`), not as a generic postfix operator
+/// like `FieldAccess`/`Index`/`Call`.
 #[derive(Debug, Clone)]
 pub struct AssignmentExpr {
     pub target: ExpressionNode,
     pub value: Box<ExpressionNode>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AssignmentPostfix {
-    pub value: ExpressionNode,
-}
-
-impl AssignmentPostfix {
-    parser!((expr_parser => ExpressionNode) => Self {
-        just('=').padded()
-            .ignore_then(expr_parser)
-            .map(|value| Self { value })
-    });
 }
