@@ -1,13 +1,14 @@
 use crate::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFor,
-        CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedItem, CheckedModule,
-        CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt,
-        CheckedStructDef, CheckedWhile, NumberValue, Storage,
+        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedExpr, CheckedExprNode,
+        CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
+        CheckedItem, CheckedModule, CheckedParam, CheckedPlace, CheckedPlaceRoot,
+        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue,
+        Storage,
     },
     context::{Context, VarBinding},
-    error::{AnalysisError, AnalysisErrorKind},
+    error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
 };
 use omega_hir::{
@@ -36,6 +37,11 @@ struct ResolvedCallee {
 #[derive(Debug, Clone)]
 pub struct Analyzer {
     errors: Vec<AnalysisError>,
+    /// Non-fatal findings -- currently just unreachable code (see
+    /// `truncate_unreachable`) -- returned alongside a successful
+    /// `CheckedModule` rather than folded into `errors`, since none of them
+    /// reject the program. See `AnalysisWarning`'s doc comment.
+    warnings: Vec<AnalysisWarning>,
     context: Context,
     /// The enclosing function's declared return type, checked against every
     /// `return <expr>;` and against the function body's own effective type
@@ -44,6 +50,17 @@ pub struct Analyzer {
     /// struct -- and therefore its methods -- can be declared inside a
     /// function body, nesting one function's analysis inside another's.
     current_return_type: ResolvedType,
+    /// A stack of enclosing loops' `HirId`s (innermost last), pushed/popped
+    /// around a `while`/`for`'s body analysis. `break`/`continue` resolve
+    /// against this -- today always `.last()` (the innermost loop), but
+    /// looked up rather than hard-assumed specifically so a future labeled
+    /// `break 'outer;` only has to change *this* resolution rule (search the
+    /// stack for a matching label instead of always taking the top); nothing
+    /// about `HirBreak`/`CheckedBreak`/codegen would need to change. Saved
+    /// and restored around each `analyze_function_def` call, same reasoning
+    /// as `current_return_type`: a loop body can't leak into a struct method
+    /// declared inside it.
+    loop_stack: Vec<HirId>,
 }
 
 impl Default for Analyzer {
@@ -56,8 +73,10 @@ impl Analyzer {
     pub fn new() -> Self {
         Self {
             errors: vec![],
+            warnings: vec![],
             context: Context::new(),
             current_return_type: ResolvedType::Void,
+            loop_stack: vec![],
         }
     }
 
@@ -581,22 +600,61 @@ impl Analyzer {
     }
 
     /// Whether a statement unconditionally diverges (its block never
-    /// actually reaches whatever position it's in): either it's a plain
-    /// `return`, or an expression-statement that diverges (see
+    /// actually reaches whatever position it's in): a plain `return`/
+    /// `break`/`continue`, or an expression-statement that diverges (see
     /// `expr_diverges` -- currently only a fully-diverging `if`). This is
     /// still a purely syntactic check, not real reachability analysis (e.g.
     /// a `while true { return 1; }` with no way out isn't recognized as
-    /// diverging), but "dispatch on a condition and return from every arm"
-    /// is common enough to be worth recognizing specifically (see
-    /// `Codegen::emit_if`'s matching `BlockOutcome::Diverged` propagation,
-    /// which this must stay in sync with -- codegen already builds sound
-    /// IR for exactly this case).
+    /// diverging), but "dispatch on a condition and return/break/continue
+    /// from every arm" is common enough to be worth recognizing specifically
+    /// (see `Codegen::emit_if`'s matching `BlockOutcome::Diverged`
+    /// propagation, which this must stay in sync with -- codegen already
+    /// builds sound IR for exactly this case).
     fn stmt_diverges(stmt: &CheckedStmt) -> bool {
         match stmt {
-            CheckedStmt::Return(_) => true,
+            CheckedStmt::Return(_) | CheckedStmt::Break(_) | CheckedStmt::Continue(_) => true,
             CheckedStmt::Expression(expr) => Self::expr_diverges(expr),
             _ => false,
         }
+    }
+
+    /// Every `CheckedStmt` variant's id/span, for anchoring an
+    /// `AnalysisWarningKind::UnreachableCode` at whichever statement turns
+    /// out to be first made unreachable by a diverging predecessor (see
+    /// `truncate_unreachable`).
+    fn checked_stmt_id_span(stmt: &CheckedStmt) -> (HirId, SimpleSpan) {
+        match stmt {
+            CheckedStmt::Declaration(d) => (d.id, d.span),
+            CheckedStmt::ExternDeclaration(d) => (d.id, d.span),
+            CheckedStmt::Expression(e) => (e.id, e.span),
+            CheckedStmt::Return(e) => (e.id, e.span),
+            CheckedStmt::Struct(s) => (s.id, s.span),
+            CheckedStmt::While(w) => (w.id, w.span),
+            CheckedStmt::For(f) => (f.id, f.span),
+            CheckedStmt::Break(b) => (b.id, b.span),
+            CheckedStmt::Continue(c) => (c.id, c.span),
+        }
+    }
+
+    /// Drops every statement after the first one that unconditionally
+    /// diverges (see `stmt_diverges`) -- they can never run, and keeping them
+    /// in the `CheckedBlock` would make codegen try to emit instructions
+    /// into an already-terminated cranelift block (a compiler panic, not a
+    /// user-facing error; see `Codegen::emit_block`). Recorded as an
+    /// `AnalysisWarningKind::UnreachableCode` rather than an `AnalysisError`:
+    /// unlike everything else this pass rejects, dead code doesn't make the
+    /// program incorrect, just wasteful -- the same reason real compilers
+    /// warn about it instead of refusing to build.
+    fn truncate_unreachable(&mut self, mut stmts: Vec<CheckedStmt>) -> Vec<CheckedStmt> {
+        let Some(cutoff) = stmts.iter().position(Self::stmt_diverges) else {
+            return stmts;
+        };
+        if let Some(first_dead) = stmts.get(cutoff + 1) {
+            let (id, span) = Self::checked_stmt_id_span(first_dead);
+            self.warnings.push(AnalysisWarning::new(id, span, AnalysisWarningKind::UnreachableCode));
+        }
+        stmts.truncate(cutoff + 1);
+        stmts
     }
 
     /// Analyzes a `{ stmts... tail }` block in its own nested scope --
@@ -615,6 +673,19 @@ impl Analyzer {
             Some(t) => Some(Box::new(t?)),
             None => None,
         };
+
+        // `analyze_stmts` already truncated (and warned about) unreachable
+        // statements *within* `stmts`; if what's left still ends in
+        // something that diverges, a tail expression after it -- if any --
+        // is unreachable too, for the same reason.
+        let tail = match &tail {
+            Some(t) if stmts.last().is_some_and(Self::stmt_diverges) => {
+                self.warnings.push(AnalysisWarning::new(t.id, t.span, AnalysisWarningKind::UnreachableCode));
+                None
+            }
+            _ => tail,
+        };
+
         Some(CheckedBlock { stmts, tail })
     }
 
@@ -1111,10 +1182,34 @@ impl Analyzer {
                     ));
                     return None;
                 }
-                let checked_body = self.analyze_block(&w.body)?;
-                Some(vec![CheckedStmt::While(CheckedWhile { condition: checked_cond, body: checked_body })])
+                self.loop_stack.push(w.id);
+                let checked_body = self.analyze_block(&w.body);
+                self.loop_stack.pop();
+                let checked_body = checked_body?;
+                Some(vec![CheckedStmt::While(CheckedWhile {
+                    id: w.id,
+                    span: w.span,
+                    condition: checked_cond,
+                    body: checked_body,
+                })])
             }
             HirStmt::For(f) => self.analyze_for(f),
+            HirStmt::Break(b) => match self.loop_stack.last() {
+                Some(&loop_id) => Some(vec![CheckedStmt::Break(CheckedBreak { id: b.id, span: b.span, loop_id })]),
+                None => {
+                    self.errors.push(AnalysisError::new(b.id, b.span, AnalysisErrorKind::BreakOutsideLoop));
+                    None
+                }
+            },
+            HirStmt::Continue(c) => match self.loop_stack.last() {
+                Some(&loop_id) => {
+                    Some(vec![CheckedStmt::Continue(CheckedContinue { id: c.id, span: c.span, loop_id })])
+                }
+                None => {
+                    self.errors.push(AnalysisError::new(c.id, c.span, AnalysisErrorKind::ContinueOutsideLoop));
+                    None
+                }
+            },
         }
     }
 
@@ -1168,7 +1263,9 @@ impl Analyzer {
             None => None,
         };
 
+        self.loop_stack.push(f.id);
         let checked_body = self.analyze_block(&f.body);
+        self.loop_stack.pop();
         ok &= checked_body.is_some();
 
         self.context.leave_scope();
@@ -1178,6 +1275,8 @@ impl Analyzer {
         }
 
         Some(vec![CheckedStmt::For(Box::new(CheckedFor {
+            id: f.id,
+            span: f.span,
             init: checked_init?,
             condition: checked_condition?,
             post: checked_post,
@@ -1194,7 +1293,10 @@ impl Analyzer {
                 None => ok = false,
             }
         }
-        ok.then_some(checked)
+        if !ok {
+            return None;
+        }
+        Some(self.truncate_unreachable(checked))
     }
 
     /// A function's declared return type must match its body's effective
@@ -1232,13 +1334,17 @@ impl Analyzer {
         // Saved/restored (not just set) since a struct -- and therefore its
         // methods -- can be declared inside a function body, nesting one
         // function's analysis inside another's; see `current_return_type`'s
-        // doc comment.
+        // and `loop_stack`'s doc comments. A method's body starts with no
+        // enclosing loop of its own, regardless of whether the `struct`
+        // declaring it sits inside one.
         let previous_return_type = std::mem::replace(
             &mut self.current_return_type,
             return_type.clone().unwrap_or(ResolvedType::Void),
         );
+        let previous_loop_stack = std::mem::take(&mut self.loop_stack);
         let body = self.analyze_block(&f.body);
         self.current_return_type = previous_return_type;
+        self.loop_stack = previous_loop_stack;
 
         self.context.leave_scope();
 
@@ -1332,11 +1438,13 @@ impl Analyzer {
         }
     }
 
-    pub fn analyze(mut self, hir_module: &HirModule) -> Result<CheckedModule, Vec<AnalysisError>> {
+    pub fn analyze(mut self, hir_module: &HirModule) -> Result<(CheckedModule, Vec<AnalysisWarning>), Vec<AnalysisError>> {
         let items = self.analyze_all(&hir_module.items, Self::analyze_item);
 
         match items {
-            Some(items) if self.errors.is_empty() => Ok(CheckedModule { id: hir_module.id, items }),
+            Some(items) if self.errors.is_empty() => {
+                Ok((CheckedModule { id: hir_module.id, items }, self.warnings))
+            }
             _ => Err(self.errors),
         }
     }

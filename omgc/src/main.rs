@@ -14,7 +14,10 @@ fn main() {
     let hir = omega_hir::lower_module(ModuleId(0), &ast);
 
     let analyzer = Analyzer::new();
-    let checked = analyzer.analyze(&hir).expect("Failed to analyze");
+    let (checked, warnings) = analyzer.analyze(&hir).expect("Failed to analyze");
+    for warning in &warnings {
+        println!("warning: {warning}");
+    }
 
     let modname = "hello";
     let codegen = Codegen::generate(modname, "x86_64-unknown-linux", checked);

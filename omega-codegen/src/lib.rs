@@ -14,10 +14,10 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFor,
-        CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedItem, CheckedModule,
-        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt,
-        CheckedStructDef, CheckedWhile, NumberValue, Storage,
+        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedExpr, CheckedExprNode,
+        CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
+        CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+        CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue, Storage,
     },
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
@@ -59,6 +59,28 @@ pub struct Codegen {
     /// See `BlockOutcome`'s doc comment for why a single shared exit point
     /// is what makes early returns inside nested control flow tractable.
     return_block: Option<Block>,
+    /// One entry per loop currently being emitted (innermost last), pushed
+    /// by `emit_while`/`emit_for` around their body and popped once it's
+    /// done. `break`/`continue` (see `process_statement`) look their target
+    /// up by the `HirId` the checked module already resolved (see
+    /// `CheckedBreak`/`CheckedContinue.loop_id`) rather than always reading
+    /// `.last()` -- today those always coincide (analysis only ever
+    /// resolves to the innermost enclosing loop), but keying by id here
+    /// means a future labeled `break 'outer;` needs no codegen changes at
+    /// all, only a different resolution rule in analysis.
+    loop_stack: Vec<(HirId, LoopTargets)>,
+}
+
+/// Where `break`/`continue` jump to for one loop. `continue_blk` is *not*
+/// always the loop's condition-check block: for a `for` loop it's a
+/// dedicated block that runs the post-clause before jumping to the
+/// condition check (`continue` must still run `i++` in `for (...; ...;
+/// i++)`), whereas for a `while` it's the condition check directly. Callers
+/// (`process_statement`) don't need to know which -- they just jump here.
+#[derive(Clone, Copy)]
+struct LoopTargets {
+    break_blk: Block,
+    continue_blk: Block,
 }
 
 /// Where a resolved place's underlying storage lives, for both the read
@@ -231,6 +253,7 @@ impl Codegen {
             stack_slots: HashMap::new(),
             local_args: HashMap::new(),
             return_block: None,
+            loop_stack: Vec::new(),
         };
 
         codegen.update_all(checked);
@@ -244,6 +267,7 @@ impl Codegen {
         self.stack_slots.clear();
         self.local_args.clear();
         self.return_block = None;
+        self.loop_stack.clear();
     }
 
     /// Walks a place's root and projections once, tracking where its
@@ -662,7 +686,16 @@ impl Codegen {
     /// iteration (the back-edge `jump` below), so it can't be sealed until
     /// that back-edge (its second predecessor, after the initial jump into
     /// it) either exists or is known not to (`body`'s outcome).
-    fn emit_while(&mut self, builder: &mut FunctionBuilder, condition: CheckedExprNode, body: CheckedBlock) {
+    ///
+    /// `loop_id` is this loop's own `HirId` (from `CheckedWhile.id`) -- the
+    /// same identity `break`/`continue` inside `body` resolved against in
+    /// analysis (`CheckedBreak`/`CheckedContinue.loop_id`), so pushing
+    /// `(loop_id, targets)` here and popping it once `body` is fully
+    /// processed is what lets `process_statement` find the right target
+    /// for a `break`/`continue` at any nesting depth inside `body`,
+    /// including through further nested loops (each pushes its own entry;
+    /// an inner loop's `break` finds *its own* `.last()` first).
+    fn emit_while(&mut self, builder: &mut FunctionBuilder, loop_id: HirId, condition: CheckedExprNode, body: CheckedBlock) {
         let header_blk = builder.create_block();
         let body_blk = builder.create_block();
         let exit_blk = builder.create_block();
@@ -675,7 +708,10 @@ impl Codegen {
 
         builder.switch_to_block(body_blk);
         builder.seal_block(body_blk);
-        if let BlockOutcome::Value(_) = self.emit_block(builder, body) {
+        self.loop_stack.push((loop_id, LoopTargets { break_blk: exit_blk, continue_blk: header_blk }));
+        let body_outcome = self.emit_block(builder, body);
+        self.loop_stack.pop();
+        if let BlockOutcome::Value(_) = body_outcome {
             builder.ins().jump(header_blk, &[]);
         }
         builder.seal_block(header_blk);
@@ -684,17 +720,24 @@ impl Codegen {
         builder.seal_block(exit_blk);
     }
 
-    /// Same shape as `emit_while`, plus a one-time `init` before the loop and
-    /// `post` re-run at the end of every iteration (before the back-edge).
+    /// Same shape as `emit_while`, plus a one-time `init` before the loop.
     /// `condition` is mandatory here (unlike the parser's/HIR's, see
     /// `CheckedFor`'s doc comment for why analysis enforces that) -- so,
     /// unlike a hypothetical always-true loop, `exit_blk` is always
     /// statically guaranteed a real predecessor (the condition's
     /// false-branch), never needing the same "trap an unreachable block"
     /// treatment `emit_if` does.
+    ///
+    /// Unlike `while`, `continue`'s target here is a dedicated
+    /// `continue_blk` rather than `header_blk` directly: C-style `continue`
+    /// still has to run the post-clause (`i++` in `for (...; ...; i++)`)
+    /// before re-checking the condition, so both the body's normal
+    /// fallthrough *and* any `continue` inside it jump to `continue_blk`,
+    /// which runs `post` once and then jumps to `header_blk` itself.
     fn emit_for(
         &mut self,
         builder: &mut FunctionBuilder,
+        loop_id: HirId,
         init: Vec<CheckedStmt>,
         condition: CheckedExprNode,
         post: Option<CheckedExprNode>,
@@ -705,6 +748,7 @@ impl Codegen {
         }
 
         let header_blk = builder.create_block();
+        let continue_blk = builder.create_block();
         let body_blk = builder.create_block();
         let exit_blk = builder.create_block();
 
@@ -716,12 +760,22 @@ impl Codegen {
 
         builder.switch_to_block(body_blk);
         builder.seal_block(body_blk);
-        if let BlockOutcome::Value(_) = self.emit_block(builder, body) {
-            if let Some(post) = post {
-                self.process_expr(builder, post);
-            }
-            builder.ins().jump(header_blk, &[]);
+        self.loop_stack.push((loop_id, LoopTargets { break_blk: exit_blk, continue_blk }));
+        let body_outcome = self.emit_block(builder, body);
+        self.loop_stack.pop();
+        if let BlockOutcome::Value(_) = body_outcome {
+            builder.ins().jump(continue_blk, &[]);
         }
+
+        // Predecessors: the body's normal fallthrough (just above, if it
+        // didn't diverge) and any `continue` inside it (already emitted,
+        // during `emit_block` above) -- both always precede this point.
+        builder.switch_to_block(continue_blk);
+        builder.seal_block(continue_blk);
+        if let Some(post) = post {
+            self.process_expr(builder, post);
+        }
+        builder.ins().jump(header_blk, &[]);
         builder.seal_block(header_blk);
 
         builder.switch_to_block(exit_blk);
@@ -1000,7 +1054,17 @@ impl Codegen {
 
     fn process_decl(&mut self, builder: &mut FunctionBuilder, decl: CheckedDeclaration) {
         let size = total_bytes(decl.r#type, self);
-        let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 16));
+        // `StackSlotData::new`'s third parameter is an alignment *shift*
+        // (alignment = 2^align_shift), not a byte count -- `4` means
+        // 16-byte-aligned, which is what was actually intended here. This
+        // was previously (harmlessly, by luck) passing `16` directly,
+        // requesting a 65536-byte alignment per slot; with few enough
+        // locals the resulting bloated stack frame still happened to work,
+        // but it's a real bug that surfaces once a function has enough
+        // locals (see the regression this fixes: a large function's
+        // earlier float locals started reading back as zero once later
+        // additions pushed the slot count high enough).
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
         self.stack_slots.insert(decl.id, slot);
     }
 
@@ -1025,16 +1089,37 @@ impl Codegen {
             CheckedStmt::ExternDeclaration(_) => {
                 todo!("extern declarations inside a function body are not yet implemented");
             }
-            CheckedStmt::While(CheckedWhile { condition, body }) => {
-                self.emit_while(builder, condition, body);
+            CheckedStmt::While(CheckedWhile { id, condition, body, .. }) => {
+                self.emit_while(builder, id, condition, body);
                 false
             }
             CheckedStmt::For(for_loop) => {
-                let CheckedFor { init, condition, post, body } = *for_loop;
-                self.emit_for(builder, init, condition, post, body);
+                let CheckedFor { id, init, condition, post, body, .. } = *for_loop;
+                self.emit_for(builder, id, init, condition, post, body);
                 false
             }
+            CheckedStmt::Break(CheckedBreak { loop_id, .. }) => {
+                let target = self.loop_target(loop_id).break_blk;
+                builder.ins().jump(target, &[]);
+                true
+            }
+            CheckedStmt::Continue(CheckedContinue { loop_id, .. }) => {
+                let target = self.loop_target(loop_id).continue_blk;
+                builder.ins().jump(target, &[]);
+                true
+            }
         }
+    }
+
+    /// Looks up `loop_id`'s targets by identity rather than assuming
+    /// `.last()` -- see `Codegen::loop_stack`'s doc comment for why.
+    fn loop_target(&self, loop_id: HirId) -> LoopTargets {
+        self.loop_stack
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == loop_id)
+            .map(|(_, targets)| *targets)
+            .expect("checked module guarantees a break/continue's loop_id is a currently-enclosing loop")
     }
 
     fn demangle(symbol: &str) -> String {

@@ -103,6 +103,25 @@ pub enum HirStmt {
     WalrusDeclaration(HirWalrusDeclaration),
     While(HirWhile),
     For(HirFor),
+    Break(HirBreak),
+    Continue(HirContinue),
+}
+
+/// `break;` -- no label yet; see `Statement::Break`'s doc comment for why
+/// that's fine to add later without disturbing this shape (just a new
+/// `label: Option<Ident>` field here and a corresponding one on
+/// `CheckedBreak`).
+#[derive(Debug, Clone)]
+pub struct HirBreak {
+    pub id: HirId,
+    pub span: SimpleSpan,
+}
+
+/// `continue;` -- see `HirBreak`.
+#[derive(Debug, Clone)]
+pub struct HirContinue {
+    pub id: HirId,
+    pub span: SimpleSpan,
 }
 
 /// A brace-delimited sequence of statements plus an optional final

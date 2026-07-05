@@ -125,6 +125,30 @@ pub enum CheckedStmt {
     /// contribution), and would otherwise force every `CheckedStmt` -- most
     /// of which are tiny -- to be sized for the rare large one.
     For(Box<CheckedFor>),
+    Break(CheckedBreak),
+    Continue(CheckedContinue),
+}
+
+/// `break;` -- `loop_id` is the enclosing loop's own `HirId` (from its
+/// `HirWhile`/`HirFor`), already resolved by analysis (see `Analyzer`'s
+/// `loop_stack`) to whichever loop this targets -- today always the
+/// innermost one, but codegen looks it up by id rather than assuming "the
+/// current loop," precisely so a future labeled `break 'outer;` only needs
+/// analysis's resolution rule to change (search the stack for a matching
+/// label instead of always taking the top), not codegen.
+#[derive(Debug, Clone)]
+pub struct CheckedBreak {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub loop_id: HirId,
+}
+
+/// `continue;` -- see `CheckedBreak`.
+#[derive(Debug, Clone)]
+pub struct CheckedContinue {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub loop_id: HirId,
 }
 
 /// A `{ ... }` block's statements plus its optional final expression (no
@@ -141,9 +165,13 @@ pub struct CheckedBlock {
     pub tail: Option<Box<CheckedExprNode>>,
 }
 
-/// `while cond { body }` -- `condition` is guaranteed `Bool`.
+/// `while cond { body }` -- `condition` is guaranteed `Bool`. `id` is what
+/// `CheckedBreak`/`CheckedContinue.loop_id` refers back to when this loop is
+/// their target.
 #[derive(Debug, Clone)]
 pub struct CheckedWhile {
+    pub id: HirId,
+    pub span: SimpleSpan,
     pub condition: CheckedExprNode,
     pub body: CheckedBlock,
 }
@@ -151,14 +179,19 @@ pub struct CheckedWhile {
 /// `for init; cond; post { body }` -- unlike the parser's `HirFor`,
 /// `condition` here is *not* optional: analysis rejects a `for` loop with no
 /// condition (`AnalysisErrorKind::ForLoopMissingCondition`) rather than
-/// treating an omitted one as "always true," since an always-true condition
-/// with no `break`/`continue` in this language would make the loop's exit
-/// block provably unreachable -- a soundness problem for codegen (cranelift
-/// requires every block to end in a terminator, and there would be nothing
-/// to ever jump into that one), not just a style choice. `init`/`post` stay
-/// optional; neither affects reachability the way a missing condition does.
+/// treating an omitted one as "always true" -- this language has no
+/// constant-condition reasoning to prove such a loop's exit is ever actually
+/// reached (even with `break` now available, *some* path has to reach it),
+/// so requiring a real condition is what currently guarantees the exit
+/// block is a valid jump target for codegen (cranelift requires every block
+/// to end in a terminator). `init`/`post` stay optional; neither affects
+/// reachability the way a missing condition does. `id` is what
+/// `CheckedBreak`/`CheckedContinue.loop_id` refers back to when this loop is
+/// their target.
 #[derive(Debug, Clone)]
 pub struct CheckedFor {
+    pub id: HirId,
+    pub span: SimpleSpan,
     pub init: Vec<CheckedStmt>,
     pub condition: CheckedExprNode,
     pub post: Option<CheckedExprNode>,

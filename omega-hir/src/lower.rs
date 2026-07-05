@@ -1,8 +1,8 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirDeclaration, HirExprNode, HirExpr,
-    HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirIf, HirItem, HirModule,
-    HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef,
-    HirWalrusDeclaration, HirWhile,
+    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
+    HirExprNode, HirExpr, HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirIf,
+    HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt,
+    HirStructDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -90,6 +90,8 @@ impl Lowerer {
             }
             Statement::Expression(expr) => vec![HirStmt::Expression(self.lower_expr(expr))],
             Statement::Return(ret) => vec![HirStmt::Return(self.lower_expr(&ret.return_value))],
+            Statement::Break => vec![HirStmt::Break(HirBreak { id: self.ids.next(), span })],
+            Statement::Continue => vec![HirStmt::Continue(HirContinue { id: self.ids.next(), span })],
             Statement::Struct(s) => vec![HirStmt::Struct(self.lower_struct_def(s, span))],
             Statement::Walrus(w) => vec![HirStmt::WalrusDeclaration(HirWalrusDeclaration {
                 id: self.ids.next(),

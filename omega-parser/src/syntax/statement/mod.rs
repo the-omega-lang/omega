@@ -73,6 +73,14 @@ pub enum Statement {
     ExternDeclaration(ExternDeclarationStmt),
     Expression(ExpressionNode),
     Return(ReturnStmt),
+    /// No label yet (just `break;`/`continue;`) -- analysis already resolves
+    /// these against a stack of enclosing loops keyed by identity rather
+    /// than always assuming "the innermost one," specifically so a labeled
+    /// `break 'outer;` can be added later by changing only how that
+    /// resolution picks an entry, with no parser/HIR/codegen rework (see
+    /// `Analyzer`'s `loop_stack`).
+    Break,
+    Continue,
     Struct(StructStmt),
     Walrus(WalrusStmt),
     While(WhileStmt),
@@ -106,6 +114,13 @@ impl StatementNode {
                     }),
                 ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
                 ReturnStmt::parser(expr_parser.clone()).map(Statement::Return),
+                // Tried before the generic expression fallback below, same
+                // reason `true`/`false` are tried before `Ident` in
+                // `ExpressionNode`'s `primary`: these are keywords, not
+                // identifiers, and would otherwise parse as (undefined)
+                // variable references.
+                text::keyword("break").trivia_padded().to(Statement::Break),
+                text::keyword("continue").trivia_padded().to(Statement::Continue),
                 expr_parser.clone().map(Statement::Expression),
             ))
             .then_ignore(just(';').trivia_padded())

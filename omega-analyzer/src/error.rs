@@ -127,12 +127,16 @@ pub enum AnalysisErrorKind {
     /// `bool`, `char`, or a pointer).
     InvalidIncrementOperand { r#type: ResolvedType },
     /// `for init;; post { ... }` -- the condition clause was omitted. Unlike
-    /// `init`/`post`, this isn't just a style choice: an always-true loop
-    /// with no `break` (this language has none yet) would make the loop's
-    /// exit point provably unreachable, which codegen can't soundly emit
-    /// (every cranelift block must end in a terminator) -- see `CheckedFor`'s
-    /// doc comment.
+    /// `init`/`post`, this isn't just a style choice: this language has no
+    /// constant-condition reasoning to prove an always-true loop's exit
+    /// point is ever actually reached, which codegen can't soundly build a
+    /// jump target for (every cranelift block must end in a terminator) --
+    /// see `CheckedFor`'s doc comment.
     ForLoopMissingCondition,
+    /// `break;` outside any enclosing `while`/`for`.
+    BreakOutsideLoop,
+    /// `continue;` outside any enclosing `while`/`for`.
+    ContinueOutsideLoop,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -225,6 +229,50 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ForLoopMissingCondition => {
                 write!(f, "'for' loop is missing its condition clause")
             }
+            Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
+            Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
+        }
+    }
+}
+
+/// A non-fatal analysis finding: unlike `AnalysisError`, this never rejects
+/// the program (see `Analyzer::analyze`'s return type) -- it's a place to
+/// hang findings a future diagnostics pass would surface to the user (e.g.
+/// as compiler warnings), without building that reporting machinery now.
+#[derive(Debug, Clone)]
+pub struct AnalysisWarning {
+    pub node_id: HirId,
+    pub span: SimpleSpan,
+    pub kind: AnalysisWarningKind,
+}
+
+impl AnalysisWarning {
+    pub fn new(node_id: HirId, span: SimpleSpan, kind: AnalysisWarningKind) -> Self {
+        Self { node_id, span, kind }
+    }
+}
+
+impl fmt::Display for AnalysisWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AnalysisWarningKind {
+    /// A statement that can never run: it follows something that
+    /// unconditionally diverges (`return`/`break`/`continue`, or an
+    /// `if`/`else` where every branch diverges) in the same block. Dropped
+    /// before codegen ever sees it (see `Analyzer::analyze_stmts`/
+    /// `analyze_block`) rather than risking codegen emitting instructions
+    /// into an already-terminated cranelift block.
+    UnreachableCode,
+}
+
+impl fmt::Display for AnalysisWarningKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnreachableCode => write!(f, "unreachable code"),
         }
     }
 }
