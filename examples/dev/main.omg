@@ -124,5 +124,12 @@ main(argc : i32, argv : [*u8]) => i32 {
     y := 3;
     printf("3 == 3: %d, 3 != 3: %d, 3 <= 3: %d, 3 >= 4: %d\n", x == y, x != y, x <= y, x >= 4);
 
+    testvar1 := if x < 3 {
+        "lower than 3"
+    } else {
+        "not lower than 3"
+    };
+    printf("testvar1: %s\n", testvar1);
+
     return 69;
 }
