@@ -81,7 +81,11 @@ pub struct CheckedFunctionDef {
     pub is_variadic: bool,
     pub params: Vec<CheckedParam>,
     pub return_type: ResolvedType,
-    pub body: Vec<CheckedStmt>,
+    /// Guaranteed by `Analyzer::check_function_return` to either end in a
+    /// tail expression whose type matches `return_type`, or end in a
+    /// statement-level `return` -- codegen relies on this to know it never
+    /// has to fall off the end of a non-`Void` function.
+    pub body: CheckedBlock,
 }
 
 impl CheckedFunctionDef {
@@ -115,6 +119,50 @@ pub enum CheckedStmt {
     Expression(CheckedExprNode),
     Return(CheckedExprNode),
     Struct(CheckedStructDef),
+    While(CheckedWhile),
+    /// Boxed: `CheckedFor` alone is by far the largest variant here (it
+    /// embeds a whole `CheckedBlock` for its body plus another for `init`'s
+    /// contribution), and would otherwise force every `CheckedStmt` -- most
+    /// of which are tiny -- to be sized for the rare large one.
+    For(Box<CheckedFor>),
+}
+
+/// A `{ ... }` block's statements plus its optional final expression (no
+/// trailing `;`), which is the block's own value. Shared by bare `{}`
+/// expressions, `if`/`else` branches, `while`/`for` bodies, and function
+/// bodies -- see `Analyzer::analyze_block`, which builds one uniformly for
+/// all of them, and `Analyzer::block_type`, which reads its effective type
+/// back out (`None` if it ends in a `return`, meaning "diverges, compatible
+/// with anything" -- the same reasoning behind Rust's `!` type, without a
+/// dedicated `ResolvedType` for it).
+#[derive(Debug, Clone)]
+pub struct CheckedBlock {
+    pub stmts: Vec<CheckedStmt>,
+    pub tail: Option<Box<CheckedExprNode>>,
+}
+
+/// `while cond { body }` -- `condition` is guaranteed `Bool`.
+#[derive(Debug, Clone)]
+pub struct CheckedWhile {
+    pub condition: CheckedExprNode,
+    pub body: CheckedBlock,
+}
+
+/// `for init; cond; post { body }` -- unlike the parser's `HirFor`,
+/// `condition` here is *not* optional: analysis rejects a `for` loop with no
+/// condition (`AnalysisErrorKind::ForLoopMissingCondition`) rather than
+/// treating an omitted one as "always true," since an always-true condition
+/// with no `break`/`continue` in this language would make the loop's exit
+/// block provably unreachable -- a soundness problem for codegen (cranelift
+/// requires every block to end in a terminator, and there would be nothing
+/// to ever jump into that one), not just a style choice. `init`/`post` stay
+/// optional; neither affects reachability the way a missing condition does.
+#[derive(Debug, Clone)]
+pub struct CheckedFor {
+    pub init: Vec<CheckedStmt>,
+    pub condition: CheckedExprNode,
+    pub post: Option<CheckedExprNode>,
+    pub body: CheckedBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -153,12 +201,21 @@ pub enum CheckedExpr {
     Assignment(CheckedAssignment),
     AddressOf(CheckedAddressOf),
     Negate(Box<CheckedExprNode>),
+    /// `++base`/`--base` never survives past analysis as its own node --
+    /// `Analyzer::analyze_incr_decr` desugars it directly into an ordinary
+    /// `Assignment` of `base + 1`/`base - 1` (a `BinaryOp` over `base`'s own
+    /// place and a `Number` matching its exact resolved type), so codegen
+    /// needs no dedicated increment/decrement machinery at all.
     BinaryOp(CheckedBinaryOp),
-    /// Block-expressions have no decided value/placement semantics yet (the
-    /// grammar has no tail-expression-without-`;` to give one a value) --
-    /// still walked and scope-checked by analysis for soundness, but codegen
-    /// has nothing sound to emit for it yet (`todo!()`).
-    Codeblock(Vec<CheckedStmt>),
+    /// A bare `{ ... }` used as an expression -- its value is its tail
+    /// expression (`Void` if it has none).
+    Codeblock(CheckedBlock),
+    /// `if cond { ... } else if cond { ... } else { ... }` -- every branch
+    /// (and `else_branch`, if present) is guaranteed to agree on this node's
+    /// own `r#type` (see `Analyzer`'s `HirExpr::If` arm), except for a
+    /// branch that diverges (ends in `return`), which is exempt the same
+    /// way `CheckedBlock`'s tail-less-but-terminates-in-`return` case is.
+    If(CheckedIf),
     /// Elements are guaranteed to all share `item_type` by the time this is
     /// constructed -- codegen never re-checks it. The literal's own type is
     /// `ResolvedType::SizedArray(item_type, elements.len())`.
@@ -239,13 +296,25 @@ pub struct CheckedFunctionCall {
     pub args: Vec<CheckedExprNode>,
 }
 
-/// Both operands are guaranteed `ResolvedType::I32` (the only numeric type
-/// today) by the time this is constructed -- codegen never re-checks it.
+/// Both operands are guaranteed to share the same numeric resolved type by
+/// the time this is constructed -- codegen never re-checks it, and picks
+/// the concrete instruction (`iadd` vs `fadd`, `sdiv` vs `udiv`, ...) from
+/// that shared type. For a comparison op (`op.is_comparison()`), this
+/// node's own type is always `Bool` regardless of the (still-numeric,
+/// still-matching) operand type; for an arithmetic op, this node's type is
+/// the same as the operands'.
 #[derive(Debug, Clone)]
 pub struct CheckedBinaryOp {
     pub op: BinaryOp,
     pub left: Box<CheckedExprNode>,
     pub right: Box<CheckedExprNode>,
+}
+
+/// See `CheckedExpr::If`'s doc comment.
+#[derive(Debug, Clone)]
+pub struct CheckedIf {
+    pub branches: Vec<(CheckedExprNode, CheckedBlock)>,
+    pub else_branch: Option<CheckedBlock>,
 }
 
 /// `target` is a `CheckedPlace`, not a general expression: analysis rejects

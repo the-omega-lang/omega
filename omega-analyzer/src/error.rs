@@ -107,6 +107,32 @@ pub enum AnalysisErrorKind {
     /// floating-point remainder instruction to lower this to (matching C,
     /// which requires calling `fmod`/`fmodf` instead of using `%`).
     FloatRemainder,
+    /// An `if`/`while`/`for` condition doesn't resolve to `Bool`.
+    NonBoolCondition { r#type: ResolvedType },
+    /// An `if`/`else if`/`else` branch's resolved type doesn't match the
+    /// others (see `Analyzer::block_type`/the `HirExpr::If` arm for exactly
+    /// how "the others" is determined, including how a branch that diverges
+    /// via `return` is exempt).
+    IfBranchTypeMismatch { expected: ResolvedType, found: ResolvedType },
+    /// A function's body doesn't produce its declared return type -- neither
+    /// a tail expression of the right type, nor an unconditional trailing
+    /// `return`, nor (for `Void`) falling off the end with no tail at all.
+    /// Also used for an individual `return <expr>;` whose type doesn't match
+    /// the enclosing function's declared return type.
+    ReturnTypeMismatch { expected: ResolvedType, found: ResolvedType },
+    /// `++expr`/`--expr` where `expr` isn't syntactically a place (e.g.
+    /// `++5`).
+    IncrementTargetNotAPlace,
+    /// `++expr`/`--expr` where `expr`'s resolved type isn't numeric (e.g.
+    /// `bool`, `char`, or a pointer).
+    InvalidIncrementOperand { r#type: ResolvedType },
+    /// `for init;; post { ... }` -- the condition clause was omitted. Unlike
+    /// `init`/`post`, this isn't just a style choice: an always-true loop
+    /// with no `break` (this language has none yet) would make the loop's
+    /// exit point provably unreachable, which codegen can't soundly emit
+    /// (every cranelift block must end in a terminator) -- see `CheckedFor`'s
+    /// doc comment.
+    ForLoopMissingCondition,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -150,11 +176,11 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::InvalidBinaryOperand { op, r#type } => write!(
                 f,
-                "cannot use operand of type '{type:?}' with operator '{op:?}' (only i32 is supported)"
+                "cannot use operand of type '{type:?}' with operator '{op:?}' (a numeric type is required)"
             ),
             Self::InvalidNegateOperand { r#type } => write!(
                 f,
-                "cannot negate operand of type '{type:?}' (only i32 is supported)"
+                "cannot negate operand of type '{type:?}' (only signed integers and floats are supported)"
             ),
             Self::NotSliceable => {
                 write!(f, "cannot slice an expression that is not a sized array or a slice")
@@ -176,6 +202,28 @@ impl fmt::Display for AnalysisErrorKind {
             ),
             Self::FloatRemainder => {
                 write!(f, "'%' is not supported on floating-point operands")
+            }
+            Self::NonBoolCondition { r#type } => write!(
+                f,
+                "condition must be of type 'bool', found '{type:?}'"
+            ),
+            Self::IfBranchTypeMismatch { expected, found } => write!(
+                f,
+                "'if' branch of type '{found:?}' does not match preceding branches of type '{expected:?}'"
+            ),
+            Self::ReturnTypeMismatch { expected, found } => write!(
+                f,
+                "expected return type '{expected:?}', found '{found:?}'"
+            ),
+            Self::IncrementTargetNotAPlace => {
+                write!(f, "'++'/'--' operand is not an assignable place")
+            }
+            Self::InvalidIncrementOperand { r#type } => write!(
+                f,
+                "cannot increment/decrement operand of type '{type:?}' (a numeric type is required)"
+            ),
+            Self::ForLoopMissingCondition => {
+                write!(f, "'for' loop is missing its condition clause")
             }
         }
     }

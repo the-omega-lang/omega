@@ -1,19 +1,22 @@
 pub mod declaration;
 pub mod extern_declaration;
+pub mod for_stmt;
 pub mod function_definition;
 pub mod r#return;
 pub mod r#struct;
 pub mod walrus;
+pub mod while_stmt;
 
 use crate::{
     parser,
-    prelude::StructStmt,
+    prelude::{IfExpr, StructStmt},
     syntax::{
         ParseError,
-        expression::ExpressionNode,
+        expression::{Expression, ExpressionNode},
         statement::{
             declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
-            function_definition::FunctionDefinitionStmt, r#return::ReturnStmt, walrus::WalrusStmt,
+            for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, r#return::ReturnStmt,
+            walrus::WalrusStmt, while_stmt::WhileStmt,
         },
     },
 };
@@ -42,7 +45,8 @@ impl RootStatementNode {
             ExternDeclarationStmt::parser().map(RootStatement::ExternDeclaration),
         ))
         .then_ignore(just(';').trivia_padded());
-        let function_def_parser = FunctionDefinitionStmt::parser(StatementNode::configured_parser());
+        let (expr_parser, stmt_parser) = StatementNode::configured_parsers();
+        let function_def_parser = FunctionDefinitionStmt::parser(expr_parser, stmt_parser);
         choice((
             semicolon_statements,
             function_def_parser.clone()
@@ -71,6 +75,10 @@ pub enum Statement {
     Return(ReturnStmt),
     Struct(StructStmt),
     Walrus(WalrusStmt),
+    While(WhileStmt),
+    /// Boxed since `ForStmt.init` embeds a bare `Statement` -- without the
+    /// indirection here, `Statement` would have infinite size.
+    For(Box<ForStmt>),
 }
 
 #[derive(Debug, Clone)]
@@ -98,15 +106,26 @@ impl StatementNode {
                     }),
                 ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
                 ReturnStmt::parser(expr_parser.clone()).map(Statement::Return),
-                expr_parser.map(Statement::Expression), // TODO: Move expression to terminal in order to handle codeblocks
+                expr_parser.clone().map(Statement::Expression),
             ))
             .then_ignore(just(';').trivia_padded())
             .trivia_padded();
 
+            // Block-terminated statements (end in `}`, not `;`) -- matching
+            // the common C-family/Rust convention that a statement whose
+            // last token is already a closing brace doesn't need a `;` of
+            // its own. A trailing `;` is still tolerated (`.or_not()`)
+            // rather than rejected, so a stray one out of habit still
+            // parses.
             let terminal = choice((
-                // Terminal statements
-                StructStmt::parser(DeclarationStmt::parser(), FunctionDefinitionStmt::parser(stmt_parser)).map(Statement::Struct),
-            ));
+                StructStmt::parser(DeclarationStmt::parser(), FunctionDefinitionStmt::parser(expr_parser.clone(), stmt_parser.clone())).map(Statement::Struct),
+                IfExpr::parser(expr_parser.clone(), stmt_parser.clone())
+                    .map_with(|if_expr, extra| ExpressionNode { expression: Expression::If(Box::new(if_expr)), span: extra.span() })
+                    .map(Statement::Expression),
+                WhileStmt::parser(expr_parser.clone(), stmt_parser.clone()).map(Statement::While),
+                ForStmt::parser(expr_parser, stmt_parser).map(|f| Statement::For(Box::new(f))),
+            ))
+            .then_ignore(just(';').trivia_padded().or_not());
 
             choice((terminal, nonterminal))
                 .map_with(|statement, extra| StatementNode { statement, span: extra.span() })
@@ -115,6 +134,24 @@ impl StatementNode {
     });
 
     pub fn configured_parser<'a>() -> impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone {
-        recursive(|stmt_parser| Self::parser(ExpressionNode::parser(stmt_parser)))
+        Self::configured_parsers().1
+    }
+
+    /// Builds one shared mutually-recursive expression/statement parser
+    /// graph and hands back *both* handles -- unlike `configured_parser`,
+    /// which only exposes the statement side. Needed wherever something
+    /// (currently just `FunctionDefinitionStmt`, for a function body's
+    /// `CodeblockExpr`) has to embed both an expression parser and a
+    /// statement parser that agree on the same grammar, without already
+    /// being handed one from an enclosing `recursive` closure the way
+    /// `StatementNode::parser`'s own body is.
+    pub fn configured_parsers<'a>() -> (
+        impl Parser<'a, &'a str, ExpressionNode, ParseError<'a>> + Clone,
+        impl Parser<'a, &'a str, Self, ParseError<'a>> + Clone,
+    ) {
+        let mut stmt_parser = Recursive::declare();
+        let expr_parser = ExpressionNode::parser(stmt_parser.clone());
+        stmt_parser.define(Self::parser(expr_parser.clone()));
+        (expr_parser, stmt_parser)
     }
 }

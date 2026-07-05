@@ -10,6 +10,21 @@ pub enum BinaryOp {
     Mul,
     Div,
     Rem,
+    /// `== != < <= > >=` -- unlike the arithmetic ops above, these always
+    /// produce `bool` regardless of the (still-matching) operand type; see
+    /// `Analyzer`'s `HirExpr::BinaryOp` arm.
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl BinaryOp {
+    pub fn is_comparison(self) -> bool {
+        matches!(self, Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge)
+    }
 }
 
 /// `left op right` -- a plain expression-forming operator, same rationale as

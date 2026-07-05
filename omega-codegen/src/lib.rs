@@ -1,21 +1,23 @@
 use cranelift::{
     codegen::{
         self,
-        ir::{FuncRef, StackSlot},
+        ir::{BlockArg, FuncRef, StackSlot},
     },
     prelude::{
-        AbiParam, Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags,
-        Signature, StackSlotData, StackSlotKind, Type as IRType, Value, isa, settings, types,
+        AbiParam, Block, Configurable, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder,
+        IntCC, MemFlags, Signature, StackSlotData, StackSlotKind, TrapCode, Type as IRType, Value,
+        isa, settings, types,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
-        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
-        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
-        CheckedFunctionDef, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, NumberValue, Storage,
+        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
+        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFor,
+        CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedItem, CheckedModule,
+        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt,
+        CheckedStructDef, CheckedWhile, NumberValue, Storage,
     },
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
@@ -49,6 +51,14 @@ pub struct Codegen {
     /// three unrelated addresses. Field access within it is a byte offset
     /// (see `total_bytes`/`field_byte_offset`), not a leaf-count slice.
     stack_slots: HashMap<HirId, StackSlot>,
+    /// The current function's single shared exit point: every `return`,
+    /// wherever it's nested (inside an `if`/`while`/`for`), jumps here
+    /// instead of emitting its own `return_` directly -- this block is the
+    /// only place that actually does. Set once at the start of
+    /// `update_function_def`, read by `process_statement`'s `Return` arm.
+    /// See `BlockOutcome`'s doc comment for why a single shared exit point
+    /// is what makes early returns inside nested control flow tractable.
+    return_block: Option<Block>,
 }
 
 /// Where a resolved place's underlying storage lives, for both the read
@@ -66,6 +76,26 @@ enum PlaceStorage {
     /// pointer-to-struct field access), since the pointee isn't known until
     /// runtime.
     Address { base: Value, offset: u32 },
+}
+
+/// The result of emitting a `{ ... }` block, or anything shaped like one
+/// (an `if`'s branch, a `while`/`for` body): either it fell off the end
+/// normally (`Value`, the block's tail-expression leaves -- empty for
+/// `Void`/no tail), or it unconditionally `return`ed (`Diverged`) -- in
+/// which case the cranelift block it was building is *already* terminated
+/// (by a jump to the function's shared `return_block`, see `Codegen::
+/// return_block`), and the caller must not emit anything else into it
+/// (another terminator in the same block is invalid IR).
+///
+/// This is what makes an early `return` nested inside an `if`/`while`/`for`
+/// tractable without full reachability analysis: every exit funnels through
+/// one `jump` to one shared block, so "did this branch already leave" is
+/// just "did processing it report `Diverged`," checked locally at each
+/// merge point (`emit_if`'s `then`/`else`, `emit_block`'s per-statement
+/// loop) rather than needing a whole-function control-flow graph.
+enum BlockOutcome {
+    Value(Vec<Value>),
+    Diverged,
 }
 
 trait IntoIRType {
@@ -134,6 +164,13 @@ fn project_field_access<T: Clone>(
     values[start..start + len].to_vec()
 }
 
+/// `jump`'s block arguments are `BlockArg`, not bare `Value` -- this just
+/// wraps each one, for the handful of `jump` call sites that pass along a
+/// block's already-materialized leaf values.
+fn block_args(values: &[Value]) -> Vec<BlockArg> {
+    values.iter().map(|v| BlockArg::from(*v)).collect()
+}
+
 /// A resolved type's total in-memory size, in bytes: the sum of its scalar
 /// leaves' sizes (`into_ir_type` already flattens a struct recursively into
 /// its leaves, so this needs no separate struct case). Layout is packed --
@@ -193,6 +230,7 @@ impl Codegen {
             local_strings: HashMap::new(),
             stack_slots: HashMap::new(),
             local_args: HashMap::new(),
+            return_block: None,
         };
 
         codegen.update_all(checked);
@@ -205,6 +243,7 @@ impl Codegen {
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();
+        self.return_block = None;
     }
 
     /// Walks a place's root and projections once, tracking where its
@@ -517,6 +556,178 @@ impl Codegen {
         }
     }
 
+    /// Runs every statement in `block`, stopping early (without touching the
+    /// now-terminated current cranelift block again) the moment one of them
+    /// diverges, then evaluates the tail expression (if any and if still
+    /// reachable). See `BlockOutcome`'s doc comment.
+    fn emit_block(&mut self, builder: &mut FunctionBuilder, block: CheckedBlock) -> BlockOutcome {
+        for stmt in block.stmts {
+            if self.process_statement(builder, stmt) {
+                return BlockOutcome::Diverged;
+            }
+        }
+        match block.tail {
+            Some(tail) => self.emit_expr_stmt(builder, *tail),
+            None => BlockOutcome::Value(vec![]),
+        }
+    }
+
+    /// Evaluates an expression in a position where divergence matters (a
+    /// statement, or a block's tail): `If`/bare `Codeblock` are the only
+    /// expression kinds that can possibly diverge (by ending in an
+    /// unconditional `return`), so they're routed through the
+    /// `BlockOutcome`-aware path; everything else can never diverge and
+    /// goes through the ordinary `process_expr`.
+    fn emit_expr_stmt(&mut self, builder: &mut FunctionBuilder, expr: CheckedExprNode) -> BlockOutcome {
+        if matches!(&expr.kind, CheckedExpr::If(_) | CheckedExpr::Codeblock(_)) {
+            let result_leaves = expr.r#type.clone().into_ir_type(self);
+            match expr.kind {
+                CheckedExpr::If(CheckedIf { branches, else_branch }) => {
+                    self.emit_if(builder, branches.into_iter(), else_branch, &result_leaves)
+                }
+                CheckedExpr::Codeblock(block) => self.emit_block(builder, block),
+                _ => unreachable!("checked by the matches! above"),
+            }
+        } else {
+            BlockOutcome::Value(self.process_expr(builder, expr))
+        }
+    }
+
+    /// Builds one `if`/`else if` branch's `brif` and recurses on the rest of
+    /// the chain for its `else` -- so `if a {..} else if b {..} else {..}`
+    /// becomes, structurally, `if a {..} else { if b {..} else {..} } `.
+    /// `branches` is an iterator (rather than a slice) precisely so the
+    /// recursive call can hand off "everything after the one I just
+    /// consumed" by simply passing the same, now-advanced iterator along.
+    ///
+    /// `result_leaves` (computed once by the caller, from the whole `if`
+    /// expression's resolved type) is used for the merge block's params at
+    /// every recursion depth, since analysis already guarantees every
+    /// branch/else agrees on that type.
+    fn emit_if(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        mut branches: std::vec::IntoIter<(CheckedExprNode, CheckedBlock)>,
+        else_branch: Option<CheckedBlock>,
+        result_leaves: &[IRType],
+    ) -> BlockOutcome {
+        let Some((cond, then_body)) = branches.next() else {
+            return match else_branch {
+                Some(b) => self.emit_block(builder, b),
+                None => BlockOutcome::Value(vec![]),
+            };
+        };
+
+        let cond_value = self.process_expr(builder, cond)[0];
+
+        let then_blk = builder.create_block();
+        let else_blk = builder.create_block();
+        let merge_blk = builder.create_block();
+        for ty in result_leaves {
+            builder.append_block_param(merge_blk, *ty);
+        }
+
+        builder.ins().brif(cond_value, then_blk, &[], else_blk, &[]);
+
+        builder.switch_to_block(then_blk);
+        builder.seal_block(then_blk);
+        let then_outcome = self.emit_block(builder, then_body);
+        if let BlockOutcome::Value(values) = &then_outcome {
+            builder.ins().jump(merge_blk, &block_args(values));
+        }
+
+        builder.switch_to_block(else_blk);
+        builder.seal_block(else_blk);
+        let else_outcome = self.emit_if(builder, branches, else_branch, result_leaves);
+        if let BlockOutcome::Value(values) = &else_outcome {
+            builder.ins().jump(merge_blk, &block_args(values));
+        }
+
+        builder.switch_to_block(merge_blk);
+        if matches!(then_outcome, BlockOutcome::Diverged) && matches!(else_outcome, BlockOutcome::Diverged) {
+            // Both paths already jumped to the function's shared return
+            // block -- this merge point is provably unreachable, but
+            // cranelift still requires every block to end in a terminator.
+            // A trap satisfies that without pretending the block is live.
+            builder.ins().trap(TrapCode::unwrap_user(1));
+            builder.seal_block(merge_blk);
+            BlockOutcome::Diverged
+        } else {
+            builder.seal_block(merge_blk);
+            BlockOutcome::Value(builder.block_params(merge_blk).to_vec())
+        }
+    }
+
+    /// `header_blk` holds the condition check and is re-entered on every
+    /// iteration (the back-edge `jump` below), so it can't be sealed until
+    /// that back-edge (its second predecessor, after the initial jump into
+    /// it) either exists or is known not to (`body`'s outcome).
+    fn emit_while(&mut self, builder: &mut FunctionBuilder, condition: CheckedExprNode, body: CheckedBlock) {
+        let header_blk = builder.create_block();
+        let body_blk = builder.create_block();
+        let exit_blk = builder.create_block();
+
+        builder.ins().jump(header_blk, &[]);
+
+        builder.switch_to_block(header_blk);
+        let cond_value = self.process_expr(builder, condition)[0];
+        builder.ins().brif(cond_value, body_blk, &[], exit_blk, &[]);
+
+        builder.switch_to_block(body_blk);
+        builder.seal_block(body_blk);
+        if let BlockOutcome::Value(_) = self.emit_block(builder, body) {
+            builder.ins().jump(header_blk, &[]);
+        }
+        builder.seal_block(header_blk);
+
+        builder.switch_to_block(exit_blk);
+        builder.seal_block(exit_blk);
+    }
+
+    /// Same shape as `emit_while`, plus a one-time `init` before the loop and
+    /// `post` re-run at the end of every iteration (before the back-edge).
+    /// `condition` is mandatory here (unlike the parser's/HIR's, see
+    /// `CheckedFor`'s doc comment for why analysis enforces that) -- so,
+    /// unlike a hypothetical always-true loop, `exit_blk` is always
+    /// statically guaranteed a real predecessor (the condition's
+    /// false-branch), never needing the same "trap an unreachable block"
+    /// treatment `emit_if` does.
+    fn emit_for(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        init: Vec<CheckedStmt>,
+        condition: CheckedExprNode,
+        post: Option<CheckedExprNode>,
+        body: CheckedBlock,
+    ) {
+        for stmt in init {
+            self.process_statement(builder, stmt);
+        }
+
+        let header_blk = builder.create_block();
+        let body_blk = builder.create_block();
+        let exit_blk = builder.create_block();
+
+        builder.ins().jump(header_blk, &[]);
+
+        builder.switch_to_block(header_blk);
+        let cond_value = self.process_expr(builder, condition)[0];
+        builder.ins().brif(cond_value, body_blk, &[], exit_blk, &[]);
+
+        builder.switch_to_block(body_blk);
+        builder.seal_block(body_blk);
+        if let BlockOutcome::Value(_) = self.emit_block(builder, body) {
+            if let Some(post) = post {
+                self.process_expr(builder, post);
+            }
+            builder.ins().jump(header_blk, &[]);
+        }
+        builder.seal_block(header_blk);
+
+        builder.switch_to_block(exit_blk);
+        builder.seal_block(exit_blk);
+    }
+
     fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
         match node.kind {
             CheckedExpr::String(s) => {
@@ -673,11 +884,64 @@ impl Codegen {
                     (BinaryOp::Rem, NumericKind::Float(_)) => {
                         unreachable!("checked module rejects '%' on float operands")
                     }
+                    (cmp, NumericKind::Float(_)) => {
+                        let cc = match cmp {
+                            BinaryOp::Eq => FloatCC::Equal,
+                            BinaryOp::Ne => FloatCC::NotEqual,
+                            BinaryOp::Lt => FloatCC::LessThan,
+                            BinaryOp::Le => FloatCC::LessThanOrEqual,
+                            BinaryOp::Gt => FloatCC::GreaterThan,
+                            BinaryOp::Ge => FloatCC::GreaterThanOrEqual,
+                            _ => unreachable!("not a comparison op"),
+                        };
+                        builder.ins().fcmp(cc, left, right)
+                    }
+                    (cmp, NumericKind::Signed(_)) => {
+                        let cc = match cmp {
+                            BinaryOp::Eq => IntCC::Equal,
+                            BinaryOp::Ne => IntCC::NotEqual,
+                            BinaryOp::Lt => IntCC::SignedLessThan,
+                            BinaryOp::Le => IntCC::SignedLessThanOrEqual,
+                            BinaryOp::Gt => IntCC::SignedGreaterThan,
+                            BinaryOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                            _ => unreachable!("not a comparison op"),
+                        };
+                        builder.ins().icmp(cc, left, right)
+                    }
+                    (cmp, NumericKind::Unsigned(_)) => {
+                        let cc = match cmp {
+                            BinaryOp::Eq => IntCC::Equal,
+                            BinaryOp::Ne => IntCC::NotEqual,
+                            BinaryOp::Lt => IntCC::UnsignedLessThan,
+                            BinaryOp::Le => IntCC::UnsignedLessThanOrEqual,
+                            BinaryOp::Gt => IntCC::UnsignedGreaterThan,
+                            BinaryOp::Ge => IntCC::UnsignedGreaterThanOrEqual,
+                            _ => unreachable!("not a comparison op"),
+                        };
+                        builder.ins().icmp(cc, left, right)
+                    }
                 };
                 vec![result]
             }
 
-            CheckedExpr::Codeblock(_) => todo!("codeblock expressions are not yet implemented"),
+            CheckedExpr::Codeblock(block) => match self.emit_block(builder, block) {
+                BlockOutcome::Value(values) => values,
+                // Only reachable if a bare `{}` used as a sub-expression
+                // (not a statement/tail, where `emit_expr_stmt` would have
+                // handled it) ends in an unconditional `return` -- a
+                // pathological, unlikely-to-occur case (there's no
+                // meaningful value to produce here regardless) that this
+                // simply treats as `Void`.
+                BlockOutcome::Diverged => vec![],
+            },
+
+            CheckedExpr::If(CheckedIf { branches, else_branch }) => {
+                let result_leaves = node.r#type.clone().into_ir_type(self);
+                match self.emit_if(builder, branches.into_iter(), else_branch, &result_leaves) {
+                    BlockOutcome::Value(values) => values,
+                    BlockOutcome::Diverged => vec![],
+                }
+            }
 
             CheckedExpr::ArrayLiteral(CheckedArrayLiteral { elements, .. }) => {
                 // Each element contributes its own leaves, in order -- the
@@ -740,19 +1004,35 @@ impl Codegen {
         self.stack_slots.insert(decl.id, slot);
     }
 
-    fn process_statement(&mut self, builder: &mut FunctionBuilder, stmt: CheckedStmt) {
+    /// Returns `true` if this statement unconditionally diverged (jumped to
+    /// the shared `return_block`) -- the current cranelift block is then
+    /// already terminated, and the caller (`emit_block`'s loop) must not
+    /// process any further statements against it.
+    fn process_statement(&mut self, builder: &mut FunctionBuilder, stmt: CheckedStmt) -> bool {
         match stmt {
-            CheckedStmt::Expression(expr) => {
-                self.process_expr(builder, expr);
-            }
+            CheckedStmt::Expression(expr) => matches!(self.emit_expr_stmt(builder, expr), BlockOutcome::Diverged),
             CheckedStmt::Return(expr) => {
                 let retval = self.process_expr(builder, expr);
-                builder.ins().return_(&retval);
+                let return_block = self.return_block.expect("set at the start of every function body");
+                builder.ins().jump(return_block, &block_args(&retval));
+                true
             }
-            CheckedStmt::Declaration(decl) => self.process_decl(builder, decl),
-            CheckedStmt::Struct(_) => {} // Only analysis is necessary
+            CheckedStmt::Declaration(decl) => {
+                self.process_decl(builder, decl);
+                false
+            }
+            CheckedStmt::Struct(_) => false, // Only analysis is necessary
             CheckedStmt::ExternDeclaration(_) => {
                 todo!("extern declarations inside a function body are not yet implemented");
+            }
+            CheckedStmt::While(CheckedWhile { condition, body }) => {
+                self.emit_while(builder, condition, body);
+                false
+            }
+            CheckedStmt::For(for_loop) => {
+                let CheckedFor { init, condition, post, body } = *for_loop;
+                self.emit_for(builder, init, condition, post, body);
+                false
             }
         }
     }
@@ -826,14 +1106,27 @@ impl Codegen {
         }
         builder.switch_to_block(entry_block);
 
-        // Process function body
-        for stmt in function_def.body {
-            self.process_statement(&mut builder, stmt);
+        // Every `return` in this function body, however deeply nested
+        // inside `if`/`while`/`for`, jumps here instead of emitting its own
+        // `return_` -- this is the only block that actually does, once
+        // every path through the body has either jumped here or (falling
+        // off the end normally) is about to, right below. See
+        // `Codegen::return_block`/`BlockOutcome`'s doc comments.
+        let return_leaves = fntype.return_type.clone().into_ir_type(self);
+        let return_block = builder.create_block();
+        for ty in &return_leaves {
+            builder.append_block_param(return_block, *ty);
+        }
+        self.return_block = Some(return_block);
+
+        if let BlockOutcome::Value(values) = self.emit_block(&mut builder, function_def.body) {
+            builder.ins().jump(return_block, &block_args(&values));
         }
 
-        if *fntype.return_type == ResolvedType::Void {
-            builder.ins().return_(&[]);
-        }
+        builder.switch_to_block(return_block);
+        builder.seal_block(return_block);
+        let final_values = builder.block_params(return_block).to_vec();
+        builder.ins().return_(&final_values);
 
         if let Err(err) = codegen::verify_function(builder.func, self.isa.as_ref()) {
             panic!("cranelift verifier rejected generated IR for a function (internal codegen bug): {err:?}");

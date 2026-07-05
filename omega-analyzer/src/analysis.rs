@@ -1,19 +1,19 @@
 use crate::{
     checked::{
-        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
-        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
-        CheckedFunctionDef, CheckedItem, CheckedModule, CheckedParam, CheckedPlace,
-        CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef,
-        NumberValue, Storage,
+        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
+        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFor,
+        CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedItem, CheckedModule,
+        CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt,
+        CheckedStructDef, CheckedWhile, NumberValue, Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind},
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
 };
 use omega_hir::{
-    BinaryOp, HirAddressOf, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
-    HirFunctionDef, HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection,
-    HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
+    BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
+    HirFor, HirFunctionDef, HirId, HirIf, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot,
+    HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
 use std::collections::HashSet;
@@ -37,6 +37,13 @@ struct ResolvedCallee {
 pub struct Analyzer {
     errors: Vec<AnalysisError>,
     context: Context,
+    /// The enclosing function's declared return type, checked against every
+    /// `return <expr>;` and against the function body's own effective type
+    /// (see `block_type`/`check_function_return`). Saved and restored around
+    /// each `analyze_function_def` call (rather than set once) since a
+    /// struct -- and therefore its methods -- can be declared inside a
+    /// function body, nesting one function's analysis inside another's.
+    current_return_type: ResolvedType,
 }
 
 impl Default for Analyzer {
@@ -50,6 +57,7 @@ impl Analyzer {
         Self {
             errors: vec![],
             context: Context::new(),
+            current_return_type: ResolvedType::Void,
         }
     }
 
@@ -532,6 +540,138 @@ impl Analyzer {
         Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
     }
 
+    /// A block's own effective type: its tail expression's type, or -- if it
+    /// has none -- `Void`, *unless* its last statement unconditionally
+    /// diverges (see `stmt_diverges`), in which case the block itself never
+    /// actually produces `Void` at its own position (control leaves the
+    /// function entirely) -- so it's exempt from whatever type is expected
+    /// there, the same way Rust's `!` (never) type unifies with anything.
+    /// `None` here means exactly that: "diverges, no constraint," not "has
+    /// no type."
+    fn block_type(block: &CheckedBlock) -> Option<ResolvedType> {
+        match &block.tail {
+            Some(tail) if Self::expr_diverges(tail) => None,
+            Some(tail) => Some(tail.r#type.clone()),
+            None => match block.stmts.last() {
+                Some(stmt) if Self::stmt_diverges(stmt) => None,
+                _ => Some(ResolvedType::Void),
+            },
+        }
+    }
+
+    /// Whether an expression unconditionally diverges: only an `if`/`else
+    /// if`/`else` can (with a genuine `else`, not an implicit empty one)
+    /// where *every* branch diverges -- everything else either can't
+    /// diverge at all, or (a bare `return`) isn't an expression to begin
+    /// with. Needed because such an `if` still gets a concrete (if
+    /// degenerate, `Void`) `r#type` of its own during analysis -- there's no
+    /// real "never" `ResolvedType` to give it instead -- so whether *it*
+    /// diverges has to be re-derived structurally here rather than read off
+    /// its `r#type`, the same way `stmt_diverges` re-derives it for a bare
+    /// `return` statement.
+    fn expr_diverges(expr: &CheckedExprNode) -> bool {
+        match &expr.kind {
+            CheckedExpr::If(CheckedIf { branches, else_branch }) => {
+                let Some(else_branch) = else_branch else { return false };
+                branches.iter().all(|(_, b)| Self::block_type(b).is_none())
+                    && Self::block_type(else_branch).is_none()
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a statement unconditionally diverges (its block never
+    /// actually reaches whatever position it's in): either it's a plain
+    /// `return`, or an expression-statement that diverges (see
+    /// `expr_diverges` -- currently only a fully-diverging `if`). This is
+    /// still a purely syntactic check, not real reachability analysis (e.g.
+    /// a `while true { return 1; }` with no way out isn't recognized as
+    /// diverging), but "dispatch on a condition and return from every arm"
+    /// is common enough to be worth recognizing specifically (see
+    /// `Codegen::emit_if`'s matching `BlockOutcome::Diverged` propagation,
+    /// which this must stay in sync with -- codegen already builds sound
+    /// IR for exactly this case).
+    fn stmt_diverges(stmt: &CheckedStmt) -> bool {
+        match stmt {
+            CheckedStmt::Return(_) => true,
+            CheckedStmt::Expression(expr) => Self::expr_diverges(expr),
+            _ => false,
+        }
+    }
+
+    /// Analyzes a `{ stmts... tail }` block in its own nested scope --
+    /// shared by bare codeblock expressions, `if`/`while`/`for` bodies, and
+    /// function bodies. Scope is always entered/left even on failure (before
+    /// the `?` that can early-return), so an error partway through a block
+    /// never leaves the scope stack unbalanced.
+    fn analyze_block(&mut self, block: &HirBlock) -> Option<CheckedBlock> {
+        self.context.enter_scope();
+        let checked_stmts = self.analyze_stmts(&block.stmts);
+        let checked_tail = block.tail.as_ref().map(|e| self.analyze_expr(e));
+        self.context.leave_scope();
+
+        let stmts = checked_stmts?;
+        let tail = match checked_tail {
+            Some(t) => Some(Box::new(t?)),
+            None => None,
+        };
+        Some(CheckedBlock { stmts, tail })
+    }
+
+    /// `++base`/`--base`: validates `base` is a place (like `AddressOf`) of
+    /// a numeric type, then desugars directly into `base = base <op> 1` --
+    /// an ordinary `Assignment` wrapping a `BinaryOp` over `base`'s own
+    /// place and a `Number` matching its exact resolved type/kind. Building
+    /// the literal `1` here, rather than going through the parser's
+    /// `NumberExpr`/`HirExpr::Number` path, is what lets this work for any
+    /// numeric type (an untyped `1` in source would default to `i32`, which
+    /// would then fail `BinaryOp`'s "operands must match exactly" rule for
+    /// every other numeric type) -- analysis already knows `base`'s exact
+    /// type here, so it can build a same-typed constant directly.
+    fn analyze_incr_decr(&mut self, node_id: HirId, span: SimpleSpan, base: &HirExprNode, op: BinaryOp) -> Option<CheckedExprNode> {
+        let HirExpr::Place(place) = &base.expr else {
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace));
+            return None;
+        };
+        let (checked_place, place_type) = self.analyze_place(base.id, base.span, place)?;
+
+        let Some(kind) = place_type.numeric_kind() else {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidIncrementOperand { r#type: place_type },
+            ));
+            return None;
+        };
+
+        let one = match kind {
+            NumericKind::Signed(_) => NumberValue::Signed(1),
+            NumericKind::Unsigned(_) => NumberValue::Unsigned(1),
+            NumericKind::Float(_) => NumberValue::Float(1.0),
+        };
+        let one_node = CheckedExprNode { id: node_id, span, r#type: place_type.clone(), kind: CheckedExpr::Number(one) };
+        let place_read = CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: place_type.clone(),
+            kind: CheckedExpr::Place(checked_place.clone()),
+        };
+        let sum = CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: place_type.clone(),
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(place_read), right: Box::new(one_node) }),
+        };
+
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: place_type,
+            kind: CheckedExpr::Assignment(CheckedAssignment { target: checked_place, value: Box::new(sum) }),
+        })
+    }
+
     fn analyze_expr(&mut self, node: &HirExprNode) -> Option<CheckedExprNode> {
         let node_id = node.id;
         let span = node.span;
@@ -562,15 +702,68 @@ impl Analyzer {
                 kind: CheckedExpr::String(s.0.clone()),
             }),
 
-            HirExpr::Codeblock(stmts) => {
-                self.context.enter_scope();
-                let checked_stmts = self.analyze_stmts(stmts);
-                self.context.leave_scope();
+            HirExpr::Codeblock(block) => {
+                let checked_block = self.analyze_block(block)?;
+                let r#type = Self::block_type(&checked_block).unwrap_or(ResolvedType::Void);
+                Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Codeblock(checked_block) })
+            }
+
+            HirExpr::If(HirIf { branches, else_branch }) => {
+                let mut checked_branches = Vec::with_capacity(branches.len());
+                for (cond, block) in branches {
+                    let checked_cond = self.analyze_expr(cond)?;
+                    if checked_cond.r#type != ResolvedType::Bool {
+                        self.errors.push(AnalysisError::new(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::NonBoolCondition { r#type: checked_cond.r#type },
+                        ));
+                        return None;
+                    }
+                    let checked_block = self.analyze_block(block)?;
+                    checked_branches.push((checked_cond, checked_block));
+                }
+                let checked_else = match else_branch {
+                    Some(b) => Some(self.analyze_block(b)?),
+                    None => None,
+                };
+
+                // What the whole `if` resolves to: the first concrete
+                // (non-diverging) type among the branches and the `else`,
+                // if any -- diverging branches (ending in `return`) are
+                // wildcards, exempt from the check below. No `else` at all
+                // forces `Void` (the "implicit else" is `{}`), matching
+                // Rust's identical rule for a possibly-skipped `if`.
+                let branch_kinds: Vec<Option<ResolvedType>> =
+                    checked_branches.iter().map(|(_, b)| Self::block_type(b)).collect();
+                let else_kind: Option<Option<ResolvedType>> = checked_else.as_ref().map(Self::block_type);
+
+                let result_type = match &else_kind {
+                    Some(k) => branch_kinds.iter().cloned().chain(std::iter::once(k.clone())).flatten().next(),
+                    None => None,
+                }
+                .unwrap_or(ResolvedType::Void);
+
+                let mismatch = branch_kinds
+                    .iter()
+                    .cloned()
+                    .chain(else_kind.iter().cloned())
+                    .flatten()
+                    .find(|t| *t != result_type);
+                if let Some(found) = mismatch {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::IfBranchTypeMismatch { expected: result_type, found },
+                    ));
+                    return None;
+                }
+
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::Void,
-                    kind: CheckedExpr::Codeblock(checked_stmts?),
+                    r#type: result_type,
+                    kind: CheckedExpr::If(CheckedIf { branches: checked_branches, else_branch: checked_else }),
                 })
             }
 
@@ -700,6 +893,9 @@ impl Analyzer {
                 })
             }
 
+            HirExpr::Increment(base) => self.analyze_incr_decr(node_id, span, base, BinaryOp::Add),
+            HirExpr::Decrement(base) => self.analyze_incr_decr(node_id, span, base, BinaryOp::Sub),
+
             HirExpr::BinaryOp(bin) => {
                 let checked_left = self.analyze_expr(&bin.left)?;
                 let checked_right = self.analyze_expr(&bin.right)?;
@@ -743,7 +939,10 @@ impl Analyzer {
                     return None;
                 }
 
-                let r#type = checked_left.r#type.clone();
+                // A comparison always produces `bool`, regardless of the
+                // (still-numeric, still-matching) operand type; an
+                // arithmetic op's result is that same operand type.
+                let r#type = if bin.op.is_comparison() { ResolvedType::Bool } else { checked_left.r#type.clone() };
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
@@ -885,10 +1084,105 @@ impl Analyzer {
                 self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
             }
             HirStmt::Expression(expr) => self.analyze_expr(expr).map(|e| vec![CheckedStmt::Expression(e)]),
-            HirStmt::Return(expr) => self.analyze_expr(expr).map(|e| vec![CheckedStmt::Return(e)]),
+            HirStmt::Return(expr) => {
+                let checked = self.analyze_expr(expr)?;
+                if checked.r#type != self.current_return_type {
+                    self.errors.push(AnalysisError::new(
+                        expr.id,
+                        expr.span,
+                        AnalysisErrorKind::ReturnTypeMismatch {
+                            expected: self.current_return_type.clone(),
+                            found: checked.r#type.clone(),
+                        },
+                    ));
+                    return None;
+                }
+                Some(vec![CheckedStmt::Return(checked)])
+            }
             HirStmt::Struct(struct_def) => self.analyze_struct_def(struct_def).map(|s| vec![CheckedStmt::Struct(s)]),
             HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w).map(Vec::from),
+            HirStmt::While(w) => {
+                let checked_cond = self.analyze_expr(&w.condition)?;
+                if checked_cond.r#type != ResolvedType::Bool {
+                    self.errors.push(AnalysisError::new(
+                        w.id,
+                        w.span,
+                        AnalysisErrorKind::NonBoolCondition { r#type: checked_cond.r#type },
+                    ));
+                    return None;
+                }
+                let checked_body = self.analyze_block(&w.body)?;
+                Some(vec![CheckedStmt::While(CheckedWhile { condition: checked_cond, body: checked_body })])
+            }
+            HirStmt::For(f) => self.analyze_for(f),
         }
+    }
+
+    /// `for`'s init/condition/post/body all share one scope of their own
+    /// (so an `i := 0` init clause is visible to the condition/post/body
+    /// but doesn't leak past the loop) -- entered once here, around all
+    /// four, rather than the body getting its own additional nested scope
+    /// from `analyze_block` alone. Every sub-part is still analyzed even
+    /// after an earlier one fails (same "keep going, report everything"
+    /// discipline as `analyze_all`), and the scope is always left before
+    /// any early return.
+    fn analyze_for(&mut self, f: &HirFor) -> Option<Vec<CheckedStmt>> {
+        self.context.enter_scope();
+
+        let mut ok = true;
+
+        let checked_init = self.analyze_stmts(&f.init);
+        ok &= checked_init.is_some();
+
+        let checked_condition = match &f.condition {
+            Some(c) => match self.analyze_expr(c) {
+                Some(cc) if cc.r#type != ResolvedType::Bool => {
+                    self.errors.push(AnalysisError::new(
+                        f.id,
+                        f.span,
+                        AnalysisErrorKind::NonBoolCondition { r#type: cc.r#type },
+                    ));
+                    ok = false;
+                    None
+                }
+                Some(cc) => Some(cc),
+                None => {
+                    ok = false;
+                    None
+                }
+            },
+            None => {
+                self.errors
+                    .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::ForLoopMissingCondition));
+                ok = false;
+                None
+            }
+        };
+
+        let checked_post = match &f.post {
+            Some(p) => {
+                let checked = self.analyze_expr(p);
+                ok &= checked.is_some();
+                checked
+            }
+            None => None,
+        };
+
+        let checked_body = self.analyze_block(&f.body);
+        ok &= checked_body.is_some();
+
+        self.context.leave_scope();
+
+        if !ok {
+            return None;
+        }
+
+        Some(vec![CheckedStmt::For(Box::new(CheckedFor {
+            init: checked_init?,
+            condition: checked_condition?,
+            post: checked_post,
+            body: checked_body?,
+        }))])
     }
 
     fn analyze_stmts(&mut self, stmts: &[HirStmt]) -> Option<Vec<CheckedStmt>> {
@@ -903,12 +1197,55 @@ impl Analyzer {
         ok.then_some(checked)
     }
 
+    /// A function's declared return type must match its body's effective
+    /// type (see `block_type`) -- a tail expression of the right type, or an
+    /// unconditional trailing `return` (already individually type-checked
+    /// against `current_return_type` when it was analyzed, so nothing more
+    /// to check there), or (only for `Void`) falling off the end with no
+    /// tail at all.
+    fn check_function_return(
+        &mut self,
+        id: HirId,
+        span: SimpleSpan,
+        return_type: &ResolvedType,
+        body: &CheckedBlock,
+    ) -> Option<()> {
+        match Self::block_type(body) {
+            None => Some(()),
+            Some(found) if found == *return_type => Some(()),
+            Some(found) => {
+                self.errors.push(AnalysisError::new(
+                    id,
+                    span,
+                    AnalysisErrorKind::ReturnTypeMismatch { expected: return_type.clone(), found },
+                ));
+                None
+            }
+        }
+    }
+
     fn analyze_function_def(&mut self, f: &HirFunctionDef) -> Option<CheckedFunctionDef> {
         self.context.enter_scope();
         let params = self.analyze_all(&f.params, Self::analyze_param);
         let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type);
-        let body = self.analyze_stmts(&f.body);
+
+        // Saved/restored (not just set) since a struct -- and therefore its
+        // methods -- can be declared inside a function body, nesting one
+        // function's analysis inside another's; see `current_return_type`'s
+        // doc comment.
+        let previous_return_type = std::mem::replace(
+            &mut self.current_return_type,
+            return_type.clone().unwrap_or(ResolvedType::Void),
+        );
+        let body = self.analyze_block(&f.body);
+        self.current_return_type = previous_return_type;
+
         self.context.leave_scope();
+
+        let params = params?;
+        let return_type = return_type?;
+        let body = body?;
+        self.check_function_return(f.id, f.span, &return_type, &body)?;
 
         let checked = CheckedFunctionDef {
             id: f.id,
@@ -916,9 +1253,9 @@ impl Analyzer {
             name: f.name.clone(),
             is_member_function: f.is_member_function,
             is_variadic: false,
-            params: params?,
-            return_type: return_type?,
-            body: body?,
+            params,
+            return_type,
+            body,
         };
 
         // Register the function's own name in whatever scope is current now

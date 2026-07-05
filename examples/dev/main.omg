@@ -1,6 +1,28 @@
 extern puts : (s: *u8) => i32;
 extern printf : (s : *u8, ...) => i32;
 
+classify(n : i32) => *u8 {
+    if n < 0 {
+        return "negative";
+    } else if n == 0 {
+        return "zero";
+    } else {
+        return "positive";
+    }
+}
+
+abs_val(n : i32) => i32 {
+    if n < 0 { -n } else { n }
+}
+
+sum_for(n : i32) => i32 {
+    total := 0;
+    for i := 0; i < n; ++i {
+        total = total + i;
+    }
+    return total;
+}
+
 struct Interface {
     do_thing: (s : *u8) => i32;
     member_function(self) => void {
@@ -79,6 +101,28 @@ main(argc : i32, argv : [*u8]) => i32 {
     q := big2 / 3i64;
     r := big2 % 3i64;
     printf("i64 div/rem: %lld %lld\n", q, r);
+
+    printf("classify(-5) = %s\n", classify(-5));
+    printf("classify(0) = %s\n", classify(0));
+    printf("classify(5) = %s\n", classify(5));
+    printf("abs_val(-7) = %d\n", abs_val(-7));
+    printf("sum_for(10) = %d\n", sum_for(10));
+
+    total := 0;
+    i := 0;
+    while i < 10 {
+        total = total + i;
+        ++i;
+    }
+    printf("while sum_to(10) = %d\n", total);
+
+    for j := 5; j > 0; --j {
+        printf("countdown: %d\n", j);
+    }
+
+    x := 3;
+    y := 3;
+    printf("3 == 3: %d, 3 != 3: %d, 3 <= 3: %d, 3 >= 4: %d\n", x == y, x != y, x <= y, x >= 4);
 
     return 69;
 }

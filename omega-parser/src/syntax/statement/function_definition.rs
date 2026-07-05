@@ -1,6 +1,6 @@
 use crate::{
     parser,
-    prelude::{CodeblockExpr, FunctionType, StatementNode},
+    prelude::{CodeblockExpr, ExpressionNode, FunctionType, StatementNode},
     syntax::{
         identifier::Ident, statement::declaration::DeclarationStmt, r#type::Type,
     },
@@ -18,7 +18,7 @@ pub struct FunctionDefinitionStmt {
 }
 
 impl FunctionDefinitionStmt {
-    parser!((stmt_parser => StatementNode) => Self {
+    parser!((expr_parser => ExpressionNode, stmt_parser => StatementNode) => Self {
         let decls_parser = DeclarationStmt::parser()
             .separated_by(just(',').trivia_padded())
             .collect::<Vec<_>>()
@@ -41,7 +41,7 @@ impl FunctionDefinitionStmt {
             .then_ignore(just(')').trivia_padded())
             .then_ignore(just("=>").trivia_padded())
             .then(Type::parser().trivia_padded())
-            .then(CodeblockExpr::parser(stmt_parser).trivia_padded())
+            .then(CodeblockExpr::parser(expr_parser, stmt_parser).trivia_padded())
             .map(
                 |(((function_name, (is_member_function, params)), return_type), codeblock)| FunctionDefinitionStmt {
                     function_name,

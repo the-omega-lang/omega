@@ -64,7 +64,7 @@ pub struct HirFunctionDef {
     /// to special-case it.
     pub params: Vec<HirParam>,
     pub return_type: Type,
-    pub body: Vec<HirStmt>,
+    pub body: HirBlock,
 }
 
 impl HirFunctionDef {
@@ -101,6 +101,50 @@ pub enum HirStmt {
     Return(HirExprNode),
     Struct(HirStructDef),
     WalrusDeclaration(HirWalrusDeclaration),
+    While(HirWhile),
+    For(HirFor),
+}
+
+/// A brace-delimited sequence of statements plus an optional final
+/// expression with no trailing `;` -- the block's own value (see
+/// `CodeblockExpr`'s doc comment in the parser). Shared by bare
+/// `{ ... }` expressions, `if`/`else` branches, `while`/`for` bodies, and a
+/// function's own body -- all of them have identical "statements, then
+/// maybe a tail" shape and identical analysis (see `Analyzer::analyze_block`).
+#[derive(Debug, Clone)]
+pub struct HirBlock {
+    pub stmts: Vec<HirStmt>,
+    pub tail: Option<Box<HirExprNode>>,
+}
+
+/// `while cond { body }` -- a statement, not an expression: see
+/// `omega_parser::syntax::statement::while_stmt::WhileStmt`'s doc comment.
+/// Self-identifying (`id`/`span`), like every other statement-shaped HIR
+/// node, since analysis needs somewhere to anchor a `NonBoolCondition` error
+/// that isn't attached to `condition`/`body` specifically.
+#[derive(Debug, Clone)]
+pub struct HirWhile {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub condition: HirExprNode,
+    pub body: HirBlock,
+}
+
+/// `for init; cond; post { body }` -- `init` is a list rather than a single
+/// optional statement because lowering a `DeclarationWithInit` init clause
+/// (`for i : i32 = 0; ...`) produces *two* `HirStmt`s (see `lower_statement`);
+/// empty means the clause was omitted (`for ;cond; ...`). `condition` is
+/// required to actually be present by analysis (`AnalysisErrorKind::
+/// ForLoopMissingCondition`) even though the grammar itself allows omitting
+/// it -- see `HirFor`'s counterpart `CheckedFor` in `omega-analyzer` for why.
+#[derive(Debug, Clone)]
+pub struct HirFor {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub init: Vec<HirStmt>,
+    pub condition: Option<HirExprNode>,
+    pub post: Option<HirExprNode>,
+    pub body: HirBlock,
 }
 
 /// `ident := value;` -- unlike `HirDeclaration`, there's no `Type` to carry
@@ -131,11 +175,21 @@ pub enum HirExpr {
     String(StringExpr),
     Bool(bool),
     Char(char),
-    Codeblock(Vec<HirStmt>),
+    Codeblock(HirBlock),
+    /// `if cond { ... } else if cond { ... } else { ... }` -- see
+    /// `omega_parser::syntax::expression::if_expr::IfExpr`'s doc comment;
+    /// `branches` is always non-empty (the leading `if` is `branches[0]`).
+    If(HirIf),
     FunctionCall(HirFunctionCall),
     Assignment(HirAssignment),
     AddressOf(HirAddressOf),
     Negate(Box<HirExprNode>),
+    /// `++base`/`--base` -- `base` isn't guaranteed to be a place at this
+    /// level, same treatment as `AddressOf`/`Assignment`'s target; see
+    /// `Analyzer::analyze_incr_decr`, which both validates that and performs
+    /// the actual "add or subtract one" desugaring.
+    Increment(Box<HirExprNode>),
+    Decrement(Box<HirExprNode>),
     BinaryOp(HirBinaryOp),
     /// `[e1, e2, ...]` -- a fixed-size array value. Its size is implicitly
     /// `elements.len()`; there's nothing else to resolve structurally here,
@@ -144,6 +198,13 @@ pub enum HirExpr {
     /// only known once semantic analysis has typed every element.
     ArrayLiteral(Vec<HirExprNode>),
     Slice(HirSlice),
+}
+
+/// See `HirExpr::If`'s doc comment.
+#[derive(Debug, Clone)]
+pub struct HirIf {
+    pub branches: Vec<(HirExprNode, HirBlock)>,
+    pub else_branch: Option<HirBlock>,
 }
 
 /// `base[start..end]` (`start`/`end` each optional) -- produces a new slice

@@ -1,13 +1,14 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirBinaryOp, HirDeclaration, HirExprNode, HirExpr,
-    HirExternDeclaration, HirFunctionCall, HirFunctionDef, HirItem, HirModule, HirParam, HirPlace,
-    HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
+    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirDeclaration, HirExprNode, HirExpr,
+    HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirIf, HirItem, HirModule,
+    HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef,
+    HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
-    DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt,
-    Ident, RootStatement, RootStatementNode, SimpleSpan, SourceModule, Statement, StatementNode,
-    StructStmt, Type,
+    CodeblockExpr, DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt,
+    FunctionDefinitionStmt, Ident, RootStatement, RootStatementNode, SimpleSpan, SourceModule,
+    Statement, StatementNode, StructStmt, Type,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -42,21 +43,33 @@ impl Lowerer {
         }
     }
 
+    fn lower_stmt(&mut self, node: &StatementNode) -> Vec<HirStmt> {
+        self.lower_statement(&node.statement, node.span)
+    }
+
     /// Most statements lower into exactly one `HirStmt`; `ident : type =
     /// value;` lowers into two (a plain `Declaration` followed by an
     /// assignment expression statement) -- unlike `Walrus`, this needs no
     /// analysis-time desugaring, since the type is already written down
     /// here, so lowering can do it directly.
-    fn lower_stmt(&mut self, node: &StatementNode) -> Vec<HirStmt> {
-        match &node.statement {
+    ///
+    /// Split out from `lower_stmt` (which just supplies `node.span`) so a
+    /// `for` loop's init clause -- a bare `Statement` with no
+    /// `StatementNode` span of its own, since it's parsed without the
+    /// semicolon/wrapping a real statement normally comes with -- can reuse
+    /// this same logic against the enclosing `for` statement's span, the
+    /// same approximation `lower_function_def` already makes for struct
+    /// methods that have no span of their own either.
+    fn lower_statement(&mut self, statement: &Statement, span: SimpleSpan) -> Vec<HirStmt> {
+        match statement {
             Statement::Declaration(decl) => {
-                vec![HirStmt::Declaration(self.lower_declaration(decl, node.span))]
+                vec![HirStmt::Declaration(self.lower_declaration(decl, span))]
             }
             Statement::DeclarationWithInit(decl, value) => {
-                let hir_decl = self.lower_declaration(decl, node.span);
+                let hir_decl = self.lower_declaration(decl, span);
                 let target = HirExprNode {
                     id: self.ids.next(),
-                    span: node.span,
+                    span,
                     expr: HirExpr::Place(HirPlace {
                         root: HirPlaceRoot::Ident(decl.ident.clone()),
                         projections: vec![],
@@ -64,7 +77,7 @@ impl Lowerer {
                 };
                 let assignment = HirExprNode {
                     id: self.ids.next(),
-                    span: node.span,
+                    span,
                     expr: HirExpr::Assignment(HirAssignment {
                         target: Box::new(target),
                         value: Box::new(self.lower_expr(value)),
@@ -73,17 +86,34 @@ impl Lowerer {
                 vec![HirStmt::Declaration(hir_decl), HirStmt::Expression(assignment)]
             }
             Statement::ExternDeclaration(decl) => {
-                vec![HirStmt::ExternDeclaration(self.lower_extern_declaration(decl, node.span))]
+                vec![HirStmt::ExternDeclaration(self.lower_extern_declaration(decl, span))]
             }
             Statement::Expression(expr) => vec![HirStmt::Expression(self.lower_expr(expr))],
             Statement::Return(ret) => vec![HirStmt::Return(self.lower_expr(&ret.return_value))],
-            Statement::Struct(s) => vec![HirStmt::Struct(self.lower_struct_def(s, node.span))],
+            Statement::Struct(s) => vec![HirStmt::Struct(self.lower_struct_def(s, span))],
             Statement::Walrus(w) => vec![HirStmt::WalrusDeclaration(HirWalrusDeclaration {
                 id: self.ids.next(),
-                span: node.span,
+                span,
                 ident: w.ident.clone(),
                 value: self.lower_expr(&w.value),
             })],
+            Statement::While(w) => vec![HirStmt::While(HirWhile {
+                id: self.ids.next(),
+                span,
+                condition: self.lower_expr(&w.condition),
+                body: self.lower_block(&w.body),
+            })],
+            Statement::For(f) => {
+                let init = f
+                    .init
+                    .as_ref()
+                    .map(|s| self.lower_statement(s, span))
+                    .unwrap_or_default();
+                let condition = f.condition.as_ref().map(|c| self.lower_expr(c));
+                let post = f.post.as_ref().map(|p| self.lower_expr(p));
+                let body = self.lower_block(&f.body);
+                vec![HirStmt::For(HirFor { id: self.ids.next(), span, init, condition, post, body })]
+            }
         }
     }
 
@@ -107,6 +137,15 @@ impl Lowerer {
             ident: decl.ident.clone(),
             r#type: decl.r#type.clone(),
         }
+    }
+
+    /// Lowers a `{ stmt; ... tail }` into the equivalent `HirBlock`. Shared
+    /// by bare codeblock expressions, `if`/`else` branches, `while`/`for`
+    /// bodies, and function bodies -- all identical in shape.
+    fn lower_block(&mut self, block: &CodeblockExpr) -> HirBlock {
+        let stmts = block.statements.iter().flat_map(|s| self.lower_stmt(s)).collect();
+        let tail = block.tail.as_ref().map(|e| Box::new(self.lower_expr(e)));
+        HirBlock { stmts, tail }
     }
 
     /// `enclosing_struct` is `Some` when lowering a struct method, in which
@@ -139,7 +178,7 @@ impl Lowerer {
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
 
-        let body = f.codeblock.0.iter().flat_map(|s| self.lower_stmt(s)).collect();
+        let body = self.lower_block(&f.codeblock);
 
         HirFunctionDef {
             id: self.ids.next(),
@@ -213,11 +252,20 @@ impl Lowerer {
                 expr: HirExpr::Char(c.0),
             },
             Expression::Codeblock(cb) => {
-                let stmts = cb.0.iter().flat_map(|s| self.lower_stmt(s)).collect();
+                let block = self.lower_block(cb);
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Codeblock(block) }
+            }
+            Expression::If(if_expr) => {
+                let branches = if_expr
+                    .branches
+                    .iter()
+                    .map(|(cond, block)| (self.lower_expr(cond), self.lower_block(block)))
+                    .collect();
+                let else_branch = if_expr.else_branch.as_ref().map(|b| self.lower_block(b));
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::Codeblock(stmts),
+                    expr: HirExpr::If(HirIf { branches, else_branch }),
                 }
             }
             Expression::FunctionCall(call) => {
@@ -249,6 +297,14 @@ impl Lowerer {
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Negate(base) }
+            }
+            Expression::Increment(incr) => {
+                let base = Box::new(self.lower_expr(&incr.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Increment(base) }
+            }
+            Expression::Decrement(decr) => {
+                let base = Box::new(self.lower_expr(&decr.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Decrement(base) }
             }
             Expression::BinaryOp(bin) => {
                 let left = Box::new(self.lower_expr(&bin.left));

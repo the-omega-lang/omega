@@ -8,6 +8,8 @@ pub mod codeblock;
 pub mod deref;
 pub mod field_access;
 pub mod function_call;
+pub mod if_expr;
+pub mod incr_decr;
 pub mod index;
 pub mod negate;
 pub mod number;
@@ -30,6 +32,8 @@ use crate::{
             deref::DerefExpr,
             field_access::{FieldAccessExpr, FieldAccessPostfix},
             function_call::{FunctionCallExpr, FunctionCallPostfix},
+            if_expr::IfExpr,
+            incr_decr::{DecrementExpr, IncrementExpr},
             index::{IndexExpr, IndexPostfix},
             negate::NegateExpr,
             number::NumberExpr,
@@ -55,12 +59,15 @@ pub enum Expression {
     Deref(Box<DerefExpr>),
     AddressOf(Box<AddressOfExpr>),
     Negate(Box<NegateExpr>),
+    Increment(Box<IncrementExpr>),
+    Decrement(Box<DecrementExpr>),
     BinaryOp(Box<BinaryOpExpr>),
     Number(NumberExpr),
     String(StringExpr),
     Bool(BoolExpr),
     Char(CharExpr),
     Codeblock(CodeblockExpr),
+    If(Box<IfExpr>),
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
     ArrayLiteral(ArrayLiteralExpr),
@@ -113,6 +120,8 @@ enum Prefix {
     Deref,
     AddressOf,
     Negate,
+    Increment,
+    Decrement,
 }
 
 impl Prefix {
@@ -121,6 +130,8 @@ impl Prefix {
             Self::Deref => Expression::Deref(Box::new(DerefExpr { base: expr })),
             Self::AddressOf => Expression::AddressOf(Box::new(AddressOfExpr { base: expr })),
             Self::Negate => Expression::Negate(Box::new(NegateExpr { base: expr })),
+            Self::Increment => Expression::Increment(Box::new(IncrementExpr { base: expr })),
+            Self::Decrement => Expression::Decrement(Box::new(DecrementExpr { base: expr })),
         }
     }
 }
@@ -136,7 +147,9 @@ impl ExpressionNode {
                 just('(').trivia_padded()
                     .ignore_then(expr_parser.clone())
                     .then_ignore(just(')').trivia_padded()),
-                CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock)
+                CodeblockExpr::parser(expr_parser.clone(), stmt_parser.clone()).map(Expression::Codeblock)
+                    .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
+                IfExpr::parser(expr_parser.clone(), stmt_parser.clone()).map(|e| Expression::If(Box::new(e)))
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 ArrayLiteralExpr::parser(expr_parser.clone()).map(Expression::ArrayLiteral)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
@@ -166,6 +179,12 @@ impl ExpressionNode {
             });
 
             let prefix = choice((
+                // `++`/`--` before the single-char `*`/`&`/`-`: tried in
+                // order, so e.g. `--x` must match the two-char `--` first,
+                // or it would instead parse as two stacked unary minuses
+                // (`Negate(Negate(x))`) one char at a time.
+                just("++").trivia_padded().to(Prefix::Increment),
+                just("--").trivia_padded().to(Prefix::Decrement),
                 just('*').trivia_padded().to(Prefix::Deref),
                 just('&').trivia_padded().to(Prefix::AddressOf),
                 just('-').trivia_padded().to(Prefix::Negate),
@@ -203,7 +222,32 @@ impl ExpressionNode {
                 },
             );
 
-            additive.clone()
+            // `== != < <= > >=`, non-associative (at most one, unlike the
+            // arithmetic levels' `foldl_with` repetition) -- matching Rust,
+            // where `a < b < c` is a parse error rather than either chained
+            // comparison or `(a < b) < c`; a longer/more-specific token
+            // (`<=`/`>=`/`==`/`!=`) is tried before its single-char prefix
+            // (`<`/`>`) so e.g. `<=` isn't parsed as `<` followed by a
+            // dangling `=`.
+            let cmp_op = choice((
+                just("==").trivia_padded().to(BinaryOp::Eq),
+                just("!=").trivia_padded().to(BinaryOp::Ne),
+                just("<=").trivia_padded().to(BinaryOp::Le),
+                just(">=").trivia_padded().to(BinaryOp::Ge),
+                just('<').trivia_padded().to(BinaryOp::Lt),
+                just('>').trivia_padded().to(BinaryOp::Gt),
+            ));
+            let comparison = additive.clone()
+                .then(cmp_op.then(additive).or_not())
+                .map_with(|(left, rest), extra| match rest {
+                    Some((op, right)) => ExpressionNode {
+                        expression: binary_op_expression(left, op, right),
+                        span: extra.span(),
+                    },
+                    None => left,
+                });
+
+            comparison.clone()
                 .then(just('=').trivia_padded().ignore_then(expr_parser).or_not())
                 .map_with(|(target, value), extra| match value {
                     Some(value) => ExpressionNode {
