@@ -61,6 +61,11 @@ impl RootStatementNode {
 #[derive(Debug, Clone)]
 pub enum Statement {
     Declaration(DeclarationStmt),
+    /// `ident : type = value;` -- unlike `Walrus`, the type is written down
+    /// explicitly, so lowering can desugar this straight into a plain
+    /// `Declaration` + assignment pair itself (see `lower_stmt`), with no
+    /// need for semantic analysis to infer anything first.
+    DeclarationWithInit(DeclarationStmt, ExpressionNode),
     ExternDeclaration(ExternDeclarationStmt),
     Expression(ExpressionNode),
     Return(ReturnStmt),
@@ -85,7 +90,12 @@ impl StatementNode {
                 // recover from `DeclarationStmt` matching `:` and then
                 // failing to parse a `Type` starting at `= ...`.
                 WalrusStmt::parser(expr_parser.clone()).map(Statement::Walrus),
-                DeclarationStmt::parser().map(Statement::Declaration),
+                DeclarationStmt::parser()
+                    .then(just('=').trivia_padded().ignore_then(expr_parser.clone()).or_not())
+                    .map(|(decl, init)| match init {
+                        Some(value) => Statement::DeclarationWithInit(decl, value),
+                        None => Statement::Declaration(decl),
+                    }),
                 ExternDeclarationStmt::parser().map(Statement::ExternDeclaration),
                 ReturnStmt::parser(expr_parser.clone()).map(Statement::Return),
                 expr_parser.map(Statement::Expression), // TODO: Move expression to terminal in order to handle codeblocks

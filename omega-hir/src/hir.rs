@@ -135,6 +135,28 @@ pub enum HirExpr {
     AddressOf(HirAddressOf),
     Negate(Box<HirExprNode>),
     BinaryOp(HirBinaryOp),
+    /// `[e1, e2, ...]` -- a fixed-size array value. Its size is implicitly
+    /// `elements.len()`; there's nothing else to resolve structurally here,
+    /// so lowering just lowers each element in place -- the common resolved
+    /// element type, and therefore the whole literal's `ResolvedType`, is
+    /// only known once semantic analysis has typed every element.
+    ArrayLiteral(Vec<HirExprNode>),
+    Slice(HirSlice),
+}
+
+/// `base[start..end]` (`start`/`end` each optional) -- produces a new slice
+/// (fat pointer) over a sub-range of `base`, unlike `HirProjection::Index`
+/// which produces a single element. `base` is a place (same as
+/// `HirAddressOf.base`'s treatment, minus the "must be a place" enforcement,
+/// which analysis still has to do here too) rather than a plain expression,
+/// since slicing needs to know exactly what's being sliced -- a
+/// `SizedArray`'s inline storage vs. an existing `Slice`'s data
+/// pointer+length -- the same distinction indexing has to make.
+#[derive(Debug, Clone)]
+pub struct HirSlice {
+    pub base: HirPlace,
+    pub start: Option<Box<HirExprNode>>,
+    pub end: Option<Box<HirExprNode>>,
 }
 
 /// The parser has no notion of "places"/lvalues -- it only knows `Ident`,

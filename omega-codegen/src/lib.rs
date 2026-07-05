@@ -12,10 +12,10 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
-        CheckedAddressOf, CheckedAssignment, CheckedBinaryOp, CheckedDeclaration, CheckedExpr,
-        CheckedExprNode, CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem,
-        CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt,
-        CheckedStructDef, Storage,
+        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
+        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
+        CheckedFunctionDef, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot,
+        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, Storage,
     },
     resolved_type::{ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
@@ -83,7 +83,21 @@ impl IntoIRType for ResolvedType {
                 .into_iter()
                 .flat_map(|x| x.1.into_ir_type(codegen))
                 .collect(),
-            _ => vec![codegen.pointer_type()],
+            // `N` copies of the item type's own leaves, back to back -- the
+            // same packed, no-padding layout a `Struct`'s fields get.
+            ResolvedType::SizedArray(item_type, size) => {
+                let item_leaves = item_type.into_ir_type(codegen);
+                std::iter::repeat_n(item_leaves, size as usize).flatten().collect()
+            }
+            // A fat pointer: a data pointer plus an `i32` length. See
+            // `ResolvedType::Slice`'s doc comment for why this is a distinct
+            // variant rather than `Pointer(Array(_))`.
+            ResolvedType::Slice(_) => vec![codegen.pointer_type(), types::I32],
+            // `Pointer`, `Function`, and the legacy unsized `Array` (see its
+            // doc comment) are all a single thin pointer value.
+            ResolvedType::Pointer(_) | ResolvedType::Function(_) | ResolvedType::Array(_) => {
+                vec![codegen.pointer_type()]
+            }
         }
     }
 }
@@ -249,10 +263,32 @@ impl Codegen {
                 }
 
                 CheckedProjection::Index { index_expr, item_type } => {
-                    let element_ir_type = current_type.clone().into_ir_type(self);
-                    let element_ir_size: u32 = element_ir_type.iter().map(|x| x.bytes()).sum();
+                    // The element size comes from `item_type` (the resolved
+                    // element type analysis already picked out), not from
+                    // flattening `current_type` itself -- the container's own
+                    // `into_ir_type` (a single thin pointer for `Array`, or
+                    // N*item leaves for `SizedArray`) has nothing to do with
+                    // one element's size.
+                    let element_ir_size = total_bytes(item_type.clone(), self);
 
-                    let mut base = self.load_scalars(builder, &current, &current_type)[0];
+                    let mut base = match &current_type {
+                        // Inline contiguous storage: index off the storage's
+                        // own address, not a pointer value loaded from it --
+                        // there is no pointer to load, the elements live
+                        // directly in `current`.
+                        ResolvedType::SizedArray(_, _) => self.place_storage_address(builder, &current),
+                        // `Array` (the legacy thin-pointer unsized form,
+                        // e.g. `argv`) *is* a pointer value; `Slice`'s first
+                        // flattened leaf is its data pointer (the second,
+                        // its length, isn't needed for a single-element
+                        // index).
+                        ResolvedType::Array(_) | ResolvedType::Slice(_) => {
+                            self.load_scalars(builder, &current, &current_type)[0]
+                        }
+                        _ => unreachable!(
+                            "checked module guarantees Index projections only apply to Array/SizedArray/Slice"
+                        ),
+                    };
                     let mut index = self.process_expr(builder, (**index_expr).clone())[0];
 
                     let ptr_type = self.pointer_type();
@@ -270,10 +306,47 @@ impl Codegen {
                     current = PlaceStorage::Address { base: element_addr, offset: 0 };
                     current_type = item_type.clone();
                 }
+
+                CheckedProjection::SliceLength => {
+                    // A slice is flattened as [data pointer, i32 length] (see
+                    // `ResolvedType::Slice`'s `into_ir_type`) -- `.length` is
+                    // just the second leaf, at a byte offset of one pointer's
+                    // width past the start of the slice's own storage.
+                    let ptr_size = self.pointer_type().bytes();
+                    current = match current {
+                        PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[1]]),
+                        PlaceStorage::Slot { slot, offset } => {
+                            PlaceStorage::Slot { slot, offset: offset + ptr_size }
+                        }
+                        PlaceStorage::Address { base, offset } => {
+                            PlaceStorage::Address { base, offset: offset + ptr_size }
+                        }
+                    };
+                    current_type = ResolvedType::I32;
+                }
             }
         }
 
         (current, current_type)
+    }
+
+    /// The runtime address backing `storage` -- the same address-resolution
+    /// `AddressOf` needs, but also needed by `SizedArray` indexing (which
+    /// must index off the storage's own address, having no pointer value to
+    /// load) and slice construction from a `SizedArray` base.
+    fn place_storage_address(&mut self, builder: &mut FunctionBuilder, storage: &PlaceStorage) -> Value {
+        let ptr_type = self.pointer_type();
+        match storage {
+            PlaceStorage::Values(_) => {
+                todo!("taking the address of a function parameter is not yet implemented");
+            }
+            PlaceStorage::Slot { slot, offset } => builder.ins().stack_addr(ptr_type, *slot, *offset as i32),
+            PlaceStorage::Address { base, offset: 0 } => *base,
+            PlaceStorage::Address { base, offset } => {
+                let offset_val = builder.ins().iconst(ptr_type, *offset as i64);
+                builder.ins().iadd(*base, offset_val)
+            }
+        }
     }
 
     /// Reads every scalar leaf of `r#type` out of `storage`, in leaf order.
@@ -495,19 +568,7 @@ impl Codegen {
 
             CheckedExpr::AddressOf(CheckedAddressOf { place }) => {
                 let (storage, _) = self.resolve_place_storage(&place, builder);
-                let ptr_type = self.pointer_type();
-                let addr = match storage {
-                    PlaceStorage::Values(_) => {
-                        todo!("taking the address of a function parameter is not yet implemented");
-                    }
-                    PlaceStorage::Slot { slot, offset } => builder.ins().stack_addr(ptr_type, slot, offset as i32),
-                    PlaceStorage::Address { base, offset: 0 } => base,
-                    PlaceStorage::Address { base, offset } => {
-                        let offset = builder.ins().iconst(ptr_type, offset as i64);
-                        builder.ins().iadd(base, offset)
-                    }
-                };
-                vec![addr]
+                vec![self.place_storage_address(builder, &storage)]
             }
 
             CheckedExpr::Negate(base) => {
@@ -534,6 +595,59 @@ impl Codegen {
             }
 
             CheckedExpr::Codeblock(_) => todo!("codeblock expressions are not yet implemented"),
+
+            CheckedExpr::ArrayLiteral(CheckedArrayLiteral { elements, .. }) => {
+                // Each element contributes its own leaves, in order -- the
+                // exact flattening `ResolvedType::SizedArray`'s `into_ir_type`
+                // expects, so the result is usable anywhere a `SizedArray`
+                // value already is (assignment, a walrus's inferred value, ...).
+                elements.into_iter().flat_map(|e| self.process_expr(builder, e)).collect()
+            }
+
+            CheckedExpr::Slice(CheckedSlice { base, item_type, start, end }) => {
+                let (storage, base_type) = self.resolve_place_storage(&base, builder);
+                let ptr_type = self.pointer_type();
+
+                // A slice's data pointer and full length, however `base` is
+                // actually stored: a `SizedArray`'s elements live inline, so
+                // the pointer is the storage's own address and the length is
+                // a compile-time constant; a `Slice` already carries both as
+                // its two flattened leaves.
+                let (data_ptr, full_len) = match &base_type {
+                    ResolvedType::SizedArray(_, size) => {
+                        let ptr = self.place_storage_address(builder, &storage);
+                        let len = builder.ins().iconst(types::I32, *size as i64);
+                        (ptr, len)
+                    }
+                    ResolvedType::Slice(_) => {
+                        let leaves = self.load_scalars(builder, &storage, &base_type);
+                        (leaves[0], leaves[1])
+                    }
+                    _ => unreachable!("checked module guarantees a slice's base is SizedArray or Slice"),
+                };
+
+                let elem_size = total_bytes(item_type, self) as i64;
+
+                let start_val = match start {
+                    Some(e) => self.process_expr(builder, *e)[0],
+                    None => builder.ins().iconst(types::I32, 0),
+                };
+                let end_val = match end {
+                    Some(e) => self.process_expr(builder, *e)[0],
+                    None => full_len,
+                };
+
+                let mut start_ext = start_val;
+                if builder.func.dfg.value_type(start_ext) != ptr_type {
+                    start_ext = builder.ins().uextend(ptr_type, start_ext);
+                }
+                let elem_size_val = builder.ins().iconst(ptr_type, elem_size);
+                let byte_offset = builder.ins().imul(start_ext, elem_size_val);
+                let new_ptr = builder.ins().iadd(data_ptr, byte_offset);
+                let new_len = builder.ins().isub(end_val, start_val);
+
+                vec![new_ptr, new_len]
+            }
         }
     }
 

@@ -1,58 +1,62 @@
 use crate::parser;
+use crate::syntax::ParseError;
 use crate::syntax::trivia::TriviaExt;
-use chumsky::prelude::*;
+use chumsky::{error::Rich, prelude::*};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StringExpr(pub String);
 
+/// `\n \t \r \0 \\ \" \' \u{XXXX}` -- the escape sequences a modern language
+/// is expected to support inside a string literal. This is its own
+/// combinator, tried *before* the plain "any character" fallback in the
+/// string body, so a backslash-quote pair (`\"`) is consumed as one atomic
+/// unit before the closing-quote check ever sees the quote half of it --
+/// otherwise an escaped quote would look exactly like the end of the string.
+fn escape_sequence<'a>() -> impl Parser<'a, &'a str, char, ParseError<'a>> + Clone {
+    just('\\').ignore_then(choice((
+        just('n').to('\n'),
+        just('t').to('\t'),
+        just('r').to('\r'),
+        just('0').to('\0'),
+        just('\\').to('\\'),
+        just('\'').to('\''),
+        just('"').to('"'),
+        just('u')
+            .ignore_then(
+                just('{')
+                    .ignore_then(text::digits(16).at_least(1).at_most(6).to_slice())
+                    .then_ignore(just('}')),
+            )
+            .try_map(|hex: &str, span| {
+                u32::from_str_radix(hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(|| Rich::custom(span, format!("invalid unicode escape '\\u{{{hex}}}'")))
+            }),
+    )))
+}
+
 impl StringExpr {
     parser!(() => Self {
-        // just('"')
-        //     .ignore_then(none_of('"').repeated().to_slice().map(ToString::to_string))
-        //     .then_ignore(just('"'))
-        //     .map(|s| Self(s))
+        // NOTE: this used to also support Python-triple-quote-style
+        // delimiters of any odd repeated-quote count (`"""..."""`,
+        // `"""""..."""""`, ...) via a quote-counting `configure`/
+        // `ignore_with_ctx` scheme. That feature was never used by any real
+        // code and its own comments already flagged it as fragile ("sometimes
+        // it matches things that dont start with \""); layering escape
+        // sequences on top of it correctly (an escaped quote must never
+        // count towards closing a 1-quote-delimited string) would only have
+        // made it more so. Dropped in favor of the plain, standard
+        // single-double-quote string every language example in this repo
+        // actually uses.
+        let content = choice((escape_sequence(), any().and_is(just('"').not())))
+            .repeated()
+            .collect::<String>();
 
-        // TODO: Implement odd-lengthed delimiter strings, similar to as follows
-        // let quote_start_parser = just('"').repeated().at_least(1).count();
-
-        // let str_remainder_parser = |quote_count| {
-        //     let str_terminator = just('"').repeated().exactly(quote_count);
-        //     none_of(str_terminator.clone())
-        //         .repeated()
-        //         .collect::<String>()
-        //         .then_ignore(str_terminator)
-        // };
-
-        // quote_start_parser.then(str_remainder_parser);
-
-        // NOTE: The below implementation may be closer to what is required to be done
-        // let quotes = just('"').repeated();
-        // let delim_start = quotes.count();
-        // let delim_end = quotes.configure(|cfg, ctx| cfg.exactly(*ctx));
-        // let content = any().and_is(delim_end.not()).repeated().collect::<String>();
-
-        // delim_start
-        //     .ignore_with_ctx(content.then_ignore(delim_end))
-        //     .map(|s| StringExpr(s))
-
-
-        // NOTE: The below implementation somewhat worked, but now sometimes it matches things that dont start with "
-        let empty_string = just('"').repeated().exactly(2).trivia_padded().map(|_| StringExpr("".to_owned()));
-
-        let delim_start = just('"').repeated().exactly(1).ignore_then(
-            just("\"\"").repeated().count().map(|count| count * 2 + 1)
-            .or(just('"').not().map(|_| 0))
-        );
-
-        let delim_end = just('"').repeated().configure(|cfg, ctx| cfg.exactly(*ctx));
-        let content = any().and_is(just('"').not()).then(any().and_is(delim_end.not()).repeated().collect::<String>()).map(|(first, remainder)| format!("{}{}", first, remainder));
-        let longquote_string = delim_start
-            .ignore_with_ctx(content.then_ignore(delim_end))
+        just('"')
+            .ignore_then(content)
+            .then_ignore(just('"'))
             .trivia_padded()
-            .map(|s| StringExpr(s));
-
-        choice(
-            (longquote_string, empty_string)
-        )
+            .map(Self)
     });
 }

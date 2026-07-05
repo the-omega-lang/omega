@@ -6,6 +6,10 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub enum TypeResolutionError {
     UnrecognizedNamedType(Ident),
+    /// `[T; N]`'s `N` doesn't fit `u32` -- kept as raw text by the parser
+    /// (same as `NumberExpr`'s integer literals) and only parsed/range-checked
+    /// here, during type resolution.
+    InvalidArraySize(String),
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -13,6 +17,9 @@ impl fmt::Display for TypeResolutionError {
         match self {
             Self::UnrecognizedNamedType(ident) => {
                 write!(f, "unrecognized named type: {}", ident.as_ref())
+            }
+            Self::InvalidArraySize(size) => {
+                write!(f, "array size '{size}' does not fit a u32")
             }
         }
     }
@@ -79,6 +86,17 @@ pub enum AnalysisErrorKind {
     InvalidBinaryOperand { op: BinaryOp, r#type: ResolvedType },
     /// A unary `-` operand isn't `i32`.
     InvalidNegateOperand { r#type: ResolvedType },
+    /// `base[start..end]` where `base`'s resolved type is neither
+    /// `SizedArray` nor `Slice`.
+    NotSliceable,
+    /// A slice's `start`/`end` bound isn't `i32`.
+    InvalidSliceBound { r#type: ResolvedType },
+    /// `[]` -- there's no element to infer the array's item type from.
+    EmptyArrayLiteral,
+    /// An array literal's elements don't all share the same resolved type
+    /// (the first element's type is what every other element is checked
+    /// against).
+    ArrayElementTypeMismatch { expected: ResolvedType, found: ResolvedType },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -127,6 +145,20 @@ impl fmt::Display for AnalysisErrorKind {
             Self::InvalidNegateOperand { r#type } => write!(
                 f,
                 "cannot negate operand of type '{type:?}' (only i32 is supported)"
+            ),
+            Self::NotSliceable => {
+                write!(f, "cannot slice an expression that is not a sized array or a slice")
+            }
+            Self::InvalidSliceBound { r#type } => write!(
+                f,
+                "slice bound must be of type 'i32', found '{type:?}'"
+            ),
+            Self::EmptyArrayLiteral => {
+                write!(f, "cannot infer the element type of an empty array literal")
+            }
+            Self::ArrayElementTypeMismatch { expected, found } => write!(
+                f,
+                "array literal element of type '{found:?}' does not match preceding elements of type '{expected:?}'"
             ),
         }
     }

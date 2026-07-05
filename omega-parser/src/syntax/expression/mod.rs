@@ -1,4 +1,5 @@
 pub mod address_of;
+pub mod array_literal;
 pub mod assignment;
 pub mod binary_op;
 pub mod codeblock;
@@ -8,6 +9,7 @@ pub mod function_call;
 pub mod index;
 pub mod negate;
 pub mod number;
+pub mod slice;
 pub mod string;
 
 use crate::{
@@ -17,6 +19,7 @@ use crate::{
         ParseError,
         expression::{
             address_of::AddressOfExpr,
+            array_literal::ArrayLiteralExpr,
             assignment::AssignmentExpr,
             binary_op::{BinaryOp, BinaryOpExpr},
             codeblock::CodeblockExpr,
@@ -26,6 +29,7 @@ use crate::{
             index::{IndexExpr, IndexPostfix},
             negate::NegateExpr,
             number::NumberExpr,
+            slice::SliceExpr,
             string::StringExpr,
         },
         statement::StatementNode,
@@ -53,6 +57,8 @@ pub enum Expression {
     Codeblock(CodeblockExpr),
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
+    ArrayLiteral(ArrayLiteralExpr),
+    Slice(Box<SliceExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -79,9 +85,14 @@ impl Postfix {
                 base: expr,
                 field: x.field,
             })),
-            Self::Index(x) => Expression::Index(Box::new(IndexExpr {
+            Self::Index(IndexPostfix::Item(index)) => Expression::Index(Box::new(IndexExpr {
                 base: expr,
-                index: x.index,
+                index,
+            })),
+            Self::Index(IndexPostfix::Range { start, end }) => Expression::Slice(Box::new(SliceExpr {
+                base: expr,
+                start,
+                end,
             })),
         }
     }
@@ -120,6 +131,8 @@ impl ExpressionNode {
                     .ignore_then(expr_parser.clone())
                     .then_ignore(just(')').trivia_padded()),
                 CodeblockExpr::parser(stmt_parser).map(Expression::Codeblock)
+                    .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
+                ArrayLiteralExpr::parser(expr_parser.clone()).map(Expression::ArrayLiteral)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 NumberExpr::parser().map(Expression::Number)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),

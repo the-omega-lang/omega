@@ -142,6 +142,31 @@ pub enum CheckedExpr {
     /// still walked and scope-checked by analysis for soundness, but codegen
     /// has nothing sound to emit for it yet (`todo!()`).
     Codeblock(Vec<CheckedStmt>),
+    /// Elements are guaranteed to all share `item_type` by the time this is
+    /// constructed -- codegen never re-checks it. The literal's own type is
+    /// `ResolvedType::SizedArray(item_type, elements.len())`.
+    ArrayLiteral(CheckedArrayLiteral),
+    Slice(CheckedSlice),
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedArrayLiteral {
+    pub item_type: ResolvedType,
+    pub elements: Vec<CheckedExprNode>,
+}
+
+/// `base[start..end]` -- `base`'s resolved type is guaranteed to be
+/// `SizedArray` or `Slice` (never anything else) by the time this is
+/// constructed, and `start`/`end` (when present) are guaranteed `I32`.
+/// `item_type` is `base`'s element type, carried the same way
+/// `CheckedProjection::Index`'s is, so codegen never has to re-derive it
+/// from `base`'s type.
+#[derive(Debug, Clone)]
+pub struct CheckedSlice {
+    pub base: CheckedPlace,
+    pub item_type: ResolvedType,
+    pub start: Option<Box<CheckedExprNode>>,
+    pub end: Option<Box<CheckedExprNode>>,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +208,11 @@ pub enum CheckedProjection {
     Deref {
         r#type: ResolvedType,
     },
+    /// `slice.length` -- reads a `Slice`'s length component. A dedicated
+    /// projection rather than a `FieldAccess` variant, since a slice isn't a
+    /// `Struct` and `length` isn't a real field looked up by name/index; see
+    /// `Analyzer::resolve_field_projection`'s special case.
+    SliceLength,
 }
 
 #[derive(Debug, Clone)]

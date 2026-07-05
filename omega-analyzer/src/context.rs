@@ -104,11 +104,23 @@ impl Context {
                 .find_defined_type(&name)
                 .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(name.clone()))?
                 .to_owned(),
-            Type::Pointer(pointee_type) => {
-                ResolvedType::Pointer(Box::new(self.resolve_type(*pointee_type)?))
-            }
+            // `*[T]` is a slice (a fat pointer), not a thin `Pointer` to an
+            // `Array` -- `[T]` alone is unsized, so a pointer to it is
+            // necessarily a different, wider representation (data pointer +
+            // length), the same reasoning Rust's `&[T]` follows. Any other
+            // pointee resolves to an ordinary thin `Pointer`, unchanged.
+            Type::Pointer(pointee_type) => match self.resolve_type(*pointee_type)? {
+                ResolvedType::Array(item_type) => ResolvedType::Slice(item_type),
+                other => ResolvedType::Pointer(Box::new(other)),
+            },
             Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp)?),
             Type::Array(item_type) => ResolvedType::Array(Box::new(self.resolve_type(*item_type)?)),
+            Type::SizedArray(item_type, size) => {
+                let size = size
+                    .parse::<u32>()
+                    .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
+                ResolvedType::SizedArray(Box::new(self.resolve_type(*item_type)?), size)
+            }
         };
 
         Ok(resolved)

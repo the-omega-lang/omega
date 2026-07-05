@@ -11,15 +11,27 @@ pub struct IndexExpr {
     pub index: ExpressionNode,
 }
 
-pub struct IndexPostfix {
-    pub index: ExpressionNode,
+/// What was found inside `[...]`: either a single index expression, or a
+/// `..`-range (a slice). Told apart at the token level -- a range always has
+/// a bare `..` in it -- so the postfix fold in `expression/mod.rs` can route
+/// straight to `Expression::Index` or `Expression::Slice` without any
+/// lookahead of its own.
+pub enum IndexPostfix {
+    Item(ExpressionNode),
+    Range { start: Option<ExpressionNode>, end: Option<ExpressionNode> },
 }
 
 impl IndexPostfix {
     parser!((expr_parser => ExpressionNode) => Self {
+        let range = expr_parser.clone().or_not()
+            .then_ignore(just("..").trivia_padded())
+            .then(expr_parser.clone().or_not())
+            .map(|(start, end)| Self::Range { start, end });
+
+        let item = expr_parser.map(Self::Item);
+
         just('[').trivia_padded()
-            .ignore_then(expr_parser)
+            .ignore_then(choice((range, item)))
             .then_ignore(just(']').trivia_padded())
-            .map(|index| Self { index })
     });
 }

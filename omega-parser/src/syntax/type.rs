@@ -18,7 +18,21 @@ pub enum Type {
     Named(Ident), // Identifier types. Example: void, i32, i64, char, ...
     Pointer(Box<Type>),
     Function(FunctionType),
+    /// `[T]` -- an unsized run of `T`, only ever meaningful today as a
+    /// parameter type used the way C's decayed array parameters are (see
+    /// `argv : [*char]` in `examples/dev/main.omg`): a single thin pointer
+    /// value, with no length carried alongside it. `*[T]` is the pointer
+    /// form of this and is *not* `Pointer(Array(T))` -- see
+    /// `Context::resolve_type`'s special case, which turns that combination
+    /// into `ResolvedType::Slice` (a fat pointer) instead, per the
+    /// language's actual slice design.
     Array(Box<Type>),
+    /// `[T; N]` -- a sized, inline, contiguous run of exactly `N` `T`s. `N`
+    /// is kept as raw digit text here and parsed/range-checked during type
+    /// resolution (`Context::resolve_type`), the same way `NumberExpr`'s
+    /// integer literals are kept as text until semantic analysis -- the
+    /// parser never rejects input on its own.
+    SizedArray(Box<Type>, String),
 }
 
 impl Type {
@@ -31,10 +45,16 @@ impl Type {
                 .ignore_then(parser.clone())
                 .map(|ptr: Type| Type::Pointer(Box::new(ptr)));
 
+            let array_size = text::digits(10).at_least(1).to_slice().map(ToString::to_string);
             let array_parser = just('[')
+                .trivia_padded()
                 .ignore_then(parser.clone())
+                .then(just(';').trivia_padded().ignore_then(array_size).or_not())
                 .then_ignore(just(']'))
-                .map(|subtype| Type::Array(Box::new(subtype)));
+                .map(|(subtype, size)| match size {
+                    Some(size) => Type::SizedArray(Box::new(subtype), size),
+                    None => Type::Array(Box::new(subtype)),
+                });
 
             // TODO: Reuse the declaration parser here
             let decl_parser = ident_parser

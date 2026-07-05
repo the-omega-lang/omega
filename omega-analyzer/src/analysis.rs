@@ -1,9 +1,9 @@
 use crate::{
     checked::{
-        CheckedAddressOf, CheckedAssignment, CheckedBinaryOp, CheckedDeclaration, CheckedExpr,
-        CheckedExprNode, CheckedExternDecl, CheckedFunctionCall, CheckedFunctionDef, CheckedItem,
-        CheckedModule, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedStmt, CheckedStructDef, Storage,
+        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
+        CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
+        CheckedFunctionDef, CheckedItem, CheckedModule, CheckedParam, CheckedPlace,
+        CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind},
@@ -11,7 +11,7 @@ use crate::{
 };
 use omega_hir::{
     HirAddressOf, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef,
-    HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirStmt,
+    HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt,
     HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, SimpleSpan, Type};
@@ -202,6 +202,20 @@ impl Analyzer {
             other => other.clone(),
         };
 
+        // `slice.length` -- not a real field (a slice isn't a `Struct`), so
+        // this is checked before the struct-only path below rejects it. Any
+        // other field name on a slice is simply `NoSuchField`, same message a
+        // struct without that field would give.
+        if let ResolvedType::Slice(_) = &dereffed {
+            if field.as_ref() == "length" {
+                projections.push(CheckedProjection::SliceLength);
+                return Some(ResolvedType::I32);
+            }
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NoSuchField(field.clone())));
+            return None;
+        }
+
         let ResolvedType::Struct(struct_type) = &dereffed else {
             self.errors
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct));
@@ -295,12 +309,21 @@ impl Analyzer {
                 }
                 HirProjection::Index(index_expr) => {
                     let checked_index = self.analyze_expr(index_expr)?;
-                    let ResolvedType::Array(item_type) = current_type else {
-                        self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAnArray));
-                        return None;
+                    // `Array` (the legacy thin-pointer unsized form, e.g.
+                    // `argv`), `SizedArray`, and `Slice` are all indexable by
+                    // a single element -- codegen tells them apart itself
+                    // (see `resolve_place_storage`'s `Index` arm) using the
+                    // exact same `current_type` this match is on.
+                    let item_type = match current_type {
+                        ResolvedType::Array(item_type) => *item_type,
+                        ResolvedType::SizedArray(item_type, _) => *item_type,
+                        ResolvedType::Slice(item_type) => *item_type,
+                        _ => {
+                            self.errors
+                                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAnArray));
+                            return None;
+                        }
                     };
-                    let item_type = *item_type;
                     projections.push(CheckedProjection::Index {
                         index_expr: Box::new(checked_index),
                         item_type: item_type.clone(),
@@ -616,6 +639,86 @@ impl Analyzer {
                         op: bin.op,
                         left: Box::new(checked_left),
                         right: Box::new(checked_right),
+                    }),
+                })
+            }
+
+            HirExpr::ArrayLiteral(elements) => {
+                let Some((first, rest)) = elements.split_first() else {
+                    self.errors
+                        .push(AnalysisError::new(node_id, span, AnalysisErrorKind::EmptyArrayLiteral));
+                    return None;
+                };
+
+                let checked_first = self.analyze_expr(first)?;
+                let item_type = checked_first.r#type.clone();
+                let mut checked_elements = Vec::with_capacity(elements.len());
+                checked_elements.push(checked_first);
+
+                for element in rest {
+                    let checked_element = self.analyze_expr(element)?;
+                    if checked_element.r#type != item_type {
+                        self.errors.push(AnalysisError::new(
+                            element.id,
+                            element.span,
+                            AnalysisErrorKind::ArrayElementTypeMismatch {
+                                expected: item_type.clone(),
+                                found: checked_element.r#type.clone(),
+                            },
+                        ));
+                        return None;
+                    }
+                    checked_elements.push(checked_element);
+                }
+
+                let size = checked_elements.len() as u32;
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::SizedArray(Box::new(item_type.clone()), size),
+                    kind: CheckedExpr::ArrayLiteral(CheckedArrayLiteral { item_type, elements: checked_elements }),
+                })
+            }
+
+            HirExpr::Slice(HirSlice { base, start, end }) => {
+                let (checked_base, base_type) = self.analyze_place(node_id, span, base)?;
+
+                let item_type = match base_type {
+                    ResolvedType::SizedArray(item_type, _) => *item_type,
+                    ResolvedType::Slice(item_type) => *item_type,
+                    _ => {
+                        self.errors
+                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable));
+                        return None;
+                    }
+                };
+
+                let analyze_bound = |this: &mut Self, bound: &Option<Box<HirExprNode>>| -> Option<Option<Box<CheckedExprNode>>> {
+                    let Some(bound) = bound else { return Some(None) };
+                    let checked_bound = this.analyze_expr(bound)?;
+                    if checked_bound.r#type != ResolvedType::I32 {
+                        this.errors.push(AnalysisError::new(
+                            bound.id,
+                            bound.span,
+                            AnalysisErrorKind::InvalidSliceBound { r#type: checked_bound.r#type },
+                        ));
+                        return None;
+                    }
+                    Some(Some(Box::new(checked_bound)))
+                };
+
+                let checked_start = analyze_bound(self, start)?;
+                let checked_end = analyze_bound(self, end)?;
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::Slice(Box::new(item_type.clone())),
+                    kind: CheckedExpr::Slice(CheckedSlice {
+                        base: checked_base,
+                        item_type,
+                        start: checked_start,
+                        end: checked_end,
                     }),
                 })
             }
