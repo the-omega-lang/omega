@@ -125,12 +125,29 @@ pub struct CheckedExprNode {
     pub kind: CheckedExpr,
 }
 
+/// A number literal's already-parsed value, in the widest container that can
+/// hold any value of its kind -- the exact width/signedness to narrow it to
+/// when emitting IR comes from the node's own `r#type` (see
+/// `CheckedExprNode::r#type`), which analysis has already range-checked the
+/// value against, so codegen only ever narrows losslessly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumberValue {
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+}
+
 #[derive(Debug, Clone)]
 pub enum CheckedExpr {
     Place(CheckedPlace),
     /// The literal's value, already parsed and range-checked against its
     /// resolved type by analysis -- codegen never re-parses source text.
-    Number(i32),
+    Number(NumberValue),
+    Bool(bool),
+    /// A single Unicode scalar value (`ResolvedType::Char`) -- kept as a
+    /// `char`, not pre-converted to its `u32` codepoint, since it's still
+    /// meaningful source-level data until codegen actually needs the bits.
+    Char(char),
     String(String),
     FunctionCall(CheckedFunctionCall),
     Assignment(CheckedAssignment),

@@ -1,14 +1,14 @@
-extern puts : (s: *char) => i32;
-extern printf : (s : *char, ...) => i32;
+extern puts : (s: *u8) => i32;
+extern printf : (s : *u8, ...) => i32;
 
 struct Interface {
-    do_thing: (s : *char) => i32;
+    do_thing: (s : *u8) => i32;
     member_function(self) => void {
         self.do_thing("You called the member function");
     }
 }
 
-main(argc : i32, argv : [*char]) => i32 {
+main(argc : i32, argv : [*u8]) => i32 {
     iface : Interface;
     iface.do_thing = puts;
     iface.do_thing("HELLO WORLD");
@@ -44,6 +44,41 @@ main(argc : i32, argv : [*char]) => i32 {
     slice = arr[0..];
     printf("slice len: %d\n", slice.length);
 
-    
+    big : i64 = 5_000_000_000i64;
+    big2 := big + 1i64;
+    printf("i64: %lld\n", big2);
+
+    ubig : u64 = 0xFFFFFFFFFu64;
+    printf("u64 (hex): %llu\n", ubig);
+
+    oct := 0o755;
+    printf("octal 0o755 = %d\n", oct);
+
+    bin := 0b1010;
+    printf("binary 0b1010 = %d\n", bin);
+
+    small : u8 = 0xC8u8;
+    small2 := small + 5u8;
+    printf("u8: %d, %d\n", small, small2);
+
+    pi : f64 = 3.14159;
+    half : f32 = 0.5f32;
+    sum_f32 := half + half;
+    printf("f64: %f, f32: %f, f32 sum: %f\n", pi, half, sum_f32);
+
+    flag := true;
+    printf("bool: %d\n", flag);
+
+    letter := 'A';
+    printf("char codepoint: %d\n", letter);
+
+    neg_i64 := -big2;
+    neg_f64 := -pi;
+    printf("negated: %lld, %f\n", neg_i64, neg_f64);
+
+    q := big2 / 3i64;
+    r := big2 % 3i64;
+    printf("i64 div/rem: %lld %lld\n", q, r);
+
     return 69;
 }

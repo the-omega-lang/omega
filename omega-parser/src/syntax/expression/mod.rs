@@ -2,6 +2,8 @@ pub mod address_of;
 pub mod array_literal;
 pub mod assignment;
 pub mod binary_op;
+pub mod bool_literal;
+pub mod char_literal;
 pub mod codeblock;
 pub mod deref;
 pub mod field_access;
@@ -22,6 +24,8 @@ use crate::{
             array_literal::ArrayLiteralExpr,
             assignment::AssignmentExpr,
             binary_op::{BinaryOp, BinaryOpExpr},
+            bool_literal::BoolExpr,
+            char_literal::CharExpr,
             codeblock::CodeblockExpr,
             deref::DerefExpr,
             field_access::{FieldAccessExpr, FieldAccessPostfix},
@@ -54,6 +58,8 @@ pub enum Expression {
     BinaryOp(Box<BinaryOpExpr>),
     Number(NumberExpr),
     String(StringExpr),
+    Bool(BoolExpr),
+    Char(CharExpr),
     Codeblock(CodeblockExpr),
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
@@ -137,6 +143,13 @@ impl ExpressionNode {
                 NumberExpr::parser().map(Expression::Number)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 StringExpr::parser().map(Expression::String)
+                    .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
+                CharExpr::parser().map(Expression::Char)
+                    .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
+                // Tried before `Ident`: `true`/`false` are keywords, not
+                // ordinary identifiers -- if `Ident` went first, they'd parse
+                // as (undefined) variable references instead.
+                BoolExpr::parser().map(Expression::Bool)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 Ident::parser().map(Expression::Ident)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),

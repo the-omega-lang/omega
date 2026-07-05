@@ -97,6 +97,16 @@ pub enum AnalysisErrorKind {
     /// (the first element's type is what every other element is checked
     /// against).
     ArrayElementTypeMismatch { expected: ResolvedType, found: ResolvedType },
+    /// A `+ - * / %` operand's types don't match each other (e.g. `i32 +
+    /// i64`) -- unlike `InvalidBinaryOperand`, both operands *are* numeric,
+    /// they just aren't the same numeric type; this language has no implicit
+    /// numeric conversions, so a mismatch here is always an error rather than
+    /// a promotion.
+    BinaryOperandTypeMismatch { left: ResolvedType, right: ResolvedType },
+    /// `%` (`BinaryOp::Rem`) applied to a float operand -- there's no native
+    /// floating-point remainder instruction to lower this to (matching C,
+    /// which requires calling `fmod`/`fmodf` instead of using `%`).
+    FloatRemainder,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -160,6 +170,13 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "array literal element of type '{found:?}' does not match preceding elements of type '{expected:?}'"
             ),
+            Self::BinaryOperandTypeMismatch { left, right } => write!(
+                f,
+                "binary operator operands have different types: '{left:?}' and '{right:?}'"
+            ),
+            Self::FloatRemainder => {
+                write!(f, "'%' is not supported on floating-point operands")
+            }
         }
     }
 }

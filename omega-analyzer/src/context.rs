@@ -58,8 +58,18 @@ impl Context {
         global_scope.defined_types.extend([
             // Standard types
             (Ident("void".into()), ResolvedType::Void),
+            (Ident("bool".into()), ResolvedType::Bool),
             (Ident("char".into()), ResolvedType::Char),
+            (Ident("i8".into()), ResolvedType::I8),
+            (Ident("i16".into()), ResolvedType::I16),
             (Ident("i32".into()), ResolvedType::I32),
+            (Ident("i64".into()), ResolvedType::I64),
+            (Ident("u8".into()), ResolvedType::U8),
+            (Ident("u16".into()), ResolvedType::U16),
+            (Ident("u32".into()), ResolvedType::U32),
+            (Ident("u64".into()), ResolvedType::U64),
+            (Ident("f32".into()), ResolvedType::F32),
+            (Ident("f64".into()), ResolvedType::F64),
         ]);
         Self {
             scopes: vec![global_scope],

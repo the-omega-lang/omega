@@ -15,9 +15,9 @@ use omega_analyzer::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
         CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
         CheckedFunctionDef, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, Storage,
+        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, NumberValue, Storage,
     },
-    resolved_type::{ResolvedFunctionType, ResolvedStructType, ResolvedType},
+    resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
 use omega_hir::{BinaryOp, HirId};
 use std::{collections::HashMap, sync::Arc};
@@ -76,8 +76,19 @@ impl IntoIRType for ResolvedType {
     fn into_ir_type(self, codegen: &Codegen) -> Vec<IRType> {
         match self {
             ResolvedType::Void => vec![],
-            ResolvedType::I32 => vec![types::I32],
-            ResolvedType::Char => vec![types::I8],
+            // `Bool` is a plain 0/1 byte -- cranelift's integer types are
+            // sign-agnostic and there's no dedicated boolean IR type to use
+            // instead (see `ResolvedType::Bool`'s doc comment).
+            ResolvedType::Bool => vec![types::I8],
+            // A decoded 4-byte Unicode scalar value, not a byte -- see
+            // `ResolvedType::Char`'s doc comment for why this isn't `I8`.
+            ResolvedType::Char => vec![types::I32],
+            ResolvedType::I8 | ResolvedType::U8 => vec![types::I8],
+            ResolvedType::I16 | ResolvedType::U16 => vec![types::I16],
+            ResolvedType::I32 | ResolvedType::U32 => vec![types::I32],
+            ResolvedType::I64 | ResolvedType::U64 => vec![types::I64],
+            ResolvedType::F32 => vec![types::F32],
+            ResolvedType::F64 => vec![types::F64],
             ResolvedType::Struct(struct_type) => struct_type
                 .fields
                 .into_iter()
@@ -484,6 +495,28 @@ impl Codegen {
         self.module.declare_func_in_func(func_id, builder.func)
     }
 
+    /// C's variadic calling convention requires the caller to promote each
+    /// *variadic* argument (never a fixed/named one, whose width is fixed by
+    /// the callee's prototype) before passing it: any integer narrower than
+    /// `int` is sign/zero-extended to 32 bits, and `float` is promoted to
+    /// `double` -- otherwise a callee like `printf` (which reads variadic
+    /// arguments according to those default-promoted widths, per its format
+    /// string) would read garbage. Only applies to `arg_type`s that flatten
+    /// to exactly one IR leaf (every numeric primitive does); called
+    /// unconditionally on every variadic argument, so anything else (a
+    /// pointer, already the right width) just passes through unchanged.
+    fn promote_variadic_arg(&mut self, builder: &mut FunctionBuilder, value: Value, arg_type: &ResolvedType) -> Value {
+        match arg_type.numeric_kind() {
+            Some(NumericKind::Float(width)) if width < 64 => builder.ins().fpromote(types::F64, value),
+            Some(NumericKind::Signed(width)) if width < 32 => builder.ins().sextend(types::I32, value),
+            Some(NumericKind::Unsigned(width)) if width < 32 => builder.ins().uextend(types::I32, value),
+            // `Bool` isn't `numeric_kind`-classified (see its doc comment),
+            // but it's still an 8-bit integer that needs the same promotion.
+            None if *arg_type == ResolvedType::Bool => builder.ins().uextend(types::I32, value),
+            _ => value,
+        }
+    }
+
     fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
         match node.kind {
             CheckedExpr::String(s) => {
@@ -513,9 +546,17 @@ impl Codegen {
                 // place root, which always yields a single address.
                 let fnaddr = self.process_expr(builder, *callee)[0];
 
+                let fixed_count = fn_type.params.len();
                 let mut ir_args = vec![];
-                for arg in args {
-                    let value = self.process_expr(builder, arg);
+                for (i, arg) in args.into_iter().enumerate() {
+                    let arg_type = arg.r#type.clone();
+                    let mut value = self.process_expr(builder, arg);
+                    // Only the variadic tail needs default-argument
+                    // promotion; a fixed/named parameter's width is already
+                    // pinned by the callee's declared signature.
+                    if fn_type.is_variadic && i >= fixed_count && let [v] = value.as_mut_slice() {
+                        *v = self.promote_variadic_arg(builder, *v, &arg_type);
+                    }
                     ir_args.push(value);
                 }
                 let ir_args = ir_args.into_iter().flatten().collect::<Vec<_>>();
@@ -548,8 +589,28 @@ impl Codegen {
             }
 
             CheckedExpr::Number(value) => {
-                vec![builder.ins().iconst::<i64>(types::I32, value as i64)]
+                // The one and only leaf of `node.r#type`'s own flattening --
+                // every resolved numeric type is exactly one IR leaf -- picks
+                // the concrete width/kind to narrow `value` into. `value`
+                // itself is already range-checked against this same type by
+                // analysis (see `Analyzer::analyze_number`), so this never
+                // has to reject anything, only narrow losslessly.
+                let ir_type = node.r#type.clone().into_ir_type(self)[0];
+                let result = match value {
+                    NumberValue::Signed(v) => builder.ins().iconst(ir_type, v),
+                    NumberValue::Unsigned(v) => builder.ins().iconst(ir_type, v as i64),
+                    NumberValue::Float(v) if ir_type == types::F32 => builder.ins().f32const(v as f32),
+                    NumberValue::Float(v) => builder.ins().f64const(v),
+                };
+                vec![result]
             }
+
+            CheckedExpr::Bool(b) => vec![builder.ins().iconst(types::I8, b as i64)],
+
+            // Cranelift has no dedicated char/codepoint type -- a `char`'s
+            // one IR leaf is just its `u32` codepoint stored in an `I32`
+            // (see `Char`'s `into_ir_type` arm).
+            CheckedExpr::Char(c) => vec![builder.ins().iconst(types::I32, c as i64)],
 
             CheckedExpr::Place(place) => self.get_place_value(&place, builder),
 
@@ -572,24 +633,46 @@ impl Codegen {
             }
 
             CheckedExpr::Negate(base) => {
+                // Checked module guarantees only signed ints or floats reach
+                // here (see `Analyzer`'s `HirExpr::Negate` arm) -- `fneg` for
+                // the latter, `ineg` (two's-complement negation) for the
+                // former.
+                let is_float = matches!(base.r#type.numeric_kind(), Some(NumericKind::Float(_)));
                 let value = self.process_expr(builder, *base)[0];
-                vec![builder.ins().ineg(value)]
+                let result = if is_float { builder.ins().fneg(value) } else { builder.ins().ineg(value) };
+                vec![result]
             }
 
             CheckedExpr::BinaryOp(CheckedBinaryOp { op, left, right }) => {
+                // Checked module guarantees both operands share the same
+                // numeric resolved type (see `Analyzer`'s `HirExpr::BinaryOp`
+                // arm), so either one's `numeric_kind` picks the right
+                // instruction for the whole operation.
+                let kind = left
+                    .r#type
+                    .numeric_kind()
+                    .expect("checked module guarantees BinaryOp operands are numeric");
                 let left = self.process_expr(builder, *left)[0];
                 let right = self.process_expr(builder, *right)[0];
-                let result = match op {
-                    BinaryOp::Add => builder.ins().iadd(left, right),
-                    BinaryOp::Sub => builder.ins().isub(left, right),
-                    BinaryOp::Mul => builder.ins().imul(left, right),
-                    // Signed: `i32` is the only numeric type today, and it's
-                    // always signed. Division/modulo by zero traps at the
-                    // instruction level -- consistent with this language
-                    // having no other runtime safety net (no bounds checks
-                    // either), so no special handling is needed here.
-                    BinaryOp::Div => builder.ins().sdiv(left, right),
-                    BinaryOp::Rem => builder.ins().srem(left, right),
+                // Division/modulo by zero traps at the instruction level --
+                // consistent with this language having no other runtime
+                // safety net (no bounds checks either), so no special
+                // handling is needed here.
+                let result = match (op, kind) {
+                    (BinaryOp::Add, NumericKind::Float(_)) => builder.ins().fadd(left, right),
+                    (BinaryOp::Add, _) => builder.ins().iadd(left, right),
+                    (BinaryOp::Sub, NumericKind::Float(_)) => builder.ins().fsub(left, right),
+                    (BinaryOp::Sub, _) => builder.ins().isub(left, right),
+                    (BinaryOp::Mul, NumericKind::Float(_)) => builder.ins().fmul(left, right),
+                    (BinaryOp::Mul, _) => builder.ins().imul(left, right),
+                    (BinaryOp::Div, NumericKind::Float(_)) => builder.ins().fdiv(left, right),
+                    (BinaryOp::Div, NumericKind::Signed(_)) => builder.ins().sdiv(left, right),
+                    (BinaryOp::Div, NumericKind::Unsigned(_)) => builder.ins().udiv(left, right),
+                    (BinaryOp::Rem, NumericKind::Signed(_)) => builder.ins().srem(left, right),
+                    (BinaryOp::Rem, NumericKind::Unsigned(_)) => builder.ins().urem(left, right),
+                    (BinaryOp::Rem, NumericKind::Float(_)) => {
+                        unreachable!("checked module rejects '%' on float operands")
+                    }
                 };
                 vec![result]
             }

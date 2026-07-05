@@ -129,6 +129,8 @@ pub enum HirExpr {
     Place(HirPlace),
     Number(NumberExpr),
     String(StringExpr),
+    Bool(bool),
+    Char(char),
     Codeblock(Vec<HirStmt>),
     FunctionCall(HirFunctionCall),
     Assignment(HirAssignment),

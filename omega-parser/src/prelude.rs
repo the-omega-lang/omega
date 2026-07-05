@@ -1,9 +1,9 @@
 pub use crate::syntax::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
-    assignment::AssignmentExpr, binary_op::{BinaryOp, BinaryOpExpr}, codeblock::CodeblockExpr,
-    deref::DerefExpr, field_access::FieldAccessExpr, function_call::FunctionCallExpr,
-    index::IndexExpr, negate::NegateExpr, number::NumberExpr, slice::SliceExpr,
-    string::StringExpr,
+    assignment::AssignmentExpr, binary_op::{BinaryOp, BinaryOpExpr}, bool_literal::BoolExpr,
+    char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
+    field_access::FieldAccessExpr, function_call::FunctionCallExpr, index::IndexExpr,
+    negate::NegateExpr, number::{NumberBase, NumberExpr}, slice::SliceExpr, string::StringExpr,
 };
 pub use crate::syntax::identifier::Ident;
 pub use crate::syntax::statement::{

@@ -202,6 +202,16 @@ impl Lowerer {
                 span: node.span,
                 expr: HirExpr::String(s.clone()),
             },
+            Expression::Bool(b) => HirExprNode {
+                id: self.ids.next(),
+                span: node.span,
+                expr: HirExpr::Bool(b.0),
+            },
+            Expression::Char(c) => HirExprNode {
+                id: self.ids.next(),
+                span: node.span,
+                expr: HirExpr::Char(c.0),
+            },
             Expression::Codeblock(cb) => {
                 let stmts = cb.0.iter().flat_map(|s| self.lower_stmt(s)).collect();
                 HirExprNode {

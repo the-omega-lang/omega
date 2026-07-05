@@ -20,7 +20,7 @@ pub enum Type {
     Function(FunctionType),
     /// `[T]` -- an unsized run of `T`, only ever meaningful today as a
     /// parameter type used the way C's decayed array parameters are (see
-    /// `argv : [*char]` in `examples/dev/main.omg`): a single thin pointer
+    /// `argv : [*u8]` in `examples/dev/main.omg`): a single thin pointer
     /// value, with no length carried alongside it. `*[T]` is the pointer
     /// form of this and is *not* `Pointer(Array(T))` -- see
     /// `Context::resolve_type`'s special case, which turns that combination

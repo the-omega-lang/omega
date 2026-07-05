@@ -3,18 +3,19 @@ use crate::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
         CheckedDeclaration, CheckedExpr, CheckedExprNode, CheckedExternDecl, CheckedFunctionCall,
         CheckedFunctionDef, CheckedItem, CheckedModule, CheckedParam, CheckedPlace,
-        CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, Storage,
+        CheckedPlaceRoot, CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef,
+        NumberValue, Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind},
-    resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
+    resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
 };
 use omega_hir::{
-    HirAddressOf, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef,
-    HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt,
-    HirStructDef, HirWalrusDeclaration,
+    BinaryOp, HirAddressOf, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
+    HirFunctionDef, HirId, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection,
+    HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
-use omega_parser::prelude::{Ident, SimpleSpan, Type};
+use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
 use std::collections::HashSet;
 
 /// A function-call's callee, resolved to either an ordinary value (whose
@@ -430,6 +431,107 @@ impl Analyzer {
         Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None })
     }
 
+    /// Resolves a number literal's target type (explicit suffix, or the
+    /// default -- `f64` for a literal with a decimal point, `i32` otherwise,
+    /// mirroring Rust's own literal defaults) and parses/range-checks its
+    /// text against that type. `NumberExpr` keeps its digits as plain text
+    /// (see its doc comment) precisely so this is the *only* place that ever
+    /// has to interpret them -- codegen just emits whatever `NumberValue`
+    /// this produces.
+    fn analyze_number(&mut self, node_id: HirId, span: SimpleSpan, n: &NumberExpr) -> Option<CheckedExprNode> {
+        let invalid_suffix = |this: &mut Self, ident: &Ident| {
+            this.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::InvalidNumberType(ident.clone())));
+        };
+
+        let resolved_type = match &n.explicit_type {
+            Some(explicit_type) => match self.context.resolve_type(Type::Named(explicit_type.clone())) {
+                Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
+                _ => {
+                    invalid_suffix(self, explicit_type);
+                    return None;
+                }
+            },
+            None if n.fractional_part.is_some() => ResolvedType::F64,
+            None => ResolvedType::I32,
+        };
+        let kind = resolved_type
+            .numeric_kind()
+            .expect("just resolved above, or a hardcoded numeric default");
+
+        // A literal written with a decimal point must resolve to a float
+        // type; a based (hex/octal/binary) literal never carries one (the
+        // grammar has no notation for it), so a float suffix on one (e.g.
+        // `0xFFf32`) is rejected here too rather than silently misparsed.
+        let is_float = matches!(kind, NumericKind::Float(_));
+        if n.fractional_part.is_some() && !is_float {
+            let Some(explicit_type) = &n.explicit_type else {
+                unreachable!("the default type for a fractional literal is always F64");
+            };
+            invalid_suffix(self, explicit_type);
+            return None;
+        }
+        if is_float && n.base != NumberBase::Decimal {
+            let Some(explicit_type) = &n.explicit_type else {
+                unreachable!("the default type is only Float when a fraction was written, which implies Decimal");
+            };
+            invalid_suffix(self, explicit_type);
+            return None;
+        }
+
+        let literal_text = || match &n.fractional_part {
+            Some(frac) => format!("{}.{}", n.integer_part, frac),
+            None => n.integer_part.clone(),
+        };
+        let out_of_range = |this: &mut Self| {
+            this.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text() },
+            ));
+        };
+
+        let value = match kind {
+            NumericKind::Float(width) => {
+                let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
+                let Ok(parsed) = text.parse::<f64>() else {
+                    out_of_range(self);
+                    return None;
+                };
+                if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
+                    out_of_range(self);
+                    return None;
+                }
+                NumberValue::Float(parsed)
+            }
+            NumericKind::Signed(width) => {
+                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
+                    out_of_range(self);
+                    return None;
+                };
+                let max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
+                if parsed > max {
+                    out_of_range(self);
+                    return None;
+                }
+                NumberValue::Signed(parsed as i64)
+            }
+            NumericKind::Unsigned(width) => {
+                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
+                    out_of_range(self);
+                    return None;
+                };
+                let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+                if parsed > max {
+                    out_of_range(self);
+                    return None;
+                }
+                NumberValue::Unsigned(parsed)
+            }
+        };
+
+        Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
+    }
+
     fn analyze_expr(&mut self, node: &HirExprNode) -> Option<CheckedExprNode> {
         let node_id = node.id;
         let span = node.span;
@@ -440,46 +542,23 @@ impl Analyzer {
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
             }
 
-            HirExpr::Number(number_expr) => {
-                let resolved_type = match &number_expr.explicit_type {
-                    Some(explicit_type) => {
-                        // Only `i32` is a supported numeric type today (see
-                        // the parser's own "TODO: handle floats and unsigned
-                        // integers"); anything else -- unrecognized, or
-                        // recognized but non-numeric -- is invalid here.
-                        match self.context.resolve_type(Type::Named(explicit_type.clone())) {
-                            Ok(ResolvedType::I32) => ResolvedType::I32,
-                            _ => {
-                                self.errors.push(AnalysisError::new(
-                                    node_id,
-                                    span,
-                                    AnalysisErrorKind::InvalidNumberType(explicit_type.clone()),
-                                ));
-                                return None;
-                            }
-                        }
-                    }
-                    None => ResolvedType::I32,
-                };
+            HirExpr::Number(number_expr) => self.analyze_number(node_id, span, number_expr),
 
-                let Ok(value) = number_expr.integer_part.parse::<i32>() else {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::NumberLiteralOutOfRange {
-                            literal: number_expr.integer_part.clone(),
-                        },
-                    ));
-                    return None;
-                };
-
-                Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
+            HirExpr::Bool(b) => {
+                Some(CheckedExprNode { id: node_id, span, r#type: ResolvedType::Bool, kind: CheckedExpr::Bool(*b) })
             }
 
+            HirExpr::Char(c) => {
+                Some(CheckedExprNode { id: node_id, span, r#type: ResolvedType::Char, kind: CheckedExpr::Char(*c) })
+            }
+
+            // A string literal's bytes are raw UTF-8 bytes, not decoded
+            // characters -- `*u8`, not `*char` (see `ResolvedType::Char`'s
+            // doc comment), the same type C's own string literals decay to.
             HirExpr::String(s) => Some(CheckedExprNode {
                 id: node_id,
                 span,
-                r#type: ResolvedType::Pointer(Box::new(ResolvedType::Char)),
+                r#type: ResolvedType::Pointer(Box::new(ResolvedType::U8)),
                 kind: CheckedExpr::String(s.0.clone()),
             }),
 
@@ -596,7 +675,14 @@ impl Analyzer {
 
             HirExpr::Negate(base) => {
                 let checked_base = self.analyze_expr(base)?;
-                if checked_base.r#type != ResolvedType::I32 {
+                // Signed ints and floats only -- matching Rust, unary `-` on
+                // an unsigned integer (or `bool`/`char`, neither of which is
+                // numeric at all) is rejected rather than silently wrapping.
+                let negatable = matches!(
+                    checked_base.r#type.numeric_kind(),
+                    Some(NumericKind::Signed(_)) | Some(NumericKind::Float(_))
+                );
+                if !negatable {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -605,10 +691,11 @@ impl Analyzer {
                     return None;
                 }
 
+                let r#type = checked_base.r#type.clone();
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::I32,
+                    r#type,
                     kind: CheckedExpr::Negate(Box::new(checked_base)),
                 })
             }
@@ -618,7 +705,7 @@ impl Analyzer {
                 let checked_right = self.analyze_expr(&bin.right)?;
 
                 for operand in [&checked_left, &checked_right] {
-                    if operand.r#type != ResolvedType::I32 {
+                    if operand.r#type.numeric_kind().is_none() {
                         self.errors.push(AnalysisError::new(
                             node_id,
                             span,
@@ -631,10 +718,36 @@ impl Analyzer {
                     }
                 }
 
+                // No implicit numeric conversions anywhere else in this
+                // language (see e.g. `AssignmentTypeMismatch`) -- arithmetic
+                // between two different numeric types is no exception.
+                if checked_left.r#type != checked_right.r#type {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::BinaryOperandTypeMismatch {
+                            left: checked_left.r#type.clone(),
+                            right: checked_right.r#type.clone(),
+                        },
+                    ));
+                    return None;
+                }
+
+                // No native float remainder instruction (see
+                // `AnalysisErrorKind::FloatRemainder`'s doc comment) --
+                // matching C, which requires `fmod`/`fmodf` instead of `%`.
+                if bin.op == BinaryOp::Rem
+                    && matches!(checked_left.r#type.numeric_kind(), Some(NumericKind::Float(_)))
+                {
+                    self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::FloatRemainder));
+                    return None;
+                }
+
+                let r#type = checked_left.r#type.clone();
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::I32,
+                    r#type,
                     kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
                         op: bin.op,
                         left: Box::new(checked_left),
