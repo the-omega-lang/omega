@@ -159,6 +159,13 @@ pub enum AnalysisErrorKind {
     /// position that requires a value (e.g. calling it, or using it as a
     /// place).
     NotAValue(Vec<Ident>),
+    /// A struct includes itself, directly or through one or more other
+    /// structs, entirely by value -- e.g. `struct A { a: A; }`, or `struct A
+    /// { b: B; }` / `struct B { a: A; }` with no pointer anywhere in the
+    /// cycle. Such a type has no finite size (the same shape Rust rejects as
+    /// E0072); breaking the cycle needs at least one pointer indirection
+    /// somewhere along it (e.g. a linked list's `next: *Node`).
+    RecursiveTypeWithoutIndirection(Ident),
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -258,6 +265,11 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "'{}' is a type, not a value",
                 path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
+            ),
+            Self::RecursiveTypeWithoutIndirection(ident) => write!(
+                f,
+                "recursive type '{}' has infinite size -- insert a pointer somewhere in the cycle to fix this",
+                ident.as_ref()
             ),
         }
     }

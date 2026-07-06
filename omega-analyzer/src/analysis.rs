@@ -70,16 +70,15 @@ pub struct Analyzer<'r> {
     /// stack (see `ensure_item_signature`) -- a name reached again while
     /// it's in here is a same-module forward reference that has looped back
     /// on itself (self-recursion, a self-referencing pointer field, or a
-    /// forward reference into a cycle). Every one of those is *allowed*: the
-    /// partially-built placeholder already sitting in scope (see
-    /// `collect_struct_signature`) is all a second reference to it ever
-    /// needs at this stage -- a bare name is just bound, and a pointer field
-    /// doesn't need its pointee's layout to finish first. The one thing this
-    /// deliberately does *not* police is a struct including itself *by
-    /// value* (directly, or through another struct) -- rejecting that
-    /// soundly needs its own layout-cycle analysis, a materially bigger,
-    /// separately-risky effort out of scope here (see the doc comment on
-    /// `ensure_item_signature`).
+    /// forward reference into a cycle). Whether that's fine or an error
+    /// depends entirely on how it was reached: indirectly (behind a
+    /// pointer), the partially-built placeholder already sitting in scope
+    /// (see `collect_struct_signature`) is all a second reference to it ever
+    /// needs -- a pointer doesn't need its pointee's layout to finish first.
+    /// Directly (by value), it means the type has no finite size (`struct A
+    /// { a: A; }`, or the same shape spread across several structs) and is
+    /// rejected via `AnalysisErrorKind::RecursiveTypeWithoutIndirection` --
+    /// see `ensure_item_signature`.
     in_progress: HashSet<Ident>,
     /// Top-level names whose signature collection has already fully run --
     /// `ensure_item_signature`'s memoization, so a name reached both via an
@@ -184,8 +183,15 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked)
     }
 
-    fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type) -> Option<ResolvedType> {
-        self.ensure_type_names_resolved(typ)?;
+    /// `indirect` is true whenever `typ` sits somewhere that never embeds
+    /// its referent inline into another type's layout -- a function's own
+    /// param/return types, or anything already behind a `Pointer`/`Array`/
+    /// `Slice` -- as opposed to a struct field or `SizedArray` element,
+    /// which do. See `ensure_item_signature` for why this distinction is
+    /// what separates a legitimate self-reference (`next: *Node`) from a
+    /// genuine infinite-size cycle (`value: Node`).
+    fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type, indirect: bool) -> Option<ResolvedType> {
+        self.ensure_type_names_resolved(id, span, typ, indirect)?;
         match self.context.resolve_type(typ.to_owned(), &mut *self.resolver) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -203,19 +209,27 @@ impl<'r> Analyzer<'r> {
     /// A qualified reference (`mymodule::Foo`) is a different module's
     /// concern entirely (its own driver-side cache/cycle guard), so this
     /// only ever recurses into the unqualified case.
-    fn ensure_type_names_resolved(&mut self, typ: &Type) -> Option<()> {
+    ///
+    /// `indirect` starts out as whatever the caller passed (see
+    /// `resolve_type_or_error`) and only ever *turns on* as the walk
+    /// descends -- `Pointer`/`Array`/a `Function`'s own param and return
+    /// types are never embedded inline into anything, so everything beneath
+    /// them is indirect regardless of what it started as; `SizedArray`
+    /// carries its element inline (an array of pointers is still indirect,
+    /// but a `SizedArray` behind nothing is not), so it just passes the
+    /// current value through unchanged.
+    fn ensure_type_names_resolved(&mut self, id: HirId, span: SimpleSpan, typ: &Type, indirect: bool) -> Option<()> {
         match typ {
-            Type::Named(path) if path.is_unqualified() => self.ensure_item_signature(&path.head),
+            Type::Named(path) if path.is_unqualified() => self.ensure_item_signature(id, span, &path.head, indirect),
             Type::Named(_) => Some(()),
-            Type::Pointer(inner) | Type::Array(inner) | Type::SizedArray(inner, _) => {
-                self.ensure_type_names_resolved(inner)
-            }
+            Type::Pointer(inner) | Type::Array(inner) => self.ensure_type_names_resolved(id, span, inner, true),
+            Type::SizedArray(inner, _) => self.ensure_type_names_resolved(id, span, inner, indirect),
             Type::Function(fntyp) => {
                 let mut ok = true;
                 for (_, param_type) in &fntyp.params {
-                    ok &= self.ensure_type_names_resolved(param_type).is_some();
+                    ok &= self.ensure_type_names_resolved(id, span, param_type, true).is_some();
                 }
-                ok &= self.ensure_type_names_resolved(&fntyp.return_type).is_some();
+                ok &= self.ensure_type_names_resolved(id, span, &fntyp.return_type, true).is_some();
                 ok.then_some(())
             }
         }
@@ -231,24 +245,34 @@ impl<'r> Analyzer<'r> {
     /// the same query-style "collect a signature on first demand, memoize it
     /// forever after" shape `omega_driver::Driver::signature_of` already uses
     /// for *cross*-module signatures, just one level down: a name found
-    /// already `done_items` is a cache hit, one found `in_progress` is a
-    /// name looping back on itself (fine -- see `in_progress`'s doc comment),
-    /// and anything else gets collected right here, on the spot, before this
-    /// returns.
+    /// already `done_items` is a cache hit, and anything not yet started
+    /// gets collected right here, on the spot, before this returns.
     ///
-    /// Deliberately does *not* attempt to distinguish an indirect reference
-    /// (behind a pointer, where only the placeholder's *existence* matters)
-    /// from a direct, by-value one (where a genuine cycle -- e.g. two
-    /// structs each embedding the other by value -- would silently produce
-    /// an infinitely-recursive layout): that distinction, and rejecting the
-    /// latter cleanly, is exactly the "infinite struct recursion through
-    /// fields" case called out as its own, separately-risky follow-up. This
-    /// only guarantees the *analyzer itself* never loops forever chasing a
-    /// same-module cycle; it doesn't yet guarantee *codegen* won't, for that
-    /// one excluded shape.
-    fn ensure_item_signature(&mut self, name: &Ident) -> Option<()> {
-        if self.done_items.contains(name) || self.in_progress.contains(name) {
+    /// A name found `in_progress` (already on the call stack, mid-collection)
+    /// is where a same-module cycle is actually caught, and `indirect` is
+    /// what decides whether that's fine or an error: `next: *Node` only ever
+    /// needs `Node`'s placeholder to *exist* (its final layout is irrelevant
+    /// to a pointer's own size), so an indirect reference to an in-progress
+    /// name is left alone; `value: Node` (or `struct A { b: B }` / `struct B
+    /// { a: A }`, discovered from either end) would recreate the same cycle
+    /// forever -- the type has no finite size -- so a *direct* reference to
+    /// an in-progress name is rejected here with
+    /// `RecursiveTypeWithoutIndirection` instead of ever being allowed to
+    /// build a self-referencing-by-value `ResolvedStructType`.
+    fn ensure_item_signature(&mut self, id: HirId, span: SimpleSpan, name: &Ident, indirect: bool) -> Option<()> {
+        if self.done_items.contains(name) {
             return Some(());
+        }
+        if self.in_progress.contains(name) {
+            if indirect {
+                return Some(());
+            }
+            self.errors.push(AnalysisError::new(
+                id,
+                span,
+                AnalysisErrorKind::RecursiveTypeWithoutIndirection(name.clone()),
+            ));
+            return None;
         }
         let Some(&index) = self.local_items.get(name) else {
             // Not a pending top-level item of this module -- a builtin
@@ -297,7 +321,10 @@ impl<'r> Analyzer<'r> {
     }
 
     fn analyze_declaration(&mut self, decl: &HirDeclaration, storage: Storage) -> Option<CheckedDeclaration> {
-        let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type)?;
+        // A global's type is never itself embedded inline into another
+        // type's layout (it isn't a struct field), so it can never be part
+        // of an infinite-size cycle -- always indirect.
+        let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type, true)?;
         self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), storage)?;
         Some(CheckedDeclaration {
             id: decl.id,
@@ -308,7 +335,7 @@ impl<'r> Analyzer<'r> {
     }
 
     fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDecl> {
-        let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type)?;
+        let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type, true)?;
         // An extern of function type imports a callable symbol; anything
         // else is extern *data*, whose storage isn't decided yet (see
         // `Storage::Global`'s doc comment).
@@ -333,7 +360,11 @@ impl<'r> Analyzer<'r> {
     }
 
     fn analyze_param(&mut self, param: &HirParam) -> Option<CheckedParam> {
-        let resolved_type = self.resolve_type_or_error(param.id, param.span, &param.r#type)?;
+        // A parameter is passed by value at the call site, not laid out
+        // inline inside anything -- a method taking its own struct type by
+        // value (`fn combine(self, other: Self) -> Self`) is completely
+        // ordinary and must not be flagged as a layout cycle.
+        let resolved_type = self.resolve_type_or_error(param.id, param.span, &param.r#type, true)?;
         self.declare_binding(param.id, param.span, &param.ident, resolved_type.clone(), Storage::Parameter)?;
         Some(CheckedParam {
             id: param.id,
@@ -358,7 +389,10 @@ impl<'r> Analyzer<'r> {
                 ));
                 return None;
             }
-            let resolved_type = this.resolve_type_or_error(field.id, field.span, &field.r#type)?;
+            // A field is the one context that genuinely lays its type out
+            // inline -- this is the case `RecursiveTypeWithoutIndirection`
+            // exists to catch, so it's the only caller passing `false`.
+            let resolved_type = this.resolve_type_or_error(field.id, field.span, &field.r#type, false)?;
             Some(CheckedParam {
                 id: field.id,
                 span: field.span,
@@ -1632,10 +1666,12 @@ impl<'r> Analyzer<'r> {
     /// exactly like `analyze_function_def` does, so later same-module items
     /// (and this module's own exported `ModuleSignature`) can see it.
     fn collect_function_signature(&mut self, f: &HirFunctionDef) -> Option<ResolvedFunctionType> {
+        // Param/return types are a function's signature, never inline data --
+        // always indirect (see `analyze_param`'s identical reasoning).
         let params = self.analyze_all(&f.params, |this, p| {
-            this.resolve_type_or_error(p.id, p.span, &p.r#type).map(|t| (p.ident.clone(), t))
+            this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
         })?;
-        let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type)?;
+        let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type, true)?;
         let fn_type = ResolvedFunctionType {
             params,
             return_type: Box::new(return_type),
@@ -1720,7 +1756,12 @@ impl<'r> Analyzer<'r> {
         let mut ok = true;
         for item in &hir_module.items {
             if let Some(name) = item_name(item) {
-                ok &= self.ensure_item_signature(&name).is_some();
+                let (id, span) = item_id_span(item);
+                // Not itself a reference from inside any type -- nothing is
+                // "in progress" yet at this point in the sweep, so `indirect`
+                // can't actually matter here; `true` just means "no cycle
+                // risk from the sweep itself," which is correct.
+                ok &= self.ensure_item_signature(id, span, &name, true).is_some();
             }
         }
         ok
