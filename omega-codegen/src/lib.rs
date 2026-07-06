@@ -17,11 +17,12 @@ use omega_analyzer::{
         CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedExpr, CheckedExprNode,
         CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
         CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue, Storage,
+        CheckedSlice, CheckedStmt, CheckedWhile, NumberValue, Storage,
     },
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
 use omega_hir::{BinaryOp, HirId};
+use omega_parser::prelude::Ident;
 use std::{collections::HashMap, sync::Arc};
 
 /// Codegen never fails: everything it would otherwise need to reject was
@@ -217,7 +218,12 @@ fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codeg
 }
 
 impl Codegen {
-    pub fn generate(module_name: &str, isa: &str, checked: CheckedModule) -> Self {
+    pub fn generate(
+        module_name: &str,
+        isa: &str,
+        modules: Vec<(Vec<Ident>, CheckedModule)>,
+        entry: &[Ident],
+    ) -> Self {
         let isa = {
             let mut builder = settings::builder();
 
@@ -256,7 +262,7 @@ impl Codegen {
             loop_stack: Vec::new(),
         };
 
-        codegen.update_all(checked);
+        codegen.update_all(modules, entry);
 
         codegen
     }
@@ -1130,10 +1136,40 @@ impl Codegen {
         format!("___omg_{}", symbol.replace("::", "_"))
     }
 
-    fn update_function_def(&mut self, function_def: CheckedFunctionDef, mangled_symbol: String) {
-        let node_id = function_def.id;
-        let fntype = function_def.fn_type();
+    /// A top-level function's mangled symbol -- its full module path plus its
+    /// own name, except the program's literal entry point (`main`, in the
+    /// `entry` module), which must keep the bare unmangled symbol `"main"`
+    /// the OS/linker looks for. Every *other* function, including other
+    /// entry-module functions, gets module-path-qualified: these mangled
+    /// names are entirely internal/opaque (never typed by a human, never an
+    /// external symbol), so changing them from today's single-module scheme
+    /// has no observable effect on program behavior.
+    fn mangled_symbol(path: &[Ident], entry: &[Ident], name: &Ident) -> String {
+        if path == entry && name.as_ref() == "main" {
+            return "main".to_string();
+        }
+        format!("{}::{}", path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"), name.as_ref())
+    }
 
+    /// A struct method's mangled symbol -- same reasoning as
+    /// `mangled_symbol`, but a method is never itself the program's entry
+    /// point, so there's no bare-symbol exception to check for here.
+    fn mangled_method_symbol(path: &[Ident], struct_name: &Ident, method_name: &Ident) -> String {
+        format!(
+            "{}::{}::{}",
+            path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+            struct_name.as_ref(),
+            method_name.as_ref()
+        )
+    }
+
+    /// A function/method's cranelift `Signature`, built the same way
+    /// regardless of whether it's being declared (pass 1) or defined (pass
+    /// 2) -- a pure function of `function_def`'s own checked shape, so
+    /// recomputing it in both passes (rather than threading it through) is
+    /// cheap and keeps the two passes independent of each other.
+    fn function_signature(&self, function_def: &CheckedFunctionDef) -> Signature {
+        let fntype = function_def.fn_type();
         let mut sig = self.module.make_signature();
         if *fntype.return_type != ResolvedType::Void {
             let return_type = fntype.return_type.clone().into_ir_type(self);
@@ -1141,13 +1177,24 @@ impl Codegen {
                 .into_iter()
                 .for_each(|param| sig.returns.push(AbiParam::new(param)));
         }
-
-        // Add parameters to signature
         for param in &function_def.params {
             let ir_type = param.r#type.clone().into_ir_type(self);
             sig.params.push(AbiParam::new(ir_type[0])); // Simple types only for now. TODO: Fix.
         }
+        sig
+    }
 
+    /// Declares (but doesn't yet define the body of) a function or method --
+    /// signature/symbol registration only, split out from what used to be
+    /// one `update_function_def` specifically so *every* function across
+    /// *every* compiled module can be declared (and therefore have a
+    /// `FuncId` any other module's body can already look up) before *any*
+    /// body starts being built. Without this split, a cross-module call in
+    /// either import direction would panic the first time one module's body
+    /// needed another module's not-yet-declared `FuncId` (see the plan's
+    /// "codegen declare/define split" note).
+    fn declare_function_def(&mut self, function_def: &CheckedFunctionDef, mangled_symbol: String) -> FuncId {
+        let sig = self.function_signature(function_def);
         let demangled_symbol = Self::demangle(&mangled_symbol);
 
         let function_id = self
@@ -1159,9 +1206,21 @@ impl Codegen {
             .declare_function(&demangled_symbol, Linkage::Export, &sig)
             .unwrap();
 
-        // Registered as soon as it's declared (not after its body is fully
-        // defined below) so a function can call itself recursively.
-        self.functions.insert(node_id, function_id);
+        self.functions.insert(function_def.id, function_id);
+        function_id
+    }
+
+    /// Builds a function/method's body -- everything `update_function_def`
+    /// used to do after declaring, now looking up the `FuncId` every item
+    /// across every module already got in the declare pass, rather than
+    /// declaring (and re-registering) it itself.
+    fn define_function_def(&mut self, function_def: CheckedFunctionDef) {
+        let function_id = *self
+            .functions
+            .get(&function_def.id)
+            .expect("declared for every item, across every module, before any body is defined");
+        let sig = self.function_signature(&function_def);
+        let fntype = function_def.fn_type();
 
         // Move `ctx` out of `self` for the duration of the build so the rest of
         // this function can still freely borrow `self` (e.g. `into_ir_type(&self)`,
@@ -1226,32 +1285,64 @@ impl Codegen {
         self.clear_local();
     }
 
-    fn update_global_function_def(&mut self, function_def: CheckedFunctionDef) {
-        let mangled_symbol = function_def.name.0.clone();
-        self.update_function_def(function_def, mangled_symbol);
-    }
-
-    fn update_struct_def(&mut self, struct_def: CheckedStructDef) {
-        for function in struct_def.functions {
-            let mangled_symbol = format!("{}::{}", struct_def.name.as_ref(), function.name.as_ref());
-            self.update_function_def(function, mangled_symbol);
-        }
-    }
-
-    fn update(&mut self, item: CheckedItem) {
+    /// Declares every function/method/extern in one item -- pass 1 of 2 (see
+    /// `update_all`).
+    fn declare_item(&mut self, item: &CheckedItem, path: &[Ident], entry: &[Ident]) {
         match item {
-            CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl),
-            CheckedItem::FunctionDefinition(fn_def) => self.update_global_function_def(fn_def),
-            CheckedItem::Struct(struct_def) => self.update_struct_def(struct_def),
+            // Externs have no body to split across two passes -- fully
+            // handled here, in one shot.
+            CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
+            CheckedItem::FunctionDefinition(f) => {
+                let mangled = Self::mangled_symbol(path, entry, &f.name);
+                self.declare_function_def(f, mangled);
+            }
+            CheckedItem::Struct(s) => {
+                for f in &s.functions {
+                    let mangled = Self::mangled_method_symbol(path, &s.name, &f.name);
+                    self.declare_function_def(f, mangled);
+                }
+            }
             CheckedItem::Declaration(_) => {
                 todo!("global data declarations are not yet implemented");
             }
         }
     }
 
-    fn update_all(&mut self, checked: CheckedModule) {
-        for item in checked.items {
-            self.update(item);
+    /// Defines every function/method body in one item -- pass 2 of 2, run
+    /// only after every item across every module has already been declared.
+    fn define_item(&mut self, item: CheckedItem) {
+        match item {
+            // Already fully handled by `declare_item` -- an extern has no
+            // body to define.
+            CheckedItem::ExternDeclaration(_) => {}
+            CheckedItem::FunctionDefinition(f) => self.define_function_def(f),
+            CheckedItem::Struct(s) => {
+                for f in s.functions {
+                    self.define_function_def(f);
+                }
+            }
+            CheckedItem::Declaration(_) => {
+                todo!("global data declarations are not yet implemented");
+            }
+        }
+    }
+
+    /// Two full passes over every item across every compiled module: first
+    /// declare everything (so any `FuncId` a cross-module call needs already
+    /// exists, regardless of import direction -- see `declare_function_def`'s
+    /// doc comment), then define every body. Mirrors the identical
+    /// signature/body split `omega_analyzer::Analyzer` does for the same
+    /// underlying reason.
+    fn update_all(&mut self, modules: Vec<(Vec<Ident>, CheckedModule)>, entry: &[Ident]) {
+        for (path, checked) in &modules {
+            for item in &checked.items {
+                self.declare_item(item, path, entry);
+            }
+        }
+        for (_, checked) in modules {
+            for item in checked.items {
+                self.define_item(item);
+            }
         }
     }
 

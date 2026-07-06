@@ -1,6 +1,10 @@
 extern puts : (s: *u8) => i32;
 extern printf : (s : *u8, ...) => i32;
 
+import simplemodule;
+import mymodule;
+import mymodule::thing::something2;
+
 classify(n : i32) => *u8 {
     if n < 0 {
         return "negative";
@@ -154,6 +158,12 @@ main(argc : i32, argv : [*u8]) => i32 {
         "not lower than 3"
     };
     printf("testvar1: %s\n", testvar1);
+
+    mod_a := simplemodule::something3(5);
+    mod_b := mymodule::something1();
+    mod_c := mymodule::thing::something2();
+    mod_d := something2();
+    printf("modules: %d %d %d %d\n", mod_a, mod_b, mod_c, mod_d);
 
     return 69;
 }

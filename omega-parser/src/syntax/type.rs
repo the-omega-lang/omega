@@ -1,6 +1,6 @@
 use crate::{
     parser,
-    syntax::identifier::Ident,
+    syntax::identifier::{Ident, Path},
 };
 use crate::syntax::trivia::TriviaExt;
 use chumsky::prelude::*;
@@ -15,7 +15,9 @@ pub struct FunctionType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
-    Named(Ident), // Identifier types. Example: void, i32, i64, char, ...
+    /// Identifier types, possibly module-qualified. Example: `void`, `i32`,
+    /// `mymodule::Foo`.
+    Named(Path),
     Pointer(Box<Type>),
     Function(FunctionType),
     /// `[T]` -- an unsized run of `T`, only ever meaningful today as a
@@ -39,7 +41,7 @@ impl Type {
     parser!(() => Self {
         recursive(|parser| {
             let ident_parser = Ident::parser();
-            let named_type_parser = ident_parser.clone().map(|ident| Type::Named(ident));
+            let named_type_parser = Path::parser().map(Type::Named);
 
             let pointer_parser = just('*')
                 .ignore_then(parser.clone())

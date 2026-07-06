@@ -1,8 +1,8 @@
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
     HirExprNode, HirExpr, HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirIf,
-    HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt,
-    HirStructDef, HirWalrusDeclaration, HirWhile,
+    HirImport, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice,
+    HirStmt, HirStructDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -40,6 +40,11 @@ impl Lowerer {
                 HirItem::FunctionDefinition(self.lower_function_def(f, node.span, None))
             }
             RootStatement::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
+            RootStatement::Import(import) => HirItem::Import(HirImport {
+                id: self.ids.next(),
+                span: node.span,
+                path: import.path.clone(),
+            }),
         }
     }
 
@@ -71,7 +76,7 @@ impl Lowerer {
                     id: self.ids.next(),
                     span,
                     expr: HirExpr::Place(HirPlace {
-                        root: HirPlaceRoot::Ident(decl.ident.clone()),
+                        root: HirPlaceRoot::Path(decl.ident.clone().into()),
                         projections: vec![],
                     }),
                 };
@@ -175,7 +180,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span,
                 ident: Ident("self".to_string()),
-                r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone()))),
+                r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone().into()))),
             });
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
@@ -222,7 +227,7 @@ impl Lowerer {
 
     fn lower_expr(&mut self, node: &ExpressionNode) -> HirExprNode {
         match &node.expression {
-            Expression::Ident(_)
+            Expression::Path(_)
             | Expression::FieldAccess(_)
             | Expression::Index(_)
             | Expression::Deref(_) => {
@@ -346,8 +351,8 @@ impl Lowerer {
     /// the place incrementally in a shared side-table.
     fn lower_place_chain(&mut self, expr: &ExpressionNode) -> HirPlace {
         match &expr.expression {
-            Expression::Ident(ident) => HirPlace {
-                root: HirPlaceRoot::Ident(ident.clone()),
+            Expression::Path(path) => HirPlace {
+                root: HirPlaceRoot::Path(path.clone()),
                 projections: vec![],
             },
             Expression::FieldAccess(access) => {

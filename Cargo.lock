@@ -410,6 +410,16 @@ dependencies = [
  "cranelift-reader",
  "omega-analyzer",
  "omega-hir",
+ "omega-parser",
+]
+
+[[package]]
+name = "omega-driver"
+version = "0.1.0"
+dependencies = [
+ "omega-analyzer",
+ "omega-hir",
+ "omega-parser",
 ]
 
 [[package]]
@@ -432,6 +442,7 @@ version = "0.1.0"
 dependencies = [
  "omega-analyzer",
  "omega-codegen",
+ "omega-driver",
  "omega-hir",
  "omega-parser",
 ]

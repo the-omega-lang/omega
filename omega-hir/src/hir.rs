@@ -5,7 +5,7 @@ use crate::ids::HirId;
 // `Type` because they only ever go through field access, never pattern
 // match on those.
 pub use omega_parser::prelude::BinaryOp;
-use omega_parser::prelude::{FunctionType, Ident, NumberExpr, SimpleSpan, StringExpr, Type};
+use omega_parser::prelude::{FunctionType, Ident, NumberExpr, Path, SimpleSpan, StringExpr, Type};
 
 #[derive(Debug, Clone)]
 pub struct HirModule {
@@ -19,6 +19,18 @@ pub enum HirItem {
     ExternDeclaration(HirExternDeclaration),
     FunctionDefinition(HirFunctionDef),
     Struct(HirStructDef),
+    Import(HirImport),
+}
+
+/// `import a::b::c;` -- carried raw and unresolved, same philosophy as every
+/// other HIR node (lowering never does symbol resolution). Whether `path`
+/// names a whole module or an item inside one is decided later by
+/// `omega_analyzer::resolver::ModuleResolver`.
+#[derive(Debug, Clone)]
+pub struct HirImport {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub path: Path,
 }
 
 #[derive(Debug, Clone)]
@@ -256,7 +268,9 @@ pub struct HirPlace {
 
 #[derive(Debug, Clone)]
 pub enum HirPlaceRoot {
-    Ident(Ident),
+    /// A (possibly module-qualified) path -- a bare identifier is just the
+    /// degenerate one-segment case, same as everywhere else `Path` is used.
+    Path(Path),
     /// The base of a projection chain that isn't a bare identifier, e.g.
     /// `foo().bar` -- the root is the `foo()` call expression.
     Expr(Box<HirExprNode>),

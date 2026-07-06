@@ -1,4 +1,5 @@
 use crate::resolved_type::ResolvedType;
+use crate::resolver::ResolveError;
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Ident, SimpleSpan};
 use std::fmt;
@@ -10,6 +11,13 @@ pub enum TypeResolutionError {
     /// (same as `NumberExpr`'s integer literals) and only parsed/range-checked
     /// here, during type resolution.
     InvalidArraySize(String),
+    /// A qualified type path (`mymodule::Foo`) failed to resolve across
+    /// modules -- unknown module/item, not visible, or a cycle. See
+    /// `crate::resolver::ModuleResolver`.
+    ModuleResolution(ResolveError),
+    /// A qualified path resolved to a value (a function/extern/global), not
+    /// a type, in a position that requires a type.
+    NotAType(Vec<Ident>),
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -21,6 +29,12 @@ impl fmt::Display for TypeResolutionError {
             Self::InvalidArraySize(size) => {
                 write!(f, "array size '{size}' does not fit a u32")
             }
+            Self::ModuleResolution(e) => write!(f, "{e}"),
+            Self::NotAType(path) => write!(
+                f,
+                "'{}' is a value, not a type",
+                path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
+            ),
         }
     }
 }
@@ -137,6 +151,14 @@ pub enum AnalysisErrorKind {
     BreakOutsideLoop,
     /// `continue;` outside any enclosing `while`/`for`.
     ContinueOutsideLoop,
+    /// A qualified place/value path (`mymodule::foo`) failed to resolve
+    /// across modules -- unknown module/item, not visible, or a cycle. See
+    /// `crate::resolver::ModuleResolver`.
+    ModuleResolution(crate::resolver::ResolveError),
+    /// A qualified path resolved to a type (a struct), not a value, in a
+    /// position that requires a value (e.g. calling it, or using it as a
+    /// place).
+    NotAValue(Vec<Ident>),
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -231,6 +253,12 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
             Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
+            Self::ModuleResolution(e) => write!(f, "{e}"),
+            Self::NotAValue(path) => write!(
+                f,
+                "'{}' is a type, not a value",
+                path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
+            ),
         }
     }
 }

@@ -18,7 +18,7 @@ pub mod string;
 
 use crate::{
     parser,
-    prelude::Ident,
+    prelude::Path,
     syntax::{
         ParseError,
         expression::{
@@ -53,7 +53,10 @@ use chumsky::prelude::*;
 /// lowering's job, and no type-checking happens here either.
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Ident(Ident),
+    /// A (possibly module-qualified) path -- `foo`, or `mymodule::thing::foo`.
+    /// A bare, unqualified name is just the degenerate one-segment case; see
+    /// `Path`'s own doc comment.
+    Path(Path),
     FieldAccess(Box<FieldAccessExpr>),
     Index(Box<IndexExpr>),
     Deref(Box<DerefExpr>),
@@ -159,12 +162,12 @@ impl ExpressionNode {
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 CharExpr::parser().map(Expression::Char)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
-                // Tried before `Ident`: `true`/`false` are keywords, not
-                // ordinary identifiers -- if `Ident` went first, they'd parse
+                // Tried before `Path`: `true`/`false` are keywords, not
+                // ordinary identifiers -- if `Path` went first, they'd parse
                 // as (undefined) variable references instead.
                 BoolExpr::parser().map(Expression::Bool)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
-                Ident::parser().map(Expression::Ident)
+                Path::parser().map(Expression::Path)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
             ));
 

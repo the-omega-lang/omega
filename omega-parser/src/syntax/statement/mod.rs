@@ -2,6 +2,7 @@ pub mod declaration;
 pub mod extern_declaration;
 pub mod for_stmt;
 pub mod function_definition;
+pub mod import;
 pub mod r#return;
 pub mod r#struct;
 pub mod walrus;
@@ -15,8 +16,8 @@ use crate::{
         expression::{Expression, ExpressionNode},
         statement::{
             declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
-            for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, r#return::ReturnStmt,
-            walrus::WalrusStmt, while_stmt::WhileStmt,
+            for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
+            r#return::ReturnStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
         },
     },
 };
@@ -30,6 +31,7 @@ pub enum RootStatement {
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
     Struct(StructStmt),
+    Import(ImportStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,7 @@ impl RootStatementNode {
         let semicolon_statements = choice((
             DeclarationStmt::parser().map(RootStatement::Declaration),
             ExternDeclarationStmt::parser().map(RootStatement::ExternDeclaration),
+            ImportStmt::parser().map(RootStatement::Import),
         ))
         .then_ignore(just(';').trivia_padded());
         let (expr_parser, stmt_parser) = StatementNode::configured_parsers();

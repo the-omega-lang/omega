@@ -10,11 +10,12 @@ use crate::{
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
+    resolver::{ImportTarget, ModuleResolver, ModuleSignature, ResolvedItem, SignatureEntry, Visibility},
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
-    HirFor, HirFunctionDef, HirId, HirIf, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot,
-    HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
+    HirFor, HirFunctionDef, HirId, HirIf, HirImport, HirItem, HirModule, HirParam, HirPlace,
+    HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
 use std::collections::HashSet;
@@ -34,8 +35,7 @@ struct ResolvedCallee {
     implicit_self: Option<CheckedExprNode>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Analyzer {
+pub struct Analyzer<'r> {
     errors: Vec<AnalysisError>,
     /// Non-fatal findings -- currently just unreachable code (see
     /// `truncate_unreachable`) -- returned alongside a successful
@@ -43,6 +43,13 @@ pub struct Analyzer {
     /// reject the program. See `AnalysisWarning`'s doc comment.
     warnings: Vec<AnalysisWarning>,
     context: Context,
+    /// Everything module-tree-shaped -- filesystem lookups, cross-module
+    /// caching, cycle detection -- lives entirely on the other side of this
+    /// trait object (see `crate::resolver`); the same long-lived resolver
+    /// (the driver) is borrowed across many short-lived per-module
+    /// `Analyzer`s, one per `collect_signatures`/`analyze_bodies` call,
+    /// rather than owned by any one of them.
+    resolver: &'r mut dyn ModuleResolver,
     /// The enclosing function's declared return type, checked against every
     /// `return <expr>;` and against the function body's own effective type
     /// (see `block_type`/`check_function_return`). Saved and restored around
@@ -63,18 +70,13 @@ pub struct Analyzer {
     loop_stack: Vec<HirId>,
 }
 
-impl Default for Analyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Analyzer {
-    pub fn new() -> Self {
+impl<'r> Analyzer<'r> {
+    pub fn new(resolver: &'r mut dyn ModuleResolver) -> Self {
         Self {
             errors: vec![],
             warnings: vec![],
             context: Context::new(),
+            resolver,
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
         }
@@ -102,7 +104,7 @@ impl Analyzer {
     }
 
     fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type) -> Option<ResolvedType> {
-        match self.context.resolve_type(typ.to_owned()) {
+        match self.context.resolve_type(typ.to_owned(), &mut *self.resolver) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
                 self.errors
@@ -305,7 +307,8 @@ impl Analyzer {
         place: &HirPlace,
     ) -> Option<(CheckedPlace, ResolvedType)> {
         let (root, mut current_type) = match &place.root {
-            HirPlaceRoot::Ident(ident) => {
+            HirPlaceRoot::Path(path) if path.is_unqualified() => {
+                let ident = &path.head;
                 let Some(binding) = self.context.find_variable(ident) else {
                     self.errors.push(AnalysisError::new(
                         node_id,
@@ -320,6 +323,36 @@ impl Analyzer {
                     r#type: binding.r#type.clone(),
                 };
                 (root, binding.r#type.clone())
+            }
+            // A qualified place root (`mymodule::thing::foo`) -- `path`'s
+            // head must already be an imported module alias (requirement 7:
+            // nothing is visible across modules without an explicit
+            // `import`); the rest is resolved across modules by `resolver`.
+            HirPlaceRoot::Path(path) => {
+                let Some(absolute) = self.context.absolute_path(path) else {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UndefinedVariable(path.head.clone()),
+                    ));
+                    return None;
+                };
+                match self.resolver.resolve_item(&absolute) {
+                    Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
+                        let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+                        (root, r#type)
+                    }
+                    Ok(ResolvedItem::Type(_)) => {
+                        self.errors
+                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAValue(absolute)));
+                        return None;
+                    }
+                    Err(e) => {
+                        self.errors
+                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                        return None;
+                    }
+                }
             }
             HirPlaceRoot::Expr(expr) => {
                 let checked_expr = self.analyze_expr(expr)?;
@@ -471,7 +504,10 @@ impl Analyzer {
         };
 
         let resolved_type = match &n.explicit_type {
-            Some(explicit_type) => match self.context.resolve_type(Type::Named(explicit_type.clone())) {
+            Some(explicit_type) => match self
+                .context
+                .resolve_type(Type::Named(explicit_type.clone().into()), &mut *self.resolver)
+            {
                 Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
                 _ => {
                     invalid_suffix(self, explicit_type);
@@ -1435,17 +1471,222 @@ impl Analyzer {
             HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(CheckedItem::ExternDeclaration),
             HirItem::FunctionDefinition(f) => self.analyze_function_def(f).map(CheckedItem::FunctionDefinition),
             HirItem::Struct(s) => self.analyze_struct_def(s).map(CheckedItem::Struct),
+            // Processed separately, before either pass ever reaches
+            // `analyze_item`/`collect_item_signature` -- see
+            // `process_imports`.
+            HirItem::Import(_) => {
+                unreachable!("imports are processed by process_imports, before analyze_item runs")
+            }
         }
     }
 
-    pub fn analyze(mut self, hir_module: &HirModule) -> Result<(CheckedModule, Vec<AnalysisWarning>), Vec<AnalysisError>> {
-        let items = self.analyze_all(&hir_module.items, Self::analyze_item);
-
-        match items {
-            Some(items) if self.errors.is_empty() => {
-                Ok((CheckedModule { id: hir_module.id, items }, self.warnings))
+    /// `import a::b::c;` -- resolves what the path actually names (a whole
+    /// module, or an item inside one; see `ModuleResolver::resolve_import`'s
+    /// doc comment for why that's not decidable from syntax alone) and binds
+    /// the result under the path's last segment, exactly like
+    /// `Context::new` already seeds builtin primitives: one mechanism for
+    /// "a name is available in this scope," reused.
+    fn process_import(&mut self, import: &HirImport) -> Option<()> {
+        let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
+        match self.resolver.resolve_import(&import.path) {
+            Ok(ImportTarget::Module(absolute)) => {
+                self.context.import_module(alias, absolute);
+                Some(())
             }
-            _ => Err(self.errors),
+            Ok(ImportTarget::Item(resolved)) => match self.context.bind_imported_item(alias, resolved) {
+                Ok(()) => Some(()),
+                Err(dup) => {
+                    self.errors
+                        .push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::Redeclaration(dup)));
+                    None
+                }
+            },
+            Err(e) => {
+                self.errors
+                    .push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::ModuleResolution(e)));
+                None
+            }
+        }
+    }
+
+    /// Every `import` in `items`, processed before anything else -- so a
+    /// module's own items can freely use any of them regardless of where in
+    /// the file they were textually written (imports are root-level-only
+    /// syntax, so there's no meaningful "before its import" case the way a
+    /// same-module forward function reference has -- see the "explicitly out
+    /// of scope" note on `collect_signatures`).
+    fn process_imports(&mut self, items: &[HirItem]) -> bool {
+        let mut ok = true;
+        for item in items {
+            if let HirItem::Import(import) = item {
+                ok &= self.process_import(import).is_some();
+            }
+        }
+        ok
+    }
+
+    /// A function's *signature* only: param and return types, with no scope
+    /// entered and no param bound by name -- binding is a body-analysis-time
+    /// concern (nothing needs to call a param by name yet), so this is
+    /// strictly less work than `analyze_function_def`, not a restricted
+    /// version of it. Registers the function's own name in the current scope
+    /// exactly like `analyze_function_def` does, so later same-module items
+    /// (and this module's own exported `ModuleSignature`) can see it.
+    fn collect_function_signature(&mut self, f: &HirFunctionDef) -> Option<ResolvedFunctionType> {
+        let params = self.analyze_all(&f.params, |this, p| {
+            this.resolve_type_or_error(p.id, p.span, &p.r#type).map(|t| (p.ident.clone(), t))
+        })?;
+        let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type)?;
+        let fn_type = ResolvedFunctionType {
+            params,
+            return_type: Box::new(return_type),
+            is_variadic: false,
+            is_member_function: f.is_member_function,
+        };
+
+        let binding = VarBinding {
+            decl_id: f.id,
+            storage: Storage::Function,
+            r#type: ResolvedType::Function(fn_type.clone()),
+        };
+        if let Err(dup) = self.context.current_scope().declare(f.name.clone(), binding) {
+            self.errors
+                .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::Redeclaration(dup)));
+            return None;
+        }
+
+        Some(fn_type)
+    }
+
+    /// A struct's *signature* only: field types (via `analyze_struct_fields`,
+    /// already signature-only -- struct fields are never scope-bound names,
+    /// so it has no body-shaped work to skip in the first place) plus every
+    /// method's signature, with zero recursion into any method body. Mirrors
+    /// `analyze_struct_def`'s early-self-insertion trick unchanged (a
+    /// method's synthetic `self: *StructName` parameter needs the struct's
+    /// own name to already resolve).
+    fn collect_struct_signature(&mut self, s: &HirStructDef) -> Option<ResolvedType> {
+        let fields = self.analyze_struct_fields(&s.fields)?;
+
+        self.context.current_scope().defined_types.insert(
+            s.name.clone(),
+            ResolvedType::Struct(ResolvedStructType {
+                fields: fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect(),
+                functions: vec![],
+            }),
+        );
+
+        self.context.enter_scope();
+        let functions = self.analyze_all(&s.functions, Self::collect_function_signature);
+        self.context.leave_scope();
+        let functions = functions?;
+
+        let ResolvedType::Struct(resolved) = self
+            .context
+            .current_scope()
+            .defined_types
+            .get_mut(&s.name)
+            .expect("just inserted above, in this exact scope frame")
+        else {
+            unreachable!("just inserted as ResolvedType::Struct above");
+        };
+        resolved.functions = s
+            .functions
+            .iter()
+            .zip(functions)
+            .map(|(f, fn_type)| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type }))
+            .collect();
+
+        Some(self.context.find_defined_type(&s.name).expect("just inserted above").clone())
+    }
+
+    /// Collects one module's exported signature table: every top-level
+    /// item's *signature* (no bodies) plus, for a struct, every method's
+    /// signature -- everything another module's qualified path could ever
+    /// need. Processes items in the same top-to-bottom order
+    /// `analyze_bodies` does, deliberately *not* fixed to tolerate
+    /// same-module forward references or self-recursive-by-value struct
+    /// cycles: doing that soundly needs turning same-module resolution into
+    /// a genuine on-demand recursive query too (the same trap a naive
+    /// insert-placeholders-then-patch scheme falls into -- see the plan's
+    /// "explicitly out of scope" section), which is a materially bigger,
+    /// separately-risky change than this feature needs. Cross-module cycles
+    /// (a *different* module's signature transitively requiring this one's)
+    /// are instead caught by the driver, at module granularity, before this
+    /// is ever called recursively for the same module twice.
+    pub fn collect_signatures(&mut self, hir_module: &HirModule) -> Result<ModuleSignature, Vec<AnalysisError>> {
+        let mut ok = self.process_imports(&hir_module.items);
+        let mut signature = ModuleSignature::default();
+
+        for item in &hir_module.items {
+            let entry = match item {
+                HirItem::Import(_) => None,
+                HirItem::Declaration(decl) => self.analyze_declaration(decl, Storage::Global).map(|checked| {
+                    (checked.ident.clone(), ResolvedItem::Value {
+                        r#type: checked.r#type,
+                        storage: Storage::Global,
+                        decl_id: checked.id,
+                    })
+                }),
+                HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(|checked| {
+                    let storage = if matches!(checked.r#type, ResolvedType::Function(_)) {
+                        Storage::Function
+                    } else {
+                        Storage::Global
+                    };
+                    (checked.ident.clone(), ResolvedItem::Value { r#type: checked.r#type, storage, decl_id: checked.id })
+                }),
+                HirItem::FunctionDefinition(f) => self.collect_function_signature(f).map(|fn_type| {
+                    (f.name.clone(), ResolvedItem::Value {
+                        r#type: ResolvedType::Function(fn_type),
+                        storage: Storage::Function,
+                        decl_id: f.id,
+                    })
+                }),
+                HirItem::Struct(s) => {
+                    self.collect_struct_signature(s).map(|r#type| (s.name.clone(), ResolvedItem::Type(r#type)))
+                }
+            };
+
+            match entry {
+                Some((name, item)) => {
+                    signature.items.insert(name, SignatureEntry { visibility: Visibility::Public, item });
+                }
+                None if matches!(item, HirItem::Import(_)) => {}
+                None => ok = false,
+            }
+        }
+
+        if ok { Ok(signature) } else { Err(std::mem::take(&mut self.errors)) }
+    }
+
+    /// Analyzes every item's *body* -- almost exactly what this used to be
+    /// (`Analyzer::analyze`) before signature collection split out into its
+    /// own pass, with one behavioral addition: qualified-path type/place
+    /// resolution can now reach across modules via `resolver` instead of
+    /// always failing locally. Independent of `collect_signatures` for the
+    /// *same* module -- it reprocesses this module's own imports and
+    /// top-level items itself (cheap; any cross-module lookup hits the
+    /// driver's cache) rather than reusing that pass's output, so no
+    /// half-built state has to survive between the two passes.
+    pub fn analyze_bodies(
+        mut self,
+        hir_module: &HirModule,
+    ) -> Result<(CheckedModule, Vec<AnalysisWarning>), Vec<AnalysisError>> {
+        let mut ok = self.process_imports(&hir_module.items);
+
+        let mut items = Vec::new();
+        for item in hir_module.items.iter().filter(|item| !matches!(item, HirItem::Import(_))) {
+            match self.analyze_item(item) {
+                Some(checked) => items.push(checked),
+                None => ok = false,
+            }
+        }
+
+        if ok && self.errors.is_empty() {
+            Ok((CheckedModule { id: hir_module.id, items }, self.warnings))
+        } else {
+            Err(self.errors)
         }
     }
 }
