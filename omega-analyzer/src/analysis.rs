@@ -3,23 +3,23 @@ use crate::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedExpr, CheckedExprNode,
         CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
-        CheckedItem, CheckedModule, CheckedParam, CheckedPlace, CheckedPlaceRoot,
+        CheckedParam, CheckedPlace, CheckedPlaceRoot,
         CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue,
         Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
-    resolver::{ImportTarget, ModuleResolver, ModuleSignature, ResolvedItem, SignatureEntry, Visibility},
+    resolver::{ImportTarget, ModuleResolver, ResolvedImport, ResolvedItem},
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
-    HirFor, HirFunctionDef, HirId, HirIf, HirImport, HirItem, HirModule, HirParam, HirPlace,
-    HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
+    HirFor, HirFunctionDef, HirId, HirIf, HirItem, HirParam, HirPlace, HirPlaceRoot, HirProjection,
+    HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// A function-call's callee, resolved to either an ordinary value (whose
@@ -52,39 +52,27 @@ pub struct Analyzer<'r> {
     /// `Analyzer`s, one per `collect_signatures`/`analyze_bodies` call,
     /// rather than owned by any one of them.
     resolver: &'r mut dyn ModuleResolver,
-    /// The module currently being analyzed -- shared (not borrowed) so any
-    /// method can look an item back up by index without tying it to a
-    /// caller's stack frame; see `local_items`.
-    hir_module: Rc<HirModule>,
-    /// Every top-level item's name, mapped to its index in
-    /// `hir_module.items` -- populated once in `Analyzer::new`, and never
-    /// includes an `import` (those have no name of their own) or the
-    /// *second* (or later) occurrence of a name already seen (each such
-    /// duplicate is instead reported immediately as a `Redeclaration`, into
-    /// `errors`, right there in `new`). This is what `ensure_item_signature`
-    /// consults to find *what* to collect the first time a same-module
-    /// forward reference (or self-reference) reaches a name before its own
-    /// textual position in the module does.
-    local_items: HashMap<Ident, usize>,
-    /// Top-level names whose signature collection is currently on the call
-    /// stack (see `ensure_item_signature`) -- a name reached again while
-    /// it's in here is a same-module forward reference that has looped back
-    /// on itself (self-recursion, a self-referencing pointer field, or a
-    /// forward reference into a cycle). Whether that's fine or an error
-    /// depends entirely on how it was reached: indirectly (behind a
-    /// pointer), the partially-built placeholder already sitting in scope
-    /// (see `collect_struct_signature`) is all a second reference to it ever
-    /// needs -- a pointer doesn't need its pointee's layout to finish first.
-    /// Directly (by value), it means the type has no finite size (`struct A
-    /// { a: A; }`, or the same shape spread across several structs) and is
-    /// rejected via `AnalysisErrorKind::RecursiveTypeWithoutIndirection` --
-    /// see `ensure_item_signature`.
+    /// This item's owning module's absolute path -- supplies the implicit
+    /// prefix an unqualified top-level reference needs to become an
+    /// absolute `(module_path, name)` query, so it's resolved exactly the
+    /// same way a qualified cross-module reference is (see
+    /// `ModuleResolver::resolve_item`'s doc comment: there is no longer an
+    /// architectural difference between the two). The *same* path for
+    /// every item constructed for this module, whether it's this module's
+    /// own top-level signature/body work or -- unchanged from before --
+    /// this same `module_path` threading through a locally-nested
+    /// `HirStmt::Struct`'s own field resolution too.
+    module_path: Vec<Ident>,
+    /// Names currently mid-resolution *within this one throwaway
+    /// `Analyzer`* -- today, only ever populated by `analyze_struct_def`
+    /// around a *locally-nested* (block-scoped) struct's own field
+    /// resolution, to detect that one struct including itself by value
+    /// (`RecursiveTypeWithoutIndirection`). Top-level items no longer use
+    /// this: that bookkeeping is global now, owned by
+    /// `omega_driver::Driver::query_state` (keyed by `(module_path, name)`,
+    /// not just `name`), since a same-module reference and a cross-module
+    /// one are resolved by the exact same mechanism.
     in_progress: HashSet<Ident>,
-    /// Top-level names whose signature collection has already fully run --
-    /// `ensure_item_signature`'s memoization, so a name reached both via an
-    /// earlier item's forward reference and via its own later textual
-    /// position is only ever collected once.
-    done_items: HashSet<Ident>,
     /// The enclosing function's declared return type, checked against every
     /// `return <expr>;` and against the function body's own effective type
     /// (see `block_type`/`check_function_return`). Saved and restored around
@@ -107,9 +95,12 @@ pub struct Analyzer<'r> {
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
 /// name of its own -- see `Context::import_module`/`bind_imported_item`
-/// instead). Shared by `Analyzer::new` (building `local_items`) and every
-/// per-module sweep that needs to visit "every named top-level item."
-fn item_name(item: &HirItem) -> Option<Ident> {
+/// instead). Exposed for `omega_driver::Driver`, which now owns the
+/// per-module "every named top-level item" index (`local_items`) that used
+/// to live on `Analyzer` -- one item is resolved (and one `Analyzer`
+/// constructed) at a time now, so there's no module-wide sweep left inside
+/// this crate to share this with locally.
+pub fn item_name(item: &HirItem) -> Option<Ident> {
     match item {
         HirItem::Declaration(d) => Some(d.ident.clone()),
         HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
@@ -119,9 +110,9 @@ fn item_name(item: &HirItem) -> Option<Ident> {
     }
 }
 
-/// A top-level item's own `HirId`/`SimpleSpan`, for anchoring the
-/// `Redeclaration` error `Analyzer::new` reports for a duplicate name.
-fn item_id_span(item: &HirItem) -> (HirId, SimpleSpan) {
+/// A top-level item's own `HirId`/`SimpleSpan`, for anchoring a
+/// `Redeclaration` error against a duplicate name -- see `item_name`.
+pub fn item_id_span(item: &HirItem) -> (HirId, SimpleSpan) {
     match item {
         HirItem::Declaration(d) => (d.id, d.span),
         HirItem::ExternDeclaration(d) => (d.id, d.span),
@@ -132,34 +123,47 @@ fn item_id_span(item: &HirItem) -> (HirId, SimpleSpan) {
 }
 
 impl<'r> Analyzer<'r> {
-    pub fn new(resolver: &'r mut dyn ModuleResolver, hir_module: Rc<HirModule>) -> Self {
-        let mut local_items = HashMap::new();
+    /// `imports` is this module's already-resolved import aliases/items --
+    /// computed once per module and cached by `omega_driver::Driver`
+    /// (cycle-guarded there too, since resolving one module's item-style
+    /// imports can itself need another module's), then applied fresh here
+    /// into every throwaway `Analyzer` built for one of this module's
+    /// items. This replaces the old per-call `process_import`/
+    /// `process_imports` -- imports are processed exactly once per module
+    /// now (by whoever builds this list), not once per item.
+    pub fn new(resolver: &'r mut dyn ModuleResolver, module_path: Vec<Ident>, imports: &[ResolvedImport]) -> Self {
+        let mut context = Context::new();
         let mut errors = Vec::new();
-        for (index, item) in hir_module.items.iter().enumerate() {
-            let Some(name) = item_name(item) else { continue };
-            match local_items.entry(name) {
-                std::collections::hash_map::Entry::Occupied(entry) => {
-                    let (id, span) = item_id_span(item);
-                    errors.push(AnalysisError::new(id, span, AnalysisErrorKind::Redeclaration(entry.key().clone())));
+        for import in imports {
+            let result = match import.target.clone() {
+                ImportTarget::Module(absolute) => {
+                    context.import_module(import.alias.clone(), absolute);
+                    Ok(())
                 }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(index);
-                }
+                ImportTarget::Item(resolved) => context.bind_imported_item(import.alias.clone(), resolved),
+            };
+            if let Err(dup) = result {
+                errors.push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::Redeclaration(dup)));
             }
         }
 
         Self {
             errors,
             warnings: vec![],
-            context: Context::new(),
+            context,
             resolver,
-            hir_module,
-            local_items,
+            module_path,
             in_progress: HashSet::new(),
-            done_items: HashSet::new(),
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
         }
+    }
+
+    /// Consumes this throwaway, per-item `Analyzer`, handing back whatever
+    /// it accumulated -- `omega_driver::Driver` folds these into its own
+    /// per-module `module_errors`/warnings after every signature/body call.
+    pub fn finish(self) -> (Vec<AnalysisError>, Vec<AnalysisWarning>) {
+        (self.errors, self.warnings)
     }
 
     // Small generic fold used everywhere a list of HIR nodes is analyzed
@@ -187,12 +191,15 @@ impl<'r> Analyzer<'r> {
     /// its referent inline into another type's layout -- a function's own
     /// param/return types, or anything already behind a `Pointer`/`Array`/
     /// `Slice` -- as opposed to a struct field or `SizedArray` element,
-    /// which do. See `ensure_item_signature` for why this distinction is
-    /// what separates a legitimate self-reference (`next: *Node`) from a
-    /// genuine infinite-size cycle (`value: Node`).
+    /// which do. See `ModuleResolver::resolve_item`'s doc comment for why
+    /// this distinction is what separates a legitimate self-reference
+    /// (`next: *Node`) from a genuine infinite-size cycle (`value: Node`).
+    /// The on-demand triggering that used to happen in a separate pre-pass
+    /// here now happens inline, inside `Context::resolve_type` itself (it
+    /// calls the resolver directly on an unqualified miss), so this is just
+    /// a thin error-reporting wrapper around it.
     fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type, indirect: bool) -> Option<ResolvedType> {
-        self.ensure_type_names_resolved(id, span, typ, indirect)?;
-        match self.context.resolve_type(typ.to_owned(), &mut *self.resolver) {
+        match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
                 self.errors
@@ -200,102 +207,6 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
-    }
-
-    /// Walks every unqualified `Type::Named` leaf reachable from `typ`
-    /// (through any number of `Pointer`/`Array`/`SizedArray`/`Function`
-    /// layers) and, for each one, makes sure it's safe for the *upcoming*
-    /// `Context::resolve_type` call to look up -- see `ensure_item_signature`.
-    /// A qualified reference (`mymodule::Foo`) is a different module's
-    /// concern entirely (its own driver-side cache/cycle guard), so this
-    /// only ever recurses into the unqualified case.
-    ///
-    /// `indirect` starts out as whatever the caller passed (see
-    /// `resolve_type_or_error`) and only ever *turns on* as the walk
-    /// descends -- `Pointer`/`Array`/a `Function`'s own param and return
-    /// types are never embedded inline into anything, so everything beneath
-    /// them is indirect regardless of what it started as; `SizedArray`
-    /// carries its element inline (an array of pointers is still indirect,
-    /// but a `SizedArray` behind nothing is not), so it just passes the
-    /// current value through unchanged.
-    fn ensure_type_names_resolved(&mut self, id: HirId, span: SimpleSpan, typ: &Type, indirect: bool) -> Option<()> {
-        match typ {
-            Type::Named(path) if path.is_unqualified() => self.ensure_item_signature(id, span, &path.head, indirect),
-            Type::Named(_) => Some(()),
-            Type::Pointer(inner) | Type::Array(inner) => self.ensure_type_names_resolved(id, span, inner, true),
-            Type::SizedArray(inner, _) => self.ensure_type_names_resolved(id, span, inner, indirect),
-            Type::Function(fntyp) => {
-                let mut ok = true;
-                for (_, param_type) in &fntyp.params {
-                    ok &= self.ensure_type_names_resolved(id, span, param_type, true).is_some();
-                }
-                ok &= self.ensure_type_names_resolved(id, span, &fntyp.return_type, true).is_some();
-                ok.then_some(())
-            }
-        }
-    }
-
-    /// Makes sure `name` -- some other top-level item in this same module --
-    /// is available to look up *right now*, regardless of whether its own
-    /// textual position in the module comes before or after whatever is
-    /// asking for it. This is what makes same-module forward references (a
-    /// function calling one declared later, a struct field naming a struct
-    /// declared later) and self-references (a recursive function; a struct
-    /// field pointing back to its own struct) resolve instead of failing --
-    /// the same query-style "collect a signature on first demand, memoize it
-    /// forever after" shape `omega_driver::Driver::signature_of` already uses
-    /// for *cross*-module signatures, just one level down: a name found
-    /// already `done_items` is a cache hit, and anything not yet started
-    /// gets collected right here, on the spot, before this returns.
-    ///
-    /// A name found `in_progress` (already on the call stack, mid-collection)
-    /// is where a same-module cycle is actually caught, and `indirect` is
-    /// what decides whether that's fine or an error: `next: *Node` only ever
-    /// needs `Node`'s placeholder to *exist* (its final layout is irrelevant
-    /// to a pointer's own size), so an indirect reference to an in-progress
-    /// name is left alone; `value: Node` (or `struct A { b: B }` / `struct B
-    /// { a: A }`, discovered from either end) would recreate the same cycle
-    /// forever -- the type has no finite size -- so a *direct* reference to
-    /// an in-progress name is rejected here with
-    /// `RecursiveTypeWithoutIndirection` instead of ever being allowed to
-    /// build a self-referencing-by-value `ResolvedStructType`.
-    fn ensure_item_signature(&mut self, id: HirId, span: SimpleSpan, name: &Ident, indirect: bool) -> Option<()> {
-        if self.done_items.contains(name) {
-            return Some(());
-        }
-        if self.in_progress.contains(name) {
-            if indirect {
-                return Some(());
-            }
-            self.errors.push(AnalysisError::new(
-                id,
-                span,
-                AnalysisErrorKind::RecursiveTypeWithoutIndirection(name.clone()),
-            ));
-            return None;
-        }
-        let Some(&index) = self.local_items.get(name) else {
-            // Not a pending top-level item of this module -- a builtin
-            // primitive, an imported alias, or genuinely undefined; the
-            // ordinary lookup that runs right after this returns is what
-            // decides which.
-            return Some(());
-        };
-
-        let hir_module = self.hir_module.clone();
-        let item = &hir_module.items[index];
-        self.in_progress.insert(name.clone());
-        let ok = match item {
-            HirItem::Declaration(decl) => self.analyze_declaration(decl, Storage::Global).is_some(),
-            HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).is_some(),
-            HirItem::FunctionDefinition(f) => self.collect_function_signature(f).is_some(),
-            HirItem::Struct(s) => self.collect_struct_signature(s).is_some(),
-            HirItem::Import(_) => unreachable!("imports are never inserted into local_items"),
-        };
-        self.in_progress.remove(name);
-        self.done_items.insert(name.clone());
-
-        ok.then_some(())
     }
 
     /// Binds `ident` in the current scope, or records `Redeclaration` if
@@ -320,7 +231,7 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    fn analyze_declaration(&mut self, decl: &HirDeclaration, storage: Storage) -> Option<CheckedDeclaration> {
+    pub fn analyze_declaration(&mut self, decl: &HirDeclaration, storage: Storage) -> Option<CheckedDeclaration> {
         // A global's type is never itself embedded inline into another
         // type's layout (it isn't a struct field), so it can never be part
         // of an infinite-size cycle -- always indirect.
@@ -334,7 +245,7 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDecl> {
+    pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDecl> {
         let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type, true)?;
         // An extern of function type imports a callable symbol; anything
         // else is extern *data*, whose storage isn't decided yet (see
@@ -492,6 +403,35 @@ impl<'r> Analyzer<'r> {
             .map(|(_, method)| method.clone())
     }
 
+    /// Resolves `absolute` (already a full `[module_path.., name]`, whether
+    /// built from a qualified place's import alias or an unqualified one's
+    /// implicit own-module prefix) to a place root -- shared by both of
+    /// `analyze_place`'s non-local cases so the `Value`/`Type`/`Err` match
+    /// is only written once.
+    fn resolve_qualified_value(
+        &mut self,
+        node_id: HirId,
+        span: SimpleSpan,
+        absolute: Vec<Ident>,
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        match self.resolver.resolve_item(&absolute, true) {
+            Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
+                let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+                Some((root, r#type))
+            }
+            Ok(ResolvedItem::Type(_)) => {
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAValue(absolute)));
+                None
+            }
+            Err(e) => {
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                None
+            }
+        }
+    }
+
     /// Resolves a place's root, then folds over its projections in source
     /// order, resolving field/index/deref projections against the running
     /// type and recording the exact resolved shape (field index, item/
@@ -503,22 +443,30 @@ impl<'r> Analyzer<'r> {
         place: &HirPlace,
     ) -> Option<(CheckedPlace, ResolvedType)> {
         let (root, mut current_type) = match &place.root {
+            // An unqualified place root -- a local (function-body-level)
+            // binding wins if there is one; otherwise this is a same-module
+            // top-level reference, resolved the exact same way a qualified
+            // cross-module one is, with `module_path` supplying the
+            // implicit prefix (see `resolve_qualified_value`). Values never
+            // need the indirect/in-progress distinction type resolution
+            // does -- only a named *type* can ever be legitimately
+            // mid-collection when referenced (see
+            // `ModuleResolver::resolve_item`'s doc comment) -- so this
+            // always passes `true`.
             HirPlaceRoot::Path(path) if path.is_unqualified() => {
                 let ident = &path.head;
-                let Some(binding) = self.context.find_variable(ident) else {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::UndefinedVariable(ident.clone()),
-                    ));
-                    return None;
-                };
-                let root = CheckedPlaceRoot::Variable {
-                    decl_id: binding.decl_id,
-                    storage: binding.storage,
-                    r#type: binding.r#type.clone(),
-                };
-                (root, binding.r#type.clone())
+                if let Some(binding) = self.context.find_variable(ident) {
+                    let root = CheckedPlaceRoot::Variable {
+                        decl_id: binding.decl_id,
+                        storage: binding.storage,
+                        r#type: binding.r#type.clone(),
+                    };
+                    (root, binding.r#type.clone())
+                } else {
+                    let absolute: Vec<Ident> =
+                        self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect();
+                    self.resolve_qualified_value(node_id, span, absolute)?
+                }
             }
             // A qualified place root (`mymodule::thing::foo`) -- `path`'s
             // head must already be an imported module alias (requirement 7:
@@ -533,22 +481,7 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
-                match self.resolver.resolve_item(&absolute) {
-                    Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
-                        let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
-                        (root, r#type)
-                    }
-                    Ok(ResolvedItem::Type(_)) => {
-                        self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAValue(absolute)));
-                        return None;
-                    }
-                    Err(e) => {
-                        self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
-                        return None;
-                    }
-                }
+                self.resolve_qualified_value(node_id, span, absolute)?
             }
             HirPlaceRoot::Expr(expr) => {
                 let checked_expr = self.analyze_expr(expr)?;
@@ -700,10 +633,12 @@ impl<'r> Analyzer<'r> {
         };
 
         let resolved_type = match &n.explicit_type {
-            Some(explicit_type) => match self
-                .context
-                .resolve_type(Type::Named(explicit_type.clone().into()), &mut *self.resolver)
-            {
+            Some(explicit_type) => match self.context.resolve_type(
+                Type::Named(explicit_type.clone().into()),
+                &mut *self.resolver,
+                &self.module_path,
+                true,
+            ) {
                 Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
                 _ => {
                     invalid_suffix(self, explicit_type);
@@ -1613,59 +1548,18 @@ impl<'r> Analyzer<'r> {
         Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
     }
 
-    /// `import a::b::c;` -- resolves what the path actually names (a whole
-    /// module, or an item inside one; see `ModuleResolver::resolve_import`'s
-    /// doc comment for why that's not decidable from syntax alone) and binds
-    /// the result under the path's last segment, exactly like
-    /// `Context::new` already seeds builtin primitives: one mechanism for
-    /// "a name is available in this scope," reused.
-    fn process_import(&mut self, import: &HirImport) -> Option<()> {
-        let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
-        match self.resolver.resolve_import(&import.path) {
-            Ok(ImportTarget::Module(absolute)) => {
-                self.context.import_module(alias, absolute);
-                Some(())
-            }
-            Ok(ImportTarget::Item(resolved)) => match self.context.bind_imported_item(alias, resolved) {
-                Ok(()) => Some(()),
-                Err(dup) => {
-                    self.errors
-                        .push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::Redeclaration(dup)));
-                    None
-                }
-            },
-            Err(e) => {
-                self.errors
-                    .push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::ModuleResolution(e)));
-                None
-            }
-        }
-    }
-
-    /// Every `import` in `items`, processed before anything else -- so a
-    /// module's own items can freely use any of them regardless of where in
-    /// the file they were textually written (imports are root-level-only
-    /// syntax, so there's no meaningful "before its import" case the way a
-    /// same-module forward function reference has -- see the "explicitly out
-    /// of scope" note on `collect_signatures`).
-    fn process_imports(&mut self, items: &[HirItem]) -> bool {
-        let mut ok = true;
-        for item in items {
-            if let HirItem::Import(import) = item {
-                ok &= self.process_import(import).is_some();
-            }
-        }
-        ok
-    }
-
     /// A function's *signature* only: param and return types, with no scope
     /// entered and no param bound by name -- binding is a body-analysis-time
     /// concern (nothing needs to call a param by name yet), so this is
-    /// strictly less work than `analyze_function_def`, not a restricted
-    /// version of it. Registers the function's own name in the current scope
-    /// exactly like `analyze_function_def` does, so later same-module items
-    /// (and this module's own exported `ModuleSignature`) can see it.
-    fn collect_function_signature(&mut self, f: &HirFunctionDef) -> Option<ResolvedFunctionType> {
+    /// strictly less work than `check_function_body`, not a restricted
+    /// version of it. Registers the function's own name in the current
+    /// (throwaway) scope too -- inert for a top-level function (nothing else
+    /// ever looks at this particular `Context` again; `omega_driver::Driver`
+    /// reads the *return value*, not this binding), but this same method
+    /// also runs once per sibling method inside `signature_of_struct`'s
+    /// method loop, where it *does* matter: it's what catches two methods
+    /// sharing a name on one struct.
+    pub fn collect_function_signature(&mut self, f: &HirFunctionDef) -> Option<ResolvedFunctionType> {
         // Param/return types are a function's signature, never inline data --
         // always indirect (see `analyze_param`'s identical reasoning).
         let params = self.analyze_all(&f.params, |this, p| {
@@ -1693,38 +1587,20 @@ impl<'r> Analyzer<'r> {
         Some(fn_type)
     }
 
-    /// A struct's *signature* only: field types (via `analyze_struct_fields`,
-    /// already signature-only -- struct fields are never scope-bound names,
-    /// so it has no body-shaped work to skip in the first place) plus every
-    /// method's signature, with zero recursion into any method body. Mirrors
-    /// `analyze_struct_def`'s early-self-insertion trick unchanged (a
-    /// method's synthetic `self: *StructName` parameter needs the struct's
-    /// own name to already resolve).
     /// A top-level struct's *signature* only: field types, plus every
-    /// method's signature, with zero recursion into any method body. The
-    /// placeholder -- with empty `fields`/`functions` -- is inserted into
-    /// scope *before* either is resolved (not just before methods, as a
-    /// pre-multi-module version of this did): a member function's synthetic
-    /// `self: *StructName` parameter has always needed the struct's own name
-    /// to already resolve, and the same is true of any field referencing
-    /// this struct through a pointer (the classic self-referencing linked-
-    /// list node). Field/method resolution may, in turn, call
-    /// `ensure_item_signature` right back into *this* struct (if, say, a
-    /// pointer field names it directly) -- safe, since `in_progress` already
-    /// holds this struct's name by the time either starts (see
-    /// `ensure_item_signature`).
-    fn collect_struct_signature(&mut self, s: &HirStructDef) -> Option<ResolvedType> {
-        let cell = Rc::new(RefCell::new(ResolvedStructType {
-            id: s.id,
-            name: s.name.clone(),
-            fields: vec![],
-            functions: vec![],
-        }));
-        self.context
-            .current_scope()
-            .defined_types
-            .insert(s.name.clone(), ResolvedType::Struct(cell.clone()));
-
+    /// method's signature, with zero recursion into any method body. Unlike
+    /// the pre-cross-module-cycle-fix version of this, `cell` is created (and
+    /// registered in `omega_driver::Driver`'s global `struct_cells`, keyed by
+    /// `(module_path, name)`) by the *caller* before this ever runs, not by
+    /// this method itself -- so a self-referencing field (`next: *Node`) or a
+    /// same- or cross-module mutual one resolves via `Context::resolve_type`'s
+    /// resolver fallback finding this exact struct already `InProgress` in
+    /// `Driver`'s global query state, not via anything local to this one
+    /// throwaway `Analyzer`/`Context`. This method's only job is to populate
+    /// `cell` in place, patched via `RefCell` so every earlier clone of it
+    /// (e.g. one taken for a pointer field while this was still empty)
+    /// observes the final result too.
+    pub fn signature_of_struct(&mut self, s: &HirStructDef, cell: &Rc<RefCell<ResolvedStructType>>) -> Option<()> {
         let fields = self.analyze_struct_fields(&s.fields)?;
         cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
@@ -1739,123 +1615,17 @@ impl<'r> Analyzer<'r> {
             .map(|(f, fn_type)| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type }))
             .collect();
 
-        Some(ResolvedType::Struct(cell))
-    }
-
-    /// Every named top-level item in `self.hir_module`, signature-resolved
-    /// via `ensure_item_signature` -- shared by `collect_signatures` and
-    /// `analyze_bodies`, both of which need this same "every top-level name
-    /// is bound, in whatever order they end up actually being collected in"
-    /// precondition before doing anything else (building the exported
-    /// `ModuleSignature`, or checking bodies against it). Sweeping in
-    /// textual order here is just for predictable error ordering -- by the
-    /// time any one item is reached, it may already be `done_items` (another
-    /// item forward-referenced it first), which is exactly the point.
-    fn ensure_all_item_signatures(&mut self) -> bool {
-        let hir_module = self.hir_module.clone();
-        let mut ok = true;
-        for item in &hir_module.items {
-            if let Some(name) = item_name(item) {
-                let (id, span) = item_id_span(item);
-                // Not itself a reference from inside any type -- nothing is
-                // "in progress" yet at this point in the sweep, so `indirect`
-                // can't actually matter here; `true` just means "no cycle
-                // risk from the sweep itself," which is correct.
-                ok &= self.ensure_item_signature(id, span, &name, true).is_some();
-            }
-        }
-        ok
-    }
-
-    /// Collects one module's exported signature table: every top-level
-    /// item's *signature* (no bodies) plus, for a struct, every method's
-    /// signature -- everything another module's qualified path could ever
-    /// need. Same-module forward references and self-references (a struct
-    /// field naming a struct declared later; a function calling one declared
-    /// later; either one referencing itself) all resolve regardless of
-    /// textual order -- see `ensure_item_signature`. Cross-module cycles (a
-    /// *different* module's signature transitively requiring this one's) are
-    /// instead caught by the driver, at module granularity, before this is
-    /// ever called recursively for the same module twice.
-    pub fn collect_signatures(&mut self) -> Result<ModuleSignature, Vec<AnalysisError>> {
-        let hir_module = self.hir_module.clone();
-        let mut ok = self.process_imports(&hir_module.items);
-        ok &= self.ensure_all_item_signatures();
-
-        if !ok || !self.errors.is_empty() {
-            return Err(std::mem::take(&mut self.errors));
-        }
-
-        // Every name is now resolved and bound in `self.context`'s root
-        // scope -- functions/globals/externs as a `VarBinding`, structs as a
-        // `defined_types` entry -- so this just reads it back out into the
-        // flat table another module's `resolve_item` ultimately consults.
-        let mut signature = ModuleSignature::default();
-        for item in &hir_module.items {
-            let Some(name) = item_name(item) else { continue };
-            let resolved = if matches!(item, HirItem::Struct(_)) {
-                ResolvedItem::Type(self.context.find_defined_type(&name).expect("just resolved above").clone())
-            } else {
-                let binding = self.context.find_variable(&name).expect("just resolved above");
-                ResolvedItem::Value {
-                    r#type: binding.r#type.clone(),
-                    storage: binding.storage,
-                    decl_id: binding.decl_id,
-                }
-            };
-            signature.items.insert(name, SignatureEntry { visibility: Visibility::Public, item: resolved });
-        }
-
-        Ok(signature)
-    }
-
-    /// Checks one top-level item's *body* against its already-resolved
-    /// signature (see `ensure_all_item_signatures`, run just before this):
-    /// a `Declaration`/`ExternDeclaration` has no body of its own, so its
-    /// `CheckedItem` is just its already-resolved type paired with the
-    /// identifying fields already sitting on the `HirItem`; a function's or
-    /// struct's methods' bodies are checked by `check_function_body`.
-    fn check_item_body(&mut self, item: &HirItem) -> Option<CheckedItem> {
-        match item {
-            HirItem::Declaration(decl) => {
-                let r#type = self.context.find_variable(&decl.ident).expect("resolved above").r#type.clone();
-                Some(CheckedItem::Declaration(CheckedDeclaration {
-                    id: decl.id,
-                    span: decl.span,
-                    ident: decl.ident.clone(),
-                    r#type,
-                }))
-            }
-            HirItem::ExternDeclaration(decl) => {
-                let r#type = self.context.find_variable(&decl.ident).expect("resolved above").r#type.clone();
-                Some(CheckedItem::ExternDeclaration(CheckedExternDecl {
-                    id: decl.id,
-                    span: decl.span,
-                    ident: decl.ident.clone(),
-                    r#type,
-                }))
-            }
-            HirItem::FunctionDefinition(f) => {
-                let ResolvedType::Function(fn_type) =
-                    self.context.find_variable(&f.name).expect("resolved above").r#type.clone()
-                else {
-                    unreachable!("a function's own binding is always ResolvedType::Function");
-                };
-                self.check_function_body(f, &fn_type).map(CheckedItem::FunctionDefinition)
-            }
-            HirItem::Struct(s) => self.check_struct_body(s).map(CheckedItem::Struct),
-            HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
-        }
+        Some(())
     }
 
     /// Checks a function's (or method's) *body* only -- its signature, and
     /// its own name bound so any call to it (including a recursive one from
     /// its own body) resolves, are already handled by
-    /// `ensure_all_item_signatures`/`collect_function_signature`. Enters a
-    /// fresh scope to bind `f`'s params by name (signature collection only
-    /// ever resolved their *types*, never bound them -- that's a body-
-    /// analysis-time concern, same as it always was).
-    fn check_function_body(&mut self, f: &HirFunctionDef, fn_type: &ResolvedFunctionType) -> Option<CheckedFunctionDef> {
+    /// `omega_driver::Driver::ensure_item`/`collect_function_signature`.
+    /// Enters a fresh scope to bind `f`'s params by name (signature
+    /// collection only ever resolved their *types*, never bound them --
+    /// that's a body-analysis-time concern, same as it always was).
+    pub fn check_function_body(&mut self, f: &HirFunctionDef, fn_type: &ResolvedFunctionType) -> Option<CheckedFunctionDef> {
         self.context.enter_scope();
         let params = self.analyze_all(&f.params, Self::analyze_param);
 
@@ -1892,20 +1662,14 @@ impl<'r> Analyzer<'r> {
 
     /// Checks a top-level struct's methods' *bodies* only -- its fields and
     /// every method's signature are already fully resolved (see
-    /// `collect_struct_signature`), sitting in the struct's own shared
-    /// `ResolvedStructType` cell; `fields`/`functions` here are read back out
-    /// of that same cell (zipped positionally against `s.fields`/
-    /// `s.functions`, in the same order `collect_struct_signature` built
-    /// them in) rather than recomputed, so a self-referencing field reads
-    /// back the exact same live data `analyze_place`'s field projections
-    /// will later see.
-    fn check_struct_body(&mut self, s: &HirStructDef) -> Option<CheckedStructDef> {
-        let ResolvedType::Struct(cell) =
-            self.context.find_defined_type(&s.name).expect("resolved above").clone()
-        else {
-            unreachable!("a struct's own binding is always ResolvedType::Struct");
-        };
-
+    /// `signature_of_struct`), sitting in `cell` (the same shared cell
+    /// `omega_driver::Driver` created before that ran); `fields`/`functions`
+    /// here are read back out of it (zipped positionally against
+    /// `s.fields`/`s.functions`, in the same order `signature_of_struct`
+    /// built them in) rather than recomputed, so a self-referencing field
+    /// reads back the exact same live data `analyze_place`'s field
+    /// projections will later see.
+    pub fn check_struct_body(&mut self, s: &HirStructDef, cell: &Rc<RefCell<ResolvedStructType>>) -> Option<CheckedStructDef> {
         let fields = s
             .fields
             .iter()
@@ -1936,34 +1700,6 @@ impl<'r> Analyzer<'r> {
         }
 
         Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
-    }
-
-    /// Analyzes every item's *body*. Two sub-passes over the same module:
-    /// first, every top-level name's signature is resolved and bound,
-    /// regardless of declaration order (`ensure_all_item_signatures`); then
-    /// every item's body is checked (`check_item_body`) against that
-    /// already-fully-resolved scope, so a same-module forward reference or
-    /// self-recursive call -- in a signature *or* a body -- just works,
-    /// rather than depending on which of two items happens to come first
-    /// textually.
-    pub fn analyze_bodies(mut self) -> Result<(CheckedModule, Vec<AnalysisWarning>), Vec<AnalysisError>> {
-        let hir_module = self.hir_module.clone();
-        let mut ok = self.process_imports(&hir_module.items);
-        ok &= self.ensure_all_item_signatures();
-
-        let mut items = Vec::new();
-        for item in hir_module.items.iter().filter(|item| !matches!(item, HirItem::Import(_))) {
-            match self.check_item_body(item) {
-                Some(checked) => items.push(checked),
-                None => ok = false,
-            }
-        }
-
-        if ok && self.errors.is_empty() {
-            Ok((CheckedModule { id: hir_module.id, items }, self.warnings))
-        } else {
-            Err(self.errors)
-        }
     }
 }
 

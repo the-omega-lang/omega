@@ -1,8 +1,7 @@
 use crate::checked::Storage;
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, Path};
-use std::collections::HashMap;
+use omega_parser::prelude::{Ident, Path, SimpleSpan};
 use std::fmt;
 
 /// A concrete cross-module lookup result -- either a type (a struct, found
@@ -48,6 +47,23 @@ pub enum ResolveError {
     /// `path` resolved to a real file, but reading or parsing it failed --
     /// an I/O error, or a syntax error in the imported file itself.
     LoadFailed { path: Vec<Ident>, message: String },
+    /// `item` (in `module`) is a struct that includes itself, directly or
+    /// through one or more other structs -- possibly in other modules --
+    /// entirely by value, with no pointer anywhere along the cycle. Such a
+    /// type has no finite size (the same shape Rust rejects as E0072); this
+    /// is the one global, item-granular query
+    /// (`omega_driver::Driver::ensure_item`) replaces the old module-
+    /// granularity `Cycle` above for -- see its doc comment for why a
+    /// *pointer* reference to something still being resolved is never an
+    /// error, only a direct, by-value one.
+    RecursiveTypeWithoutIndirection { module: Vec<Ident>, item: Ident },
+    /// `item` (in `module`) failed its own signature/body analysis -- the
+    /// real diagnostics were already recorded against that module elsewhere
+    /// (see `omega_driver::Driver::module_errors`); this is just a
+    /// lightweight marker so a *reference* to the failed item can itself
+    /// fail cleanly, without duplicating or re-deriving the underlying
+    /// error here.
+    ItemFailed { module: Vec<Ident>, item: Ident },
 }
 
 fn join(path: &[Ident]) -> String {
@@ -77,6 +93,15 @@ impl fmt::Display for ResolveError {
             Self::LoadFailed { path, message } => {
                 write!(f, "failed to load module '{}': {message}", join(path))
             }
+            Self::RecursiveTypeWithoutIndirection { module, item } => write!(
+                f,
+                "recursive type '{}::{}' has infinite size -- insert a pointer somewhere in the cycle to fix this",
+                join(module),
+                item.as_ref()
+            ),
+            Self::ItemFailed { module, item } => {
+                write!(f, "'{}::{}' failed to resolve", join(module), item.as_ref())
+            }
         }
     }
 }
@@ -94,13 +119,24 @@ pub trait ModuleResolver {
     /// analyzing bodies for a module.
     fn resolve_import(&mut self, path: &Path) -> Result<ImportTarget, ResolveError>;
 
-    /// Called for a qualified path at a use site. `absolute_path` is already
-    /// fully resolved to an absolute module path plus a final item name --
-    /// the caller (`Context`) has already substituted its own import alias
-    /// for the first segment. Always resolves to a concrete item; running
-    /// out of path while still on a module, or landing on a non-public item,
-    /// is an error here.
-    fn resolve_item(&mut self, absolute_path: &[Ident]) -> Result<ResolvedItem, ResolveError>;
+    /// Called for *any* named-type or place reference that isn't satisfied
+    /// by a local (function-body-level) scope -- including a same-module
+    /// top-level reference, with `absolute_path`'s module prefix supplied
+    /// implicitly by the caller. There is no longer an architectural
+    /// difference between "same-module" and "cross-module" here; both are
+    /// this one query, item-granular and memoized
+    /// (`omega_driver::Driver::ensure_item`).
+    ///
+    /// `indirect` is true whenever the reference sits somewhere that never
+    /// embeds its referent inline into another type's layout -- behind a
+    /// pointer, or a function's own param/return types -- as opposed to a
+    /// struct field or `SizedArray` element, which do. This is what lets a
+    /// self/mutually-referencing *pointer* field (anywhere, even across
+    /// modules) resolve while it's still mid-collection, while a direct,
+    /// by-value reference to something still mid-collection is rejected as
+    /// `ResolveError::RecursiveTypeWithoutIndirection` (a genuine
+    /// infinite-size type) instead of silently built.
+    fn resolve_item(&mut self, absolute_path: &[Ident], indirect: bool) -> Result<ResolvedItem, ResolveError>;
 }
 
 /// The only variant the parser can produce today (no `pub`/`priv` keyword
@@ -111,20 +147,29 @@ pub enum Visibility {
     Public,
 }
 
-/// One exported item, as recorded in a `ModuleSignature`. Carries a
-/// `Visibility` even though every entry produced today is `Public` --
-/// enforcing real privacy later is "stop hardcoding `Public` here and stop
-/// skipping the check in `resolve_item`," not a data-model change.
+/// One resolved top-level item, as `omega_driver::Driver` records it in its
+/// global `resolved_items` table. Carries a `Visibility` even though every
+/// entry produced today is `Public` -- enforcing real privacy later is "stop
+/// hardcoding `Public` here and stop skipping the check in `resolve_item`,"
+/// not a data-model change.
 #[derive(Debug, Clone)]
 pub struct SignatureEntry {
     pub visibility: Visibility,
     pub item: ResolvedItem,
 }
 
-/// The result of `Analyzer::collect_signatures` for one module: every
-/// top-level item's resolved signature (no bodies), keyed by name. This is
-/// exactly what another module's `resolve_item` call ultimately reads from.
-#[derive(Debug, Clone, Default)]
-pub struct ModuleSignature {
-    pub items: HashMap<Ident, SignatureEntry>,
+/// One `import` statement, already resolved to what its path actually names
+/// -- `omega_driver::Driver` computes a module's whole list of these exactly
+/// once (cycle-guarded: resolving one module's item-style imports can itself
+/// need another module's -- see its `imports` cache), then hands the same
+/// `Rc<[ResolvedImport]>` to every throwaway `Analyzer` built for one of that
+/// module's items, which applies it fresh at construction (`Analyzer::new`).
+/// `id`/`span` are the originating `HirImport`'s, kept alongside so a
+/// duplicate alias can still be reported against the right source location.
+#[derive(Debug, Clone)]
+pub struct ResolvedImport {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub alias: Ident,
+    pub target: ImportTarget,
 }

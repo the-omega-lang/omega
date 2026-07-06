@@ -143,34 +143,71 @@ impl Context {
         Some(target.iter().cloned().chain(path.tail.iter().cloned()).collect())
     }
 
+    /// A function/method signature's param and return types are never
+    /// embedded inline into anything's layout (a function is called, not
+    /// laid out inline) -- always `indirect = true`, regardless of what the
+    /// caller itself was.
     pub fn resolve_function_type(
         &self,
         fntype: FunctionType,
         resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
     ) -> Result<ResolvedFunctionType, TypeResolutionError> {
         let params = fntype
             .params
             .into_iter()
-            .map(|(ident, typ)| self.resolve_type(typ, resolver).map(|resolved| (ident, resolved)))
+            .map(|(ident, typ)| {
+                self.resolve_type(typ, resolver, module_path, true)
+                    .map(|resolved| (ident, resolved))
+            })
             .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
         Ok(ResolvedFunctionType {
             params,
-            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver)?),
+            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, true)?),
             is_variadic: fntype.is_variadic,
             is_member_function: fntype.is_member_function,
         })
     }
 
+    /// `module_path` is the *caller's own* absolute module path -- used to
+    /// build an implicit absolute path for an unqualified reference that
+    /// isn't a builtin or a local (function-body-level) binding, so it can
+    /// be resolved the exact same way a qualified cross-module one is (see
+    /// `ModuleResolver::resolve_item`'s doc comment: there's no longer an
+    /// architectural difference between the two).
+    ///
+    /// `indirect` is true whenever `typ` itself sits somewhere that never
+    /// embeds its referent inline into another type's layout. It starts out
+    /// as whatever the caller passed and only ever *turns on* as the walk
+    /// descends: `Pointer`/`Array` (a thin pointer) and a `Function`'s own
+    /// param/return types are never embedded inline into anything, so
+    /// everything beneath them is indirect regardless of what it started as;
+    /// `SizedArray` carries its element inline, so it just passes the
+    /// current value through unchanged. See `ModuleResolver::resolve_item`
+    /// for what this distinction ultimately protects.
     pub fn resolve_type(
         &self,
         typ: Type,
         resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        indirect: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolved = match typ {
-            Type::Named(path) if path.is_unqualified() => self
-                .find_defined_type(&path.head)
-                .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(path.head.clone()))?
-                .to_owned(),
+            Type::Named(path) if path.is_unqualified() => {
+                if let Some(local) = self.find_defined_type(&path.head) {
+                    local.to_owned()
+                } else {
+                    let absolute: Vec<Ident> =
+                        module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
+                    match resolver
+                        .resolve_item(&absolute, indirect)
+                        .map_err(TypeResolutionError::ModuleResolution)?
+                    {
+                        ResolvedItem::Type(t) => t,
+                        ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                    }
+                }
+            }
             // A qualified type reference (`mymodule::Foo`) -- `path`'s head
             // must already be an imported module alias (see `absolute_path`);
             // the rest is resolved across modules by `resolver`, never
@@ -179,7 +216,10 @@ impl Context {
                 let absolute = self
                     .absolute_path(&path)
                     .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(path.head.clone()))?;
-                match resolver.resolve_item(&absolute).map_err(TypeResolutionError::ModuleResolution)? {
+                match resolver
+                    .resolve_item(&absolute, indirect)
+                    .map_err(TypeResolutionError::ModuleResolution)?
+                {
                     ResolvedItem::Type(t) => t,
                     ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
                 }
@@ -189,17 +229,24 @@ impl Context {
             // necessarily a different, wider representation (data pointer +
             // length), the same reasoning Rust's `&[T]` follows. Any other
             // pointee resolves to an ordinary thin `Pointer`, unchanged.
-            Type::Pointer(pointee_type) => match self.resolve_type(*pointee_type, resolver)? {
-                ResolvedType::Array(item_type) => ResolvedType::Slice(item_type),
-                other => ResolvedType::Pointer(Box::new(other)),
-            },
-            Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp, resolver)?),
-            Type::Array(item_type) => ResolvedType::Array(Box::new(self.resolve_type(*item_type, resolver)?)),
+            Type::Pointer(pointee_type) => {
+                match self.resolve_type(*pointee_type, resolver, module_path, true)? {
+                    ResolvedType::Array(item_type) => ResolvedType::Slice(item_type),
+                    other => ResolvedType::Pointer(Box::new(other)),
+                }
+            }
+            Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path)?),
+            Type::Array(item_type) => {
+                ResolvedType::Array(Box::new(self.resolve_type(*item_type, resolver, module_path, true)?))
+            }
             Type::SizedArray(item_type, size) => {
                 let size = size
                     .parse::<u32>()
                     .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
-                ResolvedType::SizedArray(Box::new(self.resolve_type(*item_type, resolver)?), size)
+                ResolvedType::SizedArray(
+                    Box::new(self.resolve_type(*item_type, resolver, module_path, indirect)?),
+                    size,
+                )
             }
         };
 
