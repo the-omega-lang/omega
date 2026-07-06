@@ -143,9 +143,10 @@ impl IntoIRType for ResolvedType {
             ResolvedType::F32 => vec![types::F32],
             ResolvedType::F64 => vec![types::F64],
             ResolvedType::Struct(struct_type) => struct_type
+                .borrow()
                 .fields
-                .into_iter()
-                .flat_map(|x| x.1.into_ir_type(codegen))
+                .iter()
+                .flat_map(|x| x.1.clone().into_ir_type(codegen))
                 .collect(),
             // `N` copies of the item type's own leaves, back to back -- the
             // same packed, no-padding layout a `Struct`'s fields get.
@@ -320,17 +321,19 @@ impl Codegen {
                     let ResolvedType::Struct(struct_type) = &current_type else {
                         unreachable!("checked module guarantees field projections are only built against a struct type");
                     };
+                    let struct_type = struct_type.clone();
+                    let struct_type = struct_type.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            PlaceStorage::Values(project_field_access(self, &values, struct_type, *index))
+                            PlaceStorage::Values(project_field_access(self, &values, &struct_type, *index))
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
-                            offset: offset + field_byte_offset(struct_type, *index, self),
+                            offset: offset + field_byte_offset(&struct_type, *index, self),
                         },
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
-                            offset: offset + field_byte_offset(struct_type, *index, self),
+                            offset: offset + field_byte_offset(&struct_type, *index, self),
                         },
                     };
                     current_type = r#type.clone();

@@ -1,5 +1,7 @@
 use omega_hir::HirId;
 use omega_parser::prelude::Ident;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedFunctionType {
@@ -20,11 +22,37 @@ pub struct ResolvedMethod {
     pub fn_type: ResolvedFunctionType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A struct's fields and methods, shared behind `ResolvedType::Struct`'s
+/// `Rc<RefCell<_>>` so that a self-referencing field (`next: *Node`, the
+/// classic linked-list shape) can hold a live handle to the very type still
+/// being built: the placeholder is inserted (with empty `fields`/
+/// `functions`) *before* fields are resolved, and patched in place once
+/// they're known -- every clone taken in the meantime (e.g. a pointer field
+/// that pointed back to it) observes the same, eventually-complete data,
+/// rather than a stale structural snapshot copied by value. Comparing two
+/// `ResolvedType::Struct`s (see `PartialEq` below) never has to walk into
+/// `fields`/`functions` at all, so this also sidesteps the infinite regress
+/// a *structural* comparison of a self-referential type would otherwise be.
+#[derive(Debug)]
 pub struct ResolvedStructType {
+    pub id: HirId,
+    pub name: Ident,
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
 }
+
+/// Nominal, not structural: two struct types are the same type iff they're
+/// the same *declaration* (matching real language semantics -- two
+/// unrelated structs that happen to share a field layout are still
+/// different types), and, just as importantly, this never has to borrow
+/// into (or recurse through) `fields`, which may reference this very struct
+/// again -- comparing by id keeps that O(1) regardless.
+impl PartialEq for ResolvedStructType {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ResolvedStructType {}
 
 /// How a numeric resolved type behaves arithmetically: its signedness (or
 /// float-ness) and bit width. Shared by analysis (to validate a number
@@ -78,7 +106,7 @@ pub enum ResolvedType {
     /// `Pointer` which is always a single thin pointer value. Never written
     /// as `Pointer(Array(_))`; see `Context::resolve_type`.
     Slice(Box<ResolvedType>),
-    Struct(ResolvedStructType),
+    Struct(Rc<RefCell<ResolvedStructType>>),
 }
 
 impl ResolvedType {

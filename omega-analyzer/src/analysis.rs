@@ -18,7 +18,9 @@ use omega_hir::{
     HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// A function-call's callee, resolved to either an ordinary value (whose
 /// type must be `Function`) or a bound method reference (a "thiscall"):
@@ -50,6 +52,40 @@ pub struct Analyzer<'r> {
     /// `Analyzer`s, one per `collect_signatures`/`analyze_bodies` call,
     /// rather than owned by any one of them.
     resolver: &'r mut dyn ModuleResolver,
+    /// The module currently being analyzed -- shared (not borrowed) so any
+    /// method can look an item back up by index without tying it to a
+    /// caller's stack frame; see `local_items`.
+    hir_module: Rc<HirModule>,
+    /// Every top-level item's name, mapped to its index in
+    /// `hir_module.items` -- populated once in `Analyzer::new`, and never
+    /// includes an `import` (those have no name of their own) or the
+    /// *second* (or later) occurrence of a name already seen (each such
+    /// duplicate is instead reported immediately as a `Redeclaration`, into
+    /// `errors`, right there in `new`). This is what `ensure_item_signature`
+    /// consults to find *what* to collect the first time a same-module
+    /// forward reference (or self-reference) reaches a name before its own
+    /// textual position in the module does.
+    local_items: HashMap<Ident, usize>,
+    /// Top-level names whose signature collection is currently on the call
+    /// stack (see `ensure_item_signature`) -- a name reached again while
+    /// it's in here is a same-module forward reference that has looped back
+    /// on itself (self-recursion, a self-referencing pointer field, or a
+    /// forward reference into a cycle). Every one of those is *allowed*: the
+    /// partially-built placeholder already sitting in scope (see
+    /// `collect_struct_signature`) is all a second reference to it ever
+    /// needs at this stage -- a bare name is just bound, and a pointer field
+    /// doesn't need its pointee's layout to finish first. The one thing this
+    /// deliberately does *not* police is a struct including itself *by
+    /// value* (directly, or through another struct) -- rejecting that
+    /// soundly needs its own layout-cycle analysis, a materially bigger,
+    /// separately-risky effort out of scope here (see the doc comment on
+    /// `ensure_item_signature`).
+    in_progress: HashSet<Ident>,
+    /// Top-level names whose signature collection has already fully run --
+    /// `ensure_item_signature`'s memoization, so a name reached both via an
+    /// earlier item's forward reference and via its own later textual
+    /// position is only ever collected once.
+    done_items: HashSet<Ident>,
     /// The enclosing function's declared return type, checked against every
     /// `return <expr>;` and against the function body's own effective type
     /// (see `block_type`/`check_function_return`). Saved and restored around
@@ -70,13 +106,58 @@ pub struct Analyzer<'r> {
     loop_stack: Vec<HirId>,
 }
 
+/// A top-level item's own name, or `None` for an `import` (which binds no
+/// name of its own -- see `Context::import_module`/`bind_imported_item`
+/// instead). Shared by `Analyzer::new` (building `local_items`) and every
+/// per-module sweep that needs to visit "every named top-level item."
+fn item_name(item: &HirItem) -> Option<Ident> {
+    match item {
+        HirItem::Declaration(d) => Some(d.ident.clone()),
+        HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
+        HirItem::FunctionDefinition(f) => Some(f.name.clone()),
+        HirItem::Struct(s) => Some(s.name.clone()),
+        HirItem::Import(_) => None,
+    }
+}
+
+/// A top-level item's own `HirId`/`SimpleSpan`, for anchoring the
+/// `Redeclaration` error `Analyzer::new` reports for a duplicate name.
+fn item_id_span(item: &HirItem) -> (HirId, SimpleSpan) {
+    match item {
+        HirItem::Declaration(d) => (d.id, d.span),
+        HirItem::ExternDeclaration(d) => (d.id, d.span),
+        HirItem::FunctionDefinition(f) => (f.id, f.span),
+        HirItem::Struct(s) => (s.id, s.span),
+        HirItem::Import(i) => (i.id, i.span),
+    }
+}
+
 impl<'r> Analyzer<'r> {
-    pub fn new(resolver: &'r mut dyn ModuleResolver) -> Self {
+    pub fn new(resolver: &'r mut dyn ModuleResolver, hir_module: Rc<HirModule>) -> Self {
+        let mut local_items = HashMap::new();
+        let mut errors = Vec::new();
+        for (index, item) in hir_module.items.iter().enumerate() {
+            let Some(name) = item_name(item) else { continue };
+            match local_items.entry(name) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let (id, span) = item_id_span(item);
+                    errors.push(AnalysisError::new(id, span, AnalysisErrorKind::Redeclaration(entry.key().clone())));
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(index);
+                }
+            }
+        }
+
         Self {
-            errors: vec![],
+            errors,
             warnings: vec![],
             context: Context::new(),
             resolver,
+            hir_module,
+            local_items,
+            in_progress: HashSet::new(),
+            done_items: HashSet::new(),
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
         }
@@ -104,6 +185,7 @@ impl<'r> Analyzer<'r> {
     }
 
     fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type) -> Option<ResolvedType> {
+        self.ensure_type_names_resolved(typ)?;
         match self.context.resolve_type(typ.to_owned(), &mut *self.resolver) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -112,6 +194,84 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
+    }
+
+    /// Walks every unqualified `Type::Named` leaf reachable from `typ`
+    /// (through any number of `Pointer`/`Array`/`SizedArray`/`Function`
+    /// layers) and, for each one, makes sure it's safe for the *upcoming*
+    /// `Context::resolve_type` call to look up -- see `ensure_item_signature`.
+    /// A qualified reference (`mymodule::Foo`) is a different module's
+    /// concern entirely (its own driver-side cache/cycle guard), so this
+    /// only ever recurses into the unqualified case.
+    fn ensure_type_names_resolved(&mut self, typ: &Type) -> Option<()> {
+        match typ {
+            Type::Named(path) if path.is_unqualified() => self.ensure_item_signature(&path.head),
+            Type::Named(_) => Some(()),
+            Type::Pointer(inner) | Type::Array(inner) | Type::SizedArray(inner, _) => {
+                self.ensure_type_names_resolved(inner)
+            }
+            Type::Function(fntyp) => {
+                let mut ok = true;
+                for (_, param_type) in &fntyp.params {
+                    ok &= self.ensure_type_names_resolved(param_type).is_some();
+                }
+                ok &= self.ensure_type_names_resolved(&fntyp.return_type).is_some();
+                ok.then_some(())
+            }
+        }
+    }
+
+    /// Makes sure `name` -- some other top-level item in this same module --
+    /// is available to look up *right now*, regardless of whether its own
+    /// textual position in the module comes before or after whatever is
+    /// asking for it. This is what makes same-module forward references (a
+    /// function calling one declared later, a struct field naming a struct
+    /// declared later) and self-references (a recursive function; a struct
+    /// field pointing back to its own struct) resolve instead of failing --
+    /// the same query-style "collect a signature on first demand, memoize it
+    /// forever after" shape `omega_driver::Driver::signature_of` already uses
+    /// for *cross*-module signatures, just one level down: a name found
+    /// already `done_items` is a cache hit, one found `in_progress` is a
+    /// name looping back on itself (fine -- see `in_progress`'s doc comment),
+    /// and anything else gets collected right here, on the spot, before this
+    /// returns.
+    ///
+    /// Deliberately does *not* attempt to distinguish an indirect reference
+    /// (behind a pointer, where only the placeholder's *existence* matters)
+    /// from a direct, by-value one (where a genuine cycle -- e.g. two
+    /// structs each embedding the other by value -- would silently produce
+    /// an infinitely-recursive layout): that distinction, and rejecting the
+    /// latter cleanly, is exactly the "infinite struct recursion through
+    /// fields" case called out as its own, separately-risky follow-up. This
+    /// only guarantees the *analyzer itself* never loops forever chasing a
+    /// same-module cycle; it doesn't yet guarantee *codegen* won't, for that
+    /// one excluded shape.
+    fn ensure_item_signature(&mut self, name: &Ident) -> Option<()> {
+        if self.done_items.contains(name) || self.in_progress.contains(name) {
+            return Some(());
+        }
+        let Some(&index) = self.local_items.get(name) else {
+            // Not a pending top-level item of this module -- a builtin
+            // primitive, an imported alias, or genuinely undefined; the
+            // ordinary lookup that runs right after this returns is what
+            // decides which.
+            return Some(());
+        };
+
+        let hir_module = self.hir_module.clone();
+        let item = &hir_module.items[index];
+        self.in_progress.insert(name.clone());
+        let ok = match item {
+            HirItem::Declaration(decl) => self.analyze_declaration(decl, Storage::Global).is_some(),
+            HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).is_some(),
+            HirItem::FunctionDefinition(f) => self.collect_function_signature(f).is_some(),
+            HirItem::Struct(s) => self.collect_struct_signature(s).is_some(),
+            HirItem::Import(_) => unreachable!("imports are never inserted into local_items"),
+        };
+        self.in_progress.remove(name);
+        self.done_items.insert(name.clone());
+
+        ok.then_some(())
     }
 
     /// Binds `ident` in the current scope, or records `Redeclaration` if
@@ -251,6 +411,7 @@ impl<'r> Analyzer<'r> {
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct));
             return None;
         };
+        let struct_type = struct_type.borrow();
 
         let found = struct_type
             .fields
@@ -286,6 +447,7 @@ impl<'r> Analyzer<'r> {
         let ResolvedType::Struct(struct_type) = dereffed else {
             return None;
         };
+        let struct_type = struct_type.borrow();
         if struct_type.fields.iter().any(|(name, _)| name == field) {
             return None;
         }
@@ -1362,79 +1524,45 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// A *locally-nested* (block-scoped, `HirStmt::Struct`) struct's method:
+    /// top-level functions/methods never reach this anymore (see
+    /// `check_function_body`) -- this is just `collect_function_signature`
+    /// (resolve the signature, bind the name) immediately followed by
+    /// checking the body against it, which is what actually fixes
+    /// self-recursion here: the function's own name is bound *before* its
+    /// body is checked, not after, so a call to itself inside that body
+    /// resolves instead of hitting `UndefinedVariable`.
     fn analyze_function_def(&mut self, f: &HirFunctionDef) -> Option<CheckedFunctionDef> {
-        self.context.enter_scope();
-        let params = self.analyze_all(&f.params, Self::analyze_param);
-        let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type);
-
-        // Saved/restored (not just set) since a struct -- and therefore its
-        // methods -- can be declared inside a function body, nesting one
-        // function's analysis inside another's; see `current_return_type`'s
-        // and `loop_stack`'s doc comments. A method's body starts with no
-        // enclosing loop of its own, regardless of whether the `struct`
-        // declaring it sits inside one.
-        let previous_return_type = std::mem::replace(
-            &mut self.current_return_type,
-            return_type.clone().unwrap_or(ResolvedType::Void),
-        );
-        let previous_loop_stack = std::mem::take(&mut self.loop_stack);
-        let body = self.analyze_block(&f.body);
-        self.current_return_type = previous_return_type;
-        self.loop_stack = previous_loop_stack;
-
-        self.context.leave_scope();
-
-        let params = params?;
-        let return_type = return_type?;
-        let body = body?;
-        self.check_function_return(f.id, f.span, &return_type, &body)?;
-
-        let checked = CheckedFunctionDef {
-            id: f.id,
-            span: f.span,
-            name: f.name.clone(),
-            is_member_function: f.is_member_function,
-            is_variadic: false,
-            params,
-            return_type,
-            body,
-        };
-
-        // Register the function's own name in whatever scope is current now
-        // that its body scope has been popped -- the enclosing module scope
-        // for a top-level function, or the struct's dedicated method scope
-        // for a member function (see `analyze_struct_def`) -- so later
-        // top-level items, or sibling methods analyzed after this one, can
-        // call it by name.
-        let binding = VarBinding {
-            decl_id: f.id,
-            storage: Storage::Function,
-            r#type: ResolvedType::Function(checked.fn_type()),
-        };
-        if let Err(dup) = self.context.current_scope().declare(f.name.clone(), binding) {
-            self.errors
-                .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::Redeclaration(dup)));
-            return None;
-        }
-
-        Some(checked)
+        let fn_type = self.collect_function_signature(f)?;
+        self.check_function_body(f, &fn_type)
     }
 
+    /// A *locally-nested* (block-scoped, `HirStmt::Struct`) struct
+    /// definition -- top-level structs never reach this anymore (see
+    /// `check_struct_body`). Same placeholder-before-fields shape as
+    /// `collect_struct_signature`, just without any of `local_items`'s
+    /// cross-item bookkeeping: there are no textual siblings to forward-
+    /// reference here, only (potentially) this one struct's own name, so
+    /// `in_progress` is pushed/popped directly around field resolution
+    /// rather than through `ensure_item_signature`.
     fn analyze_struct_def(&mut self, s: &HirStructDef) -> Option<CheckedStructDef> {
-        let fields = self.analyze_struct_fields(&s.fields)?;
-
-        // Insert the struct's type -- with an empty method list for now --
-        // *before* analyzing any method, since a member function's synthetic
-        // `self: *StructName` parameter needs the struct's own name to
-        // already resolve.
+        let cell = Rc::new(RefCell::new(ResolvedStructType {
+            id: s.id,
+            name: s.name.clone(),
+            fields: vec![],
+            functions: vec![],
+        }));
         // TODO: Make sure type does not already exist
-        self.context.current_scope().defined_types.insert(
-            s.name.clone(),
-            ResolvedType::Struct(ResolvedStructType {
-                fields: fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect(),
-                functions: vec![],
-            }),
-        );
+        self.context
+            .current_scope()
+            .defined_types
+            .insert(s.name.clone(), ResolvedType::Struct(cell.clone()));
+
+        self.in_progress.insert(s.name.clone());
+        let fields = self.analyze_struct_fields(&s.fields);
+        self.in_progress.remove(&s.name);
+        let fields = fields?;
+        cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
         // Methods are bound in their own nested scope so they aren't
         // globally callable; `resolve_type` still sees the struct's type
@@ -1443,41 +1571,12 @@ impl<'r> Analyzer<'r> {
         let functions = self.analyze_all(&s.functions, Self::analyze_function_def);
         self.context.leave_scope();
         let functions = functions?;
-
-        // Back in the exact scope frame the struct's type was inserted into
-        // above (the enter/leave pair around the methods loop brackets
-        // symmetrically) -- patch in the now-resolved method list directly,
-        // no parent-scope depth arithmetic required.
-        let ResolvedType::Struct(resolved) = self
-            .context
-            .current_scope()
-            .defined_types
-            .get_mut(&s.name)
-            .expect("just inserted above, in this exact scope frame")
-        else {
-            unreachable!("just inserted as ResolvedType::Struct above");
-        };
-        resolved.functions = functions
+        cell.borrow_mut().functions = functions
             .iter()
             .map(|f| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type: f.fn_type() }))
             .collect();
 
         Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
-    }
-
-    fn analyze_item(&mut self, item: &HirItem) -> Option<CheckedItem> {
-        match item {
-            HirItem::Declaration(decl) => self.analyze_declaration(decl, Storage::Global).map(CheckedItem::Declaration),
-            HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(CheckedItem::ExternDeclaration),
-            HirItem::FunctionDefinition(f) => self.analyze_function_def(f).map(CheckedItem::FunctionDefinition),
-            HirItem::Struct(s) => self.analyze_struct_def(s).map(CheckedItem::Struct),
-            // Processed separately, before either pass ever reaches
-            // `analyze_item`/`collect_item_signature` -- see
-            // `process_imports`.
-            HirItem::Import(_) => {
-                unreachable!("imports are processed by process_imports, before analyze_item runs")
-            }
-        }
     }
 
     /// `import a::b::c;` -- resolves what the path actually names (a whole
@@ -1565,119 +1664,255 @@ impl<'r> Analyzer<'r> {
     /// `analyze_struct_def`'s early-self-insertion trick unchanged (a
     /// method's synthetic `self: *StructName` parameter needs the struct's
     /// own name to already resolve).
+    /// A top-level struct's *signature* only: field types, plus every
+    /// method's signature, with zero recursion into any method body. The
+    /// placeholder -- with empty `fields`/`functions` -- is inserted into
+    /// scope *before* either is resolved (not just before methods, as a
+    /// pre-multi-module version of this did): a member function's synthetic
+    /// `self: *StructName` parameter has always needed the struct's own name
+    /// to already resolve, and the same is true of any field referencing
+    /// this struct through a pointer (the classic self-referencing linked-
+    /// list node). Field/method resolution may, in turn, call
+    /// `ensure_item_signature` right back into *this* struct (if, say, a
+    /// pointer field names it directly) -- safe, since `in_progress` already
+    /// holds this struct's name by the time either starts (see
+    /// `ensure_item_signature`).
     fn collect_struct_signature(&mut self, s: &HirStructDef) -> Option<ResolvedType> {
-        let fields = self.analyze_struct_fields(&s.fields)?;
+        let cell = Rc::new(RefCell::new(ResolvedStructType {
+            id: s.id,
+            name: s.name.clone(),
+            fields: vec![],
+            functions: vec![],
+        }));
+        self.context
+            .current_scope()
+            .defined_types
+            .insert(s.name.clone(), ResolvedType::Struct(cell.clone()));
 
-        self.context.current_scope().defined_types.insert(
-            s.name.clone(),
-            ResolvedType::Struct(ResolvedStructType {
-                fields: fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect(),
-                functions: vec![],
-            }),
-        );
+        let fields = self.analyze_struct_fields(&s.fields)?;
+        cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
         self.context.enter_scope();
         let functions = self.analyze_all(&s.functions, Self::collect_function_signature);
         self.context.leave_scope();
         let functions = functions?;
-
-        let ResolvedType::Struct(resolved) = self
-            .context
-            .current_scope()
-            .defined_types
-            .get_mut(&s.name)
-            .expect("just inserted above, in this exact scope frame")
-        else {
-            unreachable!("just inserted as ResolvedType::Struct above");
-        };
-        resolved.functions = s
+        cell.borrow_mut().functions = s
             .functions
             .iter()
             .zip(functions)
             .map(|(f, fn_type)| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type }))
             .collect();
 
-        Some(self.context.find_defined_type(&s.name).expect("just inserted above").clone())
+        Some(ResolvedType::Struct(cell))
+    }
+
+    /// Every named top-level item in `self.hir_module`, signature-resolved
+    /// via `ensure_item_signature` -- shared by `collect_signatures` and
+    /// `analyze_bodies`, both of which need this same "every top-level name
+    /// is bound, in whatever order they end up actually being collected in"
+    /// precondition before doing anything else (building the exported
+    /// `ModuleSignature`, or checking bodies against it). Sweeping in
+    /// textual order here is just for predictable error ordering -- by the
+    /// time any one item is reached, it may already be `done_items` (another
+    /// item forward-referenced it first), which is exactly the point.
+    fn ensure_all_item_signatures(&mut self) -> bool {
+        let hir_module = self.hir_module.clone();
+        let mut ok = true;
+        for item in &hir_module.items {
+            if let Some(name) = item_name(item) {
+                ok &= self.ensure_item_signature(&name).is_some();
+            }
+        }
+        ok
     }
 
     /// Collects one module's exported signature table: every top-level
     /// item's *signature* (no bodies) plus, for a struct, every method's
     /// signature -- everything another module's qualified path could ever
-    /// need. Processes items in the same top-to-bottom order
-    /// `analyze_bodies` does, deliberately *not* fixed to tolerate
-    /// same-module forward references or self-recursive-by-value struct
-    /// cycles: doing that soundly needs turning same-module resolution into
-    /// a genuine on-demand recursive query too (the same trap a naive
-    /// insert-placeholders-then-patch scheme falls into -- see the plan's
-    /// "explicitly out of scope" section), which is a materially bigger,
-    /// separately-risky change than this feature needs. Cross-module cycles
-    /// (a *different* module's signature transitively requiring this one's)
-    /// are instead caught by the driver, at module granularity, before this
-    /// is ever called recursively for the same module twice.
-    pub fn collect_signatures(&mut self, hir_module: &HirModule) -> Result<ModuleSignature, Vec<AnalysisError>> {
+    /// need. Same-module forward references and self-references (a struct
+    /// field naming a struct declared later; a function calling one declared
+    /// later; either one referencing itself) all resolve regardless of
+    /// textual order -- see `ensure_item_signature`. Cross-module cycles (a
+    /// *different* module's signature transitively requiring this one's) are
+    /// instead caught by the driver, at module granularity, before this is
+    /// ever called recursively for the same module twice.
+    pub fn collect_signatures(&mut self) -> Result<ModuleSignature, Vec<AnalysisError>> {
+        let hir_module = self.hir_module.clone();
         let mut ok = self.process_imports(&hir_module.items);
-        let mut signature = ModuleSignature::default();
+        ok &= self.ensure_all_item_signatures();
 
+        if !ok || !self.errors.is_empty() {
+            return Err(std::mem::take(&mut self.errors));
+        }
+
+        // Every name is now resolved and bound in `self.context`'s root
+        // scope -- functions/globals/externs as a `VarBinding`, structs as a
+        // `defined_types` entry -- so this just reads it back out into the
+        // flat table another module's `resolve_item` ultimately consults.
+        let mut signature = ModuleSignature::default();
         for item in &hir_module.items {
-            let entry = match item {
-                HirItem::Import(_) => None,
-                HirItem::Declaration(decl) => self.analyze_declaration(decl, Storage::Global).map(|checked| {
-                    (checked.ident.clone(), ResolvedItem::Value {
-                        r#type: checked.r#type,
-                        storage: Storage::Global,
-                        decl_id: checked.id,
-                    })
-                }),
-                HirItem::ExternDeclaration(decl) => self.analyze_extern_decl(decl).map(|checked| {
-                    let storage = if matches!(checked.r#type, ResolvedType::Function(_)) {
-                        Storage::Function
-                    } else {
-                        Storage::Global
-                    };
-                    (checked.ident.clone(), ResolvedItem::Value { r#type: checked.r#type, storage, decl_id: checked.id })
-                }),
-                HirItem::FunctionDefinition(f) => self.collect_function_signature(f).map(|fn_type| {
-                    (f.name.clone(), ResolvedItem::Value {
-                        r#type: ResolvedType::Function(fn_type),
-                        storage: Storage::Function,
-                        decl_id: f.id,
-                    })
-                }),
-                HirItem::Struct(s) => {
-                    self.collect_struct_signature(s).map(|r#type| (s.name.clone(), ResolvedItem::Type(r#type)))
+            let Some(name) = item_name(item) else { continue };
+            let resolved = if matches!(item, HirItem::Struct(_)) {
+                ResolvedItem::Type(self.context.find_defined_type(&name).expect("just resolved above").clone())
+            } else {
+                let binding = self.context.find_variable(&name).expect("just resolved above");
+                ResolvedItem::Value {
+                    r#type: binding.r#type.clone(),
+                    storage: binding.storage,
+                    decl_id: binding.decl_id,
                 }
             };
+            signature.items.insert(name, SignatureEntry { visibility: Visibility::Public, item: resolved });
+        }
 
-            match entry {
-                Some((name, item)) => {
-                    signature.items.insert(name, SignatureEntry { visibility: Visibility::Public, item });
-                }
-                None if matches!(item, HirItem::Import(_)) => {}
+        Ok(signature)
+    }
+
+    /// Checks one top-level item's *body* against its already-resolved
+    /// signature (see `ensure_all_item_signatures`, run just before this):
+    /// a `Declaration`/`ExternDeclaration` has no body of its own, so its
+    /// `CheckedItem` is just its already-resolved type paired with the
+    /// identifying fields already sitting on the `HirItem`; a function's or
+    /// struct's methods' bodies are checked by `check_function_body`.
+    fn check_item_body(&mut self, item: &HirItem) -> Option<CheckedItem> {
+        match item {
+            HirItem::Declaration(decl) => {
+                let r#type = self.context.find_variable(&decl.ident).expect("resolved above").r#type.clone();
+                Some(CheckedItem::Declaration(CheckedDeclaration {
+                    id: decl.id,
+                    span: decl.span,
+                    ident: decl.ident.clone(),
+                    r#type,
+                }))
+            }
+            HirItem::ExternDeclaration(decl) => {
+                let r#type = self.context.find_variable(&decl.ident).expect("resolved above").r#type.clone();
+                Some(CheckedItem::ExternDeclaration(CheckedExternDecl {
+                    id: decl.id,
+                    span: decl.span,
+                    ident: decl.ident.clone(),
+                    r#type,
+                }))
+            }
+            HirItem::FunctionDefinition(f) => {
+                let ResolvedType::Function(fn_type) =
+                    self.context.find_variable(&f.name).expect("resolved above").r#type.clone()
+                else {
+                    unreachable!("a function's own binding is always ResolvedType::Function");
+                };
+                self.check_function_body(f, &fn_type).map(CheckedItem::FunctionDefinition)
+            }
+            HirItem::Struct(s) => self.check_struct_body(s).map(CheckedItem::Struct),
+            HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
+        }
+    }
+
+    /// Checks a function's (or method's) *body* only -- its signature, and
+    /// its own name bound so any call to it (including a recursive one from
+    /// its own body) resolves, are already handled by
+    /// `ensure_all_item_signatures`/`collect_function_signature`. Enters a
+    /// fresh scope to bind `f`'s params by name (signature collection only
+    /// ever resolved their *types*, never bound them -- that's a body-
+    /// analysis-time concern, same as it always was).
+    fn check_function_body(&mut self, f: &HirFunctionDef, fn_type: &ResolvedFunctionType) -> Option<CheckedFunctionDef> {
+        self.context.enter_scope();
+        let params = self.analyze_all(&f.params, Self::analyze_param);
+
+        // Saved/restored (not just set) since a struct -- and therefore its
+        // methods -- can be declared inside a function body, nesting one
+        // function's analysis inside another's; see `current_return_type`'s
+        // and `loop_stack`'s doc comments. A method's body starts with no
+        // enclosing loop of its own, regardless of whether the `struct`
+        // declaring it sits inside one.
+        let previous_return_type =
+            std::mem::replace(&mut self.current_return_type, (*fn_type.return_type).clone());
+        let previous_loop_stack = std::mem::take(&mut self.loop_stack);
+        let body = self.analyze_block(&f.body);
+        self.current_return_type = previous_return_type;
+        self.loop_stack = previous_loop_stack;
+
+        self.context.leave_scope();
+
+        let params = params?;
+        let body = body?;
+        self.check_function_return(f.id, f.span, &fn_type.return_type, &body)?;
+
+        Some(CheckedFunctionDef {
+            id: f.id,
+            span: f.span,
+            name: f.name.clone(),
+            is_member_function: f.is_member_function,
+            is_variadic: false,
+            params,
+            return_type: (*fn_type.return_type).clone(),
+            body,
+        })
+    }
+
+    /// Checks a top-level struct's methods' *bodies* only -- its fields and
+    /// every method's signature are already fully resolved (see
+    /// `collect_struct_signature`), sitting in the struct's own shared
+    /// `ResolvedStructType` cell; `fields`/`functions` here are read back out
+    /// of that same cell (zipped positionally against `s.fields`/
+    /// `s.functions`, in the same order `collect_struct_signature` built
+    /// them in) rather than recomputed, so a self-referencing field reads
+    /// back the exact same live data `analyze_place`'s field projections
+    /// will later see.
+    fn check_struct_body(&mut self, s: &HirStructDef) -> Option<CheckedStructDef> {
+        let ResolvedType::Struct(cell) =
+            self.context.find_defined_type(&s.name).expect("resolved above").clone()
+        else {
+            unreachable!("a struct's own binding is always ResolvedType::Struct");
+        };
+
+        let fields = s
+            .fields
+            .iter()
+            .zip(cell.borrow().fields.iter())
+            .map(|(hir_field, (_, r#type))| CheckedParam {
+                id: hir_field.id,
+                span: hir_field.span,
+                ident: hir_field.ident.clone(),
+                r#type: r#type.clone(),
+            })
+            .collect();
+
+        let method_fn_types: Vec<ResolvedFunctionType> =
+            cell.borrow().functions.iter().map(|(_, method)| method.fn_type.clone()).collect();
+
+        self.context.enter_scope();
+        let mut functions = Vec::with_capacity(s.functions.len());
+        let mut ok = true;
+        for (f, fn_type) in s.functions.iter().zip(method_fn_types.iter()) {
+            match self.check_function_body(f, fn_type) {
+                Some(checked) => functions.push(checked),
                 None => ok = false,
             }
         }
+        self.context.leave_scope();
+        if !ok {
+            return None;
+        }
 
-        if ok { Ok(signature) } else { Err(std::mem::take(&mut self.errors)) }
+        Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
     }
 
-    /// Analyzes every item's *body* -- almost exactly what this used to be
-    /// (`Analyzer::analyze`) before signature collection split out into its
-    /// own pass, with one behavioral addition: qualified-path type/place
-    /// resolution can now reach across modules via `resolver` instead of
-    /// always failing locally. Independent of `collect_signatures` for the
-    /// *same* module -- it reprocesses this module's own imports and
-    /// top-level items itself (cheap; any cross-module lookup hits the
-    /// driver's cache) rather than reusing that pass's output, so no
-    /// half-built state has to survive between the two passes.
-    pub fn analyze_bodies(
-        mut self,
-        hir_module: &HirModule,
-    ) -> Result<(CheckedModule, Vec<AnalysisWarning>), Vec<AnalysisError>> {
+    /// Analyzes every item's *body*. Two sub-passes over the same module:
+    /// first, every top-level name's signature is resolved and bound,
+    /// regardless of declaration order (`ensure_all_item_signatures`); then
+    /// every item's body is checked (`check_item_body`) against that
+    /// already-fully-resolved scope, so a same-module forward reference or
+    /// self-recursive call -- in a signature *or* a body -- just works,
+    /// rather than depending on which of two items happens to come first
+    /// textually.
+    pub fn analyze_bodies(mut self) -> Result<(CheckedModule, Vec<AnalysisWarning>), Vec<AnalysisError>> {
+        let hir_module = self.hir_module.clone();
         let mut ok = self.process_imports(&hir_module.items);
+        ok &= self.ensure_all_item_signatures();
 
         let mut items = Vec::new();
         for item in hir_module.items.iter().filter(|item| !matches!(item, HirItem::Import(_))) {
-            match self.analyze_item(item) {
+            match self.check_item_body(item) {
                 Some(checked) => items.push(checked),
                 None => ok = false,
             }

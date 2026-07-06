@@ -209,8 +209,8 @@ impl Driver {
         self.signatures.insert(path.to_vec(), SignatureState::InProgress);
 
         let result = self.parse_module(path).and_then(|hir| {
-            let mut analyzer = Analyzer::new(&mut *self);
-            analyzer.collect_signatures(&hir).map(Rc::new).map_err(|errors| {
+            let mut analyzer = Analyzer::new(&mut *self, hir);
+            analyzer.collect_signatures().map(Rc::new).map_err(|errors| {
                 // Signature collection failing isn't itself a resolution
                 // error shape (`ResolveError` has no "analysis failed"
                 // variant, deliberately -- see `ModuleResolver`'s doc
@@ -252,8 +252,8 @@ impl Driver {
         let mut errors = Vec::new();
         for path in &reachable {
             let hir = self.parsed.get(path).expect("reachable modules are always parsed by discover_reachable").clone();
-            let analyzer = Analyzer::new(&mut *self);
-            match analyzer.analyze_bodies(&hir) {
+            let analyzer = Analyzer::new(&mut *self, hir);
+            match analyzer.analyze_bodies() {
                 Ok((checked, module_warnings)) => {
                     modules.push((path.clone(), checked));
                     warnings.extend(module_warnings);
