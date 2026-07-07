@@ -62,6 +62,17 @@ pub struct Context {
     /// `bind_imported_item`, exactly like `Context::new` already seeds
     /// builtin primitives.
     imported_modules: HashMap<Ident, Vec<Ident>>,
+    /// `import`ed *generic* item aliases (`import mymodule::List;` where
+    /// `List` turns out to be a generic struct or function) -- maps the
+    /// bound alias to the item's absolute path. Kept separate from
+    /// `imported_modules`/the ordinary local-binding tables `bind_imported_item`
+    /// uses, since a generic item has no concrete `ResolvedType`/`VarBinding`
+    /// to bind yet (there's nothing concrete until a use site supplies type
+    /// arguments) -- this just records "this name means that absolute path,"
+    /// substituted in wherever an unqualified reference would otherwise fall
+    /// through to an implicit own-module-prefixed one (see
+    /// `resolve_absolute_item_path`).
+    generic_aliases: HashMap<Ident, Vec<Ident>>,
 }
 
 impl Context {
@@ -76,16 +87,19 @@ impl Context {
             (Ident("i16".into()), ResolvedType::I16),
             (Ident("i32".into()), ResolvedType::I32),
             (Ident("i64".into()), ResolvedType::I64),
+            (Ident("isize".into()), ResolvedType::ISize),
             (Ident("u8".into()), ResolvedType::U8),
             (Ident("u16".into()), ResolvedType::U16),
             (Ident("u32".into()), ResolvedType::U32),
             (Ident("u64".into()), ResolvedType::U64),
+            (Ident("usize".into()), ResolvedType::USize),
             (Ident("f32".into()), ResolvedType::F32),
             (Ident("f64".into()), ResolvedType::F64),
         ]);
         Self {
             scopes: vec![global_scope],
             imported_modules: HashMap::new(),
+            generic_aliases: HashMap::new(),
         }
     }
 
@@ -110,6 +124,13 @@ impl Context {
     /// process_import`).
     pub fn import_module(&mut self, alias: Ident, absolute_path: Vec<Ident>) {
         self.imported_modules.insert(alias, absolute_path);
+    }
+
+    /// Binds an imported *generic* item alias (`import mymodule::List;`
+    /// where `List` is a generic struct/function) -- see `generic_aliases`'s
+    /// doc comment.
+    pub fn bind_generic_alias(&mut self, alias: Ident, absolute_path: Vec<Ident>) {
+        self.generic_aliases.insert(alias, absolute_path);
     }
 
     /// Binds an imported *item* directly by name (`import mymodule::foo;`
@@ -143,6 +164,14 @@ impl Context {
         Some(target.iter().cloned().chain(path.tail.iter().cloned()).collect())
     }
 
+    /// An imported *generic* item alias's absolute path, if `alias` is one
+    /// (see `generic_aliases`'s doc comment) -- the `Analyzer::
+    /// resolve_generic_call` counterpart to `absolute_path`, for the
+    /// unqualified-only case a generic item import always is.
+    pub fn generic_alias(&self, alias: &Ident) -> Option<&Vec<Ident>> {
+        self.generic_aliases.get(alias)
+    }
+
     /// A function/method signature's param and return types are never
     /// embedded inline into anything's layout (a function is called, not
     /// laid out inline) -- always `indirect = true`, regardless of what the
@@ -167,6 +196,31 @@ impl Context {
             is_variadic: fntype.is_variadic,
             is_member_function: fntype.is_member_function,
         })
+    }
+
+    /// Resolves `path` to an absolute `[module_path.., name]`, the shared
+    /// logic behind `Type::Named`'s and `Type::Generic`'s unqualified/
+    /// qualified branches (kept as one method so this priority order is only
+    /// written once): for an unqualified `path`, a `generic_aliases` hit
+    /// (an imported generic item, see its doc comment) wins over the
+    /// implicit own-module-prefixed fallback -- a generic item is never
+    /// itself a `find_defined_type` entry, so callers still check that
+    /// first, separately, for ordinary local shadowing. For a qualified
+    /// `path`, this is exactly `absolute_path` (an imported module alias).
+    fn resolve_absolute_item_path(
+        &self,
+        path: &Path,
+        module_path: &[Ident],
+    ) -> Result<Vec<Ident>, TypeResolutionError> {
+        if path.is_unqualified() {
+            if let Some(absolute) = self.generic_aliases.get(&path.head) {
+                return Ok(absolute.clone());
+            }
+            Ok(module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect())
+        } else {
+            self.absolute_path(path)
+                .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(path.head.clone()))
+        }
     }
 
     /// `module_path` is the *caller's own* absolute module path -- used to
@@ -197,10 +251,9 @@ impl Context {
                 if let Some(local) = self.find_defined_type(&path.head) {
                     local.to_owned()
                 } else {
-                    let absolute: Vec<Ident> =
-                        module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
+                    let absolute = self.resolve_absolute_item_path(&path, module_path)?;
                     match resolver
-                        .resolve_item(&absolute, indirect)
+                        .resolve_item(&absolute, &[], indirect)
                         .map_err(TypeResolutionError::ModuleResolution)?
                     {
                         ResolvedItem::Type(t) => t,
@@ -213,11 +266,31 @@ impl Context {
             // the rest is resolved across modules by `resolver`, never
             // locally.
             Type::Named(path) => {
-                let absolute = self
-                    .absolute_path(&path)
-                    .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(path.head.clone()))?;
+                let absolute = self.resolve_absolute_item_path(&path, module_path)?;
                 match resolver
-                    .resolve_item(&absolute, indirect)
+                    .resolve_item(&absolute, &[], indirect)
+                    .map_err(TypeResolutionError::ModuleResolution)?
+                {
+                    ResolvedItem::Type(t) => t,
+                    ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                }
+            }
+            // `Path<Type, ...>` -- a generic item referenced with explicit
+            // type arguments (e.g. `List<u32>`). Args are resolved first
+            // (always `indirect = true`: naming a type as a generic argument
+            // never itself embeds it inline -- the *usage* inside the
+            // template body decides that, at instantiation time), then the
+            // whole reference is resolved exactly like `Type::Named`'s
+            // (minus the local-shadowing check -- a generic item is never a
+            // `find_defined_type` entry).
+            Type::Generic(path, args) => {
+                let resolved_args = args
+                    .into_iter()
+                    .map(|arg| self.resolve_type(arg, resolver, module_path, true))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let absolute = self.resolve_absolute_item_path(&path, module_path)?;
+                match resolver
+                    .resolve_item(&absolute, &resolved_args, indirect)
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,

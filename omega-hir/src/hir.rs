@@ -70,6 +70,10 @@ pub struct HirFunctionDef {
     pub id: HirId,
     pub span: SimpleSpan,
     pub name: Ident,
+    /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
+    /// `omega_parser::syntax::statement::function_definition::
+    /// FunctionDefinitionStmt::generics`'s doc comment.
+    pub generics: Vec<Ident>,
     pub is_member_function: bool,
     /// For member functions, the synthetic `self: *StructName` parameter is
     /// already inserted here by lowering -- downstream consumers never need
@@ -101,6 +105,10 @@ pub struct HirStructDef {
     pub id: HirId,
     pub span: SimpleSpan,
     pub name: Ident,
+    /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
+    /// `omega_parser::syntax::statement::r#struct::StructStmt::generics`'s
+    /// doc comment.
+    pub generics: Vec<Ident>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
 }

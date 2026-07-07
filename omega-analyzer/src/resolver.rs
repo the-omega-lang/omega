@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, Path, SimpleSpan};
+use omega_parser::prelude::{Ident, Path, SimpleSpan, Type};
 use std::fmt;
 
 /// A concrete cross-module lookup result -- either a type (a struct, found
@@ -29,6 +29,14 @@ pub enum ImportTarget {
     /// rest of the path -- the imported name binds directly to that item
     /// (`import mymodule::foo;` then bare `foo()`).
     Item(ResolvedItem),
+    /// `path`'s last segment names a *generic* item (struct or function) --
+    /// unlike `Item`, this is never eagerly resolved to a `ResolvedItem`:
+    /// importing supplies no type arguments (those only ever appear at a use
+    /// site, e.g. `List<u32>` or `sum_generic(1, 2)`), so there is nothing
+    /// concrete to build yet. Just the absolute path, to be substituted in
+    /// for the alias wherever it's later referenced with concrete arguments
+    /// (see `Context::generic_aliases`).
+    GenericItem(Vec<Ident>),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +72,11 @@ pub enum ResolveError {
     /// fail cleanly, without duplicating or re-deriving the underlying
     /// error here.
     ItemFailed { module: Vec<Ident>, item: Ident },
+    /// `item` (in `module`) declares `expected` generic parameters, but was
+    /// referenced with `found` type arguments -- covers both a generic item
+    /// referenced with no arguments at all (a bare `Type::Named`, `found:
+    /// 0`) and a `Type::Generic`/instantiation with the wrong count.
+    GenericArgCountMismatch { module: Vec<Ident>, item: Ident, expected: usize, found: usize },
 }
 
 fn join(path: &[Ident]) -> String {
@@ -102,6 +115,12 @@ impl fmt::Display for ResolveError {
             Self::ItemFailed { module, item } => {
                 write!(f, "'{}::{}' failed to resolve", join(module), item.as_ref())
             }
+            Self::GenericArgCountMismatch { module, item, expected, found } => write!(
+                f,
+                "'{}::{}' expects {expected} type argument(s), found {found}",
+                join(module),
+                item.as_ref()
+            ),
         }
     }
 }
@@ -136,7 +155,43 @@ pub trait ModuleResolver {
     /// by-value reference to something still mid-collection is rejected as
     /// `ResolveError::RecursiveTypeWithoutIndirection` (a genuine
     /// infinite-size type) instead of silently built.
-    fn resolve_item(&mut self, absolute_path: &[Ident], indirect: bool) -> Result<ResolvedItem, ResolveError>;
+    ///
+    /// `type_args` is the concrete substitution for a generic item's own
+    /// declared type parameters -- empty for an ordinary, non-generic item
+    /// (the overwhelmingly common case; every non-generic call site passes
+    /// `&[]`), or the arguments a generic reference was instantiated with
+    /// (`List<u32>`'s `[u32]`, or a generic function call's argument-deduced
+    /// substitution -- see `Analyzer::resolve_generic_call`). A count
+    /// mismatch against the item's own declared generic parameter list
+    /// (including a non-empty declared list against an empty `type_args`,
+    /// i.e. a bare reference to a generic item with no arguments at all) is
+    /// `ResolveError::GenericArgCountMismatch`.
+    fn resolve_item(
+        &mut self,
+        absolute_path: &[Ident],
+        type_args: &[ResolvedType],
+        indirect: bool,
+    ) -> Result<ResolvedItem, ResolveError>;
+
+    /// A *raw*, unresolved view of a generic function's own declared
+    /// signature -- just enough for duck-typed argument-driven type
+    /// inference at a call site (see `Analyzer::resolve_generic_call`), with
+    /// no analysis triggered and no instantiation attempted. `Ok(None)` for
+    /// anything that isn't a generic function -- including a non-generic
+    /// item, a generic *struct*, or a name that doesn't resolve at all --
+    /// deferring all of those diagnoses to the ordinary (non-generic) call
+    /// path, which re-derives them identically.
+    fn generic_function_signature(
+        &mut self,
+        absolute_path: &[Ident],
+    ) -> Result<Option<GenericSignature>, ResolveError>;
+}
+
+/// See `ModuleResolver::generic_function_signature`.
+#[derive(Debug, Clone)]
+pub struct GenericSignature {
+    pub generics: Vec<Ident>,
+    pub params: Vec<Type>,
 }
 
 /// The only variant the parser can produce today (no `pub`/`priv` keyword

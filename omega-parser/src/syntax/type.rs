@@ -35,13 +35,29 @@ pub enum Type {
     /// integer literals are kept as text until semantic analysis -- the
     /// parser never rejects input on its own.
     SizedArray(Box<Type>, String),
+    /// `Path<Type, ...>` -- a generic item (struct or function) referenced
+    /// with explicit type arguments, e.g. `List<u32>`. Only ever produced
+    /// where this parser already parses a named type (`<` never appears in
+    /// expression grammar, so there's no ambiguity to disambiguate here).
+    /// `Type::Named` stays the plain (non-generic) case -- unrelated to this
+    /// one at the type level; only semantic analysis knows whether a given
+    /// path actually names a generic item.
+    Generic(Path, Vec<Type>),
 }
 
 impl Type {
     parser!(() => Self {
         recursive(|parser| {
             let ident_parser = Ident::parser();
-            let named_type_parser = Path::parser().map(Type::Named);
+
+            let generic_args_parser = just('<')
+                .trivia_padded()
+                .ignore_then(parser.clone().separated_by(just(',').trivia_padded()).at_least(1).collect::<Vec<_>>())
+                .then_ignore(just('>').trivia_padded());
+            let named_type_parser = Path::parser().then(generic_args_parser.or_not()).map(|(path, args)| match args {
+                Some(args) => Type::Generic(path, args),
+                None => Type::Named(path),
+            });
 
             let pointer_parser = just('*')
                 .ignore_then(parser.clone())

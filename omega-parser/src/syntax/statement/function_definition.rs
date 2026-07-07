@@ -11,6 +11,11 @@ use chumsky::prelude::*;
 #[derive(Debug, Clone)]
 pub struct FunctionDefinitionStmt {
     pub function_name: Ident,
+    /// `<T, U, ...>` immediately after `function_name` -- empty for an
+    /// ordinary, non-generic function. Unlike a struct's, these are never
+    /// referenced with explicit arguments at a call site: they're deduced
+    /// from the call's own argument types (see `Analyzer::resolve_generic_call`).
+    pub generics: Vec<Ident>,
     pub is_member_function: bool,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,
@@ -35,7 +40,14 @@ impl FunctionDefinitionStmt {
             decls_parser.map(|decls| (false, decls)),
         ));
 
+        let generics_parser = just('<').trivia_padded()
+            .ignore_then(Ident::parser().separated_by(just(',').trivia_padded()).at_least(1).collect::<Vec<_>>())
+            .then_ignore(just('>').trivia_padded())
+            .or_not()
+            .map(|opt| opt.unwrap_or_default());
+
         Ident::parser()
+            .then(generics_parser)
             .then_ignore(just('(').trivia_padded())
             .then(param_parser)
             .then_ignore(just(')').trivia_padded())
@@ -43,8 +55,9 @@ impl FunctionDefinitionStmt {
             .then(Type::parser().trivia_padded())
             .then(CodeblockExpr::parser(expr_parser, stmt_parser).trivia_padded())
             .map(
-                |(((function_name, (is_member_function, params)), return_type), codeblock)| FunctionDefinitionStmt {
+                |((((function_name, generics), (is_member_function, params)), return_type), codeblock)| FunctionDefinitionStmt {
                     function_name,
+                    generics,
                     is_member_function,
                     params,
                     return_type,

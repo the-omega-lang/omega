@@ -56,14 +56,24 @@ fn radix_digits<'a>(radix: u32) -> impl Parser<'a, &'a str, String, ParseError<'
 impl NumberExpr {
     parser!(() => Self {
         // A type suffix is `i`/`u`/`f` followed by plain decimal digits
-        // (`i64`, `u8`, `f32`, ...) -- kept as arbitrary `Ident` text rather
-        // than validated against a fixed list here, the same as before: only
-        // semantic analysis knows which names actually resolve to a numeric
-        // type (see `Analyzer::analyze_expr`'s `HirExpr::Number` arm).
+        // (`i64`, `u8`, `f32`, ...), or the literal keyword `usize`/`isize`
+        // (pointer-sized, no digit width of their own) -- kept as arbitrary
+        // `Ident` text rather than validated against a fixed list here, the
+        // same as before: only semantic analysis knows which names actually
+        // resolve to a numeric type (see `Analyzer::analyze_expr`'s
+        // `HirExpr::Number` arm). The keyword forms are tried first so
+        // `5isize` isn't instead parsed as `5i` followed by a dangling
+        // `size` (chumsky's `choice` would still backtrack correctly either
+        // way, since `suffix_digits` requires at least one digit and `size`
+        // has none, but trying the complete keyword first is clearer).
         let suffix_digits = text::digits(10).at_least(1).to_slice().map(ToString::to_string);
-        let explicit_type_parser = choice((just('i'), just('u'), just('f')))
-            .then(suffix_digits)
-            .map(|(prefix, digits)| Ident(format!("{prefix}{digits}")));
+        let explicit_type_parser = choice((
+            text::keyword("usize").to(Ident("usize".to_string())),
+            text::keyword("isize").to(Ident("isize".to_string())),
+            choice((just('i'), just('u'), just('f')))
+                .then(suffix_digits)
+                .map(|(prefix, digits)| Ident(format!("{prefix}{digits}"))),
+        ));
 
         let based_prefix = |prefix: &'static str, base: NumberBase| {
             just(prefix)
@@ -76,7 +86,7 @@ impl NumberExpr {
             based_prefix("0o", NumberBase::Octal),
             based_prefix("0b", NumberBase::Binary),
         ))
-        .then(explicit_type_parser.or_not())
+        .then(explicit_type_parser.clone().or_not())
         .map(|((base, integer_part), explicit_type)| Self {
             base,
             integer_part,

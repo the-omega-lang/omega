@@ -140,6 +140,12 @@ impl IntoIRType for ResolvedType {
             ResolvedType::I16 | ResolvedType::U16 => vec![types::I16],
             ResolvedType::I32 | ResolvedType::U32 => vec![types::I32],
             ResolvedType::I64 | ResolvedType::U64 => vec![types::I64],
+            // Unlike every other numeric variant, this one's IR type is
+            // genuinely target-dependent -- `into_ir_type` already takes
+            // `&Codegen`, so this is the one place `usize`/`isize` actually
+            // track the real pointer width rather than a hardcoded 64 bits
+            // (see `ResolvedType::USize`/`ISize`'s doc comments).
+            ResolvedType::USize | ResolvedType::ISize => vec![codegen.pointer_type()],
             ResolvedType::F32 => vec![types::F32],
             ResolvedType::F64 => vec![types::F64],
             ResolvedType::Struct(struct_type) => struct_type
@@ -1139,6 +1145,20 @@ impl Codegen {
         format!("___omg_{}", symbol.replace("::", "_"))
     }
 
+    /// A `(path, name)` pair alone no longer uniquely identifies a compiled
+    /// function: two different instantiations of the same generic function/
+    /// method share both, but must never share a link-time symbol. `id` is
+    /// a real per-file `HirId` for an ordinary (non-generic) function --
+    /// nothing to add there -- but a generic instantiation's `id` is a
+    /// synthetic one (`omega_hir::SYNTHETIC_MODULE`, minted once per
+    /// instantiation by `omega_driver::Driver::compute_item`), so appending
+    /// its already-unique `local` counter as a suffix is guaranteed
+    /// collision-free and a complete no-op for every existing non-generic
+    /// symbol.
+    fn instantiation_suffix(id: HirId) -> String {
+        if id.module == omega_hir::SYNTHETIC_MODULE { format!("$${}", id.local) } else { String::new() }
+    }
+
     /// A top-level function's mangled symbol -- its full module path plus its
     /// own name, except the program's literal entry point (`main`, in the
     /// `entry` module), which must keep the bare unmangled symbol `"main"`
@@ -1147,22 +1167,28 @@ impl Codegen {
     /// names are entirely internal/opaque (never typed by a human, never an
     /// external symbol), so changing them from today's single-module scheme
     /// has no observable effect on program behavior.
-    fn mangled_symbol(path: &[Ident], entry: &[Ident], name: &Ident) -> String {
+    fn mangled_symbol(path: &[Ident], entry: &[Ident], name: &Ident, id: HirId) -> String {
         if path == entry && name.as_ref() == "main" {
             return "main".to_string();
         }
-        format!("{}::{}", path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"), name.as_ref())
+        format!(
+            "{}::{}{}",
+            path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+            name.as_ref(),
+            Self::instantiation_suffix(id)
+        )
     }
 
     /// A struct method's mangled symbol -- same reasoning as
     /// `mangled_symbol`, but a method is never itself the program's entry
     /// point, so there's no bare-symbol exception to check for here.
-    fn mangled_method_symbol(path: &[Ident], struct_name: &Ident, method_name: &Ident) -> String {
+    fn mangled_method_symbol(path: &[Ident], struct_name: &Ident, method_name: &Ident, id: HirId) -> String {
         format!(
-            "{}::{}::{}",
+            "{}::{}::{}{}",
             path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
             struct_name.as_ref(),
-            method_name.as_ref()
+            method_name.as_ref(),
+            Self::instantiation_suffix(id)
         )
     }
 
@@ -1296,12 +1322,12 @@ impl Codegen {
             // handled here, in one shot.
             CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
             CheckedItem::FunctionDefinition(f) => {
-                let mangled = Self::mangled_symbol(path, entry, &f.name);
+                let mangled = Self::mangled_symbol(path, entry, &f.name, f.id);
                 self.declare_function_def(f, mangled);
             }
             CheckedItem::Struct(s) => {
                 for f in &s.functions {
-                    let mangled = Self::mangled_method_symbol(path, &s.name, &f.name);
+                    let mangled = Self::mangled_method_symbol(path, &s.name, &f.name, f.id);
                     self.declare_function_def(f, mangled);
                 }
             }

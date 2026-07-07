@@ -1,9 +1,10 @@
 use omega_hir::HirId;
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedFunctionType {
     pub params: Vec<(Ident, ResolvedType)>,
     pub return_type: Box<ResolvedType>,
@@ -54,6 +55,16 @@ impl PartialEq for ResolvedStructType {
 }
 impl Eq for ResolvedStructType {}
 
+/// Consistent with the identity-only `PartialEq` above -- hashing only
+/// `id` (never `fields`/`functions`) is both correct (equal values must hash
+/// equal, and equality here is id-only) and the only option that doesn't
+/// recurse into a possibly self-referential struct's own fields.
+impl Hash for ResolvedStructType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
 /// How a numeric resolved type behaves arithmetically: its signedness (or
 /// float-ness) and bit width. Shared by analysis (to validate a number
 /// literal's suffix, range-check its value, and type-check `BinaryOp`/
@@ -82,10 +93,18 @@ pub enum ResolvedType {
     I16,
     I32,
     I64,
+    /// Pointer-sized signed integer. Hardcoded to 64 bits in `numeric_kind`
+    /// below, matching this compiler's existing single-target reality (see
+    /// its doc comment) -- it tracks the *target's* pointer width, not a
+    /// fixed alias for `i64`, unlike `into_ir_type`'s mapping of this variant
+    /// to `codegen.pointer_type()`, which genuinely is target-correct.
+    ISize,
     U8,
     U16,
     U32,
     U64,
+    /// Pointer-sized unsigned integer. See `ISize`'s doc comment.
+    USize,
     F32,
     F64,
     Pointer(Box<ResolvedType>),
@@ -109,6 +128,43 @@ pub enum ResolvedType {
     Struct(Rc<RefCell<ResolvedStructType>>),
 }
 
+/// Can't `#[derive(Hash)]` -- `Rc<RefCell<ResolvedStructType>>` isn't
+/// `Hash` (std deliberately omits it for `RefCell`, since mutating a key
+/// after it's hashed into a map would silently break the map's invariants).
+/// Mirrors the manual `PartialEq` derived transitively through `Struct`
+/// above: hash the borrowed cell's `id` only, never its `fields`/
+/// `functions`, both for consistency with that equality and to avoid
+/// recursing into a possibly self-referential struct.
+impl Hash for ResolvedType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Void
+            | Self::Bool
+            | Self::Char
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::ISize
+            | Self::U8
+            | Self::U16
+            | Self::U32
+            | Self::U64
+            | Self::USize
+            | Self::F32
+            | Self::F64 => {}
+            Self::Pointer(inner) | Self::Array(inner) | Self::Slice(inner) => inner.hash(state),
+            Self::Function(fn_type) => fn_type.hash(state),
+            Self::SizedArray(inner, size) => {
+                inner.hash(state);
+                size.hash(state);
+            }
+            Self::Struct(cell) => cell.borrow().hash(state),
+        }
+    }
+}
+
 impl ResolvedType {
     /// `Some` for exactly the types a number literal can resolve to and
     /// `BinaryOp`/`Negate` can operate on -- notably excluding `Bool` and
@@ -120,10 +176,13 @@ impl ResolvedType {
             Self::I16 => NumericKind::Signed(16),
             Self::I32 => NumericKind::Signed(32),
             Self::I64 => NumericKind::Signed(64),
+            // Hardcoded to 64 bits -- see `ISize`/`USize`'s doc comments.
+            Self::ISize => NumericKind::Signed(64),
             Self::U8 => NumericKind::Unsigned(8),
             Self::U16 => NumericKind::Unsigned(16),
             Self::U32 => NumericKind::Unsigned(32),
             Self::U64 => NumericKind::Unsigned(64),
+            Self::USize => NumericKind::Unsigned(64),
             Self::F32 => NumericKind::Float(32),
             Self::F64 => NumericKind::Float(64),
             _ => return None,

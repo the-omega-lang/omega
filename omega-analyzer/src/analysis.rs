@@ -9,17 +9,18 @@ use crate::{
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
+    generics::unify_generic_type,
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
-    resolver::{ImportTarget, ModuleResolver, ResolvedImport, ResolvedItem},
+    resolver::{GenericSignature, ImportTarget, ModuleResolver, ResolvedImport, ResolvedItem},
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
-    HirFor, HirFunctionDef, HirId, HirIf, HirItem, HirParam, HirPlace, HirPlaceRoot, HirProjection,
-    HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
+    HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirParam, HirPlace, HirPlaceRoot,
+    HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// A function-call's callee, resolved to either an ordinary value (whose
@@ -131,7 +132,25 @@ impl<'r> Analyzer<'r> {
     /// items. This replaces the old per-call `process_import`/
     /// `process_imports` -- imports are processed exactly once per module
     /// now (by whoever builds this list), not once per item.
-    pub fn new(resolver: &'r mut dyn ModuleResolver, module_path: Vec<Ident>, imports: &[ResolvedImport]) -> Self {
+    ///
+    /// `generics` is the concrete substitution for the item's own declared
+    /// generic parameters -- empty for an ordinary, non-generic item.
+    /// Seeded into `defined_types` *after* imports (through the same
+    /// duplicate-checking discipline: colliding with an already-bound import
+    /// alias, a builtin, or another entry in `generics` itself is a
+    /// `Redeclaration`, anchored at `owner` -- the item's own id/span, since
+    /// an individual generic parameter has none of its own). This is what
+    /// makes a generic parameter nothing more than a type name bound to a
+    /// concrete `ResolvedType` for the lifetime of one throwaway `Analyzer`:
+    /// genericity is purely a resolution-time concern, matching the
+    /// "duck typed" design (no bounds are ever declared or checked here).
+    pub fn new(
+        resolver: &'r mut dyn ModuleResolver,
+        module_path: Vec<Ident>,
+        imports: &[ResolvedImport],
+        generics: &[(Ident, ResolvedType)],
+        owner: (HirId, SimpleSpan),
+    ) -> Self {
         let mut context = Context::new();
         let mut errors = Vec::new();
         for import in imports {
@@ -141,9 +160,23 @@ impl<'r> Analyzer<'r> {
                     Ok(())
                 }
                 ImportTarget::Item(resolved) => context.bind_imported_item(import.alias.clone(), resolved),
+                ImportTarget::GenericItem(absolute) => {
+                    context.bind_generic_alias(import.alias.clone(), absolute);
+                    Ok(())
+                }
             };
             if let Err(dup) = result {
                 errors.push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::Redeclaration(dup)));
+            }
+        }
+
+        let mut seen_generics = HashSet::new();
+        for (ident, resolved_type) in generics {
+            let dup = context.current_scope().defined_types.contains_key(ident) || !seen_generics.insert(ident);
+            if dup {
+                errors.push(AnalysisError::new(owner.0, owner.1, AnalysisErrorKind::Redeclaration(ident.clone())));
+            } else {
+                context.current_scope().defined_types.insert(ident.clone(), resolved_type.clone());
             }
         }
 
@@ -414,7 +447,7 @@ impl<'r> Analyzer<'r> {
         span: SimpleSpan,
         absolute: Vec<Ident>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        match self.resolver.resolve_item(&absolute, true) {
+        match self.resolver.resolve_item(&absolute, &[], true) {
             Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
                 let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
                 Some((root, r#type))
@@ -463,8 +496,21 @@ impl<'r> Analyzer<'r> {
                     };
                     (root, binding.r#type.clone())
                 } else {
-                    let absolute: Vec<Ident> =
-                        self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect();
+                    // A generic-item import alias (see `Context::
+                    // generic_alias`) takes priority over the implicit
+                    // own-module prefix, exactly like `Context::
+                    // resolve_absolute_item_path` does for types -- this
+                    // only ever reaches here for a *non-call* reference to a
+                    // generic function (a call goes through
+                    // `resolve_generic_call` first), which has no way to
+                    // supply type arguments; `ensure_item` reports that
+                    // uniformly as `GenericArgCountMismatch` rather than
+                    // this falling through to (and possibly silently
+                    // matching) an unrelated same-named item in this module.
+                    let absolute = match self.context.generic_alias(ident) {
+                        Some(absolute) => absolute.clone(),
+                        None => self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect(),
+                    };
                     self.resolve_qualified_value(node_id, span, absolute)?
                 }
             }
@@ -618,6 +664,156 @@ impl<'r> Analyzer<'r> {
             return None;
         };
         Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None })
+    }
+
+    /// If `call`'s callee is a bare (optionally module-qualified) reference
+    /// to a *generic* function, resolves the whole call here via duck-typed,
+    /// argument-driven type inference instead of the ordinary
+    /// `resolve_callee`-then-args pipeline, and returns `Some(result)`
+    /// (`result` itself `None` on a reported error, `Some` on success) --
+    /// the caller must not fall through to the ordinary path either way, to
+    /// avoid re-analyzing/double-reporting. Returns plain `None` (untouched)
+    /// for anything that isn't this shape, so the caller proceeds with the
+    /// ordinary path exactly as if this were never called:
+    ///
+    /// - a method-call shape (`base.method(...)`, i.e. the callee's last
+    ///   projection is a `FieldAccess`) -- struct generics are always
+    ///   explicit (`List<u32>`), so by the time a value of that type exists,
+    ///   its methods are already fully monomorphized; no special call-site
+    ///   handling is needed there at all;
+    /// - a callee that isn't a bare/qualified path with zero projections;
+    /// - a path shadowed by a local (function-body-level) binding -- always
+    ///   wins, and is never generic (only top-level items can be);
+    /// - a qualified path whose head isn't a recognized import alias -- left
+    ///   for the ordinary path to report `UndefinedVariable`;
+    /// - `generic_function_signature` reporting this isn't a generic
+    ///   function (including "doesn't exist," or a generic *struct* --
+    ///   neither is this call's concern).
+    fn resolve_generic_call(
+        &mut self,
+        node_id: HirId,
+        span: SimpleSpan,
+        call: &HirFunctionCall,
+    ) -> Option<Option<CheckedExprNode>> {
+        let HirExpr::Place(place) = &call.callee.expr else { return None };
+        if !place.projections.is_empty() {
+            return None;
+        }
+        let HirPlaceRoot::Path(path) = &place.root else { return None };
+
+        if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
+            return None;
+        }
+
+        let absolute = if path.is_unqualified() {
+            match self.context.generic_alias(&path.head) {
+                Some(absolute) => absolute.clone(),
+                None => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+            }
+        } else {
+            self.context.absolute_path(path)?
+        };
+
+        let sig: GenericSignature = match self.resolver.generic_function_signature(&absolute) {
+            Ok(Some(sig)) => sig,
+            Ok(None) => return None,
+            Err(_) => return None,
+        };
+
+        Some(self.finish_generic_call(node_id, span, call, &absolute, &sig))
+    }
+
+    /// The actual work behind `resolve_generic_call`, once it's confirmed
+    /// `call`'s callee genuinely names a generic function at `absolute` --
+    /// split out so `resolve_generic_call` can stay a single `?`-chained
+    /// "does this even apply" check.
+    fn finish_generic_call(
+        &mut self,
+        node_id: HirId,
+        span: SimpleSpan,
+        call: &HirFunctionCall,
+        absolute: &[Ident],
+        sig: &GenericSignature,
+    ) -> Option<CheckedExprNode> {
+        let mut checked_args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            checked_args.push(self.analyze_expr(arg)?);
+        }
+
+        let mut subst = HashMap::new();
+        for (raw_type, arg) in sig.params.iter().zip(&checked_args) {
+            unify_generic_type(&sig.generics, raw_type, &arg.r#type, &mut subst);
+        }
+
+        let mut type_args = Vec::with_capacity(sig.generics.len());
+        for generic in &sig.generics {
+            match subst.get(generic) {
+                Some(resolved) => type_args.push(resolved.clone()),
+                None => {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedGenericParam(generic.clone()),
+                    ));
+                    return None;
+                }
+            }
+        }
+
+        let (fn_type, storage, decl_id) = match self.resolver.resolve_item(absolute, &type_args, true) {
+            Ok(ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage, decl_id }) => {
+                (fn_type, storage, decl_id)
+            }
+            Ok(_) => {
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::UnresolvedCallee));
+                return None;
+            }
+            Err(e) => {
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                return None;
+            }
+        };
+
+        if checked_args.len() != fn_type.params.len() && !fn_type.is_variadic {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::TooManyArguments { expected: fn_type.params.len() },
+            ));
+            return None;
+        }
+        for (arg, (_, expected_type)) in checked_args.iter().zip(&fn_type.params) {
+            if arg.r#type != *expected_type {
+                self.errors.push(AnalysisError::new(
+                    arg.id,
+                    arg.span,
+                    AnalysisErrorKind::ArgumentTypeMismatch {
+                        expected: expected_type.clone(),
+                        found: arg.r#type.clone(),
+                    },
+                ));
+                return None;
+            }
+        }
+
+        let callee_node = CheckedExprNode {
+            id: call.callee.id,
+            span: call.callee.span,
+            r#type: ResolvedType::Function(fn_type.clone()),
+            kind: CheckedExpr::Place(CheckedPlace {
+                root: CheckedPlaceRoot::Variable { decl_id, storage, r#type: ResolvedType::Function(fn_type.clone()) },
+                projections: vec![],
+            }),
+        };
+
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: (*fn_type.return_type).clone(),
+            kind: CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee_node), fn_type, args: checked_args }),
+        })
     }
 
     /// Resolves a number literal's target type (explicit suffix, or the
@@ -1006,6 +1202,10 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::FunctionCall(call) => {
+                if let Some(result) = self.resolve_generic_call(node_id, span, call) {
+                    return result;
+                }
+
                 let ResolvedCallee { callee, fn_type, implicit_self } = self.resolve_callee(&call.callee)?;
 
                 let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
@@ -1502,8 +1702,13 @@ impl<'r> Analyzer<'r> {
     /// body is checked, not after, so a call to itself inside that body
     /// resolves instead of hitting `UndefinedVariable`.
     fn analyze_function_def(&mut self, f: &HirFunctionDef) -> Option<CheckedFunctionDef> {
+        if !f.generics.is_empty() {
+            self.errors
+                .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::NestedGenericsNotSupported));
+            return None;
+        }
         let fn_type = self.collect_function_signature(f)?;
-        self.check_function_body(f, &fn_type)
+        self.check_function_body(f, &fn_type, f.id)
     }
 
     /// A *locally-nested* (block-scoped, `HirStmt::Struct`) struct
@@ -1515,6 +1720,11 @@ impl<'r> Analyzer<'r> {
     /// `in_progress` is pushed/popped directly around field resolution
     /// rather than through `ensure_item_signature`.
     fn analyze_struct_def(&mut self, s: &HirStructDef) -> Option<CheckedStructDef> {
+        if !s.generics.is_empty() {
+            self.errors
+                .push(AnalysisError::new(s.id, s.span, AnalysisErrorKind::NestedGenericsNotSupported));
+            return None;
+        }
         let cell = Rc::new(RefCell::new(ResolvedStructType {
             id: s.id,
             name: s.name.clone(),
@@ -1600,7 +1810,20 @@ impl<'r> Analyzer<'r> {
     /// `cell` in place, patched via `RefCell` so every earlier clone of it
     /// (e.g. one taken for a pointer field while this was still empty)
     /// observes the final result too.
-    pub fn signature_of_struct(&mut self, s: &HirStructDef, cell: &Rc<RefCell<ResolvedStructType>>) -> Option<()> {
+    /// `method_ids` supplies, positionally (one per `s.functions`), the
+    /// `HirId` each method's `ResolvedMethod.decl_id` gets stamped with --
+    /// `f.id` itself for an ordinary (non-generic) struct, or a freshly
+    /// minted synthetic id per generic instantiation (decided once by
+    /// `omega_driver::Driver::compute_item`, the single source of truth for
+    /// instantiation identity -- see its doc comment). `check_struct_body`
+    /// reads these same ids back out of `cell` rather than ever recomputing
+    /// them, so both phases agree on one identity per instantiation.
+    pub fn signature_of_struct(
+        &mut self,
+        s: &HirStructDef,
+        cell: &Rc<RefCell<ResolvedStructType>>,
+        method_ids: &[HirId],
+    ) -> Option<()> {
         let fields = self.analyze_struct_fields(&s.fields)?;
         cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
@@ -1612,7 +1835,8 @@ impl<'r> Analyzer<'r> {
             .functions
             .iter()
             .zip(functions)
-            .map(|(f, fn_type)| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type }))
+            .zip(method_ids)
+            .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
             .collect();
 
         Some(())
@@ -1625,7 +1849,18 @@ impl<'r> Analyzer<'r> {
     /// Enters a fresh scope to bind `f`'s params by name (signature
     /// collection only ever resolved their *types*, never bound them --
     /// that's a body-analysis-time concern, same as it always was).
-    pub fn check_function_body(&mut self, f: &HirFunctionDef, fn_type: &ResolvedFunctionType) -> Option<CheckedFunctionDef> {
+    /// `id` is stamped onto the produced `CheckedFunctionDef` in place of
+    /// always reading `f.id` -- for an ordinary (non-generic) function this
+    /// is just `f.id` (behavior-preserving); for a generic instantiation
+    /// it's the same freshly-minted synthetic id `omega_driver::Driver`
+    /// already decided (and stored) during the signature phase, so codegen
+    /// gets one distinct compiled function per instantiation.
+    pub fn check_function_body(
+        &mut self,
+        f: &HirFunctionDef,
+        fn_type: &ResolvedFunctionType,
+        id: HirId,
+    ) -> Option<CheckedFunctionDef> {
         self.context.enter_scope();
         let params = self.analyze_all(&f.params, Self::analyze_param);
 
@@ -1649,7 +1884,7 @@ impl<'r> Analyzer<'r> {
         self.check_function_return(f.id, f.span, &fn_type.return_type, &body)?;
 
         Some(CheckedFunctionDef {
-            id: f.id,
+            id,
             span: f.span,
             name: f.name.clone(),
             is_member_function: f.is_member_function,
@@ -1682,14 +1917,17 @@ impl<'r> Analyzer<'r> {
             })
             .collect();
 
-        let method_fn_types: Vec<ResolvedFunctionType> =
-            cell.borrow().functions.iter().map(|(_, method)| method.fn_type.clone()).collect();
+        // `decl_id` is read back from the cell (not `f.id`) so a generic
+        // instantiation's methods get the same synthetic ids the signature
+        // phase already decided -- see `signature_of_struct`'s doc comment.
+        let methods: Vec<(ResolvedFunctionType, HirId)> =
+            cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
 
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(s.functions.len());
         let mut ok = true;
-        for (f, fn_type) in s.functions.iter().zip(method_fn_types.iter()) {
-            match self.check_function_body(f, fn_type) {
+        for (f, (fn_type, decl_id)) in s.functions.iter().zip(methods.iter()) {
+            match self.check_function_body(f, fn_type, *decl_id) {
                 Some(checked) => functions.push(checked),
                 None => ok = false,
             }

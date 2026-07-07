@@ -186,7 +186,51 @@ main(argc : i32, argv : [*u8]) => i32 {
     mid.next = &tail;
     printf("linked list: %d -> %d -> %d\n", head.value, head.next.value, head.next.next.value);
 
+    gp : GenericPair<i32>;
+    gp.a = 3;
+    gp.b = 4;
+    printf("generic pair sum: %d\n", sum_generic(gp.a, gp.b));
+    printf("generic sum (f64): %f\n", sum_generic(1.5, 2.5));
+
+    gn : GenericNode<i32>;
+    gn.value = 7;
+    gn2 : GenericNode<i32>;
+    gn2.value = 8;
+    gn.next = &gn2;
+    printf("generic linked list: %d -> %d\n", gn.value, gn.next.value);
+
+    su : usize = 7usize;
+    si : isize = -2isize;
+    printf("usize: %llu, isize: %lld\n", su, si);
+
     return 69;
+}
+
+# A duck-typed generic struct: `T` is substituted with a concrete type at
+# each instantiation site (`GenericPair<i32>` above), and only then
+# type-checked, exactly as if `GenericPair` had been written by hand for
+# that one concrete type.
+struct GenericPair<T> {
+    a: T;
+    b: T;
+}
+
+# A duck-typed generic function: `T` is never written at the call site --
+# it's deduced from the call's own argument types (`i32` for `gp.a`/`gp.b`
+# above, `f64` for the literal call below), each producing its own
+# independently compiled instantiation.
+sum_generic<T>(a: T, b: T) => T {
+    a + b
+}
+
+# A self-referential generic struct: `next` points back to `GenericNode<T>`
+# itself (for whatever `T` this instantiation was substituted with), the
+# same pointer-indirection cycle-guard fast path `Node`'s self-reference
+# above already relies on, just keyed by the substituted instantiation
+# rather than the raw template.
+struct GenericNode<T> {
+    value: T;
+    next: *GenericNode<T>;
 }
 
 # Called by `main` above despite being declared after it -- proves a

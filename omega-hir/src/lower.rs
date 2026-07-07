@@ -191,6 +191,7 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             name: f.function_name.clone(),
+            generics: f.generics.clone(),
             is_member_function: f.is_member_function,
             params,
             return_type: f.return_type.clone(),
@@ -220,6 +221,7 @@ impl Lowerer {
             id,
             span,
             name: s.ident.clone(),
+            generics: s.generics.clone(),
             fields,
             functions,
         }
