@@ -55,6 +55,11 @@ pub enum ResolveError {
     /// `path` resolved to a real file, but reading or parsing it failed --
     /// an I/O error, or a syntax error in the imported file itself.
     LoadFailed { path: Vec<Ident>, message: String },
+    /// `path` parsed successfully, but macro expansion (`omega_parser::
+    /// macros::expand`, run right after parsing and before HIR lowering)
+    /// failed -- an undefined/misused macro, or one that expanded into
+    /// invalid syntax.
+    MacroExpansionFailed { path: Vec<Ident>, message: String },
     /// `item` (in `module`) is a struct that includes itself, directly or
     /// through one or more other structs -- possibly in other modules --
     /// entirely by value, with no pointer anywhere along the cycle. Such a
@@ -105,6 +110,9 @@ impl fmt::Display for ResolveError {
             ),
             Self::LoadFailed { path, message } => {
                 write!(f, "failed to load module '{}': {message}", join(path))
+            }
+            Self::MacroExpansionFailed { path, message } => {
+                write!(f, "macro expansion failed in module '{}': {message}", join(path))
             }
             Self::RecursiveTypeWithoutIndirection { module, item } => write!(
                 f,

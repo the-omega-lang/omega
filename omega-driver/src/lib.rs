@@ -219,6 +219,10 @@ impl Driver {
                     path: path.to_vec(),
                     message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
                 })?;
+                let ast = omega_parser::macros::expand(ast).map_err(|e| ResolveError::MacroExpansionFailed {
+                    path: path.to_vec(),
+                    message: e.to_string(),
+                })?;
                 omega_hir::lower_module(module_id, &ast)
             }
         };

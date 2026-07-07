@@ -64,7 +64,22 @@ fibo(n: i32) => i32 {
     fibo(n - 2) + fibo(n - 1)
 }
 
+struct MyNode<T> {
+    value: T;
+    next: *MyNode<T>;
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
+    mynode1 : MyNode<i32>;
+    mynode1.value = 20;
+
+    mynode0 : MyNode<i32>;
+    mynode0.value = 69;
+    mynode0.next = &mynode1;
+
+    printf("mynode0.value = %d\n", mynode0.value);
+    printf("mynode0.next.value = %d\n", mynode0.next.value);
+
     iface : Interface;
     iface.do_thing = puts;
     iface.do_thing("HELLO WORLD");
@@ -203,6 +218,13 @@ main(argc : i32, argv : [*u8]) => i32 {
     si : isize = -2isize;
     printf("usize: %llu, isize: %lld\n", su, si);
 
+    printf("macro sum: %d\n", sum_macro!(3, 4));
+
+    pt : Point;
+    pt.x = 3;
+    pt.y = 4;
+    printf("macro point magnitude_sq: %d\n", pt.magnitude_sq());
+
     return 69;
 }
 
@@ -238,6 +260,30 @@ struct GenericNode<T> {
 forward_declared_fn() => i32 {
     42
 }
+
+# A compile-time `expr`-output macro: its body is only ever type-checked
+# once fully substituted at a call site (duck typed, like generics) -- never
+# on its own. `sum_macro!(3, 4)` above expands to `(3) + (4)` and is
+# re-parsed/re-analyzed exactly as if that had been hand-written there.
+macro sum_macro($a: expr, $b: expr) => expr {
+    ($a) + ($b)
+}
+
+# A compile-time `items`-output macro: expands to zero or more top-level
+# items (here, one `struct`). Macros are expanded before HIR lowering ever
+# runs, so `Point` below is an entirely ordinary struct by the time analysis
+# sees it -- no different from `Node`/`Interface` elsewhere in this file.
+macro make_point_type($name: type) => items {
+    struct $name {
+        x: i32;
+        y: i32;
+        magnitude_sq(self) => i32 {
+            self.x * self.x + self.y * self.y
+        }
+    }
+}
+
+make_point_type!(Point);
 
 # Self-referencing struct: `next` points back to `Node` itself, which is
 # only resolvable because the struct's own placeholder is registered before

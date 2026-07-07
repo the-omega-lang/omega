@@ -11,6 +11,7 @@ pub mod function_call;
 pub mod if_expr;
 pub mod incr_decr;
 pub mod index;
+pub mod macro_invocation;
 pub mod negate;
 pub mod number;
 pub mod slice;
@@ -35,6 +36,7 @@ use crate::{
             if_expr::IfExpr,
             incr_decr::{DecrementExpr, IncrementExpr},
             index::{IndexExpr, IndexPostfix},
+            macro_invocation::MacroInvocationExpr,
             negate::NegateExpr,
             number::NumberExpr,
             slice::SliceExpr,
@@ -75,6 +77,10 @@ pub enum Expression {
     Assignment(Box<AssignmentExpr>),
     ArrayLiteral(ArrayLiteralExpr),
     Slice(Box<SliceExpr>),
+    /// `name!(arg, ...)` -- expanded away entirely by
+    /// `omega_parser::macros::expand` before HIR lowering ever runs; see
+    /// `MacroInvocationExpr`'s doc comment.
+    MacroInvocation(MacroInvocationExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +172,15 @@ impl ExpressionNode {
                 // ordinary identifiers -- if `Path` went first, they'd parse
                 // as (undefined) variable references instead.
                 BoolExpr::parser().map(Expression::Bool)
+                    .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
+                // Tried before `Path`: `Path::parser()` on its own fully and
+                // successfully parses just `sum` out of `sum!(5, 10)` (`!`
+                // isn't part of a path), and `choice` commits to the first
+                // alternative that parses successfully without backtracking
+                // into it -- so the more specific `name!(...)` shape has to
+                // be tried first, or a macro invocation would silently parse
+                // as a bare path with `!(...)` left dangling.
+                MacroInvocationExpr::parser().map(Expression::MacroInvocation)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),
                 Path::parser().map(Expression::Path)
                     .map_with(|expression, extra| ExpressionNode { expression, span: extra.span() }),

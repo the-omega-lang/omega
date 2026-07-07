@@ -3,6 +3,7 @@ pub mod extern_declaration;
 pub mod for_stmt;
 pub mod function_definition;
 pub mod import;
+pub mod macro_definition;
 pub mod r#return;
 pub mod r#struct;
 pub mod walrus;
@@ -13,11 +14,12 @@ use crate::{
     prelude::{IfExpr, StructStmt},
     syntax::{
         ParseError,
-        expression::{Expression, ExpressionNode},
+        expression::{Expression, ExpressionNode, macro_invocation::MacroInvocationExpr},
         statement::{
             declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
             for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
-            r#return::ReturnStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
+            macro_definition::MacroDefStmt, r#return::ReturnStmt, walrus::WalrusStmt,
+            while_stmt::WhileStmt,
         },
     },
 };
@@ -32,6 +34,14 @@ pub enum RootStatement {
     FunctionDefinition(FunctionDefinitionStmt),
     Struct(StructStmt),
     Import(ImportStmt),
+    /// Expanded away entirely (along with `MacroInvocation` below) by
+    /// `omega_parser::macros::expand` before HIR lowering ever runs -- see
+    /// `MacroDefStmt`'s doc comment.
+    MacroDefinition(MacroDefStmt),
+    /// `name!(arg, ...);` in item position -- only valid for an
+    /// `items`-output macro (see `MacroOutputKind`); the expansion pass
+    /// splices its expansion's items in place of this node.
+    MacroInvocation(MacroInvocationExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +56,7 @@ impl RootStatementNode {
             DeclarationStmt::parser().map(RootStatement::Declaration),
             ExternDeclarationStmt::parser().map(RootStatement::ExternDeclaration),
             ImportStmt::parser().map(RootStatement::Import),
+            MacroInvocationExpr::parser().map(RootStatement::MacroInvocation),
         ))
         .then_ignore(just(';').trivia_padded());
         let (expr_parser, stmt_parser) = StatementNode::configured_parsers();
@@ -55,6 +66,7 @@ impl RootStatementNode {
             function_def_parser.clone()
                 .map(RootStatement::FunctionDefinition),
             StructStmt::parser(DeclarationStmt::parser(), function_def_parser).map(RootStatement::Struct),
+            MacroDefStmt::parser().map(RootStatement::MacroDefinition),
         ))
         .map_with(|root_stmt, extra| RootStatementNode {
             root_stmt, span:

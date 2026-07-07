@@ -45,6 +45,12 @@ impl Lowerer {
                 span: node.span,
                 path: import.path.clone(),
             }),
+            RootStatement::MacroDefinition(_) | RootStatement::MacroInvocation(_) => {
+                unreachable!(
+                    "macros are fully expanded (definitions removed, invocations replaced by \
+                     their expansion) by omega_parser::macros::expand before lower_module runs"
+                )
+            }
         }
     }
 
@@ -338,6 +344,10 @@ impl Lowerer {
                     expr: HirExpr::Slice(HirSlice { base, start, end }),
                 }
             }
+            Expression::MacroInvocation(_) => unreachable!(
+                "macro invocations are replaced by their expansion by \
+                 omega_parser::macros::expand before lower_module runs"
+            ),
         }
     }
 
