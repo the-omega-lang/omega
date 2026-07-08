@@ -407,6 +407,9 @@ fn expand_statement(
                 body: expand_codeblock(f.body, defs, budget)?,
             }))
         }
+        Statement::Defer(d) => Statement::Defer(DeferStmt {
+            body: Box::new(expand_statement(*d.body, defs, budget)?),
+        }),
     })
 }
 

@@ -14,9 +14,9 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedExpr, CheckedExprNode,
-        CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
-        CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
+        CheckedExprNode, CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
+        CheckedIf, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
         CheckedSlice, CheckedStmt, CheckedWhile, NumberValue, Storage,
     },
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
@@ -70,6 +70,19 @@ pub struct Codegen {
     /// means a future labeled `break 'outer;` needs no codegen changes at
     /// all, only a different resolution rule in analysis.
     loop_stack: Vec<(HirId, LoopTargets)>,
+    /// One 1-byte stack slot per `defer` in the function currently being
+    /// built, `false` until that `defer`'s own statement executes -- see
+    /// `collect_defer_ids`. Allocated and zero-initialized in the entry
+    /// block, all at once, before the body is walked (a flag must start
+    /// `false` regardless of which path through the function actually
+    /// runs, which a lazy per-branch initialization couldn't guarantee).
+    defer_flags: HashMap<HirId, StackSlot>,
+    /// A `defer`'s deferred body, stashed here by `process_statement`'s
+    /// `Defer` arm (moved out of the `CheckedStmt` at its own position in
+    /// the walk) for the shared epilogue to actually generate code for,
+    /// once, after the whole function body has been walked and every flag
+    /// is known.
+    defer_bodies: HashMap<HirId, CheckedBlock>,
 }
 
 /// Where `break`/`continue` jump to for one loop. `continue_blk` is *not*
@@ -224,6 +237,127 @@ fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codeg
         .sum()
 }
 
+/// Every `defer`'s `HirId` reachable inside `block`, in declaration (program)
+/// order -- the full set a function's flags need to be allocated and
+/// zero-initialized for, computed once up front (see `define_function_def`)
+/// so that initialization can happen unconditionally in the entry block,
+/// before the body itself is walked for real.
+///
+/// This has to be a genuine full recursive walk of every
+/// `CheckedStmt`/`CheckedExpr`/`CheckedPlace` shape that can embed a nested
+/// `CheckedBlock` or `CheckedExprNode` -- not just the statement-position
+/// `If`/`Codeblock` cases `emit_expr_stmt` itself dispatches on. Analysis
+/// places no restriction against a `defer` nested inside a compound
+/// expression (e.g. `x := if cond { defer cleanup(); 1 } else { 2 };`), and
+/// codegen's own `process_expr` does reach and run such a defer's flag-set
+/// from any expression position -- so a narrower walk here would silently
+/// miss allocating (and zero-initializing) that defer's flag, which the
+/// epilogue would then either panic looking up or -- undetected -- skip
+/// running entirely. The only deliberate exclusion is `CheckedStmt::
+/// Struct`'s `.functions`: a locally-nested struct's methods are
+/// independent function scopes, matching `process_statement`'s own
+/// `CheckedStmt::Struct(_) => false // Only analysis is necessary` --
+/// codegen never touches their bodies from the enclosing function's pass
+/// regardless.
+fn collect_defer_ids(block: &CheckedBlock, out: &mut Vec<HirId>) {
+    for stmt in &block.stmts {
+        collect_defer_ids_stmt(stmt, out);
+    }
+    if let Some(tail) = &block.tail {
+        collect_defer_ids_expr(tail, out);
+    }
+}
+
+fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<HirId>) {
+    match stmt {
+        CheckedStmt::Declaration(_) | CheckedStmt::ExternDeclaration(_) | CheckedStmt::Break(_)
+        | CheckedStmt::Continue(_) => {}
+        // Independent function scope -- never recursed into, see this
+        // function's doc comment.
+        CheckedStmt::Struct(_) => {}
+        CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_defer_ids_expr(e, out),
+        CheckedStmt::While(w) => {
+            collect_defer_ids_expr(&w.condition, out);
+            collect_defer_ids(&w.body, out);
+        }
+        CheckedStmt::For(f) => {
+            for s in &f.init {
+                collect_defer_ids_stmt(s, out);
+            }
+            collect_defer_ids_expr(&f.condition, out);
+            if let Some(post) = &f.post {
+                collect_defer_ids_expr(post, out);
+            }
+            collect_defer_ids(&f.body, out);
+        }
+        CheckedStmt::Defer(d) => {
+            out.push(d.id);
+            // Always empty in practice -- analysis rejects a `defer` nested
+            // inside another `defer`'s body outright -- but walked anyway
+            // for uniformity rather than relying on that invariant here too.
+            collect_defer_ids(&d.body, out);
+        }
+    }
+}
+
+fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
+    match &expr.kind {
+        CheckedExpr::Number(_) | CheckedExpr::Bool(_) | CheckedExpr::Char(_) | CheckedExpr::String(_) => {}
+        CheckedExpr::Place(p) => collect_defer_ids_place(p, out),
+        CheckedExpr::FunctionCall(call) => {
+            collect_defer_ids_expr(&call.callee, out);
+            for arg in &call.args {
+                collect_defer_ids_expr(arg, out);
+            }
+        }
+        CheckedExpr::Assignment(a) => {
+            collect_defer_ids_place(&a.target, out);
+            collect_defer_ids_expr(&a.value, out);
+        }
+        CheckedExpr::AddressOf(a) => collect_defer_ids_place(&a.place, out),
+        CheckedExpr::Negate(e) => collect_defer_ids_expr(e, out),
+        CheckedExpr::BinaryOp(b) => {
+            collect_defer_ids_expr(&b.left, out);
+            collect_defer_ids_expr(&b.right, out);
+        }
+        CheckedExpr::Codeblock(block) => collect_defer_ids(block, out),
+        CheckedExpr::If(if_expr) => {
+            for (cond, block) in &if_expr.branches {
+                collect_defer_ids_expr(cond, out);
+                collect_defer_ids(block, out);
+            }
+            if let Some(else_branch) = &if_expr.else_branch {
+                collect_defer_ids(else_branch, out);
+            }
+        }
+        CheckedExpr::ArrayLiteral(lit) => {
+            for e in &lit.elements {
+                collect_defer_ids_expr(e, out);
+            }
+        }
+        CheckedExpr::Slice(s) => {
+            collect_defer_ids_place(&s.base, out);
+            if let Some(start) = &s.start {
+                collect_defer_ids_expr(start, out);
+            }
+            if let Some(end) = &s.end {
+                collect_defer_ids_expr(end, out);
+            }
+        }
+    }
+}
+
+fn collect_defer_ids_place(place: &CheckedPlace, out: &mut Vec<HirId>) {
+    if let CheckedPlaceRoot::Expr(e) = &place.root {
+        collect_defer_ids_expr(e, out);
+    }
+    for proj in &place.projections {
+        if let CheckedProjection::Index { index_expr, .. } = proj {
+            collect_defer_ids_expr(index_expr, out);
+        }
+    }
+}
+
 impl Codegen {
     pub fn generate(
         module_name: &str,
@@ -267,6 +401,8 @@ impl Codegen {
             local_args: HashMap::new(),
             return_block: None,
             loop_stack: Vec::new(),
+            defer_flags: HashMap::new(),
+            defer_bodies: HashMap::new(),
         };
 
         codegen.update_all(modules, entry);
@@ -281,6 +417,8 @@ impl Codegen {
         self.local_args.clear();
         self.return_block = None;
         self.loop_stack.clear();
+        self.defer_flags.clear();
+        self.defer_bodies.clear();
     }
 
     /// Walks a place's root and projections once, tracking where its
@@ -1123,6 +1261,16 @@ impl Codegen {
                 builder.ins().jump(target, &[]);
                 true
             }
+            CheckedStmt::Defer(CheckedDefer { id, body, .. }) => {
+                let slot = *self
+                    .defer_flags
+                    .get(&id)
+                    .expect("every defer's flag is allocated by collect_defer_ids before the body is walked");
+                let true_val = builder.ins().iconst(types::I8, 1);
+                builder.ins().stack_store(true_val, slot, 0);
+                self.defer_bodies.insert(id, body);
+                false
+            }
         }
     }
 
@@ -1279,6 +1427,22 @@ impl Codegen {
         }
         builder.switch_to_block(entry_block);
 
+        // One 1-byte flag per `defer` in this function, allocated and
+        // zero-initialized here -- unconditionally, before the body is
+        // walked for real -- so a path that never reaches a given `defer`
+        // reads back `false` in the epilogue rather than uninitialized
+        // stack memory. See `collect_defer_ids`'s doc comment for why this
+        // has to be a full up-front pre-pass rather than lazy allocation at
+        // each defer's own position.
+        let mut defer_order = Vec::new();
+        collect_defer_ids(&function_def.body, &mut defer_order);
+        for &id in &defer_order {
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 1, 0));
+            let false_val = builder.ins().iconst(types::I8, 0);
+            builder.ins().stack_store(false_val, slot, 0);
+            self.defer_flags.insert(id, slot);
+        }
+
         // Every `return` in this function body, however deeply nested
         // inside `if`/`while`/`for`, jumps here instead of emitting its own
         // `return_` -- this is the only block that actually does, once
@@ -1299,6 +1463,41 @@ impl Codegen {
         builder.switch_to_block(return_block);
         builder.seal_block(return_block);
         let final_values = builder.block_params(return_block).to_vec();
+
+        // Deferred cleanup, in reverse declaration order (FILO -- a
+        // later-declared resource may depend on an earlier one, so it's
+        // torn down first), checked once here rather than duplicated at
+        // every `return`/fallthrough site: every exit already funnels
+        // through this one shared `return_block` above, so this is the one
+        // place that needs to run regardless of which path got here. Each
+        // defer's flag (`false` unless its own statement actually executed
+        // -- see `process_statement`'s `Defer` arm) makes this correct with
+        // no reachability analysis: a defer whose statement never ran along
+        // the path that reached this exit is simply a no-op check here.
+        for id in defer_order.iter().rev() {
+            let slot = self.defer_flags[id];
+            let body = self
+                .defer_bodies
+                .remove(id)
+                .expect("every collected defer is visited unconditionally during the compile-time walk above");
+            let flag = builder.ins().stack_load(types::I8, slot, 0);
+            let run_blk = builder.create_block();
+            let after_blk = builder.create_block();
+            builder.ins().brif(flag, run_blk, &[], after_blk, &[]);
+
+            builder.switch_to_block(run_blk);
+            builder.seal_block(run_blk);
+            let outcome = self.emit_block(&mut builder, body);
+            assert!(
+                matches!(outcome, BlockOutcome::Value(_)),
+                "a defer body can never diverge -- analysis rejects return/break/continue inside one"
+            );
+            builder.ins().jump(after_blk, &[]);
+
+            builder.switch_to_block(after_blk);
+            builder.seal_block(after_blk);
+        }
+
         builder.ins().return_(&final_values);
 
         if let Err(err) = codegen::verify_function(builder.func, self.isa.as_ref()) {

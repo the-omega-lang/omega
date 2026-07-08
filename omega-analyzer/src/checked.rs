@@ -127,6 +127,20 @@ pub enum CheckedStmt {
     For(Box<CheckedFor>),
     Break(CheckedBreak),
     Continue(CheckedContinue),
+    Defer(CheckedDefer),
+}
+
+/// `defer <statement>;` / `defer { ... }` -- see `omega_hir::hir::HirDefer`'s
+/// doc comment for the full semantics. `body` is checked as an ordinary
+/// block (with `Analyzer::in_defer_body` set, rejecting `return`/nested
+/// `defer` inside it); codegen never runs it inline at this position --
+/// only in the enclosing function's shared epilogue, guarded by a runtime
+/// flag set right here (see `Codegen`'s `defer_flags`/`defer_bodies`).
+#[derive(Debug, Clone)]
+pub struct CheckedDefer {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub body: CheckedBlock,
 }
 
 /// `break;` -- `loop_id` is the enclosing loop's own `HirId` (from its

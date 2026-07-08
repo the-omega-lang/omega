@@ -1,8 +1,9 @@
 use crate::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedExpr, CheckedExprNode,
-        CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
+        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
+        CheckedExprNode, CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
+        CheckedIf,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
         CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue,
         Storage,
@@ -92,6 +93,18 @@ pub struct Analyzer<'r> {
     /// as `current_return_type`: a loop body can't leak into a struct method
     /// declared inside it.
     loop_stack: Vec<HirId>,
+    /// `true` while analyzing a `defer`'s own body (see `HirStmt::Defer`'s
+    /// arm in `analyze_stmt`) -- not a stack/counter, since a `defer` nested
+    /// inside another defer's body is rejected outright the moment this is
+    /// already `true`, so it can never need to represent more than one
+    /// level. Used to reject `return` inside a defer body (it would have to
+    /// jump into the very epilogue that runs deferred bodies, from inside
+    /// one of them) and nested `defer`. Saved and restored around each
+    /// `check_function_body` call, exactly like `current_return_type`/
+    /// `loop_stack`: a struct declared *inside* a defer's body still gets
+    /// methods with entirely ordinary bodies of their own, not ones that
+    /// inherit "we're inside a defer" from their lexical surroundings.
+    in_defer_body: bool,
 }
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
@@ -189,6 +202,7 @@ impl<'r> Analyzer<'r> {
             in_progress: HashSet::new(),
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
+            in_defer_body: false,
         }
     }
 
@@ -977,6 +991,10 @@ impl<'r> Analyzer<'r> {
         match stmt {
             CheckedStmt::Return(_) | CheckedStmt::Break(_) | CheckedStmt::Continue(_) => true,
             CheckedStmt::Expression(expr) => Self::expr_diverges(expr),
+            // `defer` never diverges at its own position -- it just marks
+            // "reached" and moves on; the deferred body only ever runs later,
+            // in the function's epilogue.
+            CheckedStmt::Defer(_) => false,
             _ => false,
         }
     }
@@ -996,6 +1014,7 @@ impl<'r> Analyzer<'r> {
             CheckedStmt::For(f) => (f.id, f.span),
             CheckedStmt::Break(b) => (b.id, b.span),
             CheckedStmt::Continue(c) => (c.id, c.span),
+            CheckedStmt::Defer(d) => (d.id, d.span),
         }
     }
 
@@ -1523,6 +1542,10 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::Expression(expr) => self.analyze_expr(expr).map(|e| vec![CheckedStmt::Expression(e)]),
             HirStmt::Return(expr) => {
+                if self.in_defer_body {
+                    self.errors.push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer));
+                    return None;
+                }
                 let checked = self.analyze_expr(expr)?;
                 if checked.r#type != self.current_return_type {
                     self.errors.push(AnalysisError::new(
@@ -1577,6 +1600,21 @@ impl<'r> Analyzer<'r> {
                     None
                 }
             },
+            HirStmt::Defer(d) => {
+                if !self.loop_stack.is_empty() {
+                    self.errors.push(AnalysisError::new(d.id, d.span, AnalysisErrorKind::DeferInsideLoopNotSupported));
+                    return None;
+                }
+                if self.in_defer_body {
+                    self.errors.push(AnalysisError::new(d.id, d.span, AnalysisErrorKind::NestedDeferNotSupported));
+                    return None;
+                }
+                let previous_in_defer_body = std::mem::replace(&mut self.in_defer_body, true);
+                let body = self.analyze_block(&d.body);
+                self.in_defer_body = previous_in_defer_body;
+                let body = body?;
+                Some(vec![CheckedStmt::Defer(CheckedDefer { id: d.id, span: d.span, body })])
+            }
         }
     }
 
@@ -1873,9 +1911,11 @@ impl<'r> Analyzer<'r> {
         let previous_return_type =
             std::mem::replace(&mut self.current_return_type, (*fn_type.return_type).clone());
         let previous_loop_stack = std::mem::take(&mut self.loop_stack);
+        let previous_in_defer_body = std::mem::replace(&mut self.in_defer_body, false);
         let body = self.analyze_block(&f.body);
         self.current_return_type = previous_return_type;
         self.loop_stack = previous_loop_stack;
+        self.in_defer_body = previous_in_defer_body;
 
         self.context.leave_scope();
 

@@ -125,6 +125,22 @@ pub enum HirStmt {
     For(HirFor),
     Break(HirBreak),
     Continue(HirContinue),
+    Defer(HirDefer),
+}
+
+/// `defer <statement>;` / `defer { ... }` -- schedules `body` to run when
+/// the *enclosing function* exits (every `return`, and the implicit
+/// fallthrough at the end of a void function), in FILO order relative to
+/// other defers in the same function. Structural, not value-producing, like
+/// `HirBreak`/`HirContinue` -- `body` is what's deferred, `id`/`span` self-
+/// identify the `defer` statement itself (its own position is what a
+/// runtime "was this defer reached" flag gets set at; see
+/// `omega_codegen`'s epilogue).
+#[derive(Debug, Clone)]
+pub struct HirDefer {
+    pub id: HirId,
+    pub span: SimpleSpan,
+    pub body: HirBlock,
 }
 
 /// `break;` -- no label yet; see `Statement::Break`'s doc comment for why

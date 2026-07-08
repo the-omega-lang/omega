@@ -170,6 +170,23 @@ pub enum AnalysisErrorKind {
     /// have a stable cross-module identity to key an instantiation by;
     /// a locally-nested definition has none.
     NestedGenericsNotSupported,
+    /// `defer` lexically inside a `while`/`for` loop body -- out of scope for
+    /// now. A `defer`'s "was this reached" tracking is a single runtime
+    /// boolean flag (see `omega_codegen`'s `defer_flags`), which can't
+    /// represent "reached N times"; correct per-iteration defer needs a real
+    /// dynamic, variable-length deferred-call list, which is real future
+    /// work, not this version's scope.
+    DeferInsideLoopNotSupported,
+    /// `return` inside a `defer`'s own body. Deferred code only ever runs
+    /// from the enclosing function's shared epilogue (see `omega_codegen`),
+    /// so a `return` here would have to jump into that very epilogue from
+    /// inside code the epilogue itself is running -- not supported.
+    ReturnInsideDefer,
+    /// A `defer` statement nested inside another `defer`'s own body --
+    /// not supported; a defer's body always runs at most once per function
+    /// call already, and there is no useful "defer whose scope is another
+    /// defer's body" to speak of, only the enclosing function's exit.
+    NestedDeferNotSupported,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -278,6 +295,11 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NestedGenericsNotSupported => {
                 write!(f, "generics are not supported on locally-nested structs/functions")
             }
+            Self::DeferInsideLoopNotSupported => {
+                write!(f, "'defer' is not supported inside a loop body")
+            }
+            Self::ReturnInsideDefer => write!(f, "'return' is not supported inside a 'defer' body"),
+            Self::NestedDeferNotSupported => write!(f, "'defer' is not supported inside another 'defer' body"),
         }
     }
 }

@@ -1,8 +1,8 @@
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
-    HirExprNode, HirExpr, HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirIf,
-    HirImport, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection, HirSlice,
-    HirStmt, HirStructDef, HirWalrusDeclaration, HirWhile,
+    HirDefer, HirExprNode, HirExpr, HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef,
+    HirIf, HirImport, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection,
+    HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -126,6 +126,14 @@ impl Lowerer {
                 let post = f.post.as_ref().map(|p| self.lower_expr(p));
                 let body = self.lower_block(&f.body);
                 vec![HirStmt::For(HirFor { id: self.ids.next(), span, init, condition, post, body })]
+            }
+            Statement::Defer(d) => {
+                let body_stmts = self.lower_statement(&d.body, span);
+                vec![HirStmt::Defer(HirDefer {
+                    id: self.ids.next(),
+                    span,
+                    body: HirBlock { stmts: body_stmts, tail: None },
+                })]
             }
         }
     }

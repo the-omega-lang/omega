@@ -1,4 +1,5 @@
 pub mod declaration;
+pub mod defer;
 pub mod extern_declaration;
 pub mod for_stmt;
 pub mod function_definition;
@@ -16,7 +17,8 @@ use crate::{
         ParseError,
         expression::{Expression, ExpressionNode, macro_invocation::MacroInvocationExpr},
         statement::{
-            declaration::DeclarationStmt, extern_declaration::ExternDeclarationStmt,
+            declaration::DeclarationStmt, defer::DeferStmt,
+            extern_declaration::ExternDeclarationStmt,
             for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
             macro_definition::MacroDefStmt, r#return::ReturnStmt, walrus::WalrusStmt,
             while_stmt::WhileStmt,
@@ -102,6 +104,12 @@ pub enum Statement {
     /// Boxed since `ForStmt.init` embeds a bare `Statement` -- without the
     /// indirection here, `Statement` would have infinite size.
     For(Box<ForStmt>),
+    /// `defer <statement>;` / `defer { ... }` -- see `DeferStmt`'s doc
+    /// comment. Unlike `For`, no extra `Box` is needed at this level:
+    /// `DeferStmt` itself already boxes its embedded `Statement`
+    /// (`DeferStmt.body: Box<Statement>`), which is what breaks the
+    /// recursive-size cycle here.
+    Defer(DeferStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -153,7 +161,8 @@ impl StatementNode {
                     .map_with(|if_expr, extra| ExpressionNode { expression: Expression::If(Box::new(if_expr)), span: extra.span() })
                     .map(Statement::Expression),
                 WhileStmt::parser(expr_parser.clone(), stmt_parser.clone()).map(Statement::While),
-                ForStmt::parser(expr_parser, stmt_parser).map(|f| Statement::For(Box::new(f))),
+                ForStmt::parser(expr_parser.clone(), stmt_parser.clone()).map(|f| Statement::For(Box::new(f))),
+                DeferStmt::parser(expr_parser, stmt_parser).map(Statement::Defer),
             ))
             .then_ignore(just(';').trivia_padded().or_not());
 

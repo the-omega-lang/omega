@@ -225,6 +225,9 @@ main(argc : i32, argv : [*u8]) => i32 {
     pt.y = 4;
     printf("macro point magnitude_sq: %d\n", pt.magnitude_sq());
 
+    printf("defer_demo(true) = %d\n", defer_demo(true));
+    printf("defer_demo(false) = %d\n", defer_demo(false));
+
     return 69;
 }
 
@@ -259,6 +262,22 @@ struct GenericNode<T> {
 # same-module forward reference resolves.
 forward_declared_fn() => i32 {
     42
+}
+
+# `defer` schedules a piece of code to run when *this* function exits --
+# every `return`, including the early one below, not just falling off the
+# end -- in FILO order relative to any other defers in the same function.
+# No hidden sugar (no destructors): the deferred statement/block is spelled
+# out right where it's scheduled, and runs exactly once per call.
+defer_demo(flag: bool) => i32 {
+    printf("defer_demo: start\n");
+    defer puts("defer_demo: cleanup ran");
+    if flag {
+        printf("defer_demo: early return\n");
+        return 1;
+    }
+    printf("defer_demo: normal end\n");
+    return 0;
 }
 
 # A compile-time `expr`-output macro: its body is only ever type-checked

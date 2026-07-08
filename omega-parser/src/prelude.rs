@@ -10,7 +10,7 @@ pub use crate::syntax::expression::{
 pub use crate::syntax::identifier::{Ident, Path};
 pub use crate::syntax::statement::{
     RootStatement, RootStatementNode, Statement, StatementNode, declaration::DeclarationStmt,
-    extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
+    defer::DeferStmt, extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::ImportStmt,
     macro_definition::{FragmentKind, MacroDefStmt, MacroOutputKind, MacroParam},
     r#return::ReturnStmt, r#struct::StructStmt, while_stmt::WhileStmt,
