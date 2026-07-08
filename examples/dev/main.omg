@@ -69,6 +69,14 @@ struct MyNode<T> {
     next: *MyNode<T>;
 }
 
+defer_test() => void {
+    puts("defer test");
+    # must print in reverse order (FILO)
+    defer puts("first");
+    defer { puts("second"); puts("followup of second"); }
+    defer puts("third");
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -227,6 +235,7 @@ main(argc : i32, argv : [*u8]) => i32 {
 
     printf("defer_demo(true) = %d\n", defer_demo(true));
     printf("defer_demo(false) = %d\n", defer_demo(false));
+    defer_test();
 
     return 69;
 }
