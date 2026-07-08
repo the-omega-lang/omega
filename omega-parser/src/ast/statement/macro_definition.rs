@@ -16,7 +16,7 @@ pub enum FragmentKind {
 /// What a macro invocation expands into, and therefore which grammar
 /// position it's usable in: `Expr` -- an `Expression::MacroInvocation`,
 /// usable anywhere an expression can appear; `Items` -- a
-/// `RootStatement::MacroInvocation`, usable only at module top level,
+/// `Item::MacroInvocation`, usable only at module top level,
 /// expanding to zero or more top-level items (structs, functions, ...).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroOutputKind {
@@ -32,14 +32,14 @@ pub struct MacroParam {
 
 /// `macro name($a: expr, $b: type, ...) => expr|items { ... }` -- the body
 /// is captured as a raw token slice, *not* run through the
-/// `Expression`/`Statement`/`RootStatement` parsers here: it legitimately
+/// `Expression`/`Statement`/`Item` parsers here: it legitimately
 /// contains `$name` metavariables (not valid identifiers on their own) and,
 /// for an `Items`-output macro, syntax that only becomes valid once `$name`
 /// is substituted with a concrete identifier (e.g. `struct $name { ... }`).
 /// See `omega_parser::macros` for how a definition's body is later
 /// substituted and re-parsed for real at each invocation site.
 #[derive(Debug, Clone)]
-pub struct MacroDefStmt {
+pub struct MacroDefinitionStmt {
     pub name: Ident,
     pub params: Vec<MacroParam>,
     pub output: MacroOutputKind,

@@ -18,12 +18,16 @@ use crate::lexer::{Token, TokenKind};
 /// `mark`/`reset` is the backtracking primitive, used sparingly -- most of
 /// this grammar's disambiguation only needs a bounded, non-consuming peek
 /// (e.g. "is the token after this identifier a `:` or a `:=`?"), not real
-/// backtracking. The one genuine backtracking site is root-item dispatch
-/// needing to look *past* a variable-length optional `<generics>` list
-/// before it can tell `:`/`(`/`!` apart (see `parser::item`). `reset` also
-/// truncates `errors` back to the mark's count -- so a speculative attempt
-/// that gets abandoned via `reset` never leaves behind spurious errors from
-/// the road not taken.
+/// backtracking; root-item dispatch, for instance, needs none at all (a
+/// single-token lookahead already tells `:`/`(`/`!` apart, see
+/// `parser::item::parse_declaration_or_function_definition`). The one
+/// genuine backtracking site is `parser::expression::parse_codeblock`'s
+/// tail-vs-statement disambiguation, which has no cheaper way to tell "this
+/// expression is the block's tail" from "this is the start of an ordinary
+/// statement" apart than trying the expression interpretation and checking
+/// what follows. `reset` also truncates `errors` back to the mark's count --
+/// so a speculative attempt that gets abandoned via `reset` never leaves
+/// behind spurious errors from the road not taken.
 pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,

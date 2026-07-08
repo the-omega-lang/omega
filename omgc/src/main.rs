@@ -3,15 +3,15 @@ use omega_driver::Driver;
 use omega_parser::prelude::Ident;
 use std::path::PathBuf;
 
-/// `omega-parser`'s grammar is written as recursive-descent chumsky
-/// combinators, including a few genuinely stack-recursive shapes (e.g.
-/// `CodeblockExpr`'s body parser recurses one native stack frame per
-/// statement in a block -- see its doc comment). A single large `main()`
-/// like `examples/dev/main.omg`'s can get deep enough to exceed the
-/// platform's default thread stack (commonly 8MiB), so the real work runs
-/// on a dedicated thread with a much larger stack instead of the process's
-/// main thread -- the same mitigation real-world recursive-descent
-/// compilers commonly use, rather than a change to the grammar itself.
+/// `omega-parser`'s grammar is a hand-written recursive-descent parser,
+/// including a few genuinely stack-recursive shapes (e.g. `CodeblockExpr`'s
+/// body parser recurses one native stack frame per statement in a block --
+/// see its doc comment). A single large `main()` like
+/// `examples/dev/main.omg`'s can get deep enough to exceed the platform's
+/// default thread stack (commonly 8MiB), so the real work runs on a
+/// dedicated thread with a much larger stack instead of the process's main
+/// thread -- the same mitigation real-world recursive-descent compilers
+/// commonly use, rather than a change to the grammar itself.
 fn main() {
     std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)

@@ -71,7 +71,7 @@ pub struct HirFunctionDef {
     pub span: Span,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
-    /// `omega_parser::syntax::statement::function_definition::
+    /// `omega_parser::ast::statement::function_definition::
     /// FunctionDefinitionStmt::generics`'s doc comment.
     pub generics: Vec<Ident>,
     pub is_member_function: bool,
@@ -106,7 +106,7 @@ pub struct HirStructDef {
     pub span: Span,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
-    /// `omega_parser::syntax::statement::r#struct::StructStmt::generics`'s
+    /// `omega_parser::ast::statement::r#struct::StructStmt::generics`'s
     /// doc comment.
     pub generics: Vec<Ident>,
     pub fields: Vec<HirParam>,
@@ -173,7 +173,7 @@ pub struct HirBlock {
 }
 
 /// `while cond { body }` -- a statement, not an expression: see
-/// `omega_parser::syntax::statement::while_stmt::WhileStmt`'s doc comment.
+/// `omega_parser::ast::statement::while_stmt::WhileStmt`'s doc comment.
 /// Self-identifying (`id`/`span`), like every other statement-shaped HIR
 /// node, since analysis needs somewhere to anchor a `NonBoolCondition` error
 /// that isn't attached to `condition`/`body` specifically.
@@ -232,7 +232,7 @@ pub enum HirExpr {
     Char(char),
     Codeblock(HirBlock),
     /// `if cond { ... } else if cond { ... } else { ... }` -- see
-    /// `omega_parser::syntax::expression::if_expr::IfExpr`'s doc comment;
+    /// `omega_parser::ast::expression::if_expr::IfExpr`'s doc comment;
     /// `branches` is always non-empty (the leading `if` is `branches[0]`).
     If(HirIf),
     FunctionCall(HirFunctionCall),
@@ -279,7 +279,7 @@ pub struct HirSlice {
 
 /// The parser has no notion of "places"/lvalues -- it only knows `Ident`,
 /// `FieldAccess`, `Index`, and `Deref` as plain expression-forming
-/// constructs (see `omega_parser::syntax::expression`). Lowering is what
+/// constructs (see `omega_parser::ast::expression`). Lowering is what
 /// recognizes a chain of those as denoting an addressable location and
 /// flattens it into this single shape: a root plus zero or more
 /// projections, in source order. A bare identifier is just a place with no

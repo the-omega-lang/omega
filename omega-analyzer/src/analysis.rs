@@ -2,7 +2,7 @@ use crate::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
-        CheckedExprNode, CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
+        CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
         CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue,
@@ -292,7 +292,7 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDecl> {
+    pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDeclaration> {
         let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type, true)?;
         // An extern of function type imports a callable symbol; anything
         // else is extern *data*, whose storage isn't decided yet (see
@@ -309,7 +309,7 @@ impl<'r> Analyzer<'r> {
             resolved_type.clone(),
             storage,
         )?;
-        Some(CheckedExternDecl {
+        Some(CheckedExternDeclaration {
             id: extern_decl.id,
             span: extern_decl.span,
             ident: extern_decl.ident.clone(),

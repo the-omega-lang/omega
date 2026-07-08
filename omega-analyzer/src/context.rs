@@ -54,7 +54,7 @@ pub struct Context {
     /// Whole-module `import` aliases (`import mymodule;`, or `import
     /// mymodule::thing;` where `thing` turns out to be a submodule rather
     /// than an item) -- flat, not scope-stacked, since imports are root-level
-    /// only (see `omega_parser::syntax::statement::import`). Maps the bound
+    /// only (see `omega_parser::ast::statement::import`). Maps the bound
     /// alias (always the import path's *last* segment) to the absolute
     /// module path it names. An *item*-level import (`import
     /// mymodule::foo;`) never goes here -- it binds `foo` directly into the

@@ -4,7 +4,7 @@ use crate::lexer::Token;
 /// `name!(arg, ...)` -- a macro invocation. Shared verbatim between
 /// expression position (`Expression::MacroInvocation`, usable anywhere an
 /// expression can appear) and module-top-level item position
-/// (`RootStatement::MacroInvocation`, for an `items`-output macro) rather
+/// (`Item::MacroInvocation`, for an `items`-output macro) rather
 /// than duplicated into two near-identical types, since the grammar and
 /// payload shape are identical either way -- only *where* the parser is
 /// wired in differs. Each argument is kept as a raw token slice (not parsed

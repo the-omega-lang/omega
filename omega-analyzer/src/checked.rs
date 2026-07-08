@@ -21,7 +21,7 @@ pub enum CheckedItem {
     /// this is resolved and type-checked like everything else, but codegen
     /// still has nothing sound to do with it (`todo!()`).
     Declaration(CheckedDeclaration),
-    ExternDeclaration(CheckedExternDecl),
+    ExternDeclaration(CheckedExternDeclaration),
     FunctionDefinition(CheckedFunctionDef),
     Struct(CheckedStructDef),
 }
@@ -57,7 +57,7 @@ pub struct CheckedDeclaration {
 }
 
 #[derive(Debug, Clone)]
-pub struct CheckedExternDecl {
+pub struct CheckedExternDeclaration {
     pub id: HirId,
     pub span: Span,
     pub ident: Ident,
@@ -115,7 +115,7 @@ pub struct CheckedStructDef {
 #[derive(Debug, Clone)]
 pub enum CheckedStmt {
     Declaration(CheckedDeclaration),
-    ExternDeclaration(CheckedExternDecl),
+    ExternDeclaration(CheckedExternDeclaration),
     Expression(CheckedExprNode),
     Return(CheckedExprNode),
     Struct(CheckedStructDef),

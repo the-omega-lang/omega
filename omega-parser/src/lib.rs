@@ -10,7 +10,7 @@ use prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct SourceModule {
-    pub nodes: Vec<RootStatementNode>,
+    pub nodes: Vec<ItemNode>,
 }
 
 impl SourceModule {

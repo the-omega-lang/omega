@@ -1,6 +1,6 @@
 use crate::ast::expression::macro_invocation::MacroInvocationExpr;
 use crate::ast::identifier::Ident;
-use crate::ast::statement::macro_definition::{FragmentKind, MacroDefStmt, MacroOutputKind, MacroParam};
+use crate::ast::statement::macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam};
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::{Token, TokenKind};
 use crate::parser::Parser;
@@ -9,7 +9,7 @@ use crate::parser::Parser;
 /// module-top-level item position; see `MacroInvocationExpr`'s own doc
 /// comment. Callers already peek the leading `Ident` + `!` to decide to
 /// call this at all (see `parser::expression::parse_primary`/
-/// `parser::item::parse_root_statement`).
+/// `parser::item::parse_item`).
 pub fn parse_macro_invocation(p: &mut Parser) -> Option<MacroInvocationExpr> {
     let name = p.expect_ident()?;
     p.expect(&TokenKind::Bang, "'!'");
@@ -84,7 +84,7 @@ fn capture_token_run(p: &mut Parser, stop: impl Fn(&TokenKind) -> bool) -> Vec<T
 /// invocation arguments, never parsed as real grammar here (it legitimately
 /// contains `$name` metavariables and, for an `Items`-output macro, syntax
 /// only valid post-substitution, e.g. `struct $name { ... }`).
-pub fn parse_macro_definition(p: &mut Parser) -> Option<MacroDefStmt> {
+pub fn parse_macro_definition(p: &mut Parser) -> Option<MacroDefinitionStmt> {
     p.expect(&TokenKind::Macro, "'macro'");
     let name = p.expect_ident()?;
     p.expect(&TokenKind::LParen, "'('");
@@ -95,7 +95,7 @@ pub fn parse_macro_definition(p: &mut Parser) -> Option<MacroDefStmt> {
     p.expect(&TokenKind::LBrace, "'{'");
     let body = capture_token_run(p, |k| matches!(k, TokenKind::RBrace));
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(MacroDefStmt { name, params, output, body })
+    Some(MacroDefinitionStmt { name, params, output, body })
 }
 
 /// `$name: expr`/`$name: type`, comma-separated -- `$name` is always

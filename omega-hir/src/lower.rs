@@ -7,7 +7,7 @@ use crate::hir::{
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
     CodeblockExpr, DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt,
-    FunctionDefinitionStmt, Ident, RootStatement, RootStatementNode, Span, SourceModule,
+    FunctionDefinitionStmt, Ident, Item, ItemNode, Span, SourceModule,
     Statement, StatementNode, StructStmt, Type,
 };
 
@@ -28,24 +28,24 @@ struct Lowerer {
 }
 
 impl Lowerer {
-    fn lower_item(&mut self, node: &RootStatementNode) -> HirItem {
-        match &node.root_stmt {
-            RootStatement::Declaration(decl) => {
+    fn lower_item(&mut self, node: &ItemNode) -> HirItem {
+        match &node.item {
+            Item::Declaration(decl) => {
                 HirItem::Declaration(self.lower_declaration(decl, node.span))
             }
-            RootStatement::ExternDeclaration(decl) => {
+            Item::ExternDeclaration(decl) => {
                 HirItem::ExternDeclaration(self.lower_extern_declaration(decl, node.span))
             }
-            RootStatement::FunctionDefinition(f) => {
+            Item::FunctionDefinition(f) => {
                 HirItem::FunctionDefinition(self.lower_function_def(f, node.span, None))
             }
-            RootStatement::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
-            RootStatement::Import(import) => HirItem::Import(HirImport {
+            Item::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
+            Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
                 path: import.path.clone(),
             }),
-            RootStatement::MacroDefinition(_) | RootStatement::MacroInvocation(_) => {
+            Item::MacroDefinition(_) | Item::MacroInvocation(_) => {
                 unreachable!(
                     "macros are fully expanded (definitions removed, invocations replaced by \
                      their expansion) by omega_parser::macros::expand before lower_module runs"
@@ -176,7 +176,7 @@ impl Lowerer {
     /// analysis, which used to do this ad hoc.
     ///
     /// Note: struct methods have no per-function span in the parser's AST
-    /// (only the enclosing `RootStatementNode`/`StatementNode` did, and
+    /// (only the enclosing `ItemNode`/`StatementNode` did, and
     /// struct methods were never wrapped in one) -- `span` is the enclosing
     /// struct's span in that case, an approximation but strictly better than
     /// nothing.
@@ -204,7 +204,7 @@ impl Lowerer {
         HirFunctionDef {
             id: self.ids.next(),
             span,
-            name: f.function_name.clone(),
+            name: f.ident.clone(),
             generics: f.generics.clone(),
             is_member_function: f.is_member_function,
             params,
@@ -364,7 +364,7 @@ impl Lowerer {
     /// `((a).b).c`) into one `HirPlace` with a flat `Vec<HirProjection>`, in
     /// source order. The parser itself has no idea any of this denotes an
     /// addressable location -- `FieldAccess`/`Index`/`Ident` are just plain
-    /// expression-forming constructs to it (see `omega_parser::syntax::expression`).
+    /// expression-forming constructs to it (see `omega_parser::ast::expression`).
     /// Recognizing that a chain of them rooted in an identifier (or some other
     /// base expression) is a "place" is entirely this function's job, and it
     /// replaces `analyze_place`'s old "hacky mutation" approach of building

@@ -630,7 +630,7 @@ impl Driver {
                 let ResolvedItem::Value { r#type, .. } = resolved else {
                     unreachable!("an extern's own resolved item is always ResolvedItem::Value");
                 };
-                let checked = CheckedItem::ExternDeclaration(omega_analyzer::checked::CheckedExternDecl {
+                let checked = CheckedItem::ExternDeclaration(omega_analyzer::checked::CheckedExternDeclaration {
                     id: decl.id,
                     span: decl.span,
                     ident: decl.ident.clone(),

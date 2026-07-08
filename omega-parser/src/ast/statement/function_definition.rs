@@ -5,8 +5,8 @@ use crate::ast::statement::declaration::DeclarationStmt;
 
 #[derive(Debug, Clone)]
 pub struct FunctionDefinitionStmt {
-    pub function_name: Ident,
-    /// `<T, U, ...>` immediately after `function_name` -- empty for an
+    pub ident: Ident,
+    /// `<T, U, ...>` immediately after `ident` -- empty for an
     /// ordinary, non-generic function. Unlike a struct's, these are never
     /// referenced with explicit arguments at a call site: they're deduced
     /// from the call's own argument types (see `Analyzer::resolve_generic_call`).

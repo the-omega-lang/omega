@@ -14,14 +14,14 @@ use crate::ast::expression::{ExpressionNode, macro_invocation::MacroInvocationEx
 use crate::ast::statement::{
     declaration::DeclarationStmt, defer::DeferStmt, extern_declaration::ExternDeclarationStmt,
     for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
-    macro_definition::MacroDefStmt, r#return::ReturnStmt, r#struct::StructStmt,
+    macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, r#struct::StructStmt,
     walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::diagnostics::Span;
 
 // Top level/global scope statements
 #[derive(Debug, Clone)]
-pub enum RootStatement {
+pub enum Item {
     Declaration(DeclarationStmt),
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
@@ -29,8 +29,8 @@ pub enum RootStatement {
     Import(ImportStmt),
     /// Expanded away entirely (along with `MacroInvocation` below) by
     /// `omega_parser::macros::expand` before HIR lowering ever runs -- see
-    /// `MacroDefStmt`'s doc comment.
-    MacroDefinition(MacroDefStmt),
+    /// `MacroDefinitionStmt`'s doc comment.
+    MacroDefinition(MacroDefinitionStmt),
     /// `name!(arg, ...);` in item position -- only valid for an
     /// `items`-output macro (see `MacroOutputKind`); the expansion pass
     /// splices its expansion's items in place of this node.
@@ -38,8 +38,8 @@ pub enum RootStatement {
 }
 
 #[derive(Debug, Clone)]
-pub struct RootStatementNode {
-    pub root_stmt: RootStatement,
+pub struct ItemNode {
+    pub item: Item,
     pub span: Span,
 }
 

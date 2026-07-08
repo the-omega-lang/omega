@@ -1,5 +1,5 @@
 //! Compile-time macro expansion: a pure `SourceModule -> SourceModule`
-//! syntax transform. This is the *only* place `RootStatement::
+//! syntax transform. This is the *only* place `Item::
 //! MacroDefinition`/`MacroInvocation` and `Expression::MacroInvocation`
 //! exist -- by the time [`expand`] returns successfully, none of them
 //! remain anywhere in the tree (see `omega_hir::lower::Lowerer`'s
@@ -93,7 +93,7 @@ impl fmt::Display for MacroError {
 }
 
 /// Expands every macro definition and invocation in `module`, returning a
-/// module that contains only the five ordinary [`RootStatement`] variants
+/// module that contains only the five ordinary [`Item`] variants
 /// that existed before macros were added.
 pub fn expand(module: SourceModule) -> Result<SourceModule, MacroError> {
     let (defs, items) = collect_definitions(module.nodes)?;
@@ -108,19 +108,19 @@ pub fn expand(module: SourceModule) -> Result<SourceModule, MacroError> {
 /// Splits `nodes` into macro definitions (by name, rejecting a duplicate
 /// name outright) and everything else, in original order.
 fn collect_definitions(
-    nodes: Vec<RootStatementNode>,
-) -> Result<(HashMap<Ident, MacroDefStmt>, Vec<RootStatementNode>), MacroError> {
+    nodes: Vec<ItemNode>,
+) -> Result<(HashMap<Ident, MacroDefinitionStmt>, Vec<ItemNode>), MacroError> {
     let mut defs = HashMap::new();
     let mut items = Vec::new();
     for node in nodes {
-        match node.root_stmt {
-            RootStatement::MacroDefinition(def) => {
+        match node.item {
+            Item::MacroDefinition(def) => {
                 if defs.contains_key(&def.name) {
                     return Err(MacroError::DuplicateMacroDefinition { name: def.name });
                 }
                 defs.insert(def.name.clone(), def);
             }
-            other => items.push(RootStatementNode { root_stmt: other, span: node.span }),
+            other => items.push(ItemNode { item: other, span: node.span }),
         }
     }
     Ok((defs, items))
@@ -135,7 +135,7 @@ fn collect_definitions(
 /// variant), the lexer's token stream is entirely flat -- `(`/`)`/etc. are
 /// ordinary tokens like any other, so a `$name` reference can never be
 /// "nested" in a way this needs to recurse into.
-fn validate_body_metavars(def: &MacroDefStmt) -> Result<(), MacroError> {
+fn validate_body_metavars(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
     for token in &def.body {
         if let TokenKind::Metavar(name) = &token.kind {
             let ident = Ident(name.clone());
@@ -151,28 +151,28 @@ fn validate_body_metavars(def: &MacroDefStmt) -> Result<(), MacroError> {
 /// invocation's expansion in place and recursing into every function/struct
 /// body for `expr`-output invocations nested inside expressions.
 fn expand_item_list(
-    nodes: Vec<RootStatementNode>,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    nodes: Vec<ItemNode>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
-) -> Result<Vec<RootStatementNode>, MacroError> {
+) -> Result<Vec<ItemNode>, MacroError> {
     let mut result = Vec::with_capacity(nodes.len());
     for node in nodes {
-        match node.root_stmt {
-            RootStatement::MacroInvocation(inv) => {
+        match node.item {
+            Item::MacroInvocation(inv) => {
                 result.extend(expand_items_invocation(&inv, defs, budget)?);
             }
-            RootStatement::FunctionDefinition(f) => result.push(RootStatementNode {
-                root_stmt: RootStatement::FunctionDefinition(expand_function_def(f, defs, budget)?),
+            Item::FunctionDefinition(f) => result.push(ItemNode {
+                item: Item::FunctionDefinition(expand_function_def(f, defs, budget)?),
                 span: node.span,
             }),
-            RootStatement::Struct(s) => result.push(RootStatementNode {
-                root_stmt: RootStatement::Struct(expand_struct_def(s, defs, budget)?),
+            Item::Struct(s) => result.push(ItemNode {
+                item: Item::Struct(expand_struct_def(s, defs, budget)?),
                 span: node.span,
             }),
-            other @ (RootStatement::Declaration(_) | RootStatement::ExternDeclaration(_) | RootStatement::Import(_)) => {
-                result.push(RootStatementNode { root_stmt: other, span: node.span });
+            other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
+                result.push(ItemNode { item: other, span: node.span });
             }
-            RootStatement::MacroDefinition(_) => {
+            Item::MacroDefinition(_) => {
                 unreachable!("macro definitions were already removed by collect_definitions")
             }
         }
@@ -187,9 +187,9 @@ fn expand_item_list(
 /// expanded, with no separate token-level nested-invocation handling needed.
 fn expand_items_invocation(
     inv: &MacroInvocationExpr,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
-) -> Result<Vec<RootStatementNode>, MacroError> {
+) -> Result<Vec<ItemNode>, MacroError> {
     let def = defs.get(&inv.name).ok_or_else(|| MacroError::UnknownMacro { name: inv.name.clone() })?;
     if def.output != MacroOutputKind::Items {
         return Err(MacroError::WrongOutputKindForPosition {
@@ -221,7 +221,7 @@ fn expand_items_invocation(
 /// diagnostic to point at, whereas the call site always is.
 fn expand_expr_invocation(
     inv: &MacroInvocationExpr,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<ExpressionNode, MacroError> {
     let def = defs.get(&inv.name).ok_or_else(|| MacroError::UnknownMacro { name: inv.name.clone() })?;
@@ -254,7 +254,7 @@ fn expand_expr_invocation(
 /// expansion budget (see [`MAX_EXPANSIONS`]) is spent -- one unit per
 /// invocation, regardless of output kind.
 fn substitute_invocation(
-    def: &MacroDefStmt,
+    def: &MacroDefinitionStmt,
     args: &[Vec<Token>],
     budget: &mut u32,
 ) -> Result<Vec<Token>, MacroError> {
@@ -283,7 +283,7 @@ fn substitute_invocation(
 /// be captured there) rather than being documentation only, and reports a
 /// mismatch at the invocation site instead of letting it surface
 /// confusingly deep inside expanded code.
-fn validate_fragment(def: &MacroDefStmt, param: &MacroParam, arg: &[Token]) -> Result<(), MacroError> {
+fn validate_fragment(def: &MacroDefinitionStmt, param: &MacroParam, arg: &[Token]) -> Result<(), MacroError> {
     let padded = with_eof(arg);
     let mut p = Parser::new(&padded);
     let result = match param.kind {
@@ -341,7 +341,7 @@ fn join_errors(errors: &[ParseError]) -> String {
 
 fn expand_function_def(
     f: FunctionDefinitionStmt,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<FunctionDefinitionStmt, MacroError> {
     Ok(FunctionDefinitionStmt { codeblock: expand_codeblock(f.codeblock, defs, budget)?, ..f })
@@ -349,7 +349,7 @@ fn expand_function_def(
 
 fn expand_struct_def(
     s: StructStmt,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<StructStmt, MacroError> {
     let functions = s
@@ -362,7 +362,7 @@ fn expand_struct_def(
 
 fn expand_codeblock(
     cb: CodeblockExpr,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<CodeblockExpr, MacroError> {
     let statements = cb
@@ -374,7 +374,7 @@ fn expand_codeblock(
     Ok(CodeblockExpr { statements, tail })
 }
 
-fn expand_if(if_expr: IfExpr, defs: &HashMap<Ident, MacroDefStmt>, budget: &mut u32) -> Result<IfExpr, MacroError> {
+fn expand_if(if_expr: IfExpr, defs: &HashMap<Ident, MacroDefinitionStmt>, budget: &mut u32) -> Result<IfExpr, MacroError> {
     let branches = if_expr
         .branches
         .into_iter()
@@ -386,7 +386,7 @@ fn expand_if(if_expr: IfExpr, defs: &HashMap<Ident, MacroDefStmt>, budget: &mut 
 
 fn expand_stmt_node(
     node: StatementNode,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<StatementNode, MacroError> {
     let span = node.span;
@@ -396,7 +396,7 @@ fn expand_stmt_node(
 
 fn expand_statement(
     statement: Statement,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<Statement, MacroError> {
     Ok(match statement {
@@ -440,7 +440,7 @@ fn expand_statement(
 /// from the macro's definition site) are left as they were parsed.
 fn expand_expr(
     node: ExpressionNode,
-    defs: &HashMap<Ident, MacroDefStmt>,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<ExpressionNode, MacroError> {
     let span = node.span;

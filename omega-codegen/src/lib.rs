@@ -15,7 +15,7 @@ use omega_analyzer::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
-        CheckedExprNode, CheckedExternDecl, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
+        CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
         CheckedSlice, CheckedStmt, CheckedWhile, NumberValue, Storage,
     },
@@ -666,7 +666,7 @@ impl Codegen {
         sig
     }
 
-    fn update_extern_decl(&mut self, extern_decl: CheckedExternDecl) {
+    fn update_extern_decl(&mut self, extern_decl: CheckedExternDeclaration) {
         match extern_decl.r#type {
             ResolvedType::Function(resolved_fntype) => {
                 let sig = self.make_function_sig(resolved_fntype);

@@ -1,6 +1,6 @@
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{
-    RootStatement, RootStatementNode, declaration::DeclarationStmt,
+    Item, ItemNode, declaration::DeclarationStmt,
     function_definition::FunctionDefinitionStmt, import::ImportStmt, r#struct::StructStmt,
 };
 use crate::diagnostics::ParseErrorKind;
@@ -14,10 +14,10 @@ use crate::parser::{Parser, parse_path, recovery};
 /// failed one (see `recovery::synchronize_to_item_boundary`) so a single
 /// mistake reports one error and the rest of the file still gets checked,
 /// rather than aborting on the first problem.
-pub fn parse_source_module(p: &mut Parser) -> Vec<RootStatementNode> {
+pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
     let mut nodes = Vec::new();
     while !p.is_eof() {
-        match parse_root_statement(p) {
+        match parse_item(p) {
             Some(node) => nodes.push(node),
             None => recovery::synchronize_to_item_boundary(p),
         }
@@ -25,26 +25,26 @@ pub fn parse_source_module(p: &mut Parser) -> Vec<RootStatementNode> {
     nodes
 }
 
-pub fn parse_root_statement(p: &mut Parser) -> Option<RootStatementNode> {
+pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     let start = p.peek_span();
-    let root_stmt = match p.peek() {
+    let item = match p.peek() {
         TokenKind::Extern => {
             let decl = parse_extern_declaration(p)?;
             p.expect(&TokenKind::Semi, "';'");
-            RootStatement::ExternDeclaration(decl)
+            Item::ExternDeclaration(decl)
         }
         TokenKind::Import => {
             p.advance();
             let path = parse_path(p)?;
             p.expect(&TokenKind::Semi, "';'");
-            RootStatement::Import(ImportStmt { path })
+            Item::Import(ImportStmt { path })
         }
-        TokenKind::Struct => RootStatement::Struct(parse_struct_def(p)?),
-        TokenKind::Macro => RootStatement::MacroDefinition(parse_macro_definition(p)?),
+        TokenKind::Struct => Item::Struct(parse_struct_def(p)?),
+        TokenKind::Macro => Item::MacroDefinition(parse_macro_definition(p)?),
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
             let inv = parse_macro_invocation(p)?;
             p.expect(&TokenKind::Semi, "';'");
-            RootStatement::MacroInvocation(inv)
+            Item::MacroInvocation(inv)
         }
         TokenKind::Ident(_) => parse_declaration_or_function_definition(p)?,
         _ => {
@@ -53,7 +53,7 @@ pub fn parse_root_statement(p: &mut Parser) -> Option<RootStatementNode> {
         }
     };
     let span = start.to(p.last_span());
-    Some(RootStatementNode { root_stmt, span })
+    Some(ItemNode { item, span })
 }
 
 /// A leading identifier could start either a plain `Declaration`
@@ -63,13 +63,13 @@ pub fn parse_root_statement(p: &mut Parser) -> Option<RootStatementNode> {
 /// `(params)` at all in this position, so seeing `<` or `(` immediately
 /// after the name is already conclusive on its own, without needing to look
 /// *past* the (possibly absent, possibly multi-token) generics list first.
-fn parse_declaration_or_function_definition(p: &mut Parser) -> Option<RootStatement> {
+fn parse_declaration_or_function_definition(p: &mut Parser) -> Option<Item> {
     match p.peek_at(1) {
-        TokenKind::Lt | TokenKind::LParen => Some(RootStatement::FunctionDefinition(parse_function_definition(p)?)),
+        TokenKind::Lt | TokenKind::LParen => Some(Item::FunctionDefinition(parse_function_definition(p)?)),
         _ => {
             let decl = parse_declaration(p)?;
             p.expect(&TokenKind::Semi, "';'");
-            Some(RootStatement::Declaration(decl))
+            Some(Item::Declaration(decl))
         }
     }
 }
@@ -79,7 +79,7 @@ fn parse_declaration_or_function_definition(p: &mut Parser) -> Option<RootStatem
 /// `parse_struct_def`), exactly like the old grammar's single
 /// `FunctionDefinitionStmt::parser` was.
 pub fn parse_function_definition(p: &mut Parser) -> Option<FunctionDefinitionStmt> {
-    let function_name = p.expect_ident()?;
+    let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
     let (is_member_function, params) = parse_param_list(p);
@@ -87,7 +87,7 @@ pub fn parse_function_definition(p: &mut Parser) -> Option<FunctionDefinitionStm
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = crate::parser::r#type::parse_type(p)?;
     let codeblock = parse_codeblock(p)?;
-    Some(FunctionDefinitionStmt { function_name, generics, is_member_function, params, return_type, codeblock })
+    Some(FunctionDefinitionStmt { ident, generics, is_member_function, params, return_type, codeblock })
 }
 
 /// `<T, U, ...>` -- optional, at least one name if present.
@@ -145,7 +145,7 @@ fn parse_declaration_list(p: &mut Parser) -> Vec<DeclarationStmt> {
 /// *then* `functions_parser.repeated()`, not an interleaved single loop):
 /// once the field-shaped lookahead (`Ident` + `:`) stops matching, the
 /// struct body is assumed to be all methods from there on. Shared between
-/// root-item position (`RootStatement::Struct`) and nested statement
+/// root-item position (`Item::Struct`) and nested statement
 /// position (`Statement::Struct`, see `parser::statement`) exactly like the
 /// old grammar's single `StructStmt::parser` was.
 pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
