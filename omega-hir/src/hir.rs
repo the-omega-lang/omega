@@ -5,7 +5,7 @@ use crate::ids::HirId;
 // `Type` because they only ever go through field access, never pattern
 // match on those.
 pub use omega_parser::prelude::BinaryOp;
-use omega_parser::prelude::{FunctionType, Ident, NumberExpr, Path, SimpleSpan, StringExpr, Type};
+use omega_parser::prelude::{FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
 
 #[derive(Debug, Clone)]
 pub struct HirModule {
@@ -29,14 +29,14 @@ pub enum HirItem {
 #[derive(Debug, Clone)]
 pub struct HirImport {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub path: Path,
 }
 
 #[derive(Debug, Clone)]
 pub struct HirDeclaration {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub r#type: Type,
 }
@@ -44,7 +44,7 @@ pub struct HirDeclaration {
 #[derive(Debug, Clone)]
 pub struct HirExternDeclaration {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub r#type: Type,
 }
@@ -56,7 +56,7 @@ pub struct HirExternDeclaration {
 #[derive(Debug, Clone)]
 pub struct HirParam {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub r#type: Type,
 }
@@ -68,7 +68,7 @@ pub struct HirParam {
 #[derive(Debug, Clone)]
 pub struct HirFunctionDef {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
     /// `omega_parser::syntax::statement::function_definition::
@@ -103,7 +103,7 @@ impl HirFunctionDef {
 #[derive(Debug, Clone)]
 pub struct HirStructDef {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
     /// `omega_parser::syntax::statement::r#struct::StructStmt::generics`'s
@@ -139,7 +139,7 @@ pub enum HirStmt {
 #[derive(Debug, Clone)]
 pub struct HirDefer {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub body: HirBlock,
 }
 
@@ -150,14 +150,14 @@ pub struct HirDefer {
 #[derive(Debug, Clone)]
 pub struct HirBreak {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
 }
 
 /// `continue;` -- see `HirBreak`.
 #[derive(Debug, Clone)]
 pub struct HirContinue {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
 }
 
 /// A brace-delimited sequence of statements plus an optional final
@@ -180,7 +180,7 @@ pub struct HirBlock {
 #[derive(Debug, Clone)]
 pub struct HirWhile {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub condition: HirExprNode,
     pub body: HirBlock,
 }
@@ -195,7 +195,7 @@ pub struct HirWhile {
 #[derive(Debug, Clone)]
 pub struct HirFor {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub init: Vec<HirStmt>,
     pub condition: Option<HirExprNode>,
     pub post: Option<HirExprNode>,
@@ -211,7 +211,7 @@ pub struct HirFor {
 #[derive(Debug, Clone)]
 pub struct HirWalrusDeclaration {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub value: HirExprNode,
 }
@@ -219,7 +219,7 @@ pub struct HirWalrusDeclaration {
 #[derive(Debug, Clone)]
 pub struct HirExprNode {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub expr: HirExpr,
 }
 

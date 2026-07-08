@@ -1,7 +1,7 @@
 use crate::resolved_type::ResolvedType;
 use crate::resolver::ResolveError;
 use omega_hir::HirId;
-use omega_parser::prelude::{BinaryOp, Ident, SimpleSpan};
+use omega_parser::prelude::{BinaryOp, Ident, Span};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -44,12 +44,12 @@ impl std::error::Error for TypeResolutionError {}
 #[derive(Debug, Clone)]
 pub struct AnalysisError {
     pub node_id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub kind: AnalysisErrorKind,
 }
 
 impl AnalysisError {
-    pub fn new(node_id: HirId, span: SimpleSpan, kind: AnalysisErrorKind) -> Self {
+    pub fn new(node_id: HirId, span: Span, kind: AnalysisErrorKind) -> Self {
         Self {
             node_id,
             span,
@@ -311,12 +311,12 @@ impl fmt::Display for AnalysisErrorKind {
 #[derive(Debug, Clone)]
 pub struct AnalysisWarning {
     pub node_id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub kind: AnalysisWarningKind,
 }
 
 impl AnalysisWarning {
-    pub fn new(node_id: HirId, span: SimpleSpan, kind: AnalysisWarningKind) -> Self {
+    pub fn new(node_id: HirId, span: Span, kind: AnalysisWarningKind) -> Self {
         Self { node_id, span, kind }
     }
 }

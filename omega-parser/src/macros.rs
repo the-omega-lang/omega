@@ -8,30 +8,29 @@
 //! macros at all.
 //!
 //! A macro's body is captured as a raw [`Token`] list at parse time (see
-//! `syntax::statement::macro_definition`), substituted at each invocation,
-//! rendered back to source text (`token::render`), and re-parsed through the
-//! ordinary grammar (`ExpressionNode::configured_parser`/
-//! `RootStatementNode::parser`) -- so a macro's body is never type-checked or
-//! even syntax-checked on its own, only once fully substituted with concrete
-//! arguments at a specific invocation, matching "duck typed" expansion:
-//! whatever the substituted code does or doesn't support is discovered the
-//! same way it would be for hand-written code.
+//! `parser::macro_syntax`), substituted at each invocation, and fed
+//! directly into the ordinary parser's token-based entry points
+//! (`parser::expression::parse_expression`/`parser::item::parse_source_module`)
+//! -- no render-to-text-then-re-lex round-trip. Every individual token keeps
+//! whichever real span it was originally lexed with (from the macro
+//! definition's body, or from the invocation's arguments) -- composite spans
+//! built while re-parsing a spliced token stream are always well-formed
+//! (`start <= end`) because `Span::to` is `min`/`max` construction rather
+//! than first-token/last-token linearity (see `Span`'s own doc comment); a
+//! node built from tokens mixing both origins may not describe one single
+//! contiguous file range, but it can never be inverted.
 //!
-//! Known limitation: nodes produced by re-parsing rendered, synthetic text
-//! carry `SimpleSpan`s that are byte offsets into that synthetic string, not
-//! the original file (there is no offset-injection facility in the parser
-//! entry points this calls). `expand_expr_invocation` keeps the *outermost*
-//! expanded node pinned to the original invocation's span so top-level
-//! diagnostics on badly-typed expanded code at least point at the call site;
-//! anything nested inside a substituted body does not have this. Nothing
-//! downstream slices original source text by span today, so this cannot
-//! misbehave -- it's a constraint for future span-based diagnostics, not a
-//! bug.
+//! A macro's body is never type-checked or even syntax-checked on its own,
+//! only once fully substituted with concrete arguments at a specific
+//! invocation, matching "duck typed" expansion: whatever the substituted
+//! code does or doesn't support is discovered the same way it would be for
+//! hand-written code.
 
+use crate::ast::statement::walrus::WalrusStmt;
+use crate::diagnostics::ParseError;
+use crate::lexer::{Token, TokenKind};
+use crate::parser::Parser;
 use crate::prelude::*;
-use crate::syntax::statement::walrus::WalrusStmt;
-use crate::syntax::token::{self, Token};
-use chumsky::IterParser;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -131,23 +130,21 @@ fn collect_definitions(
 /// parameters -- a real definition bug (a typo, most likely), not something
 /// duck typing should hide, so this is checked once up front rather than
 /// only surfacing confusingly if/when some invocation happens to reach it.
+/// A flat scan, not a recursive tree walk: unlike the old `Token` model
+/// (which nested a bracketed group's contents inside a `Token::Group`
+/// variant), the lexer's token stream is entirely flat -- `(`/`)`/etc. are
+/// ordinary tokens like any other, so a `$name` reference can never be
+/// "nested" in a way this needs to recurse into.
 fn validate_body_metavars(def: &MacroDefStmt) -> Result<(), MacroError> {
-    fn walk(tokens: &[Token], def: &MacroDefStmt) -> Result<(), MacroError> {
-        for token in tokens {
-            match token {
-                Token::Metavar(name) => {
-                    let ident = Ident(name.clone());
-                    if !def.params.iter().any(|p| p.name == ident) {
-                        return Err(MacroError::UnknownMetavariable { macro_name: def.name.clone(), metavar: ident });
-                    }
-                }
-                Token::Group(_, inner) => walk(inner, def)?,
-                _ => {}
+    for token in &def.body {
+        if let TokenKind::Metavar(name) = &token.kind {
+            let ident = Ident(name.clone());
+            if !def.params.iter().any(|p| p.name == ident) {
+                return Err(MacroError::UnknownMetavariable { macro_name: def.name.clone(), metavar: ident });
             }
         }
-        Ok(())
     }
-    walk(&def.body, def)
+    Ok(())
 }
 
 /// Walks a list of top-level items, splicing each `items`-output macro
@@ -202,24 +199,26 @@ fn expand_items_invocation(
         });
     }
     let tokens = substitute_invocation(def, &inv.args, budget)?;
-    let rendered = token::render(&tokens);
-    let nodes = RootStatementNode::parser()
-        .repeated()
-        .collect::<Vec<_>>()
-        .parse(rendered.as_str())
-        .into_result()
-        .map_err(|errors| MacroError::ExpansionParseError {
-            macro_name: inv.name.clone(),
-            errors: errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
-        })?;
+    let padded = with_eof(&tokens);
+    let mut p = Parser::new(&padded);
+    let nodes = crate::parser::item::parse_source_module(&mut p);
+    let errors = p.into_errors();
+    if !errors.is_empty() {
+        return Err(MacroError::ExpansionParseError { macro_name: inv.name.clone(), errors: join_errors(&errors) });
+    }
     expand_item_list(nodes, defs, budget)
 }
 
 /// Expands one `expr`-output invocation, recursing into the (possibly
 /// invocation-containing) result the same way `expand_items_invocation`
-/// does. The returned node's *own* span is the freshly re-parsed
-/// expression's; the caller (`expand_expr`) is the one that pins the
-/// invocation's original span onto the outer wrapping node.
+/// does. The returned node's *own* span is the freshly parsed expression's;
+/// the caller (`expand_expr`) is the one that pins the invocation's
+/// original (real, call-site) span onto the outer wrapping node -- kept
+/// deliberately, even though every token now carries a real span: a
+/// min/max composite of tokens mixing the invocation site and the macro's
+/// (possibly much earlier or later in the file) definition site would be a
+/// well-formed but not especially meaningful span for a top-level
+/// diagnostic to point at, whereas the call site always is.
 fn expand_expr_invocation(
     inv: &MacroInvocationExpr,
     defs: &HashMap<Ident, MacroDefStmt>,
@@ -234,14 +233,18 @@ fn expand_expr_invocation(
         });
     }
     let tokens = substitute_invocation(def, &inv.args, budget)?;
-    let rendered = token::render(&tokens);
-    let node = ExpressionNode::configured_parser()
-        .parse(rendered.as_str())
-        .into_result()
-        .map_err(|errors| MacroError::ExpansionParseError {
-            macro_name: inv.name.clone(),
-            errors: errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
-        })?;
+    let padded = with_eof(&tokens);
+    let mut p = Parser::new(&padded);
+    let parsed = crate::parser::expression::parse_expression(&mut p);
+    let fully_consumed = p.is_eof();
+    let errors = p.into_errors();
+    let node = match parsed {
+        Some(node) if fully_consumed && errors.is_empty() => node,
+        _ => {
+            let message = if errors.is_empty() { "unexpected trailing tokens".to_string() } else { join_errors(&errors) };
+            return Err(MacroError::ExpansionParseError { macro_name: inv.name.clone(), errors: message });
+        }
+    };
     expand_expr(node, defs, budget)
 }
 
@@ -275,49 +278,65 @@ fn substitute_invocation(
     Ok(substitute_tokens(&def.body, &subst))
 }
 
-/// Renders `arg` back to text and parses it against `param`'s declared
-/// fragment grammar -- this is what gives a fragment specifier real meaning
-/// (it constrains what can legally be captured there) rather than being
-/// documentation only, and reports a mismatch at the invocation site instead
-/// of letting it surface confusingly deep inside expanded code.
+/// Parses `arg` against `param`'s declared fragment grammar -- this is what
+/// gives a fragment specifier real meaning (it constrains what can legally
+/// be captured there) rather than being documentation only, and reports a
+/// mismatch at the invocation site instead of letting it surface
+/// confusingly deep inside expanded code.
 fn validate_fragment(def: &MacroDefStmt, param: &MacroParam, arg: &[Token]) -> Result<(), MacroError> {
-    let rendered = token::render(arg);
+    let padded = with_eof(arg);
+    let mut p = Parser::new(&padded);
     let result = match param.kind {
-        FragmentKind::Expr => ExpressionNode::configured_parser()
-            .parse(rendered.as_str())
-            .into_result()
-            .map(|_| ())
-            .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")),
-        FragmentKind::Type => Type::parser()
-            .parse(rendered.as_str())
-            .into_result()
-            .map(|_| ())
-            .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")),
+        FragmentKind::Expr => crate::parser::expression::parse_expression(&mut p).map(|_| ()),
+        FragmentKind::Type => crate::parser::r#type::parse_type(&mut p).map(|_| ()),
     };
-    result.map_err(|errors| MacroError::FragmentMismatch {
-        macro_name: def.name.clone(),
-        param: param.name.clone(),
-        expected: param.kind,
-        errors,
-    })
+    let fully_consumed = p.is_eof();
+    let errors = p.into_errors();
+    if result.is_some() && fully_consumed && errors.is_empty() {
+        return Ok(());
+    }
+    let message = if errors.is_empty() {
+        "unexpected trailing tokens".to_string()
+    } else {
+        join_errors(&errors)
+    };
+    Err(MacroError::FragmentMismatch { macro_name: def.name.clone(), param: param.name.clone(), expected: param.kind, errors: message })
 }
 
+/// A flat substitution pass, mirroring `validate_body_metavars`'s "no
+/// nesting to recurse into" note above.
 fn substitute_tokens(body: &[Token], subst: &HashMap<Ident, &[Token]>) -> Vec<Token> {
     let mut out = Vec::new();
     for token in body {
-        match token {
-            Token::Metavar(name) => {
-                let ident = Ident(name.clone());
-                let replacement = subst
-                    .get(&ident)
-                    .expect("unknown metavariable should have already been rejected by validate_body_metavars");
-                out.extend(replacement.iter().cloned());
-            }
-            Token::Group(delim, inner) => out.push(Token::Group(*delim, substitute_tokens(inner, subst))),
-            other => out.push(other.clone()),
+        if let TokenKind::Metavar(name) = &token.kind {
+            let ident = Ident(name.clone());
+            let replacement = subst
+                .get(&ident)
+                .expect("unknown metavariable should have already been rejected by validate_body_metavars");
+            out.extend(replacement.iter().cloned());
+        } else {
+            out.push(token.clone());
         }
     }
     out
+}
+
+/// The parser's entry points expect a token slice ending in `Eof` (see
+/// `Parser::new`'s doc comment) -- a spliced/substituted token slice has no
+/// such sentinel of its own, so one is synthesized here. Its span is
+/// otherwise meaningless (these tokens don't span one contiguous file
+/// range to begin with -- see this module's top doc comment), so it just
+/// reuses the last real token's span, a reasonable place for a "found end
+/// of input" error to point at.
+fn with_eof(tokens: &[Token]) -> Vec<Token> {
+    let eof_span = tokens.last().map(|t| t.span).unwrap_or_default();
+    let mut out = tokens.to_vec();
+    out.push(Token { kind: TokenKind::Eof, span: eof_span });
+    out
+}
+
+fn join_errors(errors: &[ParseError]) -> String {
+    errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
 }
 
 fn expand_function_def(
@@ -416,9 +435,9 @@ fn expand_statement(
 /// Recursively expands every `Expression::MacroInvocation` found anywhere in
 /// `node`'s subtree. The `MacroInvocation` arm returns early rather than
 /// falling through to the generic rewrap at the bottom, specifically so the
-/// *outer* node keeps the invocation's own original span (pointing at the
-/// call site) while the expansion's own internal spans (synthetic, see this
-/// module's top-level doc comment) are left as they were re-parsed.
+/// *outer* node keeps the invocation's own original (real, call-site) span
+/// while the expansion's own internal spans (also real now, but possibly
+/// from the macro's definition site) are left as they were parsed.
 fn expand_expr(
     node: ExpressionNode,
     defs: &HashMap<Ident, MacroDefStmt>,

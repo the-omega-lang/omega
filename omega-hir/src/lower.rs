@@ -7,7 +7,7 @@ use crate::hir::{
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
     CodeblockExpr, DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt,
-    FunctionDefinitionStmt, Ident, RootStatement, RootStatementNode, SimpleSpan, SourceModule,
+    FunctionDefinitionStmt, Ident, RootStatement, RootStatementNode, Span, SourceModule,
     Statement, StatementNode, StructStmt, Type,
 };
 
@@ -71,7 +71,7 @@ impl Lowerer {
     /// this same logic against the enclosing `for` statement's span, the
     /// same approximation `lower_function_def` already makes for struct
     /// methods that have no span of their own either.
-    fn lower_statement(&mut self, statement: &Statement, span: SimpleSpan) -> Vec<HirStmt> {
+    fn lower_statement(&mut self, statement: &Statement, span: Span) -> Vec<HirStmt> {
         match statement {
             Statement::Declaration(decl) => {
                 vec![HirStmt::Declaration(self.lower_declaration(decl, span))]
@@ -138,7 +138,7 @@ impl Lowerer {
         }
     }
 
-    fn lower_declaration(&mut self, decl: &DeclarationStmt, span: SimpleSpan) -> HirDeclaration {
+    fn lower_declaration(&mut self, decl: &DeclarationStmt, span: Span) -> HirDeclaration {
         HirDeclaration {
             id: self.ids.next(),
             span,
@@ -150,7 +150,7 @@ impl Lowerer {
     fn lower_extern_declaration(
         &mut self,
         decl: &ExternDeclarationStmt,
-        span: SimpleSpan,
+        span: Span,
     ) -> HirExternDeclaration {
         HirExternDeclaration {
             id: self.ids.next(),
@@ -183,7 +183,7 @@ impl Lowerer {
     fn lower_function_def(
         &mut self,
         f: &FunctionDefinitionStmt,
-        span: SimpleSpan,
+        span: Span,
         enclosing_struct: Option<&Ident>,
     ) -> HirFunctionDef {
         let mut params = Vec::with_capacity(f.params.len() + 1);
@@ -213,7 +213,7 @@ impl Lowerer {
         }
     }
 
-    fn lower_param(&mut self, param: &DeclarationStmt, span: SimpleSpan) -> HirParam {
+    fn lower_param(&mut self, param: &DeclarationStmt, span: Span) -> HirParam {
         HirParam {
             id: self.ids.next(),
             span,
@@ -222,7 +222,7 @@ impl Lowerer {
         }
     }
 
-    fn lower_struct_def(&mut self, s: &StructStmt, span: SimpleSpan) -> HirStructDef {
+    fn lower_struct_def(&mut self, s: &StructStmt, span: Span) -> HirStructDef {
         let id = self.ids.next();
         let fields = s.fields.iter().map(|f| self.lower_param(f, span)).collect();
         let functions = s

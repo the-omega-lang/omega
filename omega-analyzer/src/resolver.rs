@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, Path, SimpleSpan, Type};
+use omega_parser::prelude::{Ident, Path, Span, Type};
 use std::fmt;
 
 /// A concrete cross-module lookup result -- either a type (a struct, found
@@ -232,7 +232,7 @@ pub struct SignatureEntry {
 #[derive(Debug, Clone)]
 pub struct ResolvedImport {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub alias: Ident,
     pub target: ImportTarget,
 }

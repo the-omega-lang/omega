@@ -215,9 +215,12 @@ impl Driver {
                     path: path.to_vec(),
                     message: e.to_string(),
                 })?;
-                let ast = SourceModule::parse(&source).map_err(|errors| ResolveError::LoadFailed {
-                    path: path.to_vec(),
-                    message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+                let ast = SourceModule::parse(&source).map_err(|errors| {
+                    let display_path = path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::");
+                    ResolveError::LoadFailed {
+                        path: path.to_vec(),
+                        message: omega_parser::diagnostics::render_errors(&display_path, &source, &errors),
+                    }
                 })?;
                 let ast = omega_parser::macros::expand(ast).map_err(|e| ResolveError::MacroExpansionFailed {
                     path: path.to_vec(),

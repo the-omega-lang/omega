@@ -19,7 +19,7 @@ use omega_hir::{
     HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirParam, HirPlace, HirPlaceRoot,
     HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
 };
-use omega_parser::prelude::{Ident, NumberBase, NumberExpr, SimpleSpan, Type};
+use omega_parser::prelude::{Ident, NumberBase, NumberExpr, Span, Type};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -124,9 +124,9 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
     }
 }
 
-/// A top-level item's own `HirId`/`SimpleSpan`, for anchoring a
+/// A top-level item's own `HirId`/`Span`, for anchoring a
 /// `Redeclaration` error against a duplicate name -- see `item_name`.
-pub fn item_id_span(item: &HirItem) -> (HirId, SimpleSpan) {
+pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
     match item {
         HirItem::Declaration(d) => (d.id, d.span),
         HirItem::ExternDeclaration(d) => (d.id, d.span),
@@ -162,7 +162,7 @@ impl<'r> Analyzer<'r> {
         module_path: Vec<Ident>,
         imports: &[ResolvedImport],
         generics: &[(Ident, ResolvedType)],
-        owner: (HirId, SimpleSpan),
+        owner: (HirId, Span),
     ) -> Self {
         let mut context = Context::new();
         let mut errors = Vec::new();
@@ -245,7 +245,7 @@ impl<'r> Analyzer<'r> {
     /// here now happens inline, inside `Context::resolve_type` itself (it
     /// calls the resolver directly on an unqualified miss), so this is just
     /// a thin error-reporting wrapper around it.
-    fn resolve_type_or_error(&mut self, id: HirId, span: SimpleSpan, typ: &Type, indirect: bool) -> Option<ResolvedType> {
+    fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
         match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -262,7 +262,7 @@ impl<'r> Analyzer<'r> {
     fn declare_binding(
         &mut self,
         id: HirId,
-        span: SimpleSpan,
+        span: Span,
         ident: &Ident,
         r#type: ResolvedType,
         storage: Storage,
@@ -371,7 +371,7 @@ impl<'r> Analyzer<'r> {
     fn resolve_field_projection(
         &mut self,
         node_id: HirId,
-        span: SimpleSpan,
+        span: Span,
         projections: &mut Vec<CheckedProjection>,
         current_type: &ResolvedType,
         field: &Ident,
@@ -458,7 +458,7 @@ impl<'r> Analyzer<'r> {
     fn resolve_qualified_value(
         &mut self,
         node_id: HirId,
-        span: SimpleSpan,
+        span: Span,
         absolute: Vec<Ident>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         match self.resolver.resolve_item(&absolute, &[], true) {
@@ -486,7 +486,7 @@ impl<'r> Analyzer<'r> {
     fn analyze_place(
         &mut self,
         node_id: HirId,
-        span: SimpleSpan,
+        span: Span,
         place: &HirPlace,
     ) -> Option<(CheckedPlace, ResolvedType)> {
         let (root, mut current_type) = match &place.root {
@@ -706,7 +706,7 @@ impl<'r> Analyzer<'r> {
     fn resolve_generic_call(
         &mut self,
         node_id: HirId,
-        span: SimpleSpan,
+        span: Span,
         call: &HirFunctionCall,
     ) -> Option<Option<CheckedExprNode>> {
         let HirExpr::Place(place) = &call.callee.expr else { return None };
@@ -744,7 +744,7 @@ impl<'r> Analyzer<'r> {
     fn finish_generic_call(
         &mut self,
         node_id: HirId,
-        span: SimpleSpan,
+        span: Span,
         call: &HirFunctionCall,
         absolute: &[Ident],
         sig: &GenericSignature,
@@ -837,7 +837,7 @@ impl<'r> Analyzer<'r> {
     /// (see its doc comment) precisely so this is the *only* place that ever
     /// has to interpret them -- codegen just emits whatever `NumberValue`
     /// this produces.
-    fn analyze_number(&mut self, node_id: HirId, span: SimpleSpan, n: &NumberExpr) -> Option<CheckedExprNode> {
+    fn analyze_number(&mut self, node_id: HirId, span: Span, n: &NumberExpr) -> Option<CheckedExprNode> {
         let invalid_suffix = |this: &mut Self, ident: &Ident| {
             this.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::InvalidNumberType(ident.clone())));
         };
@@ -1003,7 +1003,7 @@ impl<'r> Analyzer<'r> {
     /// `AnalysisWarningKind::UnreachableCode` at whichever statement turns
     /// out to be first made unreachable by a diverging predecessor (see
     /// `truncate_unreachable`).
-    fn checked_stmt_id_span(stmt: &CheckedStmt) -> (HirId, SimpleSpan) {
+    fn checked_stmt_id_span(stmt: &CheckedStmt) -> (HirId, Span) {
         match stmt {
             CheckedStmt::Declaration(d) => (d.id, d.span),
             CheckedStmt::ExternDeclaration(d) => (d.id, d.span),
@@ -1081,7 +1081,7 @@ impl<'r> Analyzer<'r> {
     /// would then fail `BinaryOp`'s "operands must match exactly" rule for
     /// every other numeric type) -- analysis already knows `base`'s exact
     /// type here, so it can build a same-typed constant directly.
-    fn analyze_incr_decr(&mut self, node_id: HirId, span: SimpleSpan, base: &HirExprNode, op: BinaryOp) -> Option<CheckedExprNode> {
+    fn analyze_incr_decr(&mut self, node_id: HirId, span: Span, base: &HirExprNode, op: BinaryOp) -> Option<CheckedExprNode> {
         let HirExpr::Place(place) = &base.expr else {
             self.errors
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace));
@@ -1713,7 +1713,7 @@ impl<'r> Analyzer<'r> {
     fn check_function_return(
         &mut self,
         id: HirId,
-        span: SimpleSpan,
+        span: Span,
         return_type: &ResolvedType,
         body: &CheckedBlock,
     ) -> Option<()> {

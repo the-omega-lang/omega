@@ -1,6 +1,6 @@
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_hir::{HirId, ModuleId};
-use omega_parser::prelude::{BinaryOp, Ident, SimpleSpan};
+use omega_parser::prelude::{BinaryOp, Ident, Span};
 
 /// The output of semantic analysis: a fully resolved and verified tree, not a
 /// side-table report. By the time a `CheckedModule` exists, every
@@ -51,7 +51,7 @@ pub enum Storage {
 #[derive(Debug, Clone)]
 pub struct CheckedDeclaration {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
 }
@@ -59,7 +59,7 @@ pub struct CheckedDeclaration {
 #[derive(Debug, Clone)]
 pub struct CheckedExternDecl {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
 }
@@ -67,7 +67,7 @@ pub struct CheckedExternDecl {
 #[derive(Debug, Clone)]
 pub struct CheckedParam {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
 }
@@ -75,7 +75,7 @@ pub struct CheckedParam {
 #[derive(Debug, Clone)]
 pub struct CheckedFunctionDef {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub name: Ident,
     pub is_member_function: bool,
     pub is_variadic: bool,
@@ -106,7 +106,7 @@ impl CheckedFunctionDef {
 #[derive(Debug, Clone)]
 pub struct CheckedStructDef {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub name: Ident,
     pub fields: Vec<CheckedParam>,
     pub functions: Vec<CheckedFunctionDef>,
@@ -139,7 +139,7 @@ pub enum CheckedStmt {
 #[derive(Debug, Clone)]
 pub struct CheckedDefer {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub body: CheckedBlock,
 }
 
@@ -153,7 +153,7 @@ pub struct CheckedDefer {
 #[derive(Debug, Clone)]
 pub struct CheckedBreak {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub loop_id: HirId,
 }
 
@@ -161,7 +161,7 @@ pub struct CheckedBreak {
 #[derive(Debug, Clone)]
 pub struct CheckedContinue {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub loop_id: HirId,
 }
 
@@ -185,7 +185,7 @@ pub struct CheckedBlock {
 #[derive(Debug, Clone)]
 pub struct CheckedWhile {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub condition: CheckedExprNode,
     pub body: CheckedBlock,
 }
@@ -205,7 +205,7 @@ pub struct CheckedWhile {
 #[derive(Debug, Clone)]
 pub struct CheckedFor {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub init: Vec<CheckedStmt>,
     pub condition: CheckedExprNode,
     pub post: Option<CheckedExprNode>,
@@ -215,7 +215,7 @@ pub struct CheckedFor {
 #[derive(Debug, Clone)]
 pub struct CheckedExprNode {
     pub id: HirId,
-    pub span: SimpleSpan,
+    pub span: Span,
     pub r#type: ResolvedType,
     pub kind: CheckedExpr,
 }
