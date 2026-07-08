@@ -16,5 +16,5 @@ pub use crate::ast::statement::{
     r#return::ReturnStmt, r#struct::StructStmt, while_stmt::WhileStmt,
 };
 pub use crate::ast::r#type::{FunctionType, Type};
-pub use crate::diagnostics::{LineIndex, ParseError, ParseErrorKind, Span};
+pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 pub use crate::SourceModule;

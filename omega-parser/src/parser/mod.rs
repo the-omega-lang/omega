@@ -132,6 +132,23 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Like `expect`, but anchors the error *just after the previously
+    /// consumed token* (zero-width) instead of at whatever token comes
+    /// next -- for a statement terminator like `;`, "add it at the end of
+    /// what you just wrote" is where the fix belongs, which may be a whole
+    /// line away from wherever the next token happens to start.
+    pub fn expect_terminator(&mut self, kind: &TokenKind, expected: &'static str) -> bool {
+        if self.eat(kind) {
+            return true;
+        }
+        let after_last = self.last_span().end;
+        self.error_at(
+            Span::new(after_last, after_last),
+            ParseErrorKind::Expected { expected, found: self.peek().describe() },
+        );
+        false
+    }
+
     /// Consumes the current token if it's an `Ident`, returning its name;
     /// otherwise records an `Expected` error and returns `None`.
     pub fn expect_ident(&mut self) -> Option<crate::ast::identifier::Ident> {

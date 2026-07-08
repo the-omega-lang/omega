@@ -8,12 +8,13 @@ use omega_analyzer::resolved_type::{ResolvedStructType, ResolvedType};
 use omega_analyzer::resolver::{
     GenericSignature, ImportTarget, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem, Visibility,
 };
+use omega_diagnostics::{Diagnostic, SourceFile, Span};
 use omega_hir::{HirId, HirItem, HirModule, ModuleId, SYNTHETIC_MODULE};
-use omega_parser::prelude::{Ident, Path, SourceModule};
+use omega_parser::macros::MacroError;
+use omega_parser::prelude::{Ident, ParseError, Path, SourceModule};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -25,27 +26,52 @@ use std::rc::Rc;
 #[derive(Debug, Clone)]
 pub struct SearchRoots(pub Vec<PathBuf>);
 
-/// Everything that can go wrong compiling a multi-module program: a
-/// module-resolution failure (unknown/ambiguous/cyclic module, a load
-/// error), or ordinary semantic errors from one module's own signature/body
-/// analysis.
+/// Everything that can go wrong compiling a multi-module program, kept
+/// fully structured (never pre-rendered strings) so the CLI can render each
+/// finding as an annotated source snippet -- see [`CompileError::module`]/
+/// [`CompileError::to_diagnostics`] and `Driver::source_file`.
 #[derive(Debug)]
 pub enum CompileError {
-    Resolve(ResolveError),
+    /// A module-resolution failure. `importer` is the referencing site (the
+    /// importing module and its `import` statement's span) when one is
+    /// known -- resolution failures found during reachability discovery
+    /// always have one; only a broken *entry* module doesn't.
+    Resolve { error: ResolveError, importer: Option<(Vec<Ident>, Span)> },
+    /// Syntax errors in one module's own source file.
+    Parse { module: Vec<Ident>, errors: Vec<ParseError> },
+    /// The module parsed, but macro expansion (run right after parsing,
+    /// before HIR lowering) failed.
+    MacroExpansion { module: Vec<Ident>, error: MacroError },
+    /// Ordinary semantic errors from one module's own signature/body
+    /// analysis.
     Analysis { module: Vec<Ident>, errors: Vec<AnalysisError> },
 }
 
-impl fmt::Display for CompileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl CompileError {
+    /// The module whose source file this error's diagnostics render
+    /// against -- `None` only for a resolve error with no known
+    /// referencing site.
+    pub fn module(&self) -> Option<&[Ident]> {
         match self {
-            Self::Resolve(e) => write!(f, "{e}"),
-            Self::Analysis { module, errors } => {
-                let path = module.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::");
-                for error in errors {
-                    writeln!(f, "{path}: {error}")?;
-                }
-                Ok(())
+            Self::Resolve { importer, .. } => importer.as_ref().map(|(module, _)| module.as_slice()),
+            Self::Parse { module, .. } | Self::MacroExpansion { module, .. } | Self::Analysis { module, .. } => {
+                Some(module)
             }
+        }
+    }
+
+    pub fn to_diagnostics(&self) -> Vec<Diagnostic> {
+        match self {
+            Self::Resolve { error, importer } => {
+                vec![omega_analyzer::error::resolve_error_diagnostic(error, importer.as_ref().map(|&(_, span)| span))]
+            }
+            Self::Parse { errors, .. } => errors.iter().map(ParseError::to_diagnostic).collect(),
+            // A macro error carries no span today (macro expansion runs on
+            // spliced token streams, where "one location" is genuinely
+            // ambiguous -- definition site vs. invocation site); it renders
+            // as a headline-only diagnostic.
+            Self::MacroExpansion { error, .. } => vec![Diagnostic::error(error.to_string())],
+            Self::Analysis { errors, .. } => errors.iter().map(AnalysisError::to_diagnostic).collect(),
         }
     }
 }
@@ -57,7 +83,9 @@ impl fmt::Display for CompileError {
 pub struct CompiledProgram {
     pub modules: Vec<(Vec<Ident>, CheckedModule)>,
     pub entry: Vec<Ident>,
-    pub warnings: Vec<AnalysisWarning>,
+    /// Each warning tagged with the module it was found in, so the CLI can
+    /// render it against the right source file.
+    pub warnings: Vec<(Vec<Ident>, AnalysisWarning)>,
 }
 
 /// One item query's identity: its owning module, its name, and the concrete
@@ -119,6 +147,17 @@ pub struct Driver {
     next_synthetic_id: u32,
     parsed: HashMap<Vec<Ident>, Rc<HirModule>>,
     module_ids: HashMap<Vec<Ident>, ModuleId>,
+    /// Every parsed module's source text + on-disk path, kept for
+    /// diagnostic rendering (an error snippet needs the original text long
+    /// after parsing) -- see `source_file`.
+    sources: HashMap<Vec<Ident>, Rc<SourceFile>>,
+    /// Modules whose own file failed to parse / macro-expand, with the
+    /// real, structured errors -- stashed here (rather than stuffed
+    /// pre-rendered into a `ResolveError` message) because `parse_module`'s
+    /// callers only speak `ResolveError`; `compile` turns these back into
+    /// first-class `CompileError::Parse`/`MacroExpansion` at the end.
+    parse_failures: HashMap<Vec<Ident>, Vec<ParseError>>,
+    macro_failures: HashMap<Vec<Ident>, MacroError>,
     /// Every module's top-level items, indexed by name -- built once, the
     /// first time a module is touched (alongside duplicate-name detection,
     /// folded into `module_errors`); this is what `ensure_item` looks a name
@@ -165,6 +204,9 @@ impl Driver {
             next_synthetic_id: 0,
             parsed: HashMap::new(),
             module_ids: HashMap::new(),
+            sources: HashMap::new(),
+            parse_failures: HashMap::new(),
+            macro_failures: HashMap::new(),
             local_items: HashMap::new(),
             imports: HashMap::new(),
             struct_cells: HashMap::new(),
@@ -215,16 +257,19 @@ impl Driver {
                     path: path.to_vec(),
                     message: e.to_string(),
                 })?;
+                self.sources
+                    .insert(path.to_vec(), Rc::new(SourceFile::new(file.display().to_string(), source.as_str())));
+                // Parse/macro failures stash their real, structured errors
+                // (see `parse_failures`) and return a `LoadFailed` whose
+                // message is only a fallback -- `compile` recognizes the
+                // stash and reports the structured form instead.
                 let ast = SourceModule::parse(&source).map_err(|errors| {
-                    let display_path = path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::");
-                    ResolveError::LoadFailed {
-                        path: path.to_vec(),
-                        message: omega_parser::diagnostics::render_errors(&display_path, &source, &errors),
-                    }
+                    self.parse_failures.insert(path.to_vec(), errors);
+                    ResolveError::LoadFailed { path: path.to_vec(), message: "the module has syntax errors".into() }
                 })?;
-                let ast = omega_parser::macros::expand(ast).map_err(|e| ResolveError::MacroExpansionFailed {
-                    path: path.to_vec(),
-                    message: e.to_string(),
+                let ast = omega_parser::macros::expand(ast).map_err(|e| {
+                    self.macro_failures.insert(path.to_vec(), e);
+                    ResolveError::LoadFailed { path: path.to_vec(), message: "macro expansion failed".into() }
                 })?;
                 omega_hir::lower_module(module_id, &ast)
             }
@@ -272,24 +317,65 @@ impl Driver {
     /// Nothing outside this set is ever parsed or analyzed -- the whole
     /// point of resolving imports lazily rather than eagerly walking the
     /// entire search tree.
-    fn discover_reachable(&mut self, entry: &[Ident]) -> Result<Vec<Vec<Ident>>, ResolveError> {
+    ///
+    /// Failures come back as first-class `CompileError`s, each tagged with
+    /// the `import` statement that pulled the failing module in (the
+    /// worklist carries every entry's importing site along) -- so "cannot
+    /// find module" points at the actual `import` line, and a module with
+    /// syntax errors reports those errors themselves rather than a
+    /// second-hand summary.
+    fn discover_reachable(&mut self, entry: &[Ident]) -> Result<Vec<Vec<Ident>>, CompileError> {
+        type Importer = Option<(Vec<Ident>, Span)>;
         let mut reachable = vec![entry.to_vec()];
-        let mut worklist = vec![entry.to_vec()];
+        let mut worklist: Vec<(Vec<Ident>, Importer)> = vec![(entry.to_vec(), None)];
         let mut seen: std::collections::HashSet<Vec<Ident>> = std::collections::HashSet::from([entry.to_vec()]);
 
-        while let Some(path) = worklist.pop() {
-            let hir = self.parse_module(&path)?;
+        while let Some((path, importer)) = worklist.pop() {
+            let hir = match self.parse_module(&path) {
+                Ok(hir) => hir,
+                Err(error) => return Err(self.load_failure(&path, error, importer)),
+            };
             for item in &hir.items {
                 let HirItem::Import(import) = item else { continue };
-                let target = self.reachable_target(&import.path)?;
+                let target = match self.reachable_target(&import.path) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        return Err(CompileError::Resolve { error, importer: Some((path.clone(), import.span)) });
+                    }
+                };
                 if seen.insert(target.clone()) {
                     reachable.push(target.clone());
-                    worklist.push(target);
+                    worklist.push((target, Some((path.clone(), import.span))));
                 }
             }
         }
 
         Ok(reachable)
+    }
+
+    /// Turns a module-load failure into its first-class `CompileError`:
+    /// the stashed parse/macro-expansion errors when that's what actually
+    /// went wrong (see `parse_failures`), or the resolve error itself,
+    /// tagged with the importing site, otherwise.
+    fn load_failure(
+        &mut self,
+        module: &[Ident],
+        error: ResolveError,
+        importer: Option<(Vec<Ident>, Span)>,
+    ) -> CompileError {
+        if let Some(errors) = self.parse_failures.remove(module) {
+            return CompileError::Parse { module: module.to_vec(), errors };
+        }
+        if let Some(macro_error) = self.macro_failures.remove(module) {
+            return CompileError::MacroExpansion { module: module.to_vec(), error: macro_error };
+        }
+        CompileError::Resolve { error, importer }
+    }
+
+    /// The parsed source of `module`, for rendering its diagnostics --
+    /// present for every module that got as far as being read off disk.
+    pub fn source_file(&self, module: &[Ident]) -> Option<Rc<SourceFile>> {
+        self.sources.get(module).cloned()
     }
 
     /// Builds (once, cached in `local_items`) module `path`'s top-level item
@@ -306,12 +392,14 @@ impl Driver {
         for (i, item) in hir.items.iter().enumerate() {
             let Some(name) = item_name(item) else { continue };
             match index.entry(name.clone()) {
-                Entry::Occupied(_) => {
+                Entry::Occupied(first) => {
                     let (id, span) = item_id_span(item);
-                    self.module_errors
-                        .entry(path.to_vec())
-                        .or_default()
-                        .push(AnalysisError::new(id, span, AnalysisErrorKind::Redeclaration(name)));
+                    let (_, previous) = item_id_span(&hir.items[*first.get()]);
+                    self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
+                    ));
                 }
                 Entry::Vacant(entry) => {
                     entry.insert(i);
@@ -730,13 +818,14 @@ impl Driver {
     /// call in either direction must never need something that isn't ready
     /// yet).
     pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
-        let reachable = self.discover_reachable(entry).map_err(|e| vec![CompileError::Resolve(e)])?;
+        let resolve = |e: ResolveError| vec![CompileError::Resolve { error: e, importer: None }];
+        let reachable = self.discover_reachable(entry).map_err(|e| vec![e])?;
 
         for path in &reachable {
-            self.ensure_module_indexed(path).map_err(|e| vec![CompileError::Resolve(e)])?;
+            self.ensure_module_indexed(path).map_err(resolve)?;
             let names: Vec<Ident> = self.local_items[path].keys().cloned().collect();
             for name in &names {
-                let generics = self.raw_item_generics(path, name).map_err(|e| vec![CompileError::Resolve(e)])?;
+                let generics = self.raw_item_generics(path, name).map_err(resolve)?;
                 if !generics.is_empty() {
                     continue;
                 }
@@ -757,18 +846,18 @@ impl Driver {
         let mut warnings = Vec::new();
         for path in &reachable {
             let hir = self.parsed.get(path).expect("reachable modules are always parsed").clone();
-            let imports = self.resolved_imports(path).map_err(|e| vec![CompileError::Resolve(e)])?;
+            let imports = self.resolved_imports(path).map_err(resolve)?;
 
             let mut items = Vec::new();
             for item in hir.items.iter().filter(|i| !matches!(i, HirItem::Import(_))) {
                 let Some(name) = item_name(item) else { continue };
-                let generics = self.raw_item_generics(path, &name).map_err(|e| vec![CompileError::Resolve(e)])?;
+                let generics = self.raw_item_generics(path, &name).map_err(resolve)?;
                 if !generics.is_empty() {
                     continue;
                 }
                 if let Some((checked, item_warnings)) = self.check_item_body(path, &name, item, &imports, &[]) {
                     items.push(checked);
-                    warnings.extend(item_warnings);
+                    warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
                 }
             }
 
@@ -785,7 +874,7 @@ impl Driver {
             for ((inst_path, _, _), (item, item_warnings)) in &self.generic_instantiations {
                 if inst_path == path {
                     checked_module.items.push(item.clone());
-                    warnings.extend(item_warnings.clone());
+                    warnings.extend(item_warnings.iter().map(|w| (path.clone(), w.clone())));
                 }
             }
         }

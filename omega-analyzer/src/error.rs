@@ -1,12 +1,24 @@
-use crate::resolved_type::ResolvedType;
+use crate::resolved_type::{NumericKind, ResolvedType};
 use crate::resolver::ResolveError;
+use omega_diagnostics::Diagnostic;
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Ident, Span};
 use std::fmt;
 
+fn join(path: &[Ident]) -> String {
+    path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeResolutionError {
-    UnrecognizedNamedType(Ident),
+    /// A bare type name that doesn't exist in scope. `similar` is a
+    /// close-enough visible type name, when one exists -- the "did you
+    /// mean" candidate (computed at error time, while the scope still
+    /// exists to search).
+    UnrecognizedNamedType { name: Ident, similar: Option<Ident> },
+    /// A qualified reference (`mymodule::Foo`) whose head was never bound
+    /// by an `import` -- nothing is visible across modules without one.
+    ModuleNotImported { name: Ident, similar: Option<Ident> },
     /// `[T; N]`'s `N` doesn't fit `u32` -- kept as raw text by the parser
     /// (same as `NumberExpr`'s integer literals) and only parsed/range-checked
     /// here, during type resolution.
@@ -23,18 +35,17 @@ pub enum TypeResolutionError {
 impl fmt::Display for TypeResolutionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnrecognizedNamedType(ident) => {
-                write!(f, "unrecognized named type: {}", ident.as_ref())
+            Self::UnrecognizedNamedType { name, .. } => {
+                write!(f, "cannot find type '{}' in this scope", name.as_ref())
+            }
+            Self::ModuleNotImported { name, .. } => {
+                write!(f, "module '{}' is not imported", name.as_ref())
             }
             Self::InvalidArraySize(size) => {
                 write!(f, "array size '{size}' does not fit a u32")
             }
             Self::ModuleResolution(e) => write!(f, "{e}"),
-            Self::NotAType(path) => write!(
-                f,
-                "'{}' is a value, not a type",
-                path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
-            ),
+            Self::NotAType(path) => write!(f, "'{}' is a value, not a type", join(path)),
         }
     }
 }
@@ -56,6 +67,14 @@ impl AnalysisError {
             kind,
         }
     }
+
+    /// The renderable form of this error: a headline stating the problem, a
+    /// caret label localizing it, and -- where a language rule or a likely
+    /// fix genuinely helps -- a `note:`/`help:` footer. Advice is only
+    /// attached where it's always true; a wrong hint is worse than none.
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        self.kind.to_diagnostic(self.span)
+    }
 }
 
 impl fmt::Display for AnalysisError {
@@ -69,11 +88,22 @@ impl std::error::Error for AnalysisError {}
 #[derive(Debug, Clone)]
 pub enum AnalysisErrorKind {
     UnresolvedType(TypeResolutionError),
-    UndefinedVariable(Ident),
-    NotAStruct,
-    NoSuchField(Ident),
-    NotAnArray,
-    TooManyArguments { expected: usize },
+    /// An unqualified name that resolves to nothing visible. `similar` is a
+    /// close-enough visible name, when one exists.
+    UndefinedVariable { name: Ident, similar: Option<Ident> },
+    /// A qualified place/value path (`mymodule::foo`) whose head was never
+    /// bound by an `import` -- the value counterpart of
+    /// `TypeResolutionError::ModuleNotImported`.
+    ModuleNotImported { name: Ident, similar: Option<Ident> },
+    /// A field access on something that isn't a struct (after auto-deref).
+    NotAStruct { found: ResolvedType },
+    /// A field access naming a field `base` doesn't have.
+    NoSuchField { field: Ident, base: ResolvedType },
+    /// An index projection on something that isn't an array/slice.
+    NotAnArray { found: ResolvedType },
+    /// A call supplying the wrong number of arguments (too many *or* too
+    /// few -- despite this once being named `TooManyArguments`).
+    WrongArgumentCount { expected: usize, found: usize },
     ArgumentTypeMismatch { expected: ResolvedType, found: ResolvedType },
     UnresolvedCallee,
     InvalidNumberType(Ident),
@@ -81,7 +111,9 @@ pub enum AnalysisErrorKind {
     /// A name is declared twice in the same scope (a second parameter with
     /// the same name, or a second local `ident: type;` in the same function
     /// body). Shadowing an *outer* scope is fine and doesn't trigger this.
-    Redeclaration(Ident),
+    /// `previous` is the first declaration's span, when the declaring site
+    /// tracks one -- rendered as a "first declared here" secondary label.
+    Redeclaration { name: Ident, previous: Option<Span> },
     /// An assignment's left-hand side isn't syntactically a place (e.g.
     /// `5 = 3;`) -- rejected here so `CheckedAssignment.target` can be typed
     /// as `CheckedPlace` rather than a general expression.
@@ -89,20 +121,19 @@ pub enum AnalysisErrorKind {
     /// An assignment's value doesn't have the same resolved type as its
     /// target (e.g. assigning a pointer into an `i32` local).
     AssignmentTypeMismatch { target: ResolvedType, value: ResolvedType },
-    /// A number literal doesn't fit in its resolved type (only `i32` is
-    /// supported today).
-    NumberLiteralOutOfRange { literal: String },
+    /// A number literal doesn't fit in its resolved type.
+    NumberLiteralOutOfRange { literal: String, r#type: ResolvedType },
     /// `*expr` where `expr`'s resolved type isn't a pointer.
-    NotAPointer,
+    NotAPointer { found: ResolvedType },
     /// `&expr` where `expr` isn't syntactically a place (e.g. `&5`).
     AddressOfNotAPlace,
-    /// A `+ - * / %` operand isn't `i32` (the only numeric type today).
+    /// A `+ - * / %` operand isn't numeric.
     InvalidBinaryOperand { op: BinaryOp, r#type: ResolvedType },
-    /// A unary `-` operand isn't `i32`.
+    /// A unary `-` operand isn't a signed integer or float.
     InvalidNegateOperand { r#type: ResolvedType },
     /// `base[start..end]` where `base`'s resolved type is neither
     /// `SizedArray` nor `Slice`.
-    NotSliceable,
+    NotSliceable { found: ResolvedType },
     /// A slice's `start`/`end` bound isn't `i32`.
     InvalidSliceBound { r#type: ResolvedType },
     /// `[]` -- there's no element to infer the array's item type from.
@@ -115,8 +146,9 @@ pub enum AnalysisErrorKind {
     /// i64`) -- unlike `InvalidBinaryOperand`, both operands *are* numeric,
     /// they just aren't the same numeric type; this language has no implicit
     /// numeric conversions, so a mismatch here is always an error rather than
-    /// a promotion.
-    BinaryOperandTypeMismatch { left: ResolvedType, right: ResolvedType },
+    /// a promotion. The per-operand spans let the diagnostic point at each
+    /// side with its own type.
+    BinaryOperandTypeMismatch { left: ResolvedType, left_span: Span, right: ResolvedType, right_span: Span },
     /// `%` (`BinaryOp::Rem`) applied to a float operand -- there's no native
     /// floating-point remainder instruction to lower this to (matching C,
     /// which requires calling `fmod`/`fmodf` instead of using `%`).
@@ -189,104 +221,344 @@ pub enum AnalysisErrorKind {
     NestedDeferNotSupported,
 }
 
+impl AnalysisErrorKind {
+    /// See `AnalysisError::to_diagnostic`. `span` is the error's own anchor
+    /// span, which every primary label lands on unless the kind carries
+    /// something more precise (e.g. `BinaryOperandTypeMismatch`'s per-operand
+    /// spans).
+    pub fn to_diagnostic(&self, span: Span) -> Diagnostic {
+        let d = Diagnostic::error(self.to_string());
+        match self {
+            Self::UnresolvedType(e) => type_resolution_diagnostic(e, span),
+            Self::UndefinedVariable { similar, .. } => {
+                let d = d.with_label(span, "not found in this scope");
+                match similar {
+                    Some(name) => d.with_help(format!("a name with a similar spelling exists: `{}`", name.as_ref())),
+                    None => d,
+                }
+            }
+            Self::ModuleNotImported { name, similar } => {
+                let d = d
+                    .with_label(span, "this module is not in scope")
+                    .with_help(format!("add `import {};` at the top of the file", name.as_ref()));
+                match similar {
+                    Some(alias) => {
+                        d.with_help(format!("an imported module with a similar name exists: `{}`", alias.as_ref()))
+                    }
+                    None => d,
+                }
+            }
+            Self::NotAStruct { found } => d
+                .with_label(span, format!("this has type `{found}`, which has no fields"))
+                .with_note("only struct values (and pointers to them) support field access"),
+            Self::NoSuchField { base, .. } => d.with_label(span, format!("`{base}` has no field by that name")),
+            Self::NotAnArray { found } => d
+                .with_label(span, format!("this has type `{found}`, which cannot be indexed"))
+                .with_note("only arrays (`[T; N]`, `[T]`) and slices (`*[T]`) support indexing"),
+            Self::WrongArgumentCount { expected, found } => {
+                d.with_label(span, format!("expected {expected} {}, found {found}", plural(*expected, "argument")))
+            }
+            Self::ArgumentTypeMismatch { expected, found } => d
+                .with_label(span, format!("expected `{expected}`, found `{found}`"))
+                .with_note("Omega has no implicit conversions; each argument must match its parameter's type exactly"),
+            Self::UnresolvedCallee => d.with_label(span, "this is not callable"),
+            Self::InvalidNumberType(_) => d.with_label(span, "not a numeric type").with_note(
+                "valid numeric types are i8 i16 i32 i64 isize, u8 u16 u32 u64 usize, and f32 f64",
+            ),
+            Self::UnresolvedInnerExpression => d.with_label(span, "could not resolve this expression"),
+            Self::Redeclaration { name, previous } => {
+                let d = d.with_label(span, format!("`{}` declared again here", name.as_ref())).with_note(
+                    "a name can only be declared once per scope; shadowing an outer scope is allowed",
+                );
+                match previous {
+                    Some(previous) => {
+                        d.with_secondary_label(*previous, format!("`{}` first declared here", name.as_ref()))
+                    }
+                    None => d,
+                }
+            }
+            Self::AssignmentTargetNotAPlace => d
+                .with_label(span, "cannot assign to this expression")
+                .with_note("only variables, fields, indexes, and dereferences can be assigned to"),
+            Self::AssignmentTypeMismatch { target, value } => d
+                .with_label(span, format!("expected `{target}`, found `{value}`"))
+                .with_note("Omega has no implicit conversions; the value must have exactly the target's type"),
+            Self::NumberLiteralOutOfRange { r#type, .. } => {
+                let d = d.with_label(span, format!("does not fit in `{}`", r#type));
+                match type_range(r#type) {
+                    Some(range) => d.with_note(format!("`{}` can hold values from {range}", r#type)),
+                    None => d,
+                }
+            }
+            Self::NotAPointer { found } => {
+                d.with_label(span, format!("this has type `{found}`, which cannot be dereferenced"))
+            }
+            Self::AddressOfNotAPlace => d
+                .with_label(span, "cannot take the address of this expression")
+                .with_note("only values with a memory location (variables, fields, indexes, dereferences) have an address"),
+            Self::InvalidBinaryOperand { op, r#type } => d
+                .with_label(span, format!("`{}` requires numeric operands, but this is `{}`", op.symbol(), r#type)),
+            Self::InvalidNegateOperand { r#type } => d
+                .with_label(span, format!("this has type `{}`", r#type))
+                .with_note("unary `-` requires a signed integer or a float"),
+            Self::NotSliceable { found } => d
+                .with_label(span, format!("this has type `{found}`, which cannot be sliced"))
+                .with_note("only sized arrays (`[T; N]`) and slices (`*[T]`) support `[start..end]`"),
+            Self::InvalidSliceBound { r#type } => {
+                d.with_label(span, format!("slice bounds must be `i32`, found `{}`", r#type))
+            }
+            Self::EmptyArrayLiteral => d
+                .with_label(span, "cannot infer what `[]` holds")
+                .with_note("an array literal's type comes from its first element"),
+            Self::ArrayElementTypeMismatch { expected, found } => d
+                .with_label(span, format!("expected `{expected}`, found `{found}`"))
+                .with_note("every element of an array literal must have the first element's type"),
+            Self::BinaryOperandTypeMismatch { left, left_span, right, right_span } => d
+                .with_secondary_label(*left_span, format!("this is `{left}`"))
+                .with_label(*right_span, format!("this is `{right}`"))
+                .with_note("Omega has no implicit numeric conversions; both operands must have exactly the same type"),
+            Self::FloatRemainder => d
+                .with_label(span, "`%` requires integer operands")
+                .with_note("there is no native float remainder instruction (C's `%` is integer-only too)"),
+            Self::NonBoolCondition { r#type } => d
+                .with_label(span, format!("expected `bool`, found `{}`", r#type))
+                .with_note("conditions must be `bool`; there is no implicit truthiness"),
+            Self::IfBranchTypeMismatch { expected, found } => d
+                .with_label(span, format!("this branch produces `{found}`, but earlier branches produce `{expected}`"))
+                .with_note("every branch of an `if` used as an expression must produce the same type"),
+            Self::ReturnTypeMismatch { expected, found } => {
+                d.with_label(span, format!("expected `{expected}` because of the declared return type, found `{found}`"))
+            }
+            Self::IncrementTargetNotAPlace => d
+                .with_label(span, "cannot increment/decrement this expression")
+                .with_note("`++`/`--` need somewhere to store the result: a variable, field, index, or dereference"),
+            Self::InvalidIncrementOperand { r#type } => {
+                d.with_label(span, format!("`++`/`--` require a numeric operand, but this is `{}`", r#type))
+            }
+            Self::ForLoopMissingCondition => d
+                .with_label(span, "this `for` has no condition clause")
+                .with_help("write `for init; condition; post { ... }`, or use `while true { ... }` for an intentionally infinite loop"),
+            Self::BreakOutsideLoop => d.with_label(span, "cannot `break` outside of a `while`/`for` loop"),
+            Self::ContinueOutsideLoop => d.with_label(span, "cannot `continue` outside of a `while`/`for` loop"),
+            Self::ModuleResolution(e) => resolve_error_diagnostic(e, Some(span)),
+            Self::NotAValue(_) => d
+                .with_label(span, "expected a value, found a type")
+                .with_note("a struct's name refers to the type itself; only its instances hold values"),
+            Self::UnresolvedGenericParam(name) => d
+                .with_label(span, format!("cannot deduce `{}` from this call's arguments", name.as_ref()))
+                .with_note("a generic function's type parameters are deduced from its argument types only"),
+            Self::NestedGenericsNotSupported => d
+                .with_label(span, "generic parameters are not allowed here")
+                .with_note("generics are only supported on top-level structs and functions"),
+            Self::DeferInsideLoopNotSupported => d
+                .with_label(span, "`defer` cannot appear inside a loop body")
+                .with_help("move the `defer` outside the loop, or run the cleanup code directly"),
+            Self::ReturnInsideDefer => d
+                .with_label(span, "cannot `return` from inside a `defer` body")
+                .with_note("deferred code runs while the function is already returning"),
+            Self::NestedDeferNotSupported => d
+                .with_label(span, "`defer` cannot appear inside another `defer` body")
+                .with_note("a defer's body already runs exactly once, at function exit"),
+        }
+    }
+}
+
+/// See `AnalysisErrorKind::to_diagnostic` -- same shape, for the inner
+/// type-resolution errors.
+fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagnostic {
+    let d = Diagnostic::error(error.to_string());
+    match error {
+        TypeResolutionError::UnrecognizedNamedType { similar, .. } => {
+            let d = d.with_label(span, "not found in this scope");
+            match similar {
+                Some(name) => d.with_help(format!("a type with a similar name exists: `{}`", name.as_ref())),
+                None => d,
+            }
+        }
+        TypeResolutionError::ModuleNotImported { name, similar } => {
+            let d = d
+                .with_label(span, "this module is not in scope")
+                .with_help(format!("add `import {};` at the top of the file", name.as_ref()));
+            match similar {
+                Some(alias) => {
+                    d.with_help(format!("an imported module with a similar name exists: `{}`", alias.as_ref()))
+                }
+                None => d,
+            }
+        }
+        TypeResolutionError::InvalidArraySize(_) => d
+            .with_label(span, "array size out of range")
+            .with_note("an array's length must fit in a `u32`"),
+        TypeResolutionError::ModuleResolution(e) => resolve_error_diagnostic(e, Some(span)),
+        TypeResolutionError::NotAType(_) => {
+            d.with_label(span, "expected a type, found a value")
+        }
+    }
+}
+
+/// The renderable form of a module-resolution failure. `span` is the
+/// referencing site (an `import` statement, a qualified path, ...) when the
+/// caller has one; a `None` renders headline/footers only.
+pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Diagnostic {
+    let d = Diagnostic::error(error.to_string());
+    let with_label = |d: Diagnostic, message: String| match span {
+        Some(span) => d.with_label(span, message),
+        None => d,
+    };
+    match error {
+        ResolveError::UnknownModule(path) => {
+            let name = path.last().map(|i| i.as_ref()).unwrap_or_default();
+            with_label(d, "module not found".to_string()).with_note(format!(
+                "modules are looked up as `{name}.omg` files or `{name}/` directories under the compiler's search roots"
+            ))
+        }
+        ResolveError::UnknownItem { module, .. } => with_label(d, format!("not found in `{}`", join(module))),
+        ResolveError::NotVisible { .. } => with_label(d, "not visible from this module".to_string()),
+        ResolveError::Cycle(_) => with_label(d, "this import completes the cycle".to_string())
+            .with_note("modules whose imports mutually depend on each other cannot be resolved"),
+        ResolveError::AmbiguousModule(path) => {
+            let name = path.last().map(|i| i.as_ref()).unwrap_or_default();
+            with_label(d, "ambiguous module reference".to_string())
+                .with_help(format!("keep either the `{name}.omg` file or the `{name}/` directory, not both"))
+        }
+        ResolveError::LoadFailed { .. } => with_label(d, "imported from here".to_string()),
+        ResolveError::MacroExpansionFailed { .. } => with_label(d, "imported from here".to_string()),
+        ResolveError::RecursiveTypeWithoutIndirection { item, .. } => {
+            with_label(d, format!("`{}` includes itself by value, giving it infinite size", item.as_ref())).with_help(
+                format!("insert indirection (e.g. a pointer: `*{}`) somewhere in the cycle", item.as_ref()),
+            )
+        }
+        ResolveError::ItemFailed { item, .. } => {
+            with_label(d, "cannot be used because of its own error".to_string())
+                .with_note(format!("`{}`'s own error is reported where it is defined", item.as_ref()))
+        }
+        ResolveError::GenericArgCountMismatch { expected, .. } => {
+            with_label(d, format!("expected {expected} type {}", plural(*expected, "argument")))
+        }
+    }
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 { word.to_string() } else { format!("{word}s") }
+}
+
+/// The inclusive value range of a numeric type, for
+/// `NumberLiteralOutOfRange`'s note -- `None` for floats (their "range" is
+/// about precision, not simple bounds, so a bounds note would mislead).
+fn type_range(r#type: &ResolvedType) -> Option<String> {
+    match r#type.numeric_kind()? {
+        NumericKind::Signed(bits) => {
+            let max = (1u128 << (bits - 1)) - 1;
+            Some(format!("-{} to {max}", max + 1))
+        }
+        NumericKind::Unsigned(bits) => {
+            let max = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+            Some(format!("0 to {max}"))
+        }
+        NumericKind::Float(_) => None,
+    }
+}
+
 impl fmt::Display for AnalysisErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnresolvedType(e) => write!(f, "{e}"),
-            Self::UndefinedVariable(ident) => write!(f, "undefined variable '{}'", ident.as_ref()),
-            Self::NotAStruct => write!(f, "not a struct"),
-            Self::NoSuchField(ident) => write!(f, "no such field '{}' in struct", ident.as_ref()),
-            Self::NotAnArray => write!(f, "not an array"),
-            Self::TooManyArguments { expected } => {
-                write!(f, "too many arguments for function, expected {expected}")
+            Self::UndefinedVariable { name, .. } => write!(f, "cannot find '{}' in this scope", name.as_ref()),
+            Self::ModuleNotImported { name, .. } => write!(f, "module '{}' is not imported", name.as_ref()),
+            Self::NotAStruct { found } => write!(f, "field access on '{found}', which is not a struct"),
+            Self::NoSuchField { field, base } => {
+                write!(f, "no field '{}' on '{base}'", field.as_ref())
+            }
+            Self::NotAnArray { found } => write!(f, "cannot index a value of type '{found}'"),
+            Self::WrongArgumentCount { expected, found } => {
+                write!(f, "this function takes {expected} {} but {found} {} supplied",
+                    plural(*expected, "argument"),
+                    if *found == 1 { "was" } else { "were" })
             }
             Self::ArgumentTypeMismatch { expected, found } => write!(
                 f,
-                "expected type '{expected:?}' for argument, found '{found:?}'"
+                "mismatched types: expected '{expected}' for this argument, found '{found}'"
             ),
-            Self::UnresolvedCallee => write!(f, "callee does not resolve to a callable function"),
+            Self::UnresolvedCallee => write!(f, "this expression is not a callable function"),
             Self::InvalidNumberType(ident) => write!(
                 f,
-                "invalid explicit type for number expression: '{}'",
+                "invalid numeric type '{}' for a number literal",
                 ident.as_ref()
             ),
             Self::UnresolvedInnerExpression => write!(f, "inner expression could not be resolved"),
-            Self::Redeclaration(ident) => {
-                write!(f, "'{}' is already declared in this scope", ident.as_ref())
+            Self::Redeclaration { name, .. } => {
+                write!(f, "'{}' is declared multiple times in this scope", name.as_ref())
             }
             Self::AssignmentTargetNotAPlace => {
-                write!(f, "left-hand side of assignment is not an assignable place")
+                write!(f, "invalid assignment target")
             }
             Self::AssignmentTypeMismatch { target, value } => write!(
                 f,
-                "cannot assign value of type '{value:?}' to target of type '{target:?}'"
+                "mismatched types: cannot assign '{value}' to a target of type '{target}'"
             ),
-            Self::NumberLiteralOutOfRange { literal } => {
-                write!(f, "number literal '{literal}' does not fit its resolved type")
+            Self::NumberLiteralOutOfRange { literal, r#type } => {
+                write!(f, "number '{literal}' does not fit in '{}'", r#type)
             }
-            Self::NotAPointer => write!(f, "cannot dereference a non-pointer expression"),
+            Self::NotAPointer { found } => write!(f, "cannot dereference a value of type '{found}'"),
             Self::AddressOfNotAPlace => {
-                write!(f, "cannot take the address of an expression that is not an assignable place")
+                write!(f, "cannot take the address of this expression")
             }
             Self::InvalidBinaryOperand { op, r#type } => write!(
                 f,
-                "cannot use operand of type '{type:?}' with operator '{op:?}' (a numeric type is required)"
+                "cannot apply '{}' to a value of type '{}'",
+                op.symbol(),
+                r#type
             ),
             Self::InvalidNegateOperand { r#type } => write!(
                 f,
-                "cannot negate operand of type '{type:?}' (only signed integers and floats are supported)"
+                "cannot negate a value of type '{}'", r#type
             ),
-            Self::NotSliceable => {
-                write!(f, "cannot slice an expression that is not a sized array or a slice")
+            Self::NotSliceable { found } => {
+                write!(f, "cannot slice a value of type '{found}'")
             }
             Self::InvalidSliceBound { r#type } => write!(
                 f,
-                "slice bound must be of type 'i32', found '{type:?}'"
+                "mismatched types: slice bound must be 'i32', found '{}'", r#type
             ),
             Self::EmptyArrayLiteral => {
                 write!(f, "cannot infer the element type of an empty array literal")
             }
-            Self::ArrayElementTypeMismatch { expected, found } => write!(
+            Self::ArrayElementTypeMismatch { .. } => {
+                write!(f, "mismatched types in array literal")
+            }
+            Self::BinaryOperandTypeMismatch { left, right, .. } => write!(
                 f,
-                "array literal element of type '{found:?}' does not match preceding elements of type '{expected:?}'"
-            ),
-            Self::BinaryOperandTypeMismatch { left, right } => write!(
-                f,
-                "binary operator operands have different types: '{left:?}' and '{right:?}'"
+                "mismatched types: '{left}' and '{right}'"
             ),
             Self::FloatRemainder => {
                 write!(f, "'%' is not supported on floating-point operands")
             }
             Self::NonBoolCondition { r#type } => write!(
                 f,
-                "condition must be of type 'bool', found '{type:?}'"
+                "mismatched types: condition must be 'bool', found '{}'", r#type
             ),
-            Self::IfBranchTypeMismatch { expected, found } => write!(
+            Self::IfBranchTypeMismatch { .. } => write!(
                 f,
-                "'if' branch of type '{found:?}' does not match preceding branches of type '{expected:?}'"
+                "'if' and 'else' branches have incompatible types"
             ),
             Self::ReturnTypeMismatch { expected, found } => write!(
                 f,
-                "expected return type '{expected:?}', found '{found:?}'"
+                "mismatched types: expected return type '{expected}', found '{found}'"
             ),
             Self::IncrementTargetNotAPlace => {
-                write!(f, "'++'/'--' operand is not an assignable place")
+                write!(f, "invalid '++'/'--' operand")
             }
             Self::InvalidIncrementOperand { r#type } => write!(
                 f,
-                "cannot increment/decrement operand of type '{type:?}' (a numeric type is required)"
+                "cannot increment/decrement a value of type '{}'", r#type
             ),
             Self::ForLoopMissingCondition => {
-                write!(f, "'for' loop is missing its condition clause")
+                write!(f, "this 'for' loop is missing its condition clause")
             }
             Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
             Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
             Self::ModuleResolution(e) => write!(f, "{e}"),
-            Self::NotAValue(path) => write!(
-                f,
-                "'{}' is a type, not a value",
-                path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
-            ),
+            Self::NotAValue(path) => write!(f, "'{}' is a type, not a value", join(path)),
             Self::UnresolvedGenericParam(ident) => write!(
                 f,
                 "cannot infer type parameter '{}' from this call's arguments",
@@ -305,9 +577,8 @@ impl fmt::Display for AnalysisErrorKind {
 }
 
 /// A non-fatal analysis finding: unlike `AnalysisError`, this never rejects
-/// the program (see `Analyzer::analyze`'s return type) -- it's a place to
-/// hang findings a future diagnostics pass would surface to the user (e.g.
-/// as compiler warnings), without building that reporting machinery now.
+/// the program (see `Analyzer::analyze`'s return type) -- surfaced to the
+/// user as a rendered `warning:` diagnostic, but compilation proceeds.
 #[derive(Debug, Clone)]
 pub struct AnalysisWarning {
     pub node_id: HirId,
@@ -318,6 +589,15 @@ pub struct AnalysisWarning {
 impl AnalysisWarning {
     pub fn new(node_id: HirId, span: Span, kind: AnalysisWarningKind) -> Self {
         Self { node_id, span, kind }
+    }
+
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        let d = Diagnostic::warning(self.kind.to_string());
+        match self.kind {
+            AnalysisWarningKind::UnreachableCode => d
+                .with_label(self.span, "this can never run")
+                .with_note("it follows something that always diverges (`return`, `break`, or `continue`)"),
+        }
     }
 }
 

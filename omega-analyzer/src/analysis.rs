@@ -12,7 +12,7 @@ use crate::{
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     generics::unify_generic_type,
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
-    resolver::{GenericSignature, ImportTarget, ModuleResolver, ResolvedImport, ResolvedItem},
+    resolver::{GenericSignature, ImportTarget, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem},
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
@@ -172,14 +172,18 @@ impl<'r> Analyzer<'r> {
                     context.import_module(import.alias.clone(), absolute);
                     Ok(())
                 }
-                ImportTarget::Item(resolved) => context.bind_imported_item(import.alias.clone(), resolved),
+                ImportTarget::Item(resolved) => context.bind_imported_item(import.alias.clone(), resolved, import.span),
                 ImportTarget::GenericItem(absolute) => {
                     context.bind_generic_alias(import.alias.clone(), absolute);
                     Ok(())
                 }
             };
-            if let Err(dup) = result {
-                errors.push(AnalysisError::new(import.id, import.span, AnalysisErrorKind::Redeclaration(dup)));
+            if let Err((name, previous)) = result {
+                errors.push(AnalysisError::new(
+                    import.id,
+                    import.span,
+                    AnalysisErrorKind::Redeclaration { name, previous },
+                ));
             }
         }
 
@@ -187,7 +191,11 @@ impl<'r> Analyzer<'r> {
         for (ident, resolved_type) in generics {
             let dup = context.current_scope().defined_types.contains_key(ident) || !seen_generics.insert(ident);
             if dup {
-                errors.push(AnalysisError::new(owner.0, owner.1, AnalysisErrorKind::Redeclaration(ident.clone())));
+                errors.push(AnalysisError::new(
+                    owner.0,
+                    owner.1,
+                    AnalysisErrorKind::Redeclaration { name: ident.clone(), previous: None },
+                ));
             } else {
                 context.current_scope().defined_types.insert(ident.clone(), resolved_type.clone());
             }
@@ -267,12 +275,15 @@ impl<'r> Analyzer<'r> {
         r#type: ResolvedType,
         storage: Storage,
     ) -> Option<()> {
-        let binding = VarBinding { decl_id: id, storage, r#type };
+        let binding = VarBinding { decl_id: id, storage, r#type, span };
         match self.context.current_scope().declare(ident.clone(), binding) {
             Ok(()) => Some(()),
-            Err(dup) => {
-                self.errors
-                    .push(AnalysisError::new(id, span, AnalysisErrorKind::Redeclaration(dup)));
+            Err((name, previous)) => {
+                self.errors.push(AnalysisError::new(
+                    id,
+                    span,
+                    AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
+                ));
                 None
             }
         }
@@ -337,13 +348,13 @@ impl<'r> Analyzer<'r> {
     /// params they don't go through `declare_binding` -- but duplicate field
     /// names are still rejected, via a plain per-struct name set.
     fn analyze_struct_fields(&mut self, fields: &[HirParam]) -> Option<Vec<CheckedParam>> {
-        let mut seen = HashSet::new();
+        let mut seen: HashMap<Ident, Span> = HashMap::new();
         self.analyze_all(fields, |this, field| {
-            if !seen.insert(field.ident.clone()) {
+            if let Some(previous) = seen.insert(field.ident.clone(), field.span) {
                 this.errors.push(AnalysisError::new(
                     field.id,
                     field.span,
-                    AnalysisErrorKind::Redeclaration(field.ident.clone()),
+                    AnalysisErrorKind::Redeclaration { name: field.ident.clone(), previous: Some(previous) },
                 ));
                 return None;
             }
@@ -393,14 +404,17 @@ impl<'r> Analyzer<'r> {
                 projections.push(CheckedProjection::SliceLength);
                 return Some(ResolvedType::I32);
             }
-            self.errors
-                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NoSuchField(field.clone())));
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchField { field: field.clone(), base: dereffed.clone() },
+            ));
             return None;
         }
 
         let ResolvedType::Struct(struct_type) = &dereffed else {
             self.errors
-                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct));
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct { found: dereffed.clone() }));
             return None;
         };
         let struct_type = struct_type.borrow();
@@ -412,8 +426,11 @@ impl<'r> Analyzer<'r> {
             .find(|(_, (name, _))| name == field)
             .map(|(index, (_, r#type))| (index, r#type.clone()));
         let Some((index, field_type)) = found else {
-            self.errors
-                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NoSuchField(field.clone())));
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchField { field: field.clone(), base: dereffed.clone() },
+            ));
             return None;
         };
 
@@ -455,11 +472,18 @@ impl<'r> Analyzer<'r> {
     /// implicit own-module prefix) to a place root -- shared by both of
     /// `analyze_place`'s non-local cases so the `Value`/`Type`/`Err` match
     /// is only written once.
+    /// `unqualified` is the bare name the user actually wrote, when this
+    /// query is the implicit own-module fallback for one -- an
+    /// `UnknownItem` miss then means "no such variable", and is reported as
+    /// exactly that (with a typo suggestion from the visible scopes) rather
+    /// than as a confusing module-shaped error about the module the user
+    /// never mentioned.
     fn resolve_qualified_value(
         &mut self,
         node_id: HirId,
         span: Span,
         absolute: Vec<Ident>,
+        unqualified: Option<&Ident>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         match self.resolver.resolve_item(&absolute, &[], true) {
             Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
@@ -469,6 +493,13 @@ impl<'r> Analyzer<'r> {
             Ok(ResolvedItem::Type(_)) => {
                 self.errors
                     .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAValue(absolute)));
+                None
+            }
+            Err(ResolveError::UnknownItem { .. }) if unqualified.is_some() => {
+                let name = unqualified.expect("checked by the guard").clone();
+                let similar = self.context.similar_variable_name(&name);
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::UndefinedVariable { name, similar }));
                 None
             }
             Err(e) => {
@@ -521,11 +552,15 @@ impl<'r> Analyzer<'r> {
                     // uniformly as `GenericArgCountMismatch` rather than
                     // this falling through to (and possibly silently
                     // matching) an unrelated same-named item in this module.
-                    let absolute = match self.context.generic_alias(ident) {
-                        Some(absolute) => absolute.clone(),
-                        None => self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect(),
+                    let (absolute, unqualified) = match self.context.generic_alias(ident) {
+                        Some(absolute) => (absolute.clone(), None),
+                        None => {
+                            let absolute =
+                                self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect();
+                            (absolute, Some(ident))
+                        }
                     };
-                    self.resolve_qualified_value(node_id, span, absolute)?
+                    self.resolve_qualified_value(node_id, span, absolute, unqualified)?
                 }
             }
             // A qualified place root (`mymodule::thing::foo`) -- `path`'s
@@ -537,11 +572,14 @@ impl<'r> Analyzer<'r> {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
-                        AnalysisErrorKind::UndefinedVariable(path.head.clone()),
+                        AnalysisErrorKind::ModuleNotImported {
+                            name: path.head.clone(),
+                            similar: self.context.similar_module_alias(&path.head),
+                        },
                     ));
                     return None;
                 };
-                self.resolve_qualified_value(node_id, span, absolute)?
+                self.resolve_qualified_value(node_id, span, absolute, None)?
             }
             HirPlaceRoot::Expr(expr) => {
                 let checked_expr = self.analyze_expr(expr)?;
@@ -568,9 +606,9 @@ impl<'r> Analyzer<'r> {
                         ResolvedType::Array(item_type) => *item_type,
                         ResolvedType::SizedArray(item_type, _) => *item_type,
                         ResolvedType::Slice(item_type) => *item_type,
-                        _ => {
+                        found => {
                             self.errors
-                                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAnArray));
+                                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAnArray { found }));
                             return None;
                         }
                     };
@@ -582,8 +620,11 @@ impl<'r> Analyzer<'r> {
                 }
                 HirProjection::Deref => {
                     let ResolvedType::Pointer(inner) = current_type else {
-                        self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAPointer));
+                        self.errors.push(AnalysisError::new(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::NotAPointer { found: current_type },
+                        ));
                         return None;
                     };
                     let inner_type = *inner;
@@ -794,7 +835,7 @@ impl<'r> Analyzer<'r> {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
-                AnalysisErrorKind::TooManyArguments { expected: fn_type.params.len() },
+                AnalysisErrorKind::WrongArgumentCount { expected: fn_type.params.len(), found: checked_args.len() },
             ));
             return None;
         }
@@ -890,7 +931,7 @@ impl<'r> Analyzer<'r> {
             this.errors.push(AnalysisError::new(
                 node_id,
                 span,
-                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text() },
+                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text(), r#type: resolved_type.clone() },
             ));
         };
 
@@ -1168,7 +1209,7 @@ impl<'r> Analyzer<'r> {
                     if checked_cond.r#type != ResolvedType::Bool {
                         self.errors.push(AnalysisError::new(
                             node_id,
-                            span,
+                            checked_cond.span,
                             AnalysisErrorKind::NonBoolCondition { r#type: checked_cond.r#type },
                         ));
                         return None;
@@ -1229,6 +1270,12 @@ impl<'r> Analyzer<'r> {
 
                 let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
                 args.extend(implicit_self);
+                // The counts shown to the user exclude an implicit `self`
+                // (at this point `args` holds exactly that, and nothing
+                // else) -- the user never wrote it, so "takes 1 argument
+                // but 2 were supplied" for a 1-arg method call would only
+                // confuse.
+                let implicit_count = args.len();
 
                 for arg in &call.args {
                     let param_index = args.len();
@@ -1236,7 +1283,10 @@ impl<'r> Analyzer<'r> {
                         self.errors.push(AnalysisError::new(
                             arg.id,
                             arg.span,
-                            AnalysisErrorKind::TooManyArguments { expected: fn_type.params.len() },
+                            AnalysisErrorKind::WrongArgumentCount {
+                                expected: fn_type.params.len() - implicit_count,
+                                found: call.args.len(),
+                            },
                         ));
                         return None;
                     }
@@ -1380,7 +1430,9 @@ impl<'r> Analyzer<'r> {
                         span,
                         AnalysisErrorKind::BinaryOperandTypeMismatch {
                             left: checked_left.r#type.clone(),
+                            left_span: checked_left.span,
                             right: checked_right.r#type.clone(),
+                            right_span: checked_right.span,
                         },
                     ));
                     return None;
@@ -1455,9 +1507,9 @@ impl<'r> Analyzer<'r> {
                 let item_type = match base_type {
                     ResolvedType::SizedArray(item_type, _) => *item_type,
                     ResolvedType::Slice(item_type) => *item_type,
-                    _ => {
+                    found => {
                         self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable));
+                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable { found }));
                         return None;
                     }
                 };
@@ -1567,7 +1619,7 @@ impl<'r> Analyzer<'r> {
                 if checked_cond.r#type != ResolvedType::Bool {
                     self.errors.push(AnalysisError::new(
                         w.id,
-                        w.span,
+                        checked_cond.span,
                         AnalysisErrorKind::NonBoolCondition { r#type: checked_cond.r#type },
                     ));
                     return None;
@@ -1639,7 +1691,7 @@ impl<'r> Analyzer<'r> {
                 Some(cc) if cc.r#type != ResolvedType::Bool => {
                     self.errors.push(AnalysisError::new(
                         f.id,
-                        f.span,
+                        cc.span,
                         AnalysisErrorKind::NonBoolCondition { r#type: cc.r#type },
                     ));
                     ok = false;
@@ -1825,10 +1877,14 @@ impl<'r> Analyzer<'r> {
             decl_id: f.id,
             storage: Storage::Function,
             r#type: ResolvedType::Function(fn_type.clone()),
+            span: f.span,
         };
-        if let Err(dup) = self.context.current_scope().declare(f.name.clone(), binding) {
-            self.errors
-                .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::Redeclaration(dup)));
+        if let Err((name, previous)) = self.context.current_scope().declare(f.name.clone(), binding) {
+            self.errors.push(AnalysisError::new(
+                f.id,
+                f.span,
+                AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
+            ));
             return None;
         }
 

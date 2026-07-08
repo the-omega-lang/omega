@@ -30,20 +30,20 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     let item = match p.peek() {
         TokenKind::Extern => {
             let decl = parse_extern_declaration(p)?;
-            p.expect(&TokenKind::Semi, "';'");
+            p.expect_terminator(&TokenKind::Semi, "';'");
             Item::ExternDeclaration(decl)
         }
         TokenKind::Import => {
             p.advance();
             let path = parse_path(p)?;
-            p.expect(&TokenKind::Semi, "';'");
+            p.expect_terminator(&TokenKind::Semi, "';'");
             Item::Import(ImportStmt { path })
         }
         TokenKind::Struct => Item::Struct(parse_struct_def(p)?),
         TokenKind::Macro => Item::MacroDefinition(parse_macro_definition(p)?),
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
             let inv = parse_macro_invocation(p)?;
-            p.expect(&TokenKind::Semi, "';'");
+            p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
         }
         TokenKind::Ident(_) => parse_declaration_or_function_definition(p)?,
@@ -68,7 +68,7 @@ fn parse_declaration_or_function_definition(p: &mut Parser) -> Option<Item> {
         TokenKind::Lt | TokenKind::LParen => Some(Item::FunctionDefinition(parse_function_definition(p)?)),
         _ => {
             let decl = parse_declaration(p)?;
-            p.expect(&TokenKind::Semi, "';'");
+            p.expect_terminator(&TokenKind::Semi, "';'");
             Some(Item::Declaration(decl))
         }
     }
@@ -159,7 +159,7 @@ pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
         match parse_declaration(p) {
             Some(decl) => {
                 fields.push(decl);
-                p.expect(&TokenKind::Semi, "';'");
+                p.expect_terminator(&TokenKind::Semi, "';'");
             }
             None => recovery::synchronize_to_statement_boundary(p),
         }

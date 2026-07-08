@@ -25,6 +25,24 @@ impl BinaryOp {
     pub fn is_comparison(self) -> bool {
         matches!(self, Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge)
     }
+
+    /// The operator as the user wrote it -- for diagnostics ("cannot apply
+    /// `%` to ..."), where the variant name (`Rem`) would just be noise.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Rem => "%",
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+        }
+    }
 }
 
 /// `left op right` -- a plain expression-forming operator, same rationale as

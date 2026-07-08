@@ -91,9 +91,9 @@ fn join(path: &[Ident]) -> String {
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownModule(path) => write!(f, "no such module '{}'", join(path)),
+            Self::UnknownModule(path) => write!(f, "cannot find module '{}'", join(path)),
             Self::UnknownItem { module, item } => {
-                write!(f, "module '{}' has no item '{}'", join(module), item.as_ref())
+                write!(f, "cannot find '{}' in module '{}'", item.as_ref(), join(module))
             }
             Self::NotVisible { module, item } => {
                 write!(f, "'{}::{}' is not visible here", join(module), item.as_ref())
@@ -116,12 +116,12 @@ impl fmt::Display for ResolveError {
             }
             Self::RecursiveTypeWithoutIndirection { module, item } => write!(
                 f,
-                "recursive type '{}::{}' has infinite size -- insert a pointer somewhere in the cycle to fix this",
+                "recursive type '{}::{}' has infinite size",
                 join(module),
                 item.as_ref()
             ),
             Self::ItemFailed { module, item } => {
-                write!(f, "'{}::{}' failed to resolve", join(module), item.as_ref())
+                write!(f, "cannot use '{}::{}' because of its own error", join(module), item.as_ref())
             }
             Self::GenericArgCountMismatch { module, item, expected, found } => write!(
                 f,

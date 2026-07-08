@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
-use crate::resolver::{ModuleResolver, ResolvedItem};
+use crate::resolver::{ModuleResolver, ResolveError, ResolvedItem};
 use omega_hir::HirId;
 use omega_parser::prelude::*;
 use std::collections::HashMap;
@@ -17,6 +17,9 @@ pub struct VarBinding {
     pub decl_id: HirId,
     pub storage: Storage,
     pub r#type: ResolvedType,
+    /// Where the binding was introduced -- so a later `Redeclaration` error
+    /// can point back at it ("first declared here").
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -33,15 +36,17 @@ impl ScopeContext {
         }
     }
 
-    /// Binds `ident` in this scope, or returns it back as `Err` if it's
-    /// already declared *in this scope* -- shadowing an outer scope is
-    /// ordinary lexical scoping and stays allowed. Centralizes a check that
-    /// used to live, wrongly, in codegen (a name-keyed stack-slot map, which
-    /// only coincidentally caught same-function redeclaration and never
-    /// caught it for parameters at all).
-    pub fn declare(&mut self, ident: Ident, binding: VarBinding) -> Result<(), Ident> {
-        if self.declared_variables.contains_key(&ident) {
-            return Err(ident);
+    /// Binds `ident` in this scope, or returns it back as `Err` -- together
+    /// with the existing binding's span, for the "first declared here"
+    /// label -- if it's already declared *in this scope*; shadowing an
+    /// outer scope is ordinary lexical scoping and stays allowed.
+    /// Centralizes a check that used to live, wrongly, in codegen (a
+    /// name-keyed stack-slot map, which only coincidentally caught
+    /// same-function redeclaration and never caught it for parameters at
+    /// all).
+    pub fn declare(&mut self, ident: Ident, binding: VarBinding) -> Result<(), (Ident, Span)> {
+        if let Some(existing) = self.declared_variables.get(&ident) {
+            return Err((ident, existing.span));
         }
         self.declared_variables.insert(ident, binding);
         Ok(())
@@ -118,6 +123,31 @@ impl Context {
             .find_map(|scope| scope.defined_types.get(name))
     }
 
+    /// The visible value name (any scope, plus imported-module aliases) most
+    /// similar to `target`, if any is close enough -- the "did you mean"
+    /// candidate for an undefined-variable diagnostic.
+    pub fn similar_variable_name(&self, target: &Ident) -> Option<Ident> {
+        best_match(
+            target,
+            self.scopes
+                .iter()
+                .flat_map(|scope| scope.declared_variables.keys())
+                .chain(self.imported_modules.keys()),
+        )
+    }
+
+    /// The visible type name most similar to `target` -- builtins, locally
+    /// defined/imported types, and generic-item aliases alike.
+    pub fn similar_type_name(&self, target: &Ident) -> Option<Ident> {
+        best_match(
+            target,
+            self.scopes
+                .iter()
+                .flat_map(|scope| scope.defined_types.keys())
+                .chain(self.generic_aliases.keys()),
+        )
+    }
+
     /// Binds a whole-module import alias (`import mymodule;`, or the
     /// submodule case of `import mymodule::thing;`) -- `alias` is always the
     /// import path's last segment (see `omega_analyzer::analysis::Analyzer::
@@ -137,18 +167,24 @@ impl Context {
     /// then bare `foo()`) -- one mechanism, reused from `Context::new`'s own
     /// builtin-primitive seeding: an imported item just becomes an ordinary
     /// local binding in the current (module-level) scope.
-    pub fn bind_imported_item(&mut self, name: Ident, item: ResolvedItem) -> Result<(), Ident> {
+    /// `span` is the import statement's own span -- recorded as the
+    /// binding's declaration site so a later collision can point back at
+    /// it. A collision here reports the previous span where one exists
+    /// (`None` for a `defined_types` clash: builtins and type imports don't
+    /// track one).
+    pub fn bind_imported_item(&mut self, name: Ident, item: ResolvedItem, span: Span) -> Result<(), (Ident, Option<Span>)> {
         match item {
             ResolvedItem::Type(resolved_type) => {
                 if self.current_scope().defined_types.contains_key(&name) {
-                    return Err(name);
+                    return Err((name, None));
                 }
                 self.current_scope().defined_types.insert(name, resolved_type);
                 Ok(())
             }
-            ResolvedItem::Value { r#type, storage, decl_id } => {
-                self.current_scope().declare(name, VarBinding { decl_id, storage, r#type })
-            }
+            ResolvedItem::Value { r#type, storage, decl_id } => self
+                .current_scope()
+                .declare(name, VarBinding { decl_id, storage, r#type, span })
+                .map_err(|(name, previous)| (name, Some(previous))),
         }
     }
 
@@ -218,8 +254,10 @@ impl Context {
             }
             Ok(module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect())
         } else {
-            self.absolute_path(path)
-                .ok_or_else(|| TypeResolutionError::UnrecognizedNamedType(path.head.clone()))
+            self.absolute_path(path).ok_or_else(|| TypeResolutionError::ModuleNotImported {
+                name: path.head.clone(),
+                similar: self.similar_module_alias(&path.head),
+            })
         }
     }
 
@@ -252,12 +290,23 @@ impl Context {
                     local.to_owned()
                 } else {
                     let absolute = self.resolve_absolute_item_path(&path, module_path)?;
-                    match resolver
-                        .resolve_item(&absolute, &[], indirect)
-                        .map_err(TypeResolutionError::ModuleResolution)?
-                    {
-                        ResolvedItem::Type(t) => t,
-                        ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                    match resolver.resolve_item(&absolute, &[], indirect) {
+                        Ok(ResolvedItem::Type(t)) => t,
+                        Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
+                        // The implicit own-module fallback missing isn't a
+                        // module problem from the user's point of view --
+                        // they wrote a bare type name that doesn't exist.
+                        // Report it as exactly that, with a typo suggestion
+                        // where one is close enough. (A `generic_aliases`
+                        // hit points at a *different* module, where
+                        // `UnknownItem` really is about that module.)
+                        Err(ResolveError::UnknownItem { .. }) if self.generic_aliases.get(&path.head).is_none() => {
+                            return Err(TypeResolutionError::UnrecognizedNamedType {
+                                name: path.head.clone(),
+                                similar: self.similar_type_name(&path.head),
+                            });
+                        }
+                        Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                     }
                 }
             }
@@ -326,6 +375,13 @@ impl Context {
         Ok(resolved)
     }
 
+    /// The imported-module alias most similar to `target` -- for a
+    /// qualified reference whose head module was never imported (a likely
+    /// typo of one that was).
+    pub fn similar_module_alias(&self, target: &Ident) -> Option<Ident> {
+        best_match(target, self.imported_modules.keys())
+    }
+
     // Scope helpers
     pub fn current_scope(&mut self) -> &mut ScopeContext {
         self.scopes.last_mut().unwrap()
@@ -349,4 +405,37 @@ impl Context {
             .pop()
             .expect("BAD: Context does not have a scope. This should NEVER happen.")
     }
+}
+
+/// The candidate most similar to `target`, if its edit distance is small
+/// enough relative to the name's length (a third of it, minimum 1 -- "one
+/// or two typos, not a different word", the same intuition rustc's
+/// suggestions follow). Ties go to the first-seen candidate; with hash-map
+/// iteration order behind most call sites that's effectively arbitrary,
+/// which is fine -- any close match is a useful suggestion.
+fn best_match<'a>(target: &Ident, candidates: impl Iterator<Item = &'a Ident>) -> Option<Ident> {
+    let target = target.as_ref();
+    let max_distance = (target.chars().count() / 3).max(1);
+    candidates
+        .map(|candidate| (levenshtein(target, candidate.as_ref()), candidate))
+        .filter(|&(distance, _)| distance > 0 && distance <= max_distance)
+        .min_by_key(|&(distance, _)| distance)
+        .map(|(_, candidate)| candidate.clone())
+}
+
+/// Plain single-row Levenshtein -- names are short, and this only ever runs
+/// on the error path, so the simplest correct implementation wins.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b_chars.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev_diag = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b_chars.iter().enumerate() {
+            let substitution = prev_diag + usize::from(ca != cb);
+            prev_diag = row[j + 1];
+            row[j + 1] = substitution.min(row[j] + 1).min(row[j + 1] + 1);
+        }
+    }
+    row[b_chars.len()]
 }

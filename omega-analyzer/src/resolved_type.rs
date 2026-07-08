@@ -165,6 +165,59 @@ impl Hash for ResolvedType {
     }
 }
 
+/// Renders the type exactly as a user would write it in Omega source
+/// (`*u8`, `[i32; 3]`, `*[u8]`, `(s: *u8, ...) => i32`, a struct's bare
+/// name) -- this is what every diagnostic shows, so it must read as the
+/// language's own syntax, never as Rust debug output.
+impl std::fmt::Display for ResolvedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Void => write!(f, "void"),
+            Self::Bool => write!(f, "bool"),
+            Self::Char => write!(f, "char"),
+            Self::I8 => write!(f, "i8"),
+            Self::I16 => write!(f, "i16"),
+            Self::I32 => write!(f, "i32"),
+            Self::I64 => write!(f, "i64"),
+            Self::ISize => write!(f, "isize"),
+            Self::U8 => write!(f, "u8"),
+            Self::U16 => write!(f, "u16"),
+            Self::U32 => write!(f, "u32"),
+            Self::U64 => write!(f, "u64"),
+            Self::USize => write!(f, "usize"),
+            Self::F32 => write!(f, "f32"),
+            Self::F64 => write!(f, "f64"),
+            Self::Pointer(inner) => write!(f, "*{inner}"),
+            Self::Function(fn_type) => {
+                write!(f, "(")?;
+                for (i, (name, param)) in fn_type.params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    if name.as_ref().is_empty() {
+                        write!(f, "{param}")?;
+                    } else {
+                        write!(f, "{}: {param}", name.as_ref())?;
+                    }
+                }
+                if fn_type.is_variadic {
+                    if !fn_type.params.is_empty() {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "...")?;
+                }
+                write!(f, ") => {}", fn_type.return_type)
+            }
+            Self::Array(inner) => write!(f, "[{inner}]"),
+            Self::SizedArray(inner, size) => write!(f, "[{inner}; {size}]"),
+            Self::Slice(inner) => write!(f, "*[{inner}]"),
+            // Only the name, never the fields -- a struct may reference
+            // itself, and its name is how source refers to it anyway.
+            Self::Struct(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
+        }
+    }
+}
+
 impl ResolvedType {
     /// `Some` for exactly the types a number literal can resolve to and
     /// `BinaryOp`/`Negate` can operate on -- notably excluding `Bool` and

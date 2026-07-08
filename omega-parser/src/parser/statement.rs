@@ -44,7 +44,7 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
     let (statement, block_shaped) = parse_statement_content(p)?;
     if block_shaped {
         p.eat(&TokenKind::Semi);
-    } else if !p.expect(&TokenKind::Semi, "';'") {
+    } else if !p.expect_terminator(&TokenKind::Semi, "';'") {
         return None;
     }
     let span = start.to(p.last_span());
@@ -157,11 +157,11 @@ fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
 fn parse_for(p: &mut Parser) -> Option<ForStmt> {
     p.expect(&TokenKind::For, "'for'");
     let init = parse_for_init(p);
-    if !p.expect(&TokenKind::Semi, "';'") {
+    if !p.expect_terminator(&TokenKind::Semi, "';'") {
         return recover_for_header(p);
     }
     let condition = if p.check(&TokenKind::Semi) { None } else { parse_expression(p) };
-    if !p.expect(&TokenKind::Semi, "';'") {
+    if !p.expect_terminator(&TokenKind::Semi, "';'") {
         return recover_for_header(p);
     }
     let post = if p.check(&TokenKind::LBrace) { None } else { parse_expression(p) };

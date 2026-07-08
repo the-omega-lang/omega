@@ -316,6 +316,7 @@ dependencies = [
 name = "omega-analyzer"
 version = "0.1.0"
 dependencies = [
+ "omega-diagnostics",
  "omega-hir",
  "omega-parser",
 ]
@@ -334,10 +335,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omega-diagnostics"
+version = "0.1.0"
+
+[[package]]
 name = "omega-driver"
 version = "0.1.0"
 dependencies = [
  "omega-analyzer",
+ "omega-diagnostics",
  "omega-hir",
  "omega-parser",
 ]
@@ -352,6 +358,9 @@ dependencies = [
 [[package]]
 name = "omega-parser"
 version = "0.1.0"
+dependencies = [
+ "omega-diagnostics",
+]
 
 [[package]]
 name = "omgc"
@@ -359,6 +368,7 @@ version = "0.1.0"
 dependencies = [
  "omega-analyzer",
  "omega-codegen",
+ "omega-diagnostics",
  "omega-driver",
  "omega-hir",
  "omega-parser",

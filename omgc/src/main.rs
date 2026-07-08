@@ -1,6 +1,9 @@
 use omega_codegen::Codegen;
+use omega_diagnostics::Renderer;
 use omega_driver::Driver;
+use omega_parser::highlight::OmegaHighlighter;
 use omega_parser::prelude::Ident;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 /// `omega-parser`'s grammar is a hand-written recursive-descent parser,
@@ -31,19 +34,35 @@ fn run() {
     let entry_dir = PathBuf::from("examples/dev");
     let entry_module = vec![Ident("main".to_string())];
 
+    // Diagnostics go to stderr, colored only when stderr really is a
+    // terminal (and the user hasn't opted out via the conventional
+    // `NO_COLOR`) -- piping/redirecting output gets clean plain text.
+    let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
+
     let mut driver = Driver::new(vec![entry_dir]);
     let program = match driver.compile(&entry_module) {
         Ok(program) => program,
         Err(errors) => {
+            let mut count = 0usize;
             for error in &errors {
-                eprintln!("error: {error}");
+                let file = error.module().and_then(|module| driver.source_file(module));
+                for diagnostic in error.to_diagnostics() {
+                    count += 1;
+                    eprintln!("{}\n", renderer.render(&diagnostic, file.as_deref()));
+                }
             }
+            let plural = if count == 1 { "error" } else { "errors" };
+            let summary =
+                omega_diagnostics::Diagnostic::error(format!("could not compile the program due to {count} previous {plural}"));
+            eprintln!("{}", renderer.render(&summary, None));
             std::process::exit(1);
         }
     };
 
-    for warning in &program.warnings {
-        println!("warning: {warning}");
+    for (module, warning) in &program.warnings {
+        let file = driver.source_file(module);
+        eprintln!("{}\n", renderer.render(&warning.to_diagnostic(), file.as_deref()));
     }
 
     let modname = "hello";

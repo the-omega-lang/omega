@@ -207,9 +207,26 @@ fn is_ident_continue(c: char) -> bool {
 /// severity the old grammar gave these, just no longer aborting the entire
 /// tokenize pass).
 pub fn tokenize(source: &str) -> (Vec<Token>, Vec<ParseError>) {
-    let mut lexer = Lexer { source, pos: 0, tokens: Vec::new(), errors: Vec::new() };
+    let lexed = lex(source);
+    (lexed.tokens, lexed.errors)
+}
+
+/// [`tokenize`]'s full output, comment spans included. The parser never
+/// wants comments (that's the whole point of consuming them as trivia), but
+/// the diagnostics highlighter does -- a snippet's comments should render
+/// dimmed, same as every other token class gets its color.
+pub struct Lexed {
+    pub tokens: Vec<Token>,
+    /// Each comment's whole span (single-line and multi-line alike), in
+    /// source order.
+    pub comments: Vec<Span>,
+    pub errors: Vec<ParseError>,
+}
+
+pub fn lex(source: &str) -> Lexed {
+    let mut lexer = Lexer { source, pos: 0, tokens: Vec::new(), comments: Vec::new(), errors: Vec::new() };
     lexer.run();
-    (lexer.tokens, lexer.errors)
+    Lexed { tokens: lexer.tokens, comments: lexer.comments, errors: lexer.errors }
 }
 
 struct Lexer<'a> {
@@ -221,6 +238,7 @@ struct Lexer<'a> {
     /// string literal).
     pos: usize,
     tokens: Vec<Token>,
+    comments: Vec<Span>,
     errors: Vec<ParseError>,
 }
 
@@ -291,12 +309,14 @@ impl<'a> Lexer<'a> {
                 }
                 self.advance();
             }
+            self.comments.push(self.span_from(start));
             return;
         }
         loop {
             match self.peek() {
                 None => {
                     self.errors.push(ParseError::new(self.span_from(start), ParseErrorKind::UnterminatedComment));
+                    self.comments.push(self.span_from(start));
                     return;
                 }
                 Some('#') => {
@@ -306,6 +326,7 @@ impl<'a> Lexer<'a> {
                         run += 1;
                     }
                     if run == hashes {
+                        self.comments.push(self.span_from(start));
                         return;
                     }
                 }
