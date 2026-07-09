@@ -2,7 +2,8 @@ use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
     HirDefer, HirExprNode, HirExpr, HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef,
     HirIf, HirImport, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection,
-    HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration, HirWhile,
+    HirSlice, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField,
+    HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -341,6 +342,22 @@ impl Lowerer {
             Expression::ArrayLiteral(lit) => {
                 let elements = lit.elements.iter().map(|e| self.lower_expr(e)).collect();
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::ArrayLiteral(elements) }
+            }
+            Expression::StructLiteral(lit) => {
+                let fields = lit
+                    .fields
+                    .iter()
+                    .map(|f| HirStructLiteralField {
+                        name: f.name.clone(),
+                        name_span: f.name_span,
+                        value: self.lower_expr(&f.value),
+                    })
+                    .collect();
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::StructLiteral(HirStructLiteral { path: lit.path.clone(), fields }),
+                }
             }
             Expression::Slice(s) => {
                 let base = self.lower_place_chain(&s.base);

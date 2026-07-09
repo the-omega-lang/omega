@@ -4,7 +4,7 @@ use crate::ast::expression::{
     char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr, negate::NegateExpr,
-    slice::SliceExpr, string::StringExpr,
+    slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
@@ -179,7 +179,7 @@ fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<Expressi
         let end = parse_optional_slice_bound(p)?;
         return finish_slice(p, base, None, end);
     }
-    let first = parse_expression(p)?;
+    let first = p.allow_struct_literals(parse_expression)?;
     if p.eat(&TokenKind::DotDot) {
         let end = parse_optional_slice_bound(p)?;
         finish_slice(p, base, Some(first), end)
@@ -192,7 +192,7 @@ fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<Expressi
 }
 
 fn parse_optional_slice_bound(p: &mut Parser) -> Option<Option<ExpressionNode>> {
-    if p.check(&TokenKind::RBracket) { Some(None) } else { parse_expression(p).map(Some) }
+    if p.check(&TokenKind::RBracket) { Some(None) } else { p.allow_struct_literals(parse_expression).map(Some) }
 }
 
 fn finish_slice(
@@ -217,7 +217,7 @@ fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> 
     let mut args = Vec::new();
     if !p.check(&TokenKind::RParen) {
         loop {
-            args.push(parse_expression(p)?);
+            args.push(p.allow_struct_literals(parse_expression)?);
             if !p.eat(&TokenKind::Comma) {
                 break;
             }
@@ -240,7 +240,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
     match p.peek() {
         TokenKind::LParen => {
             p.advance();
-            let inner = parse_expression(p)?;
+            let inner = p.allow_struct_literals(parse_expression)?;
             p.expect(&TokenKind::RParen, "')'");
             // Deliberately keeps `inner`'s own span, not one extended to
             // cover the parens -- matches the old grammar, which never
@@ -285,6 +285,14 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
         }
         TokenKind::Ident(_) => {
             let path = parse_path(p)?;
+            if p.check(&TokenKind::LBrace) {
+                if p.struct_literals_allowed() {
+                    return parse_struct_literal(p, path, start);
+                }
+                if let Some(literal) = recover_restricted_struct_literal(p, &path, start) {
+                    return Some(literal);
+                }
+            }
             let span = start.to(p.last_span());
             Some(ExpressionNode { expression: Expression::Path(path), span })
         }
@@ -295,6 +303,86 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
     }
 }
 
+/// A struct literal written where they're restricted (`if Name { ... }` --
+/// see `Parser::restrict_struct_literals`): normally the `{` simply starts
+/// the statement's body and the path stands alone, but when what follows
+/// can *only* be read as a struct literal, silently mis-parsing it as
+/// "condition, then body" would bury the user in nonsense errors inside
+/// the "body". So this speculatively parses the literal and keeps it --
+/// with one precise `StructLiteralNotAllowedHere` error -- exactly when
+/// the token after its closing `}` proves the literal reading (another
+/// `{` for the real body, a projection, or an operator continuing the
+/// condition; none of these can follow a completed `if cond { body }`
+/// mid-statement). Anything less conclusive resets and lets the ordinary
+/// "path, then body" interpretation proceed untouched.
+fn recover_restricted_struct_literal(
+    p: &mut Parser,
+    path: &crate::ast::identifier::Path,
+    start: crate::diagnostics::Span,
+) -> Option<ExpressionNode> {
+    let mark = p.mark();
+    let Some(literal) = parse_struct_literal(p, path.clone(), start) else {
+        p.reset(mark);
+        return None;
+    };
+    let confirms_literal = matches!(
+        p.peek(),
+        TokenKind::LBrace
+            | TokenKind::Dot
+            | TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::EqEq
+            | TokenKind::NotEq
+            | TokenKind::Lt
+            | TokenKind::LtEq
+            | TokenKind::Gt
+            | TokenKind::GtEq
+    );
+    if !confirms_literal {
+        p.reset(mark);
+        return None;
+    }
+    p.error_at(literal.span, ParseErrorKind::StructLiteralNotAllowedHere);
+    Some(literal)
+}
+
+/// `Name { field: value; ... }` -- the caller has already parsed `path` and
+/// confirmed both that a `{` follows and that a struct literal is allowed
+/// here (see `Parser::struct_literals_allowed`). Field initializers are
+/// `;`-terminated, deliberately mirroring struct *definition* syntax
+/// (`field: Type;` there, `field: value;` here).
+fn parse_struct_literal(
+    p: &mut Parser,
+    path: crate::ast::identifier::Path,
+    start: crate::diagnostics::Span,
+) -> Option<ExpressionNode> {
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut fields = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) {
+        let name_span = p.peek_span();
+        let name = p.expect_ident()?;
+        p.expect(&TokenKind::Colon, "':'");
+        // Inside the literal's braces, a nested struct literal is
+        // unambiguous again even if this one sits in condition position.
+        let value = p.allow_struct_literals(parse_expression)?;
+        p.expect_terminator(&TokenKind::Semi, "';'");
+        fields.push(StructLiteralField { name, name_span, value });
+    }
+    if !p.check(&TokenKind::RBrace) {
+        p.error(ParseErrorKind::Expected {
+            expected: "a field initializer (`name: value;`) or '}'",
+            found: p.peek().describe(),
+        });
+        return None;
+    }
+    p.advance(); // '}'
+    let span = start.to(p.last_span());
+    Some(ExpressionNode { expression: Expression::StructLiteral(StructLiteralExpr { path, fields }), span })
+}
+
 /// `[e1, e2, ...]` -- same "no trailing comma" rule as `parse_call`.
 fn parse_array_literal(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
@@ -302,7 +390,7 @@ fn parse_array_literal(p: &mut Parser) -> Option<ExpressionNode> {
     let mut elements = Vec::new();
     if !p.check(&TokenKind::RBracket) {
         loop {
-            elements.push(parse_expression(p)?);
+            elements.push(p.allow_struct_literals(parse_expression)?);
             if !p.eat(&TokenKind::Comma) {
                 break;
             }
@@ -334,11 +422,83 @@ fn parse_if_expr(p: &mut Parser) -> Option<IfExpr> {
 }
 
 /// `cond { ... }` -- the leading `if`/`else if` keyword itself is always
-/// consumed by the caller before this runs.
+/// consumed by the caller before this runs. The condition parses with
+/// struct literals restricted: `if flag { ... }` must mean "condition
+/// `flag`, then the branch body," never a `flag { ... }` literal (see
+/// `Parser::restrict_struct_literals`).
 fn parse_if_branch_body(p: &mut Parser) -> Option<(ExpressionNode, CodeblockExpr)> {
-    let condition = parse_expression(p)?;
+    let condition = p.restrict_struct_literals(parse_expression)?;
     let body = parse_codeblock(p)?;
     Some((condition, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::SourceModule;
+    use crate::ast::expression::Expression;
+    use crate::ast::statement::{Item, Statement};
+    use crate::diagnostics::ParseErrorKind;
+
+    /// The statements of `source`'s first (and only) function definition.
+    fn body_statements(source: &str) -> Vec<Statement> {
+        let module = SourceModule::parse(source).expect("source must parse");
+        let Item::FunctionDefinition(f) = &module.nodes[0].item else {
+            panic!("first item must be a function");
+        };
+        f.codeblock.statements.iter().map(|s| s.statement.clone()).collect()
+    }
+
+    #[test]
+    fn struct_literal_parses_with_fields_in_order() {
+        let stmts = body_statements("f() => i32 { v := Vec2 { x: 1; y: 2; }; v.x }");
+        let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
+        let Expression::StructLiteral(lit) = &w.value.expression else {
+            panic!("expected a struct literal value")
+        };
+        assert_eq!(lit.path.head.as_ref(), "Vec2");
+        let names: Vec<&str> = lit.fields.iter().map(|f| f.name.as_ref()).collect();
+        assert_eq!(names, ["x", "y"]);
+    }
+
+    #[test]
+    fn condition_position_reads_brace_as_body_not_literal() {
+        // `flag { ... }` in a `while` condition must be "condition `flag`,
+        // then the body" -- including when the body's first statement is a
+        // declaration (`x: i32;`), which is field-initializer-shaped.
+        let stmts = body_statements("f() => void { while flag { x: i32; } }");
+        let Statement::While(w) = &stmts[0] else { panic!("expected a while statement") };
+        assert!(matches!(w.condition.expression, Expression::Path(_)));
+        assert!(matches!(w.body.statements[0].statement, Statement::Declaration(_)));
+    }
+
+    #[test]
+    fn unambiguous_literal_in_condition_reports_dedicated_error() {
+        // The `.x > 0` after the closing `}` proves the literal reading --
+        // one precise error, not a cascade from mis-parsing the "body".
+        let errors = SourceModule::parse("f() => void { if Vec2 { x: 1; }.x > 0 { g(); } }")
+            .expect_err("must not parse");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(errors[0].kind, ParseErrorKind::StructLiteralNotAllowedHere));
+    }
+
+    #[test]
+    fn parenthesized_literal_in_condition_parses() {
+        // The suggested fix for the case above must itself parse. (The
+        // trailing `done();` keeps the `if` in statement position rather
+        // than the block's tail.)
+        let stmts = body_statements("f() => void { if (Vec2 { x: 1; }).x > 0 { g(); } done(); }");
+        assert!(matches!(stmts[0], Statement::Expression(_)));
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn literal_inside_call_arguments_in_condition_parses() {
+        // Bracketed sub-contexts lift the restriction: the `{` inside
+        // `check(...)`'s arguments can't be the statement's body.
+        let stmts = body_statements("f() => void { if check(Vec2 { x: 1; }) { g(); } done(); }");
+        assert!(matches!(stmts[0], Statement::Expression(_)));
+        assert_eq!(stmts.len(), 2);
+    }
 }
 
 /// `{ stmt; stmt; ... tail }` -- at every position, tries the tail
@@ -354,24 +514,28 @@ fn parse_if_branch_body(p: &mut Parser) -> Option<(ExpressionNode, CodeblockExpr
 /// tell "this is the tail" from "this is a statement" apart than trying the
 /// expression interpretation and checking what follows.
 pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
-    p.expect(&TokenKind::LBrace, "'{'");
-    let mut statements = Vec::new();
-    let tail = loop {
-        if p.check(&TokenKind::RBrace) || p.is_eof() {
-            break None;
-        }
-        let mark = p.mark();
-        if let Some(expr) = parse_expression(p)
-            && p.check(&TokenKind::RBrace)
-        {
-            break Some(Box::new(expr));
-        }
-        p.reset(mark);
-        match parse_statement(p) {
-            Some(stmt) => statements.push(stmt),
-            None => crate::parser::recovery::synchronize_to_statement_boundary(p),
-        }
-    };
-    p.expect(&TokenKind::RBrace, "'}'");
-    Some(CodeblockExpr { statements, tail })
+    // Inside the block's own braces, struct literals are unambiguous again
+    // regardless of what position the block itself sits in.
+    p.allow_struct_literals(|p| {
+        p.expect(&TokenKind::LBrace, "'{'");
+        let mut statements = Vec::new();
+        let tail = loop {
+            if p.check(&TokenKind::RBrace) || p.is_eof() {
+                break None;
+            }
+            let mark = p.mark();
+            if let Some(expr) = parse_expression(p)
+                && p.check(&TokenKind::RBrace)
+            {
+                break Some(Box::new(expr));
+            }
+            p.reset(mark);
+            match parse_statement(p) {
+                Some(stmt) => statements.push(stmt),
+                None => crate::parser::recovery::synchronize_to_statement_boundary(p),
+            }
+        };
+        p.expect(&TokenKind::RBrace, "'}'");
+        Some(CodeblockExpr { statements, tail })
+    })
 }

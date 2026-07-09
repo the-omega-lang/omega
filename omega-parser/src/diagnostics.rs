@@ -63,6 +63,9 @@ impl ParseError {
             ParseErrorKind::InvalidCharLiteral => d
                 .with_label(self.span, "must contain exactly one character")
                 .with_help("write multi-character text as a string literal: `\"...\"`"),
+            ParseErrorKind::StructLiteralNotAllowedHere => d
+                .with_label(self.span, "the `{` here is ambiguous with the statement's own body")
+                .with_help("wrap the struct literal in parentheses: `(Name { ... })`"),
         }
     }
 }
@@ -95,6 +98,12 @@ pub enum ParseErrorKind {
     /// An empty character literal (`''`), or one containing more than one
     /// character/escape.
     InvalidCharLiteral,
+    /// A struct literal written directly in `if`/`while`/`for` condition
+    /// position, where its `{` would be ambiguous with the statement's own
+    /// body block -- only reported when the speculative parse is *sure*
+    /// (see `parser::expression::parse_primary`'s restricted-`Ident` case),
+    /// never on a mere possibility.
+    StructLiteralNotAllowedHere,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -109,6 +118,9 @@ impl fmt::Display for ParseErrorKind {
             Self::InvalidMetavariable => write!(f, "expected an identifier after '$'"),
             Self::InvalidUnicodeEscape(hex) => write!(f, "invalid unicode escape '\\u{{{hex}}}'"),
             Self::InvalidCharLiteral => write!(f, "character literal must contain exactly one character"),
+            Self::StructLiteralNotAllowedHere => {
+                write!(f, "struct literals are not allowed in this position")
+            }
         }
     }
 }

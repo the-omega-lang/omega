@@ -127,7 +127,10 @@ fn parse_walrus(p: &mut Parser) -> Option<WalrusStmt> {
 
 fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
     p.expect(&TokenKind::While, "'while'");
-    let condition = parse_expression(p)?;
+    // Struct literals are restricted in condition position -- `while flag
+    // { ... }` must mean "condition `flag`, then the body"; see
+    // `Parser::restrict_struct_literals`.
+    let condition = p.restrict_struct_literals(parse_expression)?;
     let body = parse_codeblock(p)?;
     Some(WhileStmt { condition, body })
 }
@@ -160,11 +163,18 @@ fn parse_for(p: &mut Parser) -> Option<ForStmt> {
     if !p.expect_terminator(&TokenKind::Semi, "';'") {
         return recover_for_header(p);
     }
-    let condition = if p.check(&TokenKind::Semi) { None } else { parse_expression(p) };
+    // The whole `cond; post` header shares the same body-`{` ambiguity an
+    // `if`/`while` condition has, so struct literals are restricted in both
+    // clauses (the init clause needs no restriction -- its own `;` always
+    // separates it from the body -- but restricting uniformly from here on
+    // costs nothing and reads simpler).
+    let condition =
+        if p.check(&TokenKind::Semi) { None } else { p.restrict_struct_literals(parse_expression) };
     if !p.expect_terminator(&TokenKind::Semi, "';'") {
         return recover_for_header(p);
     }
-    let post = if p.check(&TokenKind::LBrace) { None } else { parse_expression(p) };
+    let post =
+        if p.check(&TokenKind::LBrace) { None } else { p.restrict_struct_literals(parse_expression) };
     let Some(body) = parse_codeblock(p) else { return recover_for_header(p) };
     Some(ForStmt { init, condition, post, body })
 }

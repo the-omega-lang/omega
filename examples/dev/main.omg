@@ -77,6 +77,42 @@ defer_test() => void {
     defer puts("third");
 }
 
+# A struct with both static and member functions: a function declared
+# *without* `self` is static -- called through the struct's name
+# (`Vec2::origin()`), with no instance -- while one *with* `self` stays an
+# ordinary member function. Static bodies commonly build their result with
+# a struct literal (see `Vec2 { x: ...; y: ...; }` below), which must set
+# every field exactly once.
+struct Vec2 {
+    x: i32;
+    y: i32;
+    origin() => Vec2 {
+        Vec2 {
+            x: 0;
+            y: 0;
+        }
+    }
+    new(x: i32, y: i32) => Vec2 {
+        Vec2 { x: x; y: y; }
+    }
+    manhattan(self) => i32 {
+        abs_val(self.x) + abs_val(self.y)
+    }
+}
+
+# A struct-typed field, initialized below both by a nested literal and by an
+# already-built value -- literals nest like any other expression.
+struct Segment {
+    a: Vec2;
+    b: Vec2;
+}
+
+# A whole struct passed *by value* (not through a pointer like `self`) --
+# flattened into one scalar argument per field at the call site.
+vec_sum(v: Vec2) => i32 {
+    v.x + v.y
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -236,6 +272,23 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf("defer_demo(true) = %d\n", defer_demo(true));
     printf("defer_demo(false) = %d\n", defer_demo(false));
     defer_test();
+
+    v := Vec2 { x: 3; y: -4; };
+    printf("struct literal: (%d, %d)\n", v.x, v.y);
+    o := Vec2::origin();
+    printf("static call: (%d, %d)\n", o.x, o.y);
+    w := Vec2::new(7, 9);
+    printf("static call with args: (%d, %d), manhattan = %d\n", w.x, w.y, w.manhattan());
+    printf("struct by value: vec_sum = %d\n", vec_sum(w));
+    seg := Segment {
+        a: Vec2 { x: 1; y: 2; };
+        b: w;
+    };
+    printf("nested literal: (%d,%d)-(%d,%d)\n", seg.a.x, seg.a.y, seg.b.x, seg.b.y);
+    if v.manhattan() > 5 {
+        p := simplemodule::Pair::of(4, 5);
+        printf("cross-module static: %d\n", p.sum());
+    }
 
     return 69;
 }

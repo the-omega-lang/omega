@@ -267,7 +267,30 @@ pub enum CheckedExpr {
     /// constructed -- codegen never re-checks it. The literal's own type is
     /// `ResolvedType::SizedArray(item_type, elements.len())`.
     ArrayLiteral(CheckedArrayLiteral),
+    /// `Name { field: value; ... }` -- the node's own `r#type` is always the
+    /// struct being built (`ResolvedType::Struct`); see
+    /// `CheckedStructLiteral`'s doc comment for the field guarantees.
+    StructLiteral(CheckedStructLiteral),
     Slice(CheckedSlice),
+}
+
+/// A whole struct value built in one expression. `fields` is in *source*
+/// (evaluation) order -- the order the user wrote the initializers in, which
+/// is the order their side effects must run in -- with each entry carrying
+/// the field's declared position (`field_index`) in the struct's own field
+/// list. Analysis guarantees every declared field appears exactly once and
+/// every value already has its field's exact type, so codegen only has to
+/// evaluate in list order and emit leaves in `field_index` order.
+#[derive(Debug, Clone)]
+pub struct CheckedStructLiteral {
+    pub fields: Vec<CheckedStructLiteralField>,
+}
+
+/// See `CheckedStructLiteral`.
+#[derive(Debug, Clone)]
+pub struct CheckedStructLiteralField {
+    pub field_index: usize,
+    pub value: CheckedExprNode,
 }
 
 #[derive(Debug, Clone)]

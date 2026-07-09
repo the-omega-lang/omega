@@ -193,6 +193,32 @@ pub trait ModuleResolver {
         &mut self,
         absolute_path: &[Ident],
     ) -> Result<Option<GenericSignature>, ResolveError>;
+
+    /// The name of a top-level item in `module_path` most similar to
+    /// `target` (see `crate::similarity::best_match`), drawn only from
+    /// `namespace` -- the "did you mean" candidate for a reference that
+    /// resolved to nothing. Only the resolver can answer this: the analyzer
+    /// never holds a module-wide name list (items are resolved one at a
+    /// time, on demand), so scope-level searches alone would miss every
+    /// top-level item. Purely advisory (error path only): `None` when
+    /// nothing is close enough, or when the module can't even be indexed.
+    fn similar_item_name(
+        &mut self,
+        module_path: &[Ident],
+        target: &Ident,
+        namespace: ItemNamespace,
+    ) -> Option<Ident>;
+}
+
+/// Which namespace a "did you mean" suggestion should draw from -- a type
+/// position must never suggest a function, and vice versa (a wrong hint is
+/// worse than none). See `ModuleResolver::similar_item_name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemNamespace {
+    /// Functions, globals, externs.
+    Value,
+    /// Structs (generic templates included).
+    Type,
 }
 
 /// See `ModuleResolver::generic_function_signature`.

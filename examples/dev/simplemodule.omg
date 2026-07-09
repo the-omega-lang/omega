@@ -1,3 +1,16 @@
 something3(n : i32) => i32 {
     n * 3
 }
+
+# Reached from `main` as `simplemodule::Pair::of(...)` -- a static function
+# on a struct in another module, resolved through the imported module alias.
+struct Pair {
+    a: i32;
+    b: i32;
+    of(a: i32, b: i32) => Pair {
+        Pair { a: a; b: b; }
+    }
+    sum(self) => i32 {
+        self.a + self.b
+    }
+}

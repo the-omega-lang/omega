@@ -6,6 +6,7 @@ pub use crate::ast::expression::{
     if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     macro_invocation::MacroInvocationExpr, negate::NegateExpr,
     number::{NumberBase, NumberExpr}, slice::SliceExpr, string::StringExpr,
+    struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 pub use crate::ast::identifier::{Ident, Path};
 pub use crate::ast::statement::{

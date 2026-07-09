@@ -514,6 +514,20 @@ fn expand_expr(
         Expression::ArrayLiteral(lit) => Expression::ArrayLiteral(ArrayLiteralExpr {
             elements: lit.elements.into_iter().map(|e| expand_expr(e, defs, budget)).collect::<Result<Vec<_>, _>>()?,
         }),
+        Expression::StructLiteral(lit) => Expression::StructLiteral(StructLiteralExpr {
+            path: lit.path,
+            fields: lit
+                .fields
+                .into_iter()
+                .map(|f| {
+                    Ok(StructLiteralField {
+                        name: f.name,
+                        name_span: f.name_span,
+                        value: expand_expr(f.value, defs, budget)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, MacroError>>()?,
+        }),
         Expression::Slice(s) => {
             let s = *s;
             Expression::Slice(Box::new(SliceExpr {

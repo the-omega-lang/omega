@@ -16,6 +16,7 @@ pub mod negate;
 pub mod number;
 pub mod slice;
 pub mod string;
+pub mod struct_literal;
 
 use crate::ast::identifier::Path;
 use crate::ast::expression::{
@@ -24,7 +25,7 @@ use crate::ast::expression::{
     codeblock::CodeblockExpr, deref::DerefExpr, field_access::FieldAccessExpr,
     function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
     index::IndexExpr, macro_invocation::MacroInvocationExpr, negate::NegateExpr,
-    number::NumberExpr, slice::SliceExpr, string::StringExpr,
+    number::NumberExpr, slice::SliceExpr, string::StringExpr, struct_literal::StructLiteralExpr,
 };
 use crate::diagnostics::Span;
 
@@ -56,6 +57,8 @@ pub enum Expression {
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
     ArrayLiteral(ArrayLiteralExpr),
+    /// `Name { field: value; ... }` -- see `StructLiteralExpr`'s doc comment.
+    StructLiteral(StructLiteralExpr),
     Slice(Box<SliceExpr>),
     /// `name!(arg, ...)` -- expanded away entirely by
     /// `omega_parser::macros::expand` before HIR lowering ever runs; see

@@ -6,8 +6,10 @@ use omega_analyzer::checked::{CheckedItem, CheckedModule, Storage};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
 use omega_analyzer::resolved_type::{ResolvedStructType, ResolvedType};
 use omega_analyzer::resolver::{
-    GenericSignature, ImportTarget, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem, Visibility,
+    GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport,
+    ResolvedItem, Visibility,
 };
+use omega_analyzer::similarity::best_match;
 use omega_diagnostics::{Diagnostic, SourceFile, Span};
 use omega_hir::{HirId, HirItem, HirModule, ModuleId, SYNTHETIC_MODULE};
 use omega_parser::macros::MacroError;
@@ -956,5 +958,31 @@ impl ModuleResolver for Driver {
             generics: f.generics.clone(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))
+    }
+
+    fn similar_item_name(
+        &mut self,
+        module_path: &[Ident],
+        target: &Ident,
+        namespace: ItemNamespace,
+    ) -> Option<Ident> {
+        // Purely advisory -- a module that can't even be indexed just
+        // produces no suggestion (its own failure is reported elsewhere).
+        if self.ensure_module_indexed(module_path).is_err() {
+            return None;
+        }
+        let hir = self.parsed.get(module_path)?;
+        let index = self.local_items.get(module_path)?;
+        let candidates = index
+            .iter()
+            .filter(|&(_, &i)| match &hir.items[i] {
+                HirItem::Struct(_) => namespace == ItemNamespace::Type,
+                HirItem::FunctionDefinition(_) | HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => {
+                    namespace == ItemNamespace::Value
+                }
+                HirItem::Import(_) => false,
+            })
+            .map(|(name, _)| name);
+        best_match(target, candidates)
     }
 }

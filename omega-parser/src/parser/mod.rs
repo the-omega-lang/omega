@@ -32,6 +32,15 @@ pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     errors: Vec<ParseError>,
+    /// Rust's "no struct literal here" restriction: inside an `if`/`while`
+    /// condition or a `for` header, `flag { ... }` must mean "condition
+    /// `flag`, then the body block", never a struct literal -- the two are
+    /// otherwise syntactically identical. Set by those condition parsers
+    /// (see `restrict_struct_literals`), and cleared again the moment the
+    /// grammar enters any bracketed sub-context (`(...)`, `[...]`, `{...}`),
+    /// where a `{` can no longer be mistaken for the statement's own body --
+    /// the exact rule rustc's parser applies.
+    struct_literals_restricted: bool,
 }
 
 /// A saved parser position, from `Parser::mark` -- opaque; only meaningful
@@ -48,7 +57,34 @@ impl<'a> Parser<'a> {
     /// able to sit at that final index forever without going out of bounds.
     pub fn new(tokens: &'a [Token]) -> Self {
         debug_assert!(matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Eof)));
-        Self { tokens, pos: 0, errors: Vec::new() }
+        Self { tokens, pos: 0, errors: Vec::new(), struct_literals_restricted: false }
+    }
+
+    /// Whether a struct literal may start at the current position -- see
+    /// `struct_literals_restricted`.
+    pub fn struct_literals_allowed(&self) -> bool {
+        !self.struct_literals_restricted
+    }
+
+    /// Runs `f` with struct literals restricted -- for `if`/`while`/`for`
+    /// condition position, where `name { ... }` must parse as "condition,
+    /// then body". The previous state is restored afterward, whatever it was.
+    pub fn restrict_struct_literals<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(&mut self.struct_literals_restricted, true);
+        let result = f(self);
+        self.struct_literals_restricted = previous;
+        result
+    }
+
+    /// Runs `f` with struct literals allowed again -- for every bracketed
+    /// sub-context (`(...)`, `[...]`, `{...}`) inside a restricted position,
+    /// where a `{` is unambiguous again. The previous state is restored
+    /// afterward, whatever it was.
+    pub fn allow_struct_literals<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(&mut self.struct_literals_restricted, false);
+        let result = f(self);
+        self.struct_literals_restricted = previous;
+        result
     }
 
     pub fn into_errors(self) -> Vec<ParseError> {

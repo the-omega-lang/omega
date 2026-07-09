@@ -91,10 +91,13 @@ pub enum AnalysisErrorKind {
     /// An unqualified name that resolves to nothing visible. `similar` is a
     /// close-enough visible name, when one exists.
     UndefinedVariable { name: Ident, similar: Option<Ident> },
-    /// A qualified place/value path (`mymodule::foo`) whose head was never
-    /// bound by an `import` -- the value counterpart of
-    /// `TypeResolutionError::ModuleNotImported`.
-    ModuleNotImported { name: Ident, similar: Option<Ident> },
+    /// A qualified place/value path (`head::rest`) whose head names nothing
+    /// visible: not an imported module alias, not a type, and not one of
+    /// this module's own items. What the user *meant* can't be known (a
+    /// module they forgot to import, or a typo'd struct name), so this
+    /// carries a "did you mean" candidate from each world and only ever
+    /// suggests what actually exists.
+    UndefinedPathHead { name: Ident, similar_module: Option<Ident>, similar_type: Option<Ident> },
     /// A field access on something that isn't a struct (after auto-deref).
     NotAStruct { found: ResolvedType },
     /// A field access naming a field `base` doesn't have.
@@ -219,6 +222,36 @@ pub enum AnalysisErrorKind {
     /// call already, and there is no useful "defer whose scope is another
     /// defer's body" to speak of, only the enclosing function's exit.
     NestedDeferNotSupported,
+    /// `Name { field: value; ... }` where `Name` resolves to a type that
+    /// isn't a struct (a primitive, an array, ...).
+    StructLiteralNotAStruct { found: ResolvedType },
+    /// A struct literal setting the same field twice. `previous` is the
+    /// first initializer's span -- rendered as a "first set here" label.
+    DuplicateFieldInitializer { field: Ident, previous: Span },
+    /// A struct literal field's value doesn't have the field's declared
+    /// type.
+    FieldTypeMismatch { field: Ident, expected: ResolvedType, found: ResolvedType },
+    /// A struct literal that doesn't cover every declared field -- partial
+    /// initialization is not allowed (there is no implicit zeroing).
+    MissingFieldInitializers { r#struct: Ident, missing: Vec<Ident> },
+    /// `Struct::function` naming a function `Struct` doesn't have. `similar`
+    /// is a close-enough function name on that struct, when one exists.
+    NoSuchStructFunction { r#struct: Ident, function: Ident, similar: Option<Ident> },
+    /// `Struct::function(...)` where `function` takes `self` -- a member
+    /// function needs an instance to be called on.
+    MemberFunctionWithoutInstance { r#struct: Ident, function: Ident },
+    /// `value.function(...)` where `function` does *not* take `self` -- a
+    /// static function is called through the struct's name, not an instance.
+    StaticFunctionOnInstance { r#struct: Ident, function: Ident },
+    /// `Type::name` where `Type` is a real type but not a struct (e.g.
+    /// `i32::something`) -- only structs can have functions.
+    StaticAccessOnNonStruct { found: ResolvedType },
+    /// `Struct::function::more` -- a path trying to reach *through* a
+    /// struct's function; functions have no items of their own.
+    StructPathTooDeep { r#struct: Ident, function: Ident },
+    /// `head::item` where `head` names a *value* (a function or global) --
+    /// values have no items of their own; only modules and struct types do.
+    NotAModule { name: Ident },
 }
 
 impl AnalysisErrorKind {
@@ -237,16 +270,25 @@ impl AnalysisErrorKind {
                     None => d,
                 }
             }
-            Self::ModuleNotImported { name, similar } => {
-                let d = d
-                    .with_label(span, "this module is not in scope")
-                    .with_help(format!("add `import {};` at the top of the file", name.as_ref()));
-                match similar {
-                    Some(alias) => {
-                        d.with_help(format!("an imported module with a similar name exists: `{}`", alias.as_ref()))
-                    }
-                    None => d,
+            Self::UndefinedPathHead { name, similar_module, similar_type } => {
+                let mut d = d.with_label(span, "not a known module or struct");
+                if let Some(similar) = similar_type {
+                    d = d.with_help(format!("a type with a similar name exists: `{}`", similar.as_ref()));
                 }
+                if let Some(similar) = similar_module {
+                    d = d.with_help(format!(
+                        "an imported module with a similar name exists: `{}`",
+                        similar.as_ref()
+                    ));
+                }
+                if similar_type.is_none() && similar_module.is_none() {
+                    d = d.with_note(format!(
+                        "if `{}` is a module, it must be imported first: `import {};`",
+                        name.as_ref(),
+                        name.as_ref()
+                    ));
+                }
+                d
             }
             Self::NotAStruct { found } => d
                 .with_label(span, format!("this has type `{found}`, which has no fields"))
@@ -359,6 +401,53 @@ impl AnalysisErrorKind {
             Self::NestedDeferNotSupported => d
                 .with_label(span, "`defer` cannot appear inside another `defer` body")
                 .with_note("a defer's body already runs exactly once, at function exit"),
+            Self::StructLiteralNotAStruct { found } => d
+                .with_label(span, format!("`{found}` is not a struct"))
+                .with_note("only struct types can be built with `Name { field: value; ... }`"),
+            Self::DuplicateFieldInitializer { field, previous } => d
+                .with_label(span, format!("`{}` set again here", field.as_ref()))
+                .with_secondary_label(*previous, format!("`{}` first set here", field.as_ref())),
+            Self::FieldTypeMismatch { expected, found, .. } => d
+                .with_label(span, format!("expected `{expected}`, found `{found}`"))
+                .with_note("Omega has no implicit conversions; each value must have exactly its field's type"),
+            Self::MissingFieldInitializers { r#struct, missing } => d
+                .with_label(span, format!("missing {}", field_list(missing)))
+                .with_note(format!(
+                    "a struct literal must set every field of `{}`; there is no implicit zero-initialization",
+                    r#struct.as_ref()
+                )),
+            Self::NoSuchStructFunction { r#struct, similar, .. } => {
+                let d = d.with_label(span, format!("not found in `{}`", r#struct.as_ref()));
+                match similar {
+                    Some(name) => {
+                        d.with_help(format!("a function with a similar name exists: `{}`", name.as_ref()))
+                    }
+                    None => d,
+                }
+            }
+            Self::MemberFunctionWithoutInstance { r#struct, function } => d
+                .with_label(span, "this function takes `self`")
+                .with_help(format!(
+                    "call it on a value of type `{}` instead: `value.{}(...)`",
+                    r#struct.as_ref(),
+                    function.as_ref()
+                )),
+            Self::StaticFunctionOnInstance { r#struct, function } => d
+                .with_label(span, "this function does not take `self`")
+                .with_help(format!(
+                    "call it through the struct's name instead: `{}::{}(...)`",
+                    r#struct.as_ref(),
+                    function.as_ref()
+                )),
+            Self::StaticAccessOnNonStruct { .. } => {
+                d.with_label(span, "only structs have functions")
+            }
+            Self::StructPathTooDeep { .. } => {
+                d.with_label(span, "a function has no items of its own")
+            }
+            Self::NotAModule { .. } => {
+                d.with_label(span, "only modules and struct types can contain items")
+            }
         }
     }
 }
@@ -442,6 +531,19 @@ fn plural(n: usize, word: &str) -> String {
     if n == 1 { word.to_string() } else { format!("{word}s") }
 }
 
+/// `field 'a'` / `fields 'a' and 'b'` / `fields 'a', 'b', and 'c'` -- for
+/// `MissingFieldInitializers`' headline and label.
+fn field_list(fields: &[Ident]) -> String {
+    let names: Vec<String> = fields.iter().map(|f| format!("'{}'", f.as_ref())).collect();
+    let listed = match names.as_slice() {
+        [one] => one.clone(),
+        [one, two] => format!("{one} and {two}"),
+        [init @ .., last] => format!("{}, and {last}", init.join(", ")),
+        [] => String::new(),
+    };
+    format!("{} {listed}", plural(fields.len(), "field"))
+}
+
 /// The inclusive value range of a numeric type, for
 /// `NumberLiteralOutOfRange`'s note -- `None` for floats (their "range" is
 /// about precision, not simple bounds, so a bounds note would mislead).
@@ -464,7 +566,7 @@ impl fmt::Display for AnalysisErrorKind {
         match self {
             Self::UnresolvedType(e) => write!(f, "{e}"),
             Self::UndefinedVariable { name, .. } => write!(f, "cannot find '{}' in this scope", name.as_ref()),
-            Self::ModuleNotImported { name, .. } => write!(f, "module '{}' is not imported", name.as_ref()),
+            Self::UndefinedPathHead { name, .. } => write!(f, "cannot find '{}' in this scope", name.as_ref()),
             Self::NotAStruct { found } => write!(f, "field access on '{found}', which is not a struct"),
             Self::NoSuchField { field, base } => {
                 write!(f, "no field '{}' on '{base}'", field.as_ref())
@@ -572,6 +674,45 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::ReturnInsideDefer => write!(f, "'return' is not supported inside a 'defer' body"),
             Self::NestedDeferNotSupported => write!(f, "'defer' is not supported inside another 'defer' body"),
+            Self::StructLiteralNotAStruct { found } => {
+                write!(f, "cannot build a value of type '{found}' with a struct literal")
+            }
+            Self::DuplicateFieldInitializer { field, .. } => {
+                write!(f, "field '{}' is set more than once", field.as_ref())
+            }
+            Self::FieldTypeMismatch { field, expected, found } => write!(
+                f,
+                "mismatched types: field '{}' is '{expected}', found '{found}'",
+                field.as_ref()
+            ),
+            Self::MissingFieldInitializers { r#struct, missing } => {
+                write!(f, "missing {} in initializer of '{}'", field_list(missing), r#struct.as_ref())
+            }
+            Self::NoSuchStructFunction { r#struct, function, .. } => {
+                write!(f, "no function '{}' on struct '{}'", function.as_ref(), r#struct.as_ref())
+            }
+            Self::MemberFunctionWithoutInstance { r#struct, function } => write!(
+                f,
+                "'{}::{}' is a member function and cannot be called without an instance",
+                r#struct.as_ref(),
+                function.as_ref()
+            ),
+            Self::StaticFunctionOnInstance { r#struct, function } => write!(
+                f,
+                "'{}::{}' is a static function and cannot be called on an instance",
+                r#struct.as_ref(),
+                function.as_ref()
+            ),
+            Self::StaticAccessOnNonStruct { found } => {
+                write!(f, "type '{found}' has no functions")
+            }
+            Self::StructPathTooDeep { r#struct, function } => {
+                write!(f, "'{}::{}' is a function; there is nothing to look up inside it",
+                    r#struct.as_ref(), function.as_ref())
+            }
+            Self::NotAModule { name } => {
+                write!(f, "'{}' is a value, not a module or type", name.as_ref())
+            }
         }
     }
 }

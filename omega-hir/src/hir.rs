@@ -252,7 +252,29 @@ pub enum HirExpr {
     /// element type, and therefore the whole literal's `ResolvedType`, is
     /// only known once semantic analysis has typed every element.
     ArrayLiteral(Vec<HirExprNode>),
+    /// `Name { field: value; ... }` -- a whole struct value built in one
+    /// expression. Carried raw (`path` unresolved, fields by name), same
+    /// philosophy as every other HIR node: whether `path` names a struct,
+    /// whether every field exists and is covered exactly once, and each
+    /// value's type are all analysis's questions.
+    StructLiteral(HirStructLiteral),
     Slice(HirSlice),
+}
+
+/// See `HirExpr::StructLiteral`.
+#[derive(Debug, Clone)]
+pub struct HirStructLiteral {
+    pub path: Path,
+    pub fields: Vec<HirStructLiteralField>,
+}
+
+/// One `name: value;` initializer -- `name_span` points at the field name
+/// itself, for "no such field"/"field set twice" diagnostics.
+#[derive(Debug, Clone)]
+pub struct HirStructLiteralField {
+    pub name: Ident,
+    pub name_span: Span,
+    pub value: HirExprNode,
 }
 
 /// See `HirExpr::If`'s doc comment.

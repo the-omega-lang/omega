@@ -5,19 +5,21 @@ use crate::{
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedWhile, NumberValue,
+        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
+        CheckedStructLiteralField, CheckedWhile, NumberValue,
         Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     generics::unify_generic_type,
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
-    resolver::{GenericSignature, ImportTarget, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem},
+    resolver::{GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem},
+    similarity::best_match,
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
     HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirParam, HirPlace, HirPlaceRoot,
-    HirProjection, HirSlice, HirStmt, HirStructDef, HirWalrusDeclaration,
+    HirProjection, HirSlice, HirStmt, HirStructDef, HirStructLiteral, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{Ident, NumberBase, NumberExpr, Span, Type};
 use std::cell::RefCell;
@@ -497,10 +499,37 @@ impl<'r> Analyzer<'r> {
             }
             Err(ResolveError::UnknownItem { .. }) if unqualified.is_some() => {
                 let name = unqualified.expect("checked by the guard").clone();
-                let similar = self.context.similar_variable_name(&name);
+                // Scope-level candidates first, then this module's own
+                // top-level values (functions/globals/externs) -- only the
+                // resolver holds a module-wide name list.
+                let similar = self.context.similar_variable_name(&name).or_else(|| {
+                    self.resolver.similar_item_name(&self.module_path, &name, ItemNamespace::Value)
+                });
                 self.errors
                     .push(AnalysisError::new(node_id, span, AnalysisErrorKind::UndefinedVariable { name, similar }));
                 None
+            }
+            // `mymodule::MyStruct::do_thing` -- the "module" that failed to
+            // resolve (`mymodule::MyStruct`) may actually be a struct, and
+            // the last segment one of its static functions. Only attempted
+            // when the missing module is exactly this path minus its last
+            // segment (a deeper miss can't be this shape).
+            Err(ResolveError::UnknownModule(missing))
+                if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
+            {
+                match self.resolver.resolve_item(&missing, &[], true) {
+                    Ok(ResolvedItem::Type(t)) => {
+                        self.resolve_static_function(node_id, span, &t, &absolute[missing.len()..])
+                    }
+                    _ => {
+                        self.errors.push(AnalysisError::new(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(missing)),
+                        ));
+                        None
+                    }
+                }
             }
             Err(e) => {
                 self.errors
@@ -508,6 +537,122 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
+    }
+
+    /// `Head::function` where `Head` isn't an imported module alias -- the
+    /// head may instead name a struct *type* (a builtin/imported/locally
+    /// defined one via `find_defined_type`, or this module's own top-level
+    /// struct via the resolver), making this a static-function reference.
+    /// Reports the most precise error it can when the head names nothing
+    /// usable -- `ModuleNotImported` only when the head is genuinely
+    /// unknown, never when it exists but is the wrong kind of thing (a
+    /// wrong "add `import ...;`" hint would be worse than none).
+    fn resolve_type_qualified_value(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &omega_parser::prelude::Path,
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
+            return self.resolve_static_function(node_id, span, &head_type, &path.tail);
+        }
+
+        let absolute: Vec<Ident> =
+            self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
+        let kind = match self.resolver.resolve_item(&absolute, &[], true) {
+            Ok(ResolvedItem::Type(t)) => {
+                return self.resolve_static_function(node_id, span, &t, &path.tail);
+            }
+            Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: path.head.clone() },
+            // The head names nothing at all -- an unimported module, or a
+            // typo of a struct/module that does exist; suggest whichever
+            // actually does.
+            Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
+                name: path.head.clone(),
+                similar_module: self.context.similar_module_alias(&path.head),
+                similar_type: self.context.similar_type_name(&path.head).or_else(|| {
+                    self.resolver.similar_item_name(&self.module_path, &path.head, ItemNamespace::Type)
+                }),
+            },
+            // The head *does* name something here (a failed item, an
+            // uninstantiated generic, ...) -- report that, precisely.
+            Err(e) => AnalysisErrorKind::ModuleResolution(e),
+        };
+        self.errors.push(AnalysisError::new(node_id, span, kind));
+        None
+    }
+
+    /// `Struct::function` -- resolves `rest` (the path segments after the
+    /// type's own name, always non-empty) against `r#type`'s static
+    /// functions. A function declared *without* `self` is static: callable
+    /// through the struct's name alone, with no instance. The result is an
+    /// ordinary `Storage::Function` place root, exactly what a member-call
+    /// callee resolves to -- codegen needs no new machinery for it.
+    fn resolve_static_function(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        r#type: &ResolvedType,
+        rest: &[Ident],
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        let ResolvedType::Struct(cell) = r#type else {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::StaticAccessOnNonStruct { found: r#type.clone() },
+            ));
+            return None;
+        };
+        let function = &rest[0];
+        let (struct_name, method, similar) = {
+            let struct_type = cell.borrow();
+            let method = struct_type
+                .functions
+                .iter()
+                .find(|(name, _)| name == function)
+                .map(|(_, method)| method.clone());
+            let similar = match method {
+                Some(_) => None,
+                None => best_match(function, struct_type.functions.iter().map(|(name, _)| name)),
+            };
+            (struct_type.name.clone(), method, similar)
+        };
+
+        let Some(method) = method else {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchStructFunction { r#struct: struct_name, function: function.clone(), similar },
+            ));
+            return None;
+        };
+        if rest.len() > 1 {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::StructPathTooDeep { r#struct: struct_name, function: function.clone() },
+            ));
+            return None;
+        }
+        if method.fn_type.is_member_function {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::MemberFunctionWithoutInstance {
+                    r#struct: struct_name,
+                    function: function.clone(),
+                },
+            ));
+            return None;
+        }
+
+        let fn_type = ResolvedType::Function(method.fn_type);
+        let root = CheckedPlaceRoot::Variable {
+            decl_id: method.decl_id,
+            storage: Storage::Function,
+            r#type: fn_type.clone(),
+        };
+        Some((root, fn_type))
     }
 
     /// Resolves a place's root, then folds over its projections in source
@@ -563,24 +708,18 @@ impl<'r> Analyzer<'r> {
                     self.resolve_qualified_value(node_id, span, absolute, unqualified)?
                 }
             }
-            // A qualified place root (`mymodule::thing::foo`) -- `path`'s
-            // head must already be an imported module alias (requirement 7:
-            // nothing is visible across modules without an explicit
-            // `import`); the rest is resolved across modules by `resolver`.
-            HirPlaceRoot::Path(path) => {
-                let Some(absolute) = self.context.absolute_path(path) else {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::ModuleNotImported {
-                            name: path.head.clone(),
-                            similar: self.context.similar_module_alias(&path.head),
-                        },
-                    ));
-                    return None;
-                };
-                self.resolve_qualified_value(node_id, span, absolute, None)?
-            }
+            // A qualified place root -- either module-qualified
+            // (`mymodule::thing::foo`, head an imported module alias) or
+            // type-qualified (`MyStruct::do_thing`, head a struct type, the
+            // tail one of its static functions). A module alias wins when
+            // both could apply, preserving the module interpretation
+            // unchanged; a head that's neither is reported by
+            // `resolve_type_qualified_value` with the most precise error it
+            // can determine.
+            HirPlaceRoot::Path(path) => match self.context.absolute_path(path) {
+                Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None)?,
+                None => self.resolve_type_qualified_value(node_id, span, path)?,
+            },
             HirPlaceRoot::Expr(expr) => {
                 let checked_expr = self.analyze_expr(expr)?;
                 let r#type = checked_expr.r#type.clone();
@@ -648,6 +787,26 @@ impl<'r> Analyzer<'r> {
             let (checked_base, base_type) = self.analyze_place(callee.id, callee.span, &base_place)?;
 
             if let Some(method) = self.find_method(&base_type, field) {
+                // A function declared without `self` is static -- reached
+                // through the struct's name (`MyStruct::f()`), never through
+                // an instance; prepending an implicit `self` argument it has
+                // no parameter for could only produce nonsense downstream.
+                if !method.fn_type.is_member_function {
+                    let dereffed = match &base_type {
+                        ResolvedType::Pointer(inner) => inner.as_ref(),
+                        other => other,
+                    };
+                    let ResolvedType::Struct(cell) = dereffed else {
+                        unreachable!("find_method only ever finds methods on struct types");
+                    };
+                    let r#struct = cell.borrow().name.clone();
+                    self.errors.push(AnalysisError::new(
+                        callee.id,
+                        callee.span,
+                        AnalysisErrorKind::StaticFunctionOnInstance { r#struct, function: field.clone() },
+                    ));
+                    return None;
+                }
                 // `self` is `&base` -- or, if `base` is already a pointer,
                 // `base` itself (that's exactly what a seamless deref would
                 // have produced, so there's no need to materialize a
@@ -1501,6 +1660,8 @@ impl<'r> Analyzer<'r> {
                 })
             }
 
+            HirExpr::StructLiteral(lit) => self.analyze_struct_literal(node_id, span, lit),
+
             HirExpr::Slice(HirSlice { base, start, end }) => {
                 let (checked_base, base_type) = self.analyze_place(node_id, span, base)?;
 
@@ -1544,6 +1705,102 @@ impl<'r> Analyzer<'r> {
                 })
             }
         }
+    }
+
+    /// `Name { field: value; ... }` -- builds a whole struct value in one
+    /// expression. The literal's name resolves exactly like a type
+    /// annotation would (one mechanism -- unknown names/modules get the
+    /// same diagnostics, typo suggestions included, that type positions
+    /// already give), and every declared field must be set exactly once
+    /// with a value of its exact type. All field problems in one literal
+    /// are reported in one pass (same keep-going discipline as
+    /// `analyze_all`), not just the first.
+    fn analyze_struct_literal(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        lit: &HirStructLiteral,
+    ) -> Option<CheckedExprNode> {
+        let resolved =
+            self.resolve_type_or_error(node_id, span, &Type::Named(lit.path.clone()), true)?;
+        let ResolvedType::Struct(cell) = &resolved else {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::StructLiteralNotAStruct { found: resolved },
+            ));
+            return None;
+        };
+        // Snapshot the declared fields so `cell` isn't borrowed across the
+        // value analysis below -- a nested literal of this same struct type
+        // needs to borrow it again.
+        let declared: Vec<(Ident, ResolvedType)> = cell.borrow().fields.clone();
+        let struct_name = cell.borrow().name.clone();
+
+        let mut seen: HashMap<Ident, Span> = HashMap::new();
+        let mut checked_fields = Vec::with_capacity(lit.fields.len());
+        let mut ok = true;
+        for field in &lit.fields {
+            if let Some(previous) = seen.insert(field.name.clone(), field.name_span) {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    field.name_span,
+                    AnalysisErrorKind::DuplicateFieldInitializer { field: field.name.clone(), previous },
+                ));
+                ok = false;
+                continue;
+            }
+            let found = declared
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| name == &field.name)
+                .map(|(index, (_, r#type))| (index, r#type.clone()));
+            let Some((field_index, expected)) = found else {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    field.name_span,
+                    AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: resolved.clone() },
+                ));
+                ok = false;
+                continue;
+            };
+            let Some(value) = self.analyze_expr(&field.value) else {
+                ok = false;
+                continue;
+            };
+            if value.r#type != expected {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    value.span,
+                    AnalysisErrorKind::FieldTypeMismatch {
+                        field: field.name.clone(),
+                        expected,
+                        found: value.r#type.clone(),
+                    },
+                ));
+                ok = false;
+                continue;
+            }
+            checked_fields.push(CheckedStructLiteralField { field_index, value });
+        }
+
+        let missing: Vec<Ident> =
+            declared.iter().map(|(name, _)| name).filter(|name| !seen.contains_key(name)).cloned().collect();
+        if !missing.is_empty() {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::MissingFieldInitializers { r#struct: struct_name, missing },
+            ));
+            ok = false;
+        }
+
+        ok.then(|| CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: resolved.clone(),
+            kind: CheckedExpr::StructLiteral(CheckedStructLiteral { fields: checked_fields }),
+        })
     }
 
     /// Desugars `ident := value;` into the same two `CheckedStmt`s writing

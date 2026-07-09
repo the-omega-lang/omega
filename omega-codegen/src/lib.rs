@@ -17,7 +17,7 @@ use omega_analyzer::{
         CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedSlice, CheckedStmt, CheckedWhile, NumberValue, Storage,
+        CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedWhile, NumberValue, Storage,
     },
     resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
 };
@@ -335,6 +335,11 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
                 collect_defer_ids_expr(e, out);
             }
         }
+        CheckedExpr::StructLiteral(lit) => {
+            for f in &lit.fields {
+                collect_defer_ids_expr(&f.value, out);
+            }
+        }
         CheckedExpr::Slice(s) => {
             collect_defer_ids_place(&s.base, out);
             if let Some(start) = &s.start {
@@ -433,30 +438,47 @@ impl Codegen {
         place: &CheckedPlace,
         builder: &mut FunctionBuilder,
     ) -> (PlaceStorage, ResolvedType) {
-        let CheckedPlaceRoot::Variable { decl_id, storage, r#type } = &place.root else {
-            todo!("place roots that aren't a bare variable (e.g. `foo().bar`) are not yet implemented");
-        };
-
-        let mut current_type = r#type.clone();
-        let mut current = match storage {
-            Storage::Local => {
-                let slot = *self.stack_slots.get(decl_id).unwrap_or_else(|| {
-                    panic!("checked module guarantees {decl_id:?} was declared before this use")
-                });
-                PlaceStorage::Slot { slot, offset: 0 }
+        let (mut current, mut current_type) = match &place.root {
+            CheckedPlaceRoot::Variable { decl_id, storage, r#type } => {
+                let current = match storage {
+                    Storage::Local => {
+                        let slot = *self.stack_slots.get(decl_id).unwrap_or_else(|| {
+                            panic!("checked module guarantees {decl_id:?} was declared before this use")
+                        });
+                        PlaceStorage::Slot { slot, offset: 0 }
+                    }
+                    Storage::Parameter => {
+                        let values = self.local_args.get(decl_id).cloned().unwrap_or_else(|| {
+                            panic!("checked module guarantees {decl_id:?} was bound as a parameter before this use")
+                        });
+                        PlaceStorage::Values(values)
+                    }
+                    Storage::Function => {
+                        unreachable!(
+                            "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
+                        );
+                    }
+                    Storage::Global => todo!("global/extern data storage is not yet implemented"),
+                };
+                (current, r#type.clone())
             }
-            Storage::Parameter => {
-                let values = self.local_args.get(decl_id).cloned().unwrap_or_else(|| {
-                    panic!("checked module guarantees {decl_id:?} was bound as a parameter before this use")
-                });
-                PlaceStorage::Values(values)
+            // A temporary as the root of a projection chain -- `foo().bar`,
+            // `Vec2 { ... }.x`, or a method call's implicit `&self` on
+            // either: materialized into an anonymous stack slot so the rest
+            // of the projection walk (including taking its address) has
+            // ordinary memory to work against, exactly like a local's slot
+            // -- the temporary just has no name and no declaration to key
+            // `stack_slots` by.
+            CheckedPlaceRoot::Expr(expr) => {
+                let r#type = expr.r#type.clone();
+                let values = self.process_expr(builder, (**expr).clone());
+                let size = total_bytes(r#type.clone(), self);
+                let slot = builder
+                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                let storage = PlaceStorage::Slot { slot, offset: 0 };
+                self.store_scalars(builder, &storage, &values);
+                (storage, r#type)
             }
-            Storage::Function => {
-                unreachable!(
-                    "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
-                );
-            }
-            Storage::Global => todo!("global/extern data storage is not yet implemented"),
         };
 
         for projection in &place.projections {
@@ -1158,6 +1180,29 @@ impl Codegen {
                 elements.into_iter().flat_map(|e| self.process_expr(builder, e)).collect()
             }
 
+            CheckedExpr::StructLiteral(CheckedStructLiteral { fields }) => {
+                // Values are evaluated in the order the user wrote them
+                // (their side effects must run in source order), but the
+                // result's leaves are concatenated in *declared field*
+                // order -- the exact flattening `ResolvedType::Struct`'s
+                // `into_ir_type` expects, so the result is usable anywhere
+                // a struct value already is. The checked module guarantees
+                // every declared field appears exactly once.
+                let ResolvedType::Struct(struct_type) = &node.r#type else {
+                    unreachable!("checked module guarantees a struct literal's own type is a struct");
+                };
+                let field_count = struct_type.borrow().fields.len();
+                let mut per_field: Vec<Option<Vec<Value>>> = vec![None; field_count];
+                for field in fields {
+                    per_field[field.field_index] = Some(self.process_expr(builder, field.value));
+                }
+                per_field
+                    .into_iter()
+                    .map(|leaves| leaves.expect("checked module guarantees every field is initialized"))
+                    .flatten()
+                    .collect()
+            }
+
             CheckedExpr::Slice(CheckedSlice { base, item_type, start, end }) => {
                 let (storage, base_type) = self.resolve_place_storage(&base, builder);
                 let ptr_type = self.pointer_type();
@@ -1355,8 +1400,13 @@ impl Codegen {
                 .for_each(|param| sig.returns.push(AbiParam::new(param)));
         }
         for param in &function_def.params {
-            let ir_type = param.r#type.clone().into_ir_type(self);
-            sig.params.push(AbiParam::new(ir_type[0])); // Simple types only for now. TODO: Fix.
+            // Every leaf, not just the first: a struct/slice passed by value
+            // flattens to several scalar params -- the same flattening call
+            // sites (`make_function_sig`) and the entry block's `argmap`
+            // already use, which all three must agree on.
+            for leaf in param.r#type.clone().into_ir_type(self) {
+                sig.params.push(AbiParam::new(leaf));
+            }
         }
         sig
     }
