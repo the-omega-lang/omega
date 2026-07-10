@@ -8,7 +8,7 @@ use crate::ast::expression::{
 };
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
-use crate::parser::{Parser, macro_syntax::parse_macro_invocation, parse_path, statement::parse_statement};
+use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::parse_statement};
 
 /// The full expression grammar's single entry point. A deliberate hybrid,
 /// not one generic precedence-climbing loop for everything: assignment
@@ -284,7 +284,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             Some(ExpressionNode { expression: Expression::MacroInvocation(inv), span })
         }
         TokenKind::Ident(_) => {
-            let path = parse_path(p)?;
+            let path = parse_expr_path(p)?;
             if p.check(&TokenKind::LBrace) {
                 if p.struct_literals_allowed() {
                     return parse_struct_literal(p, path, start);
@@ -303,6 +303,77 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
     }
 }
 
+/// A path in expression position, with speculative support for explicit
+/// generic arguments on one segment: `Optional<u32>::Some`,
+/// `MyNode<i32> { ... }`. Unlike type position -- where `<` can only mean
+/// generic arguments -- a `<` here is usually the comparison operator
+/// (`a < b`), so the generic reading is only *committed* when what follows
+/// the closing `>` proves it: another `::` segment, or a `{` opening a
+/// struct literal where one is allowed. (`a < b > c` isn't valid syntax
+/// anyway -- comparison is non-associative, see `parse_comparison` -- so
+/// nothing parseable is ever stolen by committing on those two tokens.)
+/// Anything less conclusive resets and leaves the `<` for the comparison
+/// tier, exactly like `recover_restricted_struct_literal`'s mark/reset
+/// discipline -- abandoned speculation never leaks errors.
+fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
+    use crate::ast::identifier::ExprPath;
+
+    let head = p.expect_ident()?;
+    let mut path = crate::ast::identifier::Path { head, tail: Vec::new() };
+    let mut generic_args = Vec::new();
+    let mut args_at = 0;
+
+    loop {
+        let segment = path.tail.len();
+        if generic_args.is_empty()
+            && p.check(&TokenKind::Lt)
+            && let Some(args) = try_parse_generic_args(p)
+        {
+            generic_args = args;
+            args_at = segment;
+        }
+        if !p.check(&TokenKind::ColonColon) {
+            break;
+        }
+        p.advance();
+        path.tail.push(p.expect_ident()?);
+    }
+
+    Some(ExprPath { path, generic_args, args_at })
+}
+
+/// The speculative `<Type, ...>` attempt behind `parse_expr_path` -- returns
+/// the parsed arguments only when the commit rule holds (see its doc
+/// comment), resetting the parser to just before the `<` otherwise.
+fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type>> {
+    let mark = p.mark();
+    p.advance(); // '<'
+    let mut args = Vec::new();
+    loop {
+        match crate::parser::r#type::parse_type(p) {
+            Some(ty) => args.push(ty),
+            None => {
+                p.reset(mark);
+                return None;
+            }
+        }
+        if !p.eat(&TokenKind::Comma) {
+            break;
+        }
+    }
+    if !p.eat(&TokenKind::Gt) {
+        p.reset(mark);
+        return None;
+    }
+    let commits = p.check(&TokenKind::ColonColon)
+        || (p.check(&TokenKind::LBrace) && p.struct_literals_allowed());
+    if !commits {
+        p.reset(mark);
+        return None;
+    }
+    Some(args)
+}
+
 /// A struct literal written where they're restricted (`if Name { ... }` --
 /// see `Parser::restrict_struct_literals`): normally the `{` simply starts
 /// the statement's body and the path stands alone, but when what follows
@@ -317,7 +388,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
 /// "path, then body" interpretation proceed untouched.
 fn recover_restricted_struct_literal(
     p: &mut Parser,
-    path: &crate::ast::identifier::Path,
+    path: &crate::ast::identifier::ExprPath,
     start: crate::diagnostics::Span,
 ) -> Option<ExpressionNode> {
     let mark = p.mark();
@@ -356,7 +427,7 @@ fn recover_restricted_struct_literal(
 /// (`field: Type;` there, `field: value;` here).
 fn parse_struct_literal(
     p: &mut Parser,
-    path: crate::ast::identifier::Path,
+    path: crate::ast::identifier::ExprPath,
     start: crate::diagnostics::Span,
 ) -> Option<ExpressionNode> {
     p.expect(&TokenKind::LBrace, "'{'");
@@ -455,9 +526,79 @@ mod tests {
         let Expression::StructLiteral(lit) = &w.value.expression else {
             panic!("expected a struct literal value")
         };
-        assert_eq!(lit.path.head.as_ref(), "Vec2");
+        assert_eq!(lit.path.path.head.as_ref(), "Vec2");
         let names: Vec<&str> = lit.fields.iter().map(|f| f.name.as_ref()).collect();
         assert_eq!(names, ["x", "y"]);
+    }
+
+    #[test]
+    fn generic_args_commit_on_path_continuation() {
+        // `Optional<u32>::Some { ... }` -- the `::` after `>` proves the
+        // generic reading; the literal's path carries the args on segment 0.
+        let stmts = body_statements("f() => void { a := Optional<u32>::Some { value: 10; }; }");
+        let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
+        let Expression::StructLiteral(lit) = &w.value.expression else {
+            panic!("expected a struct literal value")
+        };
+        assert_eq!(lit.path.path.head.as_ref(), "Optional");
+        assert_eq!(lit.path.path.tail[0].as_ref(), "Some");
+        assert_eq!(lit.path.generic_args.len(), 1);
+        assert_eq!(lit.path.args_at, 0);
+    }
+
+    #[test]
+    fn generic_args_do_not_steal_comparisons() {
+        // `a < b` followed by something that is neither `::` nor `{` must
+        // stay a comparison -- including the nasty `f(a < b, c > d)` shape,
+        // where a C++-style greedy reading would see `a<b, c>(d)`.
+        let stmts = body_statements("f() => void { x := a < b; g(a < b, c > d); }");
+        let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
+        assert!(matches!(w.value.expression, Expression::BinaryOp(_)));
+        let Statement::Expression(call) = &stmts[1] else { panic!("expected a call statement") };
+        let Expression::FunctionCall(call) = &call.expression else { panic!("expected a call") };
+        assert_eq!(call.args.len(), 2);
+    }
+
+    #[test]
+    fn enum_with_header_bodies_and_functions_parses() {
+        let source = r#"
+            enum MyCoolEnum(tag: i16, description: *u8) {
+                Bad(-1, "bad"),
+                First(0, "first") { message: *u8; },
+                Second(1, "second") {
+                    number: u64;
+                    decimal: f64;
+                }
+                Third(2, "third");
+
+                print_description(self) => void { puts(self.description); }
+                make() => MyCoolEnum { MyCoolEnum::Third }
+            }
+        "#;
+        let module = SourceModule::parse(source).expect("enum must parse");
+        let Item::Enum(e) = &module.nodes[0].item else { panic!("expected an enum item") };
+        assert_eq!(e.ident.as_ref(), "MyCoolEnum");
+        assert_eq!(e.header.len(), 2);
+        assert_eq!(e.header[0].ident.as_ref(), "tag");
+        let names: Vec<&str> = e.variants.iter().map(|v| v.ident.as_ref()).collect();
+        assert_eq!(names, ["Bad", "First", "Second", "Third"]);
+        assert_eq!(e.variants[2].fields.len(), 2);
+        assert_eq!(e.functions.len(), 2);
+    }
+
+    #[test]
+    fn enum_function_without_variant_terminator_reports_dedicated_error() {
+        let errors = SourceModule::parse(
+            "enum E { First, Second do_thing(self) => void { } }",
+        )
+        .expect_err("must not parse");
+        assert!(errors.iter().any(|e| matches!(e.kind, ParseErrorKind::EnumFunctionBeforeSemi)));
+    }
+
+    #[test]
+    fn enum_in_statement_position_reports_dedicated_error() {
+        let errors = SourceModule::parse("f() => void { enum E { A } }").expect_err("must not parse");
+        assert!(errors.iter().any(|e| matches!(e.kind, ParseErrorKind::EnumNotAllowedHere)));
     }
 
     #[test]

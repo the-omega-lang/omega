@@ -4,7 +4,7 @@ use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer};
 use omega_analyzer::checked::{CheckedItem, CheckedModule, Storage};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
-use omega_analyzer::resolved_type::{ResolvedStructType, ResolvedType};
+use omega_analyzer::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType};
 use omega_analyzer::resolver::{
     GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport,
     ResolvedItem, Visibility,
@@ -175,6 +175,10 @@ pub struct Driver {
     /// not -- be served immediately, without needing exclusive access to
     /// whatever is currently building it.
     struct_cells: HashMap<ItemKey, Rc<RefCell<ResolvedStructType>>>,
+    /// The enum counterpart of `struct_cells` -- same lifecycle, same
+    /// serve-while-`InProgress` role (a variant body's `*MyEnum` pointer
+    /// back at the enum still being collected resolves through this).
+    enum_cells: HashMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
     query_state: HashMap<ItemKey, QueryState>,
     /// Every item that finished its query successfully -- absent for one
     /// that's `Done` but failed (see `ensure_item`); the real diagnostics
@@ -212,6 +216,7 @@ impl Driver {
             local_items: HashMap::new(),
             imports: HashMap::new(),
             struct_cells: HashMap::new(),
+            enum_cells: HashMap::new(),
             query_state: HashMap::new(),
             resolved_items: HashMap::new(),
             generic_instantiations: HashMap::new(),
@@ -438,6 +443,7 @@ impl Driver {
         let hir = self.parsed.get(module_path).expect("parsed by local_item_index");
         Ok(match &hir.items[index] {
             HirItem::Struct(s) => s.generics.clone(),
+            HirItem::Enum(e) => e.generics.clone(),
             HirItem::FunctionDefinition(f) => f.generics.clone(),
             HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => vec![],
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
@@ -500,6 +506,25 @@ impl Driver {
             .clone()
     }
 
+    /// The enum counterpart of `struct_cell` -- same creation contract (see
+    /// its doc comment). The placeholder's tag defaults to the implicit
+    /// `u16`; `signature_of_enum` patches the real shape in.
+    fn enum_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedEnumType>> {
+        self.enum_cells
+            .entry(key.clone())
+            .or_insert_with(|| {
+                Rc::new(RefCell::new(ResolvedEnumType {
+                    id,
+                    name: key.1.clone(),
+                    tag_type: ResolvedType::U16,
+                    header: vec![],
+                    variants: vec![],
+                    functions: vec![],
+                }))
+            })
+            .clone()
+    }
+
     /// The one global query behind same-module resolution, cross-module
     /// resolution, and generic instantiation alike -- see
     /// `ModuleResolver::resolve_item`'s doc comment. A name already `Done`
@@ -543,6 +568,9 @@ impl Driver {
                     // than assumed impossible.
                     if let Some(cell) = self.struct_cells.get(&key) {
                         return Ok(ResolvedItem::Type(ResolvedType::Struct(cell.clone())));
+                    }
+                    if let Some(cell) = self.enum_cells.get(&key) {
+                        return Ok(ResolvedItem::Type(ResolvedType::Enum { cell: cell.clone(), variant: None }));
                     }
                     return Err(ResolveError::Cycle(vec![module_path.to_vec()]));
                 }
@@ -673,6 +701,22 @@ impl Driver {
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Struct(cell)));
                 (result, errors)
             }
+            HirItem::Enum(e) => {
+                let id = if type_args.is_empty() { e.id } else { self.fresh_synthetic_id() };
+                let key: ItemKey = (module_path.to_vec(), name.clone(), type_args.to_vec());
+                let cell = self.enum_cell(&key, id);
+                let method_ids: Vec<HirId> = e
+                    .functions
+                    .iter()
+                    .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
+                    .collect();
+                let mut analyzer =
+                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (e.id, e.span));
+                let ok = analyzer.signature_of_enum(e, &cell, &method_ids);
+                let (errors, _warnings) = analyzer.finish();
+                let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Enum { cell, variant: None }));
+                (result, errors)
+            }
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
         };
 
@@ -756,6 +800,19 @@ impl Driver {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
                 }
                 checked.map(|c| (CheckedItem::Struct(c), warnings))
+            }
+            HirItem::Enum(e) => {
+                let cell = self.enum_cells.get(&key).expect("resolved in phase 1").clone();
+                let substitution: Vec<(Ident, ResolvedType)> =
+                    e.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
+                let mut analyzer =
+                    Analyzer::new(self, module_path.to_vec(), imports, &substitution, (e.id, e.span));
+                let checked = analyzer.check_enum_body(e, &cell);
+                let (errors, warnings) = analyzer.finish();
+                if !errors.is_empty() {
+                    self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+                }
+                checked.map(|c| (CheckedItem::Enum(c), warnings))
             }
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
         }
@@ -976,7 +1033,7 @@ impl ModuleResolver for Driver {
         let candidates = index
             .iter()
             .filter(|&(_, &i)| match &hir.items[i] {
-                HirItem::Struct(_) => namespace == ItemNamespace::Type,
+                HirItem::Struct(_) | HirItem::Enum(_) => namespace == ItemNamespace::Type,
                 HirItem::FunctionDefinition(_) | HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => {
                     namespace == ItemNamespace::Value
                 }

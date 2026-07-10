@@ -1,7 +1,8 @@
 use crate::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
+        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
+        CheckedEnumDef, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
@@ -12,16 +13,20 @@ use crate::{
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     generics::unify_generic_type,
-    resolved_type::{NumericKind, ResolvedFunctionType, ResolvedMethod, ResolvedStructType, ResolvedType},
+    resolved_type::{
+        ConstValue, NumericKind, ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType,
+        ResolvedMethod, ResolvedStructType, ResolvedType,
+    },
     resolver::{GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem},
     similarity::best_match,
 };
 use omega_hir::{
-    BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirExpr, HirExprNode, HirExternDeclaration,
+    BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
+    HirExternDeclaration,
     HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirParam, HirPlace, HirPlaceRoot,
     HirProjection, HirSlice, HirStmt, HirStructDef, HirStructLiteral, HirWalrusDeclaration,
 };
-use omega_parser::prelude::{Ident, NumberBase, NumberExpr, Span, Type};
+use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, Span, Type};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -39,6 +44,14 @@ struct ResolvedCallee {
     callee: CheckedExprNode,
     fn_type: ResolvedFunctionType,
     implicit_self: Option<CheckedExprNode>,
+}
+
+/// What a `Name { ... }` literal's path resolved to -- see
+/// `Analyzer::resolve_literal_target`.
+enum LiteralTarget {
+    /// Always wraps `ResolvedType::Struct`.
+    Struct(ResolvedType),
+    EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
 }
 
 pub struct Analyzer<'r> {
@@ -122,6 +135,7 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
         HirItem::FunctionDefinition(f) => Some(f.name.clone()),
         HirItem::Struct(s) => Some(s.name.clone()),
+        HirItem::Enum(e) => Some(e.name.clone()),
         HirItem::Import(_) => None,
     }
 }
@@ -134,6 +148,7 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::ExternDeclaration(d) => (d.id, d.span),
         HirItem::FunctionDefinition(f) => (f.id, f.span),
         HirItem::Struct(s) => (s.id, s.span),
+        HirItem::Enum(e) => (e.id, e.span),
         HirItem::Import(i) => (i.id, i.span),
     }
 }
@@ -414,6 +429,71 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        // Enum member access: `tag` and header fields exist on every value;
+        // a body field additionally requires the value's variant to be
+        // statically known (see `ResolvedType::Enum`) *and* to be the one
+        // declaring it -- anything else gets the most precise "why not"
+        // this lookup can determine.
+        if let ResolvedType::Enum { cell, variant } = &dereffed {
+            let e = cell.borrow();
+            if field.as_ref() == "tag" {
+                let r#type = e.tag_type.clone();
+                projections.push(CheckedProjection::EnumTag { r#type: r#type.clone() });
+                return Some(r#type);
+            }
+            if let Some((index, (_, r#type))) = e.header.iter().enumerate().find(|(_, (name, _))| name == field) {
+                let r#type = r#type.clone();
+                projections.push(CheckedProjection::EnumHeader { field: field.clone(), index, r#type: r#type.clone() });
+                return Some(r#type);
+            }
+            if let Some(current) = variant
+                && let Some((field_index, (_, r#type))) =
+                    e.variants[*current].fields.iter().enumerate().find(|(_, (name, _))| name == field)
+            {
+                let r#type = r#type.clone();
+                projections.push(CheckedProjection::EnumBody {
+                    variant_index: *current,
+                    field_index,
+                    r#type: r#type.clone(),
+                });
+                return Some(r#type);
+            }
+            let owner = e.variants.iter().find(|v| v.fields.iter().any(|(name, _)| name == field));
+            let kind = match (owner, variant) {
+                (Some(owner), Some(current)) => AnalysisErrorKind::EnumFieldWrongVariant {
+                    field: field.clone(),
+                    owner: owner.name.clone(),
+                    actual: e.variants[*current].name.clone(),
+                },
+                (Some(owner), None) => AnalysisErrorKind::EnumFieldVariantUnknown {
+                    field: field.clone(),
+                    r#enum: e.name.clone(),
+                    owner: owner.name.clone(),
+                },
+                (None, _) => {
+                    // Suggest across everything reachable as `value.name` on
+                    // this value: tag, header, and -- when the variant is
+                    // known -- its own body fields.
+                    let tag = Ident("tag".into());
+                    let candidates = std::iter::once(&tag)
+                        .chain(e.header.iter().map(|(name, _)| name))
+                        .chain(
+                            variant
+                                .iter()
+                                .flat_map(|&i| e.variants[i].fields.iter().map(|(name, _)| name)),
+                        );
+                    AnalysisErrorKind::NoSuchEnumField {
+                        field: field.clone(),
+                        r#enum: e.name.clone(),
+                        similar: best_match(field, candidates),
+                    }
+                }
+            };
+            drop(e);
+            self.errors.push(AnalysisError::new(node_id, span, kind));
+            return None;
+        }
+
         let ResolvedType::Struct(struct_type) = &dereffed else {
             self.errors
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct { found: dereffed.clone() }));
@@ -455,18 +535,48 @@ impl<'r> Analyzer<'r> {
             ResolvedType::Pointer(inner) => inner.as_ref(),
             other => other,
         };
-        let ResolvedType::Struct(struct_type) = dereffed else {
-            return None;
-        };
-        let struct_type = struct_type.borrow();
-        if struct_type.fields.iter().any(|(name, _)| name == field) {
-            return None;
+        match dereffed {
+            ResolvedType::Struct(struct_type) => {
+                let struct_type = struct_type.borrow();
+                if struct_type.fields.iter().any(|(name, _)| name == field) {
+                    return None;
+                }
+                struct_type
+                    .functions
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, method)| method.clone())
+            }
+            ResolvedType::Enum { cell, variant } => {
+                // Anything reachable as a field on *this* value (`tag`,
+                // header, the known variant's body fields) shadows a
+                // same-named function, matching the struct rule above.
+                let e = cell.borrow();
+                let shadowed = field.as_ref() == "tag"
+                    || e.header.iter().any(|(name, _)| name == field)
+                    || variant.is_some_and(|i| e.variants[i].fields.iter().any(|(name, _)| name == field));
+                if shadowed {
+                    return None;
+                }
+                e.functions
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, method)| method.clone())
+            }
+            _ => None,
         }
-        struct_type
-            .functions
-            .iter()
-            .find(|(name, _)| name == field)
-            .map(|(_, method)| method.clone())
+    }
+
+    /// The name of an enum member that an assignment must not target --
+    /// `Some` when `target`'s final projection reads the tag or a header
+    /// field (both per-variant constants); see the `Assignment` arm of
+    /// `analyze_expr`.
+    fn immutable_enum_member(target: &CheckedPlace) -> Option<Ident> {
+        match target.projections.last()? {
+            CheckedProjection::EnumTag { .. } => Some(Ident("tag".into())),
+            CheckedProjection::EnumHeader { field, .. } => Some(field.clone()),
+            _ => None,
+        }
     }
 
     /// Resolves `absolute` (already a full `[module_path.., name]`, whether
@@ -519,7 +629,7 @@ impl<'r> Analyzer<'r> {
             {
                 match self.resolver.resolve_item(&missing, &[], true) {
                     Ok(ResolvedItem::Type(t)) => {
-                        self.resolve_static_function(node_id, span, &t, &absolute[missing.len()..])
+                        self.resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
                     }
                     _ => {
                         self.errors.push(AnalysisError::new(
@@ -554,14 +664,14 @@ impl<'r> Analyzer<'r> {
         path: &omega_parser::prelude::Path,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
-            return self.resolve_static_function(node_id, span, &head_type, &path.tail);
+            return self.resolve_type_member(node_id, span, &head_type, &path.tail);
         }
 
         let absolute: Vec<Ident> =
             self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
         let kind = match self.resolver.resolve_item(&absolute, &[], true) {
             Ok(ResolvedItem::Type(t)) => {
-                return self.resolve_static_function(node_id, span, &t, &path.tail);
+                return self.resolve_type_member(node_id, span, &t, &path.tail);
             }
             Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: path.head.clone() },
             // The head names nothing at all -- an unimported module, or a
@@ -582,55 +692,178 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// `Struct::function` -- resolves `rest` (the path segments after the
-    /// type's own name, always non-empty) against `r#type`'s static
-    /// functions. A function declared *without* `self` is static: callable
-    /// through the struct's name alone, with no instance. The result is an
-    /// ordinary `Storage::Function` place root, exactly what a member-call
-    /// callee resolves to -- codegen needs no new machinery for it.
-    fn resolve_static_function(
+    /// A place root whose path carries explicit generic arguments
+    /// (`Optional<u32>::Some`, `List<u8>::new`, `sum_generic<f64>`): the
+    /// argumented prefix resolves through the same instantiating
+    /// `resolve_item` query every other generic reference uses, and
+    /// whatever one segment may follow it resolves as a member of the
+    /// resulting type (`resolve_type_member`). An instantiated *value* (a
+    /// generic function referenced with explicit arguments) is legal only
+    /// with nothing after it.
+    fn resolve_generic_args_place(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        expr_path: &ExprPath,
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        let segments = expr_path.path.segments();
+        let rest = &segments[expr_path.args_at + 1..];
+        if rest.len() > 1 {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::GenericPathTooDeep { r#type: segments[expr_path.args_at].clone() },
+            ));
+            return None;
+        }
+
+        let type_args = self.resolve_generic_arg_list(node_id, span, expr_path)?;
+        let absolute = self.generic_prefix_absolute(node_id, span, &segments[..=expr_path.args_at])?;
+        match self.resolver.resolve_item(&absolute, &type_args, true) {
+            Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAValue(absolute)));
+                None
+            }
+            Ok(ResolvedItem::Type(t)) => self.resolve_type_member(node_id, span, &t, rest),
+            Ok(ResolvedItem::Value { r#type, storage, decl_id }) if rest.is_empty() => {
+                let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+                Some((root, r#type))
+            }
+            Ok(ResolvedItem::Value { .. }) => {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::NotAModule { name: segments[expr_path.args_at].clone() },
+                ));
+                None
+            }
+            Err(e) => {
+                self.errors
+                    .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                None
+            }
+        }
+    }
+
+    /// Resolves an `ExprPath`'s written `<T, ...>` arguments -- always
+    /// indirect, same reasoning as `Type::Generic`'s argument resolution in
+    /// `Context::resolve_type`.
+    fn resolve_generic_arg_list(&mut self, node_id: HirId, span: Span, expr_path: &ExprPath) -> Option<Vec<ResolvedType>> {
+        self.analyze_all(&expr_path.generic_args, |this, arg| {
+            this.resolve_type_or_error(node_id, span, arg, true)
+        })
+    }
+
+    /// The absolute item path of an expression path's generic-argumented
+    /// *prefix* (`Optional` in `Optional<u32>::Some`, `mymodule::List` in
+    /// `mymodule::List<u8>::new`) -- the same alias-vs-own-module priority
+    /// `Context::resolve_absolute_item_path` applies to type positions.
+    fn generic_prefix_absolute(&mut self, node_id: HirId, span: Span, prefix: &[Ident]) -> Option<Vec<Ident>> {
+        if let [single] = prefix {
+            if let Some(absolute) = self.context.generic_alias(single) {
+                return Some(absolute.clone());
+            }
+            return Some(self.module_path.iter().cloned().chain(std::iter::once(single.clone())).collect());
+        }
+        let path = omega_parser::prelude::Path { head: prefix[0].clone(), tail: prefix[1..].to_vec() };
+        match self.context.absolute_path(&path) {
+            Some(absolute) => Some(absolute),
+            None => {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UndefinedPathHead {
+                        name: path.head.clone(),
+                        similar_module: self.context.similar_module_alias(&path.head),
+                        similar_type: self.context.similar_type_name(&path.head),
+                    },
+                ));
+                None
+            }
+        }
+    }
+
+    /// `Type::member` -- resolves `rest` (the path segments after the type's
+    /// own name, always non-empty) against `r#type`'s members. For a struct
+    /// that can only be a static function; for an enum it's a variant
+    /// (producing a whole constructed value -- the unit form, so only valid
+    /// for a body-less variant) or a static function. A function declared
+    /// *without* `self` is static: callable through the type's name alone,
+    /// with no instance. A static function resolves to an ordinary
+    /// `Storage::Function` place root, exactly what a member-call callee
+    /// resolves to; a unit variant resolves to a `CheckedPlaceRoot::Expr`
+    /// construction -- codegen needs no new machinery for either.
+    fn resolve_type_member(
         &mut self,
         node_id: HirId,
         span: Span,
         r#type: &ResolvedType,
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        let ResolvedType::Struct(cell) = r#type else {
-            self.errors.push(AnalysisError::new(
-                node_id,
-                span,
-                AnalysisErrorKind::StaticAccessOnNonStruct { found: r#type.clone() },
-            ));
-            return None;
-        };
-        let function = &rest[0];
-        let (struct_name, method, similar) = {
-            let struct_type = cell.borrow();
-            let method = struct_type
-                .functions
-                .iter()
-                .find(|(name, _)| name == function)
-                .map(|(_, method)| method.clone());
-            let similar = match method {
-                Some(_) => None,
-                None => best_match(function, struct_type.functions.iter().map(|(name, _)| name)),
-            };
-            (struct_type.name.clone(), method, similar)
+        let member = &rest[0];
+        let (type_name, method, missing_member_error) = match r#type {
+            ResolvedType::Struct(cell) => {
+                let struct_type = cell.borrow();
+                let method = struct_type
+                    .functions
+                    .iter()
+                    .find(|(name, _)| name == member)
+                    .map(|(_, method)| method.clone());
+                let similar = match method {
+                    Some(_) => None,
+                    None => best_match(member, struct_type.functions.iter().map(|(name, _)| name)),
+                };
+                let missing = AnalysisErrorKind::NoSuchStructFunction {
+                    r#struct: struct_type.name.clone(),
+                    function: member.clone(),
+                    similar,
+                };
+                (struct_type.name.clone(), method, missing)
+            }
+            ResolvedType::Enum { cell, .. } => {
+                // A variant wins over a same-named function -- analysis of
+                // the definition would ideally forbid the collision, but
+                // resolution still needs a deterministic order.
+                if let Some((variant_index, variant)) = {
+                    let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
+                    found
+                } {
+                    return self.resolve_unit_variant(node_id, span, cell, variant_index, &variant, rest);
+                }
+                let e = cell.borrow();
+                let method = e
+                    .functions
+                    .iter()
+                    .find(|(name, _)| name == member)
+                    .map(|(_, method)| method.clone());
+                let missing = AnalysisErrorKind::NoSuchEnumMember {
+                    r#enum: e.name.clone(),
+                    name: member.clone(),
+                    similar_variant: best_match(member, e.variants.iter().map(|v| &v.name)),
+                    similar_function: best_match(member, e.functions.iter().map(|(name, _)| name)),
+                };
+                (e.name.clone(), method, missing)
+            }
+            other => {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::StaticAccessOnNonStruct { found: other.clone() },
+                ));
+                return None;
+            }
         };
 
         let Some(method) = method else {
-            self.errors.push(AnalysisError::new(
-                node_id,
-                span,
-                AnalysisErrorKind::NoSuchStructFunction { r#struct: struct_name, function: function.clone(), similar },
-            ));
+            self.errors.push(AnalysisError::new(node_id, span, missing_member_error));
             return None;
         };
         if rest.len() > 1 {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
-                AnalysisErrorKind::StructPathTooDeep { r#struct: struct_name, function: function.clone() },
+                AnalysisErrorKind::StructPathTooDeep { r#struct: type_name, function: member.clone() },
             ));
             return None;
         }
@@ -639,8 +872,8 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::MemberFunctionWithoutInstance {
-                    r#struct: struct_name,
-                    function: function.clone(),
+                    r#struct: type_name,
+                    function: member.clone(),
                 },
             ));
             return None;
@@ -655,6 +888,49 @@ impl<'r> Analyzer<'r> {
         Some((root, fn_type))
     }
 
+    /// `Enum::Variant` in value position -- the unit construction. Only a
+    /// body-less variant has one (there is no implicit zeroing to fill a
+    /// body with); the result is an ordinary expression place root whose
+    /// type statically knows its variant.
+    fn resolve_unit_variant(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        cell: &Rc<RefCell<ResolvedEnumType>>,
+        variant_index: usize,
+        variant: &ResolvedEnumVariant,
+        rest: &[Ident],
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        if rest.len() > 1 {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::GenericPathTooDeep { r#type: variant.name.clone() },
+            ));
+            return None;
+        }
+        if !variant.fields.is_empty() {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::EnumVariantMissingBody {
+                    r#enum: cell.borrow().name.clone(),
+                    variant: variant.name.clone(),
+                    fields: variant.fields.iter().map(|(name, _)| name.clone()).collect(),
+                },
+            ));
+            return None;
+        }
+        let r#type = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
+        let construct = CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: r#type.clone(),
+            kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields: vec![] }),
+        };
+        Some((CheckedPlaceRoot::Expr(Box::new(construct)), r#type))
+    }
+
     /// Resolves a place's root, then folds over its projections in source
     /// order, resolving field/index/deref projections against the running
     /// type and recording the exact resolved shape (field index, item/
@@ -666,6 +942,12 @@ impl<'r> Analyzer<'r> {
         place: &HirPlace,
     ) -> Option<(CheckedPlace, ResolvedType)> {
         let (root, mut current_type) = match &place.root {
+            // A path with explicit generic arguments (`Optional<u32>::Some`,
+            // `sum_generic<f64>`) -- resolved through the instantiating
+            // machinery; see `resolve_generic_args_place`.
+            HirPlaceRoot::Path(expr_path) if expr_path.plain().is_none() => {
+                self.resolve_generic_args_place(node_id, span, expr_path)?
+            }
             // An unqualified place root -- a local (function-body-level)
             // binding wins if there is one; otherwise this is a same-module
             // top-level reference, resolved the exact same way a qualified
@@ -676,7 +958,8 @@ impl<'r> Analyzer<'r> {
             // mid-collection when referenced (see
             // `ModuleResolver::resolve_item`'s doc comment) -- so this
             // always passes `true`.
-            HirPlaceRoot::Path(path) if path.is_unqualified() => {
+            HirPlaceRoot::Path(expr_path) if expr_path.path.is_unqualified() => {
+                let path = &expr_path.path;
                 let ident = &path.head;
                 if let Some(binding) = self.context.find_variable(ident) {
                     let root = CheckedPlaceRoot::Variable {
@@ -710,16 +993,19 @@ impl<'r> Analyzer<'r> {
             }
             // A qualified place root -- either module-qualified
             // (`mymodule::thing::foo`, head an imported module alias) or
-            // type-qualified (`MyStruct::do_thing`, head a struct type, the
-            // tail one of its static functions). A module alias wins when
+            // type-qualified (`MyStruct::do_thing`/`MyEnum::Variant`, head a
+            // type, the tail one of its members). A module alias wins when
             // both could apply, preserving the module interpretation
             // unchanged; a head that's neither is reported by
             // `resolve_type_qualified_value` with the most precise error it
             // can determine.
-            HirPlaceRoot::Path(path) => match self.context.absolute_path(path) {
-                Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None)?,
-                None => self.resolve_type_qualified_value(node_id, span, path)?,
-            },
+            HirPlaceRoot::Path(expr_path) => {
+                let path = &expr_path.path;
+                match self.context.absolute_path(path) {
+                    Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None)?,
+                    None => self.resolve_type_qualified_value(node_id, span, path)?,
+                }
+            }
             HirPlaceRoot::Expr(expr) => {
                 let checked_expr = self.analyze_expr(expr)?;
                 let r#type = checked_expr.r#type.clone();
@@ -796,10 +1082,11 @@ impl<'r> Analyzer<'r> {
                         ResolvedType::Pointer(inner) => inner.as_ref(),
                         other => other,
                     };
-                    let ResolvedType::Struct(cell) = dereffed else {
-                        unreachable!("find_method only ever finds methods on struct types");
+                    let r#struct = match dereffed {
+                        ResolvedType::Struct(cell) => cell.borrow().name.clone(),
+                        ResolvedType::Enum { cell, .. } => cell.borrow().name.clone(),
+                        _ => unreachable!("find_method only ever finds methods on struct/enum types"),
                     };
-                    let r#struct = cell.borrow().name.clone();
                     self.errors.push(AnalysisError::new(
                         callee.id,
                         callee.span,
@@ -820,7 +1107,9 @@ impl<'r> Analyzer<'r> {
                         kind: CheckedExpr::Place(checked_base),
                     }
                 } else {
-                    let pointer_type = ResolvedType::Pointer(Box::new(base_type));
+                    // Widened for the same reason an explicit `&` widens: a
+                    // method's `self` is `*Enum`, never `*Enum::Variant`.
+                    let pointer_type = ResolvedType::Pointer(Box::new(base_type.widened()));
                     CheckedExprNode {
                         id: callee.id,
                         span: callee.span,
@@ -913,7 +1202,11 @@ impl<'r> Analyzer<'r> {
         if !place.projections.is_empty() {
             return None;
         }
-        let HirPlaceRoot::Path(path) = &place.root else { return None };
+        let HirPlaceRoot::Path(expr_path) = &place.root else { return None };
+        // Explicit generic arguments already pin the instantiation -- the
+        // ordinary path resolves them (see `resolve_generic_args_place`),
+        // with no argument-driven deduction wanted or needed.
+        let Some(path) = expr_path.plain() else { return None };
 
         if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
             return None;
@@ -962,7 +1255,11 @@ impl<'r> Analyzer<'r> {
         let mut type_args = Vec::with_capacity(sig.generics.len());
         for generic in &sig.generics {
             match subst.get(generic) {
-                Some(resolved) => type_args.push(resolved.clone()),
+                // Widened: a deduced `T` must never carry a caller-specific
+                // enum-variant refinement -- `T = MyEnum`, not
+                // `T = MyEnum::Second` (which would mint a spurious extra
+                // instantiation per variant).
+                Some(resolved) => type_args.push(resolved.widened()),
                 None => {
                     self.errors.push(AnalysisError::new(
                         node_id,
@@ -999,7 +1296,7 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         for (arg, (_, expected_type)) in checked_args.iter().zip(&fn_type.params) {
-            if arg.r#type != *expected_type {
+            if !expected_type.accepts(&arg.r#type) {
                 self.errors.push(AnalysisError::new(
                     arg.id,
                     arg.span,
@@ -1391,10 +1688,14 @@ impl<'r> Analyzer<'r> {
                     checked_branches.iter().map(|(_, b)| Self::block_type(b)).collect();
                 let else_kind: Option<Option<ResolvedType>> = checked_else.as_ref().map(Self::block_type);
 
+                // Widened: branches producing *different variants* of one
+                // enum (`if c { E::A } else { E::B }`) still agree on the
+                // enum itself, which is then the whole `if`'s type.
                 let result_type = match &else_kind {
                     Some(k) => branch_kinds.iter().cloned().chain(std::iter::once(k.clone())).flatten().next(),
                     None => None,
                 }
+                .map(|t| t.widened())
                 .unwrap_or(ResolvedType::Void);
 
                 let mismatch = branch_kinds
@@ -1402,7 +1703,7 @@ impl<'r> Analyzer<'r> {
                     .cloned()
                     .chain(else_kind.iter().cloned())
                     .flatten()
-                    .find(|t| *t != result_type);
+                    .find(|t| !result_type.accepts(t));
                 if let Some(found) = mismatch {
                     self.errors.push(AnalysisError::new(
                         node_id,
@@ -1454,7 +1755,7 @@ impl<'r> Analyzer<'r> {
 
                     if param_index < fn_type.params.len() {
                         let expected_type = &fn_type.params[param_index].1;
-                        if &checked_arg.r#type != expected_type {
+                        if !expected_type.accepts(&checked_arg.r#type) {
                             self.errors.push(AnalysisError::new(
                                 arg.id,
                                 arg.span,
@@ -1493,7 +1794,7 @@ impl<'r> Analyzer<'r> {
                 let (checked_target, target_type) =
                     self.analyze_place(assignment.target.id, assignment.target.span, place)?;
 
-                if target_type != checked_value.r#type {
+                if !target_type.accepts(&checked_value.r#type) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1501,6 +1802,18 @@ impl<'r> Analyzer<'r> {
                             target: target_type,
                             value: checked_value.r#type,
                         },
+                    ));
+                    return None;
+                }
+
+                // The tag and header fields are per-variant constants --
+                // writable body fields are the only mutable part of an enum
+                // value.
+                if let Some(field) = Self::immutable_enum_member(&checked_target) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::EnumFieldImmutable { field },
                     ));
                     return None;
                 }
@@ -1524,10 +1837,15 @@ impl<'r> Analyzer<'r> {
                 };
                 let (checked_place, place_type) = self.analyze_place(base.id, base.span, place)?;
 
+                // Widened: a variant refinement never survives indirection
+                // (`&second_valued` is a plain `*MyEnum`, not
+                // `*MyEnum::Second`) -- a refined pointee type could be
+                // silently falsified by any write through the pointer, so
+                // no pointer ever carries one.
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::Pointer(Box::new(place_type)),
+                    r#type: ResolvedType::Pointer(Box::new(place_type.widened())),
                     kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_place }),
                 })
             }
@@ -1631,13 +1949,16 @@ impl<'r> Analyzer<'r> {
                 };
 
                 let checked_first = self.analyze_expr(first)?;
-                let item_type = checked_first.r#type.clone();
+                // Widened for the same reason an `if`'s branches are -- an
+                // array of mixed variants of one enum is an array of that
+                // enum.
+                let item_type = checked_first.r#type.widened();
                 let mut checked_elements = Vec::with_capacity(elements.len());
                 checked_elements.push(checked_first);
 
                 for element in rest {
                     let checked_element = self.analyze_expr(element)?;
-                    if checked_element.r#type != item_type {
+                    if !item_type.accepts(&checked_element.r#type) {
                         self.errors.push(AnalysisError::new(
                             element.id,
                             element.span,
@@ -1707,40 +2028,110 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `Name { field: value; ... }` -- builds a whole struct value in one
-    /// expression. The literal's name resolves exactly like a type
-    /// annotation would (one mechanism -- unknown names/modules get the
-    /// same diagnostics, typo suggestions included, that type positions
-    /// already give), and every declared field must be set exactly once
-    /// with a value of its exact type. All field problems in one literal
-    /// are reported in one pass (same keep-going discipline as
-    /// `analyze_all`), not just the first.
+    /// `Name { field: value; ... }` -- builds a whole struct value, or --
+    /// when the path names an enum variant (`Enum::Variant { ... }`) -- a
+    /// whole enum value, in one expression. The literal's name resolves
+    /// with the same diagnostics (typo suggestions included) type positions
+    /// already give (see `resolve_literal_target`), and every declared
+    /// field must be set exactly once with a value of its exact type. All
+    /// field problems in one literal are reported in one pass (same
+    /// keep-going discipline as `analyze_all`), not just the first.
     fn analyze_struct_literal(
         &mut self,
         node_id: HirId,
         span: Span,
         lit: &HirStructLiteral,
     ) -> Option<CheckedExprNode> {
-        let resolved =
-            self.resolve_type_or_error(node_id, span, &Type::Named(lit.path.clone()), true)?;
-        let ResolvedType::Struct(cell) = &resolved else {
-            self.errors.push(AnalysisError::new(
-                node_id,
-                span,
-                AnalysisErrorKind::StructLiteralNotAStruct { found: resolved },
-            ));
-            return None;
-        };
-        // Snapshot the declared fields so `cell` isn't borrowed across the
-        // value analysis below -- a nested literal of this same struct type
-        // needs to borrow it again.
-        let declared: Vec<(Ident, ResolvedType)> = cell.borrow().fields.clone();
-        let struct_name = cell.borrow().name.clone();
+        match self.resolve_literal_target(node_id, span, &lit.path)? {
+            LiteralTarget::Struct(resolved) => {
+                let ResolvedType::Struct(cell) = &resolved else {
+                    unreachable!("LiteralTarget::Struct always wraps ResolvedType::Struct");
+                };
+                // Snapshot the declared fields so `cell` isn't borrowed
+                // across the value analysis below -- a nested literal of
+                // this same struct type needs to borrow it again.
+                let declared: Vec<(Ident, ResolvedType)> = cell.borrow().fields.clone();
+                let struct_name = cell.borrow().name.clone();
+                let base = resolved.clone();
+                let fields = self.check_field_initializers(
+                    node_id,
+                    span,
+                    &struct_name,
+                    &declared,
+                    &lit.fields,
+                    |field| AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: base.clone() },
+                )?;
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: resolved,
+                    kind: CheckedExpr::StructLiteral(CheckedStructLiteral { fields }),
+                })
+            }
+            LiteralTarget::EnumVariant(cell, variant_index) => {
+                let (enum_name, variant_name, declared, header_names) = {
+                    let e = cell.borrow();
+                    let v = &e.variants[variant_index];
+                    let header_names: Vec<Ident> = e.header.iter().map(|(name, _)| name.clone()).collect();
+                    (e.name.clone(), v.name.clone(), v.fields.clone(), header_names)
+                };
+                if declared.is_empty() {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::EnumVariantHasNoBody { r#enum: enum_name, variant: variant_name },
+                    ));
+                    return None;
+                }
+                let declared_names: Vec<Ident> = declared.iter().map(|(name, _)| name.clone()).collect();
+                let unknown_enum = enum_name.clone();
+                let fields = self.check_field_initializers(
+                    node_id,
+                    span,
+                    &variant_name,
+                    &declared,
+                    &lit.fields,
+                    move |field| {
+                        if field.name.as_ref() == "tag" || header_names.contains(&field.name) {
+                            AnalysisErrorKind::EnumHeaderFieldInLiteral { field: field.name.clone() }
+                        } else {
+                            AnalysisErrorKind::NoSuchEnumField {
+                                field: field.name.clone(),
+                                r#enum: unknown_enum.clone(),
+                                similar: best_match(&field.name, declared_names.iter()),
+                            }
+                        }
+                    },
+                )?;
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::Enum { cell, variant: Some(variant_index) },
+                    kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }),
+                })
+            }
+        }
+    }
 
+    /// The shared per-field discipline behind both literal forms: each
+    /// initializer must name a declared field, exactly once, with a value
+    /// of its field's type; every declared field must be covered (there is
+    /// no implicit zeroing). `unknown_field` supplies the form-specific
+    /// "no such field" diagnostic. `owner` is the name shown by the
+    /// missing-fields error (the struct, or the enum variant).
+    fn check_field_initializers(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        owner: &Ident,
+        declared: &[(Ident, ResolvedType)],
+        fields: &[omega_hir::HirStructLiteralField],
+        unknown_field: impl Fn(&omega_hir::HirStructLiteralField) -> AnalysisErrorKind,
+    ) -> Option<Vec<CheckedStructLiteralField>> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
-        let mut checked_fields = Vec::with_capacity(lit.fields.len());
+        let mut checked_fields = Vec::with_capacity(fields.len());
         let mut ok = true;
-        for field in &lit.fields {
+        for field in fields {
             if let Some(previous) = seen.insert(field.name.clone(), field.name_span) {
                 self.errors.push(AnalysisError::new(
                     node_id,
@@ -1756,11 +2147,7 @@ impl<'r> Analyzer<'r> {
                 .find(|(_, (name, _))| name == &field.name)
                 .map(|(index, (_, r#type))| (index, r#type.clone()));
             let Some((field_index, expected)) = found else {
-                self.errors.push(AnalysisError::new(
-                    node_id,
-                    field.name_span,
-                    AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: resolved.clone() },
-                ));
+                self.errors.push(AnalysisError::new(node_id, field.name_span, unknown_field(field)));
                 ok = false;
                 continue;
             };
@@ -1768,7 +2155,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if value.r#type != expected {
+            if !expected.accepts(&value.r#type) {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     value.span,
@@ -1790,17 +2177,173 @@ impl<'r> Analyzer<'r> {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
-                AnalysisErrorKind::MissingFieldInitializers { r#struct: struct_name, missing },
+                AnalysisErrorKind::MissingFieldInitializers { r#struct: owner.clone(), missing },
             ));
             ok = false;
         }
 
-        ok.then(|| CheckedExprNode {
-            id: node_id,
-            span,
-            r#type: resolved.clone(),
-            kind: CheckedExpr::StructLiteral(CheckedStructLiteral { fields: checked_fields }),
-        })
+        ok.then_some(checked_fields)
+    }
+
+    /// What a `Name { ... }` literal's path actually names -- a struct, or
+    /// one specific variant of an enum -- with the most precise error this
+    /// can determine otherwise. Resolution order mirrors place-root
+    /// resolution: explicit generic arguments pin the type prefix
+    /// exactly; otherwise an imported-module alias reading of the head wins
+    /// (trying the whole path as the type first, then all-but-last as an
+    /// enum with the last segment its variant), and a non-alias multi-
+    /// segment head must itself be a type in scope or this module's own.
+    fn resolve_literal_target(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &ExprPath,
+    ) -> Option<LiteralTarget> {
+        if path.plain().is_none() {
+            let segments = path.path.segments();
+            let rest = segments[path.args_at + 1..].to_vec();
+            if rest.len() > 1 {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::GenericPathTooDeep { r#type: segments[path.args_at].clone() },
+                ));
+                return None;
+            }
+            let type_args = self.resolve_generic_arg_list(node_id, span, path)?;
+            let absolute = self.generic_prefix_absolute(node_id, span, &segments[..=path.args_at])?;
+            let resolved = match self.resolver.resolve_item(&absolute, &type_args, true) {
+                Ok(ResolvedItem::Type(t)) => t,
+                Ok(ResolvedItem::Value { .. }) => {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(crate::error::TypeResolutionError::NotAType(absolute)),
+                    ));
+                    return None;
+                }
+                Err(e) => {
+                    self.errors
+                        .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                    return None;
+                }
+            };
+            return self.literal_target_from_type(node_id, span, resolved, &rest);
+        }
+
+        let plain = &path.path;
+
+        // A bare name: exactly a written type annotation, same diagnostics
+        // (typo suggestions included) and all.
+        if plain.is_unqualified() {
+            let resolved = self.resolve_type_or_error(node_id, span, &Type::Named(plain.clone()), true)?;
+            return self.literal_target_from_type(node_id, span, resolved, &[]);
+        }
+
+        // Module-qualified head: the whole path as the type first
+        // (`mymodule::Vec2 { ... }`), then all-but-last as an enum whose
+        // last segment names the variant (`mymodule::Shape::Circle`).
+        if let Some(absolute) = self.context.absolute_path(plain) {
+            let first_error = match self.resolver.resolve_item(&absolute, &[], true) {
+                Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
+                Ok(ResolvedItem::Value { .. }) => {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(crate::error::TypeResolutionError::NotAType(absolute)),
+                    ));
+                    return None;
+                }
+                Err(e) => e,
+            };
+            if absolute.len() >= 3 {
+                let (variant, prefix) = absolute.split_last().expect("length checked above");
+                if let Ok(ResolvedItem::Type(t)) = self.resolver.resolve_item(prefix, &[], true) {
+                    return self.literal_target_from_type(node_id, span, t, std::slice::from_ref(variant));
+                }
+            }
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(first_error)));
+            return None;
+        }
+
+        // Head isn't a module alias -- it must be a type (`Enum::Variant`):
+        // local/imported first, then this module's own item, mirroring
+        // `resolve_type_qualified_value`'s priority and error precision.
+        if let Some(head_type) = self.context.find_defined_type(&plain.head).cloned() {
+            return self.literal_target_from_type(node_id, span, head_type, &plain.tail);
+        }
+        let absolute: Vec<Ident> =
+            self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect();
+        let kind = match self.resolver.resolve_item(&absolute, &[], true) {
+            Ok(ResolvedItem::Type(t)) => {
+                return self.literal_target_from_type(node_id, span, t, &plain.tail);
+            }
+            Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: plain.head.clone() },
+            Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
+                name: plain.head.clone(),
+                similar_module: self.context.similar_module_alias(&plain.head),
+                similar_type: self.context.similar_type_name(&plain.head).or_else(|| {
+                    self.resolver.similar_item_name(&self.module_path, &plain.head, ItemNamespace::Type)
+                }),
+            },
+            Err(e) => AnalysisErrorKind::ModuleResolution(e),
+        };
+        self.errors.push(AnalysisError::new(node_id, span, kind));
+        None
+    }
+
+    /// Interprets an already-resolved type (plus at most one trailing path
+    /// segment) as a literal's target -- see `resolve_literal_target`.
+    fn literal_target_from_type(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+        rest: &[Ident],
+    ) -> Option<LiteralTarget> {
+        let kind = match &r#type {
+            ResolvedType::Struct(cell) => match rest.first() {
+                None => return Some(LiteralTarget::Struct(r#type.clone())),
+                Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
+                    r#struct: cell.borrow().name.clone(),
+                    name: name.clone(),
+                },
+            },
+            ResolvedType::Enum { cell, .. } => match rest {
+                [] => {
+                    let e = cell.borrow();
+                    AnalysisErrorKind::EnumLiteralWithoutVariant {
+                        r#enum: e.name.clone(),
+                        example: e
+                            .variants
+                            .first()
+                            .map(|v| v.name.clone())
+                            .unwrap_or_else(|| Ident("Variant".into())),
+                    }
+                }
+                [variant_name] => {
+                    let found = cell.borrow().variant(variant_name).map(|(index, _)| index);
+                    match found {
+                        Some(index) => return Some(LiteralTarget::EnumVariant(cell.clone(), index)),
+                        None => {
+                            let e = cell.borrow();
+                            AnalysisErrorKind::NoSuchEnumMember {
+                                r#enum: e.name.clone(),
+                                name: variant_name.clone(),
+                                similar_variant: best_match(variant_name, e.variants.iter().map(|v| &v.name)),
+                                similar_function: best_match(variant_name, e.functions.iter().map(|(name, _)| name)),
+                            }
+                        }
+                    }
+                }
+                _ => AnalysisErrorKind::GenericPathTooDeep { r#type: cell.borrow().name.clone() },
+            },
+            _ if rest.is_empty() => AnalysisErrorKind::StructLiteralNotAStruct { found: r#type.clone() },
+            _ => AnalysisErrorKind::StaticAccessOnNonStruct { found: r#type.clone() },
+        };
+        self.errors.push(AnalysisError::new(node_id, span, kind));
+        None
     }
 
     /// Desugars `ident := value;` into the same two `CheckedStmt`s writing
@@ -1856,7 +2399,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 let checked = self.analyze_expr(expr)?;
-                if checked.r#type != self.current_return_type {
+                if !self.current_return_type.accepts(&checked.r#type) {
                     self.errors.push(AnalysisError::new(
                         expr.id,
                         expr.span,
@@ -2028,7 +2571,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<()> {
         match Self::block_type(body) {
             None => Some(()),
-            Some(found) if found == *return_type => Some(()),
+            Some(found) if return_type.accepts(&found) => Some(()),
             Some(found) => {
                 self.errors.push(AnalysisError::new(
                     id,
@@ -2191,6 +2734,449 @@ impl<'r> Analyzer<'r> {
             .collect();
 
         Some(())
+    }
+
+    /// A top-level enum's *signature*: tag type, header fields, every
+    /// variant (tag value, header constants, body fields), and every
+    /// function's signature -- populated into `cell` in place, exactly like
+    /// `signature_of_struct` (whose cell/`method_ids` contract this
+    /// shares; see its doc comment). Keep-going discipline throughout: all
+    /// independent problems in one enum definition are reported in one
+    /// pass, and the cell is only ever populated when everything held.
+    pub fn signature_of_enum(
+        &mut self,
+        e: &HirEnumDef,
+        cell: &Rc<RefCell<ResolvedEnumType>>,
+        method_ids: &[HirId],
+    ) -> Option<()> {
+        let mut ok = true;
+
+        // --- header: optional leading explicit tag, then shared fields ---
+        let mut explicit_tag: Option<ResolvedType> = None;
+        let mut header: Vec<(Ident, ResolvedType)> = Vec::new();
+        let mut seen_header: HashMap<Ident, Span> = HashMap::new();
+        for (position, field) in e.header.iter().enumerate() {
+            if field.ident.as_ref() == "tag" {
+                if position != 0 {
+                    self.errors
+                        .push(AnalysisError::new(field.id, field.span, AnalysisErrorKind::EnumTagNotFirst));
+                    ok = false;
+                    continue;
+                }
+                let Some(tag_type) = self.resolve_type_or_error(field.id, field.span, &field.r#type, true) else {
+                    ok = false;
+                    continue;
+                };
+                let is_integer = matches!(
+                    tag_type.numeric_kind(),
+                    Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
+                );
+                if !is_integer {
+                    self.errors.push(AnalysisError::new(
+                        field.id,
+                        field.span,
+                        AnalysisErrorKind::EnumTagNotInteger { found: tag_type },
+                    ));
+                    ok = false;
+                    continue;
+                }
+                explicit_tag = Some(tag_type);
+                continue;
+            }
+            if seen_header.insert(field.ident.clone(), field.span).is_some() {
+                self.errors.push(AnalysisError::new(
+                    field.id,
+                    field.span,
+                    AnalysisErrorKind::EnumFieldShadowsHeader { field: field.ident.clone(), variant: None },
+                ));
+                ok = false;
+                continue;
+            }
+            // Header fields are laid out inline in every enum value -- the
+            // same `indirect = false` a struct field passes.
+            let Some(resolved) = self.resolve_type_or_error(field.id, field.span, &field.r#type, false) else {
+                ok = false;
+                continue;
+            };
+            if !Self::const_representable(&resolved) {
+                self.errors.push(AnalysisError::new(
+                    field.id,
+                    field.span,
+                    AnalysisErrorKind::EnumHeaderFieldUnsupportedType {
+                        field: field.ident.clone(),
+                        found: resolved,
+                    },
+                ));
+                ok = false;
+                continue;
+            }
+            header.push((field.ident.clone(), resolved));
+        }
+        let has_tag = explicit_tag.is_some();
+        let tag_type = explicit_tag.unwrap_or(ResolvedType::U16);
+
+        // A broken header makes every variant's expectations (argument
+        // count, tag-ness, field types) unknowable -- checking variants
+        // against the *surviving* entries would only report derived noise
+        // ("must supply 1 value" because the invalid tag entry was
+        // dropped), so the header's own errors stand alone.
+        if !ok {
+            return None;
+        }
+
+        // --- variants ---
+        let mut variants: Vec<ResolvedEnumVariant> = Vec::new();
+        let mut seen_variants: HashMap<Ident, Span> = HashMap::new();
+        let mut seen_tags: HashMap<i128, (Ident, Span)> = HashMap::new();
+        for (declared_index, variant) in e.variants.iter().enumerate() {
+            if let Some(previous) = seen_variants.insert(variant.name.clone(), variant.span) {
+                self.errors.push(AnalysisError::new(
+                    variant.id,
+                    variant.span,
+                    AnalysisErrorKind::Redeclaration { name: variant.name.clone(), previous: Some(previous) },
+                ));
+                ok = false;
+                continue;
+            }
+
+            let expected_args = header.len() + has_tag as usize;
+            if variant.args.len() != expected_args {
+                self.errors.push(AnalysisError::new(
+                    variant.id,
+                    variant.span,
+                    AnalysisErrorKind::EnumVariantArgCount {
+                        variant: variant.name.clone(),
+                        expected: expected_args,
+                        found: variant.args.len(),
+                        has_tag,
+                    },
+                ));
+                ok = false;
+                continue;
+            }
+
+            // The tag: the leading argument when explicit, or this
+            // variant's declared position when implicit (`u16`, counting
+            // from 0 -- guaranteed in range: u16::MAX variants is far past
+            // any real declaration, and `declared_index` is bounded by the
+            // source's own variant count).
+            let tag = if has_tag {
+                match self.const_eval(&variant.args[0], &tag_type) {
+                    Some(ConstValue::Number(value)) => Some(value),
+                    Some(_) => unreachable!("const_eval only produces Number for an integer expected type"),
+                    None => None,
+                }
+            } else {
+                Some(NumberValue::Unsigned(declared_index as u64))
+            };
+            let Some(tag) = tag else {
+                ok = false;
+                continue;
+            };
+            let tag_key = match tag {
+                NumberValue::Signed(value) => value as i128,
+                NumberValue::Unsigned(value) => value as i128,
+                NumberValue::Float(_) => unreachable!("tag types are integers"),
+            };
+            if let Some((previous_variant, previous)) = seen_tags.get(&tag_key) {
+                self.errors.push(AnalysisError::new(
+                    variant.id,
+                    variant.span,
+                    AnalysisErrorKind::DuplicateEnumTag {
+                        variant: variant.name.clone(),
+                        value: tag_key.to_string(),
+                        previous_variant: previous_variant.clone(),
+                        previous: *previous,
+                    },
+                ));
+                ok = false;
+                continue;
+            }
+            seen_tags.insert(tag_key, (variant.name.clone(), variant.span));
+
+            // Header values -- one constant per header field, positionally.
+            let mut header_values = Vec::with_capacity(header.len());
+            let mut variant_ok = true;
+            for ((_, field_type), arg) in header.iter().zip(&variant.args[has_tag as usize..]) {
+                match self.const_eval(arg, field_type) {
+                    Some(value) => header_values.push(value),
+                    None => variant_ok = false,
+                }
+            }
+
+            // Body fields -- must not collide with the header (both are
+            // reached as `value.name`) or the reserved `tag`.
+            let mut fields: Vec<(Ident, ResolvedType)> = Vec::new();
+            let mut seen_fields: HashMap<Ident, Span> = HashMap::new();
+            for field in &variant.fields {
+                let shadows_header =
+                    field.ident.as_ref() == "tag" || header.iter().any(|(name, _)| *name == field.ident);
+                if shadows_header {
+                    self.errors.push(AnalysisError::new(
+                        field.id,
+                        field.span,
+                        AnalysisErrorKind::EnumFieldShadowsHeader {
+                            field: field.ident.clone(),
+                            variant: Some(variant.name.clone()),
+                        },
+                    ));
+                    variant_ok = false;
+                    continue;
+                }
+                if let Some(previous) = seen_fields.insert(field.ident.clone(), field.span) {
+                    self.errors.push(AnalysisError::new(
+                        field.id,
+                        field.span,
+                        AnalysisErrorKind::Redeclaration { name: field.ident.clone(), previous: Some(previous) },
+                    ));
+                    variant_ok = false;
+                    continue;
+                }
+                // A body field is inline layout, exactly like a struct
+                // field -- the one context that catches by-value recursion.
+                let Some(resolved) = self.resolve_type_or_error(field.id, field.span, &field.r#type, false) else {
+                    variant_ok = false;
+                    continue;
+                };
+                fields.push((field.ident.clone(), resolved));
+            }
+
+            if !variant_ok {
+                ok = false;
+                continue;
+            }
+            variants.push(ResolvedEnumVariant { name: variant.name.clone(), tag, header_values, fields });
+        }
+
+        // A function sharing a variant's name would make `Enum::name`
+        // ambiguous -- rejected outright, before signatures are collected.
+        for function in &e.functions {
+            if let Some(previous) = seen_variants.get(&function.name) {
+                self.errors.push(AnalysisError::new(
+                    function.id,
+                    function.span,
+                    AnalysisErrorKind::Redeclaration { name: function.name.clone(), previous: Some(*previous) },
+                ));
+                ok = false;
+            }
+        }
+
+        if !ok {
+            return None;
+        }
+
+        {
+            let mut resolved = cell.borrow_mut();
+            resolved.tag_type = tag_type;
+            resolved.header = header;
+            resolved.variants = variants;
+        }
+
+        self.context.enter_scope();
+        let functions = self.analyze_all(&e.functions, Self::collect_function_signature);
+        self.context.leave_scope();
+        let functions = functions?;
+        cell.borrow_mut().functions = e
+            .functions
+            .iter()
+            .zip(functions)
+            .zip(method_ids)
+            .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
+            .collect();
+
+        Some(())
+    }
+
+    /// Whether `r#type` has a literal constant form -- the requirement on
+    /// enum header fields (their values are per-variant constants); see
+    /// `ConstValue`.
+    fn const_representable(r#type: &ResolvedType) -> bool {
+        r#type.numeric_kind().is_some()
+            || matches!(r#type, ResolvedType::Bool | ResolvedType::Char)
+            || matches!(r#type, ResolvedType::Pointer(inner) if **inner == ResolvedType::U8)
+    }
+
+    /// Evaluates an enum variant's tag/header value: a literal (number,
+    /// string, bool, or char -- optionally a negated number), checked
+    /// against `expected` -- the *expected type drives* number-literal
+    /// interpretation here (no `u32` suffix needed to satisfy a `u32`
+    /// header field), unlike ordinary expressions, since a constant
+    /// position has nothing else to infer from.
+    fn const_eval(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+        let mismatch = |this: &mut Self, found: &str| {
+            this.errors.push(AnalysisError::new(
+                expr.id,
+                expr.span,
+                AnalysisErrorKind::EnumValueTypeMismatch { expected: expected.clone(), found: found.into() },
+            ));
+            None
+        };
+        match &expr.expr {
+            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Negate(inner) => match &inner.expr {
+                HirExpr::Number(n) => {
+                    self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number)
+                }
+                _ => {
+                    self.errors
+                        .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::EnumValueNotConstant));
+                    None
+                }
+            },
+            HirExpr::String(s) => match expected {
+                ResolvedType::Pointer(inner) if **inner == ResolvedType::U8 => Some(ConstValue::Str(s.0.clone())),
+                _ => mismatch(self, "a string literal"),
+            },
+            HirExpr::Bool(b) => match expected {
+                ResolvedType::Bool => Some(ConstValue::Bool(*b)),
+                _ => mismatch(self, "a bool literal"),
+            },
+            HirExpr::Char(c) => match expected {
+                ResolvedType::Char => Some(ConstValue::Char(*c)),
+                _ => mismatch(self, "a character literal"),
+            },
+            _ => {
+                self.errors
+                    .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::EnumValueNotConstant));
+                None
+            }
+        }
+    }
+
+    /// The number-literal side of `const_eval`: parses and range-checks `n`
+    /// against `expected` (which must be numeric), honoring an optional
+    /// leading negation -- including the asymmetric edge (`-32768` fits
+    /// `i16`, `32768` doesn't).
+    fn const_number(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        n: &NumberExpr,
+        expected: &ResolvedType,
+        negated: bool,
+    ) -> Option<NumberValue> {
+        let mismatch = |this: &mut Self, found: String| {
+            this.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::EnumValueTypeMismatch { expected: expected.clone(), found },
+            ));
+            None
+        };
+        let Some(kind) = expected.numeric_kind() else {
+            return mismatch(self, "a number literal".into());
+        };
+
+        // An explicit suffix must agree with the field's declared type --
+        // there are no implicit conversions to paper over a disagreement.
+        if let Some(suffix) = &n.explicit_type {
+            let suffixed = self.context.resolve_type(
+                Type::Named(suffix.clone().into()),
+                &mut *self.resolver,
+                &self.module_path,
+                true,
+            );
+            match suffixed {
+                Ok(t) if t == *expected => {}
+                Ok(t) => return mismatch(self, format!("a `{t}` literal")),
+                Err(_) => {
+                    self.errors
+                        .push(AnalysisError::new(node_id, span, AnalysisErrorKind::InvalidNumberType(suffix.clone())));
+                    return None;
+                }
+            }
+        }
+
+        let is_float = matches!(kind, NumericKind::Float(_));
+        if n.fractional_part.is_some() && !is_float {
+            return mismatch(self, "a fractional number literal".into());
+        }
+        if negated && matches!(kind, NumericKind::Unsigned(_)) {
+            return mismatch(self, "a negative number literal".into());
+        }
+
+        let literal_text = || {
+            let digits = match &n.fractional_part {
+                Some(frac) => format!("{}.{}", n.integer_part, frac),
+                None => n.integer_part.clone(),
+            };
+            if negated { format!("-{digits}") } else { digits }
+        };
+        let out_of_range = |this: &mut Self| {
+            this.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text(), r#type: expected.clone() },
+            ));
+            None
+        };
+
+        match kind {
+            NumericKind::Float(width) => {
+                let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
+                let Ok(parsed) = text.parse::<f64>() else {
+                    return out_of_range(self);
+                };
+                if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
+                    return out_of_range(self);
+                }
+                Some(NumberValue::Float(if negated { -parsed } else { parsed }))
+            }
+            NumericKind::Signed(width) => {
+                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
+                    return out_of_range(self);
+                };
+                // One extra magnitude on the negative side: |i16::MIN| is
+                // 32768, one past i16::MAX.
+                let positive_max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
+                let max = if negated { positive_max + 1 } else { positive_max };
+                if parsed > max {
+                    return out_of_range(self);
+                }
+                let value = if negated { (-(parsed as i128)) as i64 } else { parsed as i64 };
+                Some(NumberValue::Signed(value))
+            }
+            NumericKind::Unsigned(width) => {
+                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
+                    return out_of_range(self);
+                };
+                let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+                if parsed > max {
+                    return out_of_range(self);
+                }
+                Some(NumberValue::Unsigned(parsed))
+            }
+        }
+    }
+
+    /// Checks a top-level enum's function *bodies* only -- the counterpart
+    /// of `check_struct_body`, with the same read-back-from-the-cell
+    /// discipline (see its doc comment); an enum's fields/variants have no
+    /// body work of their own (their values were fully evaluated during
+    /// `signature_of_enum`).
+    pub fn check_enum_body(
+        &mut self,
+        e: &HirEnumDef,
+        cell: &Rc<RefCell<ResolvedEnumType>>,
+    ) -> Option<CheckedEnumDef> {
+        let methods: Vec<(ResolvedFunctionType, HirId)> =
+            cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
+
+        self.context.enter_scope();
+        let mut functions = Vec::with_capacity(e.functions.len());
+        let mut ok = true;
+        for (f, (fn_type, decl_id)) in e.functions.iter().zip(methods.iter()) {
+            match self.check_function_body(f, fn_type, *decl_id) {
+                Some(checked) => functions.push(checked),
+                None => ok = false,
+            }
+        }
+        self.context.leave_scope();
+        if !ok {
+            return None;
+        }
+
+        Some(CheckedEnumDef { id: e.id, span: e.span, name: e.name.clone(), functions })
     }
 
     /// Checks a function's (or method's) *body* only -- its signature, and

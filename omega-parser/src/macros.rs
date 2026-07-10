@@ -169,6 +169,10 @@ fn expand_item_list(
                 item: Item::Struct(expand_struct_def(s, defs, budget)?),
                 span: node.span,
             }),
+            Item::Enum(e) => result.push(ItemNode {
+                item: Item::Enum(expand_enum_def(e, defs, budget)?),
+                span: node.span,
+            }),
             other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
                 result.push(ItemNode { item: other, span: node.span });
             }
@@ -358,6 +362,27 @@ fn expand_struct_def(
         .map(|f| expand_function_def(f, defs, budget))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(StructStmt { functions, ..s })
+}
+
+fn expand_enum_def(
+    e: EnumStmt,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
+    budget: &mut u32,
+) -> Result<EnumStmt, MacroError> {
+    let variants = e
+        .variants
+        .into_iter()
+        .map(|v| {
+            let args = v.args.into_iter().map(|a| expand_expr(a, defs, budget)).collect::<Result<Vec<_>, _>>()?;
+            Ok(EnumVariantStmt { args, ..v })
+        })
+        .collect::<Result<Vec<_>, MacroError>>()?;
+    let functions = e
+        .functions
+        .into_iter()
+        .map(|f| expand_function_def(f, defs, budget))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(EnumStmt { variants, functions, ..e })
 }
 
 fn expand_codeblock(

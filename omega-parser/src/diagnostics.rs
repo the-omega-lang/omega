@@ -66,6 +66,12 @@ impl ParseError {
             ParseErrorKind::StructLiteralNotAllowedHere => d
                 .with_label(self.span, "the `{` here is ambiguous with the statement's own body")
                 .with_help("wrap the struct literal in parentheses: `(Name { ... })`"),
+            ParseErrorKind::EnumFunctionBeforeSemi => d
+                .with_label(self.span, "this looks like a function definition")
+                .with_help("end the variant list with `;` before defining functions"),
+            ParseErrorKind::EnumNotAllowedHere => d
+                .with_label(self.span, "not allowed inside a function body")
+                .with_help("move this `enum` to the module's top level"),
         }
     }
 }
@@ -104,6 +110,13 @@ pub enum ParseErrorKind {
     /// (see `parser::expression::parse_primary`'s restricted-`Ident` case),
     /// never on a mere possibility.
     StructLiteralNotAllowedHere,
+    /// A function definition where an enum variant was expected -- the
+    /// variant list must be ended with `;` before functions can follow
+    /// (see `parser::item::parse_enum_def`).
+    EnumFunctionBeforeSemi,
+    /// An `enum` declaration in statement position -- enums are top-level
+    /// items only (unlike `struct`, which is also allowed locally).
+    EnumNotAllowedHere,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -120,6 +133,12 @@ impl fmt::Display for ParseErrorKind {
             Self::InvalidCharLiteral => write!(f, "character literal must contain exactly one character"),
             Self::StructLiteralNotAllowedHere => {
                 write!(f, "struct literals are not allowed in this position")
+            }
+            Self::EnumFunctionBeforeSemi => {
+                write!(f, "enum functions must come after the variant list is ended with ';'")
+            }
+            Self::EnumNotAllowedHere => {
+                write!(f, "enums can only be declared at the top level of a module")
             }
         }
     }

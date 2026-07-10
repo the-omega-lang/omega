@@ -1,5 +1,6 @@
 pub mod declaration;
 pub mod defer;
+pub mod r#enum;
 pub mod extern_declaration;
 pub mod for_stmt;
 pub mod function_definition;
@@ -12,7 +13,8 @@ pub mod while_stmt;
 
 use crate::ast::expression::{ExpressionNode, macro_invocation::MacroInvocationExpr};
 use crate::ast::statement::{
-    declaration::DeclarationStmt, defer::DeferStmt, extern_declaration::ExternDeclarationStmt,
+    declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
+    extern_declaration::ExternDeclarationStmt,
     for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
     macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, r#struct::StructStmt,
     walrus::WalrusStmt, while_stmt::WhileStmt,
@@ -26,6 +28,12 @@ pub enum Item {
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
     Struct(StructStmt),
+    /// Top-level only -- unlike `struct`, there is deliberately no
+    /// `Statement::Enum`: an enum's identity (tag values, cross-module
+    /// construction) is inherently module-level, and statement position
+    /// reports a dedicated parse error instead (see
+    /// `ParseErrorKind::EnumNotAllowedHere`).
+    Enum(EnumStmt),
     Import(ImportStmt),
     /// Expanded away entirely (along with `MacroInvocation` below) by
     /// `omega_parser::macros::expand` before HIR lowering ever runs -- see

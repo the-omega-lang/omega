@@ -1,13 +1,14 @@
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
-    HirDefer, HirExprNode, HirExpr, HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef,
+    HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr, HirExternDeclaration, HirFor,
+    HirFunctionCall, HirFunctionDef,
     HirIf, HirImport, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection,
     HirSlice, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField,
     HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
-    CodeblockExpr, DeclarationStmt, Expression, ExpressionNode, ExternDeclarationStmt,
+    CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode, ExternDeclarationStmt,
     FunctionDefinitionStmt, Ident, Item, ItemNode, Span, SourceModule,
     Statement, StatementNode, StructStmt, Type,
 };
@@ -41,6 +42,7 @@ impl Lowerer {
                 HirItem::FunctionDefinition(self.lower_function_def(f, node.span, None))
             }
             Item::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
+            Item::Enum(e) => HirItem::Enum(self.lower_enum_def(e, node.span)),
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
@@ -238,6 +240,52 @@ impl Lowerer {
             name: s.ident.clone(),
             generics: s.generics.clone(),
             fields,
+            functions,
+        }
+    }
+
+    /// Same treatment as `lower_struct_def` -- member functions get their
+    /// synthetic `self: *EnumName` inserted by `lower_function_def`, exactly
+    /// like a struct's. Header entries keep their own real spans (the parser
+    /// records them -- position-sensitive `tag` rules deserve precise
+    /// errors); variant body fields inherit their variant's span, the same
+    /// approximation struct fields make with their struct's.
+    fn lower_enum_def(&mut self, e: &EnumStmt, span: Span) -> HirEnumDef {
+        let id = self.ids.next();
+        let header = e
+            .header
+            .iter()
+            .map(|h| HirParam {
+                id: self.ids.next(),
+                span: h.span,
+                ident: h.ident.clone(),
+                r#type: h.r#type.clone(),
+            })
+            .collect();
+        let variants = e
+            .variants
+            .iter()
+            .map(|v| HirEnumVariant {
+                id: self.ids.next(),
+                span: v.span,
+                name: v.ident.clone(),
+                args: v.args.iter().map(|a| self.lower_expr(a)).collect(),
+                fields: v.fields.iter().map(|f| self.lower_param(f, v.span)).collect(),
+            })
+            .collect();
+        let functions = e
+            .functions
+            .iter()
+            .map(|f| self.lower_function_def(f, span, Some(&e.ident)))
+            .collect();
+
+        HirEnumDef {
+            id,
+            span,
+            name: e.ident.clone(),
+            generics: e.generics.clone(),
+            header,
+            variants,
             functions,
         }
     }

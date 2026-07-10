@@ -113,6 +113,81 @@ vec_sum(v: Vec2) => i32 {
     v.x + v.y
 }
 
+# The most basic omega-style enum: no header, so the tag is implicit -- an
+# auto-incrementing u16 starting at 0. Even then, every value exposes it as
+# `value.tag`.
+enum MyBasicEnum {
+    First,  # tag: 0
+    Second, # tag: 1
+    Third;  # tag: 2
+}
+
+# A header: fields present on *every* variant, whose values are per-variant
+# constants supplied Java-style in each variant's `(...)` -- baked in at the
+# definition, constant forever (`value.description` works on any variant,
+# and can never be assigned).
+enum MyEnumWithHeader(description: *u8, some_number: u32) {
+    First("This is the first variant", 10),
+    Second("This is the second variant", 25),
+    Third("This is the third variant", 30);
+}
+
+# Variant bodies: fields only *that* variant has. At runtime the body region
+# is a union of all the bodies, but the type system only ever exposes the
+# body of the variant a value provably is: `E::Second { ... }` produces a
+# value statically known to be `Second` (its type reads `E::Second`), which
+# is what makes `.some_text` compile -- and `.some_number` not. The
+# refinement never survives indirection: through `*MyEnumWithBodies` only
+# the tag and header remain accessible.
+enum MyEnumWithBodies {
+    First,
+    Second { some_text: *u8; }
+    Third { some_number: u16; pointer_to_another_instance: *MyEnumWithBodies; }
+}
+
+# An explicit tag: `tag` leads the header with the integer type of your
+# choice, and each variant supplies its own (unique, compile-time-constant)
+# value first.
+enum MyEnumWithExplicitTagAndHeader(tag: u32, description: *u8) {
+    First(10, "This is the first entry"),
+    Second(20, "This is the second entry"),
+    Third(30, "This is the third entry");
+}
+
+# Generic enums instantiate exactly like generic structs; expression paths
+# take explicit arguments here (`Optional<u32>::Some { ... }`).
+enum Optional<T> {
+    None,
+    Some { value: T; };
+}
+
+# Everything at once, plus functions after the `;` ending the variant list
+# (Java-style): with `self` = member function, without = static.
+enum MyCoolEnum(tag: i16, description: *u8) {
+    Bad(-1, "Something went wrong :("),
+    First(0, "This is the first value") {
+        message: *u8;
+    },
+    Second(1, "This is the second value") {
+        number: u64;
+        decimal: f64;
+    },
+    Third(2, "This is the third value");
+
+    print_description(self) => void {
+        puts(self.description);
+    }
+    default() => MyCoolEnum {
+        MyCoolEnum::Third
+    }
+}
+
+# A whole enum passed by value -- same flattening story as `vec_sum`, plus
+# the opaque payload chunks the union region travels as.
+cool_tag(e: MyCoolEnum) => i16 {
+    e.tag
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -289,6 +364,44 @@ main(argc : i32, argv : [*u8]) => i32 {
         p := simplemodule::Pair::of(4, 5);
         printf("cross-module static: %d\n", p.sum());
     }
+
+    e1 := MyBasicEnum::First;
+    e2 := MyBasicEnum::Third;
+    printf("enum tags: %d %d\n", e1.tag, e2.tag);
+
+    h := MyEnumWithHeader::Second;
+    printf("enum header: tag=%d desc=%s number=%u\n", h.tag, h.description, h.some_number);
+
+    s := MyEnumWithBodies::Second { some_text: "hello, this is some text"; };
+    printf("enum body: tag=%d text=%s\n", s.tag, s.some_text);
+    t := MyEnumWithBodies::Third { some_number: 777u16; pointer_to_another_instance: &s; };
+    printf("enum body2: tag=%d n=%d inner_tag=%d\n", t.tag, t.some_number, t.pointer_to_another_instance.tag);
+
+    xt := MyEnumWithExplicitTagAndHeader::Third;
+    printf("enum explicit: tag=%u desc=%s\n", xt.tag, xt.description);
+
+    opt := Optional<u32>::Some { value: 42u32; };
+    none := Optional<u32>::None;
+    printf("enum generic: some(tag=%d value=%u) none(tag=%d)\n", opt.tag, opt.value, none.tag);
+
+    cool := MyCoolEnum::Second { number: 123u64; decimal: 2.5; };
+    printf("enum cool: tag=%d number=%llu decimal=%f\n", cool.tag, cool.number, cool.decimal);
+    cool.print_description();
+    dflt := MyCoolEnum::default();
+    dflt.print_description();
+    printf("enum by value: %d\n", cool_tag(dflt));
+
+    anyvariant : MyCoolEnum = MyCoolEnum::Bad;
+    printf("enum widened: tag=%d\n", anyvariant.tag);
+    anyvariant = dflt;
+    picked := if anyvariant.tag > 0i16 { MyCoolEnum::Bad } else { MyCoolEnum::Third };
+    printf("enum picked: %s\n", picked.description);
+
+    st := simplemodule::Status::make_err(42);
+    printf("cross-module enum: tag=%d label=%s\n", st.tag, st.label);
+    okst := simplemodule::Status::Ok;
+    err := simplemodule::Status::Err { code: 7; };
+    printf("cross-module enum 2: ok=%d err_code=%d\n", okst.tag, err.code);
 
     return 69;
 }

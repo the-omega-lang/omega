@@ -1,7 +1,7 @@
 use cranelift::{
     codegen::{
         self,
-        ir::{BlockArg, FuncRef, StackSlot},
+        ir::{ArgumentPurpose, BlockArg, FuncRef, StackSlot},
     },
     prelude::{
         AbiParam, Block, Configurable, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder,
@@ -14,12 +14,16 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedExpr,
+        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
+        CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
         CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedWhile, NumberValue, Storage,
     },
-    resolved_type::{NumericKind, ResolvedFunctionType, ResolvedStructType, ResolvedType},
+    resolved_type::{
+        ConstValue, NumericKind, ResolvedEnumType, ResolvedFunctionType, ResolvedStructType,
+        ResolvedType,
+    },
 };
 use omega_hir::{BinaryOp, HirId};
 use omega_parser::prelude::Ident;
@@ -167,6 +171,26 @@ impl IntoIRType for ResolvedType {
                 .iter()
                 .flat_map(|x| x.1.clone().into_ir_type(codegen))
                 .collect(),
+            // An enum value is `[tag][header fields][payload]` -- the tag
+            // and header flatten like ordinary struct fields, while the
+            // payload (a union of every variant's body, sized to the
+            // largest) flattens to opaque integer chunks: no single typed
+            // leaf list can describe a union, so the chunks only ever move
+            // bytes around (assignment, parameter passing); a body field is
+            // read/written through memory at its byte offset instead (see
+            // `resolve_place_storage`'s `EnumBody` arm). A statically-known
+            // variant refinement never changes the layout -- every enum
+            // value is full-size, which is exactly what makes refined ->
+            // plain widening a plain leaf copy.
+            ResolvedType::Enum { cell, .. } => {
+                let enum_type = cell.borrow();
+                let mut leaves = enum_type.tag_type.clone().into_ir_type(codegen);
+                for (_, field_type) in &enum_type.header {
+                    leaves.extend(field_type.clone().into_ir_type(codegen));
+                }
+                leaves.extend(payload_chunks(enum_payload_bytes(&enum_type, codegen)));
+                leaves
+            }
             // `N` copies of the item type's own leaves, back to back -- the
             // same packed, no-padding layout a `Struct`'s fields get.
             ResolvedType::SizedArray(item_type, size) => {
@@ -235,6 +259,75 @@ fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codeg
         .iter()
         .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
         .sum()
+}
+
+/// The size of an enum's payload region: the largest variant body, in
+/// packed bytes -- `0` for an enum with no variant bodies at all.
+fn enum_payload_bytes(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
+    enum_type
+        .variants
+        .iter()
+        .map(|v| v.fields.iter().map(|(_, r#type)| total_bytes(r#type.clone(), codegen)).sum::<u32>())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Decomposes an enum's payload region into opaque integer leaves covering
+/// exactly `bytes` -- as many `i64`s as fit, then one `i32`/`i16`/`i8` as
+/// needed. Deterministic and layout-only: these leaves exist so the payload
+/// can ride the same flattened-scalar machinery every other value uses
+/// (copies, params, returns); nothing ever interprets them as numbers.
+fn payload_chunks(mut bytes: u32) -> Vec<IRType> {
+    let mut chunks = Vec::new();
+    while bytes >= 8 {
+        chunks.push(types::I64);
+        bytes -= 8;
+    }
+    if bytes >= 4 {
+        chunks.push(types::I32);
+        bytes -= 4;
+    }
+    if bytes >= 2 {
+        chunks.push(types::I16);
+        bytes -= 2;
+    }
+    if bytes >= 1 {
+        chunks.push(types::I8);
+    }
+    chunks
+}
+
+/// A header field's packed byte offset within an enum value -- past the tag
+/// and every preceding header field.
+fn enum_header_offset(enum_type: &ResolvedEnumType, index: usize, codegen: &Codegen) -> u32 {
+    total_bytes(enum_type.tag_type.clone(), codegen)
+        + enum_type.header[..index]
+            .iter()
+            .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
+            .sum::<u32>()
+}
+
+/// The payload region's byte offset within an enum value -- past the tag
+/// and the whole header.
+fn enum_payload_offset(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
+    enum_header_offset(enum_type, enum_type.header.len(), codegen)
+}
+
+/// A body field's packed byte offset within an enum value: the payload
+/// region's start plus every preceding field of the *same variant* (each
+/// variant's body independently starts at the payload's start -- that's
+/// the union).
+fn enum_body_field_offset(
+    enum_type: &ResolvedEnumType,
+    variant_index: usize,
+    field_index: usize,
+    codegen: &Codegen,
+) -> u32 {
+    enum_payload_offset(enum_type, codegen)
+        + enum_type.variants[variant_index].fields[..field_index]
+            .iter()
+            .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
+            .sum::<u32>()
 }
 
 /// Every `defer`'s `HirId` reachable inside `block`, in declaration (program)
@@ -337,6 +430,11 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
         }
         CheckedExpr::StructLiteral(lit) => {
             for f in &lit.fields {
+                collect_defer_ids_expr(&f.value, out);
+            }
+        }
+        CheckedExpr::EnumConstruct(construct) => {
+            for f in &construct.fields {
                 collect_defer_ids_expr(&f.value, out);
             }
         }
@@ -556,6 +654,82 @@ impl Codegen {
                     current_type = item_type.clone();
                 }
 
+                CheckedProjection::EnumTag { r#type } => {
+                    // The tag is the leading leaf/bytes of every enum value
+                    // -- offset 0, first leaf.
+                    let ResolvedType::Enum { cell, .. } = &current_type else {
+                        unreachable!("checked module guarantees EnumTag projections are only built against an enum type");
+                    };
+                    let tag_leaves = cell.borrow().tag_type.clone().into_ir_type(self).len();
+                    current = match current {
+                        PlaceStorage::Values(values) => PlaceStorage::Values(values[..tag_leaves].to_vec()),
+                        memory_backed => memory_backed,
+                    };
+                    current_type = r#type.clone();
+                }
+
+                CheckedProjection::EnumHeader { index, r#type, .. } => {
+                    let ResolvedType::Enum { cell, .. } = &current_type else {
+                        unreachable!("checked module guarantees EnumHeader projections are only built against an enum type");
+                    };
+                    let cell = cell.clone();
+                    let enum_type = cell.borrow();
+                    current = match current {
+                        PlaceStorage::Values(values) => {
+                            // Positional, by leaf count -- the tag's leaves,
+                            // then every preceding header field's.
+                            let start = enum_type.tag_type.clone().into_ir_type(self).len()
+                                + enum_type.header[..*index]
+                                    .iter()
+                                    .map(|(_, t)| t.clone().into_ir_type(self).len())
+                                    .sum::<usize>();
+                            let len = enum_type.header[*index].1.clone().into_ir_type(self).len();
+                            PlaceStorage::Values(values[start..start + len].to_vec())
+                        }
+                        PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                            slot,
+                            offset: offset + enum_header_offset(&enum_type, *index, self),
+                        },
+                        PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                            base,
+                            offset: offset + enum_header_offset(&enum_type, *index, self),
+                        },
+                    };
+                    current_type = r#type.clone();
+                }
+
+                CheckedProjection::EnumBody { variant_index, field_index, r#type } => {
+                    let ResolvedType::Enum { cell, .. } = &current_type else {
+                        unreachable!("checked module guarantees EnumBody projections are only built against an enum type");
+                    };
+                    let cell = cell.clone();
+                    // A body field lives inside the opaque payload chunks,
+                    // which no leaf slice can address -- an SSA-value-backed
+                    // enum (a parameter) is spilled to an anonymous slot
+                    // first, exactly like a temporary place root, so the
+                    // field is an ordinary byte offset from there.
+                    if let PlaceStorage::Values(values) = &current {
+                        let size = total_bytes(current_type.clone(), self);
+                        let slot = builder
+                            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                        let spilled = PlaceStorage::Slot { slot, offset: 0 };
+                        self.store_scalars(builder, &spilled, &values.clone());
+                        current = spilled;
+                    }
+                    let field_offset =
+                        enum_body_field_offset(&cell.borrow(), *variant_index, *field_index, self);
+                    current = match current {
+                        PlaceStorage::Slot { slot, offset } => {
+                            PlaceStorage::Slot { slot, offset: offset + field_offset }
+                        }
+                        PlaceStorage::Address { base, offset } => {
+                            PlaceStorage::Address { base, offset: offset + field_offset }
+                        }
+                        PlaceStorage::Values(_) => unreachable!("spilled to a slot above"),
+                    };
+                    current_type = r#type.clone();
+                }
+
                 CheckedProjection::SliceLength => {
                     // A slice is flattened as [data pointer, i32 length] (see
                     // `ResolvedType::Slice`'s `into_ir_type`) -- `.length` is
@@ -664,25 +838,47 @@ impl Codegen {
         self.load_scalars(builder, &storage, &r#type)
     }
 
+    /// Whether `return_type` is returned through a hidden `StructReturn`
+    /// pointer instead of in registers: x86_64 SysV has exactly two integer
+    /// return registers (rax/rdx), so any value flattening to more than two
+    /// leaves -- a large struct, or any enum with a payload -- can't come
+    /// back by value. (Two int + two float leaves would technically still
+    /// fit, but classifying leaf register classes buys nothing over this
+    /// simple, always-correct rule.) Must agree between definitions and
+    /// call sites -- both derive their `Signature` from `make_function_sig`,
+    /// so it's decided in exactly one place.
+    fn needs_sret(&self, return_type: &ResolvedType) -> bool {
+        return_type.clone().into_ir_type(self).len() > 2
+    }
+
     fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
+        let mut sig = self.module.make_signature();
+
+        // The hidden struct-return pointer is always the first parameter
+        // (see `needs_sret`); cranelift itself handles the SysV requirement
+        // of also returning that pointer in rax, so the signature declares
+        // no return values at all in this case.
+        if *resolved_fntype.return_type != ResolvedType::Void {
+            if self.needs_sret(&resolved_fntype.return_type) {
+                sig.params
+                    .push(AbiParam::special(self.pointer_type(), ArgumentPurpose::StructReturn));
+            } else {
+                for leaf in resolved_fntype.return_type.into_ir_type(self) {
+                    sig.returns.push(AbiParam::new(leaf));
+                }
+            }
+        }
+
         let ir_params = resolved_fntype
             .params
             .into_iter()
             .flat_map(|param| param.1.into_ir_type(self));
-
-        let mut sig = self.module.make_signature();
         for param in ir_params {
             sig.params.push(AbiParam::new(param));
         }
 
         if resolved_fntype.is_variadic {
             sig.call_conv = isa::CallConv::SystemV;
-        }
-
-        if *resolved_fntype.return_type != ResolvedType::Void {
-            for param in resolved_fntype.return_type.into_ir_type(self) {
-                sig.returns.push(AbiParam::new(param));
-            }
         }
 
         sig
@@ -731,6 +927,49 @@ impl Codegen {
 
     fn get_func_ref_from_id(&mut self, builder: &mut FunctionBuilder, func_id: FuncId) -> FuncRef {
         self.module.declare_func_in_func(func_id, builder.func)
+    }
+
+    /// A string constant's pointer value, deduplicated per module
+    /// (`strings`) and per function (`local_strings`) -- shared by string
+    /// literal expressions and enum header constants.
+    fn emit_string_ptr(&mut self, builder: &mut FunctionBuilder, s: String) -> Value {
+        if let Some(local_value) = self.local_strings.get(&s) {
+            return *local_value;
+        }
+
+        let ptr_type = self.pointer_type();
+        let str_id = if let Some(id) = self.strings.get(&s) {
+            *id
+        } else {
+            self.get_or_declare_global_string(s.clone())
+        };
+
+        let global_value = self.module.declare_data_in_func(str_id, builder.func);
+        let str_ptr = builder.ins().global_value(ptr_type, global_value);
+
+        self.local_strings.insert(s, str_ptr);
+
+        str_ptr
+    }
+
+    /// Emits one `ConstValue` (an enum tag or header constant) as a single
+    /// scalar of `r#type` -- every const-representable type is exactly one
+    /// IR leaf (see `Analyzer::const_representable`).
+    fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Value {
+        match value {
+            ConstValue::Number(number) => {
+                let leaf = r#type.clone().into_ir_type(self)[0];
+                match number {
+                    NumberValue::Signed(v) => builder.ins().iconst(leaf, *v),
+                    NumberValue::Unsigned(v) => builder.ins().iconst(leaf, *v as i64),
+                    NumberValue::Float(v) if leaf == types::F32 => builder.ins().f32const(*v as f32),
+                    NumberValue::Float(v) => builder.ins().f64const(*v),
+                }
+            }
+            ConstValue::Bool(b) => builder.ins().iconst(types::I8, *b as i64),
+            ConstValue::Char(c) => builder.ins().iconst(types::I32, *c as i64),
+            ConstValue::Str(s) => self.emit_string_ptr(builder, s.clone()),
+        }
     }
 
     /// C's variadic calling convention requires the caller to promote each
@@ -959,25 +1198,7 @@ impl Codegen {
 
     fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
         match node.kind {
-            CheckedExpr::String(s) => {
-                if let Some(local_value) = self.local_strings.get(&s) {
-                    return vec![*local_value];
-                }
-
-                let ptr_type = self.pointer_type();
-                let str_id = if let Some(id) = self.strings.get(&s) {
-                    *id
-                } else {
-                    self.get_or_declare_global_string(s.clone())
-                };
-
-                let global_value = self.module.declare_data_in_func(str_id, builder.func);
-                let str_ptr = builder.ins().global_value(ptr_type, global_value);
-
-                self.local_strings.insert(s, str_ptr);
-
-                vec![str_ptr]
-            }
+            CheckedExpr::String(s) => vec![self.emit_string_ptr(builder, s)],
 
             CheckedExpr::FunctionCall(CheckedFunctionCall { callee, fn_type, args }) => {
                 // Checked module guarantees the callee resolves to exactly
@@ -999,7 +1220,21 @@ impl Codegen {
                     }
                     ir_args.push(value);
                 }
-                let ir_args = ir_args.into_iter().flatten().collect::<Vec<_>>();
+                let mut ir_args = ir_args.into_iter().flatten().collect::<Vec<_>>();
+
+                // A large return value needs caller-provided memory: an
+                // anonymous slot whose address rides in as the hidden
+                // leading StructReturn argument (mirroring
+                // `make_function_sig`/`define_function_def`); the value's
+                // leaves are read back out of it after the call.
+                let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
+                    let size = total_bytes((*fn_type.return_type).clone(), self);
+                    let slot = builder
+                        .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                    let pointer = builder.ins().stack_addr(self.pointer_type(), slot, 0);
+                    ir_args.insert(0, pointer);
+                    slot
+                });
 
                 let call = if fn_type.is_variadic {
                     // Cranelift does not currently support variadic functions.
@@ -1025,7 +1260,13 @@ impl Codegen {
                     return vec![];
                 }
 
-                builder.inst_results(call).to_vec()
+                match sret_slot {
+                    Some(slot) => {
+                        let storage = PlaceStorage::Slot { slot, offset: 0 };
+                        self.load_scalars(builder, &storage, &fn_type.return_type)
+                    }
+                    None => builder.inst_results(call).to_vec(),
+                }
             }
 
             CheckedExpr::Number(value) => {
@@ -1178,6 +1419,72 @@ impl Codegen {
                 // expects, so the result is usable anywhere a `SizedArray`
                 // value already is (assignment, a walrus's inferred value, ...).
                 elements.into_iter().flat_map(|e| self.process_expr(builder, e)).collect()
+            }
+
+            CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }) => {
+                // Built in an anonymous scratch slot -- constants (tag,
+                // header) and typed body fields land at their byte offsets,
+                // the rest of the payload region is zeroed (deterministic
+                // bytes for the chunk-wise copies the leaf model does) --
+                // then the whole value is read back out as ordinary leaves.
+                let ResolvedType::Enum { cell, .. } = &node.r#type else {
+                    unreachable!("checked module guarantees a construction's own type is its enum");
+                };
+                let cell = cell.clone();
+                // Snapshot everything needed so the cell isn't borrowed
+                // across the field-value evaluation below.
+                let (tag, tag_type, header, payload_offset, chunks, field_offsets) = {
+                    let enum_type = cell.borrow();
+                    let variant = &enum_type.variants[variant_index];
+                    let header: Vec<(ResolvedType, ConstValue)> = enum_type
+                        .header
+                        .iter()
+                        .zip(&variant.header_values)
+                        .map(|((_, r#type), value)| (r#type.clone(), value.clone()))
+                        .collect();
+                    let field_offsets: Vec<u32> = (0..variant.fields.len())
+                        .map(|i| enum_body_field_offset(&enum_type, variant_index, i, self))
+                        .collect();
+                    (
+                        variant.tag,
+                        enum_type.tag_type.clone(),
+                        header,
+                        enum_payload_offset(&enum_type, self),
+                        payload_chunks(enum_payload_bytes(&enum_type, self)),
+                        field_offsets,
+                    )
+                };
+
+                let total = total_bytes(node.r#type.clone(), self);
+                let slot = builder
+                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
+
+                let tag_value = self.emit_const_value(builder, &ConstValue::Number(tag), &tag_type);
+                builder.ins().stack_store(tag_value, slot, 0);
+
+                let mut offset = total_bytes(tag_type, self);
+                for (r#type, value) in &header {
+                    let const_value = self.emit_const_value(builder, value, r#type);
+                    builder.ins().stack_store(const_value, slot, offset as i32);
+                    offset += total_bytes(r#type.clone(), self);
+                }
+
+                let mut chunk_offset = payload_offset;
+                for chunk in chunks {
+                    let zero = builder.ins().iconst(chunk, 0);
+                    builder.ins().stack_store(zero, slot, chunk_offset as i32);
+                    chunk_offset += chunk.bytes();
+                }
+
+                // Body values run in source order (their side effects
+                // must); each lands at its declared field's offset.
+                for field in fields {
+                    let field_offset = field_offsets[field.field_index];
+                    let values = self.process_expr(builder, field.value);
+                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: field_offset }, &values);
+                }
+
+                self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &node.r#type)
             }
 
             CheckedExpr::StructLiteral(CheckedStructLiteral { fields }) => {
@@ -1387,28 +1694,12 @@ impl Codegen {
 
     /// A function/method's cranelift `Signature`, built the same way
     /// regardless of whether it's being declared (pass 1) or defined (pass
-    /// 2) -- a pure function of `function_def`'s own checked shape, so
-    /// recomputing it in both passes (rather than threading it through) is
-    /// cheap and keeps the two passes independent of each other.
+    /// 2) -- and, crucially, the same way *call sites* build it: one
+    /// delegation to `make_function_sig`, so the definition and every call
+    /// can never disagree about parameter flattening or the hidden
+    /// struct-return pointer.
     fn function_signature(&self, function_def: &CheckedFunctionDef) -> Signature {
-        let fntype = function_def.fn_type();
-        let mut sig = self.module.make_signature();
-        if *fntype.return_type != ResolvedType::Void {
-            let return_type = fntype.return_type.clone().into_ir_type(self);
-            return_type
-                .into_iter()
-                .for_each(|param| sig.returns.push(AbiParam::new(param)));
-        }
-        for param in &function_def.params {
-            // Every leaf, not just the first: a struct/slice passed by value
-            // flattens to several scalar params -- the same flattening call
-            // sites (`make_function_sig`) and the entry block's `argmap`
-            // already use, which all three must agree on.
-            for leaf in param.r#type.clone().into_ir_type(self) {
-                sig.params.push(AbiParam::new(leaf));
-            }
-        }
-        sig
+        self.make_function_sig(function_def.fn_type())
     }
 
     /// Declares (but doesn't yet define the body of) a function or method --
@@ -1461,6 +1752,15 @@ impl Codegen {
         builder.append_block_params_for_function_params(entry_block);
         let block_params = builder.block_params(entry_block).to_vec();
 
+        // A large return value comes back through a hidden StructReturn
+        // pointer, always the signature's first parameter (see
+        // `make_function_sig`) -- peel it off before mapping the *declared*
+        // parameters below.
+        let sret = self
+            .needs_sret(&function_def.return_type)
+            .then(|| block_params[0]);
+        let declared_params = &block_params[sret.is_some() as usize..];
+
         // Some identifiers (e.g structs) have more than one value per identifier.
         // For that reason, lets make a helper array that repeats the param's own
         // id N times, where N is the amount of values it has.
@@ -1472,7 +1772,7 @@ impl Codegen {
                 vec![param.id; value_count]
             })
             .collect::<Vec<_>>();
-        for (i, arg) in block_params.iter().enumerate() {
+        for (i, arg) in declared_params.iter().enumerate() {
             self.local_args.entry(argmap[i]).or_default().push(*arg);
         }
         builder.switch_to_block(entry_block);
@@ -1548,7 +1848,19 @@ impl Codegen {
             builder.seal_block(after_blk);
         }
 
-        builder.ins().return_(&final_values);
+        // With a StructReturn pointer, the value leaves are stored through
+        // it and the signature declares no return values (cranelift itself
+        // returns the pointer in rax per the SysV rule); otherwise the
+        // leaves return in registers as before.
+        match sret {
+            Some(pointer) => {
+                self.store_scalars(&mut builder, &PlaceStorage::Address { base: pointer, offset: 0 }, &final_values);
+                builder.ins().return_(&[]);
+            }
+            None => {
+                builder.ins().return_(&final_values);
+            }
+        }
 
         if let Err(err) = codegen::verify_function(builder.func, self.isa.as_ref()) {
             panic!("cranelift verifier rejected generated IR for a function (internal codegen bug): {err:?}");
@@ -1580,6 +1892,12 @@ impl Codegen {
                     self.declare_function_def(f, mangled);
                 }
             }
+            CheckedItem::Enum(e) => {
+                for f in &e.functions {
+                    let mangled = Self::mangled_method_symbol(path, &e.name, &f.name, f.id);
+                    self.declare_function_def(f, mangled);
+                }
+            }
             CheckedItem::Declaration(_) => {
                 todo!("global data declarations are not yet implemented");
             }
@@ -1596,6 +1914,11 @@ impl Codegen {
             CheckedItem::FunctionDefinition(f) => self.define_function_def(f),
             CheckedItem::Struct(s) => {
                 for f in s.functions {
+                    self.define_function_def(f);
+                }
+            }
+            CheckedItem::Enum(e) => {
+                for f in e.functions {
                     self.define_function_def(f);
                 }
             }

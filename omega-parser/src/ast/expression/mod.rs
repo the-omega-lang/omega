@@ -18,7 +18,7 @@ pub mod slice;
 pub mod string;
 pub mod struct_literal;
 
-use crate::ast::identifier::Path;
+use crate::ast::identifier::ExprPath;
 use crate::ast::expression::{
     address_of::AddressOfExpr, array_literal::ArrayLiteralExpr, assignment::AssignmentExpr,
     binary_op::BinaryOpExpr, bool_literal::BoolExpr, char_literal::CharExpr,
@@ -36,10 +36,11 @@ use crate::diagnostics::Span;
 /// lowering's job, and no type-checking happens here either.
 #[derive(Debug, Clone)]
 pub enum Expression {
-    /// A (possibly module-qualified) path -- `foo`, or `mymodule::thing::foo`.
-    /// A bare, unqualified name is just the degenerate one-segment case; see
-    /// `Path`'s own doc comment.
-    Path(Path),
+    /// A (possibly module-qualified) path -- `foo`, or `mymodule::thing::foo`,
+    /// or one with explicit generic arguments on a segment
+    /// (`Optional<u32>::Some`). A bare, unqualified name is just the
+    /// degenerate one-segment case; see `Path`/`ExprPath`'s own doc comments.
+    Path(ExprPath),
     FieldAccess(Box<FieldAccessExpr>),
     Index(Box<IndexExpr>),
     Deref(Box<DerefExpr>),

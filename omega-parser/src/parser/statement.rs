@@ -4,6 +4,7 @@ use crate::ast::statement::{
     extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt, r#return::ReturnStmt,
     walrus::WalrusStmt, while_stmt::WhileStmt,
 };
+use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::expression::{parse_codeblock, parse_expression};
 use crate::parser::{Parser, recovery};
@@ -59,6 +60,20 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
 fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
     match p.peek() {
         TokenKind::Struct => Some((Statement::Struct(crate::parser::item::parse_struct_def(p)?), true)),
+        TokenKind::Enum => {
+            // Report once, then skip the whole declaration (name, optional
+            // header, braced body) wholesale -- leaving its remains for
+            // generic recovery would cascade into spurious errors.
+            p.error(ParseErrorKind::EnumNotAllowedHere);
+            p.advance(); // 'enum'
+            while !matches!(p.peek(), TokenKind::LBrace | TokenKind::RBrace | TokenKind::Eof) {
+                p.advance();
+            }
+            if p.check(&TokenKind::LBrace) {
+                recovery::skip_balanced_group(p);
+            }
+            None
+        }
         TokenKind::While => Some((Statement::While(parse_while(p)?), true)),
         TokenKind::For => Some((Statement::For(Box::new(parse_for(p)?)), true)),
         TokenKind::Defer => {

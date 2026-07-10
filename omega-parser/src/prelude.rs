@@ -8,10 +8,11 @@ pub use crate::ast::expression::{
     number::{NumberBase, NumberExpr}, slice::SliceExpr, string::StringExpr,
     struct_literal::{StructLiteralExpr, StructLiteralField},
 };
-pub use crate::ast::identifier::{Ident, Path};
+pub use crate::ast::identifier::{ExprPath, Ident, Path};
 pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode, declaration::DeclarationStmt,
-    defer::DeferStmt, extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
+    defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
+    extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::ImportStmt,
     macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
     r#return::ReturnStmt, r#struct::StructStmt, while_stmt::WhileStmt,

@@ -28,9 +28,12 @@ use crate::parser::Parser;
 
 /// Recovers after a failed top-level item: skips to the next depth-0 `;`
 /// (consumed) or a token that plausibly starts a new item, whichever comes
-/// first.
+/// first. A stray depth-0 `}` is consumed and skipped -- there is no
+/// enclosing block at item level for it to close, and stopping *at* it
+/// (like statement recovery does) would stall `parse_source_module` on the
+/// same token forever.
 pub fn synchronize_to_item_boundary(p: &mut Parser) {
-    synchronize(p, starts_item);
+    synchronize(p, starts_item, false);
 }
 
 /// Recovers after a failed statement: skips to the next depth-0 `;`
@@ -39,13 +42,14 @@ pub fn synchronize_to_item_boundary(p: &mut Parser) {
 /// unconsumed `}`, so the enclosing block still finishes cleanly instead of
 /// recovery eating its way out of the block entirely.
 pub fn synchronize_to_statement_boundary(p: &mut Parser) {
-    synchronize(p, starts_statement);
+    synchronize(p, starts_statement, true);
 }
 
-fn synchronize(p: &mut Parser, starts_boundary: fn(&TokenKind) -> bool) {
+fn synchronize(p: &mut Parser, starts_boundary: fn(&TokenKind) -> bool, stop_at_rbrace: bool) {
     loop {
         match p.peek() {
-            TokenKind::Eof | TokenKind::RBrace => return,
+            TokenKind::Eof => return,
+            TokenKind::RBrace if stop_at_rbrace => return,
             TokenKind::Semi => {
                 p.advance();
                 return;

@@ -252,6 +252,75 @@ pub enum AnalysisErrorKind {
     /// `head::item` where `head` names a *value* (a function or global) --
     /// values have no items of their own; only modules and struct types do.
     NotAModule { name: Ident },
+    /// An enum header entry named `tag` that isn't the *first* entry -- the
+    /// tag is required to lead the header (it's how the runtime layout
+    /// starts, and how the compiler tells variants apart).
+    EnumTagNotFirst,
+    /// An explicit tag (`tag: T` leading the header) whose `T` isn't an
+    /// integer type -- tags are currently always numeric.
+    EnumTagNotInteger { found: ResolvedType },
+    /// A header field whose type has no compile-time-constant literal form
+    /// (a struct, an array, ...) -- header values are per-variant constants,
+    /// so every header field must be expressible as one.
+    EnumHeaderFieldUnsupportedType { field: Ident, found: ResolvedType },
+    /// A variant supplying the wrong number of header values. `expected`
+    /// counts the explicit tag when the enum declares one (`has_tag`), so
+    /// the message can spell out what the list must contain.
+    EnumVariantArgCount { variant: Ident, expected: usize, found: usize, has_tag: bool },
+    /// A variant's tag/header value that isn't a literal constant -- the
+    /// header is per-variant *constant* data, baked in at the definition.
+    EnumValueNotConstant,
+    /// A variant's tag/header value whose literal kind can't be a value of
+    /// the field's declared type (e.g. a string where `u32` is expected).
+    /// `found` is a short description of what was written.
+    EnumValueTypeMismatch { expected: ResolvedType, found: String },
+    /// Two variants sharing one tag value -- tags are how variants are told
+    /// apart at runtime, so they must be unique per variant.
+    DuplicateEnumTag { variant: Ident, value: String, previous_variant: Ident, previous: Span },
+    /// A variant body field with the same name as a shared header field --
+    /// both are reached as `value.name`, so they must not collide. Also
+    /// covers a body/header field named `tag` (`header_field` is `tag`
+    /// then), which the tag itself already claims on every enum.
+    EnumFieldShadowsHeader { field: Ident, variant: Option<Ident> },
+    /// `Enum { ... }` -- an enum can't be built by naming just the enum; a
+    /// specific variant must be chosen. `example` is a real variant of this
+    /// enum, for the help text.
+    EnumLiteralWithoutVariant { r#enum: Ident, example: Ident },
+    /// `Enum::Name`/`Enum::Name { ... }` where `Name` is neither a variant
+    /// nor a function of the enum. Carries a "did you mean" candidate from
+    /// each namespace; only ever suggests what actually exists.
+    NoSuchEnumMember { r#enum: Ident, name: Ident, similar_variant: Option<Ident>, similar_function: Option<Ident> },
+    /// `Enum::Variant` (bare, no `{ ... }`) where the variant declares body
+    /// fields -- they'd be left uninitialized, and there is no implicit
+    /// zeroing anywhere in this language.
+    EnumVariantMissingBody { r#enum: Ident, variant: Ident, fields: Vec<Ident> },
+    /// `Enum::Variant { ... }` where the variant declares *no* body fields.
+    EnumVariantHasNoBody { r#enum: Ident, variant: Ident },
+    /// `Struct::Name { ... }` -- a literal path reaching into a struct as
+    /// if it had variants.
+    StructLiteralPathTooDeep { r#struct: Ident, name: Ident },
+    /// A field access naming a *body* field of a different variant than the
+    /// one this value statically is.
+    EnumFieldWrongVariant { field: Ident, owner: Ident, actual: Ident },
+    /// A field access naming a body field on an enum value whose variant
+    /// isn't statically known -- without knowing the variant, the field may
+    /// not exist in the value at all. `owner` is the variant declaring it.
+    EnumFieldVariantUnknown { field: Ident, r#enum: Ident, owner: Ident },
+    /// A field access naming something that is neither the tag, a header
+    /// field, nor any variant's body field.
+    NoSuchEnumField { field: Ident, r#enum: Ident, similar: Option<Ident> },
+    /// A path with explicit generic arguments (`Optional<u32>::...`)
+    /// continuing more than one segment past the instantiated type --
+    /// nothing nests deeper than a type's own members.
+    GenericPathTooDeep { r#type: Ident },
+    /// An assignment to an enum value's tag or one of its header fields --
+    /// both are per-variant constants; only a variant's own body fields are
+    /// mutable.
+    EnumFieldImmutable { field: Ident },
+    /// A variant-body literal (`Enum::Variant { ... }`) trying to set a
+    /// *header* field -- header values are fixed per variant by the enum's
+    /// own definition, never supplied at a construction site.
+    EnumHeaderFieldInLiteral { field: Ident },
 }
 
 impl AnalysisErrorKind {
@@ -322,9 +391,24 @@ impl AnalysisErrorKind {
             Self::AssignmentTargetNotAPlace => d
                 .with_label(span, "cannot assign to this expression")
                 .with_note("only variables, fields, indexes, and dereferences can be assigned to"),
-            Self::AssignmentTypeMismatch { target, value } => d
-                .with_label(span, format!("expected `{target}`, found `{value}`"))
-                .with_note("Omega has no implicit conversions; the value must have exactly the target's type"),
+            Self::AssignmentTypeMismatch { target, value } => {
+                let d = d
+                    .with_label(span, format!("expected `{target}`, found `{value}`"))
+                    .with_note("Omega has no implicit conversions; the value must have exactly the target's type");
+                // Both sides being *refined* variants of one enum means the
+                // variable was `:=`-inferred to one specific variant --
+                // declaring it as the plain enum is exactly what holds any.
+                match (target, value) {
+                    (
+                        ResolvedType::Enum { cell: expected, variant: Some(_) },
+                        ResolvedType::Enum { cell: found, variant: Some(_) },
+                    ) if expected.borrow().id == found.borrow().id => d.with_help(format!(
+                        "declare the variable with the plain enum type to hold any variant: `name : {} = ...;`",
+                        expected.borrow().name.as_ref()
+                    )),
+                    _ => d,
+                }
+            }
             Self::NumberLiteralOutOfRange { r#type, .. } => {
                 let d = d.with_label(span, format!("does not fit in `{}`", r#type));
                 match type_range(r#type) {
@@ -435,19 +519,105 @@ impl AnalysisErrorKind {
             Self::StaticFunctionOnInstance { r#struct, function } => d
                 .with_label(span, "this function does not take `self`")
                 .with_help(format!(
-                    "call it through the struct's name instead: `{}::{}(...)`",
+                    "call it through the type's name instead: `{}::{}(...)`",
                     r#struct.as_ref(),
                     function.as_ref()
                 )),
             Self::StaticAccessOnNonStruct { .. } => {
-                d.with_label(span, "only structs have functions")
+                d.with_label(span, "only structs and enums have functions")
             }
             Self::StructPathTooDeep { .. } => {
                 d.with_label(span, "a function has no items of its own")
             }
             Self::NotAModule { .. } => {
-                d.with_label(span, "only modules and struct types can contain items")
+                d.with_label(span, "only modules and struct/enum types can contain items")
             }
+            Self::EnumTagNotFirst => d
+                .with_label(span, "`tag` must be the header's first entry")
+                .with_help("move `tag: ...` to the front of the header"),
+            Self::EnumTagNotInteger { found } => d
+                .with_label(span, format!("`{found}` cannot be a tag type"))
+                .with_note("enum tags are currently limited to integer types (i8..i64, u8..u64, isize, usize)"),
+            Self::EnumHeaderFieldUnsupportedType { found, .. } => d
+                .with_label(span, format!("`{found}` has no literal constant form"))
+                .with_note(
+                    "each variant supplies this field's value as a compile-time constant,\nso header fields are currently limited to integers, floats, bool, char, and `*u8`",
+                ),
+            Self::EnumVariantArgCount { expected, found, has_tag, .. } => {
+                let what = if *has_tag { "the tag, then one value per header field" } else { "one value per header field" };
+                d.with_label(span, format!("expected {expected} {}, found {found}", plural(*expected, "value")))
+                    .with_note(format!("each variant's `(...)` must supply {what}, in header order"))
+            }
+            Self::EnumValueNotConstant => d
+                .with_label(span, "not a literal constant")
+                .with_note("a variant's tag and header values are baked in at the definition,\nso they must be literals (a number, string, bool, or char)"),
+            Self::EnumValueTypeMismatch { expected, found } => {
+                d.with_label(span, format!("expected `{expected}`, found {found}"))
+            }
+            Self::DuplicateEnumTag { value, previous_variant, previous, .. } => d
+                .with_label(span, format!("tag {value} used again here"))
+                .with_secondary_label(*previous, format!("first used by variant '{}'", previous_variant.as_ref()))
+                .with_note("the tag is how variants are told apart at runtime, so each variant needs its own"),
+            Self::EnumFieldShadowsHeader { field, .. } => {
+                let d = d.with_label(span, format!("`{}` already names a header field", field.as_ref()));
+                if field.as_ref() == "tag" {
+                    d.with_note("`tag` is reserved: every enum value exposes its tag as `value.tag`")
+                } else {
+                    d.with_note("header fields and body fields are both accessed as `value.name`, so they share one namespace")
+                }
+            }
+            Self::EnumLiteralWithoutVariant { r#enum, example } => d
+                .with_label(span, "an enum value is always a specific variant")
+                .with_help(format!("name the variant: `{}::{} {{ ... }}`", r#enum.as_ref(), example.as_ref())),
+            Self::NoSuchEnumMember { r#enum, similar_variant, similar_function, .. } => {
+                let mut d = d.with_label(span, format!("not found in `{}`", r#enum.as_ref()));
+                if let Some(name) = similar_variant {
+                    d = d.with_help(format!("a variant with a similar name exists: `{}`", name.as_ref()));
+                }
+                if let Some(name) = similar_function {
+                    d = d.with_help(format!("a function with a similar name exists: `{}`", name.as_ref()));
+                }
+                d
+            }
+            Self::EnumVariantMissingBody { r#enum, variant, fields } => d
+                .with_label(span, format!("variant '{}' has {}", variant.as_ref(), field_list(fields)))
+                .with_help(format!(
+                    "supply them with a body: `{}::{} {{ {} }}`",
+                    r#enum.as_ref(),
+                    variant.as_ref(),
+                    fields.iter().map(|f| format!("{}: ...;", f.as_ref())).collect::<Vec<_>>().join(" ")
+                )),
+            Self::EnumVariantHasNoBody { r#enum, variant } => d
+                .with_label(span, format!("variant '{}' declares no fields", variant.as_ref()))
+                .with_help(format!("write it bare: `{}::{}`", r#enum.as_ref(), variant.as_ref())),
+            Self::StructLiteralPathTooDeep { r#struct, .. } => d
+                .with_label(span, format!("`{}` is a struct -- it has no variants", r#struct.as_ref()))
+                .with_help(format!("build it directly: `{} {{ ... }}`", r#struct.as_ref())),
+            Self::EnumFieldWrongVariant { field, owner, actual } => d
+                .with_label(span, format!("this value is `{}`, which has no field '{}'", actual.as_ref(), field.as_ref()))
+                .with_note(format!("'{}' belongs to variant '{}'", field.as_ref(), owner.as_ref())),
+            Self::EnumFieldVariantUnknown { field, owner, .. } => d
+                .with_label(span, format!("this value's variant is not statically known here"))
+                .with_note(format!(
+                    "'{}' belongs to variant '{}', which this value may or may not be;\nonly `tag` and the shared header fields are always present",
+                    field.as_ref(),
+                    owner.as_ref()
+                )),
+            Self::NoSuchEnumField { r#enum, similar, .. } => {
+                let d = d.with_label(span, format!("`{}` has no field by that name", r#enum.as_ref()));
+                match similar {
+                    Some(name) => d.with_help(format!("a field with a similar name exists: `{}`", name.as_ref())),
+                    None => d,
+                }
+            }
+            Self::GenericPathTooDeep { r#type } => d
+                .with_label(span, format!("nothing nests deeper than `{}`'s own members", r#type.as_ref())),
+            Self::EnumFieldImmutable { field } => d
+                .with_label(span, format!("`{}` is fixed by the value's variant", field.as_ref()))
+                .with_note("the tag and header fields are per-variant constants; only a variant's own body fields can be assigned"),
+            Self::EnumHeaderFieldInLiteral { field } => d
+                .with_label(span, format!("`{}` is a header field", field.as_ref()))
+                .with_note("header values are fixed per variant by the enum's definition, so a construction site never supplies them"),
         }
     }
 }
@@ -705,6 +875,79 @@ impl fmt::Display for AnalysisErrorKind {
             ),
             Self::StaticAccessOnNonStruct { found } => {
                 write!(f, "type '{found}' has no functions")
+            }
+            Self::EnumTagNotFirst => {
+                write!(f, "the 'tag' header entry must come first")
+            }
+            Self::EnumTagNotInteger { found } => {
+                write!(f, "enum tags must be integers, but this tag is declared as '{found}'")
+            }
+            Self::EnumHeaderFieldUnsupportedType { field, .. } => {
+                write!(f, "header field '{}' has a type that cannot hold a constant", field.as_ref())
+            }
+            Self::EnumVariantArgCount { variant, expected, found, .. } => {
+                write!(
+                    f,
+                    "variant '{}' must supply {expected} {}, but supplies {found}",
+                    variant.as_ref(),
+                    plural(*expected, "value")
+                )
+            }
+            Self::EnumValueNotConstant => {
+                write!(f, "enum variant values must be literal constants")
+            }
+            Self::EnumValueTypeMismatch { expected, found } => {
+                write!(f, "mismatched types: expected '{expected}', found {found}")
+            }
+            Self::DuplicateEnumTag { variant, value, previous_variant, .. } => {
+                write!(
+                    f,
+                    "variants '{}' and '{}' share the tag value {value}",
+                    previous_variant.as_ref(),
+                    variant.as_ref()
+                )
+            }
+            Self::EnumFieldShadowsHeader { field, variant } => match variant {
+                Some(variant) => write!(
+                    f,
+                    "field '{}' of variant '{}' collides with a header field",
+                    field.as_ref(),
+                    variant.as_ref()
+                ),
+                None => write!(f, "header field '{}' is declared more than once", field.as_ref()),
+            },
+            Self::EnumLiteralWithoutVariant { r#enum, .. } => {
+                write!(f, "cannot build enum '{}' without naming a variant", r#enum.as_ref())
+            }
+            Self::NoSuchEnumMember { r#enum, name, .. } => {
+                write!(f, "no variant or function '{}' on enum '{}'", name.as_ref(), r#enum.as_ref())
+            }
+            Self::EnumVariantMissingBody { r#enum, variant, .. } => {
+                write!(f, "variant '{}::{}' has fields that must be initialized", r#enum.as_ref(), variant.as_ref())
+            }
+            Self::EnumVariantHasNoBody { r#enum, variant } => {
+                write!(f, "variant '{}::{}' has no fields to initialize", r#enum.as_ref(), variant.as_ref())
+            }
+            Self::StructLiteralPathTooDeep { r#struct, name } => {
+                write!(f, "'{}' is a struct, so '{}' cannot be one of its variants", r#struct.as_ref(), name.as_ref())
+            }
+            Self::EnumFieldWrongVariant { field, owner, .. } => {
+                write!(f, "field '{}' belongs to a different variant ('{}')", field.as_ref(), owner.as_ref())
+            }
+            Self::EnumFieldVariantUnknown { field, r#enum, .. } => {
+                write!(f, "cannot access variant field '{}' on a value whose '{}' variant is unknown", field.as_ref(), r#enum.as_ref())
+            }
+            Self::NoSuchEnumField { field, r#enum, .. } => {
+                write!(f, "no field '{}' on enum '{}'", field.as_ref(), r#enum.as_ref())
+            }
+            Self::GenericPathTooDeep { r#type } => {
+                write!(f, "path continues too far past '{}'", r#type.as_ref())
+            }
+            Self::EnumFieldImmutable { field } => {
+                write!(f, "cannot assign to '{}' of an enum value", field.as_ref())
+            }
+            Self::EnumHeaderFieldInLiteral { field } => {
+                write!(f, "header field '{}' cannot be initialized at a construction site", field.as_ref())
             }
             Self::StructPathTooDeep { r#struct, function } => {
                 write!(f, "'{}::{}' is a function; there is nothing to look up inside it",

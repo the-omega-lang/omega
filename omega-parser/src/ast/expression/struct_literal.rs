@@ -1,21 +1,20 @@
 use crate::ast::expression::ExpressionNode;
-use crate::ast::identifier::{Ident, Path};
+use crate::ast::identifier::{ExprPath, Ident};
 use crate::diagnostics::Span;
 
-/// `Name { field: value; ... }` -- builds a whole struct value in one
-/// expression, one initializer per field (analysis requires *every* field to
-/// be covered exactly once). Field initializers are `;`-terminated, matching
-/// the struct definition syntax they mirror, not comma-separated.
+/// `Name { field: value; ... }` -- builds a whole struct value (or, when the
+/// path names an enum variant -- `Enum::Variant { ... }` -- an enum value) in
+/// one expression, one initializer per field (analysis requires *every*
+/// field to be covered exactly once). Field initializers are `;`-terminated,
+/// matching the struct definition syntax they mirror, not comma-separated.
 ///
-/// `path` is the struct's (possibly module-qualified) type name -- kept as a
-/// raw `Path` like every other name at this layer; whether it actually names
-/// a struct is analysis's question. Explicit generic arguments
-/// (`List<u32> { ... }`) are not part of this grammar: `<` after a path in
-/// expression position already means comparison, the same ambiguity that
-/// leads Rust to require a turbofish there.
+/// `path` is the built type's (possibly module-qualified, possibly
+/// generic-argumented -- `List<u32> { ... }`, `Optional<u32>::Some { ... }`)
+/// name -- kept raw like every other name at this layer; whether it actually
+/// names a struct or an enum variant is analysis's question.
 #[derive(Debug, Clone)]
 pub struct StructLiteralExpr {
-    pub path: Path,
+    pub path: ExprPath,
     pub fields: Vec<StructLiteralField>,
 }
 

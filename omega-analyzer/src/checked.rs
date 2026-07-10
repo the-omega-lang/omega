@@ -24,6 +24,7 @@ pub enum CheckedItem {
     ExternDeclaration(CheckedExternDeclaration),
     FunctionDefinition(CheckedFunctionDef),
     Struct(CheckedStructDef),
+    Enum(CheckedEnumDef),
 }
 
 /// Where a resolved variable reference's value physically lives. Attached
@@ -109,6 +110,20 @@ pub struct CheckedStructDef {
     pub span: Span,
     pub name: Ident,
     pub fields: Vec<CheckedParam>,
+    pub functions: Vec<CheckedFunctionDef>,
+}
+
+/// A checked enum definition. Deliberately *only* the functions: the
+/// tag/header/variant data codegen needs at every construction and
+/// field-access site travels inside `ResolvedType::Enum`'s shared cell (on
+/// the expressions themselves), so carrying a second copy here would just
+/// be a divergence risk. What's left is exactly what has a compiled
+/// artifact of its own -- the methods.
+#[derive(Debug, Clone)]
+pub struct CheckedEnumDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
     pub functions: Vec<CheckedFunctionDef>,
 }
 
@@ -271,7 +286,27 @@ pub enum CheckedExpr {
     /// struct being built (`ResolvedType::Struct`); see
     /// `CheckedStructLiteral`'s doc comment for the field guarantees.
     StructLiteral(CheckedStructLiteral),
+    /// `Enum::Variant` / `Enum::Variant { field: value; ... }` -- builds a
+    /// whole enum value. The node's own `r#type` is always the enum with
+    /// this exact variant statically known
+    /// (`ResolvedType::Enum { variant: Some(variant_index) }`); the tag and
+    /// header constants come from the enum's shared cell, so only the
+    /// variant's own body fields are carried here (with the same
+    /// exactly-once/-typed guarantees `CheckedStructLiteral` documents,
+    /// against the variant's field list).
+    EnumConstruct(CheckedEnumConstruct),
     Slice(CheckedSlice),
+}
+
+/// See `CheckedExpr::EnumConstruct`.
+#[derive(Debug, Clone)]
+pub struct CheckedEnumConstruct {
+    pub variant_index: usize,
+    /// Body-field initializers in *source* (evaluation) order, each tagged
+    /// with its declared position in the variant's own field list -- same
+    /// contract as `CheckedStructLiteral::fields`. Always empty for a
+    /// body-less variant.
+    pub fields: Vec<CheckedStructLiteralField>,
 }
 
 /// A whole struct value built in one expression. `fields` is in *source*
@@ -357,6 +392,30 @@ pub enum CheckedProjection {
     /// `Struct` and `length` isn't a real field looked up by name/index; see
     /// `Analyzer::resolve_field_projection`'s special case.
     SliceLength,
+    /// `value.tag` on an enum -- reads the tag, which every enum value has
+    /// (implicit-tag enums included). `r#type` is the enum's tag type.
+    EnumTag {
+        r#type: ResolvedType,
+    },
+    /// A shared header field on an enum value -- present on every variant,
+    /// so no static variant knowledge is required. `index` is the field's
+    /// position in `ResolvedEnumType::header`; `field` is its name, carried
+    /// for diagnostics only (header fields are per-variant constants, so an
+    /// assignment through this projection is rejected by name).
+    EnumHeader {
+        field: Ident,
+        index: usize,
+        r#type: ResolvedType,
+    },
+    /// A body field of an enum value whose variant is statically known --
+    /// analysis guarantees the base's resolved type carries exactly
+    /// `variant_index` (see `ResolvedType::Enum`), so codegen can compute
+    /// the field's offset inside the union region with no runtime check.
+    EnumBody {
+        variant_index: usize,
+        field_index: usize,
+        r#type: ResolvedType,
+    },
 }
 
 #[derive(Debug, Clone)]

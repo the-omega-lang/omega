@@ -65,6 +65,91 @@ impl Hash for ResolvedStructType {
     }
 }
 
+/// An omega-style enum's fully resolved shape, shared behind
+/// `ResolvedType::Enum`'s `Rc<RefCell<_>>` for exactly the reasons
+/// `ResolvedStructType` is (see its doc comment): a variant body may point
+/// back at the enum itself (`next: *MyEnum`), so the placeholder is
+/// registered before variants are resolved and patched in place.
+///
+/// Everything a *use site* needs is here -- construction sites in any
+/// module read the tag/header constants straight out of this cell, so the
+/// per-variant constants only ever get analyzed once, at the definition.
+#[derive(Debug)]
+pub struct ResolvedEnumType {
+    pub id: HirId,
+    pub name: Ident,
+    /// Always an integer type -- `U16` for an implicit tag; whatever the
+    /// header's leading `tag:` entry declared for an explicit one. Kept as
+    /// a full `ResolvedType` (not a width/signedness pair) deliberately:
+    /// the language intends to allow non-numeric tags eventually, and
+    /// everything downstream already treats this as an opaque field type.
+    pub tag_type: ResolvedType,
+    /// The shared header fields, in declaration order -- *excluding* the
+    /// tag, which is layout-wise field -1 (always first) and accessed via
+    /// the dedicated `.tag` projection instead.
+    pub header: Vec<(Ident, ResolvedType)>,
+    pub variants: Vec<ResolvedEnumVariant>,
+    /// Same shape and semantics as `ResolvedStructType::functions`.
+    pub functions: Vec<(Ident, ResolvedMethod)>,
+}
+
+/// One resolved variant: its unique tag value, its per-variant header
+/// constants (one per `ResolvedEnumType::header` entry, positionally), and
+/// its own body fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedEnumVariant {
+    pub name: Ident,
+    /// Compile-time constant, unique across the enum -- what the
+    /// uniqueness check compared, and what construction emits at offset 0.
+    pub tag: crate::checked::NumberValue,
+    /// One constant per header field, positionally.
+    pub header_values: Vec<ConstValue>,
+    /// The variant-specific body fields -- empty for a body-less variant.
+    /// At runtime the enum's body region is a union of all variants'
+    /// bodies; analysis only ever lets the statically-known variant's own
+    /// fields be touched.
+    pub fields: Vec<(Ident, ResolvedType)>,
+}
+
+impl ResolvedEnumType {
+    /// The variant named `name`, with its index -- the shape both variant
+    /// construction and body-field lookup want.
+    pub fn variant(&self, name: &Ident) -> Option<(usize, &ResolvedEnumVariant)> {
+        self.variants.iter().enumerate().find(|(_, v)| &v.name == name)
+    }
+}
+
+/// Nominal identity, exactly like `ResolvedStructType`'s -- see its
+/// `PartialEq`/`Hash` doc comments; the same self-reference reasoning
+/// applies (a variant body may embed `*MyEnum`).
+impl PartialEq for ResolvedEnumType {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ResolvedEnumType {}
+
+impl Hash for ResolvedEnumType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+/// A compile-time constant value -- what an enum variant's tag and header
+/// values evaluate to at the definition, and what construction sites
+/// re-emit. Covers exactly the primitive types a constant can currently be
+/// written as; a header field whose type can't be represented here is
+/// rejected at the enum's definition (see `AnalysisErrorKind::
+/// EnumHeaderFieldUnsupportedType`), never at a use site.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstValue {
+    Number(crate::checked::NumberValue),
+    Bool(bool),
+    Char(char),
+    /// A `*u8` string constant -- the literal's decoded bytes.
+    Str(String),
+}
+
 /// How a numeric resolved type behaves arithmetically: its signedness (or
 /// float-ness) and bit width. Shared by analysis (to validate a number
 /// literal's suffix, range-check its value, and type-check `BinaryOp`/
@@ -126,6 +211,18 @@ pub enum ResolvedType {
     /// as `Pointer(Array(_))`; see `Context::resolve_type`.
     Slice(Box<ResolvedType>),
     Struct(Rc<RefCell<ResolvedStructType>>),
+    /// An omega-style enum value. `variant` is the *statically known*
+    /// variant, when there is one: `MyEnum::Second { ... }` produces a
+    /// value of type `MyEnum::Second` (variant `Some(1)`), and only such a
+    /// refined value may touch that variant's own body fields; a plain
+    /// `MyEnum` (variant `None` -- what every written-down type annotation
+    /// resolves to) only exposes the tag and the shared header. A refined
+    /// value is usable anywhere the plain enum is expected -- the one
+    /// implicit widening this type system has; see `ResolvedType::accepts`.
+    Enum {
+        cell: Rc<RefCell<ResolvedEnumType>>,
+        variant: Option<usize>,
+    },
 }
 
 /// Can't `#[derive(Hash)]` -- `Rc<RefCell<ResolvedStructType>>` isn't
@@ -161,6 +258,10 @@ impl Hash for ResolvedType {
                 size.hash(state);
             }
             Self::Struct(cell) => cell.borrow().hash(state),
+            Self::Enum { cell, variant } => {
+                cell.borrow().hash(state);
+                variant.hash(state);
+            }
         }
     }
 }
@@ -214,6 +315,18 @@ impl std::fmt::Display for ResolvedType {
             // Only the name, never the fields -- a struct may reference
             // itself, and its name is how source refers to it anyway.
             Self::Struct(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
+            // A refined enum type shows its known variant (`MyEnum::Second`)
+            // -- that's exactly how source spells the construction that
+            // produced it, and the refinement is load-bearing in the
+            // diagnostics that mention it (body-field access rules).
+            Self::Enum { cell, variant } => {
+                let e = cell.borrow();
+                write!(f, "{}", e.name.as_ref())?;
+                if let Some(index) = variant {
+                    write!(f, "::{}", e.variants[*index].name.as_ref())?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -240,5 +353,37 @@ impl ResolvedType {
             Self::F64 => NumericKind::Float(64),
             _ => return None,
         })
+    }
+
+    /// The same type with any statically-known enum-variant refinement
+    /// erased (`MyEnum::Second` -> `MyEnum`) -- what inference positions
+    /// that must stay variant-agnostic (an `if`'s unified branch type, an
+    /// array literal's element type, a deduced generic argument) normalize
+    /// to. Shallow on purpose: refinement only ever exists at the top level
+    /// of a value's type (nothing written down in source can nest one).
+    pub fn widened(&self) -> ResolvedType {
+        match self {
+            Self::Enum { cell, variant: Some(_) } => Self::Enum { cell: cell.clone(), variant: None },
+            other => other.clone(),
+        }
+    }
+
+    /// Whether a value of type `value` can be supplied where `self` is
+    /// expected: exact equality, plus the one implicit widening this type
+    /// system has -- a variant-refined enum value (`MyEnum::Second`) is
+    /// usable as its plain enum (`MyEnum`). Never the reverse (a plain
+    /// value's variant isn't known), and never through any indirection
+    /// (`*MyEnum::Second` -> `*MyEnum` would let a write through the
+    /// pointer silently falsify the refinement).
+    pub fn accepts(&self, value: &ResolvedType) -> bool {
+        if self == value {
+            return true;
+        }
+        match (self, value) {
+            (Self::Enum { cell: expected, variant: None }, Self::Enum { cell: found, variant: Some(_) }) => {
+                expected.borrow().id == found.borrow().id
+            }
+            _ => false,
+        }
     }
 }

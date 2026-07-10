@@ -5,7 +5,7 @@ use crate::ids::HirId;
 // `Type` because they only ever go through field access, never pattern
 // match on those.
 pub use omega_parser::prelude::BinaryOp;
-use omega_parser::prelude::{FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
+use omega_parser::prelude::{ExprPath, FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
 
 #[derive(Debug, Clone)]
 pub struct HirModule {
@@ -19,6 +19,7 @@ pub enum HirItem {
     ExternDeclaration(HirExternDeclaration),
     FunctionDefinition(HirFunctionDef),
     Struct(HirStructDef),
+    Enum(HirEnumDef),
     Import(HirImport),
 }
 
@@ -111,6 +112,43 @@ pub struct HirStructDef {
     pub generics: Vec<Ident>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
+}
+
+/// An omega-style enum -- see `omega_parser::ast::statement::r#enum::
+/// EnumStmt`'s doc comment for the full language shape. Carried raw like
+/// every other HIR node: whether the header's first entry is a valid
+/// explicit tag, whether each variant's `args` are constants of the right
+/// types, and whether tags are unique are all analysis's questions.
+#[derive(Debug, Clone)]
+pub struct HirEnumDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    /// `<T, U, ...>` -- empty for an ordinary, non-generic enum.
+    pub generics: Vec<Ident>,
+    /// The raw header entries, in source order -- a first entry named `tag`
+    /// is the explicit tag; the rest are the shared header fields.
+    pub header: Vec<HirParam>,
+    pub variants: Vec<HirEnumVariant>,
+    /// Same shape as `HirStructDef::functions` -- a member function's
+    /// synthetic `self: *EnumName` parameter is already inserted by
+    /// lowering.
+    pub functions: Vec<HirFunctionDef>,
+}
+
+/// One enum variant -- self-identifying (`id`/`span`, the span covering the
+/// variant's name) like every declaration-shaped HIR node, since identity
+/// problems (duplicate name/tag, wrong `args` count) anchor here.
+#[derive(Debug, Clone)]
+pub struct HirEnumVariant {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    /// The variant's header values (explicit tag first, when the enum
+    /// declares one) -- analysis requires these to be constants.
+    pub args: Vec<HirExprNode>,
+    /// The variant's own body fields -- empty for a body-less variant.
+    pub fields: Vec<HirParam>,
 }
 
 #[derive(Debug, Clone)]
@@ -264,7 +302,7 @@ pub enum HirExpr {
 /// See `HirExpr::StructLiteral`.
 #[derive(Debug, Clone)]
 pub struct HirStructLiteral {
-    pub path: Path,
+    pub path: ExprPath,
     pub fields: Vec<HirStructLiteralField>,
 }
 
@@ -314,9 +352,10 @@ pub struct HirPlace {
 
 #[derive(Debug, Clone)]
 pub enum HirPlaceRoot {
-    /// A (possibly module-qualified) path -- a bare identifier is just the
-    /// degenerate one-segment case, same as everywhere else `Path` is used.
-    Path(Path),
+    /// A (possibly module-qualified, possibly generic-argumented) path -- a
+    /// bare identifier is just the degenerate one-segment case, same as
+    /// everywhere else `Path`/`ExprPath` is used.
+    Path(ExprPath),
     /// The base of a projection chain that isn't a bare identifier, e.g.
     /// `foo().bar` -- the root is the `foo()` call expression.
     Expr(Box<HirExprNode>),
