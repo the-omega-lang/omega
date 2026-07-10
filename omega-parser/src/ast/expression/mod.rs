@@ -12,6 +12,7 @@ pub mod if_expr;
 pub mod incr_decr;
 pub mod index;
 pub mod macro_invocation;
+pub mod match_expr;
 pub mod negate;
 pub mod number;
 pub mod slice;
@@ -24,8 +25,9 @@ use crate::ast::expression::{
     binary_op::BinaryOpExpr, bool_literal::BoolExpr, char_literal::CharExpr,
     codeblock::CodeblockExpr, deref::DerefExpr, field_access::FieldAccessExpr,
     function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
-    index::IndexExpr, macro_invocation::MacroInvocationExpr, negate::NegateExpr,
-    number::NumberExpr, slice::SliceExpr, string::StringExpr, struct_literal::StructLiteralExpr,
+    index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
+    negate::NegateExpr, number::NumberExpr, slice::SliceExpr, string::StringExpr,
+    struct_literal::StructLiteralExpr,
 };
 use crate::diagnostics::Span;
 
@@ -55,6 +57,7 @@ pub enum Expression {
     Char(CharExpr),
     Codeblock(CodeblockExpr),
     If(Box<IfExpr>),
+    Match(Box<MatchExpr>),
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
     ArrayLiteral(ArrayLiteralExpr),

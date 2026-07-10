@@ -41,6 +41,7 @@ pub enum TokenKind {
     False,
     If,
     Else,
+    Match,
     Extern,
     Import,
     Return,
@@ -55,6 +56,11 @@ pub enum TokenKind {
 
     // Multi-char punctuation, maximal-munch (tried longest-first during
     // lexing so e.g. `...` is never mistaken for `..` followed by `.`).
+    /// `...` -- an inclusive range (`a...b`, `a...`, `...b`, or bare `...`
+    /// for the full domain), any bound optional; also still used, unchanged,
+    /// for variadic function parameters -- the two never collide since a
+    /// variadic `...` only ever appears as the last item of a parameter
+    /// list, a position expressions never occur in. See `ast::range::RangeExpr`.
     DotDotDot,
     ColonColon,
     FatArrow,
@@ -63,7 +69,12 @@ pub enum TokenKind {
     NotEq,
     LtEq,
     GtEq,
-    DotDot,
+    /// `..<` -- an exclusive-end range (`a..<b`, `..<b`); always requires an
+    /// explicit end (`a..<` alone is a parse error, see
+    /// `parser::expression::parse_range_tail`). Plain two-dot `..` doesn't
+    /// exist in this grammar at all -- every range is spelled either `...`
+    /// (inclusive) or `..<` (exclusive-end).
+    DotDotLt,
     PlusPlus,
     MinusMinus,
 
@@ -108,6 +119,7 @@ impl TokenKind {
             Self::False => "'false'".to_string(),
             Self::If => "'if'".to_string(),
             Self::Else => "'else'".to_string(),
+            Self::Match => "'match'".to_string(),
             Self::Extern => "'extern'".to_string(),
             Self::Import => "'import'".to_string(),
             Self::Return => "'return'".to_string(),
@@ -127,7 +139,7 @@ impl TokenKind {
             Self::NotEq => "'!='".to_string(),
             Self::LtEq => "'<='".to_string(),
             Self::GtEq => "'>='".to_string(),
-            Self::DotDot => "'..'".to_string(),
+            Self::DotDotLt => "'..<'".to_string(),
             Self::PlusPlus => "'++'".to_string(),
             Self::MinusMinus => "'--'".to_string(),
             Self::Bang => "'!'".to_string(),
@@ -166,6 +178,7 @@ const KEYWORDS: &[(&str, TokenKind)] = &[
     ("false", TokenKind::False),
     ("if", TokenKind::If),
     ("else", TokenKind::Else),
+    ("match", TokenKind::Match),
     ("extern", TokenKind::Extern),
     ("import", TokenKind::Import),
     ("return", TokenKind::Return),
@@ -183,6 +196,7 @@ const KEYWORDS: &[(&str, TokenKind)] = &[
 /// `:=` is never mistaken for `:` + `=`.
 const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
     ("...", TokenKind::DotDotDot),
+    ("..<", TokenKind::DotDotLt),
     ("::", TokenKind::ColonColon),
     ("=>", TokenKind::FatArrow),
     (":=", TokenKind::ColonEq),
@@ -190,7 +204,6 @@ const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
     ("!=", TokenKind::NotEq),
     ("<=", TokenKind::LtEq),
     (">=", TokenKind::GtEq),
-    ("..", TokenKind::DotDot),
     ("++", TokenKind::PlusPlus),
     ("--", TokenKind::MinusMinus),
 ];

@@ -2,14 +2,14 @@ use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
     HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr, HirExternDeclaration, HirFor,
     HirFunctionCall, HirFunctionDef,
-    HirIf, HirImport, HirItem, HirModule, HirParam, HirPlace, HirPlaceRoot, HirProjection,
-    HirSlice, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField,
-    HirWalrusDeclaration, HirWhile,
+    HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
+    HirPlaceRoot, HirProjection, HirRange, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
+    HirStructLiteralField, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
     CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode, ExternDeclarationStmt,
-    FunctionDefinitionStmt, Ident, Item, ItemNode, Span, SourceModule,
+    FunctionDefinitionStmt, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
     Statement, StatementNode, StructStmt, Type,
 };
 
@@ -409,18 +409,49 @@ impl Lowerer {
             }
             Expression::Slice(s) => {
                 let base = self.lower_place_chain(&s.base);
-                let start = s.start.as_ref().map(|e| Box::new(self.lower_expr(e)));
-                let end = s.end.as_ref().map(|e| Box::new(self.lower_expr(e)));
+                let range = self.lower_range(&s.range);
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Slice(HirSlice { base, range }) }
+            }
+            Expression::Match(m) => {
+                let scrutinee = Box::new(self.lower_expr(&m.scrutinee));
+                let arms = m
+                    .arms
+                    .iter()
+                    .map(|arm| HirMatchArm {
+                        pattern: self.lower_pattern(&arm.pattern),
+                        body: self.lower_expr(&arm.body),
+                        span: arm.span,
+                    })
+                    .collect();
+                let else_branch = m.else_branch.as_ref().map(|b| self.lower_block(b));
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::Slice(HirSlice { base, start, end }),
+                    expr: HirExpr::Match(HirMatch { scrutinee, arms, else_branch }),
                 }
             }
             Expression::MacroInvocation(_) => unreachable!(
                 "macro invocations are replaced by their expansion by \
                  omega_parser::macros::expand before lower_module runs"
             ),
+        }
+    }
+
+    /// See `HirRange`'s doc comment -- shared, structural lowering for both
+    /// `HirSlice` and `HirPattern::Range`.
+    fn lower_range(&mut self, range: &RangeExpr) -> HirRange {
+        HirRange {
+            start: range.start.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            end: range.end.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            inclusive: range.inclusive,
+            span: range.span,
+        }
+    }
+
+    fn lower_pattern(&mut self, pattern: &Pattern) -> HirPattern {
+        match pattern {
+            Pattern::Value(v) => HirPattern::Value(self.lower_expr(v)),
+            Pattern::Range(r) => HirPattern::Range(self.lower_range(r)),
         }
     }
 

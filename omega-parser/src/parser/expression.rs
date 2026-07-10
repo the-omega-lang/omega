@@ -3,10 +3,12 @@ use crate::ast::expression::{
     assignment::AssignmentExpr, binary_op::{BinaryOp, BinaryOpExpr}, bool_literal::BoolExpr,
     char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
-    incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr, negate::NegateExpr,
-    slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
+    incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
+    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, slice::SliceExpr,
+    string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
-use crate::diagnostics::ParseErrorKind;
+use crate::ast::range::RangeExpr;
+use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::parse_statement};
 
@@ -165,46 +167,66 @@ fn parse_postfix(p: &mut Parser) -> Option<ExpressionNode> {
     Some(expr)
 }
 
-/// `base[index]` vs `base[start..end]` (`start`/`end` each independently
-/// optional) -- told apart by the presence of a bare `..`: if the token
-/// right after `[` is `..`, there's no start bound; otherwise one mandatory
-/// expression is parsed first and *then* checked for a following `..` --
-/// either way, no real backtracking is needed (unlike the old grammar's
-/// `choice((range, item))`, which had to speculatively try the whole range
-/// shape first): the `..` decides which shape this is only once we've seen
-/// it, and everything up to that point is identical for both.
+/// `base[index]` vs `base[range]` -- told apart by whether a range operator
+/// (`...`/`..<`) appears right after `[` (no start bound) or right after one
+/// mandatory expression is parsed first -- either way, no real backtracking
+/// is needed (unlike the old grammar's `choice((range, item))`, which had to
+/// speculatively try the whole range shape first): the operator decides
+/// which shape this is only once we've seen it, and everything up to that
+/// point is identical for both. See `RangeExpr`'s doc comment for the range
+/// grammar itself, shared verbatim with match patterns.
 fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<ExpressionNode> {
     p.advance(); // '['
-    if p.eat(&TokenKind::DotDot) {
-        let end = parse_optional_slice_bound(p)?;
-        return finish_slice(p, base, None, end);
+    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+        let op_span = p.peek_span();
+        let range = parse_range_tail(p, None, op_span, &TokenKind::RBracket)?;
+        return finish_slice(p, base, range);
     }
     let first = p.allow_struct_literals(parse_expression)?;
-    if p.eat(&TokenKind::DotDot) {
-        let end = parse_optional_slice_bound(p)?;
-        finish_slice(p, base, Some(first), end)
-    } else {
-        let close_span = p.peek_span();
-        p.expect(&TokenKind::RBracket, "']'");
-        let span = base.span.to(close_span);
-        Some(ExpressionNode { expression: Expression::Index(Box::new(IndexExpr { base, index: first })), span })
+    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+        let op_span = p.peek_span();
+        let range = parse_range_tail(p, Some(first), op_span, &TokenKind::RBracket)?;
+        return finish_slice(p, base, range);
     }
-}
-
-fn parse_optional_slice_bound(p: &mut Parser) -> Option<Option<ExpressionNode>> {
-    if p.check(&TokenKind::RBracket) { Some(None) } else { p.allow_struct_literals(parse_expression).map(Some) }
-}
-
-fn finish_slice(
-    p: &mut Parser,
-    base: ExpressionNode,
-    start: Option<ExpressionNode>,
-    end: Option<ExpressionNode>,
-) -> Option<ExpressionNode> {
     let close_span = p.peek_span();
     p.expect(&TokenKind::RBracket, "']'");
     let span = base.span.to(close_span);
-    Some(ExpressionNode { expression: Expression::Slice(Box::new(SliceExpr { base, start, end })), span })
+    Some(ExpressionNode { expression: Expression::Index(Box::new(IndexExpr { base, index: first })), span })
+}
+
+/// Consumes the range operator at the parser's current position (`...` or
+/// `..<` -- the caller has already confirmed one is here) and parses the
+/// rest of the shared range grammar. `terminator` is whatever token means
+/// "no end bound follows" in the caller's context (`]` for a slice, `=>` for
+/// a match pattern). `..<` always requires an explicit end
+/// (`ExclusiveRangeMissingEnd` otherwise, per `RangeExpr`'s doc comment).
+fn parse_range_tail(
+    p: &mut Parser,
+    start: Option<ExpressionNode>,
+    op_span: Span,
+    terminator: &TokenKind,
+) -> Option<RangeExpr> {
+    let inclusive = match p.peek() {
+        TokenKind::DotDotDot => true,
+        TokenKind::DotDotLt => false,
+        _ => unreachable!("caller already confirmed a range operator is here"),
+    };
+    p.advance();
+    let end = if p.check(terminator) { None } else { Some(p.allow_struct_literals(parse_expression)?) };
+    if !inclusive && end.is_none() {
+        p.error_at(op_span, ParseErrorKind::ExclusiveRangeMissingEnd);
+        return None;
+    }
+    let lo = start.as_ref().map(|s| s.span).unwrap_or(op_span);
+    let hi = end.as_ref().map(|e| e.span).unwrap_or(op_span);
+    Some(RangeExpr { start, end, inclusive, span: lo.to(hi) })
+}
+
+fn finish_slice(p: &mut Parser, base: ExpressionNode, range: RangeExpr) -> Option<ExpressionNode> {
+    let close_span = p.peek_span();
+    p.expect(&TokenKind::RBracket, "']'");
+    let span = base.span.to(close_span);
+    Some(ExpressionNode { expression: Expression::Slice(Box::new(SliceExpr { base, range })), span })
 }
 
 /// `callee(args)` -- comma-separated, no trailing comma tolerated (matching
@@ -256,6 +278,11 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             let if_expr = parse_if_expr(p)?;
             let span = start.to(p.last_span());
             Some(ExpressionNode { expression: Expression::If(Box::new(if_expr)), span })
+        }
+        TokenKind::Match => {
+            let match_expr = parse_match_expr(p)?;
+            let span = start.to(p.last_span());
+            Some(ExpressionNode { expression: Expression::Match(Box::new(match_expr)), span })
         }
         TokenKind::LBracket => parse_array_literal(p),
         TokenKind::Number(_) => {
@@ -501,6 +528,62 @@ fn parse_if_branch_body(p: &mut Parser) -> Option<(ExpressionNode, CodeblockExpr
     let condition = p.restrict_struct_literals(parse_expression)?;
     let body = parse_codeblock(p)?;
     Some((condition, body))
+}
+
+/// `match scrutinee { pattern => body, ... } else { ... }`. The scrutinee
+/// parses with struct literals restricted, exactly like an `if` condition
+/// (`parse_if_branch_body`) -- `match flag { ... }` must mean "scrutinee
+/// `flag`, then the arm list," never a `flag { ... }` literal.
+fn parse_match_expr(p: &mut Parser) -> Option<MatchExpr> {
+    let start = p.peek_span();
+    p.expect(&TokenKind::Match, "'match'");
+    let scrutinee = p.restrict_struct_literals(parse_expression)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut arms = Vec::new();
+    while !p.check(&TokenKind::RBrace) && !p.is_eof() {
+        arms.push(parse_match_arm(p)?);
+        if !p.eat(&TokenKind::Comma) {
+            break;
+        }
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    let else_branch = if p.eat(&TokenKind::Else) { Some(parse_codeblock(p)?) } else { None };
+    let span = start.to(p.last_span());
+    Some(MatchExpr { scrutinee, arms, else_branch, span })
+}
+
+/// `pattern => body` -- arms are comma-separated with an optional trailing
+/// comma, uniformly regardless of whether `body` is a bare expression or a
+/// `{ ... }` block (simpler than Rust's "comma optional after a block"
+/// special case).
+fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
+    let start = p.peek_span();
+    let pattern = parse_pattern(p)?;
+    p.expect(&TokenKind::FatArrow, "'=>'");
+    let body = p.allow_struct_literals(parse_expression)?;
+    let span = start.to(body.span);
+    Some(MatchArm { pattern, body, span })
+}
+
+/// One pattern: a range (leading `...`/`..<`, or one expression followed by
+/// `...`/`..<`), or else that one expression stands alone as
+/// `Pattern::Value` -- a literal or an `Enum::Variant` path, told apart by
+/// analysis (see `Pattern`'s doc comment), not here. Reuses
+/// `parse_range_tail` verbatim (terminated by `=>` instead of a slice's
+/// `]`), so the range grammar is defined in exactly one place.
+fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
+    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+        let op_span = p.peek_span();
+        let range = parse_range_tail(p, None, op_span, &TokenKind::FatArrow)?;
+        return Some(Pattern::Range(range));
+    }
+    let value = p.allow_struct_literals(parse_expression)?;
+    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+        let op_span = p.peek_span();
+        let range = parse_range_tail(p, Some(value), op_span, &TokenKind::FatArrow)?;
+        return Some(Pattern::Range(range));
+    }
+    Some(Pattern::Value(value))
 }
 
 #[cfg(test)]

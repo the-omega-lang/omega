@@ -4,11 +4,12 @@ pub use crate::ast::expression::{
     char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr,
     if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
-    macro_invocation::MacroInvocationExpr, negate::NegateExpr,
-    number::{NumberBase, NumberExpr}, slice::SliceExpr, string::StringExpr,
+    macro_invocation::MacroInvocationExpr, match_expr::{MatchArm, MatchExpr, Pattern},
+    negate::NegateExpr, number::{NumberBase, NumberExpr}, slice::SliceExpr, string::StringExpr,
     struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 pub use crate::ast::identifier::{ExprPath, Ident, Path};
+pub use crate::ast::range::RangeExpr;
 pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode, declaration::DeclarationStmt,
     defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},

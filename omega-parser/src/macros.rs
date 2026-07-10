@@ -555,12 +555,35 @@ fn expand_expr(
         }),
         Expression::Slice(s) => {
             let s = *s;
-            Expression::Slice(Box::new(SliceExpr {
-                base: expand_expr(s.base, defs, budget)?,
-                start: s.start.map(|e| expand_expr(e, defs, budget)).transpose()?,
-                end: s.end.map(|e| expand_expr(e, defs, budget)).transpose()?,
-            }))
+            Expression::Slice(Box::new(SliceExpr { base: expand_expr(s.base, defs, budget)?, range: expand_range(s.range, defs, budget)? }))
         }
+        Expression::Match(m) => Expression::Match(Box::new(expand_match(*m, defs, budget)?)),
     };
     Ok(ExpressionNode { expression, span })
+}
+
+fn expand_range(range: RangeExpr, defs: &HashMap<Ident, MacroDefinitionStmt>, budget: &mut u32) -> Result<RangeExpr, MacroError> {
+    Ok(RangeExpr {
+        start: range.start.map(|e| expand_expr(e, defs, budget)).transpose()?,
+        end: range.end.map(|e| expand_expr(e, defs, budget)).transpose()?,
+        inclusive: range.inclusive,
+        span: range.span,
+    })
+}
+
+fn expand_match(match_expr: MatchExpr, defs: &HashMap<Ident, MacroDefinitionStmt>, budget: &mut u32) -> Result<MatchExpr, MacroError> {
+    let scrutinee = expand_expr(match_expr.scrutinee, defs, budget)?;
+    let arms = match_expr
+        .arms
+        .into_iter()
+        .map(|arm| {
+            let pattern = match arm.pattern {
+                Pattern::Value(v) => Pattern::Value(expand_expr(v, defs, budget)?),
+                Pattern::Range(r) => Pattern::Range(expand_range(r, defs, budget)?),
+            };
+            Ok(MatchArm { pattern, body: expand_expr(arm.body, defs, budget)?, span: arm.span })
+        })
+        .collect::<Result<Vec<_>, MacroError>>()?;
+    let else_branch = match_expr.else_branch.map(|b| expand_codeblock(b, defs, budget)).transpose()?;
+    Ok(MatchExpr { scrutinee, arms, else_branch, span: match_expr.span })
 }

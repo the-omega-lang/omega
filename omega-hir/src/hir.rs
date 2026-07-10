@@ -297,6 +297,8 @@ pub enum HirExpr {
     /// value's type are all analysis's questions.
     StructLiteral(HirStructLiteral),
     Slice(HirSlice),
+    /// See `HirMatch`'s doc comment.
+    Match(HirMatch),
 }
 
 /// See `HirExpr::StructLiteral`.
@@ -322,19 +324,67 @@ pub struct HirIf {
     pub else_branch: Option<HirBlock>,
 }
 
-/// `base[start..end]` (`start`/`end` each optional) -- produces a new slice
-/// (fat pointer) over a sub-range of `base`, unlike `HirProjection::Index`
-/// which produces a single element. `base` is a place (same as
-/// `HirAddressOf.base`'s treatment, minus the "must be a place" enforcement,
-/// which analysis still has to do here too) rather than a plain expression,
-/// since slicing needs to know exactly what's being sliced -- a
-/// `SizedArray`'s inline storage vs. an existing `Slice`'s data
-/// pointer+length -- the same distinction indexing has to make.
+/// `base[range]` -- produces a new slice (fat pointer) over a sub-range of
+/// `base`, unlike `HirProjection::Index` which produces a single element.
+/// `base` is a place (same as `HirAddressOf.base`'s treatment, minus the
+/// "must be a place" enforcement, which analysis still has to do here too)
+/// rather than a plain expression, since slicing needs to know exactly what's
+/// being sliced -- a `SizedArray`'s inline storage vs. an existing `Slice`'s
+/// data pointer+length -- the same distinction indexing has to make.
 #[derive(Debug, Clone)]
 pub struct HirSlice {
     pub base: HirPlace,
+    pub range: HirRange,
+}
+
+/// See `omega_parser::ast::range::RangeExpr`'s doc comment for the range
+/// grammar itself -- shared, unchanged, between slicing (`HirSlice`) and
+/// match range-patterns (`HirPattern::Range`).
+#[derive(Debug, Clone)]
+pub struct HirRange {
     pub start: Option<Box<HirExprNode>>,
     pub end: Option<Box<HirExprNode>>,
+    pub inclusive: bool,
+    pub span: Span,
+}
+
+/// `match scrutinee { pattern => body, ... } else { ... }` -- see
+/// `omega_parser::ast::expression::match_expr::MatchExpr`'s doc comment.
+/// Carried raw, same philosophy as every other HIR node: whether each
+/// pattern is well-formed for the scrutinee's type, whether the arms are
+/// exhaustive, and any place-narrowing inside a matched arm are all
+/// analysis's questions.
+#[derive(Debug, Clone)]
+pub struct HirMatch {
+    pub scrutinee: Box<HirExprNode>,
+    pub arms: Vec<HirMatchArm>,
+    pub else_branch: Option<HirBlock>,
+}
+
+/// See `HirMatch`'s doc comment.
+#[derive(Debug, Clone)]
+pub struct HirMatchArm {
+    pub pattern: HirPattern,
+    pub body: HirExprNode,
+    pub span: Span,
+}
+
+/// One arm's pattern -- see `omega_parser::ast::expression::match_expr::Pattern`'s
+/// doc comment; carried just as raw as everywhere else, telling a literal
+/// apart from an `Enum::Variant` path is analysis's job.
+#[derive(Debug, Clone)]
+pub enum HirPattern {
+    Value(HirExprNode),
+    Range(HirRange),
+}
+
+impl HirPattern {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Value(v) => v.span,
+            Self::Range(r) => r.span,
+        }
+    }
 }
 
 /// The parser has no notion of "places"/lvalues -- it only knows `Ident`,

@@ -296,6 +296,17 @@ pub enum CheckedExpr {
     /// against the variant's field list).
     EnumConstruct(CheckedEnumConstruct),
     Slice(CheckedSlice),
+    /// `match scrutinee { pattern => body, ... } else { ... }` -- an
+    /// exhaustive switch, and (for an enum scrutinee) the proof mechanism
+    /// behind sum-type subtyping: each arm's `body` is analyzed with the
+    /// scrutinee's own binding narrowed to exactly the variant that arm's
+    /// pattern proved (see `Analyzer::analyze_match`), so this node itself
+    /// carries no narrowing information at all -- it's already baked into
+    /// each arm's `CheckedMatchArm.body` as ordinary (already-refined)
+    /// `ResolvedType`s on whatever place expressions appear there. Every
+    /// arm (and `else_branch`, if present) is guaranteed to agree on this
+    /// node's own `r#type`, exactly like `CheckedExpr::If`.
+    Match(CheckedMatch),
 }
 
 /// See `CheckedExpr::EnumConstruct`.
@@ -334,18 +345,22 @@ pub struct CheckedArrayLiteral {
     pub elements: Vec<CheckedExprNode>,
 }
 
-/// `base[start..end]` -- `base`'s resolved type is guaranteed to be
-/// `SizedArray` or `Slice` (never anything else) by the time this is
-/// constructed, and `start`/`end` (when present) are guaranteed `I32`.
-/// `item_type` is `base`'s element type, carried the same way
-/// `CheckedProjection::Index`'s is, so codegen never has to re-derive it
-/// from `base`'s type.
+/// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`
+/// or `Slice` (never anything else) by the time this is constructed, and
+/// `start`/`end` (when present) are guaranteed `I32`. `item_type` is
+/// `base`'s element type, carried the same way `CheckedProjection::Index`'s
+/// is, so codegen never has to re-derive it from `base`'s type. `inclusive`
+/// mirrors `omega_hir::HirRange`'s -- when `true` and `end` is present,
+/// codegen includes `end` itself in the slice (see
+/// `omega_parser::ast::range::RangeExpr`'s doc comment for the range
+/// grammar).
 #[derive(Debug, Clone)]
 pub struct CheckedSlice {
     pub base: CheckedPlace,
     pub item_type: ResolvedType,
     pub start: Option<Box<CheckedExprNode>>,
     pub end: Option<Box<CheckedExprNode>>,
+    pub inclusive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -444,6 +459,31 @@ pub struct CheckedBinaryOp {
 pub struct CheckedIf {
     pub branches: Vec<(CheckedExprNode, CheckedBlock)>,
     pub else_branch: Option<CheckedBlock>,
+}
+
+/// See `CheckedExpr::Match`'s doc comment.
+#[derive(Debug, Clone)]
+pub struct CheckedMatch {
+    pub arms: Vec<CheckedMatchArm>,
+    /// `None` only when analysis already proved every value is covered by
+    /// `arms` (`Analyzer::analyze_match`'s exhaustiveness check) -- codegen
+    /// (`omega_codegen`'s `emit_match`) traps instead of falling through in
+    /// that case, since falling off the end is otherwise provably
+    /// unreachable, unlike `CheckedIf`'s "no `else`" case (which defaults to
+    /// producing `Void`).
+    pub else_branch: Option<CheckedBlock>,
+}
+
+/// One arm: every condition must hold, in order, for this arm to run (short-
+/// circuiting on the first `false` -- see `emit_match`). A value/enum-variant
+/// pattern has exactly one condition; a range pattern has one per bound
+/// actually present (so up to two) -- there is no boolean AND/OR operator in
+/// this language, so a multi-bound test is nested branching in codegen
+/// rather than one merged boolean expression.
+#[derive(Debug, Clone)]
+pub struct CheckedMatchArm {
+    pub conditions: Vec<CheckedExprNode>,
+    pub body: CheckedBlock,
 }
 
 /// `target` is a `CheckedPlace`, not a general expression: analysis rejects

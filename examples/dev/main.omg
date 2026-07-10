@@ -188,6 +188,31 @@ cool_tag(e: MyCoolEnum) => i16 {
     e.tag
 }
 
+# Sum-type subtyping through proofs: a variant is itself a subtype of its
+# enum, so a function can take a pointer to one exact variant directly --
+# no helper struct, no destructuring -- and access that variant's own body
+# fields right away. Calling this requires the compiler to have already
+# proved its argument is specifically `Second`, either by construction
+# (`x := MyEnumWithBodies::Second { ... }`) or by `match`.
+print_second_text(x: *MyEnumWithBodies::Second) => void {
+    printf("variant-specific field access: %s\n", x.some_text);
+}
+
+# Matching through an existing pointer: proving `b` is `Second` narrows `b`
+# itself (a `*MyEnumWithBodies`) to `*MyEnumWithBodies::Second`, so it can
+# be passed straight into `print_second_text` -- no `&`, no destructuring.
+# Outside the matched arm (and in `else`), `b` stays a plain
+# `*MyEnumWithBodies` -- only the tag is reachable there.
+describe_if_second(b: *MyEnumWithBodies) => void {
+    match b {
+        MyEnumWithBodies::Second => {
+            print_second_text(b);
+        }
+    } else {
+        printf("not the Second variant (tag=%d)\n", b.tag);
+    }
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -228,11 +253,15 @@ main(argc : i32, argv : [*u8]) => i32 {
 
     arr : [i32; 3] = [1, 2, 3];
     arr2 := [1, 2, 3];
-    slice := arr[1..];
+    slice := arr[1...];
     printf("array second item: %d\n", slice[0]);
     printf("slice len: %d\n", slice.length);
-    slice = arr[0..];
+    slice = arr[0...];
     printf("slice len: %d\n", slice.length);
+    slice = arr[0..<2];
+    printf("exclusive-end slice len: %d\n", slice.length);
+    slice = arr[0...1];
+    printf("inclusive-end slice len: %d\n", slice.length);
 
     big : i64 = 5_000_000_000i64;
     big2 := big + 1i64;
@@ -300,6 +329,19 @@ main(argc : i32, argv : [*u8]) => i32 {
         "not lower than 3"
     };
     printf("testvar1: %s\n", testvar1);
+
+    # `match` also works as an ordinary value/range switch, standardized on
+    # the same range grammar slicing uses: `..<` excludes its end, `...`
+    # includes it (or, with no bound, is fully open on that side). These
+    # three patterns cover every `u32` value between them, so no `else` is
+    # needed -- the compiler verifies that coverage itself.
+    matched_num := 100u32;
+    message := match matched_num {
+        0..<100 => "less than a hundred",
+        100 => "a hundred",
+        101... => "more than a hundred",
+    };
+    printf("match on value: matched_num=%u is %s\n", matched_num, message);
 
     mod_a := simplemodule::something3(5);
     mod_b := mymodule::something1();
@@ -376,6 +418,28 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf("enum body: tag=%d text=%s\n", s.tag, s.some_text);
     t := MyEnumWithBodies::Third { some_number: 777u16; pointer_to_another_instance: &s; };
     printf("enum body2: tag=%d n=%d inner_tag=%d\n", t.tag, t.some_number, t.pointer_to_another_instance.tag);
+
+    # Sum-type subtyping: `s`'s own inferred type is `MyEnumWithBodies::Second`
+    # (permanently, since it was never widened by an explicit plain type
+    # annotation), so `&s` stays refined and can be passed directly where a
+    # variant-specific pointer is expected -- no `match` needed here, the
+    # proof already happened at construction.
+    print_second_text(&s);
+
+    # `match` proves it instead, for a value whose *static* type is plain:
+    # `describe_if_second` only ever sees `*MyEnumWithBodies`, and proves
+    # which variant it's holding at runtime via the tag.
+    describe_if_second(&s);
+    describe_if_second(&t);
+
+    # `match` as an expression: exhaustive over every variant, no `else`
+    # needed since all three are covered.
+    kind := match s {
+        MyEnumWithBodies::First => "first",
+        MyEnumWithBodies::Second => "second",
+        MyEnumWithBodies::Third => "third",
+    };
+    printf("match as expression: %s\n", kind);
 
     xt := MyEnumWithExplicitTagAndHeader::Third;
     printf("enum explicit: tag=%u desc=%s\n", xt.tag, xt.description);

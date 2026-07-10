@@ -17,7 +17,7 @@ use omega_analyzer::{
         CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
         CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
-        CheckedIf, CheckedItem, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+        CheckedIf, CheckedItem, CheckedMatch, CheckedMatchArm, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
         CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedWhile, NumberValue, Storage,
     },
     resolved_type::{
@@ -445,6 +445,17 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
             }
             if let Some(end) = &s.end {
                 collect_defer_ids_expr(end, out);
+            }
+        }
+        CheckedExpr::Match(m) => {
+            for arm in &m.arms {
+                for cond in &arm.conditions {
+                    collect_defer_ids_expr(cond, out);
+                }
+                collect_defer_ids(&arm.body, out);
+            }
+            if let Some(else_branch) = &m.else_branch {
+                collect_defer_ids(else_branch, out);
             }
         }
     }
@@ -1017,13 +1028,16 @@ impl Codegen {
     /// `BlockOutcome`-aware path; everything else can never diverge and
     /// goes through the ordinary `process_expr`.
     fn emit_expr_stmt(&mut self, builder: &mut FunctionBuilder, expr: CheckedExprNode) -> BlockOutcome {
-        if matches!(&expr.kind, CheckedExpr::If(_) | CheckedExpr::Codeblock(_)) {
+        if matches!(&expr.kind, CheckedExpr::If(_) | CheckedExpr::Codeblock(_) | CheckedExpr::Match(_)) {
             let result_leaves = expr.r#type.clone().into_ir_type(self);
             match expr.kind {
                 CheckedExpr::If(CheckedIf { branches, else_branch }) => {
                     self.emit_if(builder, branches.into_iter(), else_branch, &result_leaves)
                 }
                 CheckedExpr::Codeblock(block) => self.emit_block(builder, block),
+                CheckedExpr::Match(CheckedMatch { arms, else_branch }) => {
+                    self.emit_match(builder, arms.into_iter(), else_branch, &result_leaves)
+                }
                 _ => unreachable!("checked by the matches! above"),
             }
         } else {
@@ -1087,6 +1101,95 @@ impl Codegen {
             // block -- this merge point is provably unreachable, but
             // cranelift still requires every block to end in a terminator.
             // A trap satisfies that without pretending the block is live.
+            builder.ins().trap(TrapCode::unwrap_user(1));
+            builder.seal_block(merge_blk);
+            BlockOutcome::Diverged
+        } else {
+            builder.seal_block(merge_blk);
+            BlockOutcome::Value(builder.block_params(merge_blk).to_vec())
+        }
+    }
+
+    /// `match`'s analogue of `emit_if`: recurses through `arms` exactly the
+    /// way `emit_if` recurses through `branches` (an arm's "no match, try
+    /// the next one" path plays the same role `else` does there), with one
+    /// difference at the very base case -- `else_branch: None` here means
+    /// analysis already *proved* every value is covered
+    /// (`Analyzer::analyze_enum_match`/`analyze_value_match`), not "default
+    /// to an implicit empty block" the way `if` treats a missing `else` --
+    /// so falling off the end traps instead of producing an empty `Value`,
+    /// which would otherwise try to jump into `merge_blk` with zero values
+    /// against however many params a non-`Void` match result type declared.
+    fn emit_match(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        mut arms: std::vec::IntoIter<CheckedMatchArm>,
+        else_branch: Option<CheckedBlock>,
+        result_leaves: &[IRType],
+    ) -> BlockOutcome {
+        let Some(arm) = arms.next() else {
+            return match else_branch {
+                Some(b) => self.emit_block(builder, b),
+                None => {
+                    builder.ins().trap(TrapCode::unwrap_user(1));
+                    BlockOutcome::Diverged
+                }
+            };
+        };
+
+        // A pattern with no present bounds (bare `...`) always matches --
+        // nothing after it in the chain is ever reachable, so there's no
+        // "fail" edge to build at all.
+        if arm.conditions.is_empty() {
+            return self.emit_block(builder, arm.body);
+        }
+
+        let body_blk = builder.create_block();
+        let fail_blk = builder.create_block();
+        let merge_blk = builder.create_block();
+        for ty in result_leaves {
+            builder.append_block_param(merge_blk, *ty);
+        }
+
+        // Every condition must hold to reach `body_blk`; any single one
+        // failing jumps straight to `fail_blk` (the rest of the arm chain)
+        // -- there is no boolean AND operator in this language, so a
+        // multi-bound pattern (a range's low and high bound) is this
+        // nested-brif chain rather than one merged boolean value. Each
+        // condition but the first needs its own intermediate block to test
+        // in (the previous condition's true edge).
+        let condition_count = arm.conditions.len();
+        let mut next_test_blk = None;
+        for (i, cond) in arm.conditions.into_iter().enumerate() {
+            if let Some(blk) = next_test_blk {
+                builder.switch_to_block(blk);
+                builder.seal_block(blk);
+            }
+            let cond_value = self.process_expr(builder, cond)[0];
+            let true_target = if i + 1 == condition_count { body_blk } else { builder.create_block() };
+            builder.ins().brif(cond_value, true_target, &[], fail_blk, &[]);
+            next_test_blk = Some(true_target);
+        }
+
+        builder.switch_to_block(body_blk);
+        builder.seal_block(body_blk);
+        let body_outcome = self.emit_block(builder, arm.body);
+        if let BlockOutcome::Value(values) = &body_outcome {
+            builder.ins().jump(merge_blk, &block_args(values));
+        }
+
+        builder.switch_to_block(fail_blk);
+        builder.seal_block(fail_blk);
+        let fail_outcome = self.emit_match(builder, arms, else_branch, result_leaves);
+        if let BlockOutcome::Value(values) = &fail_outcome {
+            builder.ins().jump(merge_blk, &block_args(values));
+        }
+
+        builder.switch_to_block(merge_blk);
+        if matches!(body_outcome, BlockOutcome::Diverged) && matches!(fail_outcome, BlockOutcome::Diverged) {
+            // Same reasoning as `emit_if`'s identical check: both paths
+            // already diverged, so this merge point is provably
+            // unreachable, but cranelift still requires a terminator.
             builder.ins().trap(TrapCode::unwrap_user(1));
             builder.seal_block(merge_blk);
             BlockOutcome::Diverged
@@ -1413,6 +1516,14 @@ impl Codegen {
                 }
             }
 
+            CheckedExpr::Match(CheckedMatch { arms, else_branch }) => {
+                let result_leaves = node.r#type.clone().into_ir_type(self);
+                match self.emit_match(builder, arms.into_iter(), else_branch, &result_leaves) {
+                    BlockOutcome::Value(values) => values,
+                    BlockOutcome::Diverged => vec![],
+                }
+            }
+
             CheckedExpr::ArrayLiteral(CheckedArrayLiteral { elements, .. }) => {
                 // Each element contributes its own leaves, in order -- the
                 // exact flattening `ResolvedType::SizedArray`'s `into_ir_type`
@@ -1510,7 +1621,7 @@ impl Codegen {
                     .collect()
             }
 
-            CheckedExpr::Slice(CheckedSlice { base, item_type, start, end }) => {
+            CheckedExpr::Slice(CheckedSlice { base, item_type, start, end, inclusive }) => {
                 let (storage, base_type) = self.resolve_place_storage(&base, builder);
                 let ptr_type = self.pointer_type();
 
@@ -1538,8 +1649,17 @@ impl Codegen {
                     Some(e) => self.process_expr(builder, *e)[0],
                     None => builder.ins().iconst(types::I32, 0),
                 };
+                // An inclusive end (`...`) with an explicit bound includes
+                // that element itself, so it's one past `end` in the
+                // exclusive terms the rest of this function computes in; an
+                // absent end always means "through the real end of `base`"
+                // regardless of `inclusive` -- there's nothing to be
+                // exclusive *of* when there's no bound at all.
                 let end_val = match end {
-                    Some(e) => self.process_expr(builder, *e)[0],
+                    Some(e) => {
+                        let v = self.process_expr(builder, *e)[0];
+                        if inclusive { builder.ins().iadd_imm(v, 1) } else { v }
+                    }
                     None => full_len,
                 };
 

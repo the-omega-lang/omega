@@ -21,6 +21,21 @@ pub struct VarBinding {
     /// Where the binding was introduced -- so a later `Redeclaration` error
     /// can point back at it ("first declared here").
     pub span: Span,
+    /// `true` only for the shadow binding a matched `match` arm declares to
+    /// narrow its scrutinee (`Analyzer::analyze_enum_match`) -- `false` for
+    /// every ordinary declaration, including one whose own inferred type
+    /// happens to be a refined enum variant (`a := Entity::Person { ... }`).
+    /// The distinction matters for exactly one thing: whether `&binding`
+    /// may keep a refined pointee type. A `:=`-inferred refined type is a
+    /// *permanent* fact about the binding (assigning a different variant to
+    /// it later would already be rejected by `ResolvedType::accepts`), so a
+    /// pointer to it staying refined is sound; a match-narrowed shadow's
+    /// refinement is only true for the lexical duration of that one arm --
+    /// the underlying storage can still hold a different variant once the
+    /// arm ends, so a pointer taken inside it must still widen, exactly
+    /// like before this field existed. See `Analyzer`'s `HirExpr::AddressOf`
+    /// arm.
+    pub narrowed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +199,7 @@ impl Context {
             }
             ResolvedItem::Value { r#type, storage, decl_id } => self
                 .current_scope()
-                .declare(name, VarBinding { decl_id, storage, r#type, span })
+                .declare(name, VarBinding { decl_id, storage, r#type, span, narrowed: false })
                 .map_err(|(name, previous)| (name, Some(previous))),
         }
     }
@@ -286,49 +301,58 @@ impl Context {
         indirect: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolved = match typ {
-            Type::Named(path) if path.is_unqualified() => {
-                if let Some(local) = self.find_defined_type(&path.head) {
-                    local.to_owned()
-                } else {
-                    let absolute = self.resolve_absolute_item_path(&path, module_path)?;
-                    match resolver.resolve_item(&absolute, &[], indirect) {
-                        Ok(ResolvedItem::Type(t)) => t,
-                        Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
-                        // The implicit own-module fallback missing isn't a
-                        // module problem from the user's point of view --
-                        // they wrote a bare type name that doesn't exist.
-                        // Report it as exactly that, with a typo suggestion
-                        // where one is close enough -- from the visible
-                        // scopes first, then this module's own top-level
-                        // structs (which only the resolver can enumerate).
-                        // (A `generic_aliases` hit points at a *different*
-                        // module, where `UnknownItem` really is about that
-                        // module.)
-                        Err(ResolveError::UnknownItem { .. }) if self.generic_aliases.get(&path.head).is_none() => {
-                            let similar = self.similar_type_name(&path.head).or_else(|| {
-                                resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type)
-                            });
-                            return Err(TypeResolutionError::UnrecognizedNamedType {
-                                name: path.head.clone(),
-                                similar,
-                            });
-                        }
-                        Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
-                    }
-                }
-            }
-            // A qualified type reference (`mymodule::Foo`) -- `path`'s head
-            // must already be an imported module alias (see `absolute_path`);
-            // the rest is resolved across modules by `resolver`, never
-            // locally.
+            // `Entity::Person` (bare or `mymodule`-qualified) is tried first
+            // -- cheap to rule out (`Ok(None)` whenever the prefix doesn't
+            // resolve to a plain enum) and must win over the ordinary
+            // qualified-path reading below (`Entity` is never itself an
+            // imported module alias). See `try_resolve_enum_variant_type`'s
+            // own doc comment.
             Type::Named(path) => {
-                let absolute = self.resolve_absolute_item_path(&path, module_path)?;
-                match resolver
-                    .resolve_item(&absolute, &[], indirect)
-                    .map_err(TypeResolutionError::ModuleResolution)?
-                {
-                    ResolvedItem::Type(t) => t,
-                    ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect)? {
+                    resolved
+                } else if path.is_unqualified() {
+                    if let Some(local) = self.find_defined_type(&path.head) {
+                        local.to_owned()
+                    } else {
+                        let absolute = self.resolve_absolute_item_path(&path, module_path)?;
+                        match resolver.resolve_item(&absolute, &[], indirect) {
+                            Ok(ResolvedItem::Type(t)) => t,
+                            Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
+                            // The implicit own-module fallback missing isn't a
+                            // module problem from the user's point of view --
+                            // they wrote a bare type name that doesn't exist.
+                            // Report it as exactly that, with a typo suggestion
+                            // where one is close enough -- from the visible
+                            // scopes first, then this module's own top-level
+                            // structs (which only the resolver can enumerate).
+                            // (A `generic_aliases` hit points at a *different*
+                            // module, where `UnknownItem` really is about that
+                            // module.)
+                            Err(ResolveError::UnknownItem { .. }) if self.generic_aliases.get(&path.head).is_none() => {
+                                let similar = self.similar_type_name(&path.head).or_else(|| {
+                                    resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type)
+                                });
+                                return Err(TypeResolutionError::UnrecognizedNamedType {
+                                    name: path.head.clone(),
+                                    similar,
+                                });
+                            }
+                            Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
+                        }
+                    }
+                } else {
+                    // A qualified type reference (`mymodule::Foo`) -- `path`'s
+                    // head must already be an imported module alias (see
+                    // `absolute_path`); the rest is resolved across modules
+                    // by `resolver`, never locally.
+                    let absolute = self.resolve_absolute_item_path(&path, module_path)?;
+                    match resolver
+                        .resolve_item(&absolute, &[], indirect)
+                        .map_err(TypeResolutionError::ModuleResolution)?
+                    {
+                        ResolvedItem::Type(t) => t,
+                        ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                    }
                 }
             }
             // `Path<Type, ...>` -- a generic item referenced with explicit
@@ -380,6 +404,44 @@ impl Context {
         };
 
         Ok(resolved)
+    }
+
+    /// If `path`'s last segment names a variant of the enum its remaining
+    /// segments resolve to (`Entity::Person`, or `mymodule::Entity::Person`),
+    /// resolves to that variant's own refined type
+    /// (`ResolvedType::Enum { variant: Some(_) }`) -- the type-position
+    /// mirror of `Analyzer::resolve_type_member`'s identical lookup on the
+    /// expression side, letting a variant be named directly in a type
+    /// annotation (`x: *Entity::Person`). Returns `Ok(None)` -- not an error
+    /// -- whenever `path` has only one segment, or its prefix doesn't
+    /// resolve to a plain enum at all, so the caller falls through to
+    /// ordinary module-qualified-path handling unchanged; only returns
+    /// `Err` once the prefix genuinely *is* a plain enum but the last
+    /// segment isn't one of its variants -- a real, actionable mistake.
+    fn try_resolve_enum_variant_type(
+        &self,
+        path: &Path,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        indirect: bool,
+    ) -> Result<Option<ResolvedType>, TypeResolutionError> {
+        let Some((variant_name, prefix_tail)) = path.tail.split_last() else { return Ok(None) };
+        let prefix = Type::Named(Path { head: path.head.clone(), tail: prefix_tail.to_vec() });
+        let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, indirect) else {
+            return Ok(None);
+        };
+        let found = cell.borrow().variant(variant_name).map(|(idx, _)| idx);
+        match found {
+            Some(idx) => Ok(Some(ResolvedType::Enum { cell: cell.clone(), variant: Some(idx) })),
+            None => {
+                let similar = best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
+                Err(TypeResolutionError::NoSuchVariantForType {
+                    r#enum: cell.borrow().name.clone(),
+                    name: variant_name.clone(),
+                    similar,
+                })
+            }
+        }
     }
 
     /// The imported-module alias most similar to `target` -- for a

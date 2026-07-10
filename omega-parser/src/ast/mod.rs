@@ -5,5 +5,6 @@
 //! Kept in the same file-per-construct layout as before for continuity.
 pub mod expression;
 pub mod identifier;
+pub mod range;
 pub mod statement;
 pub mod r#type;

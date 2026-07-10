@@ -30,6 +30,10 @@ pub enum TypeResolutionError {
     /// A qualified path resolved to a value (a function/extern/global), not
     /// a type, in a position that requires a type.
     NotAType(Vec<Ident>),
+    /// `Enum::Name` in *type* position (e.g. `x: *Entity::Name`) where
+    /// `Name` isn't one of `Enum`'s variants -- the type-position mirror of
+    /// `AnalysisErrorKind::NoSuchEnumMember`.
+    NoSuchVariantForType { r#enum: Ident, name: Ident, similar: Option<Ident> },
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -46,6 +50,9 @@ impl fmt::Display for TypeResolutionError {
             }
             Self::ModuleResolution(e) => write!(f, "{e}"),
             Self::NotAType(path) => write!(f, "'{}' is a value, not a type", join(path)),
+            Self::NoSuchVariantForType { r#enum, name, .. } => {
+                write!(f, "no variant '{}' on enum '{}'", name.as_ref(), r#enum.as_ref())
+            }
         }
     }
 }
@@ -321,6 +328,45 @@ pub enum AnalysisErrorKind {
     /// *header* field -- header values are fixed per variant by the enum's
     /// own definition, never supplied at a construction site.
     EnumHeaderFieldInLiteral { field: Ident },
+
+    // -- match expressions --
+    /// A `match` pattern's value/range bound isn't a literal constant --
+    /// unlike an ordinary expression, a pattern is checked against the
+    /// scrutinee's whole domain at compile time, so its bounds have to be
+    /// known then too.
+    PatternValueNotConstant,
+    /// `Enum::Name` as a match pattern where `Name` isn't one of `Enum`'s
+    /// variants. The pattern-position mirror of `NoSuchEnumMember` (patterns
+    /// only ever name a variant, never a function, so there's just one
+    /// candidate namespace here).
+    NoSuchVariantInPattern { r#enum: Ident, name: Ident, similar: Option<Ident> },
+    /// A value/range pattern (`100`, `0..<10`) matched against an enum
+    /// scrutinee -- an enum can only be matched by naming one of its
+    /// variants.
+    PatternNotEnumVariant { r#enum: Ident },
+    /// An `Enum::Variant` pattern matched against a non-enum scrutinee.
+    PatternIsEnumVariant { r#enum: Ident, variant: Ident, scrutinee: ResolvedType },
+    /// A value/range pattern's own type doesn't match the scrutinee's exact
+    /// type (e.g. a `u32` scrutinee matched against an `i32` literal --
+    /// this language has no implicit numeric conversions anywhere else
+    /// either).
+    PatternTypeMismatch { expected: ResolvedType, found: ResolvedType },
+    /// `match`'s scrutinee isn't a supported type -- scoped to enums,
+    /// integers, and `bool` for now (see `ResolvedType::integer_domain`).
+    UnsupportedMatchScrutinee { r#type: ResolvedType },
+    /// Two arms' patterns cover the same value -- an enum variant named by
+    /// more than one arm, or two numeric/`bool` patterns whose intervals
+    /// intersect. `previous` points at the earlier, already-covering arm.
+    OverlappingMatchArm { previous: Span },
+    /// An enum `match` covers only some variants and has no `else` --
+    /// `missing` lists every variant left uncovered.
+    NonExhaustiveMatchEnum { r#enum: Ident, missing: Vec<Ident> },
+    /// A numeric/`bool` `match` doesn't cover its scrutinee's whole domain
+    /// and has no `else` -- `gaps` describes each uncovered sub-range.
+    NonExhaustiveMatchValue { r#type: ResolvedType, gaps: Vec<String> },
+    /// A `match` arm's (or `else`'s) resolved type doesn't match the others
+    /// -- the `match` analogue of `IfBranchTypeMismatch`.
+    MatchArmTypeMismatch { expected: ResolvedType, found: ResolvedType },
 }
 
 impl AnalysisErrorKind {
@@ -618,6 +664,42 @@ impl AnalysisErrorKind {
             Self::EnumHeaderFieldInLiteral { field } => d
                 .with_label(span, format!("`{}` is a header field", field.as_ref()))
                 .with_note("header values are fixed per variant by the enum's definition, so a construction site never supplies them"),
+
+            Self::PatternValueNotConstant => d
+                .with_label(span, "not a literal constant")
+                .with_note("a match pattern is checked against the scrutinee's whole domain at compile time,\nso its bounds must be literals (a number, bool, or char)"),
+            Self::NoSuchVariantInPattern { r#enum, similar, .. } => {
+                let d = d.with_label(span, format!("not found in `{}`", r#enum.as_ref()));
+                match similar {
+                    Some(name) => d.with_help(format!("a variant with a similar name exists: `{}`", name.as_ref())),
+                    None => d,
+                }
+            }
+            Self::PatternNotEnumVariant { r#enum } => d
+                .with_label(span, format!("`{}` can only be matched by naming one of its variants", r#enum.as_ref()))
+                .with_help(format!("write a pattern like `{}::SomeVariant`", r#enum.as_ref())),
+            Self::PatternIsEnumVariant { r#enum, variant, scrutinee } => d.with_label(
+                span,
+                format!("`{}::{}` is a variant of `{}`, not of `{scrutinee}`", r#enum.as_ref(), variant.as_ref(), r#enum.as_ref()),
+            ),
+            Self::PatternTypeMismatch { expected, found } => {
+                d.with_label(span, format!("expected `{expected}`, found `{found}`"))
+            }
+            Self::UnsupportedMatchScrutinee { r#type } => d
+                .with_label(span, format!("cannot match on `{type}`"))
+                .with_note("`match` supports enums, integers, and `bool`"),
+            Self::OverlappingMatchArm { previous } => d
+                .with_label(span, "this pattern is unreachable")
+                .with_secondary_label(*previous, "already covered here"),
+            Self::NonExhaustiveMatchEnum { missing, .. } => d
+                .with_label(span, format!("missing {} {}", plural(missing.len(), "variant"), ident_list(missing)))
+                .with_help("cover the remaining variants, or add an `else` block"),
+            Self::NonExhaustiveMatchValue { gaps, .. } => d
+                .with_label(span, format!("not covered: {}", gaps.join(", ")))
+                .with_help("cover the remaining values, or add an `else` block"),
+            Self::MatchArmTypeMismatch { expected, found } => d
+                .with_label(span, format!("this arm produces `{found}`, but earlier arms produce `{expected}`"))
+                .with_note("every arm of a `match` used as an expression must produce the same type"),
         }
     }
 }
@@ -651,6 +733,13 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         TypeResolutionError::ModuleResolution(e) => resolve_error_diagnostic(e, Some(span)),
         TypeResolutionError::NotAType(_) => {
             d.with_label(span, "expected a type, found a value")
+        }
+        TypeResolutionError::NoSuchVariantForType { r#enum, similar, .. } => {
+            let d = d.with_label(span, format!("not found in `{}`", r#enum.as_ref()));
+            match similar {
+                Some(name) => d.with_help(format!("a variant with a similar name exists: `{}`", name.as_ref())),
+                None => d,
+            }
         }
     }
 }
@@ -701,17 +790,23 @@ fn plural(n: usize, word: &str) -> String {
     if n == 1 { word.to_string() } else { format!("{word}s") }
 }
 
-/// `field 'a'` / `fields 'a' and 'b'` / `fields 'a', 'b', and 'c'` -- for
-/// `MissingFieldInitializers`' headline and label.
-fn field_list(fields: &[Ident]) -> String {
-    let names: Vec<String> = fields.iter().map(|f| format!("'{}'", f.as_ref())).collect();
-    let listed = match names.as_slice() {
+/// `'a'` / `'a' and 'b'` / `'a', 'b', and 'c'` -- the bare listing
+/// `field_list`/`NonExhaustiveMatchEnum`'s diagnostic build their own
+/// noun-prefixed message around.
+fn ident_list(names: &[Ident]) -> String {
+    let names: Vec<String> = names.iter().map(|f| format!("'{}'", f.as_ref())).collect();
+    match names.as_slice() {
         [one] => one.clone(),
         [one, two] => format!("{one} and {two}"),
         [init @ .., last] => format!("{}, and {last}", init.join(", ")),
         [] => String::new(),
-    };
-    format!("{} {listed}", plural(fields.len(), "field"))
+    }
+}
+
+/// `field 'a'` / `fields 'a' and 'b'` / `fields 'a', 'b', and 'c'` -- for
+/// `MissingFieldInitializers`' headline and label.
+fn field_list(fields: &[Ident]) -> String {
+    format!("{} {}", plural(fields.len(), "field"), ident_list(fields))
 }
 
 /// The inclusive value range of a numeric type, for
@@ -956,6 +1051,33 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NotAModule { name } => {
                 write!(f, "'{}' is a value, not a module or type", name.as_ref())
             }
+            Self::PatternValueNotConstant => write!(f, "match patterns must be literal constants"),
+            Self::NoSuchVariantInPattern { r#enum, name, .. } => {
+                write!(f, "no variant '{}' on enum '{}'", name.as_ref(), r#enum.as_ref())
+            }
+            Self::PatternNotEnumVariant { r#enum } => {
+                write!(f, "'{}' can only be matched by naming a variant", r#enum.as_ref())
+            }
+            Self::PatternIsEnumVariant { r#enum, variant, scrutinee } => write!(
+                f,
+                "mismatched types: expected '{scrutinee}', found '{}::{}'",
+                r#enum.as_ref(),
+                variant.as_ref()
+            ),
+            Self::PatternTypeMismatch { expected, found } => {
+                write!(f, "mismatched types: expected '{expected}', found '{found}'")
+            }
+            Self::UnsupportedMatchScrutinee { r#type } => {
+                write!(f, "cannot match on a value of type '{type}'")
+            }
+            Self::OverlappingMatchArm { .. } => write!(f, "unreachable match arm"),
+            Self::NonExhaustiveMatchEnum { r#enum, .. } => {
+                write!(f, "match on '{}' does not cover every variant", r#enum.as_ref())
+            }
+            Self::NonExhaustiveMatchValue { r#type, .. } => {
+                write!(f, "match on '{type}' does not cover every value")
+            }
+            Self::MatchArmTypeMismatch { .. } => write!(f, "'match' arms have incompatible types"),
         }
     }
 }

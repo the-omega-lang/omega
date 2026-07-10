@@ -72,6 +72,9 @@ impl ParseError {
             ParseErrorKind::EnumNotAllowedHere => d
                 .with_label(self.span, "not allowed inside a function body")
                 .with_help("move this `enum` to the module's top level"),
+            ParseErrorKind::ExclusiveRangeMissingEnd => d
+                .with_label(self.span, "exclusive range has no end bound")
+                .with_help("give it an end (`..<end`), or use an inclusive range instead (`...`)"),
         }
     }
 }
@@ -117,6 +120,10 @@ pub enum ParseErrorKind {
     /// An `enum` declaration in statement position -- enums are top-level
     /// items only (unlike `struct`, which is also allowed locally).
     EnumNotAllowedHere,
+    /// `..<` with no end bound (`a..<` or bare `..<`) -- unlike `...`, an
+    /// exclusive range's whole point is excluding its end, so an
+    /// open-ended one is meaningless; see `ast::range::RangeExpr`.
+    ExclusiveRangeMissingEnd,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -139,6 +146,9 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::EnumNotAllowedHere => {
                 write!(f, "enums can only be declared at the top level of a module")
+            }
+            Self::ExclusiveRangeMissingEnd => {
+                write!(f, "an exclusive range ('..<') must have an end bound")
             }
         }
     }

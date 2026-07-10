@@ -355,6 +355,32 @@ impl ResolvedType {
         })
     }
 
+    /// The inclusive `[min, max]` domain of every representable value of
+    /// this type, as `i128` (comfortably spans every integer type from
+    /// `i8` to `u64`/`usize`, plus `bool`'s `{0,1}`) -- what a `match`'s
+    /// interval-exhaustiveness check (`crate::exhaustiveness`) treats as
+    /// "the whole domain" a numeric/`bool` match must cover. `None` for
+    /// every other type: `match` support is deliberately scoped to enums,
+    /// integers, and `bool` for now (see
+    /// `AnalysisErrorKind::UnsupportedMatchScrutinee`) -- lifting that
+    /// scope later (e.g. to `char`) only needs a new arm here.
+    pub fn integer_domain(&self) -> Option<(i128, i128)> {
+        Some(match self {
+            Self::Bool => (0, 1),
+            Self::I8 => (i8::MIN as i128, i8::MAX as i128),
+            Self::I16 => (i16::MIN as i128, i16::MAX as i128),
+            Self::I32 => (i32::MIN as i128, i32::MAX as i128),
+            // `ISize` is hardcoded to 64 bits -- see `numeric_kind`'s doc
+            // comment.
+            Self::I64 | Self::ISize => (i64::MIN as i128, i64::MAX as i128),
+            Self::U8 => (u8::MIN as i128, u8::MAX as i128),
+            Self::U16 => (u16::MIN as i128, u16::MAX as i128),
+            Self::U32 => (u32::MIN as i128, u32::MAX as i128),
+            Self::U64 | Self::USize => (u64::MIN as i128, u64::MAX as i128),
+            _ => return None,
+        })
+    }
+
     /// The same type with any statically-known enum-variant refinement
     /// erased (`MyEnum::Second` -> `MyEnum`) -- what inference positions
     /// that must stay variant-agnostic (an `if`'s unified branch type, an
@@ -372,9 +398,21 @@ impl ResolvedType {
     /// expected: exact equality, plus the one implicit widening this type
     /// system has -- a variant-refined enum value (`MyEnum::Second`) is
     /// usable as its plain enum (`MyEnum`). Never the reverse (a plain
-    /// value's variant isn't known), and never through any indirection
-    /// (`*MyEnum::Second` -> `*MyEnum` would let a write through the
-    /// pointer silently falsify the refinement).
+    /// value's variant isn't known).
+    ///
+    /// This widening also applies through exactly one level of pointer
+    /// indirection (`*MyEnum::Second` usable as `*MyEnum`) -- sound
+    /// specifically because of which pointers are ever allowed to carry a
+    /// refined pointee in the first place: `&value` only keeps a
+    /// refinement when it's a *permanent* fact about `value`'s own
+    /// declared/inferred type (see `VarBinding::narrowed` and
+    /// `Analyzer`'s `HirExpr::AddressOf` arm), and a permanently-refined
+    /// binding can never be reassigned a different variant (this same
+    /// `accepts` rule, applied at every assignment, already rejects that).
+    /// A `match`-narrowed pointer (`b: *MyEnum` proven `*MyEnum::Second`
+    /// inside one arm) is never widened *back* by this rule either -- it's
+    /// already exactly `*MyEnum::Second`, matched via `self == value` above
+    /// without needing this arm at all.
     pub fn accepts(&self, value: &ResolvedType) -> bool {
         if self == value {
             return true;
@@ -383,6 +421,7 @@ impl ResolvedType {
             (Self::Enum { cell: expected, variant: None }, Self::Enum { cell: found, variant: Some(_) }) => {
                 expected.borrow().id == found.borrow().id
             }
+            (Self::Pointer(expected), Self::Pointer(found)) => expected.accepts(found),
             _ => false,
         }
     }
