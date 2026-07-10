@@ -292,13 +292,16 @@ impl<'r> Analyzer<'r> {
         ident: &Ident,
         r#type: ResolvedType,
         storage: Storage,
+        mutable: bool,
     ) -> Option<()> {
-        self.declare_binding_impl(id, span, ident, r#type, storage, false)
+        self.declare_binding_impl(id, span, ident, r#type, storage, false, mutable)
     }
 
     /// See `VarBinding::narrowed`'s doc comment -- used only by
     /// `analyze_enum_match` to shadow-declare a matched arm's narrowed
-    /// scrutinee.
+    /// scrutinee. `mutable` is inherited from the binding being narrowed
+    /// (reassigning the narrowed view is exactly as valid as reassigning
+    /// the original would have been).
     fn declare_narrowed_binding(
         &mut self,
         id: HirId,
@@ -306,8 +309,9 @@ impl<'r> Analyzer<'r> {
         ident: &Ident,
         r#type: ResolvedType,
         storage: Storage,
+        mutable: bool,
     ) -> Option<()> {
-        self.declare_binding_impl(id, span, ident, r#type, storage, true)
+        self.declare_binding_impl(id, span, ident, r#type, storage, true, mutable)
     }
 
     fn declare_binding_impl(
@@ -318,8 +322,9 @@ impl<'r> Analyzer<'r> {
         r#type: ResolvedType,
         storage: Storage,
         narrowed: bool,
+        mutable: bool,
     ) -> Option<()> {
-        let binding = VarBinding { decl_id: id, storage, r#type, span, narrowed };
+        let binding = VarBinding { decl_id: id, storage, r#type, span, narrowed, mutable };
         match self.context.current_scope().declare(ident.clone(), binding) {
             Ok(()) => Some(()),
             Err((name, previous)) => {
@@ -338,7 +343,7 @@ impl<'r> Analyzer<'r> {
         // type's layout (it isn't a struct field), so it can never be part
         // of an infinite-size cycle -- always indirect.
         let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type, true)?;
-        self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), storage)?;
+        self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), storage, decl.mutable)?;
         Some(CheckedDeclaration {
             id: decl.id,
             span: decl.span,
@@ -357,12 +362,17 @@ impl<'r> Analyzer<'r> {
         } else {
             Storage::Global
         };
+        // `extern` declarations are always immutable for now -- no existing
+        // use case needs mutable extern data, and `mut extern` can be added
+        // later without breaking anything (see `omega_parser`'s `mut`
+        // contextual-keyword sites, none of which check for it here).
         self.declare_binding(
             extern_decl.id,
             extern_decl.span,
             &extern_decl.ident,
             resolved_type.clone(),
             storage,
+            false,
         )?;
         Some(CheckedExternDeclaration {
             id: extern_decl.id,
@@ -378,7 +388,14 @@ impl<'r> Analyzer<'r> {
         // value (`fn combine(self, other: Self) -> Self`) is completely
         // ordinary and must not be flagged as a layout cycle.
         let resolved_type = self.resolve_type_or_error(param.id, param.span, &param.r#type, true)?;
-        self.declare_binding(param.id, param.span, &param.ident, resolved_type.clone(), Storage::Parameter)?;
+        // Parameters (including `self`) are always immutable bindings --
+        // `mut` is never recognized in parameter position at all (see
+        // `omega_parser::parser::item::parse_declaration_list`); a
+        // parameter that needs to vary locally can be shadowed
+        // (`mut x := param;`). `self`'s own *pointee* mutability (`mut
+        // self` vs `self`) is a separate, `ResolvedType::Pointer` concern,
+        // already baked into `resolved_type` here.
+        self.declare_binding(param.id, param.span, &param.ident, resolved_type.clone(), Storage::Parameter, false)?;
         Some(CheckedParam {
             id: param.id,
             span: param.span,
@@ -422,7 +439,11 @@ impl<'r> Analyzer<'r> {
     /// `**Struct` still needs an explicit `(*ptr).field`). Shared by
     /// `analyze_place`'s projection loop and member-call resolution below,
     /// so both plain field access and method access get this for free from
-    /// one implementation.
+    /// one implementation. `mutable`, like `analyze_place`'s own running
+    /// mutability, is overwritten with the pointer's own flag when this
+    /// inserts a seamless deref -- callers that don't care about mutability
+    /// (a read, or a callable-field lookup) just pass a throwaway `&mut
+    /// bool`.
     fn resolve_field_projection(
         &mut self,
         node_id: HirId,
@@ -430,11 +451,13 @@ impl<'r> Analyzer<'r> {
         projections: &mut Vec<CheckedProjection>,
         current_type: &ResolvedType,
         field: &Ident,
+        mutable: &mut bool,
     ) -> Option<ResolvedType> {
         let dereffed = match current_type {
-            ResolvedType::Pointer(inner) => {
-                projections.push(CheckedProjection::Deref { r#type: (**inner).clone() });
-                (**inner).clone()
+            ResolvedType::Pointer { pointee, mutable: pointer_mutable } => {
+                *mutable = *pointer_mutable;
+                projections.push(CheckedProjection::Deref { r#type: (**pointee).clone() });
+                (**pointee).clone()
             }
             other => other.clone(),
         };
@@ -443,7 +466,7 @@ impl<'r> Analyzer<'r> {
         // this is checked before the struct-only path below rejects it. Any
         // other field name on a slice is simply `NoSuchField`, same message a
         // struct without that field would give.
-        if let ResolvedType::Slice(_) = &dereffed {
+        if let ResolvedType::Slice { .. } = &dereffed {
             if field.as_ref() == "length" {
                 projections.push(CheckedProjection::SliceLength);
                 return Some(ResolvedType::I32);
@@ -559,7 +582,7 @@ impl<'r> Analyzer<'r> {
     /// always shadows a method with the same name.
     fn find_method(&self, current_type: &ResolvedType, field: &Ident) -> Option<ResolvedMethod> {
         let dereffed = match current_type {
-            ResolvedType::Pointer(inner) => inner.as_ref(),
+            ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
             other => other,
         };
         match dereffed {
@@ -604,6 +627,46 @@ impl<'r> Analyzer<'r> {
             CheckedProjection::EnumHeader { field, .. } => Some(field.clone()),
             _ => None,
         }
+    }
+
+    /// Errors (returning `None`) unless a place `analyze_place` already
+    /// resolved (`mutable` is its own third return value) may be written
+    /// to. Shared by every requirement that ultimately means the same
+    /// thing -- an assignment, `++`/`--`, an explicit `&mut`, and a `mut
+    /// self` method call's implicit auto-ref are all, at bottom, "this
+    /// place must be mutable" -- so the diagnostic (and the choice between
+    /// `NotMutableBinding`/`NotMutablePointer`, mirroring
+    /// `immutable_enum_member`'s pattern of inspecting the checked place's
+    /// own projections) only needs writing once. `hir_root` is the
+    /// *original* place's root, for naming the binding in
+    /// `NotMutableBinding` -- only ever `None` when the reason is
+    /// definitely `NotMutablePointer` instead (a non-place root, e.g. a
+    /// freshly-constructed value, is never itself the *cause* of
+    /// immutability -- something dereferenced along the way always is).
+    fn require_mutable_place(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        hir_root: &HirPlaceRoot,
+        checked_place: &CheckedPlace,
+        mutable: bool,
+    ) -> Option<()> {
+        if mutable {
+            return Some(());
+        }
+        let through_pointer = checked_place.projections.iter().any(|p| matches!(p, CheckedProjection::Deref { .. }));
+        let kind = if through_pointer {
+            AnalysisErrorKind::NotMutablePointer
+        } else {
+            match hir_root {
+                HirPlaceRoot::Path(p) if p.path.is_unqualified() => {
+                    AnalysisErrorKind::NotMutableBinding { ident: p.path.head.clone() }
+                }
+                _ => AnalysisErrorKind::NotMutablePointer,
+            }
+        };
+        self.errors.push(AnalysisError::new(node_id, span, kind));
+        None
     }
 
     /// Resolves `absolute` (already a full `[module_path.., name]`, whether
@@ -962,18 +1025,34 @@ impl<'r> Analyzer<'r> {
     /// order, resolving field/index/deref projections against the running
     /// type and recording the exact resolved shape (field index, item/
     /// pointee type) so codegen never has to re-search or re-derive them.
+    ///
+    /// Also computes whether the *whole place* may be written to, in the
+    /// same walk: it starts as the root's own mutability (a local/global
+    /// binding's `VarBinding::mutable`; always `false` for anything reached
+    /// through cross-module/qualified resolution, conservatively -- nothing
+    /// in this language yet threads a real flag through `ResolvedItem`, and
+    /// `false` is the safe default for "immutable unless proven otherwise"),
+    /// and is *overwritten* (never combined) every time a `Deref` --
+    /// explicit or the seamless one `resolve_field_projection` inserts for
+    /// `ptr.field` -- or a `Slice` index is processed, by that pointer's/
+    /// slice's own `mutable` flag: going through a pointer resets the
+    /// mutability basis to that specific pointer's, regardless of what came
+    /// before. A field access or an index into inline storage (`Array`/
+    /// `SizedArray`, which aren't fat pointers) never changes it -- it
+    /// simply inherits whatever the base's mutability already was.
     fn analyze_place(
         &mut self,
         node_id: HirId,
         span: Span,
         place: &HirPlace,
-    ) -> Option<(CheckedPlace, ResolvedType)> {
-        let (root, mut current_type) = match &place.root {
+    ) -> Option<(CheckedPlace, ResolvedType, bool)> {
+        let (root, mut current_type, mut mutable) = match &place.root {
             // A path with explicit generic arguments (`Optional<u32>::Some`,
             // `sum_generic<f64>`) -- resolved through the instantiating
             // machinery; see `resolve_generic_args_place`.
             HirPlaceRoot::Path(expr_path) if expr_path.plain().is_none() => {
-                self.resolve_generic_args_place(node_id, span, expr_path)?
+                let (root, r#type) = self.resolve_generic_args_place(node_id, span, expr_path)?;
+                (root, r#type, false)
             }
             // An unqualified place root -- a local (function-body-level)
             // binding wins if there is one; otherwise this is a same-module
@@ -994,7 +1073,7 @@ impl<'r> Analyzer<'r> {
                         storage: binding.storage,
                         r#type: binding.r#type.clone(),
                     };
-                    (root, binding.r#type.clone())
+                    (root, binding.r#type.clone(), binding.mutable)
                 } else {
                     // A generic-item import alias (see `Context::
                     // generic_alias`) takes priority over the implicit
@@ -1015,7 +1094,8 @@ impl<'r> Analyzer<'r> {
                             (absolute, Some(ident))
                         }
                     };
-                    self.resolve_qualified_value(node_id, span, absolute, unqualified)?
+                    let (root, r#type) = self.resolve_qualified_value(node_id, span, absolute, unqualified)?;
+                    (root, r#type, false)
                 }
             }
             // A qualified place root -- either module-qualified
@@ -1028,15 +1108,16 @@ impl<'r> Analyzer<'r> {
             // can determine.
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
-                match self.context.absolute_path(path) {
+                let (root, r#type) = match self.context.absolute_path(path) {
                     Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None)?,
                     None => self.resolve_type_qualified_value(node_id, span, path)?,
-                }
+                };
+                (root, r#type, false)
             }
             HirPlaceRoot::Expr(expr) => {
                 let checked_expr = self.analyze_expr(expr)?;
                 let r#type = checked_expr.r#type.clone();
-                (CheckedPlaceRoot::Expr(Box::new(checked_expr)), r#type)
+                (CheckedPlaceRoot::Expr(Box::new(checked_expr)), r#type, false)
             }
         };
 
@@ -1044,20 +1125,31 @@ impl<'r> Analyzer<'r> {
         for projection in &place.projections {
             match projection {
                 HirProjection::FieldAccess(field) => {
-                    current_type =
-                        self.resolve_field_projection(node_id, span, &mut projections, &current_type, field)?;
+                    current_type = self.resolve_field_projection(
+                        node_id,
+                        span,
+                        &mut projections,
+                        &current_type,
+                        field,
+                        &mut mutable,
+                    )?;
                 }
                 HirProjection::Index(index_expr) => {
                     let checked_index = self.analyze_expr(index_expr)?;
                     // `Array` (the legacy thin-pointer unsized form, e.g.
-                    // `argv`), `SizedArray`, and `Slice` are all indexable by
-                    // a single element -- codegen tells them apart itself
-                    // (see `resolve_place_storage`'s `Index` arm) using the
-                    // exact same `current_type` this match is on.
+                    // `argv`) and `SizedArray` are indexable inline storage
+                    // (mutability unchanged); `Slice` is a fat pointer whose
+                    // own `mutable` flag resets it, exactly like `Deref`
+                    // below -- codegen tells the three apart itself (see
+                    // `resolve_place_storage`'s `Index` arm) using the exact
+                    // same `current_type` this match is on.
                     let item_type = match current_type {
                         ResolvedType::Array(item_type) => *item_type,
                         ResolvedType::SizedArray(item_type, _) => *item_type,
-                        ResolvedType::Slice(item_type) => *item_type,
+                        ResolvedType::Slice { item, mutable: slice_mutable } => {
+                            mutable = slice_mutable;
+                            *item
+                        }
                         found => {
                             self.errors
                                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAnArray { found }));
@@ -1071,7 +1163,7 @@ impl<'r> Analyzer<'r> {
                     current_type = item_type;
                 }
                 HirProjection::Deref => {
-                    let ResolvedType::Pointer(inner) = current_type else {
+                    let ResolvedType::Pointer { pointee, mutable: pointer_mutable } = current_type else {
                         self.errors.push(AnalysisError::new(
                             node_id,
                             span,
@@ -1079,14 +1171,15 @@ impl<'r> Analyzer<'r> {
                         ));
                         return None;
                     };
-                    let inner_type = *inner;
+                    mutable = pointer_mutable;
+                    let inner_type = *pointee;
                     projections.push(CheckedProjection::Deref { r#type: inner_type.clone() });
                     current_type = inner_type;
                 }
             }
         }
 
-        Some((CheckedPlace { root, projections }, current_type))
+        Some((CheckedPlace { root, projections }, current_type, mutable))
     }
 
     fn resolve_callee(&mut self, callee: &HirExprNode) -> Option<ResolvedCallee> {
@@ -1097,7 +1190,7 @@ impl<'r> Analyzer<'r> {
                 root: place.root.clone(),
                 projections: place.projections[..place.projections.len() - 1].to_vec(),
             };
-            let (checked_base, base_type) = self.analyze_place(callee.id, callee.span, &base_place)?;
+            let (checked_base, base_type, base_mutable) = self.analyze_place(callee.id, callee.span, &base_place)?;
 
             if let Some(method) = self.find_method(&base_type, field) {
                 // A function declared without `self` is static -- reached
@@ -1106,7 +1199,7 @@ impl<'r> Analyzer<'r> {
                 // no parameter for could only produce nonsense downstream.
                 if !method.fn_type.is_member_function {
                     let dereffed = match &base_type {
-                        ResolvedType::Pointer(inner) => inner.as_ref(),
+                        ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
                         other => other,
                     };
                     let r#struct = match dereffed {
@@ -1121,22 +1214,51 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 }
-                // `self` is `&base` -- or, if `base` is already a pointer,
-                // `base` itself (that's exactly what a seamless deref would
-                // have produced, so there's no need to materialize a
+
+                // `self`'s own declared type (always the first param, a
+                // synthesized `*Self`/`*mut Self` -- see
+                // `omega_hir::lower::Lowerer::lower_function_def`) says
+                // whether this call needs write access to `base`.
+                let self_mutable = match method.fn_type.params.first() {
+                    Some((_, ResolvedType::Pointer { mutable, .. })) => *mutable,
+                    _ => unreachable!("a member function's first param is always the synthesized self: *Self/*mut Self"),
+                };
+
+                // `self` is `&base`/`&mut base` -- or, if `base` is already a
+                // pointer, `base` itself, coerced to exactly the pointer
+                // shape `self` expects (that's what a seamless deref would
+                // have produced anyway, so there's no need to materialize a
                 // Deref-then-AddressOf round trip just to get back the same
                 // pointer value).
-                let self_arg = if matches!(base_type, ResolvedType::Pointer(_)) {
+                let self_arg = if let ResolvedType::Pointer { pointee: base_pointee, mutable: base_ptr_mutable } =
+                    &base_type
+                {
+                    if self_mutable && !base_ptr_mutable {
+                        self.errors.push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::NotMutablePointer));
+                        return None;
+                    }
+                    let pointer_type =
+                        ResolvedType::Pointer { pointee: Box::new(base_pointee.widened()), mutable: self_mutable };
                     CheckedExprNode {
                         id: callee.id,
                         span: callee.span,
-                        r#type: base_type,
+                        r#type: pointer_type,
                         kind: CheckedExpr::Place(checked_base),
                     }
                 } else {
-                    // Widened for the same reason an explicit `&` widens: a
-                    // method's `self` is `*Enum`, never `*Enum::Variant`.
-                    let pointer_type = ResolvedType::Pointer(Box::new(base_type.widened()));
+                    if self_mutable {
+                        self.require_mutable_place(callee.id, callee.span, &base_place.root, &checked_base, base_mutable)?;
+                        // De-assumption, exactly like an explicit `&mut`: a
+                        // writable alias to `base` now exists for the
+                        // duration of this call.
+                        if let Some((ident, ..)) = self.narrowable_place(&base_place) {
+                            self.context.widen_variable(&ident);
+                        }
+                    }
+                    // Widened for the same reason an explicit `&`/`&mut`
+                    // widens: a method's `self` is `*Self`/`*mut Self`, never
+                    // `*Self::Variant`.
+                    let pointer_type = ResolvedType::Pointer { pointee: Box::new(base_type.widened()), mutable: self_mutable };
                     CheckedExprNode {
                         id: callee.id,
                         span: callee.span,
@@ -1171,8 +1293,14 @@ impl<'r> Analyzer<'r> {
             // the whole place from scratch (which would risk reporting the
             // base's errors, e.g. an undefined variable, twice).
             let CheckedPlace { root, mut projections } = checked_base;
-            let field_type =
-                self.resolve_field_projection(callee.id, callee.span, &mut projections, &base_type, field)?;
+            let field_type = self.resolve_field_projection(
+                callee.id,
+                callee.span,
+                &mut projections,
+                &base_type,
+                field,
+                &mut false,
+            )?;
             let checked_callee = CheckedExprNode {
                 id: callee.id,
                 span: callee.span,
@@ -1611,7 +1739,8 @@ impl<'r> Analyzer<'r> {
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace));
             return None;
         };
-        let (checked_place, place_type) = self.analyze_place(base.id, base.span, place)?;
+        let (checked_place, place_type, mutable) = self.analyze_place(base.id, base.span, place)?;
+        self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let Some(kind) = place_type.numeric_kind() else {
             self.errors.push(AnalysisError::new(
@@ -1655,7 +1784,7 @@ impl<'r> Analyzer<'r> {
 
         match &node.expr {
             HirExpr::Place(place) => {
-                let (checked_place, r#type) = self.analyze_place(node_id, span, place)?;
+                let (checked_place, r#type, _mutable) = self.analyze_place(node_id, span, place)?;
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
             }
 
@@ -1675,7 +1804,9 @@ impl<'r> Analyzer<'r> {
             HirExpr::String(s) => Some(CheckedExprNode {
                 id: node_id,
                 span,
-                r#type: ResolvedType::Pointer(Box::new(ResolvedType::U8)),
+                // Immutable, like a C string literal -- writing through it
+                // would be just as unsound here as there.
+                r#type: ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false },
                 kind: CheckedExpr::String(s.0.clone()),
             }),
 
@@ -1818,8 +1949,9 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
-                let (checked_target, target_type) =
+                let (checked_target, target_type, target_mutable) =
                     self.analyze_place(assignment.target.id, assignment.target.span, place)?;
+                self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
                 if !target_type.accepts(&checked_value.r#type) {
                     self.errors.push(AnalysisError::new(
@@ -1856,37 +1988,55 @@ impl<'r> Analyzer<'r> {
                 })
             }
 
-            HirExpr::AddressOf(HirAddressOf { base }) => {
+            HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 let HirExpr::Place(place) = &base.expr else {
                     self.errors
                         .push(AnalysisError::new(node_id, span, AnalysisErrorKind::AddressOfNotAPlace));
                     return None;
                 };
-                let (checked_place, place_type) = self.analyze_place(base.id, base.span, place)?;
+                let (checked_place, place_type, place_mutable) = self.analyze_place(base.id, base.span, place)?;
 
-                // A variant refinement surviving `&` is only sound when
-                // it's a *permanent* fact about the place -- its own
-                // declared/inferred type (`a := Entity::Person { ... }`;
-                // reassigning a different variant to `a` later is already
-                // rejected by `ResolvedType::accepts`, so a pointer into it
-                // can never go stale that way). A `match`-narrowed shadow's
-                // refinement is only true for that one arm's lexical scope
-                // -- the underlying storage can still hold a different
-                // variant once the arm ends -- so that case still widens,
-                // exactly as before this distinction existed (see
-                // `VarBinding::narrowed`).
-                let narrowed_shadow = place.projections.is_empty()
-                    && matches!(&place.root, HirPlaceRoot::Path(p) if p.generic_args.is_empty() && p.path.is_unqualified())
-                    && match &place.root {
-                        HirPlaceRoot::Path(p) => self.context.find_variable(&p.path.head).is_some_and(|b| b.narrowed),
-                        _ => false,
-                    };
-                let pointee_type = if narrowed_shadow { place_type.widened() } else { place_type };
+                let pointee_type = if *mutable {
+                    // `&mut` requires write access, and -- unlike plain `&`
+                    // below -- *always* produces a fully-widened pointee, no
+                    // exception: the only way a mutable refined pointer can
+                    // ever exist is a `match`-narrowed *view* of an
+                    // already-mutable place, never something freshly minted
+                    // here (see `ResolvedType::accepts`'s doc comment for why
+                    // that distinction is what keeps a mutable pointer/slice
+                    // from ever needing to widen implicitly).
+                    self.require_mutable_place(node_id, span, &place.root, &checked_place, place_mutable)?;
+                    // De-assumption: a writable alias to this place now
+                    // exists, so any later direct read of it (in this or an
+                    // enclosing scope) can no longer trust a narrower type
+                    // than the plain one -- this is the actual "de-assume a
+                    // proof once a mutable reference has been taken" step.
+                    if let Some((ident, ..)) = self.narrowable_place(place) {
+                        self.context.widen_variable(&ident);
+                    }
+                    place_type.widened()
+                } else {
+                    // A variant refinement surviving `&` is only sound when
+                    // it's a *permanent* fact about the place -- its own
+                    // declared/inferred type (`a := Entity::Person { ... }`;
+                    // reassigning a different variant to `a` later is already
+                    // rejected by `ResolvedType::accepts`, so a pointer into
+                    // it can never go stale that way). A `match`-narrowed
+                    // shadow's refinement is only true for that one arm's
+                    // lexical scope -- the underlying storage can still hold
+                    // a different variant once the arm ends -- so that case
+                    // still widens, exactly as before this distinction
+                    // existed (see `VarBinding::narrowed`).
+                    let narrowed_shadow = self
+                        .narrowable_place(place)
+                        .is_some_and(|(ident, ..)| self.context.find_variable(&ident).is_some_and(|b| b.narrowed));
+                    if narrowed_shadow { place_type.widened() } else { place_type }
+                };
 
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::Pointer(Box::new(pointee_type)),
+                    r#type: ResolvedType::Pointer { pointee: Box::new(pointee_type), mutable: *mutable },
                     kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_place }),
                 })
             }
@@ -2025,11 +2175,17 @@ impl<'r> Analyzer<'r> {
             HirExpr::StructLiteral(lit) => self.analyze_struct_literal(node_id, span, lit),
 
             HirExpr::Slice(HirSlice { base, range }) => {
-                let (checked_base, base_type) = self.analyze_place(node_id, span, base)?;
+                let (checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base)?;
 
-                let item_type = match base_type {
-                    ResolvedType::SizedArray(item_type, _) => *item_type,
-                    ResolvedType::Slice(item_type) => *item_type,
+                // The new slice's own mutability: for inline storage
+                // (`SizedArray`), whether the storage being sliced is itself
+                // writable (the place's own mutability); for re-slicing an
+                // existing `Slice` value, that slice's own flag -- a
+                // property of the value being sliced, independent of
+                // whether the *variable* holding it happens to be `mut`.
+                let (item_type, mutable) = match base_type {
+                    ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable),
+                    ResolvedType::Slice { item, mutable } => (*item, mutable),
                     found => {
                         self.errors
                             .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable { found }));
@@ -2057,7 +2213,7 @@ impl<'r> Analyzer<'r> {
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::Slice(Box::new(item_type.clone())),
+                    r#type: ResolvedType::Slice { item: Box::new(item_type.clone()), mutable },
                     kind: CheckedExpr::Slice(CheckedSlice {
                         base: checked_base,
                         item_type,
@@ -2096,8 +2252,8 @@ impl<'r> Analyzer<'r> {
         let checked_scrutinee = self.analyze_expr(&m.scrutinee)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
 
-        let (scrutinee_read, prelude_stmts, narrow_binding) = if let Some((ident, decl_id, storage)) = narrow_target {
-            (checked_scrutinee.clone(), Vec::new(), Some((ident, decl_id, storage)))
+        let (scrutinee_read, prelude_stmts, narrow_binding) = if let Some((ident, decl_id, storage, mutable)) = narrow_target {
+            (checked_scrutinee.clone(), Vec::new(), Some((ident, decl_id, storage, mutable)))
         } else {
             let target = CheckedPlace {
                 root: CheckedPlaceRoot::Variable { decl_id: node_id, storage: Storage::Local, r#type: scrutinee_type.clone() },
@@ -2120,7 +2276,7 @@ impl<'r> Analyzer<'r> {
         };
 
         let is_enum_scrutinee = matches!(&scrutinee_type, ResolvedType::Enum { .. })
-            || matches!(&scrutinee_type, ResolvedType::Pointer(inner) if matches!(**inner, ResolvedType::Enum { .. }));
+            || matches!(&scrutinee_type, ResolvedType::Pointer { pointee, .. } if matches!(**pointee, ResolvedType::Enum { .. }));
 
         let (arms, else_branch, result_type) = if is_enum_scrutinee {
             self.analyze_enum_match(node_id, span, m, &scrutinee_type, &scrutinee_read, narrow_binding)?
@@ -2154,13 +2310,14 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A scrutinee that's exactly a bare local/parameter reference -- no
+    /// A place that's exactly a bare local/parameter reference -- no
     /// projections, no module qualification, no explicit generic
-    /// arguments. Only this shape supports narrowing (see `analyze_match`'s
-    /// doc comment): its identity (`decl_id`/`storage`) is what a matched
-    /// arm re-declares, shadowed, with a refined type.
-    fn narrowable_scrutinee(&self, scrutinee: &HirExprNode) -> Option<(Ident, HirId, Storage)> {
-        let HirExpr::Place(place) = &scrutinee.expr else { return None };
+    /// arguments. Only this shape supports narrowing/de-assumption (see
+    /// `analyze_match`'s and `HirExpr::AddressOf`'s doc comments): its
+    /// identity (`decl_id`/`storage`) is what gets shadow-declared (match
+    /// narrowing) or widened in place (`Context::widen_variable`, `&mut`'s
+    /// de-assumption).
+    fn narrowable_place(&self, place: &HirPlace) -> Option<(Ident, HirId, Storage, bool)> {
         if !place.projections.is_empty() {
             return None;
         }
@@ -2169,7 +2326,17 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         let binding = self.context.find_variable(&expr_path.path.head)?;
-        Some((expr_path.path.head.clone(), binding.decl_id, binding.storage))
+        Some((expr_path.path.head.clone(), binding.decl_id, binding.storage, binding.mutable))
+    }
+
+    /// `narrowable_place`, but for a scrutinee expression rather than an
+    /// already-unwrapped place -- `match`'s scrutinee is a full
+    /// `HirExprNode` (it doesn't have to be a place at all, see
+    /// `analyze_match`'s doc comment), so this just unwraps the one shape
+    /// that's ever narrowable before delegating.
+    fn narrowable_scrutinee(&self, scrutinee: &HirExprNode) -> Option<(Ident, HirId, Storage, bool)> {
+        let HirExpr::Place(place) = &scrutinee.expr else { return None };
+        self.narrowable_place(place)
     }
 
     /// An arm's body: a `{ ... }` block analyzes exactly like any other
@@ -2198,12 +2365,15 @@ impl<'r> Analyzer<'r> {
         m: &HirMatch,
         scrutinee_type: &ResolvedType,
         scrutinee_read: &CheckedExprNode,
-        narrow_binding: Option<(Ident, HirId, Storage)>,
+        narrow_binding: Option<(Ident, HirId, Storage, bool)>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
+        // `through_pointer` is the scrutinee's own pointer mutability when
+        // matching through one -- narrowing only ever refines the pointee,
+        // never changes whether the pointer itself is writable.
         let (cell, through_pointer) = match scrutinee_type {
-            ResolvedType::Enum { cell, .. } => (cell.clone(), false),
-            ResolvedType::Pointer(inner) => match &**inner {
-                ResolvedType::Enum { cell, .. } => (cell.clone(), true),
+            ResolvedType::Enum { cell, .. } => (cell.clone(), None),
+            ResolvedType::Pointer { pointee, mutable } => match &**pointee {
+                ResolvedType::Enum { cell, .. } => (cell.clone(), Some(*mutable)),
                 _ => unreachable!("caller already confirmed this is an enum or pointer-to-enum"),
             },
             _ => unreachable!("caller already confirmed this is an enum or pointer-to-enum"),
@@ -2213,8 +2383,14 @@ impl<'r> Analyzer<'r> {
         // matches (every value of an enum carries one); built once here,
         // reused (cloned) per arm's condition.
         let mut tag_projections = Vec::new();
-        let tag_type =
-            self.resolve_field_projection(node_id, span, &mut tag_projections, scrutinee_type, &Ident("tag".to_string()))?;
+        let tag_type = self.resolve_field_projection(
+            node_id,
+            span,
+            &mut tag_projections,
+            scrutinee_type,
+            &Ident("tag".to_string()),
+            &mut false,
+        )?;
         let CheckedExpr::Place(scrutinee_place) = &scrutinee_read.kind else {
             unreachable!("analyze_match always builds scrutinee_read as a place read")
         };
@@ -2265,10 +2441,13 @@ impl<'r> Analyzer<'r> {
             };
 
             self.context.enter_scope();
-            if let Some((ident, decl_id, storage)) = &narrow_binding {
+            if let Some((ident, decl_id, storage, mutable)) = &narrow_binding {
                 let refined = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
-                let narrowed = if through_pointer { ResolvedType::Pointer(Box::new(refined)) } else { refined };
-                self.declare_narrowed_binding(*decl_id, arm.span, ident, narrowed, *storage);
+                let narrowed = match through_pointer {
+                    Some(pointer_mutable) => ResolvedType::Pointer { pointee: Box::new(refined), mutable: pointer_mutable },
+                    None => refined,
+                };
+                self.declare_narrowed_binding(*decl_id, arm.span, ident, narrowed, *storage, *mutable);
             }
             let body = self.analyze_match_arm_body(&arm.body);
             self.context.leave_scope();
@@ -2904,6 +3083,49 @@ impl<'r> Analyzer<'r> {
         None
     }
 
+    /// `ident : Type = value;` -- builds the declaration and its
+    /// initializing write by hand, exactly like `analyze_walrus` does,
+    /// specifically so this write never goes through the ordinary
+    /// `HirExpr::Assignment` arm's mutability check: it's the declaration's
+    /// own initializer, never a `mut`-requiring reassignment, regardless of
+    /// whether `ident` was declared `mut`.
+    fn analyze_declaration_with_init(&mut self, decl: &HirDeclaration, value: &HirExprNode) -> Option<[CheckedStmt; 2]> {
+        let checked_decl = self.analyze_declaration(decl, Storage::Local)?;
+        let checked_value = self.analyze_expr(value)?;
+
+        if !checked_decl.r#type.accepts(&checked_value.r#type) {
+            self.errors.push(AnalysisError::new(
+                value.id,
+                value.span,
+                AnalysisErrorKind::AssignmentTypeMismatch {
+                    target: checked_decl.r#type.clone(),
+                    value: checked_value.r#type.clone(),
+                },
+            ));
+            return None;
+        }
+
+        let declaration = CheckedStmt::Declaration(checked_decl.clone());
+        let assignment = CheckedStmt::Expression(CheckedExprNode {
+            id: decl.id,
+            span: decl.span,
+            r#type: checked_decl.r#type.clone(),
+            kind: CheckedExpr::Assignment(CheckedAssignment {
+                target: CheckedPlace {
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: decl.id,
+                        storage: Storage::Local,
+                        r#type: checked_decl.r#type,
+                    },
+                    projections: vec![],
+                },
+                value: Box::new(checked_value),
+            }),
+        });
+
+        Some([declaration, assignment])
+    }
+
     /// Desugars `ident := value;` into the same two `CheckedStmt`s writing
     /// `ident : <inferred type>; ident = value;` by hand would produce --
     /// analysis is the only place that can do this desugaring, since only it
@@ -2914,7 +3136,7 @@ impl<'r> Analyzer<'r> {
     fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<[CheckedStmt; 2]> {
         let checked_value = self.analyze_expr(&w.value)?;
         let r#type = checked_value.r#type.clone();
-        self.declare_binding(w.id, w.span, &w.ident, r#type.clone(), Storage::Local)?;
+        self.declare_binding(w.id, w.span, &w.ident, r#type.clone(), Storage::Local, w.mutable)?;
 
         let declaration = CheckedStmt::Declaration(CheckedDeclaration {
             id: w.id,
@@ -2946,6 +3168,9 @@ impl<'r> Analyzer<'r> {
         match stmt {
             HirStmt::Declaration(decl) => {
                 self.analyze_declaration(decl, Storage::Local).map(|d| vec![CheckedStmt::Declaration(d)])
+            }
+            HirStmt::DeclarationWithInit(decl, value) => {
+                self.analyze_declaration_with_init(decl, value).map(Vec::from)
             }
             HirStmt::ExternDeclaration(decl) => {
                 self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
@@ -3237,6 +3462,7 @@ impl<'r> Analyzer<'r> {
             r#type: ResolvedType::Function(fn_type.clone()),
             span: f.span,
             narrowed: false,
+            mutable: false,
         };
         if let Err((name, previous)) = self.context.current_scope().declare(f.name.clone(), binding) {
             self.errors.push(AnalysisError::new(
@@ -3552,7 +3778,10 @@ impl<'r> Analyzer<'r> {
     fn const_representable(r#type: &ResolvedType) -> bool {
         r#type.numeric_kind().is_some()
             || matches!(r#type, ResolvedType::Bool | ResolvedType::Char)
-            || matches!(r#type, ResolvedType::Pointer(inner) if **inner == ResolvedType::U8)
+            // A string constant's own type is always immutable (see
+            // `HirExpr::String`'s arm in `analyze_expr`), so only an
+            // immutable `*u8` header field could ever accept one anyway.
+            || matches!(r#type, ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8)
     }
 
     /// Evaluates an enum variant's tag/header value: a literal (number,
@@ -3583,7 +3812,9 @@ impl<'r> Analyzer<'r> {
                 }
             },
             HirExpr::String(s) => match expected {
-                ResolvedType::Pointer(inner) if **inner == ResolvedType::U8 => Some(ConstValue::Str(s.0.clone())),
+                ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8 => {
+                    Some(ConstValue::Str(s.0.clone()))
+                }
                 _ => mismatch(self, "a string literal"),
             },
             HirExpr::Bool(b) => match expected {

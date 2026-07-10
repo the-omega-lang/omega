@@ -12,6 +12,11 @@ pub struct FunctionDefinitionStmt {
     /// from the call's own argument types (see `Analyzer::resolve_generic_call`).
     pub generics: Vec<Ident>,
     pub is_member_function: bool,
+    /// Whether `self` was written `mut self` -- meaningless when
+    /// `is_member_function` is `false`. Determines whether the synthesized
+    /// `self` parameter is `*mut Self` or plain `*Self` (see
+    /// `omega_hir::lower::Lowerer::lower_function_def`).
+    pub self_mutable: bool,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,
     pub codeblock: CodeblockExpr,

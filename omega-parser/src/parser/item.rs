@@ -48,6 +48,19 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
         }
+        // `mut` is a contextual keyword here (see `lexer::TokenKind`'s doc
+        // comment) -- only a global *declaration* can be `mut` at item
+        // position (there's no top-level walrus/`:=` at all, see
+        // `WalrusStmt`'s own doc comment), so a leading `mut` commits
+        // straight to `parse_declaration` rather than the function-
+        // definition-or-declaration dispatch below.
+        TokenKind::Ident(name) if name == "mut" => {
+            p.advance(); // 'mut'
+            let mut decl = parse_declaration(p)?;
+            decl.mutable = true;
+            p.expect_terminator(&TokenKind::Semi, "';'");
+            Item::Declaration(decl)
+        }
         TokenKind::Ident(_) => parse_declaration_or_function_definition(p)?,
         _ => {
             p.error(ParseErrorKind::Expected { expected: "a top-level item", found: p.peek().describe() });
@@ -84,12 +97,12 @@ pub fn parse_function_definition(p: &mut Parser) -> Option<FunctionDefinitionStm
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
-    let (is_member_function, params) = parse_param_list(p);
+    let (is_member_function, self_mutable, params) = parse_param_list(p);
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = crate::parser::r#type::parse_type(p)?;
     let codeblock = parse_codeblock(p)?;
-    Some(FunctionDefinitionStmt { ident, generics, is_member_function, params, return_type, codeblock })
+    Some(FunctionDefinitionStmt { ident, generics, is_member_function, self_mutable, params, return_type, codeblock })
 }
 
 /// `<T, U, ...>` -- optional, at least one name if present.
@@ -105,19 +118,28 @@ fn parse_optional_generics(p: &mut Parser) -> Option<Vec<Ident>> {
     Some(generics)
 }
 
-/// `self` (optionally followed by `, ident: Type, ...`), or just
-/// `ident: Type, ...` -- `self` is a contextual keyword here (see
+/// `self` / `mut self` (optionally followed by `, ident: Type, ...`), or
+/// just `ident: Type, ...` -- `self`/`mut` are contextual keywords here (see
 /// `lexer::TokenKind`'s doc comment), checked by comparing an already-lexed
-/// `Ident`'s text.
-fn parse_param_list(p: &mut Parser) -> (bool, Vec<DeclarationStmt>) {
+/// `Ident`'s text. Returns `(is_member_function, self_mutable, params)`.
+fn parse_param_list(p: &mut Parser) -> (bool, bool, Vec<DeclarationStmt>) {
+    let self_mutable = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+        && matches!(p.peek_at(1), TokenKind::Ident(name) if name == "self")
+    {
+        p.advance(); // 'mut'
+        true
+    } else {
+        false
+    };
     if let TokenKind::Ident(name) = p.peek()
         && name == "self"
     {
         p.advance();
         let rest = if p.eat(&TokenKind::Comma) { parse_declaration_list(p) } else { Vec::new() };
-        return (true, rest);
+        return (true, self_mutable, rest);
     }
-    (false, parse_declaration_list(p))
+    (false, false, parse_declaration_list(p))
 }
 
 /// Zero or more `ident: Type` pairs, comma-separated -- a comma is only

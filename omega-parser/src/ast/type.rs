@@ -13,7 +13,10 @@ pub enum Type {
     /// Identifier types, possibly module-qualified. Example: `void`, `i32`,
     /// `mymodule::Foo`.
     Named(Path),
-    Pointer(Box<Type>),
+    /// `*T` (immutable, `mutable: false`) or `*mut T` (`mutable: true`) --
+    /// whether the pointee may be written through. Immutable by default,
+    /// matching every binding's own default (see `DeclarationStmt::mutable`).
+    Pointer(Box<Type>, bool),
     Function(FunctionType),
     /// `[T]` -- an unsized run of `T`, only ever meaningful today as a
     /// parameter type used the way C's decayed array parameters are (see

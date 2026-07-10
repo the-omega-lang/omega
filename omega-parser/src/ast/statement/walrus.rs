@@ -11,4 +11,7 @@ use crate::ast::identifier::Ident;
 pub struct WalrusStmt {
     pub ident: Ident,
     pub value: ExpressionNode,
+    /// `true` only for `mut ident := value;`. See
+    /// `omega_analyzer::context::VarBinding::mutable`.
+    pub mutable: bool,
 }

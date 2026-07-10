@@ -200,10 +200,10 @@ impl IntoIRType for ResolvedType {
             // A fat pointer: a data pointer plus an `i32` length. See
             // `ResolvedType::Slice`'s doc comment for why this is a distinct
             // variant rather than `Pointer(Array(_))`.
-            ResolvedType::Slice(_) => vec![codegen.pointer_type(), types::I32],
+            ResolvedType::Slice { .. } => vec![codegen.pointer_type(), types::I32],
             // `Pointer`, `Function`, and the legacy unsized `Array` (see its
             // doc comment) are all a single thin pointer value.
-            ResolvedType::Pointer(_) | ResolvedType::Function(_) | ResolvedType::Array(_) => {
+            ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_) => {
                 vec![codegen.pointer_type()]
             }
         }
@@ -640,7 +640,7 @@ impl Codegen {
                         // flattened leaf is its data pointer (the second,
                         // its length, isn't needed for a single-element
                         // index).
-                        ResolvedType::Array(_) | ResolvedType::Slice(_) => {
+                        ResolvedType::Array(_) | ResolvedType::Slice { .. } => {
                             self.load_scalars(builder, &current, &current_type)[0]
                         }
                         _ => unreachable!(
@@ -1636,7 +1636,7 @@ impl Codegen {
                         let len = builder.ins().iconst(types::I32, *size as i64);
                         (ptr, len)
                     }
-                    ResolvedType::Slice(_) => {
+                    ResolvedType::Slice { .. } => {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], leaves[1])
                     }

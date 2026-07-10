@@ -58,6 +58,18 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
 /// specifically to avoid double-consuming a terminator (see this module's
 /// top doc comment).
 fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
+    // `mut` is a contextual keyword here (see `lexer::TokenKind`'s doc
+    // comment, exactly like `self`) -- only recognized leading a binding
+    // declaration (`mut a := ...`/`mut a : T;`), never anywhere else, so it
+    // stays usable as an ordinary identifier in every other position.
+    if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+        && matches!(p.peek_at(1), TokenKind::Ident(_))
+        && matches!(p.peek_at(2), TokenKind::ColonEq | TokenKind::Colon)
+    {
+        p.advance(); // 'mut'
+        return parse_walrus_or_declaration(p, true);
+    }
     match p.peek() {
         TokenKind::Struct => Some((Statement::Struct(crate::parser::item::parse_struct_def(p)?), true)),
         TokenKind::Enum => {
@@ -91,17 +103,8 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             p.advance();
             Some((Statement::Continue, false))
         }
-        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq) => {
-            Some((Statement::Walrus(parse_walrus(p)?), false))
-        }
-        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Colon) => {
-            let decl = parse_declaration(p)?;
-            if p.eat(&TokenKind::Eq) {
-                let value = parse_expression(p)?;
-                Some((Statement::DeclarationWithInit(decl, value), false))
-            } else {
-                Some((Statement::Declaration(decl), false))
-            }
+        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon) => {
+            parse_walrus_or_declaration(p, false)
         }
         _ => {
             let expr = parse_expression(p)?;
@@ -111,14 +114,41 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
     }
 }
 
+/// `ident := value` or `ident : Type` (optionally `= value`) -- `mutable`
+/// is already known by the time this runs (an optional leading `mut` is
+/// handled by the caller, `parse_statement_content`, since it has to decide
+/// *before* seeing which of these two shapes follows). `p.peek_at(1)` (the
+/// token right after `ident`) is what tells them apart.
+fn parse_walrus_or_declaration(p: &mut Parser, mutable: bool) -> Option<(Statement, bool)> {
+    match p.peek_at(1) {
+        TokenKind::ColonEq => {
+            let mut w = parse_walrus(p)?;
+            w.mutable = mutable;
+            Some((Statement::Walrus(w), false))
+        }
+        _ => {
+            let mut decl = parse_declaration(p)?;
+            decl.mutable = mutable;
+            if p.eat(&TokenKind::Eq) {
+                let value = parse_expression(p)?;
+                Some((Statement::DeclarationWithInit(decl, value), false))
+            } else {
+                Some((Statement::Declaration(decl), false))
+            }
+        }
+    }
+}
+
 /// `ident : Type` -- shared by declarations (function-body and struct-field
 /// position), and by the leading name of a function/struct's own parameter/
-/// field list.
+/// field list. Always `mutable: false` here -- a leading `mut` (only
+/// meaningful in statement/item position) is applied by the caller
+/// afterward; struct/enum fields and parameters never check for one at all.
 pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::Colon, "':'");
     let r#type = crate::parser::r#type::parse_type(p)?;
-    Some(DeclarationStmt { ident, r#type })
+    Some(DeclarationStmt { ident, r#type, mutable: false })
 }
 
 pub fn parse_extern_declaration(p: &mut Parser) -> Option<ExternDeclarationStmt> {
@@ -133,11 +163,12 @@ fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {
     Some(ReturnStmt { return_value })
 }
 
+/// Always `mutable: false` here -- see `parse_declaration`'s identical note.
 fn parse_walrus(p: &mut Parser) -> Option<WalrusStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::ColonEq, "':='");
     let value = parse_expression(p)?;
-    Some(WalrusStmt { ident, value })
+    Some(WalrusStmt { ident, value, mutable: false })
 }
 
 fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
@@ -198,11 +229,27 @@ fn parse_for_init(p: &mut Parser) -> Option<Statement> {
     if p.check(&TokenKind::Semi) {
         return None;
     }
+    // `mut` is a contextual keyword here too (see `parse_statement_content`'s
+    // identical check) -- `for mut i := 0; ...` is by far the most common
+    // reason to want a mutable loop-local at all.
+    let mutable = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+        && matches!(p.peek_at(1), TokenKind::Ident(_))
+        && matches!(p.peek_at(2), TokenKind::ColonEq | TokenKind::Colon)
+    {
+        p.advance(); // 'mut'
+        true
+    } else {
+        false
+    };
     if matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::ColonEq) {
-        return parse_walrus(p).map(Statement::Walrus);
+        let mut w = parse_walrus(p)?;
+        w.mutable = mutable;
+        return Some(Statement::Walrus(w));
     }
     if matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
-        let decl = parse_declaration(p)?;
+        let mut decl = parse_declaration(p)?;
+        decl.mutable = mutable;
         return if p.eat(&TokenKind::Eq) {
             let value = parse_expression(p)?;
             Some(Statement::DeclarationWithInit(decl, value))

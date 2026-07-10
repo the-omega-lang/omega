@@ -38,13 +38,15 @@ pub fn unify_generic_type(
         // `Pointer(Array(_))` shape only ever unifies against a `Slice`,
         // regardless of whether `concrete` actually turns out to be one (a
         // mismatch here is left for the ordinary argument-type check).
-        (Type::Pointer(inner), _) if matches!(inner.as_ref(), Type::Array(_)) => {
+        (Type::Pointer(inner, _), _) if matches!(inner.as_ref(), Type::Array(_)) => {
             let Type::Array(elem) = inner.as_ref() else { unreachable!() };
-            if let ResolvedType::Slice(c) = concrete {
+            if let ResolvedType::Slice { item: c, .. } = concrete {
                 unify_generic_type(generics, elem, c, subst);
             }
         }
-        (Type::Pointer(inner), ResolvedType::Pointer(c)) => unify_generic_type(generics, inner, c, subst),
+        (Type::Pointer(inner, _), ResolvedType::Pointer { pointee: c, .. }) => {
+            unify_generic_type(generics, inner, c, subst)
+        }
         (Type::Array(inner), ResolvedType::Array(c)) => unify_generic_type(generics, inner, c, subst),
         (Type::SizedArray(inner, _), ResolvedType::SizedArray(c, _)) => unify_generic_type(generics, inner, c, subst),
         (Type::Function(f), ResolvedType::Function(c)) => {

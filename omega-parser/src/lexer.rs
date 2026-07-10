@@ -24,19 +24,21 @@ pub enum TokenKind {
     /// have to pair up with a following identifier itself.
     Metavar(String),
 
-    // Keywords. Deliberately *not* included here: `self`/`expr`/`type`/
-    // `items`/`usize`/`isize` -- these are context-sensitive in the current
-    // grammar (e.g. `self` is a keyword only in a function's first-
-    // parameter position, and an ordinary identifier everywhere else,
+    // Keywords. Deliberately *not* included here: `self`/`mut`/`expr`/
+    // `type`/`items`/`usize`/`isize` -- these are context-sensitive in the
+    // current grammar (e.g. `self` is a keyword only in a function's
+    // first-parameter position, and an ordinary identifier everywhere else,
     // including in expression position inside a method body referencing
-    // that same parameter; `usize`/`isize` are never syntax keywords at
-    // all, just ordinary type-name identifiers plus a narrow number-
-    // literal-suffix recognition rule inside `scan_number_suffix`).
+    // that same parameter; `mut` is a keyword only immediately after `*`
+    // (`*mut T`) or leading a binding declaration (`mut a := ...`), and an
+    // ordinary identifier everywhere else; `usize`/`isize` are never syntax
+    // keywords at all, just ordinary type-name identifiers plus a narrow
+    // number-literal-suffix recognition rule inside `scan_number_suffix`).
     // Reserving them globally here would be a real (if minor) grammar
-    // narrowing -- e.g. it would stop `self`/`type`/... from being usable
-    // as ordinary variable names -- so they stay plain `Ident` tokens, and
-    // the parser recognizes them contextually by comparing an ident's text
-    // exactly where the current grammar already does.
+    // narrowing -- e.g. it would stop `self`/`mut`/`type`/... from being
+    // usable as ordinary variable names -- so they stay plain `Ident`
+    // tokens, and the parser recognizes them contextually by comparing an
+    // ident's text exactly where the current grammar already does.
     True,
     False,
     If,

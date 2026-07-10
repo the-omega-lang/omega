@@ -81,23 +81,7 @@ impl Lowerer {
             }
             Statement::DeclarationWithInit(decl, value) => {
                 let hir_decl = self.lower_declaration(decl, span);
-                let target = HirExprNode {
-                    id: self.ids.next(),
-                    span,
-                    expr: HirExpr::Place(HirPlace {
-                        root: HirPlaceRoot::Path(decl.ident.clone().into()),
-                        projections: vec![],
-                    }),
-                };
-                let assignment = HirExprNode {
-                    id: self.ids.next(),
-                    span,
-                    expr: HirExpr::Assignment(HirAssignment {
-                        target: Box::new(target),
-                        value: Box::new(self.lower_expr(value)),
-                    }),
-                };
-                vec![HirStmt::Declaration(hir_decl), HirStmt::Expression(assignment)]
+                vec![HirStmt::DeclarationWithInit(hir_decl, self.lower_expr(value))]
             }
             Statement::ExternDeclaration(decl) => {
                 vec![HirStmt::ExternDeclaration(self.lower_extern_declaration(decl, span))]
@@ -112,6 +96,7 @@ impl Lowerer {
                 span,
                 ident: w.ident.clone(),
                 value: self.lower_expr(&w.value),
+                mutable: w.mutable,
             })],
             Statement::While(w) => vec![HirStmt::While(HirWhile {
                 id: self.ids.next(),
@@ -147,6 +132,7 @@ impl Lowerer {
             span,
             ident: decl.ident.clone(),
             r#type: decl.r#type.clone(),
+            mutable: decl.mutable,
         }
     }
 
@@ -197,7 +183,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span,
                 ident: Ident("self".to_string()),
-                r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone().into()))),
+                r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone().into())), f.self_mutable),
             });
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
@@ -363,7 +349,7 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::AddressOf(HirAddressOf { base }),
+                    expr: HirExpr::AddressOf(HirAddressOf { base, mutable: addr.mutable }),
                 }
             }
             Expression::Negate(neg) => {

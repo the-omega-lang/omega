@@ -40,6 +40,8 @@ pub struct HirDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: Type,
+    /// See `omega_parser::ast::statement::declaration::DeclarationStmt::mutable`.
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +156,13 @@ pub struct HirEnumVariant {
 #[derive(Debug, Clone)]
 pub enum HirStmt {
     Declaration(HirDeclaration),
+    /// `ident : Type = value;` -- kept as one node (rather than a
+    /// `Declaration` followed by a separate assignment expression) so the
+    /// initializing write can be checked as exactly that -- initialization,
+    /// never a `mut`-requiring reassignment -- the same way
+    /// `WalrusDeclaration`'s own initializer already is. See
+    /// `Analyzer::analyze_declaration_with_init`.
+    DeclarationWithInit(HirDeclaration, HirExprNode),
     ExternDeclaration(HirExternDeclaration),
     Expression(HirExprNode),
     Return(HirExprNode),
@@ -252,6 +261,8 @@ pub struct HirWalrusDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub value: HirExprNode,
+    /// See `omega_parser::ast::statement::walrus::WalrusStmt::mutable`.
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -445,6 +456,8 @@ pub struct HirBinaryOp {
 #[derive(Debug, Clone)]
 pub struct HirAddressOf {
     pub base: Box<HirExprNode>,
+    /// See `omega_parser::ast::expression::address_of::AddressOfExpr::mutable`.
+    pub mutable: bool,
 }
 
 /// `target` is deliberately not typed as `HirPlace`: the parser doesn't

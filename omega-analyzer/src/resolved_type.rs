@@ -192,7 +192,13 @@ pub enum ResolvedType {
     USize,
     F32,
     F64,
-    Pointer(Box<ResolvedType>),
+    /// `*T` (`mutable: false`) or `*mut T` (`mutable: true`) -- whether the
+    /// pointee may be written through (`Analyzer::analyze_place`'s running
+    /// mutability, overwritten by every `Deref` it processes). Immutable by
+    /// default, like every binding (`VarBinding::mutable`). This is a
+    /// *type*-level fact, unrelated to whether the pointer *itself* (as a
+    /// binding) can be reassigned to point elsewhere.
+    Pointer { pointee: Box<ResolvedType>, mutable: bool },
     Function(ResolvedFunctionType),
     /// An unsized run of `T`, only ever meaningful as a value type the way
     /// C's decayed array parameters are (see `argv : [*u8]` in
@@ -206,10 +212,12 @@ pub enum ResolvedType {
     /// (locals, struct fields, ...) rather than referenced through a
     /// pointer, the same way a `Struct` is.
     SizedArray(Box<ResolvedType>, u32),
-    /// `*[T]` -- a fat pointer: a data pointer plus a length, unlike
-    /// `Pointer` which is always a single thin pointer value. Never written
-    /// as `Pointer(Array(_))`; see `Context::resolve_type`.
-    Slice(Box<ResolvedType>),
+    /// `*[T]` (`mutable: false`) or `*mut [T]` (`mutable: true`) -- a fat
+    /// pointer: a data pointer plus a length, unlike `Pointer` which is
+    /// always a single thin pointer value. Never written as
+    /// `Pointer(Array(_))`; see `Context::resolve_type`. `mutable` carries
+    /// the same meaning `Pointer::mutable` does, for `slice[i] = value`.
+    Slice { item: Box<ResolvedType>, mutable: bool },
     Struct(Rc<RefCell<ResolvedStructType>>),
     /// An omega-style enum value. `variant` is the *statically known*
     /// variant, when there is one: `MyEnum::Second { ... }` produces a
@@ -251,7 +259,15 @@ impl Hash for ResolvedType {
             | Self::USize
             | Self::F32
             | Self::F64 => {}
-            Self::Pointer(inner) | Self::Array(inner) | Self::Slice(inner) => inner.hash(state),
+            Self::Array(inner) => inner.hash(state),
+            Self::Pointer { pointee, mutable } => {
+                pointee.hash(state);
+                mutable.hash(state);
+            }
+            Self::Slice { item, mutable } => {
+                item.hash(state);
+                mutable.hash(state);
+            }
             Self::Function(fn_type) => fn_type.hash(state),
             Self::SizedArray(inner, size) => {
                 inner.hash(state);
@@ -288,7 +304,8 @@ impl std::fmt::Display for ResolvedType {
             Self::USize => write!(f, "usize"),
             Self::F32 => write!(f, "f32"),
             Self::F64 => write!(f, "f64"),
-            Self::Pointer(inner) => write!(f, "*{inner}"),
+            Self::Pointer { pointee, mutable: false } => write!(f, "*{pointee}"),
+            Self::Pointer { pointee, mutable: true } => write!(f, "*mut {pointee}"),
             Self::Function(fn_type) => {
                 write!(f, "(")?;
                 for (i, (name, param)) in fn_type.params.iter().enumerate() {
@@ -311,7 +328,8 @@ impl std::fmt::Display for ResolvedType {
             }
             Self::Array(inner) => write!(f, "[{inner}]"),
             Self::SizedArray(inner, size) => write!(f, "[{inner}; {size}]"),
-            Self::Slice(inner) => write!(f, "*[{inner}]"),
+            Self::Slice { item, mutable: false } => write!(f, "*[{item}]"),
+            Self::Slice { item, mutable: true } => write!(f, "*mut [{item}]"),
             // Only the name, never the fields -- a struct may reference
             // itself, and its name is how source refers to it anyway.
             Self::Struct(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
@@ -400,19 +418,36 @@ impl ResolvedType {
     /// usable as its plain enum (`MyEnum`). Never the reverse (a plain
     /// value's variant isn't known).
     ///
-    /// This widening also applies through exactly one level of pointer
-    /// indirection (`*MyEnum::Second` usable as `*MyEnum`) -- sound
-    /// specifically because of which pointers are ever allowed to carry a
-    /// refined pointee in the first place: `&value` only keeps a
+    /// This widening also applies through exactly one level of *immutable*
+    /// pointer/slice indirection (`*MyEnum::Second` usable as `*MyEnum`) --
+    /// sound specifically because of which pointers are ever allowed to
+    /// carry a refined pointee in the first place: `&value` only keeps a
     /// refinement when it's a *permanent* fact about `value`'s own
     /// declared/inferred type (see `VarBinding::narrowed` and
     /// `Analyzer`'s `HirExpr::AddressOf` arm), and a permanently-refined
     /// binding can never be reassigned a different variant (this same
     /// `accepts` rule, applied at every assignment, already rejects that).
-    /// A `match`-narrowed pointer (`b: *MyEnum` proven `*MyEnum::Second`
-    /// inside one arm) is never widened *back* by this rule either -- it's
-    /// already exactly `*MyEnum::Second`, matched via `self == value` above
-    /// without needing this arm at all.
+    ///
+    /// Deliberately **not** extended to mutable pointers/slices at all --
+    /// `*mut MyEnum::Second` never widens to `*mut MyEnum`, full stop, even
+    /// though the exact same reasoning above would make it locally sound at
+    /// this one call site. The reason is what happens *after*: a widened
+    /// `*mut MyEnum` handed to unconstrained code could be used to write a
+    /// *different* variant through it, silently invalidating whatever
+    /// *other* binding/pointer still believes the underlying storage is
+    /// `MyEnum::Second` (the original aliasing hole this whole mutability
+    /// system exists to close). `&mut place`/`mut self`'s auto-ref close
+    /// this at the *source* instead (see `Analyzer`'s `HirExpr::AddressOf`
+    /// arm and `Context::widen_variable`): they always produce an already-
+    /// widened mutable pointer and immediately widen the source binding's
+    /// own tracked type too, so a refined mutable pointer only ever exists
+    /// as a `match`-narrowed *view* of an already-mutable place, never as
+    /// something `accepts` needs to reason about widening further.
+    ///
+    /// A mutable pointer/slice *does* freely coerce into an immutable one
+    /// of the same (or widening-compatible) pointee, symmetric with a
+    /// mutable binding being just as readable as an immutable one --
+    /// captured below by `mutable: false` on `self`'s side alone.
     pub fn accepts(&self, value: &ResolvedType) -> bool {
         if self == value {
             return true;
@@ -421,7 +456,12 @@ impl ResolvedType {
             (Self::Enum { cell: expected, variant: None }, Self::Enum { cell: found, variant: Some(_) }) => {
                 expected.borrow().id == found.borrow().id
             }
-            (Self::Pointer(expected), Self::Pointer(found)) => expected.accepts(found),
+            (Self::Pointer { pointee: expected, mutable: false }, Self::Pointer { pointee: found, .. }) => {
+                expected.accepts(found)
+            }
+            (Self::Slice { item: expected, mutable: false }, Self::Slice { item: found, .. }) => {
+                expected.accepts(found)
+            }
             _ => false,
         }
     }

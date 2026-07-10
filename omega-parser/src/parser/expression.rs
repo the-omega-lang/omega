@@ -112,7 +112,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
     enum Prefix {
         Deref,
-        AddressOf,
+        AddressOf { mutable: bool },
         Negate,
         Increment,
         Decrement,
@@ -121,16 +121,26 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         TokenKind::PlusPlus => Prefix::Increment,
         TokenKind::MinusMinus => Prefix::Decrement,
         TokenKind::Star => Prefix::Deref,
-        TokenKind::Amp => Prefix::AddressOf,
+        // `&mut` -- `mut` is a contextual keyword here (see
+        // `lexer::TokenKind`'s doc comment), checked by comparing an
+        // already-lexed `Ident`'s text, exactly like `self`/pointer types'
+        // own `*mut` check.
+        TokenKind::Amp if matches!(p.peek_at(1), TokenKind::Ident(name) if name == "mut") => {
+            Prefix::AddressOf { mutable: true }
+        }
+        TokenKind::Amp => Prefix::AddressOf { mutable: false },
         TokenKind::Minus => Prefix::Negate,
         _ => return parse_postfix(p),
     };
     p.advance();
+    if matches!(prefix, Prefix::AddressOf { mutable: true }) {
+        p.advance(); // 'mut'
+    }
     let base = parse_unary(p)?;
     let span = start.to(base.span);
     let expression = match prefix {
         Prefix::Deref => Expression::Deref(Box::new(DerefExpr { base })),
-        Prefix::AddressOf => Expression::AddressOf(Box::new(AddressOfExpr { base })),
+        Prefix::AddressOf { mutable } => Expression::AddressOf(Box::new(AddressOfExpr { base, mutable })),
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
         Prefix::Increment => Expression::Increment(Box::new(IncrementExpr { base })),
         Prefix::Decrement => Expression::Decrement(Box::new(DecrementExpr { base })),

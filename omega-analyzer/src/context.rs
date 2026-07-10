@@ -36,6 +36,15 @@ pub struct VarBinding {
     /// like before this field existed. See `Analyzer`'s `HirExpr::AddressOf`
     /// arm.
     pub narrowed: bool,
+    /// Whether this binding may be reassigned (`x = ...`/`++x`/`--x`) --
+    /// `true` only for a declaration explicitly written `mut` (see
+    /// `DeclarationStmt`/`WalrusStmt`'s own `mutable` fields). Every other
+    /// binding -- parameters (including `self`), struct/enum fields, and an
+    /// un-`mut` local/global -- is `false`; only `self`'s own *pointee*
+    /// mutability varies (`mut self` vs `self`, a `ResolvedType::Pointer`
+    /// concern, unrelated to this field). See `Analyzer::analyze_place`'s
+    /// doc comment for how this feeds into a whole place's mutability.
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +141,26 @@ impl Context {
             .find_map(|scope| scope.declared_variables.get(ident))
     }
 
+    /// "De-assumes" a proof the instant a mutable reference to `ident`'s
+    /// current place is taken (`&mut`, or the auto-ref for a `mut self`
+    /// method call) -- widens its *currently visible* binding's type in
+    /// place, wherever it's found (innermost scope first, matching
+    /// `find_variable`'s own walk), rather than shadowing a new one: a
+    /// writable alias to the storage now exists, so any later direct read
+    /// of `ident` within the same (or an enclosing) scope can no longer
+    /// trust a narrower type than the plain one. See
+    /// `ResolvedType::accepts`'s doc comment for why this -- rather than
+    /// ever letting a *mutable* pointer/slice widen implicitly -- is how
+    /// this compiler closes that aliasing hole.
+    pub fn widen_variable(&mut self, ident: &Ident) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.declared_variables.get_mut(ident) {
+                binding.r#type = binding.r#type.widened();
+                return;
+            }
+        }
+    }
+
     pub fn find_defined_type(&self, name: &Ident) -> Option<&ResolvedType> {
         self.scopes
             .iter()
@@ -197,9 +226,13 @@ impl Context {
                 self.current_scope().defined_types.insert(name, resolved_type);
                 Ok(())
             }
+            // Conservatively immutable, like every other cross-module value
+            // reference (see `Analyzer::analyze_place`'s doc comment) --
+            // nothing threads a real mutability flag through `ResolvedItem`
+            // yet, and `false` is the safe default.
             ResolvedItem::Value { r#type, storage, decl_id } => self
                 .current_scope()
-                .declare(name, VarBinding { decl_id, storage, r#type, span, narrowed: false })
+                .declare(name, VarBinding { decl_id, storage, r#type, span, narrowed: false, mutable: false })
                 .map_err(|(name, previous)| (name, Some(previous))),
         }
     }
@@ -382,10 +415,10 @@ impl Context {
             // necessarily a different, wider representation (data pointer +
             // length), the same reasoning Rust's `&[T]` follows. Any other
             // pointee resolves to an ordinary thin `Pointer`, unchanged.
-            Type::Pointer(pointee_type) => {
+            Type::Pointer(pointee_type, mutable) => {
                 match self.resolve_type(*pointee_type, resolver, module_path, true)? {
-                    ResolvedType::Array(item_type) => ResolvedType::Slice(item_type),
-                    other => ResolvedType::Pointer(Box::new(other)),
+                    ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
+                    other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
                 }
             }
             Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path)?),

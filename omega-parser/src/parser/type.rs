@@ -21,10 +21,21 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
     }
 }
 
+/// `*T` or `*mut T` -- `mut` is a contextual keyword here (see
+/// `lexer::TokenKind`'s doc comment on why it's not a global one, exactly
+/// like `self`), checked by comparing an already-lexed `Ident`'s text.
 fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '*'
+    let mutable = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+    {
+        p.advance();
+        true
+    } else {
+        false
+    };
     let inner = parse_type(p)?;
-    Some(Type::Pointer(Box::new(inner)))
+    Some(Type::Pointer(Box::new(inner), mutable))
 }
 
 fn parse_array_type(p: &mut Parser) -> Option<Type> {

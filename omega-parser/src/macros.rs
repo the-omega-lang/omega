@@ -497,7 +497,7 @@ fn expand_expr(
         }
         Expression::AddressOf(addr) => {
             let addr = *addr;
-            Expression::AddressOf(Box::new(AddressOfExpr { base: expand_expr(addr.base, defs, budget)? }))
+            Expression::AddressOf(Box::new(AddressOfExpr { base: expand_expr(addr.base, defs, budget)?, mutable: addr.mutable }))
         }
         Expression::Negate(neg) => {
             let neg = *neg;

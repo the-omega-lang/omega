@@ -367,6 +367,19 @@ pub enum AnalysisErrorKind {
     /// A `match` arm's (or `else`'s) resolved type doesn't match the others
     /// -- the `match` analogue of `IfBranchTypeMismatch`.
     MatchArmTypeMismatch { expected: ResolvedType, found: ResolvedType },
+
+    // -- mutability --
+    /// A binding not declared `mut` was used somewhere that requires write
+    /// access to it: an assignment, `++`/`--`, an explicit `&mut`, or the
+    /// implicit `mut self` auto-ref a mutating method call needs. `ident`
+    /// names the binding itself; the requiring expression's own span is
+    /// what this anchors to (the assignment, the `&mut`, the call, ...).
+    NotMutableBinding { ident: Ident },
+    /// Same requirement as `NotMutableBinding`, reached through a pointer
+    /// instead -- the *pointer's* type would need to be `*mut T`, not `*T`
+    /// (a `*T` pointer stays unwritable no matter how the binding holding
+    /// it was declared).
+    NotMutablePointer,
 }
 
 impl AnalysisErrorKind {
@@ -700,6 +713,13 @@ impl AnalysisErrorKind {
             Self::MatchArmTypeMismatch { expected, found } => d
                 .with_label(span, format!("this arm produces `{found}`, but earlier arms produce `{expected}`"))
                 .with_note("every arm of a `match` used as an expression must produce the same type"),
+
+            Self::NotMutableBinding { ident } => d
+                .with_label(span, format!("`{}` is not declared `mut`", ident.as_ref()))
+                .with_help(format!("declare it `mut {}`", ident.as_ref())),
+            Self::NotMutablePointer => d
+                .with_label(span, "this pointer's pointee is immutable")
+                .with_help("use `*mut T` instead of `*T`, and `&mut` to create one"),
         }
     }
 }
@@ -1078,6 +1098,8 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "match on '{type}' does not cover every value")
             }
             Self::MatchArmTypeMismatch { .. } => write!(f, "'match' arms have incompatible types"),
+            Self::NotMutableBinding { ident } => write!(f, "cannot mutate '{}': not declared 'mut'", ident.as_ref()),
+            Self::NotMutablePointer => write!(f, "cannot mutate through an immutable pointer"),
         }
     }
 }
