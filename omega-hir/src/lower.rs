@@ -1,16 +1,16 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirContinue, HirDeclaration,
-    HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr, HirExternDeclaration, HirFor,
-    HirFunctionCall, HirFunctionDef,
+    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirCast, HirContinue,
+    HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
+    HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef,
     HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
     HirPlaceRoot, HirProjection, HirRange, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirWalrusDeclaration, HirWhile,
+    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
     CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode, ExternDeclarationStmt,
     FunctionDefinitionStmt, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
-    Statement, StatementNode, StructStmt, Type,
+    Statement, StatementNode, StructStmt, Type, UnionStmt,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -43,6 +43,7 @@ impl Lowerer {
             }
             Item::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
             Item::Enum(e) => HirItem::Enum(self.lower_enum_def(e, node.span)),
+            Item::Union(u) => HirItem::Union(self.lower_union_def(u, node.span)),
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
@@ -90,7 +91,6 @@ impl Lowerer {
             Statement::Return(ret) => vec![HirStmt::Return(self.lower_expr(&ret.return_value))],
             Statement::Break => vec![HirStmt::Break(HirBreak { id: self.ids.next(), span })],
             Statement::Continue => vec![HirStmt::Continue(HirContinue { id: self.ids.next(), span })],
-            Statement::Struct(s) => vec![HirStmt::Struct(self.lower_struct_def(s, span))],
             Statement::Walrus(w) => vec![HirStmt::WalrusDeclaration(HirWalrusDeclaration {
                 id: self.ids.next(),
                 span,
@@ -231,6 +231,27 @@ impl Lowerer {
     }
 
     /// Same treatment as `lower_struct_def` -- member functions get their
+    /// synthetic `self: *UnionName` inserted by `lower_function_def`.
+    fn lower_union_def(&mut self, u: &UnionStmt, span: Span) -> HirUnionDef {
+        let id = self.ids.next();
+        let fields = u.fields.iter().map(|f| self.lower_param(f, span)).collect();
+        let functions = u
+            .functions
+            .iter()
+            .map(|f| self.lower_function_def(f, span, Some(&u.ident)))
+            .collect();
+
+        HirUnionDef {
+            id,
+            span,
+            name: u.ident.clone(),
+            generics: u.generics.clone(),
+            fields,
+            functions,
+        }
+    }
+
+    /// Same treatment as `lower_struct_def` -- member functions get their
     /// synthetic `self: *EnumName` inserted by `lower_function_def`, exactly
     /// like a struct's. Header entries keep their own real spans (the parser
     /// records them -- position-sensitive `tag` rules deserve precise
@@ -355,6 +376,14 @@ impl Lowerer {
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Negate(base) }
+            }
+            Expression::Cast(cast) => {
+                let base = Box::new(self.lower_expr(&cast.base));
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Cast(HirCast { target: cast.target.clone(), base }),
+                }
             }
             Expression::Increment(incr) => {
                 let base = Box::new(self.lower_expr(&incr.base));

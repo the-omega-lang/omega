@@ -8,6 +8,7 @@ pub mod import;
 pub mod macro_definition;
 pub mod r#return;
 pub mod r#struct;
+pub mod union;
 pub mod walrus;
 pub mod while_stmt;
 
@@ -17,7 +18,7 @@ use crate::ast::statement::{
     extern_declaration::ExternDeclarationStmt,
     for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
     macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, r#struct::StructStmt,
-    walrus::WalrusStmt, while_stmt::WhileStmt,
+    union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::diagnostics::Span;
 
@@ -28,12 +29,16 @@ pub enum Item {
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
     Struct(StructStmt),
-    /// Top-level only -- unlike `struct`, there is deliberately no
-    /// `Statement::Enum`: an enum's identity (tag values, cross-module
-    /// construction) is inherently module-level, and statement position
-    /// reports a dedicated parse error instead (see
-    /// `ParseErrorKind::EnumNotAllowedHere`).
+    /// Top-level only -- there is deliberately no `Statement::Struct` or
+    /// `Statement::Enum`: both a struct's and an enum's identity (tag
+    /// values, cross-module construction, cross-module caching) is
+    /// inherently module-level, and statement position reports a dedicated
+    /// parse error instead (see `ParseErrorKind::StructNotAllowedHere`/
+    /// `EnumNotAllowedHere`).
     Enum(EnumStmt),
+    /// See `UnionStmt`'s doc comment -- same top-level-only reasoning as
+    /// `Struct`/`Enum` above.
+    Union(UnionStmt),
     Import(ImportStmt),
     /// Expanded away entirely (along with `MacroInvocation` below) by
     /// `omega_parser::macros::expand` before HIR lowering ever runs -- see
@@ -71,7 +76,6 @@ pub enum Statement {
     /// `Analyzer`'s `loop_stack`).
     Break,
     Continue,
-    Struct(StructStmt),
     Walrus(WalrusStmt),
     While(WhileStmt),
     /// Boxed since `ForStmt.init` embeds a bare `Statement` -- without the

@@ -72,6 +72,12 @@ impl ParseError {
             ParseErrorKind::EnumNotAllowedHere => d
                 .with_label(self.span, "not allowed inside a function body")
                 .with_help("move this `enum` to the module's top level"),
+            ParseErrorKind::StructNotAllowedHere => d
+                .with_label(self.span, "not allowed inside a function body")
+                .with_help("move this `struct` to the module's top level"),
+            ParseErrorKind::UnionNotAllowedHere => d
+                .with_label(self.span, "not allowed inside a function body")
+                .with_help("move this `union` to the module's top level"),
             ParseErrorKind::ExclusiveRangeMissingEnd => d
                 .with_label(self.span, "exclusive range has no end bound")
                 .with_help("give it an end (`..<end`), or use an inclusive range instead (`...`)"),
@@ -118,8 +124,17 @@ pub enum ParseErrorKind {
     /// (see `parser::item::parse_enum_def`).
     EnumFunctionBeforeSemi,
     /// An `enum` declaration in statement position -- enums are top-level
-    /// items only (unlike `struct`, which is also allowed locally).
+    /// items only.
     EnumNotAllowedHere,
+    /// A `struct` declaration in statement position -- structs are
+    /// top-level items only: a locally-nested one would bypass the
+    /// driver's whole module-level query/cache/cycle-detection system, with
+    /// no forward-reference or cross-item support and no working
+    /// self-reference-cycle guard.
+    StructNotAllowedHere,
+    /// A `union` declaration in statement position -- same reasoning as
+    /// `StructNotAllowedHere`.
+    UnionNotAllowedHere,
     /// `..<` with no end bound (`a..<` or bare `..<`) -- unlike `...`, an
     /// exclusive range's whole point is excluding its end, so an
     /// open-ended one is meaningless; see `ast::range::RangeExpr`.
@@ -146,6 +161,12 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::EnumNotAllowedHere => {
                 write!(f, "enums can only be declared at the top level of a module")
+            }
+            Self::StructNotAllowedHere => {
+                write!(f, "structs can only be declared at the top level of a module")
+            }
+            Self::UnionNotAllowedHere => {
+                write!(f, "unions can only be declared at the top level of a module")
             }
             Self::ExclusiveRangeMissingEnd => {
                 write!(f, "an exclusive range ('..<') must have an end bound")

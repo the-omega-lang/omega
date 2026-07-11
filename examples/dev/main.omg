@@ -81,19 +81,19 @@ defer_test() => void {
 # *without* `self` is static -- called through the struct's name
 # (`Vec2::origin()`), with no instance -- while one *with* `self` stays an
 # ordinary member function. Static bodies commonly build their result with
-# a struct literal (see `Vec2 { x: ...; y: ...; }` below), which must set
+# a struct literal (see `Vec2 { x = ...; y = ...; }` below), which must set
 # every field exactly once.
 struct Vec2 {
     x: i32;
     y: i32;
     origin() => Vec2 {
         Vec2 {
-            x: 0;
-            y: 0;
+            x = 0;
+            y = 0;
         }
     }
     new(x: i32, y: i32) => Vec2 {
-        Vec2 { x: x; y: y; }
+        Vec2 { x = x; y = y; }
     }
     manhattan(self) => i32 {
         abs_val(self.x) + abs_val(self.y)
@@ -219,6 +219,15 @@ describe_if_second(b: *MyEnumWithBodies) => void {
     } else {
         printf("not the Second variant (tag=%d)\n", b.tag);
     }
+}
+
+# A union: every field overlaps the same storage -- no tag, no compiler
+# proof, unlike an enum variant body. Constructed by setting exactly one
+# field (`Value { as_i32 = ...; }`); any field is then readable at any time,
+# freely reinterpreting whatever bytes are actually there.
+union Value {
+    as_i32: i32;
+    as_f32: f32;
 }
 
 main(argc : i32, argv : [*u8]) => i32 {
@@ -398,7 +407,7 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf("defer_demo(false) = %d\n", defer_demo(false));
     defer_test();
 
-    mut v := Vec2 { x: 3; y: -4; };
+    mut v := Vec2 { x = 3; y = -4; };
     printf("struct literal: (%d, %d)\n", v.x, v.y);
     v.translate(2, 6);
     printf("translated: (%d, %d)\n", v.x, v.y);
@@ -408,8 +417,8 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf("static call with args: (%d, %d), manhattan = %d\n", w.x, w.y, w.manhattan());
     printf("struct by value: vec_sum = %d\n", vec_sum(w));
     seg := Segment {
-        a: Vec2 { x: 1; y: 2; };
-        b: w;
+        a = Vec2 { x = 1; y = 2; };
+        b = w;
     };
     printf("nested literal: (%d,%d)-(%d,%d)\n", seg.a.x, seg.a.y, seg.b.x, seg.b.y);
     if v.manhattan() > 5 {
@@ -424,9 +433,9 @@ main(argc : i32, argv : [*u8]) => i32 {
     h := MyEnumWithHeader::Second;
     printf("enum header: tag=%d desc=%s number=%u\n", h.tag, h.description, h.some_number);
 
-    s := MyEnumWithBodies::Second { some_text: "hello, this is some text"; };
+    s := MyEnumWithBodies::Second { some_text = "hello, this is some text"; };
     printf("enum body: tag=%d text=%s\n", s.tag, s.some_text);
-    t := MyEnumWithBodies::Third { some_number: 777u16; pointer_to_another_instance: &s; };
+    t := MyEnumWithBodies::Third { some_number = 777u16; pointer_to_another_instance = &s; };
     printf("enum body2: tag=%d n=%d inner_tag=%d\n", t.tag, t.some_number, t.pointer_to_another_instance.tag);
 
     # Sum-type subtyping: `s`'s own inferred type is `MyEnumWithBodies::Second`
@@ -454,11 +463,11 @@ main(argc : i32, argv : [*u8]) => i32 {
     xt := MyEnumWithExplicitTagAndHeader::Third;
     printf("enum explicit: tag=%u desc=%s\n", xt.tag, xt.description);
 
-    opt := Optional<u32>::Some { value: 42u32; };
+    opt := Optional<u32>::Some { value = 42u32; };
     none := Optional<u32>::None;
     printf("enum generic: some(tag=%d value=%u) none(tag=%d)\n", opt.tag, opt.value, none.tag);
 
-    cool := MyCoolEnum::Second { number: 123u64; decimal: 2.5; };
+    cool := MyCoolEnum::Second { number = 123u64; decimal = 2.5; };
     printf("enum cool: tag=%d number=%llu decimal=%f\n", cool.tag, cool.number, cool.decimal);
     cool.print_description();
     dflt := MyCoolEnum::default();
@@ -474,8 +483,25 @@ main(argc : i32, argv : [*u8]) => i32 {
     st := simplemodule::Status::make_err(42);
     printf("cross-module enum: tag=%d label=%s\n", st.tag, st.label);
     okst := simplemodule::Status::Ok;
-    err := simplemodule::Status::Err { code: 7; };
+    err := simplemodule::Status::Err { code = 7; };
     printf("cross-module enum 2: ok=%d err_code=%d\n", okst.tag, err.code);
+
+    # A union's fields overlap the same storage: written as `as_i32`, read
+    # back as `as_f32` -- exactly the bit pattern of pi as an IEEE-754 f32.
+    val := Value { as_i32 = 1078530011; };
+    printf("union overlap: as_i32=%d as_f32=%f\n", val.as_i32, val.as_f32);
+
+    # `<Type>expr` casts: a numeric conversion (real width/signedness-aware
+    # codegen, not just relabeling) and a pointer reinterpretation.
+    ci := 10;
+    cf := <f32>ci;
+    printf("cast i32->f32: %d -> %f\n", ci, cf);
+
+    thing := Vec2::new(11, 22);
+    thing_ptr := &thing;
+    void_ptr := <*void>thing_ptr;
+    back := <*Vec2>void_ptr;
+    printf("cast pointer roundtrip: (%d, %d)\n", back.x, back.y);
 
     return 69;
 }

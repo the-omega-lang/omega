@@ -25,6 +25,7 @@ pub enum CheckedItem {
     FunctionDefinition(CheckedFunctionDef),
     Struct(CheckedStructDef),
     Enum(CheckedEnumDef),
+    Union(CheckedUnionDef),
 }
 
 /// Where a resolved variable reference's value physically lives. Attached
@@ -113,6 +114,17 @@ pub struct CheckedStructDef {
     pub functions: Vec<CheckedFunctionDef>,
 }
 
+/// A checked union definition -- same shape as `CheckedStructDef`; field
+/// overlap is entirely a codegen-layout concern, not a checked-tree one.
+#[derive(Debug, Clone)]
+pub struct CheckedUnionDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub fields: Vec<CheckedParam>,
+    pub functions: Vec<CheckedFunctionDef>,
+}
+
 /// A checked enum definition. Deliberately *only* the functions: the
 /// tag/header/variant data codegen needs at every construction and
 /// field-access site travels inside `ResolvedType::Enum`'s shared cell (on
@@ -133,7 +145,6 @@ pub enum CheckedStmt {
     ExternDeclaration(CheckedExternDeclaration),
     Expression(CheckedExprNode),
     Return(CheckedExprNode),
-    Struct(CheckedStructDef),
     While(CheckedWhile),
     /// Boxed: `CheckedFor` alone is by far the largest variant here (it
     /// embeds a whole `CheckedBlock` for its body plus another for `init`'s
@@ -282,11 +293,11 @@ pub enum CheckedExpr {
     /// constructed -- codegen never re-checks it. The literal's own type is
     /// `ResolvedType::SizedArray(item_type, elements.len())`.
     ArrayLiteral(CheckedArrayLiteral),
-    /// `Name { field: value; ... }` -- the node's own `r#type` is always the
+    /// `Name { field = value; ... }` -- the node's own `r#type` is always the
     /// struct being built (`ResolvedType::Struct`); see
     /// `CheckedStructLiteral`'s doc comment for the field guarantees.
     StructLiteral(CheckedStructLiteral),
-    /// `Enum::Variant` / `Enum::Variant { field: value; ... }` -- builds a
+    /// `Enum::Variant` / `Enum::Variant { field = value; ... }` -- builds a
     /// whole enum value. The node's own `r#type` is always the enum with
     /// this exact variant statically known
     /// (`ResolvedType::Enum { variant: Some(variant_index) }`); the tag and
@@ -307,6 +318,60 @@ pub enum CheckedExpr {
     /// arm (and `else_branch`, if present) is guaranteed to agree on this
     /// node's own `r#type`, exactly like `CheckedExpr::If`.
     Match(CheckedMatch),
+    /// `<Type>base` -- `target_type` is this node's own `r#type` too
+    /// (carried here as well since `CheckedCast` is also useful standalone
+    /// in codegen's dispatch); `kind` is exactly which conversion
+    /// (`Analyzer::resolve_cast_kind`) `base`'s value needs to become it.
+    Cast(CheckedCast),
+    /// `Union { field = value; }` -- builds a whole union value by writing
+    /// exactly one field; analysis guarantees exactly one initializer was
+    /// given (see `AnalysisErrorKind::UnionLiteralMissingField`/
+    /// `UnionLiteralTooManyFields`). The node's own `r#type` is always the
+    /// union being built (`ResolvedType::Union`).
+    UnionConstruct(CheckedUnionConstruct),
+}
+
+/// See `CheckedExpr::UnionConstruct`. `field_index` is the field's position
+/// in the union's own field list, exactly like `CheckedProjection::UnionField`
+/// -- codegen zeroes the union's storage, then stores `value`'s leaves at
+/// offset 0 (no tag/header, unlike `CheckedEnumConstruct`).
+#[derive(Debug, Clone)]
+pub struct CheckedUnionConstruct {
+    pub field_index: usize,
+    pub value: Box<CheckedExprNode>,
+}
+
+/// See `CheckedExpr::Cast`. Every castable type flattens to exactly one IR
+/// leaf (numeric or pointer), so this never touches the multi-leaf
+/// flattening machinery at all -- codegen is a single instruction (or none,
+/// for `CastKind::Reinterpret`) applied to `base`'s own one leaf.
+#[derive(Debug, Clone)]
+pub struct CheckedCast {
+    pub kind: CastKind,
+    pub target_type: ResolvedType,
+    pub base: Box<CheckedExprNode>,
+}
+
+/// Exactly which conversion a cast needs, already resolved from both
+/// sides' `ResolvedType::cast_class` -- codegen never re-derives this, it
+/// just picks the one Cranelift instruction (or none) each variant maps to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastKind {
+    /// No instruction needed at all -- source and target already share the
+    /// same underlying IR representation: same-width int-family (regardless
+    /// of Omega-level signedness -- Cranelift has no separate signed/
+    /// unsigned integer *types*, only signed/unsigned *operations*, and a
+    /// pointer uses that same width-64 type too), or identical float width.
+    Reinterpret,
+    IntExtend { signed: bool },
+    IntTruncate,
+    IntToFloat { signed: bool },
+    /// Saturating, not trapping (`fcvt_to_*_sat`, not `fcvt_to_*`) --
+    /// matches Rust's own `as` behavior; a numeric cast shouldn't be a
+    /// surprise trap source over an out-of-range or NaN value.
+    FloatToInt { signed: bool },
+    FloatExtend,
+    FloatTruncate,
 }
 
 /// See `CheckedExpr::EnumConstruct`.
@@ -429,6 +494,15 @@ pub enum CheckedProjection {
     EnumBody {
         variant_index: usize,
         field_index: usize,
+        r#type: ResolvedType,
+    },
+    /// A field of a union value -- deliberately not `FieldAccess`: every
+    /// union field lives at offset 0 (they all overlap the same storage), so
+    /// codegen never needs (or wants) an index-based offset lookup here, the
+    /// way it does for a struct's sequentially laid out fields.
+    UnionField {
+        field: Ident,
+        index: usize,
         r#type: ResolvedType,
     },
 }

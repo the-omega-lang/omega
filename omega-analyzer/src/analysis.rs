@@ -1,31 +1,31 @@
 use crate::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
+        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
         CheckedEnumDef, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedMatch, CheckedMatchArm,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
         CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
-        CheckedStructLiteralField, CheckedWhile, NumberValue,
+        CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile, CastKind, NumberValue,
         Storage,
     },
     context::{Context, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
     generics::unify_generic_type,
     resolved_type::{
-        ConstValue, NumericKind, ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType,
-        ResolvedMethod, ResolvedStructType, ResolvedType,
+        CastClass, ConstValue, NumericKind, ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType,
+        ResolvedMethod, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem},
     similarity::best_match,
 };
 use omega_hir::{
-    BinaryOp, HirAddressOf, HirBlock, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
+    BinaryOp, HirAddressOf, HirBlock, HirCast, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
     HirExternDeclaration,
     HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
     HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
-    HirWalrusDeclaration,
+    HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, Span, Type};
 use std::cell::RefCell;
@@ -53,6 +53,8 @@ enum LiteralTarget {
     /// Always wraps `ResolvedType::Struct`.
     Struct(ResolvedType),
     EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
+    /// Always wraps `ResolvedType::Union`.
+    Union(ResolvedType),
 }
 
 pub struct Analyzer<'r> {
@@ -75,28 +77,17 @@ pub struct Analyzer<'r> {
     /// absolute `(module_path, name)` query, so it's resolved exactly the
     /// same way a qualified cross-module reference is (see
     /// `ModuleResolver::resolve_item`'s doc comment: there is no longer an
-    /// architectural difference between the two). The *same* path for
-    /// every item constructed for this module, whether it's this module's
-    /// own top-level signature/body work or -- unchanged from before --
-    /// this same `module_path` threading through a locally-nested
-    /// `HirStmt::Struct`'s own field resolution too.
+    /// architectural difference between the two). The *same* path for every
+    /// item constructed for this module -- this module's own top-level
+    /// signature/body work.
     module_path: Vec<Ident>,
-    /// Names currently mid-resolution *within this one throwaway
-    /// `Analyzer`* -- today, only ever populated by `analyze_struct_def`
-    /// around a *locally-nested* (block-scoped) struct's own field
-    /// resolution, to detect that one struct including itself by value
-    /// (`RecursiveTypeWithoutIndirection`). Top-level items no longer use
-    /// this: that bookkeeping is global now, owned by
-    /// `omega_driver::Driver::query_state` (keyed by `(module_path, name)`,
-    /// not just `name`), since a same-module reference and a cross-module
-    /// one are resolved by the exact same mechanism.
-    in_progress: HashSet<Ident>,
     /// The enclosing function's declared return type, checked against every
     /// `return <expr>;` and against the function body's own effective type
-    /// (see `block_type`/`check_function_return`). Saved and restored around
-    /// each `analyze_function_def` call (rather than set once) since a
-    /// struct -- and therefore its methods -- can be declared inside a
-    /// function body, nesting one function's analysis inside another's.
+    /// (see `block_type`/`check_function_return`). Reset at the start of
+    /// each `check_function_body` call -- one `Analyzer` checks exactly one
+    /// top-level item at a time (see `item_name`'s doc comment), and a
+    /// struct's methods are checked sequentially, never nested inside one
+    /// another's analysis, so a plain reset (not a save/restore) is enough.
     current_return_type: ResolvedType,
     /// A stack of enclosing loops' `HirId`s (innermost last), pushed/popped
     /// around a `while`/`for`'s body analysis. `break`/`continue` resolve
@@ -104,10 +95,9 @@ pub struct Analyzer<'r> {
     /// looked up rather than hard-assumed specifically so a future labeled
     /// `break 'outer;` only has to change *this* resolution rule (search the
     /// stack for a matching label instead of always taking the top); nothing
-    /// about `HirBreak`/`CheckedBreak`/codegen would need to change. Saved
-    /// and restored around each `analyze_function_def` call, same reasoning
-    /// as `current_return_type`: a loop body can't leak into a struct method
-    /// declared inside it.
+    /// about `HirBreak`/`CheckedBreak`/codegen would need to change. Cleared
+    /// at the start of each `check_function_body` call, same reasoning as
+    /// `current_return_type`.
     loop_stack: Vec<HirId>,
     /// `true` while analyzing a `defer`'s own body (see `HirStmt::Defer`'s
     /// arm in `analyze_stmt`) -- not a stack/counter, since a `defer` nested
@@ -115,11 +105,8 @@ pub struct Analyzer<'r> {
     /// already `true`, so it can never need to represent more than one
     /// level. Used to reject `return` inside a defer body (it would have to
     /// jump into the very epilogue that runs deferred bodies, from inside
-    /// one of them) and nested `defer`. Saved and restored around each
-    /// `check_function_body` call, exactly like `current_return_type`/
-    /// `loop_stack`: a struct declared *inside* a defer's body still gets
-    /// methods with entirely ordinary bodies of their own, not ones that
-    /// inherit "we're inside a defer" from their lexical surroundings.
+    /// one of them) and nested `defer`. Reset at the start of each
+    /// `check_function_body` call, same reasoning as `current_return_type`.
     in_defer_body: bool,
 }
 
@@ -137,6 +124,7 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::FunctionDefinition(f) => Some(f.name.clone()),
         HirItem::Struct(s) => Some(s.name.clone()),
         HirItem::Enum(e) => Some(e.name.clone()),
+        HirItem::Union(u) => Some(u.name.clone()),
         HirItem::Import(_) => None,
     }
 }
@@ -150,6 +138,7 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::FunctionDefinition(f) => (f.id, f.span),
         HirItem::Struct(s) => (s.id, s.span),
         HirItem::Enum(e) => (e.id, e.span),
+        HirItem::Union(u) => (u.id, u.span),
         HirItem::Import(i) => (i.id, i.span),
     }
 }
@@ -225,7 +214,6 @@ impl<'r> Analyzer<'r> {
             context,
             resolver,
             module_path,
-            in_progress: HashSet::new(),
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
             in_defer_body: false,
@@ -544,6 +532,30 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        if let ResolvedType::Union(union_type) = &dereffed {
+            let union_type = union_type.borrow();
+            let found = union_type
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| name == field)
+                .map(|(index, (_, r#type))| (index, r#type.clone()));
+            let Some((index, field_type)) = found else {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::NoSuchField { field: field.clone(), base: dereffed.clone() },
+                ));
+                return None;
+            };
+            projections.push(CheckedProjection::UnionField {
+                field: field.clone(),
+                index,
+                r#type: field_type.clone(),
+            });
+            return Some(field_type);
+        }
+
         let ResolvedType::Struct(struct_type) = &dereffed else {
             self.errors
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAStruct { found: dereffed.clone() }));
@@ -609,6 +621,17 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 e.functions
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, method)| method.clone())
+            }
+            ResolvedType::Union(union_type) => {
+                let union_type = union_type.borrow();
+                if union_type.fields.iter().any(|(name, _)| name == field) {
+                    return None;
+                }
+                union_type
+                    .functions
                     .iter()
                     .find(|(name, _)| name == field)
                     .map(|(_, method)| method.clone())
@@ -911,6 +934,24 @@ impl<'r> Analyzer<'r> {
                 };
                 (struct_type.name.clone(), method, missing)
             }
+            ResolvedType::Union(cell) => {
+                let union_type = cell.borrow();
+                let method = union_type
+                    .functions
+                    .iter()
+                    .find(|(name, _)| name == member)
+                    .map(|(_, method)| method.clone());
+                let similar = match method {
+                    Some(_) => None,
+                    None => best_match(member, union_type.functions.iter().map(|(name, _)| name)),
+                };
+                let missing = AnalysisErrorKind::NoSuchStructFunction {
+                    r#struct: union_type.name.clone(),
+                    function: member.clone(),
+                    similar,
+                };
+                (union_type.name.clone(), method, missing)
+            }
             ResolvedType::Enum { cell, .. } => {
                 // A variant wins over a same-named function -- analysis of
                 // the definition would ideally forbid the collision, but
@@ -1204,8 +1245,9 @@ impl<'r> Analyzer<'r> {
                     };
                     let r#struct = match dereffed {
                         ResolvedType::Struct(cell) => cell.borrow().name.clone(),
+                        ResolvedType::Union(cell) => cell.borrow().name.clone(),
                         ResolvedType::Enum { cell, .. } => cell.borrow().name.clone(),
-                        _ => unreachable!("find_method only ever finds methods on struct/enum types"),
+                        _ => unreachable!("find_method only ever finds methods on struct/union/enum types"),
                     };
                     self.errors.push(AnalysisError::new(
                         callee.id,
@@ -1661,7 +1703,6 @@ impl<'r> Analyzer<'r> {
             CheckedStmt::ExternDeclaration(d) => (d.id, d.span),
             CheckedStmt::Expression(e) => (e.id, e.span),
             CheckedStmt::Return(e) => (e.id, e.span),
-            CheckedStmt::Struct(s) => (s.id, s.span),
             CheckedStmt::While(w) => (w.id, w.span),
             CheckedStmt::For(f) => (f.id, f.span),
             CheckedStmt::Break(b) => (b.id, b.span),
@@ -2225,6 +2266,78 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::Match(m) => self.analyze_match(node_id, span, m),
+
+            HirExpr::Cast(HirCast { target, base }) => {
+                let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
+                let checked_base = self.analyze_expr(base)?;
+
+                if let (ResolvedType::Pointer { mutable: true, .. }, ResolvedType::Pointer { mutable: false, .. }) =
+                    (&target_type, &checked_base.r#type)
+                {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::CastToMutablePointer {
+                            from: checked_base.r#type.clone(),
+                            to: target_type.clone(),
+                        },
+                    ));
+                    return None;
+                }
+
+                let (Some(source_class), Some(target_class)) =
+                    (checked_base.r#type.cast_class(), target_type.cast_class())
+                else {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::InvalidCast { from: checked_base.r#type.clone(), to: target_type.clone() },
+                    ));
+                    return None;
+                };
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: target_type.clone(),
+                    kind: CheckedExpr::Cast(CheckedCast {
+                        kind: Self::resolve_cast_kind(source_class, target_class),
+                        target_type,
+                        base: Box::new(checked_base),
+                    }),
+                })
+            }
+        }
+    }
+
+    /// Picks the one `CastKind` a `(source, target)` `CastClass` pair needs,
+    /// purely from width/signedness -- no per-type-pair table (see
+    /// `CastClass`'s doc comment).
+    fn resolve_cast_kind(source: CastClass, target: CastClass) -> CastKind {
+        match (source, target) {
+            (CastClass::Int { width: sw, signed }, CastClass::Int { width: tw, .. }) => {
+                if sw == tw {
+                    CastKind::Reinterpret
+                } else if sw < tw {
+                    // Widening reproduces the *source's* value, so it's the
+                    // source's signedness that picks sign- vs zero-extend
+                    // (matches Rust's `as`: `-1i8 as u32 == u32::MAX`).
+                    CastKind::IntExtend { signed }
+                } else {
+                    CastKind::IntTruncate
+                }
+            }
+            (CastClass::Int { signed, .. }, CastClass::Float { .. }) => CastKind::IntToFloat { signed },
+            (CastClass::Float { .. }, CastClass::Int { signed, .. }) => CastKind::FloatToInt { signed },
+            (CastClass::Float { width: sw }, CastClass::Float { width: tw }) => {
+                if sw == tw {
+                    CastKind::Reinterpret
+                } else if sw < tw {
+                    CastKind::FloatExtend
+                } else {
+                    CastKind::FloatTruncate
+                }
+            }
         }
     }
 
@@ -2765,7 +2878,7 @@ impl<'r> Analyzer<'r> {
         Some(result_type)
     }
 
-    /// `Name { field: value; ... }` -- builds a whole struct value, or --
+    /// `Name { field = value; ... }` -- builds a whole struct value, or --
     /// when the path names an enum variant (`Enum::Variant { ... }`) -- a
     /// whole enum value, in one expression. The literal's name resolves
     /// with the same diagnostics (typo suggestions included) type positions
@@ -2845,6 +2958,68 @@ impl<'r> Analyzer<'r> {
                     span,
                     r#type: ResolvedType::Enum { cell, variant: Some(variant_index) },
                     kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }),
+                })
+            }
+            LiteralTarget::Union(resolved) => {
+                let ResolvedType::Union(cell) = &resolved else {
+                    unreachable!("LiteralTarget::Union always wraps ResolvedType::Union");
+                };
+                let declared: Vec<(Ident, ResolvedType)> = cell.borrow().fields.clone();
+                let union_name = cell.borrow().name.clone();
+
+                if lit.fields.is_empty() {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnionLiteralMissingField { r#union: union_name },
+                    ));
+                    return None;
+                }
+                if lit.fields.len() > 1 {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnionLiteralTooManyFields {
+                            r#union: union_name,
+                            fields: lit.fields.iter().map(|f| f.name.clone()).collect(),
+                        },
+                    ));
+                    return None;
+                }
+
+                let field = &lit.fields[0];
+                let found = declared
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (name, _))| name == &field.name)
+                    .map(|(index, (_, r#type))| (index, r#type.clone()));
+                let Some((field_index, expected)) = found else {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        field.name_span,
+                        AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: resolved.clone() },
+                    ));
+                    return None;
+                };
+                let value = self.analyze_expr(&field.value)?;
+                if !expected.accepts(&value.r#type) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        value.span,
+                        AnalysisErrorKind::FieldTypeMismatch {
+                            field: field.name.clone(),
+                            expected,
+                            found: value.r#type.clone(),
+                        },
+                    ));
+                    return None;
+                }
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: resolved,
+                    kind: CheckedExpr::UnionConstruct(CheckedUnionConstruct { field_index, value: Box::new(value) }),
                 })
             }
         }
@@ -3047,6 +3222,13 @@ impl<'r> Analyzer<'r> {
                     name: name.clone(),
                 },
             },
+            ResolvedType::Union(cell) => match rest.first() {
+                None => return Some(LiteralTarget::Union(r#type.clone())),
+                Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
+                    r#struct: cell.borrow().name.clone(),
+                    name: name.clone(),
+                },
+            },
             ResolvedType::Enum { cell, .. } => match rest {
                 [] => {
                     let e = cell.borrow();
@@ -3195,7 +3377,6 @@ impl<'r> Analyzer<'r> {
                 }
                 Some(vec![CheckedStmt::Return(checked)])
             }
-            HirStmt::Struct(struct_def) => self.analyze_struct_def(struct_def).map(|s| vec![CheckedStmt::Struct(s)]),
             HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w).map(Vec::from),
             HirStmt::While(w) => {
                 let checked_cond = self.analyze_expr(&w.condition)?;
@@ -3366,71 +3547,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A *locally-nested* (block-scoped, `HirStmt::Struct`) struct's method:
-    /// top-level functions/methods never reach this anymore (see
-    /// `check_function_body`) -- this is just `collect_function_signature`
-    /// (resolve the signature, bind the name) immediately followed by
-    /// checking the body against it, which is what actually fixes
-    /// self-recursion here: the function's own name is bound *before* its
-    /// body is checked, not after, so a call to itself inside that body
-    /// resolves instead of hitting `UndefinedVariable`.
-    fn analyze_function_def(&mut self, f: &HirFunctionDef) -> Option<CheckedFunctionDef> {
-        if !f.generics.is_empty() {
-            self.errors
-                .push(AnalysisError::new(f.id, f.span, AnalysisErrorKind::NestedGenericsNotSupported));
-            return None;
-        }
-        let fn_type = self.collect_function_signature(f)?;
-        self.check_function_body(f, &fn_type, f.id)
-    }
-
-    /// A *locally-nested* (block-scoped, `HirStmt::Struct`) struct
-    /// definition -- top-level structs never reach this anymore (see
-    /// `check_struct_body`). Same placeholder-before-fields shape as
-    /// `collect_struct_signature`, just without any of `local_items`'s
-    /// cross-item bookkeeping: there are no textual siblings to forward-
-    /// reference here, only (potentially) this one struct's own name, so
-    /// `in_progress` is pushed/popped directly around field resolution
-    /// rather than through `ensure_item_signature`.
-    fn analyze_struct_def(&mut self, s: &HirStructDef) -> Option<CheckedStructDef> {
-        if !s.generics.is_empty() {
-            self.errors
-                .push(AnalysisError::new(s.id, s.span, AnalysisErrorKind::NestedGenericsNotSupported));
-            return None;
-        }
-        let cell = Rc::new(RefCell::new(ResolvedStructType {
-            id: s.id,
-            name: s.name.clone(),
-            fields: vec![],
-            functions: vec![],
-        }));
-        // TODO: Make sure type does not already exist
-        self.context
-            .current_scope()
-            .defined_types
-            .insert(s.name.clone(), ResolvedType::Struct(cell.clone()));
-
-        self.in_progress.insert(s.name.clone());
-        let fields = self.analyze_struct_fields(&s.fields);
-        self.in_progress.remove(&s.name);
-        let fields = fields?;
-        cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
-
-        // Methods are bound in their own nested scope so they aren't
-        // globally callable; `resolve_type` still sees the struct's type
-        // just inserted above by walking outward through the scope stack.
-        self.context.enter_scope();
-        let functions = self.analyze_all(&s.functions, Self::analyze_function_def);
-        self.context.leave_scope();
-        let functions = functions?;
-        cell.borrow_mut().functions = functions
-            .iter()
-            .map(|f| (f.name.clone(), ResolvedMethod { decl_id: f.id, fn_type: f.fn_type() }))
-            .collect();
-
-        Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
-    }
-
     /// A function's *signature* only: param and return types, with no scope
     /// entered and no param bound by name -- binding is a body-analysis-time
     /// concern (nothing needs to call a param by name yet), so this is
@@ -3511,6 +3627,33 @@ impl<'r> Analyzer<'r> {
         self.context.leave_scope();
         let functions = functions?;
         cell.borrow_mut().functions = s
+            .functions
+            .iter()
+            .zip(functions)
+            .zip(method_ids)
+            .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
+            .collect();
+
+        Some(())
+    }
+
+    /// A union's *signature* -- identical contract to `signature_of_struct`
+    /// (see its doc comment); field overlap in storage is entirely a
+    /// codegen-layout concern, invisible at this level.
+    pub fn signature_of_union(
+        &mut self,
+        u: &HirUnionDef,
+        cell: &Rc<RefCell<ResolvedUnionType>>,
+        method_ids: &[HirId],
+    ) -> Option<()> {
+        let fields = self.analyze_struct_fields(&u.fields)?;
+        cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
+
+        self.context.enter_scope();
+        let functions = self.analyze_all(&u.functions, Self::collect_function_signature);
+        self.context.leave_scope();
+        let functions = functions?;
+        cell.borrow_mut().functions = u
             .functions
             .iter()
             .zip(functions)
@@ -3991,20 +4134,16 @@ impl<'r> Analyzer<'r> {
         self.context.enter_scope();
         let params = self.analyze_all(&f.params, Self::analyze_param);
 
-        // Saved/restored (not just set) since a struct -- and therefore its
-        // methods -- can be declared inside a function body, nesting one
-        // function's analysis inside another's; see `current_return_type`'s
-        // and `loop_stack`'s doc comments. A method's body starts with no
-        // enclosing loop of its own, regardless of whether the `struct`
-        // declaring it sits inside one.
-        let previous_return_type =
-            std::mem::replace(&mut self.current_return_type, (*fn_type.return_type).clone());
-        let previous_loop_stack = std::mem::take(&mut self.loop_stack);
-        let previous_in_defer_body = std::mem::replace(&mut self.in_defer_body, false);
+        // One `Analyzer` checks exactly one top-level item at a time (see
+        // `item_name`'s doc comment), and a struct's methods are checked
+        // sequentially, never while another method/function's body is still
+        // being analyzed -- so there's no *nesting* to protect against here,
+        // just an ordinary reset before each independent body: no enclosing
+        // loop or defer of its own, and its own declared return type.
+        self.current_return_type = (*fn_type.return_type).clone();
+        self.loop_stack.clear();
+        self.in_defer_body = false;
         let body = self.analyze_block(&f.body);
-        self.current_return_type = previous_return_type;
-        self.loop_stack = previous_loop_stack;
-        self.in_defer_body = previous_in_defer_body;
 
         self.context.leave_scope();
 
@@ -4067,6 +4206,41 @@ impl<'r> Analyzer<'r> {
         }
 
         Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
+    }
+
+    /// Checks a union's methods' *bodies* only -- identical contract to
+    /// `check_struct_body` (see its doc comment).
+    pub fn check_union_body(&mut self, u: &HirUnionDef, cell: &Rc<RefCell<ResolvedUnionType>>) -> Option<CheckedUnionDef> {
+        let fields = u
+            .fields
+            .iter()
+            .zip(cell.borrow().fields.iter())
+            .map(|(hir_field, (_, r#type))| CheckedParam {
+                id: hir_field.id,
+                span: hir_field.span,
+                ident: hir_field.ident.clone(),
+                r#type: r#type.clone(),
+            })
+            .collect();
+
+        let methods: Vec<(ResolvedFunctionType, HirId)> =
+            cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
+
+        self.context.enter_scope();
+        let mut functions = Vec::with_capacity(u.functions.len());
+        let mut ok = true;
+        for (f, (fn_type, decl_id)) in u.functions.iter().zip(methods.iter()) {
+            match self.check_function_body(f, fn_type, *decl_id) {
+                Some(checked) => functions.push(checked),
+                None => ok = false,
+            }
+        }
+        self.context.leave_scope();
+        if !ok {
+            return None;
+        }
+
+        Some(CheckedUnionDef { id: u.id, span: u.span, name: u.name.clone(), fields, functions })
     }
 }
 

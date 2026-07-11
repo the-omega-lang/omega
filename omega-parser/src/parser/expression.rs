@@ -1,7 +1,7 @@
 use crate::ast::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
     assignment::AssignmentExpr, binary_op::{BinaryOp, BinaryOpExpr}, bool_literal::BoolExpr,
-    char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
+    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, slice::SliceExpr,
@@ -110,6 +110,15 @@ fn binary_op_expr(left: ExpressionNode, op: BinaryOp, right: ExpressionNode) -> 
 /// fold-right becomes just "the operand is itself a `parse_unary` call."
 fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
+    // `<Type>base` -- a bare `<` can never start a primary expression any
+    // other way (it's only ever infix, in `parse_comparison`, or inside an
+    // already-committed generic-args parse), so this is unambiguous with no
+    // lookahead beyond "is the very next token `<`" needed. Checked before
+    // the single-token `Prefix` dispatch below since it doesn't fit that
+    // shape (a whole type, not one token, precedes the operand).
+    if p.check(&TokenKind::Lt) {
+        return parse_cast(p, start);
+    }
     enum Prefix {
         Deref,
         AddressOf { mutable: bool },
@@ -146,6 +155,19 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Prefix::Decrement => Expression::Decrement(Box::new(DecrementExpr { base })),
     };
     Some(ExpressionNode { expression, span })
+}
+
+/// `<Type>base` -- same binding tightness as `parse_unary`'s other
+/// prefixes (right-associative via recursing into `parse_unary` again for
+/// `base`), just with a whole type between the operator's `<`/`>` instead
+/// of one token.
+fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
+    p.advance(); // '<'
+    let target = crate::parser::r#type::parse_type(p)?;
+    p.expect(&TokenKind::Gt, "'>'");
+    let base = parse_unary(p)?;
+    let span = start.to(base.span);
+    Some(ExpressionNode { expression: Expression::Cast(Box::new(CastExpr { target, base })), span })
 }
 
 /// Binds tightest: `.field`, `[index]`/`[a..b]`, `(args)`, left-associative
@@ -457,11 +479,13 @@ fn recover_restricted_struct_literal(
     Some(literal)
 }
 
-/// `Name { field: value; ... }` -- the caller has already parsed `path` and
-/// confirmed both that a `{` follows and that a struct literal is allowed
-/// here (see `Parser::struct_literals_allowed`). Field initializers are
-/// `;`-terminated, deliberately mirroring struct *definition* syntax
-/// (`field: Type;` there, `field: value;` here).
+/// `Name { field = value; ... }` -- the caller has already parsed `path`
+/// and confirmed both that a `{` follows and that a struct literal is
+/// allowed here (see `Parser::struct_literals_allowed`). Field
+/// initializers are `;`-terminated, matching struct *definition* syntax's
+/// own terminator (`field: Type;` there) without borrowing its `:` --
+/// a literal's field is an assignment, not a declaration, so it uses the
+/// assignment operator instead.
 fn parse_struct_literal(
     p: &mut Parser,
     path: crate::ast::identifier::ExprPath,
@@ -472,7 +496,7 @@ fn parse_struct_literal(
     while matches!(p.peek(), TokenKind::Ident(_)) {
         let name_span = p.peek_span();
         let name = p.expect_ident()?;
-        p.expect(&TokenKind::Colon, "':'");
+        p.expect(&TokenKind::Eq, "'='");
         // Inside the literal's braces, a nested struct literal is
         // unambiguous again even if this one sits in condition position.
         let value = p.allow_struct_literals(parse_expression)?;
@@ -481,7 +505,7 @@ fn parse_struct_literal(
     }
     if !p.check(&TokenKind::RBrace) {
         p.error(ParseErrorKind::Expected {
-            expected: "a field initializer (`name: value;`) or '}'",
+            expected: "a field initializer (`name = value;`) or '}'",
             found: p.peek().describe(),
         });
         return None;
@@ -614,7 +638,7 @@ mod tests {
 
     #[test]
     fn struct_literal_parses_with_fields_in_order() {
-        let stmts = body_statements("f() => i32 { v := Vec2 { x: 1; y: 2; }; v.x }");
+        let stmts = body_statements("f() => i32 { v := Vec2 { x = 1; y = 2; }; v.x }");
         let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
         let Expression::StructLiteral(lit) = &w.value.expression else {
             panic!("expected a struct literal value")
@@ -628,7 +652,7 @@ mod tests {
     fn generic_args_commit_on_path_continuation() {
         // `Optional<u32>::Some { ... }` -- the `::` after `>` proves the
         // generic reading; the literal's path carries the args on segment 0.
-        let stmts = body_statements("f() => void { a := Optional<u32>::Some { value: 10; }; }");
+        let stmts = body_statements("f() => void { a := Optional<u32>::Some { value = 10; }; }");
         let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
         let Expression::StructLiteral(lit) = &w.value.expression else {
             panic!("expected a struct literal value")
@@ -709,7 +733,7 @@ mod tests {
     fn unambiguous_literal_in_condition_reports_dedicated_error() {
         // The `.x > 0` after the closing `}` proves the literal reading --
         // one precise error, not a cascade from mis-parsing the "body".
-        let errors = SourceModule::parse("f() => void { if Vec2 { x: 1; }.x > 0 { g(); } }")
+        let errors = SourceModule::parse("f() => void { if Vec2 { x = 1; }.x > 0 { g(); } }")
             .expect_err("must not parse");
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0].kind, ParseErrorKind::StructLiteralNotAllowedHere));
@@ -720,7 +744,7 @@ mod tests {
         // The suggested fix for the case above must itself parse. (The
         // trailing `done();` keeps the `if` in statement position rather
         // than the block's tail.)
-        let stmts = body_statements("f() => void { if (Vec2 { x: 1; }).x > 0 { g(); } done(); }");
+        let stmts = body_statements("f() => void { if (Vec2 { x = 1; }).x > 0 { g(); } done(); }");
         assert!(matches!(stmts[0], Statement::Expression(_)));
         assert_eq!(stmts.len(), 2);
     }
@@ -729,7 +753,7 @@ mod tests {
     fn literal_inside_call_arguments_in_condition_parses() {
         // Bracketed sub-contexts lift the restriction: the `{` inside
         // `check(...)`'s arguments can't be the statement's body.
-        let stmts = body_statements("f() => void { if check(Vec2 { x: 1; }) { g(); } done(); }");
+        let stmts = body_statements("f() => void { if check(Vec2 { x = 1; }) { g(); } done(); }");
         assert!(matches!(stmts[0], Statement::Expression(_)));
         assert_eq!(stmts.len(), 2);
     }

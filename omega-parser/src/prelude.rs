@@ -1,7 +1,7 @@
 pub use crate::ast::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
     assignment::AssignmentExpr, binary_op::{BinaryOp, BinaryOpExpr}, bool_literal::BoolExpr,
-    char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
+    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr,
     if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     macro_invocation::MacroInvocationExpr, match_expr::{MatchArm, MatchExpr, Pattern},
@@ -16,7 +16,7 @@ pub use crate::ast::statement::{
     extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::ImportStmt,
     macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
-    r#return::ReturnStmt, r#struct::StructStmt, while_stmt::WhileStmt,
+    r#return::ReturnStmt, r#struct::StructStmt, union::UnionStmt, while_stmt::WhileStmt,
 };
 pub use crate::ast::r#type::{FunctionType, Type};
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};

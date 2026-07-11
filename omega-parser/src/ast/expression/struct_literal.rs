@@ -2,7 +2,7 @@ use crate::ast::expression::ExpressionNode;
 use crate::ast::identifier::{ExprPath, Ident};
 use crate::diagnostics::Span;
 
-/// `Name { field: value; ... }` -- builds a whole struct value (or, when the
+/// `Name { field = value; ... }` -- builds a whole struct value (or, when the
 /// path names an enum variant -- `Enum::Variant { ... }` -- an enum value) in
 /// one expression, one initializer per field (analysis requires *every*
 /// field to be covered exactly once). Field initializers are `;`-terminated,

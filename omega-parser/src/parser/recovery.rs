@@ -100,7 +100,12 @@ pub(crate) fn skip_balanced_group(p: &mut Parser) {
 fn starts_item(kind: &TokenKind) -> bool {
     matches!(
         kind,
-        TokenKind::Extern | TokenKind::Import | TokenKind::Struct | TokenKind::Macro | TokenKind::Ident(_)
+        TokenKind::Extern
+            | TokenKind::Import
+            | TokenKind::Struct
+            | TokenKind::Union
+            | TokenKind::Macro
+            | TokenKind::Ident(_)
     )
 }
 
@@ -111,6 +116,7 @@ fn starts_statement(kind: &TokenKind) -> bool {
             | TokenKind::While
             | TokenKind::For
             | TokenKind::Struct
+            | TokenKind::Union
             | TokenKind::Return
             | TokenKind::Break
             | TokenKind::Continue

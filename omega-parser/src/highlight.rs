@@ -25,6 +25,7 @@ impl Highlighter for OmegaHighlighter {
                 | TokenKind::Return
                 | TokenKind::Struct
                 | TokenKind::Enum
+                | TokenKind::Union
                 | TokenKind::While
                 | TokenKind::For
                 | TokenKind::Break

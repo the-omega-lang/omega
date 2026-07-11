@@ -65,6 +65,33 @@ impl Hash for ResolvedStructType {
     }
 }
 
+/// A union's fields and methods, shared behind `ResolvedType::Union`'s
+/// `Rc<RefCell<_>>` for exactly the reasons `ResolvedStructType` is (see its
+/// doc comment) -- same self-reference/placeholder-then-patch handling, same
+/// nominal `PartialEq`/`Hash` below. The only real difference from a struct
+/// is semantic (fields overlap in storage instead of being laid out
+/// sequentially), which lives entirely in codegen/field-projection, not here.
+#[derive(Debug)]
+pub struct ResolvedUnionType {
+    pub id: HirId,
+    pub name: Ident,
+    pub fields: Vec<(Ident, ResolvedType)>,
+    pub functions: Vec<(Ident, ResolvedMethod)>,
+}
+
+impl PartialEq for ResolvedUnionType {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ResolvedUnionType {}
+
+impl Hash for ResolvedUnionType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
 /// An omega-style enum's fully resolved shape, shared behind
 /// `ResolvedType::Enum`'s `Rc<RefCell<_>>` for exactly the reasons
 /// `ResolvedStructType` is (see its doc comment): a variant body may point
@@ -163,6 +190,16 @@ pub enum NumericKind {
     Float(u32),
 }
 
+/// A castable type's shape, for `<Target>expr` (see `ResolvedType::cast_class`):
+/// its bit width, and (for the int family) signedness -- exactly what's
+/// needed to pick a `CastKind` between any two castable types, purely from
+/// their widths/signedness, with no per-type-pair table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastClass {
+    Int { width: u32, signed: bool },
+    Float { width: u32 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedType {
     Void,
@@ -219,6 +256,8 @@ pub enum ResolvedType {
     /// the same meaning `Pointer::mutable` does, for `slice[i] = value`.
     Slice { item: Box<ResolvedType>, mutable: bool },
     Struct(Rc<RefCell<ResolvedStructType>>),
+    /// A C/Rust-style union value -- see `ResolvedUnionType`'s doc comment.
+    Union(Rc<RefCell<ResolvedUnionType>>),
     /// An omega-style enum value. `variant` is the *statically known*
     /// variant, when there is one: `MyEnum::Second { ... }` produces a
     /// value of type `MyEnum::Second` (variant `Some(1)`), and only such a
@@ -274,6 +313,7 @@ impl Hash for ResolvedType {
                 size.hash(state);
             }
             Self::Struct(cell) => cell.borrow().hash(state),
+            Self::Union(cell) => cell.borrow().hash(state),
             Self::Enum { cell, variant } => {
                 cell.borrow().hash(state);
                 variant.hash(state);
@@ -333,6 +373,7 @@ impl std::fmt::Display for ResolvedType {
             // Only the name, never the fields -- a struct may reference
             // itself, and its name is how source refers to it anyway.
             Self::Struct(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
+            Self::Union(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
             // A refined enum type shows its known variant (`MyEnum::Second`)
             // -- that's exactly how source spells the construction that
             // produced it, and the refinement is load-bearing in the
@@ -371,6 +412,34 @@ impl ResolvedType {
             Self::F64 => NumericKind::Float(64),
             _ => return None,
         })
+    }
+
+    /// This type's shape for `<Target>expr` casting purposes -- `None` for
+    /// anything a cast can't touch at all (structs/enums/unions/slices/
+    /// `bool`/`char`/`void`/functions; see `AnalysisErrorKind::InvalidCast`).
+    /// A pointer counts as an unsigned 64-bit int -- this compiler's
+    /// existing single-target assumption (exactly matching `numeric_kind`'s
+    /// own hardcoded 64-bit `isize`/`usize` above), and literally true at
+    /// the IR level: `Codegen::pointer_type()` already returns the same
+    /// Cranelift type an ordinary 64-bit integer would. This one case is
+    /// what makes pointer<->pointer, pointer<->integer, and integer<->pointer
+    /// casts all fall out of the *same* int-to-int width rules
+    /// `Analyzer::resolve_cast_kind` applies, with no special-casing beyond
+    /// it -- `bool`/`char` are deliberately left out (matching their
+    /// existing exclusion from `numeric_kind`/arithmetic) rather than grown
+    /// into a second special case here.
+    pub fn cast_class(&self) -> Option<CastClass> {
+        if let Some(kind) = self.numeric_kind() {
+            return Some(match kind {
+                NumericKind::Signed(width) => CastClass::Int { width, signed: true },
+                NumericKind::Unsigned(width) => CastClass::Int { width, signed: false },
+                NumericKind::Float(width) => CastClass::Float { width },
+            });
+        }
+        match self {
+            Self::Pointer { .. } => Some(CastClass::Int { width: 64, signed: false }),
+            _ => None,
+        }
     }
 
     /// The inclusive `[min, max]` domain of every representable value of

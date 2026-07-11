@@ -4,7 +4,7 @@ use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer};
 use omega_analyzer::checked::{CheckedItem, CheckedModule, Storage};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
-use omega_analyzer::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType};
+use omega_analyzer::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
 use omega_analyzer::resolver::{
     GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport,
     ResolvedItem, Visibility,
@@ -179,6 +179,8 @@ pub struct Driver {
     /// serve-while-`InProgress` role (a variant body's `*MyEnum` pointer
     /// back at the enum still being collected resolves through this).
     enum_cells: HashMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
+    /// The union counterpart of `struct_cells` -- same lifecycle, same role.
+    union_cells: HashMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
     query_state: HashMap<ItemKey, QueryState>,
     /// Every item that finished its query successfully -- absent for one
     /// that's `Done` but failed (see `ensure_item`); the real diagnostics
@@ -217,6 +219,7 @@ impl Driver {
             imports: HashMap::new(),
             struct_cells: HashMap::new(),
             enum_cells: HashMap::new(),
+            union_cells: HashMap::new(),
             query_state: HashMap::new(),
             resolved_items: HashMap::new(),
             generic_instantiations: HashMap::new(),
@@ -444,6 +447,7 @@ impl Driver {
         Ok(match &hir.items[index] {
             HirItem::Struct(s) => s.generics.clone(),
             HirItem::Enum(e) => e.generics.clone(),
+            HirItem::Union(u) => u.generics.clone(),
             HirItem::FunctionDefinition(f) => f.generics.clone(),
             HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => vec![],
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
@@ -525,6 +529,17 @@ impl Driver {
             .clone()
     }
 
+    /// The union counterpart of `struct_cell` -- same creation contract (see
+    /// its doc comment).
+    fn union_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedUnionType>> {
+        self.union_cells
+            .entry(key.clone())
+            .or_insert_with(|| {
+                Rc::new(RefCell::new(ResolvedUnionType { id, name: key.1.clone(), fields: vec![], functions: vec![] }))
+            })
+            .clone()
+    }
+
     /// The one global query behind same-module resolution, cross-module
     /// resolution, and generic instantiation alike -- see
     /// `ModuleResolver::resolve_item`'s doc comment. A name already `Done`
@@ -571,6 +586,9 @@ impl Driver {
                     }
                     if let Some(cell) = self.enum_cells.get(&key) {
                         return Ok(ResolvedItem::Type(ResolvedType::Enum { cell: cell.clone(), variant: None }));
+                    }
+                    if let Some(cell) = self.union_cells.get(&key) {
+                        return Ok(ResolvedItem::Type(ResolvedType::Union(cell.clone())));
                     }
                     return Err(ResolveError::Cycle(vec![module_path.to_vec()]));
                 }
@@ -717,6 +735,22 @@ impl Driver {
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Enum { cell, variant: None }));
                 (result, errors)
             }
+            HirItem::Union(u) => {
+                let id = if type_args.is_empty() { u.id } else { self.fresh_synthetic_id() };
+                let key: ItemKey = (module_path.to_vec(), name.clone(), type_args.to_vec());
+                let cell = self.union_cell(&key, id);
+                let method_ids: Vec<HirId> = u
+                    .functions
+                    .iter()
+                    .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
+                    .collect();
+                let mut analyzer =
+                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (u.id, u.span));
+                let ok = analyzer.signature_of_union(u, &cell, &method_ids);
+                let (errors, _warnings) = analyzer.finish();
+                let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Union(cell)));
+                (result, errors)
+            }
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
         };
 
@@ -813,6 +847,19 @@ impl Driver {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
                 }
                 checked.map(|c| (CheckedItem::Enum(c), warnings))
+            }
+            HirItem::Union(u) => {
+                let cell = self.union_cells.get(&key).expect("resolved in phase 1").clone();
+                let substitution: Vec<(Ident, ResolvedType)> =
+                    u.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
+                let mut analyzer =
+                    Analyzer::new(self, module_path.to_vec(), imports, &substitution, (u.id, u.span));
+                let checked = analyzer.check_union_body(u, &cell);
+                let (errors, warnings) = analyzer.finish();
+                if !errors.is_empty() {
+                    self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+                }
+                checked.map(|c| (CheckedItem::Union(c), warnings))
             }
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
         }
@@ -1033,7 +1080,7 @@ impl ModuleResolver for Driver {
         let candidates = index
             .iter()
             .filter(|&(_, &i)| match &hir.items[i] {
-                HirItem::Struct(_) | HirItem::Enum(_) => namespace == ItemNamespace::Type,
+                HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) => namespace == ItemNamespace::Type,
                 HirItem::FunctionDefinition(_) | HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => {
                     namespace == ItemNamespace::Value
                 }

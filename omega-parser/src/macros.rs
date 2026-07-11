@@ -173,6 +173,10 @@ fn expand_item_list(
                 item: Item::Enum(expand_enum_def(e, defs, budget)?),
                 span: node.span,
             }),
+            Item::Union(u) => result.push(ItemNode {
+                item: Item::Union(expand_union_def(u, defs, budget)?),
+                span: node.span,
+            }),
             other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
                 result.push(ItemNode { item: other, span: node.span });
             }
@@ -364,6 +368,19 @@ fn expand_struct_def(
     Ok(StructStmt { functions, ..s })
 }
 
+fn expand_union_def(
+    u: UnionStmt,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
+    budget: &mut u32,
+) -> Result<UnionStmt, MacroError> {
+    let functions = u
+        .functions
+        .into_iter()
+        .map(|f| expand_function_def(f, defs, budget))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(UnionStmt { functions, ..u })
+}
+
 fn expand_enum_def(
     e: EnumStmt,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
@@ -436,7 +453,6 @@ fn expand_statement(
         }
         Statement::Break => Statement::Break,
         Statement::Continue => Statement::Continue,
-        Statement::Struct(s) => Statement::Struct(expand_struct_def(s, defs, budget)?),
         Statement::Walrus(w) => Statement::Walrus(WalrusStmt { value: expand_expr(w.value, defs, budget)?, ..w }),
         Statement::While(w) => Statement::While(WhileStmt {
             condition: expand_expr(w.condition, defs, budget)?,
@@ -502,6 +518,10 @@ fn expand_expr(
         Expression::Negate(neg) => {
             let neg = *neg;
             Expression::Negate(Box::new(NegateExpr { base: expand_expr(neg.base, defs, budget)? }))
+        }
+        Expression::Cast(cast) => {
+            let cast = *cast;
+            Expression::Cast(Box::new(CastExpr { target: cast.target, base: expand_expr(cast.base, defs, budget)? }))
         }
         Expression::Increment(incr) => {
             let incr = *incr;

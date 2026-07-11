@@ -14,15 +14,15 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
+        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
         CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedItem, CheckedMatch, CheckedMatchArm, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedWhile, NumberValue, Storage,
+        CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedUnionConstruct, CheckedWhile, CastKind, NumberValue, Storage,
     },
     resolved_type::{
         ConstValue, NumericKind, ResolvedEnumType, ResolvedFunctionType, ResolvedStructType,
-        ResolvedType,
+        ResolvedType, ResolvedUnionType,
     },
 };
 use omega_hir::{BinaryOp, HirId};
@@ -171,6 +171,13 @@ impl IntoIRType for ResolvedType {
                 .iter()
                 .flat_map(|x| x.1.clone().into_ir_type(codegen))
                 .collect(),
+            // Every field overlaps the same storage -- exactly the shape a
+            // single enum variant's payload has (see `enum_payload_bytes`'s
+            // doc comment), so this reuses the same opaque-chunk flattening,
+            // with no tag/header leaves in front of it.
+            ResolvedType::Union(union_type) => {
+                payload_chunks(union_bytes(&union_type.borrow(), codegen))
+            }
             // An enum value is `[tag][header fields][payload]` -- the tag
             // and header flatten like ordinary struct fields, while the
             // payload (a union of every variant's body, sized to the
@@ -272,6 +279,14 @@ fn enum_payload_bytes(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
         .unwrap_or(0)
 }
 
+/// The size of a union's storage: its largest field, in packed bytes -- `0`
+/// for a union with no fields at all. See `enum_payload_bytes`, whose shape
+/// this mirrors exactly (a union's whole body plays the same role a single
+/// enum variant's body does).
+fn union_bytes(union_type: &ResolvedUnionType, codegen: &Codegen) -> u32 {
+    union_type.fields.iter().map(|(_, r#type)| total_bytes(r#type.clone(), codegen)).max().unwrap_or(0)
+}
+
 /// Decomposes an enum's payload region into opaque integer leaves covering
 /// exactly `bytes` -- as many `i64`s as fit, then one `i32`/`i16`/`i8` as
 /// needed. Deterministic and layout-only: these leaves exist so the payload
@@ -346,12 +361,7 @@ fn enum_body_field_offset(
 /// from any expression position -- so a narrower walk here would silently
 /// miss allocating (and zero-initializing) that defer's flag, which the
 /// epilogue would then either panic looking up or -- undetected -- skip
-/// running entirely. The only deliberate exclusion is `CheckedStmt::
-/// Struct`'s `.functions`: a locally-nested struct's methods are
-/// independent function scopes, matching `process_statement`'s own
-/// `CheckedStmt::Struct(_) => false // Only analysis is necessary` --
-/// codegen never touches their bodies from the enclosing function's pass
-/// regardless.
+/// running entirely.
 fn collect_defer_ids(block: &CheckedBlock, out: &mut Vec<HirId>) {
     for stmt in &block.stmts {
         collect_defer_ids_stmt(stmt, out);
@@ -365,9 +375,6 @@ fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<HirId>) {
     match stmt {
         CheckedStmt::Declaration(_) | CheckedStmt::ExternDeclaration(_) | CheckedStmt::Break(_)
         | CheckedStmt::Continue(_) => {}
-        // Independent function scope -- never recursed into, see this
-        // function's doc comment.
-        CheckedStmt::Struct(_) => {}
         CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_defer_ids_expr(e, out),
         CheckedStmt::While(w) => {
             collect_defer_ids_expr(&w.condition, out);
@@ -458,6 +465,8 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
                 collect_defer_ids(else_branch, out);
             }
         }
+        CheckedExpr::Cast(cast) => collect_defer_ids_expr(&cast.base, out),
+        CheckedExpr::UnionConstruct(construct) => collect_defer_ids_expr(&construct.value, out),
     }
 }
 
@@ -611,6 +620,25 @@ impl Codegen {
                             offset: offset + field_byte_offset(&struct_type, *index, self),
                         },
                     };
+                    current_type = r#type.clone();
+                }
+
+                // Every field lives at offset 0 (see
+                // `CheckedProjection::UnionField`'s doc comment) -- the only
+                // real work here is spilling an SSA-value-backed union to
+                // memory first (mirrors `EnumBody`'s identical spill, for the
+                // identical reason: no leaf slice can reinterpret one field's
+                // real shape out of the union's own opaque payload chunks),
+                // then letting `current_type` advance to the field's type.
+                CheckedProjection::UnionField { r#type, .. } => {
+                    if let PlaceStorage::Values(values) = &current {
+                        let size = total_bytes(current_type.clone(), self);
+                        let slot = builder
+                            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                        let spilled = PlaceStorage::Slot { slot, offset: 0 };
+                        self.store_scalars(builder, &spilled, &values.clone());
+                        current = spilled;
+                    }
                     current_type = r#type.clone();
                 }
 
@@ -1674,6 +1702,46 @@ impl Codegen {
 
                 vec![new_ptr, new_len]
             }
+
+            CheckedExpr::Cast(CheckedCast { kind, target_type, base }) => {
+                let value = self.process_expr(builder, *base)[0];
+                let target_ir = target_type.into_ir_type(self)[0];
+                let result = match kind {
+                    CastKind::Reinterpret => value,
+                    CastKind::IntExtend { signed: true } => builder.ins().sextend(target_ir, value),
+                    CastKind::IntExtend { signed: false } => builder.ins().uextend(target_ir, value),
+                    CastKind::IntTruncate => builder.ins().ireduce(target_ir, value),
+                    CastKind::IntToFloat { signed: true } => builder.ins().fcvt_from_sint(target_ir, value),
+                    CastKind::IntToFloat { signed: false } => builder.ins().fcvt_from_uint(target_ir, value),
+                    CastKind::FloatToInt { signed: true } => builder.ins().fcvt_to_sint_sat(target_ir, value),
+                    CastKind::FloatToInt { signed: false } => builder.ins().fcvt_to_uint_sat(target_ir, value),
+                    CastKind::FloatExtend => builder.ins().fpromote(target_ir, value),
+                    CastKind::FloatTruncate => builder.ins().fdemote(target_ir, value),
+                };
+                vec![result]
+            }
+
+            CheckedExpr::UnionConstruct(CheckedUnionConstruct { field_index: _, value }) => {
+                // Mirrors `EnumConstruct`'s shape (anonymous slot, zero the
+                // whole region deterministically, store the one field's
+                // scalars, read the whole thing back as flattened leaves) --
+                // minus the tag/header steps, since a union has neither.
+                let total = total_bytes(node.r#type.clone(), self);
+                let slot = builder
+                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
+
+                let mut chunk_offset = 0u32;
+                for chunk in node.r#type.clone().into_ir_type(self) {
+                    let zero = builder.ins().iconst(chunk, 0);
+                    builder.ins().stack_store(zero, slot, chunk_offset as i32);
+                    chunk_offset += chunk.bytes();
+                }
+
+                let values = self.process_expr(builder, *value);
+                self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &values);
+
+                self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &node.r#type)
+            }
         }
     }
 
@@ -1710,7 +1778,6 @@ impl Codegen {
                 self.process_decl(builder, decl);
                 false
             }
-            CheckedStmt::Struct(_) => false, // Only analysis is necessary
             CheckedStmt::ExternDeclaration(_) => {
                 todo!("extern declarations inside a function body are not yet implemented");
             }
@@ -2018,6 +2085,12 @@ impl Codegen {
                     self.declare_function_def(f, mangled);
                 }
             }
+            CheckedItem::Union(u) => {
+                for f in &u.functions {
+                    let mangled = Self::mangled_method_symbol(path, &u.name, &f.name, f.id);
+                    self.declare_function_def(f, mangled);
+                }
+            }
             CheckedItem::Declaration(_) => {
                 todo!("global data declarations are not yet implemented");
             }
@@ -2039,6 +2112,11 @@ impl Codegen {
             }
             CheckedItem::Enum(e) => {
                 for f in e.functions {
+                    self.define_function_def(f);
+                }
+            }
+            CheckedItem::Union(u) => {
+                for f in u.functions {
                     self.define_function_def(f);
                 }
             }

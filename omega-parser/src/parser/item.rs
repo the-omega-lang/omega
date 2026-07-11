@@ -3,6 +3,7 @@ use crate::ast::statement::{
     Item, ItemNode, declaration::DeclarationStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     function_definition::FunctionDefinitionStmt, import::ImportStmt, r#struct::StructStmt,
+    union::UnionStmt,
 };
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
@@ -42,6 +43,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         }
         TokenKind::Struct => Item::Struct(parse_struct_def(p)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p)?),
+        TokenKind::Union => Item::Union(parse_union_def(p)?),
         TokenKind::Macro => Item::MacroDefinition(parse_macro_definition(p)?),
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
             let inv = parse_macro_invocation(p)?;
@@ -199,6 +201,39 @@ pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
 
     p.expect(&TokenKind::RBrace, "'}'");
     Some(StructStmt { ident, generics, fields, functions })
+}
+
+/// `union Name<T, ...> { field: Type; ... method(...) => T { ... } ... }`
+/// -- identical shape and parsing strategy to `parse_struct_def`; the only
+/// difference is semantic (fields overlap in storage instead of being laid
+/// out sequentially), which is entirely an analyzer/codegen concern.
+pub fn parse_union_def(p: &mut Parser) -> Option<UnionStmt> {
+    p.expect(&TokenKind::Union, "'union'");
+    let ident = p.expect_ident()?;
+    let generics = parse_optional_generics(p)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+
+    let mut fields = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
+        match parse_declaration(p) {
+            Some(decl) => {
+                fields.push(decl);
+                p.expect_terminator(&TokenKind::Semi, "';'");
+            }
+            None => recovery::synchronize_to_statement_boundary(p),
+        }
+    }
+
+    let mut functions = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) {
+        match parse_function_definition(p) {
+            Some(f) => functions.push(f),
+            None => recovery::synchronize_to_statement_boundary(p),
+        }
+    }
+
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(UnionStmt { ident, generics, fields, functions })
 }
 
 /// `enum Name<T, ...>(header) { Variant(args) { fields }, ...; functions }`

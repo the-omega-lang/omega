@@ -71,19 +71,16 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
         return parse_walrus_or_declaration(p, true);
     }
     match p.peek() {
-        TokenKind::Struct => Some((Statement::Struct(crate::parser::item::parse_struct_def(p)?), true)),
+        TokenKind::Struct => {
+            reject_local_type_decl(p, ParseErrorKind::StructNotAllowedHere);
+            None
+        }
         TokenKind::Enum => {
-            // Report once, then skip the whole declaration (name, optional
-            // header, braced body) wholesale -- leaving its remains for
-            // generic recovery would cascade into spurious errors.
-            p.error(ParseErrorKind::EnumNotAllowedHere);
-            p.advance(); // 'enum'
-            while !matches!(p.peek(), TokenKind::LBrace | TokenKind::RBrace | TokenKind::Eof) {
-                p.advance();
-            }
-            if p.check(&TokenKind::LBrace) {
-                recovery::skip_balanced_group(p);
-            }
+            reject_local_type_decl(p, ParseErrorKind::EnumNotAllowedHere);
+            None
+        }
+        TokenKind::Union => {
+            reject_local_type_decl(p, ParseErrorKind::UnionNotAllowedHere);
             None
         }
         TokenKind::While => Some((Statement::While(parse_while(p)?), true)),
@@ -111,6 +108,23 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             let block_shaped = matches!(expr.expression, Expression::Codeblock(_) | Expression::If(_));
             Some((Statement::Expression(expr), block_shaped))
         }
+    }
+}
+
+/// `struct`/`enum` (or, one day, any other type-defining keyword) in
+/// statement position: both are top-level-only, so this reports `kind`
+/// once, then skips the whole declaration (name, optional header, braced
+/// body) wholesale -- leaving its remains for generic recovery would
+/// cascade into spurious errors -- and lets the caller treat this exactly
+/// like any other unparseable statement (`None`).
+fn reject_local_type_decl(p: &mut Parser, kind: ParseErrorKind) {
+    p.error(kind);
+    p.advance(); // 'struct'/'enum'
+    while !matches!(p.peek(), TokenKind::LBrace | TokenKind::RBrace | TokenKind::Eof) {
+        p.advance();
+    }
+    if p.check(&TokenKind::LBrace) {
+        recovery::skip_balanced_group(p);
     }
 }
 

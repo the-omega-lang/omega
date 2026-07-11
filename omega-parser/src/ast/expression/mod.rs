@@ -3,6 +3,7 @@ pub mod array_literal;
 pub mod assignment;
 pub mod binary_op;
 pub mod bool_literal;
+pub mod cast;
 pub mod char_literal;
 pub mod codeblock;
 pub mod deref;
@@ -22,7 +23,7 @@ pub mod struct_literal;
 use crate::ast::identifier::ExprPath;
 use crate::ast::expression::{
     address_of::AddressOfExpr, array_literal::ArrayLiteralExpr, assignment::AssignmentExpr,
-    binary_op::BinaryOpExpr, bool_literal::BoolExpr, char_literal::CharExpr,
+    binary_op::BinaryOpExpr, bool_literal::BoolExpr, cast::CastExpr, char_literal::CharExpr,
     codeblock::CodeblockExpr, deref::DerefExpr, field_access::FieldAccessExpr,
     function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
     index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
@@ -48,6 +49,8 @@ pub enum Expression {
     Deref(Box<DerefExpr>),
     AddressOf(Box<AddressOfExpr>),
     Negate(Box<NegateExpr>),
+    /// `<Type>base` -- see `CastExpr`'s doc comment.
+    Cast(Box<CastExpr>),
     Increment(Box<IncrementExpr>),
     Decrement(Box<DecrementExpr>),
     BinaryOp(Box<BinaryOpExpr>),
@@ -61,7 +64,7 @@ pub enum Expression {
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
     ArrayLiteral(ArrayLiteralExpr),
-    /// `Name { field: value; ... }` -- see `StructLiteralExpr`'s doc comment.
+    /// `Name { field = value; ... }` -- see `StructLiteralExpr`'s doc comment.
     StructLiteral(StructLiteralExpr),
     Slice(Box<SliceExpr>),
     /// `name!(arg, ...)` -- expanded away entirely by

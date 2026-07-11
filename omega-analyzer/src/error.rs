@@ -206,12 +206,6 @@ pub enum AnalysisErrorKind {
     /// for this declared generic parameter -- it never appeared (in a
     /// structurally recognizable position) in any of the call's arguments.
     UnresolvedGenericParam(Ident),
-    /// A struct or function declared with generic parameters (`<T, ...>`)
-    /// inside a function body (a locally-nested `HirStmt::Struct`, or one of
-    /// its methods) -- generics are only supported on top-level items, which
-    /// have a stable cross-module identity to key an instantiation by;
-    /// a locally-nested definition has none.
-    NestedGenericsNotSupported,
     /// `defer` lexically inside a `while`/`for` loop body -- out of scope for
     /// now. A `defer`'s "was this reached" tracking is a single runtime
     /// boolean flag (see `omega_codegen`'s `defer_flags`), which can't
@@ -229,8 +223,8 @@ pub enum AnalysisErrorKind {
     /// call already, and there is no useful "defer whose scope is another
     /// defer's body" to speak of, only the enclosing function's exit.
     NestedDeferNotSupported,
-    /// `Name { field: value; ... }` where `Name` resolves to a type that
-    /// isn't a struct (a primitive, an array, ...).
+    /// `Name { field = value; ... }` where `Name` resolves to a type that
+    /// isn't a struct or union (a primitive, an array, ...).
     StructLiteralNotAStruct { found: ResolvedType },
     /// A struct literal setting the same field twice. `previous` is the
     /// first initializer's span -- rendered as a "first set here" label.
@@ -380,6 +374,29 @@ pub enum AnalysisErrorKind {
     /// (a `*T` pointer stays unwritable no matter how the binding holding
     /// it was declared).
     NotMutablePointer,
+
+    // -- unions --
+    /// `Union { }` -- a union literal setting no field at all; unlike a
+    /// struct, there's no "every field" to zero-init, and unlike an enum
+    /// variant, there's no tag to pick a default from -- exactly one field
+    /// must be named so the write actually has a well-defined shape.
+    UnionLiteralMissingField { r#union: Ident },
+    /// `Union { a = 1; b = 2; }` -- a union literal setting more than one
+    /// field; they'd overlap the same storage, so only one write is ever
+    /// meaningful. `fields` lists every field name that was set, in source
+    /// order.
+    UnionLiteralTooManyFields { r#union: Ident, fields: Vec<Ident> },
+
+    // -- casting --
+    /// `<Type>expr` where either side isn't castable at all -- scoped to
+    /// numeric types and pointers (see `ResolvedType::cast_class`);
+    /// structs/enums/unions/slices/`bool`/`char` have no cast support.
+    InvalidCast { from: ResolvedType, to: ResolvedType },
+    /// `<*mut T>expr` where `expr`'s own pointer type is immutable (`*T`,
+    /// not `*mut T`) -- the same directional rule `ResolvedType::accepts`
+    /// already applies to pointer coercion, checked here at a cast site
+    /// instead of a call/assignment site.
+    CastToMutablePointer { from: ResolvedType, to: ResolvedType },
 }
 
 impl AnalysisErrorKind {
@@ -532,9 +549,6 @@ impl AnalysisErrorKind {
             Self::UnresolvedGenericParam(name) => d
                 .with_label(span, format!("cannot deduce `{}` from this call's arguments", name.as_ref()))
                 .with_note("a generic function's type parameters are deduced from its argument types only"),
-            Self::NestedGenericsNotSupported => d
-                .with_label(span, "generic parameters are not allowed here")
-                .with_note("generics are only supported on top-level structs and functions"),
             Self::DeferInsideLoopNotSupported => d
                 .with_label(span, "`defer` cannot appear inside a loop body")
                 .with_help("move the `defer` outside the loop, or run the cleanup code directly"),
@@ -545,8 +559,8 @@ impl AnalysisErrorKind {
                 .with_label(span, "`defer` cannot appear inside another `defer` body")
                 .with_note("a defer's body already runs exactly once, at function exit"),
             Self::StructLiteralNotAStruct { found } => d
-                .with_label(span, format!("`{found}` is not a struct"))
-                .with_note("only struct types can be built with `Name { field: value; ... }`"),
+                .with_label(span, format!("`{found}` is not a struct or union"))
+                .with_note("only struct and union types can be built with `Name { field = value; ... }`"),
             Self::DuplicateFieldInitializer { field, previous } => d
                 .with_label(span, format!("`{}` set again here", field.as_ref()))
                 .with_secondary_label(*previous, format!("`{}` first set here", field.as_ref())),
@@ -720,6 +734,18 @@ impl AnalysisErrorKind {
             Self::NotMutablePointer => d
                 .with_label(span, "this pointer's pointee is immutable")
                 .with_help("use `*mut T` instead of `*T`, and `&mut` to create one"),
+            Self::UnionLiteralMissingField { r#union } => d
+                .with_label(span, "no field set")
+                .with_help(format!("set exactly one of `{}`'s fields", r#union.as_ref())),
+            Self::UnionLiteralTooManyFields { r#union, fields } => d
+                .with_label(span, format!("{} set, but a union literal may only set one", field_list(fields)))
+                .with_help(format!("`{}`'s fields overlap the same storage; pick exactly one", r#union.as_ref())),
+            Self::InvalidCast { from, to } => d
+                .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
+                .with_note("casts are only supported between numeric types and pointers"),
+            Self::CastToMutablePointer { from, to } => d
+                .with_label(span, format!("cannot cast '{from}' to '{to}'"))
+                .with_help("a pointer cast can only target `*mut T` if the source is already `*mut`"),
         }
     }
 }
@@ -951,9 +977,6 @@ impl fmt::Display for AnalysisErrorKind {
                 "cannot infer type parameter '{}' from this call's arguments",
                 ident.as_ref()
             ),
-            Self::NestedGenericsNotSupported => {
-                write!(f, "generics are not supported on locally-nested structs/functions")
-            }
             Self::DeferInsideLoopNotSupported => {
                 write!(f, "'defer' is not supported inside a loop body")
             }
@@ -974,7 +997,7 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "missing {} in initializer of '{}'", field_list(missing), r#struct.as_ref())
             }
             Self::NoSuchStructFunction { r#struct, function, .. } => {
-                write!(f, "no function '{}' on struct '{}'", function.as_ref(), r#struct.as_ref())
+                write!(f, "no function '{}' on '{}'", function.as_ref(), r#struct.as_ref())
             }
             Self::MemberFunctionWithoutInstance { r#struct, function } => write!(
                 f,
@@ -1100,6 +1123,16 @@ impl fmt::Display for AnalysisErrorKind {
             Self::MatchArmTypeMismatch { .. } => write!(f, "'match' arms have incompatible types"),
             Self::NotMutableBinding { ident } => write!(f, "cannot mutate '{}': not declared 'mut'", ident.as_ref()),
             Self::NotMutablePointer => write!(f, "cannot mutate through an immutable pointer"),
+            Self::UnionLiteralMissingField { r#union } => {
+                write!(f, "union literal for '{}' sets no field", r#union.as_ref())
+            }
+            Self::UnionLiteralTooManyFields { r#union, .. } => {
+                write!(f, "union literal for '{}' sets more than one field", r#union.as_ref())
+            }
+            Self::InvalidCast { from, to } => write!(f, "cannot cast '{from}' to '{to}'"),
+            Self::CastToMutablePointer { from, to } => {
+                write!(f, "cannot cast '{from}' to '{to}': target is a mutable pointer")
+            }
         }
     }
 }

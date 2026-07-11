@@ -20,6 +20,7 @@ pub enum HirItem {
     FunctionDefinition(HirFunctionDef),
     Struct(HirStructDef),
     Enum(HirEnumDef),
+    Union(HirUnionDef),
     Import(HirImport),
 }
 
@@ -116,6 +117,20 @@ pub struct HirStructDef {
     pub functions: Vec<HirFunctionDef>,
 }
 
+/// A C/Rust-style union -- see `omega_parser::ast::statement::union::
+/// UnionStmt`'s doc comment; structurally identical to `HirStructDef`
+/// (fields overlap in storage instead of being laid out sequentially is
+/// entirely an analyzer/codegen concern, not a lowering one).
+#[derive(Debug, Clone)]
+pub struct HirUnionDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub generics: Vec<Ident>,
+    pub fields: Vec<HirParam>,
+    pub functions: Vec<HirFunctionDef>,
+}
+
 /// An omega-style enum -- see `omega_parser::ast::statement::r#enum::
 /// EnumStmt`'s doc comment for the full language shape. Carried raw like
 /// every other HIR node: whether the header's first entry is a valid
@@ -166,7 +181,6 @@ pub enum HirStmt {
     ExternDeclaration(HirExternDeclaration),
     Expression(HirExprNode),
     Return(HirExprNode),
-    Struct(HirStructDef),
     WalrusDeclaration(HirWalrusDeclaration),
     While(HirWhile),
     For(HirFor),
@@ -301,7 +315,7 @@ pub enum HirExpr {
     /// element type, and therefore the whole literal's `ResolvedType`, is
     /// only known once semantic analysis has typed every element.
     ArrayLiteral(Vec<HirExprNode>),
-    /// `Name { field: value; ... }` -- a whole struct value built in one
+    /// `Name { field = value; ... }` -- a whole struct value built in one
     /// expression. Carried raw (`path` unresolved, fields by name), same
     /// philosophy as every other HIR node: whether `path` names a struct,
     /// whether every field exists and is covered exactly once, and each
@@ -310,6 +324,18 @@ pub enum HirExpr {
     Slice(HirSlice),
     /// See `HirMatch`'s doc comment.
     Match(HirMatch),
+    /// `<Type>base` -- `target` is carried raw and unresolved, same
+    /// philosophy as every other HIR node: whether it's actually castable
+    /// (and, if so, exactly which conversion it needs) is analysis's
+    /// question (see `omega_analyzer::resolved_type::ResolvedType::cast_class`).
+    Cast(HirCast),
+}
+
+/// See `HirExpr::Cast`.
+#[derive(Debug, Clone)]
+pub struct HirCast {
+    pub target: Type,
+    pub base: Box<HirExprNode>,
 }
 
 /// See `HirExpr::StructLiteral`.
