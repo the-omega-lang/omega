@@ -45,6 +45,14 @@ struct ResolvedCallee {
     callee: CheckedExprNode,
     fn_type: ResolvedFunctionType,
     implicit_self: Option<CheckedExprNode>,
+    /// `Some` only when `method` named 2+ overloaded candidates -- overload
+    /// resolution (`Analyzer::resolve_overload`) already had to fully
+    /// analyze (and pick the concrete type of) every user-written argument
+    /// itself, to score candidates, so those are handed back here instead
+    /// of asking `FunctionCall`'s own argument loop to redo (and
+    /// potentially re-error on) the same work. `None` -- the overwhelming
+    /// majority of calls -- means the ordinary loop runs exactly as before.
+    checked_args: Option<Vec<CheckedExprNode>>,
 }
 
 /// What a `Name { ... }` literal's path resolved to -- see
@@ -140,6 +148,44 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::Enum(e) => (e.id, e.span),
         HirItem::Union(u) => (u.id, u.span),
         HirItem::Import(i) => (i.id, i.span),
+    }
+}
+
+/// The pure parse-and-range-check core behind a number literal's concrete
+/// value -- no `Span`/error-pushing, just `Err(())` on failure, so this is
+/// equally usable from `Analyzer::analyze_number`'s real (error-reporting)
+/// path and from overload-viability scoring's *silent* "would this literal
+/// fit this candidate" check (a rejected candidate must never push a
+/// speculative error). `kind` is whatever concrete numeric type the caller
+/// already decided on (explicit suffix, inferred from context, or the
+/// plain i32/f64 default) -- this never picks the type itself, only
+/// validates the literal's digits against it.
+fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue, ()> {
+    match kind {
+        NumericKind::Float(width) => {
+            let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
+            let parsed = text.parse::<f64>().map_err(|_| ())?;
+            if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
+                return Err(());
+            }
+            Ok(NumberValue::Float(parsed))
+        }
+        NumericKind::Signed(width) => {
+            let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
+            let max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
+            if parsed > max {
+                return Err(());
+            }
+            Ok(NumberValue::Signed(parsed as i64))
+        }
+        NumericKind::Unsigned(width) => {
+            let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
+            let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+            if parsed > max {
+                return Err(());
+            }
+            Ok(NumberValue::Unsigned(parsed))
+        }
     }
 }
 
@@ -592,7 +638,13 @@ impl<'r> Analyzer<'r> {
     /// detect a member call (`base.method(args)`) before committing to
     /// resolving `field` as an ordinary field access. A field with this name
     /// always shadows a method with the same name.
-    fn find_method(&self, current_type: &ResolvedType, field: &Ident) -> Option<ResolvedMethod> {
+    /// Every method named `field` on `current_type` (after at most one
+    /// pointer deref) -- usually zero or one, but two or more is a valid
+    /// overload set (see `Analyzer::resolve_overload`, which the two call
+    /// sites route a multi-candidate result through). A field with this
+    /// name always shadows every same-named method, exactly like a single
+    /// method would have.
+    fn find_methods(&self, current_type: &ResolvedType, field: &Ident) -> Vec<ResolvedMethod> {
         let dereffed = match current_type {
             ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
             other => other,
@@ -601,13 +653,14 @@ impl<'r> Analyzer<'r> {
             ResolvedType::Struct(struct_type) => {
                 let struct_type = struct_type.borrow();
                 if struct_type.fields.iter().any(|(name, _)| name == field) {
-                    return None;
+                    return Vec::new();
                 }
                 struct_type
                     .functions
                     .iter()
-                    .find(|(name, _)| name == field)
+                    .filter(|(name, _)| name == field)
                     .map(|(_, method)| method.clone())
+                    .collect()
             }
             ResolvedType::Enum { cell, variant } => {
                 // Anything reachable as a field on *this* value (`tag`,
@@ -618,25 +671,23 @@ impl<'r> Analyzer<'r> {
                     || e.header.iter().any(|(name, _)| name == field)
                     || variant.is_some_and(|i| e.variants[i].fields.iter().any(|(name, _)| name == field));
                 if shadowed {
-                    return None;
+                    return Vec::new();
                 }
-                e.functions
-                    .iter()
-                    .find(|(name, _)| name == field)
-                    .map(|(_, method)| method.clone())
+                e.functions.iter().filter(|(name, _)| name == field).map(|(_, method)| method.clone()).collect()
             }
             ResolvedType::Union(union_type) => {
                 let union_type = union_type.borrow();
                 if union_type.fields.iter().any(|(name, _)| name == field) {
-                    return None;
+                    return Vec::new();
                 }
                 union_type
                     .functions
                     .iter()
-                    .find(|(name, _)| name == field)
+                    .filter(|(name, _)| name == field)
                     .map(|(_, method)| method.clone())
+                    .collect()
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 
@@ -710,6 +761,26 @@ impl<'r> Analyzer<'r> {
         absolute: Vec<Ident>,
         unqualified: Option<&Ident>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        // A bare (uncalled) reference to an overloaded name -- `resolve_item`
+        // would otherwise silently resolve it to whichever candidate the
+        // driver happens to index first (see `ModuleResolver::resolve_item`'s
+        // single-result contract, which has no way to pick one at all). Only
+        // a call site (`resolve_overloaded_call`) has the argument types
+        // needed to disambiguate, so anywhere else this is unconditionally
+        // ambiguous -- reported with every candidate listed, no winner.
+        if let Some((name, module_path)) = absolute.split_last()
+            && let Ok(Some(candidates)) = self.resolver.function_overload_signatures(module_path, name)
+        {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::AmbiguousOverload {
+                    name: name.clone(),
+                    candidates: candidates.into_iter().map(|(_, t)| t).collect(),
+                },
+            ));
+            return None;
+        }
         match self.resolver.resolve_item(&absolute, &[], true) {
             Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
                 let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
@@ -1156,7 +1227,7 @@ impl<'r> Analyzer<'r> {
                 (root, r#type, false)
             }
             HirPlaceRoot::Expr(expr) => {
-                let checked_expr = self.analyze_expr(expr)?;
+                let checked_expr = self.analyze_expr(expr, None)?;
                 let r#type = checked_expr.r#type.clone();
                 (CheckedPlaceRoot::Expr(Box::new(checked_expr)), r#type, false)
             }
@@ -1176,7 +1247,7 @@ impl<'r> Analyzer<'r> {
                     )?;
                 }
                 HirProjection::Index(index_expr) => {
-                    let checked_index = self.analyze_expr(index_expr)?;
+                    let checked_index = self.analyze_expr(index_expr, None)?;
                     // `Array` (the legacy thin-pointer unsized form, e.g.
                     // `argv`) and `SizedArray` are indexable inline storage
                     // (mutability unchanged); `Slice` is a fat pointer whose
@@ -1223,7 +1294,7 @@ impl<'r> Analyzer<'r> {
         Some((CheckedPlace { root, projections }, current_type, mutable))
     }
 
-    fn resolve_callee(&mut self, callee: &HirExprNode) -> Option<ResolvedCallee> {
+    fn resolve_callee(&mut self, callee: &HirExprNode, args: &[HirExprNode]) -> Option<ResolvedCallee> {
         if let HirExpr::Place(place) = &callee.expr
             && let Some(HirProjection::FieldAccess(field)) = place.projections.last()
         {
@@ -1233,12 +1304,39 @@ impl<'r> Analyzer<'r> {
             };
             let (checked_base, base_type, base_mutable) = self.analyze_place(callee.id, callee.span, &base_place)?;
 
-            if let Some(method) = self.find_method(&base_type, field) {
+            let methods = self.find_methods(&base_type, field);
+            if !methods.is_empty() {
                 // A function declared without `self` is static -- reached
                 // through the struct's name (`MyStruct::f()`), never through
                 // an instance; prepending an implicit `self` argument it has
                 // no parameter for could only produce nonsense downstream.
-                if !method.fn_type.is_member_function {
+                // Only the *member* candidates are even callable this way,
+                // so overload resolution (when there's more than one) never
+                // needs to consider the static ones at all.
+                let member_methods: Vec<ResolvedMethod> =
+                    methods.into_iter().filter(|m| m.fn_type.is_member_function).collect();
+
+                let (method, checked_args) = if member_methods.len() > 1 {
+                    // Scored without each candidate's own synthesized `self`
+                    // param -- `args` is the call's user-written arguments
+                    // only, `self` is never itself overload-distinguishing
+                    // (every member candidate has exactly one, always
+                    // viable). The winning candidate's *real* (with-`self`)
+                    // signature is read back from `member_methods` by index
+                    // right after.
+                    let candidates: Vec<(HirId, ResolvedFunctionType)> = member_methods
+                        .iter()
+                        .map(|m| {
+                            let mut sans_self = m.fn_type.clone();
+                            sans_self.params = sans_self.params[1..].to_vec();
+                            (m.decl_id, sans_self)
+                        })
+                        .collect();
+                    let (winner, checked) = self.resolve_overload(callee.id, callee.span, field, &candidates, args)?;
+                    (member_methods[winner].clone(), Some(checked))
+                } else if let Some(only) = member_methods.into_iter().next() {
+                    (only, None)
+                } else {
                     let dereffed = match &base_type {
                         ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
                         other => other,
@@ -1247,7 +1345,7 @@ impl<'r> Analyzer<'r> {
                         ResolvedType::Struct(cell) => cell.borrow().name.clone(),
                         ResolvedType::Union(cell) => cell.borrow().name.clone(),
                         ResolvedType::Enum { cell, .. } => cell.borrow().name.clone(),
-                        _ => unreachable!("find_method only ever finds methods on struct/union/enum types"),
+                        _ => unreachable!("find_methods only ever finds methods on struct/union/enum types"),
                     };
                     self.errors.push(AnalysisError::new(
                         callee.id,
@@ -1255,7 +1353,7 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::StaticFunctionOnInstance { r#struct, function: field.clone() },
                     ));
                     return None;
-                }
+                };
 
                 // `self`'s own declared type (always the first param, a
                 // synthesized `*Self`/`*mut Self` -- see
@@ -1327,6 +1425,7 @@ impl<'r> Analyzer<'r> {
                     callee: callee_expr,
                     fn_type: method.fn_type,
                     implicit_self: Some(self_arg),
+                    checked_args,
                 });
             }
 
@@ -1354,16 +1453,311 @@ impl<'r> Analyzer<'r> {
                     .push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::UnresolvedCallee));
                 return None;
             };
-            return Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None });
+            return Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None, checked_args: None });
         }
 
-        let checked_callee = self.analyze_expr(callee)?;
+        let checked_callee = self.analyze_expr(callee, None)?;
         let ResolvedType::Function(fn_type) = checked_callee.r#type.clone() else {
             self.errors
                 .push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::UnresolvedCallee));
             return None;
         };
-        Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None })
+        Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None, checked_args: None })
+    }
+
+    /// If `call`'s callee is `Type::function(args)` -- a static function
+    /// reached through a struct/enum/union's own name, never an instance --
+    /// where `function` names 2+ overloaded (non-member) candidates,
+    /// resolves the whole call here via the same `resolve_overload`
+    /// machinery `resolve_callee`'s method-call branch uses, with the
+    /// identical `Option<Option<_>>` "handled or fall through" convention.
+    /// Returns plain `None` for anything that isn't this exact shape --
+    /// most importantly a name with 0 or 1 static candidates, which falls
+    /// through to `resolve_type_member`'s existing, completely unchanged
+    /// single-candidate path. Deliberately scoped to a *locally visible*
+    /// type name (this module's own, or an imported alias) -- a deeper
+    /// module-qualified type path (`module::Type::function`) still resolves
+    /// correctly through the ordinary path, just without overload
+    /// disambiguation (an intentionally narrow, documented gap: this shape
+    /// is rare enough, and resolving its type half needs machinery this
+    /// method would otherwise have to duplicate wholesale from
+    /// `resolve_qualified_value`).
+    fn resolve_overloaded_static_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+    ) -> Option<Option<CheckedExprNode>> {
+        let HirExpr::Place(place) = &call.callee.expr else { return None };
+        if !place.projections.is_empty() {
+            return None;
+        }
+        let HirPlaceRoot::Path(expr_path) = &place.root else { return None };
+        let path = expr_path.plain()?;
+        let [member] = path.tail.as_slice() else { return None };
+
+        // A module alias wins over a type interpretation whenever both
+        // could apply -- the same priority `resolve_type_qualified_value`
+        // gives it -- so a genuine `module::function` shape (already
+        // `resolve_overloaded_call`'s concern) is never misread as
+        // `Type::function` here.
+        if self.context.absolute_path(path).is_some() {
+            return None;
+        }
+
+        let r#type = if let Some(t) = self.context.find_defined_type(&path.head) {
+            t.clone()
+        } else {
+            let absolute: Vec<Ident> =
+                self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
+            match self.resolver.resolve_item(&absolute, &[], true) {
+                Ok(ResolvedItem::Type(t)) => t,
+                _ => return None,
+            }
+        };
+
+        let all_methods = match &r#type {
+            ResolvedType::Struct(cell) => cell.borrow().functions.clone(),
+            ResolvedType::Union(cell) => cell.borrow().functions.clone(),
+            ResolvedType::Enum { cell, .. } => cell.borrow().functions.clone(),
+            _ => return None,
+        };
+        let statics: Vec<ResolvedMethod> = all_methods
+            .into_iter()
+            .filter(|(name, m)| name == member && !m.fn_type.is_member_function)
+            .map(|(_, m)| m)
+            .collect();
+        if statics.len() < 2 {
+            return None;
+        }
+
+        let candidates: Vec<(HirId, ResolvedFunctionType)> =
+            statics.iter().map(|m| (m.decl_id, m.fn_type.clone())).collect();
+        let Some((winner, args)) = self.resolve_overload(node_id, span, member, &candidates, &call.args) else {
+            return Some(None);
+        };
+        let (decl_id, fn_type) = candidates[winner].clone();
+
+        let callee = CheckedExprNode {
+            id: call.callee.id,
+            span: call.callee.span,
+            r#type: ResolvedType::Function(fn_type.clone()),
+            kind: CheckedExpr::Place(CheckedPlace {
+                root: CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: ResolvedType::Function(fn_type.clone()) },
+                projections: vec![],
+            }),
+        };
+        let return_type = *fn_type.return_type.clone();
+        Some(Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: return_type,
+            kind: CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee), fn_type, args }),
+        }))
+    }
+
+    /// If `call`'s callee is a bare (optionally module-qualified) reference
+    /// to an *overloaded* name (2+ non-generic top-level functions sharing
+    /// it -- see `ModuleResolver::function_overload_signatures`), resolves
+    /// the whole call here via argument-driven overload resolution
+    /// (`resolve_overload`) instead of the ordinary `resolve_callee`-then-
+    /// args pipeline, with the identical `Option<Option<_>>` "handled or
+    /// fall through" convention `resolve_generic_call` uses (checked
+    /// immediately before it, at this call's own use site). Returns plain
+    /// `None` for anything that isn't this exact shape -- most importantly,
+    /// a name with 0 or 1 candidates, which is the overwhelming majority of
+    /// calls and stays on the completely unchanged ordinary path.
+    fn resolve_overloaded_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+    ) -> Option<Option<CheckedExprNode>> {
+        let HirExpr::Place(place) = &call.callee.expr else { return None };
+        if !place.projections.is_empty() {
+            return None;
+        }
+        let HirPlaceRoot::Path(expr_path) = &place.root else { return None };
+        let path = expr_path.plain()?;
+
+        if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
+            return None;
+        }
+
+        let absolute = if path.is_unqualified() {
+            self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect()
+        } else {
+            self.context.absolute_path(path)?
+        };
+        let (name, module_path) = absolute.split_last()?;
+
+        let candidates = match self.resolver.function_overload_signatures(module_path, name) {
+            Ok(Some(candidates)) => candidates,
+            Ok(None) => return None,
+            Err(e) => {
+                self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                return Some(None);
+            }
+        };
+
+        let Some((winner, args)) = self.resolve_overload(node_id, span, name, &candidates, &call.args) else {
+            return Some(None);
+        };
+        let (decl_id, fn_type) = candidates[winner].clone();
+
+        let callee = CheckedExprNode {
+            id: call.callee.id,
+            span: call.callee.span,
+            r#type: ResolvedType::Function(fn_type.clone()),
+            kind: CheckedExpr::Place(CheckedPlace {
+                root: CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: ResolvedType::Function(fn_type.clone()) },
+                projections: vec![],
+            }),
+        };
+        let return_type = *fn_type.return_type.clone();
+        Some(Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: return_type,
+            kind: CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee), fn_type, args }),
+        }))
+    }
+
+    /// Resolves a call against 2+ same-named candidates by argument type --
+    /// shared by `resolve_overloaded_call` (top-level functions) and, once
+    /// wired in, struct/enum/union method calls (`resolve_callee`'s
+    /// method-call branch, `resolve_type_member`'s static-function branch).
+    /// `candidates` pairs each overload's own identity (a `HirId` --
+    /// whatever the caller needs to build the resolved callee/method
+    /// reference) with its resolved signature; `args` are the call's own
+    /// raw (not yet analyzed) argument expressions.
+    ///
+    /// Every argument that isn't an `adaptable_literal` (see its own doc
+    /// comment) is analyzed exactly once, up front -- its resolved type
+    /// can't depend on which candidate wins, so this is what avoids
+    /// double-analyzing (and double-erroring on) a fixed-type argument
+    /// across every candidate's viability check. An adaptable-literal
+    /// argument is instead scored per candidate via `literal_overload_fit`,
+    /// silently (no errors for a candidate that turns out not to win): a
+    /// candidate is viable iff every argument fits its corresponding
+    /// parameter, and its *score* is how many adaptable-literal arguments
+    /// needed a type other than their own natural default (`i32`/`f64`) to
+    /// fit -- 0 for "every literal stayed at its default." The unique
+    /// minimum-score viable candidate wins; zero viable candidates is
+    /// `NoMatchingOverload`, two or more tied at the minimum is
+    /// `AmbiguousOverload`. Once a winner is picked, its own
+    /// adaptable-literal arguments are analyzed for real (the only point
+    /// they're actually committed to a concrete type).
+    fn resolve_overload(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        candidates: &[(HirId, ResolvedFunctionType)],
+        args: &[HirExprNode],
+    ) -> Option<(usize, Vec<CheckedExprNode>)> {
+        let mut fixed: Vec<Option<CheckedExprNode>> = Vec::with_capacity(args.len());
+        for arg in args {
+            fixed.push(if Self::adaptable_literal(arg) { None } else { Some(self.analyze_expr(arg, None)?) });
+        }
+
+        let mut viable: Vec<(usize, u32)> = Vec::new();
+        for (i, (_, fn_type)) in candidates.iter().enumerate() {
+            if fn_type.is_variadic || fn_type.params.len() != args.len() {
+                continue;
+            }
+            let mut score = 0u32;
+            let mut ok = true;
+            for ((_, param_type), (arg, fixed_arg)) in fn_type.params.iter().zip(args.iter().zip(&fixed)) {
+                match fixed_arg {
+                    Some(checked) => {
+                        if !param_type.accepts(&checked.r#type) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    None => match Self::literal_overload_fit(arg, param_type) {
+                        Some(true) => {}
+                        Some(false) => score += 1,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    },
+                }
+            }
+            if ok {
+                viable.push((i, score));
+            }
+        }
+
+        let Some(min_score) = viable.iter().map(|&(_, s)| s).min() else {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::NoMatchingOverload {
+                    name: name.clone(),
+                    candidates: candidates.iter().map(|(_, t)| t.clone()).collect(),
+                },
+            ));
+            return None;
+        };
+        let winners: Vec<usize> = viable.iter().filter(|&&(_, s)| s == min_score).map(|&(i, _)| i).collect();
+        let winner = match winners.as_slice() {
+            [only] => *only,
+            _ => {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::AmbiguousOverload {
+                        name: name.clone(),
+                        candidates: winners.iter().map(|&i| candidates[i].1.clone()).collect(),
+                    },
+                ));
+                return None;
+            }
+        };
+
+        let winner_params = &candidates[winner].1.params;
+        let mut final_args = Vec::with_capacity(args.len());
+        for (arg, fixed_arg) in args.iter().zip(fixed) {
+            let checked = match fixed_arg {
+                Some(checked) => checked,
+                None => {
+                    let index = final_args.len();
+                    self.analyze_expr(arg, Some(&winner_params[index].1))?
+                }
+            };
+            final_args.push(checked);
+        }
+
+        Some((winner, final_args))
+    }
+
+    /// Whether an `adaptable_literal` argument fits `target` for overload-
+    /// viability purposes, and -- if so -- whether `target` is exactly the
+    /// literal's own natural default type (`i32`/`f64`); see
+    /// `resolve_overload`'s doc comment for how the result is used.
+    /// `None` if it doesn't fit at all (wrong numeric kind/family, or out
+    /// of range for `target`'s width). Deliberately silent -- never pushes
+    /// an error, since a candidate this rejects might not be the one the
+    /// call ultimately resolves to.
+    fn literal_overload_fit(arg: &HirExprNode, target: &ResolvedType) -> Option<bool> {
+        let n = match &arg.expr {
+            HirExpr::Number(n) => n,
+            HirExpr::Negate(inner) => match &inner.expr {
+                HirExpr::Number(n) => n,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let target_kind = target.numeric_kind()?;
+        if matches!(target_kind, NumericKind::Float(_)) != n.fractional_part.is_some() {
+            return None;
+        }
+        parse_number_literal(n, target_kind).ok()?;
+        let default = if n.fractional_part.is_some() { ResolvedType::F64 } else { ResolvedType::I32 };
+        Some(*target == default)
     }
 
     /// If `call`'s callee is a bare (optionally module-qualified) reference
@@ -1441,7 +1835,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         let mut checked_args = Vec::with_capacity(call.args.len());
         for arg in &call.args {
-            checked_args.push(self.analyze_expr(arg)?);
+            checked_args.push(self.analyze_expr(arg, None)?);
         }
 
         let mut subst = HashMap::new();
@@ -1524,14 +1918,39 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Resolves a number literal's target type (explicit suffix, or the
-    /// default -- `f64` for a literal with a decimal point, `i32` otherwise,
-    /// mirroring Rust's own literal defaults) and parses/range-checks its
-    /// text against that type. `NumberExpr` keeps its digits as plain text
-    /// (see its doc comment) precisely so this is the *only* place that ever
-    /// has to interpret them -- codegen just emits whatever `NumberValue`
-    /// this produces.
-    fn analyze_number(&mut self, node_id: HirId, span: Span, n: &NumberExpr) -> Option<CheckedExprNode> {
+    /// Picks the concrete type an *unsuffixed* literal resolves to: `expected`
+    /// (untyped-constant inference -- see `Self::adaptable_literal`'s doc
+    /// comment) if it's given and its numeric family agrees with the
+    /// literal's own -- `Float` iff the literal was written with a
+    /// fractional part, never the other way around (an int-kind literal
+    /// never silently becomes a float, only a same-family width/signedness
+    /// adapts) -- else today's plain i32/f64 default (mirroring Rust's own
+    /// literal defaults). An explicit suffix always wins outright and never
+    /// reaches this at all (see `analyze_number`).
+    fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>) -> ResolvedType {
+        let default = if n.fractional_part.is_some() { ResolvedType::F64 } else { ResolvedType::I32 };
+        let Some(expected) = expected else { return default };
+        let Some(kind) = expected.numeric_kind() else { return default };
+        if matches!(kind, NumericKind::Float(_)) == n.fractional_part.is_some() {
+            expected.clone()
+        } else {
+            default
+        }
+    }
+
+    /// Resolves a number literal's target type (see
+    /// `default_or_expected_number_type`) and parses/range-checks its text
+    /// against that type (see `parse_number_literal`). `NumberExpr` keeps
+    /// its digits as plain text (see its doc comment) precisely so this is
+    /// the *only* place that ever has to interpret them -- codegen just
+    /// emits whatever `NumberValue` this produces.
+    fn analyze_number(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        n: &NumberExpr,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         let invalid_suffix = |this: &mut Self, ident: &Ident| {
             this.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::InvalidNumberType(ident.clone())));
         };
@@ -1549,8 +1968,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
             },
-            None if n.fractional_part.is_some() => ResolvedType::F64,
-            None => ResolvedType::I32,
+            None => Self::default_or_expected_number_type(n, expected),
         };
         let kind = resolved_type
             .numeric_kind()
@@ -1576,58 +1994,40 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let literal_text = || match &n.fractional_part {
-            Some(frac) => format!("{}.{}", n.integer_part, frac),
-            None => n.integer_part.clone(),
-        };
-        let out_of_range = |this: &mut Self| {
-            this.errors.push(AnalysisError::new(
+        let Ok(value) = parse_number_literal(n, kind) else {
+            let literal_text = match &n.fractional_part {
+                Some(frac) => format!("{}.{}", n.integer_part, frac),
+                None => n.integer_part.clone(),
+            };
+            self.errors.push(AnalysisError::new(
                 node_id,
                 span,
-                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text(), r#type: resolved_type.clone() },
+                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text, r#type: resolved_type },
             ));
-        };
-
-        let value = match kind {
-            NumericKind::Float(width) => {
-                let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
-                let Ok(parsed) = text.parse::<f64>() else {
-                    out_of_range(self);
-                    return None;
-                };
-                if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
-                    out_of_range(self);
-                    return None;
-                }
-                NumberValue::Float(parsed)
-            }
-            NumericKind::Signed(width) => {
-                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
-                    out_of_range(self);
-                    return None;
-                };
-                let max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
-                if parsed > max {
-                    out_of_range(self);
-                    return None;
-                }
-                NumberValue::Signed(parsed as i64)
-            }
-            NumericKind::Unsigned(width) => {
-                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
-                    out_of_range(self);
-                    return None;
-                };
-                let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
-                if parsed > max {
-                    out_of_range(self);
-                    return None;
-                }
-                NumberValue::Unsigned(parsed)
-            }
+            return None;
         };
 
         Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
+    }
+
+    /// Whether `expr` is a bare (or singly-negated) *unsuffixed* number
+    /// literal -- the one expression shape whose concrete type isn't
+    /// already pinned by anything written down, so it's the one shape
+    /// worth peeking at *before* fully analyzing it: `HirExpr::If`'s
+    /// branch-unification (see its own doc comment) and overload
+    /// resolution's viability scoring both need to know "is this argument/
+    /// branch still open to adapt" without the side effects (errors bound
+    /// to a specific resolved type) a real `analyze_expr` call would commit
+    /// to. `Negate` is peeked through because it's transparent to a
+    /// literal's own type (`-100` is exactly as adaptable as `100`) -- see
+    /// `HirExpr::Negate`'s arm in `analyze_expr`, which threads `expected`
+    /// straight through for the identical reason.
+    fn adaptable_literal(expr: &HirExprNode) -> bool {
+        match &expr.expr {
+            HirExpr::Number(n) => n.explicit_type.is_none(),
+            HirExpr::Negate(inner) => matches!(&inner.expr, HirExpr::Number(n) if n.explicit_type.is_none()),
+            _ => false,
+        }
     }
 
     /// A block's own effective type: its tail expression's type, or -- if it
@@ -1737,10 +2137,13 @@ impl<'r> Analyzer<'r> {
     /// function bodies. Scope is always entered/left even on failure (before
     /// the `?` that can early-return), so an error partway through a block
     /// never leaves the scope stack unbalanced.
-    fn analyze_block(&mut self, block: &HirBlock) -> Option<CheckedBlock> {
+    /// `expected` is threaded *only* into the block's own tail expression
+    /// (see `analyze_expr`'s doc comment) -- ordinary statements never have
+    /// an outer expected type of their own.
+    fn analyze_block(&mut self, block: &HirBlock, expected: Option<&ResolvedType>) -> Option<CheckedBlock> {
         self.context.enter_scope();
         let checked_stmts = self.analyze_stmts(&block.stmts);
-        let checked_tail = block.tail.as_ref().map(|e| self.analyze_expr(e));
+        let checked_tail = block.tail.as_ref().map(|e| self.analyze_expr(e, expected));
         self.context.leave_scope();
 
         let stmts = checked_stmts?;
@@ -1819,7 +2222,20 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn analyze_expr(&mut self, node: &HirExprNode) -> Option<CheckedExprNode> {
+    /// `expected` is the concrete type this expression's *result* is about
+    /// to flow into, when the caller has one available (a declaration's
+    /// annotated type, an assignment's target, a `return`'s function
+    /// signature, a call argument's parameter, a struct/union field's
+    /// declared type, ...) -- `None` everywhere else. Only a handful of
+    /// arms actually consult it: an unsuffixed number literal adapts to it
+    /// (untyped-constant inference -- see `default_or_expected_number_type`),
+    /// and `ArrayLiteral`/`If`/`Codeblock`/`Negate` thread it further down
+    /// into whichever of their own sub-expressions could themselves be
+    /// unsuffixed literals. Every other arm ignores it entirely -- this is
+    /// deliberately *not* full bidirectional inference, just enough
+    /// top-down context for a literal whose own type isn't pinned by an
+    /// explicit suffix to adapt instead of defaulting to i32/f64.
+    fn analyze_expr(&mut self, node: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
         let node_id = node.id;
         let span = node.span;
 
@@ -1829,7 +2245,7 @@ impl<'r> Analyzer<'r> {
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
             }
 
-            HirExpr::Number(number_expr) => self.analyze_number(node_id, span, number_expr),
+            HirExpr::Number(number_expr) => self.analyze_number(node_id, span, number_expr, expected),
 
             HirExpr::Bool(b) => {
                 Some(CheckedExprNode { id: node_id, span, r#type: ResolvedType::Bool, kind: CheckedExpr::Bool(*b) })
@@ -1852,15 +2268,30 @@ impl<'r> Analyzer<'r> {
             }),
 
             HirExpr::Codeblock(block) => {
-                let checked_block = self.analyze_block(block)?;
+                let checked_block = self.analyze_block(block, expected)?;
                 let r#type = Self::block_type(&checked_block).unwrap_or(ResolvedType::Void);
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Codeblock(checked_block) })
             }
 
             HirExpr::If(HirIf { branches, else_branch }) => {
-                let mut checked_branches = Vec::with_capacity(branches.len());
-                for (cond, block) in branches {
-                    let checked_cond = self.analyze_expr(cond)?;
+                // No `else` at all forces `Void` regardless of branch
+                // content below (the "implicit else" is `{}`, matching
+                // Rust's identical rule for a possibly-skipped `if`) --
+                // branches get no expected type threaded into them in that
+                // case, exactly as if this whole feature didn't exist for
+                // them: there's no cross-branch value to unify toward.
+                let has_else = else_branch.is_some();
+                let branch_is_adaptable: Vec<bool> = branches
+                    .iter()
+                    .map(|(_, block)| has_else && block.tail.as_deref().is_some_and(Self::adaptable_literal))
+                    .collect();
+                let else_is_adaptable =
+                    else_branch.as_ref().is_some_and(|b| b.tail.as_deref().is_some_and(Self::adaptable_literal));
+
+                let mut checked_conds = Vec::with_capacity(branches.len());
+                let mut checked_blocks: Vec<Option<CheckedBlock>> = Vec::with_capacity(branches.len());
+                for ((cond, block), &adaptable) in branches.iter().zip(&branch_is_adaptable) {
+                    let checked_cond = self.analyze_expr(cond, None)?;
                     if checked_cond.r#type != ResolvedType::Bool {
                         self.errors.push(AnalysisError::new(
                             node_id,
@@ -1869,20 +2300,70 @@ impl<'r> Analyzer<'r> {
                         ));
                         return None;
                     }
-                    let checked_block = self.analyze_block(block)?;
-                    checked_branches.push((checked_cond, checked_block));
+                    checked_conds.push(checked_cond);
+                    let block_expected = if has_else { expected } else { None };
+                    checked_blocks.push(if adaptable { None } else { Some(self.analyze_block(block, block_expected)?) });
                 }
-                let checked_else = match else_branch {
-                    Some(b) => Some(self.analyze_block(b)?),
-                    None => None,
+                let mut checked_else = match else_branch {
+                    Some(b) if !else_is_adaptable => Some(self.analyze_block(b, expected)?),
+                    _ => None,
                 };
+
+                // The unification *anchor* used to thread an expected type
+                // into the not-yet-analyzed adaptable-literal branches
+                // above -- only meaningful when an `else` exists at all
+                // (see `has_else` above): the incoming `expected` wins
+                // outright; else the first already-analyzed (non-adaptable)
+                // branch's/`else`'s own (widened) type; else -- every
+                // branch is an adaptable literal -- fall back to analyzing
+                // the very first branch with no expected type, exactly
+                // today's byte-for-byte behavior for that all-literal case.
+                // This never decides the *final* `result_type` below on its
+                // own -- that's still re-derived the same way it always was
+                // (see the "no `else`..." comment above), so a real
+                // pre-existing mismatch (e.g. a tail-valued branch with no
+                // `else` at all) is rejected exactly as before.
+                if has_else {
+                    let anchor = match expected {
+                        Some(t) => Some(t.clone()),
+                        None => checked_blocks
+                            .iter()
+                            .flatten()
+                            .chain(checked_else.as_ref())
+                            .find_map(Self::block_type)
+                            .map(|t| t.widened()),
+                    };
+                    let anchor = match anchor {
+                        Some(t) => t,
+                        None => {
+                            let (_, first_block) = branches.first().expect("an `if` always has at least one branch");
+                            let block = self.analyze_block(first_block, None)?;
+                            let t = Self::block_type(&block).map(|t| t.widened()).unwrap_or(ResolvedType::Void);
+                            checked_blocks[0] = Some(block);
+                            t
+                        }
+                    };
+                    for ((_, block), checked) in branches.iter().zip(checked_blocks.iter_mut()) {
+                        if checked.is_none() {
+                            *checked = Some(self.analyze_block(block, Some(&anchor))?);
+                        }
+                    }
+                    if checked_else.is_none()
+                        && let Some(b) = else_branch
+                    {
+                        checked_else = Some(self.analyze_block(b, Some(&anchor))?);
+                    }
+                }
+
+                let checked_branches: Vec<(CheckedExprNode, CheckedBlock)> = checked_conds
+                    .into_iter()
+                    .zip(checked_blocks.into_iter().map(|b| b.expect("every branch analyzed above")))
+                    .collect();
 
                 // What the whole `if` resolves to: the first concrete
                 // (non-diverging) type among the branches and the `else`,
                 // if any -- diverging branches (ending in `return`) are
-                // wildcards, exempt from the check below. No `else` at all
-                // forces `Void` (the "implicit else" is `{}`), matching
-                // Rust's identical rule for a possibly-skipped `if`.
+                // wildcards, exempt from the check below.
                 let branch_kinds: Vec<Option<ResolvedType>> =
                     checked_branches.iter().map(|(_, b)| Self::block_type(b)).collect();
                 let else_kind: Option<Option<ResolvedType>> = checked_else.as_ref().map(Self::block_type);
@@ -1921,53 +2402,72 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::FunctionCall(call) => {
+                if let Some(result) = self.resolve_overloaded_call(node_id, span, call) {
+                    return result;
+                }
+                if let Some(result) = self.resolve_overloaded_static_call(node_id, span, call) {
+                    return result;
+                }
                 if let Some(result) = self.resolve_generic_call(node_id, span, call) {
                     return result;
                 }
 
-                let ResolvedCallee { callee, fn_type, implicit_self } = self.resolve_callee(&call.callee)?;
+                let ResolvedCallee { callee, fn_type, implicit_self, checked_args } =
+                    self.resolve_callee(&call.callee, &call.args)?;
 
                 let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
                 args.extend(implicit_self);
-                // The counts shown to the user exclude an implicit `self`
-                // (at this point `args` holds exactly that, and nothing
-                // else) -- the user never wrote it, so "takes 1 argument
-                // but 2 were supplied" for a 1-arg method call would only
-                // confuse.
-                let implicit_count = args.len();
 
-                for arg in &call.args {
-                    let param_index = args.len();
-                    if param_index >= fn_type.params.len() && !fn_type.is_variadic {
-                        self.errors.push(AnalysisError::new(
-                            arg.id,
-                            arg.span,
-                            AnalysisErrorKind::WrongArgumentCount {
-                                expected: fn_type.params.len() - implicit_count,
-                                found: call.args.len(),
-                            },
-                        ));
-                        return None;
-                    }
+                match checked_args {
+                    // Overload resolution already fully analyzed (and
+                    // type-checked, including untyped-constant adaptation)
+                    // every user-written argument itself, to score
+                    // candidates -- redoing that here would risk
+                    // double-erroring, and can't change the outcome anyway.
+                    Some(overload_args) => args.extend(overload_args),
+                    None => {
+                        // The counts shown to the user exclude an implicit
+                        // `self` (at this point `args` holds exactly that,
+                        // and nothing else) -- the user never wrote it, so
+                        // "takes 1 argument but 2 were supplied" for a 1-arg
+                        // method call would only confuse.
+                        let implicit_count = args.len();
 
-                    let checked_arg = self.analyze_expr(arg)?;
+                        for arg in &call.args {
+                            let param_index = args.len();
+                            if param_index >= fn_type.params.len() && !fn_type.is_variadic {
+                                self.errors.push(AnalysisError::new(
+                                    arg.id,
+                                    arg.span,
+                                    AnalysisErrorKind::WrongArgumentCount {
+                                        expected: fn_type.params.len() - implicit_count,
+                                        found: call.args.len(),
+                                    },
+                                ));
+                                return None;
+                            }
 
-                    if param_index < fn_type.params.len() {
-                        let expected_type = &fn_type.params[param_index].1;
-                        if !expected_type.accepts(&checked_arg.r#type) {
-                            self.errors.push(AnalysisError::new(
-                                arg.id,
-                                arg.span,
-                                AnalysisErrorKind::ArgumentTypeMismatch {
-                                    expected: expected_type.clone(),
-                                    found: checked_arg.r#type.clone(),
-                                },
-                            ));
-                            return None;
+                            let expected_type =
+                                (param_index < fn_type.params.len()).then(|| &fn_type.params[param_index].1);
+                            let checked_arg = self.analyze_expr(arg, expected_type)?;
+
+                            if let Some(expected_type) = expected_type {
+                                if !expected_type.accepts(&checked_arg.r#type) {
+                                    self.errors.push(AnalysisError::new(
+                                        arg.id,
+                                        arg.span,
+                                        AnalysisErrorKind::ArgumentTypeMismatch {
+                                            expected: expected_type.clone(),
+                                            found: checked_arg.r#type.clone(),
+                                        },
+                                    ));
+                                    return None;
+                                }
+                            }
+
+                            args.push(checked_arg);
                         }
                     }
-
-                    args.push(checked_arg);
                 }
 
                 let return_type = *fn_type.return_type.clone();
@@ -1980,8 +2480,6 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::Assignment(assignment) => {
-                let checked_value = self.analyze_expr(&assignment.value)?;
-
                 let HirExpr::Place(place) = &assignment.target.expr else {
                     self.errors.push(AnalysisError::new(
                         node_id,
@@ -1993,6 +2491,11 @@ impl<'r> Analyzer<'r> {
                 let (checked_target, target_type, target_mutable) =
                     self.analyze_place(assignment.target.id, assignment.target.span, place)?;
                 self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
+
+                // Resolved *before* the value, unlike almost everywhere else
+                // in this match -- the target's own type is exactly the
+                // expected type an unsuffixed literal value should adapt to.
+                let checked_value = self.analyze_expr(&assignment.value, Some(&target_type))?;
 
                 if !target_type.accepts(&checked_value.r#type) {
                     self.errors.push(AnalysisError::new(
@@ -2083,7 +2586,13 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::Negate(base) => {
-                let checked_base = self.analyze_expr(base)?;
+                // `expected` passes straight through -- `Negate` is
+                // transparent to its own result type (it's always exactly
+                // `base`'s type, see below), so whatever type context this
+                // node itself received is exactly the right context for
+                // `base` too (including, notably, an unsuffixed literal
+                // `base` -- `-100` is exactly as adaptable as `100`).
+                let checked_base = self.analyze_expr(base, expected)?;
                 // Signed ints and floats only -- matching Rust, unary `-` on
                 // an unsigned integer (or `bool`/`char`, neither of which is
                 // numeric at all) is rejected rather than silently wrapping.
@@ -2113,8 +2622,8 @@ impl<'r> Analyzer<'r> {
             HirExpr::Decrement(base) => self.analyze_incr_decr(node_id, span, base, BinaryOp::Sub),
 
             HirExpr::BinaryOp(bin) => {
-                let checked_left = self.analyze_expr(&bin.left)?;
-                let checked_right = self.analyze_expr(&bin.right)?;
+                let checked_left = self.analyze_expr(&bin.left, None)?;
+                let checked_right = self.analyze_expr(&bin.right, None)?;
 
                 for operand in [&checked_left, &checked_right] {
                     if operand.r#type.numeric_kind().is_none() {
@@ -2180,28 +2689,42 @@ impl<'r> Analyzer<'r> {
                     return None;
                 };
 
-                let checked_first = self.analyze_expr(first)?;
+                // A declared/expected element type (from `[T; N]` context)
+                // is used as *every* element's own expected type, including
+                // the first -- unlike the plain bottom-up fallback below,
+                // where only later elements are checked against the
+                // first's own inferred type, never the other way around.
+                let declared_item_type = match expected {
+                    Some(ResolvedType::SizedArray(item_type, _)) => Some(item_type.as_ref()),
+                    _ => None,
+                };
+
+                let checked_first = self.analyze_expr(first, declared_item_type)?;
                 // Widened for the same reason an `if`'s branches are -- an
                 // array of mixed variants of one enum is an array of that
                 // enum.
-                let item_type = checked_first.r#type.widened();
-                let mut checked_elements = Vec::with_capacity(elements.len());
-                checked_elements.push(checked_first);
+                let item_type = declared_item_type.cloned().unwrap_or_else(|| checked_first.r#type.widened());
 
-                for element in rest {
-                    let checked_element = self.analyze_expr(element)?;
-                    if !item_type.accepts(&checked_element.r#type) {
-                        self.errors.push(AnalysisError::new(
-                            element.id,
-                            element.span,
+                let mut checked_elements = Vec::with_capacity(elements.len());
+                let check_element = |this: &mut Self, id: HirId, elem_span: Span, checked: CheckedExprNode| {
+                    if !item_type.accepts(&checked.r#type) {
+                        this.errors.push(AnalysisError::new(
+                            id,
+                            elem_span,
                             AnalysisErrorKind::ArrayElementTypeMismatch {
                                 expected: item_type.clone(),
-                                found: checked_element.r#type.clone(),
+                                found: checked.r#type.clone(),
                             },
                         ));
                         return None;
                     }
-                    checked_elements.push(checked_element);
+                    Some(checked)
+                };
+                checked_elements.push(check_element(self, first.id, first.span, checked_first)?);
+
+                for element in rest {
+                    let checked_element = self.analyze_expr(element, Some(&item_type))?;
+                    checked_elements.push(check_element(self, element.id, element.span, checked_element)?);
                 }
 
                 let size = checked_elements.len() as u32;
@@ -2236,7 +2759,7 @@ impl<'r> Analyzer<'r> {
 
                 let analyze_bound = |this: &mut Self, bound: &Option<Box<HirExprNode>>| -> Option<Option<Box<CheckedExprNode>>> {
                     let Some(bound) = bound else { return Some(None) };
-                    let checked_bound = this.analyze_expr(bound)?;
+                    let checked_bound = this.analyze_expr(bound, Some(&ResolvedType::I32))?;
                     if checked_bound.r#type != ResolvedType::I32 {
                         this.errors.push(AnalysisError::new(
                             bound.id,
@@ -2269,7 +2792,12 @@ impl<'r> Analyzer<'r> {
 
             HirExpr::Cast(HirCast { target, base }) => {
                 let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
-                let checked_base = self.analyze_expr(base)?;
+                // `base` keeps its own natural (default, unsuffixed-literal)
+                // type -- the cast's target is an explicit instruction to
+                // convert, never context to infer `base`'s own type from
+                // (`<f32>10` casts a genuine i32 `10` to `f32`, it doesn't
+                // just relabel an already-f32 literal).
+                let checked_base = self.analyze_expr(base, None)?;
 
                 if let (ResolvedType::Pointer { mutable: true, .. }, ResolvedType::Pointer { mutable: false, .. }) =
                     (&target_type, &checked_base.r#type)
@@ -2362,7 +2890,7 @@ impl<'r> Analyzer<'r> {
     /// expression per condition would.
     fn analyze_match(&mut self, node_id: HirId, span: Span, m: &HirMatch) -> Option<CheckedExprNode> {
         let narrow_target = self.narrowable_scrutinee(&m.scrutinee);
-        let checked_scrutinee = self.analyze_expr(&m.scrutinee)?;
+        let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
 
         let (scrutinee_read, prelude_stmts, narrow_binding) = if let Some((ident, decl_id, storage, mutable)) = narrow_target {
@@ -2459,9 +2987,9 @@ impl<'r> Analyzer<'r> {
     /// need, since `if` never allows a bare-expression branch body).
     fn analyze_match_arm_body(&mut self, body: &HirExprNode) -> Option<CheckedBlock> {
         if let HirExpr::Codeblock(block) = &body.expr {
-            self.analyze_block(block)
+            self.analyze_block(block, None)
         } else {
-            let checked = self.analyze_expr(body)?;
+            let checked = self.analyze_expr(body, None)?;
             Some(CheckedBlock { stmts: vec![], tail: Some(Box::new(checked)) })
         }
     }
@@ -2570,7 +3098,7 @@ impl<'r> Analyzer<'r> {
 
         let variant_count = cell.borrow().variants.len();
         let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b)?),
+            Some(b) => Some(self.analyze_block(b, None)?),
             None if covered.len() < variant_count => {
                 let missing: Vec<Ident> = cell
                     .borrow()
@@ -2693,7 +3221,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b)?),
+            Some(b) => Some(self.analyze_block(b, None)?),
             None if !coverage.gaps.is_empty() => {
                 let gaps = coverage.gaps.iter().map(|(lo, hi)| Self::describe_gap(scrutinee_type, *lo, *hi)).collect();
                 self.errors.push(AnalysisError::new(
@@ -3001,7 +3529,7 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
-                let value = self.analyze_expr(&field.value)?;
+                let value = self.analyze_expr(&field.value, Some(&expected))?;
                 if !expected.accepts(&value.r#type) {
                     self.errors.push(AnalysisError::new(
                         node_id,
@@ -3063,7 +3591,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            let Some(value) = self.analyze_expr(&field.value) else {
+            let Some(value) = self.analyze_expr(&field.value, Some(&expected)) else {
                 ok = false;
                 continue;
             };
@@ -3273,7 +3801,7 @@ impl<'r> Analyzer<'r> {
     /// whether `ident` was declared `mut`.
     fn analyze_declaration_with_init(&mut self, decl: &HirDeclaration, value: &HirExprNode) -> Option<[CheckedStmt; 2]> {
         let checked_decl = self.analyze_declaration(decl, Storage::Local)?;
-        let checked_value = self.analyze_expr(value)?;
+        let checked_value = self.analyze_expr(value, Some(&checked_decl.r#type))?;
 
         if !checked_decl.r#type.accepts(&checked_value.r#type) {
             self.errors.push(AnalysisError::new(
@@ -3316,7 +3844,7 @@ impl<'r> Analyzer<'r> {
     /// assignment's value, rather than re-analyzed, to avoid double-reporting
     /// any error inside it.
     fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<[CheckedStmt; 2]> {
-        let checked_value = self.analyze_expr(&w.value)?;
+        let checked_value = self.analyze_expr(&w.value, None)?;
         let r#type = checked_value.r#type.clone();
         self.declare_binding(w.id, w.span, &w.ident, r#type.clone(), Storage::Local, w.mutable)?;
 
@@ -3357,13 +3885,14 @@ impl<'r> Analyzer<'r> {
             HirStmt::ExternDeclaration(decl) => {
                 self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
             }
-            HirStmt::Expression(expr) => self.analyze_expr(expr).map(|e| vec![CheckedStmt::Expression(e)]),
+            HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| vec![CheckedStmt::Expression(e)]),
             HirStmt::Return(expr) => {
                 if self.in_defer_body {
                     self.errors.push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer));
                     return None;
                 }
-                let checked = self.analyze_expr(expr)?;
+                let return_type = self.current_return_type.clone();
+                let checked = self.analyze_expr(expr, Some(&return_type))?;
                 if !self.current_return_type.accepts(&checked.r#type) {
                     self.errors.push(AnalysisError::new(
                         expr.id,
@@ -3379,7 +3908,7 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w).map(Vec::from),
             HirStmt::While(w) => {
-                let checked_cond = self.analyze_expr(&w.condition)?;
+                let checked_cond = self.analyze_expr(&w.condition, None)?;
                 if checked_cond.r#type != ResolvedType::Bool {
                     self.errors.push(AnalysisError::new(
                         w.id,
@@ -3389,7 +3918,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 self.loop_stack.push(w.id);
-                let checked_body = self.analyze_block(&w.body);
+                let checked_body = self.analyze_block(&w.body, None);
                 self.loop_stack.pop();
                 let checked_body = checked_body?;
                 Some(vec![CheckedStmt::While(CheckedWhile {
@@ -3426,7 +3955,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 let previous_in_defer_body = std::mem::replace(&mut self.in_defer_body, true);
-                let body = self.analyze_block(&d.body);
+                let body = self.analyze_block(&d.body, None);
                 self.in_defer_body = previous_in_defer_body;
                 let body = body?;
                 Some(vec![CheckedStmt::Defer(CheckedDefer { id: d.id, span: d.span, body })])
@@ -3451,7 +3980,7 @@ impl<'r> Analyzer<'r> {
         ok &= checked_init.is_some();
 
         let checked_condition = match &f.condition {
-            Some(c) => match self.analyze_expr(c) {
+            Some(c) => match self.analyze_expr(c, None) {
                 Some(cc) if cc.r#type != ResolvedType::Bool => {
                     self.errors.push(AnalysisError::new(
                         f.id,
@@ -3477,7 +4006,7 @@ impl<'r> Analyzer<'r> {
 
         let checked_post = match &f.post {
             Some(p) => {
-                let checked = self.analyze_expr(p);
+                let checked = self.analyze_expr(p, None);
                 ok &= checked.is_some();
                 checked
             }
@@ -3485,7 +4014,7 @@ impl<'r> Analyzer<'r> {
         };
 
         self.loop_stack.push(f.id);
-        let checked_body = self.analyze_block(&f.body);
+        let checked_body = self.analyze_block(&f.body, None);
         self.loop_stack.pop();
         ok &= checked_body.is_some();
 
@@ -3558,6 +4087,19 @@ impl<'r> Analyzer<'r> {
     /// also runs once per sibling method inside `signature_of_struct`'s
     /// method loop, where it *does* matter: it's what catches two methods
     /// sharing a name on one struct.
+    /// Note this deliberately does *not* declare `f.name` into
+    /// `self.context`'s current scope the way most other signature
+    /// collection does -- when this runs once per sibling inside
+    /// `signature_of_struct`/`enum`/`union`'s method loop, that binding
+    /// would never actually be visible to anything (body-checking runs
+    /// later, through an entirely separate `Analyzer`/`Context`; see
+    /// `omega_driver::Driver::check_item_body`), so its *only* real effect
+    /// was catching two methods sharing a name -- which up to two
+    /// *overloaded* methods are now allowed to do (see
+    /// `check_overload_duplicates`, called by each of those three methods
+    /// once every sibling's signature is known). A top-level (non-method)
+    /// caller never had a meaningful use for the binding either -- it
+    /// always got a fresh, empty `Context`, so nothing could ever collide.
     pub fn collect_function_signature(&mut self, f: &HirFunctionDef) -> Option<ResolvedFunctionType> {
         // Param/return types are a function's signature, never inline data --
         // always indirect (see `analyze_param`'s identical reasoning).
@@ -3565,31 +4107,42 @@ impl<'r> Analyzer<'r> {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
         })?;
         let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type, true)?;
-        let fn_type = ResolvedFunctionType {
+        Some(ResolvedFunctionType {
             params,
             return_type: Box::new(return_type),
             is_variadic: false,
             is_member_function: f.is_member_function,
-        };
+        })
+    }
 
-        let binding = VarBinding {
-            decl_id: f.id,
-            storage: Storage::Function,
-            r#type: ResolvedType::Function(fn_type.clone()),
-            span: f.span,
-            narrowed: false,
-            mutable: false,
-        };
-        if let Err((name, previous)) = self.context.current_scope().declare(f.name.clone(), binding) {
-            self.errors.push(AnalysisError::new(
-                f.id,
-                f.span,
-                AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
-            ));
-            return None;
+    /// Compares every pair of `functions`' signatures by param-type list,
+    /// ignoring parameter names -- the method-loop counterpart to
+    /// `omega_driver::Driver::check_overload_duplicates` (see its doc
+    /// comment for the full reasoning): two methods sharing a name is a
+    /// valid overload as long as their signatures genuinely differ; an
+    /// identical pair is a real duplicate, reported the same way a plain
+    /// same-name collision always has been.
+    fn check_overload_duplicates(&mut self, functions: &[HirFunctionDef], signatures: &[ResolvedFunctionType]) {
+        for i in 1..functions.len() {
+            for j in 0..i {
+                if functions[i].name != functions[j].name {
+                    continue;
+                }
+                let same_params =
+                    signatures[i].params.iter().map(|(_, t)| t).eq(signatures[j].params.iter().map(|(_, t)| t));
+                if same_params {
+                    self.errors.push(AnalysisError::new(
+                        functions[i].id,
+                        functions[i].span,
+                        AnalysisErrorKind::Redeclaration {
+                            name: functions[i].name.clone(),
+                            previous: Some(functions[j].span),
+                        },
+                    ));
+                    break;
+                }
+            }
         }
-
-        Some(fn_type)
     }
 
     /// A top-level struct's *signature* only: field types, plus every
@@ -3626,6 +4179,7 @@ impl<'r> Analyzer<'r> {
         let functions = self.analyze_all(&s.functions, Self::collect_function_signature);
         self.context.leave_scope();
         let functions = functions?;
+        self.check_overload_duplicates(&s.functions, &functions);
         cell.borrow_mut().functions = s
             .functions
             .iter()
@@ -3653,6 +4207,7 @@ impl<'r> Analyzer<'r> {
         let functions = self.analyze_all(&u.functions, Self::collect_function_signature);
         self.context.leave_scope();
         let functions = functions?;
+        self.check_overload_duplicates(&u.functions, &functions);
         cell.borrow_mut().functions = u
             .functions
             .iter()
@@ -3904,6 +4459,7 @@ impl<'r> Analyzer<'r> {
         let functions = self.analyze_all(&e.functions, Self::collect_function_signature);
         self.context.leave_scope();
         let functions = functions?;
+        self.check_overload_duplicates(&e.functions, &functions);
         cell.borrow_mut().functions = e
             .functions
             .iter()
@@ -4143,7 +4699,11 @@ impl<'r> Analyzer<'r> {
         self.current_return_type = (*fn_type.return_type).clone();
         self.loop_stack.clear();
         self.in_defer_body = false;
-        let body = self.analyze_block(&f.body);
+        // The function's own declared return type is the expected type for
+        // an implicit tail-expression return (`fn f() => f64 { 10 }`) --
+        // the same untyped-constant adaptation an explicit `return 10;`
+        // gets (see `HirStmt::Return`'s arm above).
+        let body = self.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
 
         self.context.leave_scope();
 

@@ -1,5 +1,5 @@
 use crate::checked::Storage;
-use crate::resolved_type::ResolvedType;
+use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Path, Span, Type};
 use std::fmt;
@@ -193,6 +193,24 @@ pub trait ModuleResolver {
         &mut self,
         absolute_path: &[Ident],
     ) -> Result<Option<GenericSignature>, ResolveError>;
+
+    /// `name`'s every overload candidate in `module_path`, each already
+    /// paired with the `HirId` a callee place root needs -- an escape hatch
+    /// alongside `resolve_item` exactly like `generic_function_signature`
+    /// is, and for the identical reason: an overloaded name can't be
+    /// addressed by `resolve_item`'s single-result `(absolute_path,
+    /// type_args)` key at all (nothing about the *name* alone picks one
+    /// candidate; only the call's own argument types do, at the call
+    /// site -- see `Analyzer::resolve_overloaded_call`). `Ok(None)` means
+    /// "not an overloaded name" (zero or exactly one candidate) -- callers
+    /// fall through to the ordinary `resolve_item` path unchanged in that
+    /// case, so this never affects behavior for the overwhelmingly common
+    /// non-overloaded name.
+    fn function_overload_signatures(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType)>>, ResolveError>;
 
     /// The name of a top-level item in `module_path` most similar to
     /// `target` (see `crate::similarity::best_match`), drawn only from

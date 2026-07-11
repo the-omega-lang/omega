@@ -106,6 +106,17 @@ struct Vec2 {
         self.x = self.x + dx;
         self.y = self.y + dy;
     }
+    # Method overloading: distinguished by parameter type exactly like a
+    # free function's (see `print_any`/`print_number2` below) -- an
+    # unsuffixed literal argument (`v.scale(3)`) picks whichever candidate
+    # it fits, preferring its own default type when more than one would fit.
+    scale(mut self, factor: i32) => void {
+        self.x = self.x * factor;
+        self.y = self.y * factor;
+    }
+    scale(mut self, factor: f64) => void {
+        puts("scale: f64 overload called");
+    }
 }
 
 # A struct-typed field, initialized below both by a nested literal and by an
@@ -228,6 +239,34 @@ describe_if_second(b: *MyEnumWithBodies) => void {
 union Value {
     as_i32: i32;
     as_f32: f32;
+}
+
+# Function overloading, resolved by parameter count and type. An unsuffixed
+# literal argument is free to adapt to whichever candidate it fits (see the
+# untyped-constant inference this builds on) as long as that candidate is
+# the *unique* best match: `print_any(10)` only fits `u32` here (an int
+# literal never adapts to `*u8`/`f64`), so it's picked with no ambiguity
+# even though it isn't `10`'s own default type.
+print_any(thing: *u8) => void {
+    printf("print_any: string '%s'\n", thing);
+}
+print_any(thing: u32) => void {
+    printf("print_any: u32 %u\n", thing);
+}
+print_any(thing: f64) => void {
+    puts("print_any: f64 overload called");
+}
+
+# Two overloads distinguished purely by which type an unsuffixed literal's
+# own *default* is: `10`'s default is `i32`, so this candidate wins
+# outright over `u32` (which could also technically hold it, just not for
+# free) -- see `AmbiguousOverload`'s doc comment for the case where no
+# candidate's default matches (rejected, not guessed).
+print_number2(n: i32) => void {
+    printf("print_number2: i32 %d\n", n);
+}
+print_number2(n: u32) => void {
+    printf("print_number2: u32 %u\n", n);
 }
 
 main(argc : i32, argv : [*u8]) => i32 {
@@ -502,6 +541,30 @@ main(argc : i32, argv : [*u8]) => i32 {
     void_ptr := <*void>thing_ptr;
     back := <*Vec2>void_ptr;
     printf("cast pointer roundtrip: (%d, %d)\n", back.x, back.y);
+
+    # Untyped-constant inference: an unsuffixed literal adapts to whatever
+    # concrete type context expects, as long as the *kind* still matches
+    # (an int-kind literal never becomes a float, only a same-kind width/
+    # signedness adapts -- `coerced_wrong : f64 = 10;` would still error).
+    coerced_u64 : u64 = 10;
+    coerced_f64 : f64 = 10.0;
+    coerced_f32 : f32 = 10.0;
+    coerced_neg : i8 = -100;
+    coerced_arr : [u64; 3] = [1, 2, 3];
+    coerced_branch := if coerced_u64 > 5u64 { 5u64 } else { 10 };
+    printf(
+        "literal coercion: u64=%llu f64=%f f32=%f neg=%d arr[2]=%llu branch=%llu\n",
+        coerced_u64, coerced_f64, coerced_f32, coerced_neg, coerced_arr[2], coerced_branch
+    );
+
+    print_any("hello");
+    print_any(10);
+    print_any(10.0);
+    print_number2(10);
+
+    mut scaled := Vec2::new(2, 3);
+    scaled.scale(3);
+    printf("method overload: (%d, %d)\n", scaled.x, scaled.y);
 
     return 69;
 }

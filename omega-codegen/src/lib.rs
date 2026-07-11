@@ -1834,16 +1834,18 @@ impl Codegen {
 
     /// A `(path, name)` pair alone no longer uniquely identifies a compiled
     /// function: two different instantiations of the same generic function/
-    /// method share both, but must never share a link-time symbol. `id` is
-    /// a real per-file `HirId` for an ordinary (non-generic) function --
-    /// nothing to add there -- but a generic instantiation's `id` is a
-    /// synthetic one (`omega_hir::SYNTHETIC_MODULE`, minted once per
-    /// instantiation by `omega_driver::Driver::compute_item`), so appending
-    /// its already-unique `local` counter as a suffix is guaranteed
-    /// collision-free and a complete no-op for every existing non-generic
-    /// symbol.
+    /// method share both, but must never share a link-time symbol -- and
+    /// neither do two overloads sharing a name in one real module (see
+    /// `omega_analyzer::resolver::ModuleResolver::function_overload_signatures`).
+    /// `id.local` is unique within its own module regardless of *why* two
+    /// items share a name (a generic instantiation's synthetic id, or two
+    /// ordinary overloads' real ones), so appending it unconditionally is
+    /// what makes every case collision-free at once -- these mangled names
+    /// are entirely internal/opaque (never typed by a human, never an
+    /// external symbol other than the one `main` exception below), so this
+    /// has no observable effect on program behavior.
     fn instantiation_suffix(id: HirId) -> String {
-        if id.module == omega_hir::SYNTHETIC_MODULE { format!("$${}", id.local) } else { String::new() }
+        format!("$${}", id.local)
     }
 
     /// A top-level function's mangled symbol -- its full module path plus its

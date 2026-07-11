@@ -4,7 +4,9 @@ use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer};
 use omega_analyzer::checked::{CheckedItem, CheckedModule, Storage};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
-use omega_analyzer::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
+use omega_analyzer::resolved_type::{
+    ResolvedEnumType, ResolvedFunctionType, ResolvedStructType, ResolvedType, ResolvedUnionType,
+};
 use omega_analyzer::resolver::{
     GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport,
     ResolvedItem, Visibility,
@@ -165,6 +167,26 @@ pub struct Driver {
     /// folded into `module_errors`); this is what `ensure_item` looks a name
     /// up in to find *what* to analyze the first time it's asked for.
     local_items: HashMap<Vec<Ident>, HashMap<Ident, usize>>,
+    /// Every name in a module that names *more than one* function
+    /// (`local_items` above still points only at the first-declared one,
+    /// unused by the overload path) -- built alongside `local_items` in
+    /// `ensure_module_indexed`. A name absent here is never overloaded:
+    /// it's either not a function at all, or a plain, ordinary one-item
+    /// name, both served by the unchanged `local_items`/`ensure_item` path.
+    function_overloads: HashMap<Vec<Ident>, HashMap<Ident, Vec<usize>>>,
+    /// One overload candidate's resolved signature, memoized by item index
+    /// rather than by name (see `ensure_overload_signature`) -- unlike
+    /// `struct_cells`/`enum_cells`/`ItemKey`'s `query_state`, a function
+    /// signature has no self-referential-cycle risk of its own (nothing
+    /// ever embeds a function *by value* the way a struct field can embed
+    /// another struct), so this is a plain memoizing cache, no `InProgress`
+    /// guard needed.
+    overload_signatures: HashMap<(Vec<Ident>, usize), ResolvedFunctionType>,
+    /// One overload candidate's fully checked body, memoized the same way
+    /// (see `ensure_overload_body`) -- merged into its module's `items`
+    /// during `compile`'s overload sweep, mirroring how an ordinary item's
+    /// checked body is collected.
+    overload_bodies: HashMap<(Vec<Ident>, usize), (CheckedItem, Vec<AnalysisWarning>)>,
     imports: HashMap<Vec<Ident>, ImportCacheState>,
     /// Every struct's shared identity cell, decoupled from any one module's
     /// analysis -- created the moment *anyone* (same-module or foreign)
@@ -216,6 +238,9 @@ impl Driver {
             parse_failures: HashMap::new(),
             macro_failures: HashMap::new(),
             local_items: HashMap::new(),
+            function_overloads: HashMap::new(),
+            overload_signatures: HashMap::new(),
+            overload_bodies: HashMap::new(),
             imports: HashMap::new(),
             struct_cells: HashMap::new(),
             enum_cells: HashMap::new(),
@@ -399,17 +424,32 @@ impl Driver {
         }
         let hir = self.parse_module(path)?;
         let mut index = HashMap::new();
+        let mut overloads: HashMap<Ident, Vec<usize>> = HashMap::new();
         for (i, item) in hir.items.iter().enumerate() {
             let Some(name) = item_name(item) else { continue };
+            let is_function = matches!(item, HirItem::FunctionDefinition(_));
             match index.entry(name.clone()) {
                 Entry::Occupied(first) => {
-                    let (id, span) = item_id_span(item);
-                    let (_, previous) = item_id_span(&hir.items[*first.get()]);
-                    self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
-                        id,
-                        span,
-                        AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
-                    ));
+                    let first_index = *first.get();
+                    let first_is_function = matches!(&hir.items[first_index], HirItem::FunctionDefinition(_));
+                    if is_function && first_is_function {
+                        // A valid overload *candidate* -- not a
+                        // redeclaration (see `function_overloads`'s doc
+                        // comment). Whether it's genuinely distinct (a
+                        // different signature) is checked later, once every
+                        // candidate's signature is actually resolved (see
+                        // `check_overload_duplicates`) -- nothing here has
+                        // access to param types yet.
+                        overloads.entry(name).or_insert_with(|| vec![first_index]).push(i);
+                    } else {
+                        let (id, span) = item_id_span(item);
+                        let (_, previous) = item_id_span(&hir.items[first_index]);
+                        self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
+                            id,
+                            span,
+                            AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
+                        ));
+                    }
                 }
                 Entry::Vacant(entry) => {
                     entry.insert(i);
@@ -417,6 +457,7 @@ impl Driver {
             }
         }
         self.local_items.insert(path.to_vec(), index);
+        self.function_overloads.insert(path.to_vec(), overloads);
         Ok(())
     }
 
@@ -891,6 +932,103 @@ impl Driver {
         }
     }
 
+    /// One overload candidate's resolved signature (see
+    /// `overload_signatures`'s doc comment), memoized by `(module_path,
+    /// index)` rather than by name -- the whole reason this exists
+    /// separately from `compute_item`'s identical-looking
+    /// `HirItem::FunctionDefinition` branch, which is keyed by name and so
+    /// can only ever address the first-declared candidate. Always
+    /// non-generic (every candidate in an overload group is confirmed a
+    /// plain function by `ensure_module_indexed`), so there's no
+    /// `type_args`/synthetic-id decision to make the way `compute_item`
+    /// has for a generic instantiation.
+    fn ensure_overload_signature(
+        &mut self,
+        module_path: &[Ident],
+        index: usize,
+    ) -> Result<ResolvedFunctionType, ResolveError> {
+        let key = (module_path.to_vec(), index);
+        if let Some(fn_type) = self.overload_signatures.get(&key) {
+            return Ok(fn_type.clone());
+        }
+        let imports = self.resolved_imports(module_path)?;
+        let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
+        let HirItem::FunctionDefinition(f) = &hir.items[index] else {
+            unreachable!("only ever called with an index ensure_module_indexed confirmed is a function");
+        };
+        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &imports, &[], (f.id, f.span));
+        let checked = analyzer.collect_function_signature(f);
+        let (errors, _warnings) = analyzer.finish();
+        if !errors.is_empty() {
+            self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+        }
+        let fn_type =
+            checked.ok_or_else(|| ResolveError::ItemFailed { module: module_path.to_vec(), item: f.name.clone() })?;
+        self.overload_signatures.insert(key, fn_type.clone());
+        Ok(fn_type)
+    }
+
+    /// One overload candidate's fully checked body (see `overload_bodies`'s
+    /// doc comment), memoized the same way. Reads its own already-resolved
+    /// signature back from `ensure_overload_signature` rather than
+    /// recomputing it, mirroring `check_item_body`'s identical contract for
+    /// an ordinary item.
+    fn ensure_overload_body(&mut self, module_path: &[Ident], index: usize) -> Option<(CheckedItem, Vec<AnalysisWarning>)> {
+        let key = (module_path.to_vec(), index);
+        if let Some(result) = self.overload_bodies.get(&key) {
+            return Some(result.clone());
+        }
+        let fn_type = self.ensure_overload_signature(module_path, index).ok()?;
+        let imports = self.resolved_imports(module_path).ok()?;
+        let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
+        let HirItem::FunctionDefinition(f) = &hir.items[index] else {
+            unreachable!("only ever called with an index ensure_module_indexed confirmed is a function");
+        };
+        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &imports, &[], (f.id, f.span));
+        let checked = analyzer.check_function_body(f, &fn_type, f.id);
+        let (errors, warnings) = analyzer.finish();
+        if !errors.is_empty() {
+            self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+        }
+        let result = (CheckedItem::FunctionDefinition(checked?), warnings);
+        self.overload_bodies.insert(key, result.clone());
+        Some(result)
+    }
+
+    /// Compares every pair of `name`'s overload candidates (`indices`,
+    /// already resolved into `signatures` at the same positions) by
+    /// param-type list, ignoring parameter names -- an identical pair is a
+    /// genuine duplicate (two calls could never be told apart), reported
+    /// via the same `Redeclaration` diagnostic a same-shaped non-function
+    /// collision already gets in `ensure_module_indexed`, not a new
+    /// variant, since the underlying meaning ("this name already exists
+    /// here") is identical.
+    fn check_overload_duplicates(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+        indices: &[usize],
+        signatures: &[ResolvedFunctionType],
+    ) {
+        let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
+        for i in 1..indices.len() {
+            for j in 0..i {
+                let same_params =
+                    signatures[i].params.iter().map(|(_, t)| t).eq(signatures[j].params.iter().map(|(_, t)| t));
+                if same_params {
+                    let (id, span) = item_id_span(&hir.items[indices[i]]);
+                    let (_, previous) = item_id_span(&hir.items[indices[j]]);
+                    self.module_errors.entry(module_path.to_vec()).or_default().push(AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::Redeclaration { name: name.clone(), previous: Some(previous) },
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
     /// Every reachable module's every error recorded so far, drained into
     /// the `Vec<CompileError>` shape `compile` returns on failure.
     fn drain_errors(&mut self, reachable: &[Vec<Ident>]) -> Vec<CompileError> {
@@ -929,8 +1067,16 @@ impl Driver {
 
         for path in &reachable {
             self.ensure_module_indexed(path).map_err(resolve)?;
+            let overloaded_names: std::collections::HashSet<Ident> =
+                self.function_overloads[path].keys().cloned().collect();
             let names: Vec<Ident> = self.local_items[path].keys().cloned().collect();
             for name in &names {
+                // Handled below instead -- `ensure_item`'s `ItemKey` can
+                // only ever address one item per name, so it would silently
+                // only process the first-declared overload.
+                if overloaded_names.contains(name) {
+                    continue;
+                }
                 let generics = self.raw_item_generics(path, name).map_err(resolve)?;
                 if !generics.is_empty() {
                     continue;
@@ -940,6 +1086,19 @@ impl Driver {
                 // `indirect`'s distinction can't matter here; `true` just
                 // means "no spurious cycle risk from the sweep itself."
                 let _ = self.ensure_item(path, name, &[], true);
+            }
+            // Every overloaded name's every candidate signature -- resolved
+            // eagerly here (unlike a generic instantiation, an overload set
+            // is fully enumerable up front, so there's no need for
+            // `check_generic_instantiation_body`'s on-demand trigger/
+            // deferred-merge dance).
+            for (name, indices) in &self.function_overloads[path].clone() {
+                let signatures: Vec<ResolvedFunctionType> = indices
+                    .iter()
+                    .map(|&i| self.ensure_overload_signature(path, i))
+                    .collect::<Result<_, _>>()
+                    .map_err(resolve)?;
+                self.check_overload_duplicates(path, name, indices, &signatures);
             }
         }
 
@@ -954,9 +1113,17 @@ impl Driver {
             let hir = self.parsed.get(path).expect("reachable modules are always parsed").clone();
             let imports = self.resolved_imports(path).map_err(resolve)?;
 
+            let overloaded_names: std::collections::HashSet<Ident> =
+                self.function_overloads[path].keys().cloned().collect();
             let mut items = Vec::new();
             for item in hir.items.iter().filter(|i| !matches!(i, HirItem::Import(_))) {
                 let Some(name) = item_name(item) else { continue };
+                // Handled below instead -- `check_item_body`'s `ItemKey`
+                // lookup would collide across every candidate sharing this
+                // name (see this loop's overload-sweep counterpart below).
+                if overloaded_names.contains(&name) {
+                    continue;
+                }
                 let generics = self.raw_item_generics(path, &name).map_err(resolve)?;
                 if !generics.is_empty() {
                     continue;
@@ -964,6 +1131,14 @@ impl Driver {
                 if let Some((checked, item_warnings)) = self.check_item_body(path, &name, item, &imports, &[]) {
                     items.push(checked);
                     warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
+                }
+            }
+            for indices in self.function_overloads[path].clone().into_values() {
+                for index in indices {
+                    if let Some((checked, item_warnings)) = self.ensure_overload_body(path, index) {
+                        items.push(checked);
+                        warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
+                    }
                 }
             }
 
@@ -1062,6 +1237,37 @@ impl ModuleResolver for Driver {
             generics: f.generics.clone(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))
+    }
+
+    fn function_overload_signatures(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType)>>, ResolveError> {
+        // A module-resolution failure here doesn't mean this call is
+        // broken -- it means `module_path` (the caller's naive "everything
+        // but the last segment" split of an absolute path) isn't a real
+        // module at all, which is exactly what a `Module::Type::function`
+        // static-call path (its `module_path` would actually be
+        // `[Module, Type]`) looks like from here. Swallowed the same way
+        // `generic_function_signature` swallows it, for the identical
+        // reason: "not a flat item path" just means "not this call's
+        // concern," left for the ordinary path to resolve/report for real.
+        if self.ensure_module_indexed(module_path).is_err() {
+            return Ok(None);
+        }
+        let Some(indices) = self.function_overloads[module_path].get(name).cloned() else {
+            return Ok(None);
+        };
+        let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
+        let mut candidates = Vec::with_capacity(indices.len());
+        for index in indices {
+            let HirItem::FunctionDefinition(f) = &hir.items[index] else {
+                unreachable!("function_overloads only ever records function item indices");
+            };
+            candidates.push((f.id, self.ensure_overload_signature(module_path, index)?));
+        }
+        Ok(Some(candidates))
     }
 
     fn similar_item_name(

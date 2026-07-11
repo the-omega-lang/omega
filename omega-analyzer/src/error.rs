@@ -1,4 +1,4 @@
-use crate::resolved_type::{NumericKind, ResolvedType};
+use crate::resolved_type::{NumericKind, ResolvedFunctionType, ResolvedType};
 use crate::resolver::ResolveError;
 use omega_diagnostics::Diagnostic;
 use omega_hir::HirId;
@@ -397,6 +397,19 @@ pub enum AnalysisErrorKind {
     /// already applies to pointer coercion, checked here at a cast site
     /// instead of a call/assignment site.
     CastToMutablePointer { from: ResolvedType, to: ResolvedType },
+
+    // -- overload resolution --
+    /// A call (or a bare, uncalled reference) to an overloaded name where
+    /// no candidate's parameters accept the arguments given -- `candidates`
+    /// lists every overload's signature, so the message can show what
+    /// *would* have matched.
+    NoMatchingOverload { name: Ident, candidates: Vec<ResolvedFunctionType> },
+    /// A call (or a bare, uncalled reference) to an overloaded name where
+    /// two or more candidates are equally good a match -- see
+    /// `Analyzer::resolve_overload`'s scoring rule for what "equally good"
+    /// means (fewest literal arguments needing a non-default type).
+    /// `candidates` lists every *tied* candidate.
+    AmbiguousOverload { name: Ident, candidates: Vec<ResolvedFunctionType> },
 }
 
 impl AnalysisErrorKind {
@@ -746,6 +759,20 @@ impl AnalysisErrorKind {
             Self::CastToMutablePointer { from, to } => d
                 .with_label(span, format!("cannot cast '{from}' to '{to}'"))
                 .with_help("a pointer cast can only target `*mut T` if the source is already `*mut`"),
+            Self::NoMatchingOverload { name, candidates } => {
+                let mut d = d.with_label(span, format!("no overload of `{}` matches this", name.as_ref()));
+                for candidate in candidates {
+                    d = d.with_note(format!("candidate: {}", ResolvedType::Function(candidate.clone())));
+                }
+                d
+            }
+            Self::AmbiguousOverload { name, candidates } => {
+                let mut d = d.with_label(span, format!("reference to `{}` is ambiguous", name.as_ref()));
+                for candidate in candidates {
+                    d = d.with_note(format!("candidate: {}", ResolvedType::Function(candidate.clone())));
+                }
+                d
+            }
         }
     }
 }
@@ -1133,6 +1160,8 @@ impl fmt::Display for AnalysisErrorKind {
             Self::CastToMutablePointer { from, to } => {
                 write!(f, "cannot cast '{from}' to '{to}': target is a mutable pointer")
             }
+            Self::NoMatchingOverload { name, .. } => write!(f, "no overload of '{}' matches this call", name.as_ref()),
+            Self::AmbiguousOverload { name, .. } => write!(f, "ambiguous reference to overloaded '{}'", name.as_ref()),
         }
     }
 }
