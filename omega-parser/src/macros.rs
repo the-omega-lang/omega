@@ -519,6 +519,10 @@ fn expand_expr(
             let neg = *neg;
             Expression::Negate(Box::new(NegateExpr { base: expand_expr(neg.base, defs, budget)? }))
         }
+        Expression::BitNot(not) => {
+            let not = *not;
+            Expression::BitNot(Box::new(BitNotExpr { base: expand_expr(not.base, defs, budget)? }))
+        }
         Expression::Cast(cast) => {
             let cast = *cast;
             Expression::Cast(Box::new(CastExpr { target: cast.target, base: expand_expr(cast.base, defs, budget)? }))
@@ -541,6 +545,7 @@ fn expand_expr(
         }
         Expression::Number(n) => Expression::Number(n),
         Expression::String(s) => Expression::String(s),
+        Expression::ByteString(s) => Expression::ByteString(s),
         Expression::Bool(b) => Expression::Bool(b),
         Expression::Char(c) => Expression::Char(c),
         Expression::Codeblock(cb) => Expression::Codeblock(expand_codeblock(cb, defs, budget)?),
@@ -553,6 +558,14 @@ fn expand_expr(
             let assign = *assign;
             Expression::Assignment(Box::new(AssignmentExpr {
                 target: expand_expr(assign.target, defs, budget)?,
+                value: Box::new(expand_expr(*assign.value, defs, budget)?),
+            }))
+        }
+        Expression::CompoundAssign(assign) => {
+            let assign = *assign;
+            Expression::CompoundAssign(Box::new(CompoundAssignExpr {
+                target: expand_expr(assign.target, defs, budget)?,
+                op: assign.op,
                 value: Box::new(expand_expr(*assign.value, defs, budget)?),
             }))
         }

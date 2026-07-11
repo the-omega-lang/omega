@@ -1,7 +1,8 @@
 use crate::ast::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
-    assignment::AssignmentExpr, binary_op::{BinaryOp, BinaryOpExpr}, bool_literal::BoolExpr,
-    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr, deref::DerefExpr,
+    assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
+    bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
+    codeblock::CodeblockExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, slice::SliceExpr,
@@ -20,24 +21,43 @@ use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::par
 /// outer layers matching their exact non-standard semantics; only the
 /// genuinely standard left-associative additive/multiplicative tiers use
 /// real precedence-climbing (see `parse_additive`/`parse_multiplicative`).
-/// Precedence, loosest to tightest: assignment, comparison, additive,
-/// multiplicative, prefix unary, postfix, primary.
+/// Precedence, loosest to tightest: assignment, comparison, bitor, bitxor,
+/// bitand, shift, additive, multiplicative, prefix unary, postfix, primary.
+/// The bitwise tiers sit *tighter* than comparison and *looser* than shift,
+/// matching Rust's precedence rather than C's -- C famously binds `&`/`|`
+/// looser than `==`, so `a & b == c` silently means `a & (b == c)`; putting
+/// the bitwise ops above comparison here avoids that footgun entirely.
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
     parse_assignment(p)
 }
 
+/// Plain `=` and every "operate and assign" form (`+= -= *= /= %= &= |= ^=
+/// <<= >>=`) share this one outer layer -- the latter just carries which
+/// `BinaryOp` it desugars through (see `CompoundAssignExpr`'s doc comment).
 fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
     let target = parse_comparison(p)?;
-    if !p.check(&TokenKind::Eq) {
-        return Some(target);
-    }
+    let op = match p.peek() {
+        TokenKind::Eq => None,
+        TokenKind::PlusEq => Some(BinaryOp::Add),
+        TokenKind::MinusEq => Some(BinaryOp::Sub),
+        TokenKind::StarEq => Some(BinaryOp::Mul),
+        TokenKind::SlashEq => Some(BinaryOp::Div),
+        TokenKind::PercentEq => Some(BinaryOp::Rem),
+        TokenKind::AmpEq => Some(BinaryOp::BitAnd),
+        TokenKind::PipeEq => Some(BinaryOp::BitOr),
+        TokenKind::CaretEq => Some(BinaryOp::BitXor),
+        TokenKind::ShlEq => Some(BinaryOp::Shl),
+        TokenKind::ShrEq => Some(BinaryOp::Shr),
+        _ => return Some(target),
+    };
     p.advance();
     let value = parse_expression(p)?;
     let span = target.span.to(value.span);
-    Some(ExpressionNode {
-        expression: Expression::Assignment(Box::new(AssignmentExpr { target, value: Box::new(value) })),
-        span,
-    })
+    let expression = match op {
+        None => Expression::Assignment(Box::new(AssignmentExpr { target, value: Box::new(value) })),
+        Some(op) => Expression::CompoundAssign(Box::new(CompoundAssignExpr { target, op, value: Box::new(value) })),
+    };
+    Some(ExpressionNode { expression, span })
 }
 
 /// `== != < <= > >=`, non-associative: at most one comparison is matched
@@ -45,7 +65,7 @@ fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
 /// parenthesized rather than either chaining or silently meaning
 /// `(a < b) < c`.
 fn parse_comparison(p: &mut Parser) -> Option<ExpressionNode> {
-    let left = parse_additive(p)?;
+    let left = parse_bitor(p)?;
     let op = match p.peek() {
         TokenKind::EqEq => BinaryOp::Eq,
         TokenKind::NotEq => BinaryOp::Ne,
@@ -56,9 +76,61 @@ fn parse_comparison(p: &mut Parser) -> Option<ExpressionNode> {
         _ => return Some(left),
     };
     p.advance();
-    let right = parse_additive(p)?;
+    let right = parse_bitor(p)?;
     let span = left.span.to(right.span);
     Some(ExpressionNode { expression: binary_op_expr(left, op, right), span })
+}
+
+fn parse_bitor(p: &mut Parser) -> Option<ExpressionNode> {
+    let mut left = parse_bitxor(p)?;
+    while p.check(&TokenKind::Pipe) {
+        p.advance();
+        let right = parse_bitxor(p)?;
+        let span = left.span.to(right.span);
+        left = ExpressionNode { expression: binary_op_expr(left, BinaryOp::BitOr, right), span };
+    }
+    Some(left)
+}
+
+fn parse_bitxor(p: &mut Parser) -> Option<ExpressionNode> {
+    let mut left = parse_bitand(p)?;
+    while p.check(&TokenKind::Caret) {
+        p.advance();
+        let right = parse_bitand(p)?;
+        let span = left.span.to(right.span);
+        left = ExpressionNode { expression: binary_op_expr(left, BinaryOp::BitXor, right), span };
+    }
+    Some(left)
+}
+
+/// `&` here is always infix (bitwise-and) -- unlike `parse_unary`'s prefix
+/// `&`/`&mut` (address-of), disambiguated purely by position, the same way
+/// `*`/`-` already mean different things as a prefix vs. an infix operator.
+fn parse_bitand(p: &mut Parser) -> Option<ExpressionNode> {
+    let mut left = parse_shift(p)?;
+    while p.check(&TokenKind::Amp) {
+        p.advance();
+        let right = parse_shift(p)?;
+        let span = left.span.to(right.span);
+        left = ExpressionNode { expression: binary_op_expr(left, BinaryOp::BitAnd, right), span };
+    }
+    Some(left)
+}
+
+fn parse_shift(p: &mut Parser) -> Option<ExpressionNode> {
+    let mut left = parse_additive(p)?;
+    loop {
+        let op = match p.peek() {
+            TokenKind::Shl => BinaryOp::Shl,
+            TokenKind::Shr => BinaryOp::Shr,
+            _ => break,
+        };
+        p.advance();
+        let right = parse_additive(p)?;
+        let span = left.span.to(right.span);
+        left = ExpressionNode { expression: binary_op_expr(left, op, right), span };
+    }
+    Some(left)
 }
 
 fn parse_additive(p: &mut Parser) -> Option<ExpressionNode> {
@@ -123,6 +195,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Deref,
         AddressOf { mutable: bool },
         Negate,
+        BitNot,
         Increment,
         Decrement,
     }
@@ -139,6 +212,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         }
         TokenKind::Amp => Prefix::AddressOf { mutable: false },
         TokenKind::Minus => Prefix::Negate,
+        TokenKind::Tilde => Prefix::BitNot,
         _ => return parse_postfix(p),
     };
     p.advance();
@@ -151,6 +225,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Prefix::Deref => Expression::Deref(Box::new(DerefExpr { base })),
         Prefix::AddressOf { mutable } => Expression::AddressOf(Box::new(AddressOfExpr { base, mutable })),
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
+        Prefix::BitNot => Expression::BitNot(Box::new(BitNotExpr { base })),
         Prefix::Increment => Expression::Increment(Box::new(IncrementExpr { base })),
         Prefix::Decrement => Expression::Decrement(Box::new(DecrementExpr { base })),
     };
@@ -324,6 +399,10 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
         TokenKind::Str(_) => {
             let TokenKind::Str(s) = p.advance().kind else { unreachable!() };
             Some(ExpressionNode { expression: Expression::String(StringExpr(s)), span: start })
+        }
+        TokenKind::ByteStr(_) => {
+            let TokenKind::ByteStr(s) = p.advance().kind else { unreachable!() };
+            Some(ExpressionNode { expression: Expression::ByteString(ByteStringExpr(s)), span: start })
         }
         TokenKind::Char(_) => {
             let TokenKind::Char(c) = p.advance().kind else { unreachable!() };

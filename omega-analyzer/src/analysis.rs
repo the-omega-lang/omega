@@ -21,10 +21,10 @@ use crate::{
     similarity::best_match,
 };
 use omega_hir::{
-    BinaryOp, HirAddressOf, HirBlock, HirCast, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
+    BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
     HirExternDeclaration,
     HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
-    HirPlace, HirPlaceRoot, HirProjection, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
+    HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
     HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, Span, Type};
@@ -743,6 +743,85 @@ impl<'r> Analyzer<'r> {
         None
     }
 
+    /// `&base[range]` (`requested_mutable: false`) / `&mut base[range]`
+    /// (`requested_mutable: true`) -- the only way to produce a
+    /// `ResolvedType::Slice` value; a bare `base[range]` with no `&`/`&mut`
+    /// is rejected before this is ever called (see `HirExpr::Slice`'s arm
+    /// in `analyze_expr`). Mirrors `HirExpr::AddressOf`'s own `&`/`&mut`
+    /// treatment of an ordinary place, just producing a fat pointer instead
+    /// of a thin one.
+    fn analyze_slice(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        base: &HirPlace,
+        range: &HirRange,
+        requested_mutable: bool,
+    ) -> Option<CheckedExprNode> {
+        let (checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base, None)?;
+
+        // The slice's *source* mutability: for inline storage
+        // (`SizedArray`), whether the storage being sliced is itself
+        // writable (the place's own mutability); for re-slicing an
+        // existing `Slice` value, that slice's own flag -- a property of
+        // the value being sliced, independent of whether the *variable*
+        // holding it happens to be `mut`. `requested_mutable` (from the
+        // `&`/`&mut` the user actually wrote) may never exceed this: you
+        // can't get a mutable slice out of an immutable array or an
+        // already-immutable slice.
+        let (item_type, source_mutable, from_slice) = match base_type {
+            ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false),
+            ResolvedType::Slice { item, mutable } => (*item, mutable, true),
+            found => {
+                self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable { found }));
+                return None;
+            }
+        };
+        if requested_mutable && !source_mutable {
+            // Re-slicing an already-immutable `Slice` value: `require_
+            // mutable_place` below would blame the *binding* (`&base.root`),
+            // which is misleading here -- the binding may well be `mut`,
+            // it's the slice *value* it holds that's immutable (see the
+            // comment above). Only the plain-array case is a genuine
+            // binding-mutability question.
+            if from_slice {
+                self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ImmutableSliceSource));
+                return None;
+            }
+            self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
+        }
+
+        let analyze_bound = |this: &mut Self, bound: &Option<Box<HirExprNode>>| -> Option<Option<Box<CheckedExprNode>>> {
+            let Some(bound) = bound else { return Some(None) };
+            let checked_bound = this.analyze_expr(bound, Some(&ResolvedType::I32))?;
+            if checked_bound.r#type != ResolvedType::I32 {
+                this.errors.push(AnalysisError::new(
+                    bound.id,
+                    bound.span,
+                    AnalysisErrorKind::InvalidSliceBound { r#type: checked_bound.r#type },
+                ));
+                return None;
+            }
+            Some(Some(Box::new(checked_bound)))
+        };
+
+        let checked_start = analyze_bound(self, &range.start)?;
+        let checked_end = analyze_bound(self, &range.end)?;
+
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::Slice { item: Box::new(item_type.clone()), mutable: requested_mutable },
+            kind: CheckedExpr::Slice(CheckedSlice {
+                base: checked_base,
+                item_type,
+                start: checked_start,
+                end: checked_end,
+                inclusive: range.inclusive,
+            }),
+        })
+    }
+
     /// Resolves `absolute` (already a full `[module_path.., name]`, whether
     /// built from a qualified place's import alias or an unqualified one's
     /// implicit own-module prefix) to a place root -- shared by both of
@@ -760,17 +839,29 @@ impl<'r> Analyzer<'r> {
         span: Span,
         absolute: Vec<Ident>,
         unqualified: Option<&Ident>,
+        expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         // A bare (uncalled) reference to an overloaded name -- `resolve_item`
         // would otherwise silently resolve it to whichever candidate the
         // driver happens to index first (see `ModuleResolver::resolve_item`'s
-        // single-result contract, which has no way to pick one at all). Only
-        // a call site (`resolve_overloaded_call`) has the argument types
-        // needed to disambiguate, so anywhere else this is unconditionally
-        // ambiguous -- reported with every candidate listed, no winner.
+        // single-result contract, which has no way to pick one at all). A
+        // call site (`resolve_overloaded_call`) has the argument types
+        // needed to disambiguate; anywhere else, the only other thing that
+        // can disambiguate is an explicit function-typed `expected` (a
+        // declaration/assignment annotation) that structurally matches
+        // exactly one candidate's signature -- everything else is
+        // unconditionally ambiguous, reported with every candidate listed
+        // and no winner.
         if let Some((name, module_path)) = absolute.split_last()
             && let Ok(Some(candidates)) = self.resolver.function_overload_signatures(module_path, name)
         {
+            if let Some(ResolvedType::Function(expected_fn)) = expected
+                && let Some((decl_id, fn_type)) = Self::unique_overload_signature_match(expected_fn, &candidates)
+            {
+                let r#type = ResolvedType::Function(fn_type);
+                let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
+                return Some((root, r#type));
+            }
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -831,6 +922,35 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
+    }
+
+    /// Finds the one candidate (if any) among an overloaded name's
+    /// signatures that structurally matches `expected` -- a function-typed
+    /// declaration/assignment annotation naming exactly which overload is
+    /// meant (`f : (a: u64) => void = f;`). Compared by shape only (param
+    /// types in order, return type, `is_variadic`/`is_member_function`),
+    /// never by parameter name -- the annotation's own parameter names have
+    /// no reason to match the target function's, same "types only" spirit
+    /// as `check_overload_duplicates`'s pairwise comparison. Zero or 2+
+    /// matches both return `None`: a real duplicate overload set is already
+    /// rejected elsewhere (`check_overload_duplicates`), so 2+ here would
+    /// mean the annotation itself is ambiguous, not that a choice exists.
+    fn unique_overload_signature_match(
+        expected: &ResolvedFunctionType,
+        candidates: &[(HirId, ResolvedFunctionType)],
+    ) -> Option<(HirId, ResolvedFunctionType)> {
+        let mut matches = candidates.iter().filter(|(_, fn_type)| {
+            fn_type.is_variadic == expected.is_variadic
+                && fn_type.is_member_function == expected.is_member_function
+                && fn_type.return_type == expected.return_type
+                && fn_type.params.len() == expected.params.len()
+                && fn_type.params.iter().zip(&expected.params).all(|((_, a), (_, b))| a == b)
+        });
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first.clone())
     }
 
     /// `Head::function` where `Head` isn't an imported module alias -- the
@@ -1157,6 +1277,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         place: &HirPlace,
+        expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlace, ResolvedType, bool)> {
         let (root, mut current_type, mut mutable) = match &place.root {
             // A path with explicit generic arguments (`Optional<u32>::Some`,
@@ -1206,7 +1327,7 @@ impl<'r> Analyzer<'r> {
                             (absolute, Some(ident))
                         }
                     };
-                    let (root, r#type) = self.resolve_qualified_value(node_id, span, absolute, unqualified)?;
+                    let (root, r#type) = self.resolve_qualified_value(node_id, span, absolute, unqualified, expected)?;
                     (root, r#type, false)
                 }
             }
@@ -1221,7 +1342,7 @@ impl<'r> Analyzer<'r> {
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
                 let (root, r#type) = match self.context.absolute_path(path) {
-                    Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None)?,
+                    Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None, expected)?,
                     None => self.resolve_type_qualified_value(node_id, span, path)?,
                 };
                 (root, r#type, false)
@@ -1302,7 +1423,7 @@ impl<'r> Analyzer<'r> {
                 root: place.root.clone(),
                 projections: place.projections[..place.projections.len() - 1].to_vec(),
             };
-            let (checked_base, base_type, base_mutable) = self.analyze_place(callee.id, callee.span, &base_place)?;
+            let (checked_base, base_type, base_mutable) = self.analyze_place(callee.id, callee.span, &base_place, None)?;
 
             let methods = self.find_methods(&base_type, field);
             if !methods.is_empty() {
@@ -2013,15 +2134,14 @@ impl<'r> Analyzer<'r> {
     /// Whether `expr` is a bare (or singly-negated) *unsuffixed* number
     /// literal -- the one expression shape whose concrete type isn't
     /// already pinned by anything written down, so it's the one shape
-    /// worth peeking at *before* fully analyzing it: `HirExpr::If`'s
-    /// branch-unification (see its own doc comment) and overload
-    /// resolution's viability scoring both need to know "is this argument/
-    /// branch still open to adapt" without the side effects (errors bound
-    /// to a specific resolved type) a real `analyze_expr` call would commit
-    /// to. `Negate` is peeked through because it's transparent to a
-    /// literal's own type (`-100` is exactly as adaptable as `100`) -- see
-    /// `HirExpr::Negate`'s arm in `analyze_expr`, which threads `expected`
-    /// straight through for the identical reason.
+    /// worth peeking at *before* fully analyzing it: overload resolution's
+    /// viability scoring needs to know "is this argument still open to
+    /// adapt" without the side effects (errors bound to a specific resolved
+    /// type) a real `analyze_expr` call would commit to. `Negate` is peeked
+    /// through because it's transparent to a literal's own type (`-100` is
+    /// exactly as adaptable as `100`) -- see `HirExpr::Negate`'s arm in
+    /// `analyze_expr`, which threads `expected` straight through for the
+    /// identical reason.
     fn adaptable_literal(expr: &HirExprNode) -> bool {
         match &expr.expr {
             HirExpr::Number(n) => n.explicit_type.is_none(),
@@ -2183,7 +2303,7 @@ impl<'r> Analyzer<'r> {
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace));
             return None;
         };
-        let (checked_place, place_type, mutable) = self.analyze_place(base.id, base.span, place)?;
+        let (checked_place, place_type, mutable) = self.analyze_place(base.id, base.span, place, None)?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let Some(kind) = place_type.numeric_kind() else {
@@ -2222,6 +2342,121 @@ impl<'r> Analyzer<'r> {
         })
     }
 
+    /// The type-checking core of `left op right`, shared by `HirExpr::
+    /// BinaryOp`'s arm and `analyze_compound_assign`'s desugaring (`target
+    /// op= value` -> `target = target op value`) -- both already have their
+    /// operands analyzed (a compound assignment's `left` is a synthetic
+    /// place-read, never itself re-analyzed here), so this only ever
+    /// type-checks and combines two already-`CheckedExprNode`s.
+    fn analyze_binary_op(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        op: BinaryOp,
+        checked_left: CheckedExprNode,
+        checked_right: CheckedExprNode,
+    ) -> Option<CheckedExprNode> {
+        for operand in [&checked_left, &checked_right] {
+            if operand.r#type.numeric_kind().is_none() {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::InvalidBinaryOperand { op, r#type: operand.r#type.clone() },
+                ));
+                return None;
+            }
+        }
+
+        // No implicit numeric conversions anywhere else in this
+        // language (see e.g. `AssignmentTypeMismatch`) -- arithmetic
+        // between two different numeric types is no exception.
+        if checked_left.r#type != checked_right.r#type {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::BinaryOperandTypeMismatch {
+                    left: checked_left.r#type.clone(),
+                    left_span: checked_left.span,
+                    right: checked_right.r#type.clone(),
+                    right_span: checked_right.span,
+                },
+            ));
+            return None;
+        }
+
+        // No native float remainder instruction (see
+        // `AnalysisErrorKind::FloatRemainder`'s doc comment) --
+        // matching C, which requires `fmod`/`fmodf` instead of `%`.
+        if op == BinaryOp::Rem && matches!(checked_left.r#type.numeric_kind(), Some(NumericKind::Float(_))) {
+            self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::FloatRemainder));
+            return None;
+        }
+
+        // No native float bitwise/shift instructions either -- same
+        // reasoning as `Rem` just above, just for a whole family of ops
+        // instead of one.
+        if matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr)
+            && matches!(checked_left.r#type.numeric_kind(), Some(NumericKind::Float(_)))
+        {
+            self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::FloatBitwiseOperand));
+            return None;
+        }
+
+        // A comparison always produces `bool`, regardless of the
+        // (still-numeric, still-matching) operand type; an
+        // arithmetic op's result is that same operand type.
+        let r#type = if op.is_comparison() { ResolvedType::Bool } else { checked_left.r#type.clone() };
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type,
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(checked_left), right: Box::new(checked_right) }),
+        })
+    }
+
+    /// `target op= value` -- desugars directly into `target = target op
+    /// value`, the same pattern `analyze_incr_decr` already uses for
+    /// `++`/`--` (a `BinaryOp` over a place-read and `value`, wrapped in an
+    /// ordinary `Assignment`), generalized to a real right-hand side
+    /// instead of a synthesized `1`. `value` is analyzed with `expected =
+    /// Some(&target_type)` -- the same treatment a plain assignment's value
+    /// already gets (`HirExpr::Assignment`'s arm) -- so `a *= 5` adapts an
+    /// unsuffixed literal `5` to `a`'s own type rather than defaulting to
+    /// `i32`/`f64` and then failing `analyze_binary_op`'s "operands must
+    /// match exactly" check.
+    fn analyze_compound_assign(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: &HirExprNode,
+        op: BinaryOp,
+        value: &HirExprNode,
+    ) -> Option<CheckedExprNode> {
+        let HirExpr::Place(place) = &target.expr else {
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::CompoundAssignTargetNotAPlace));
+            return None;
+        };
+        let (checked_place, place_type, mutable) = self.analyze_place(target.id, target.span, place, None)?;
+        self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
+
+        let checked_value = self.analyze_expr(value, Some(&place_type))?;
+        let place_read = CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: place_type.clone(),
+            kind: CheckedExpr::Place(checked_place.clone()),
+        };
+        let combined = self.analyze_binary_op(node_id, span, op, place_read, checked_value)?;
+
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: place_type,
+            kind: CheckedExpr::Assignment(CheckedAssignment { target: checked_place, value: Box::new(combined) }),
+        })
+    }
+
     /// `expected` is the concrete type this expression's *result* is about
     /// to flow into, when the caller has one available (a declaration's
     /// annotated type, an assignment's target, a `return`'s function
@@ -2241,7 +2476,7 @@ impl<'r> Analyzer<'r> {
 
         match &node.expr {
             HirExpr::Place(place) => {
-                let (checked_place, r#type, _mutable) = self.analyze_place(node_id, span, place)?;
+                let (checked_place, r#type, _mutable) = self.analyze_place(node_id, span, place, expected)?;
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
             }
 
@@ -2267,6 +2502,18 @@ impl<'r> Analyzer<'r> {
                 kind: CheckedExpr::String(s.0.clone()),
             }),
 
+            // `b"..."` -- a raw byte run with a compile-time-known length,
+            // not a null-terminated C string: `*[u8]` (`ResolvedType::
+            // Slice`, see `Context::resolve_type`'s `*[T]` special case),
+            // never `*u8`. Immutable for the same reason a plain string
+            // literal is.
+            HirExpr::ByteString(s) => Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: ResolvedType::Slice { item: Box::new(ResolvedType::U8), mutable: false },
+                kind: CheckedExpr::ByteString(s.0.clone()),
+            }),
+
             HirExpr::Codeblock(block) => {
                 let checked_block = self.analyze_block(block, expected)?;
                 let r#type = Self::block_type(&checked_block).unwrap_or(ResolvedType::Void);
@@ -2281,16 +2528,22 @@ impl<'r> Analyzer<'r> {
                 // case, exactly as if this whole feature didn't exist for
                 // them: there's no cross-branch value to unify toward.
                 let has_else = else_branch.is_some();
-                let branch_is_adaptable: Vec<bool> = branches
-                    .iter()
-                    .map(|(_, block)| has_else && block.tail.as_deref().is_some_and(Self::adaptable_literal))
-                    .collect();
-                let else_is_adaptable =
-                    else_branch.as_ref().is_some_and(|b| b.tail.as_deref().is_some_and(Self::adaptable_literal));
 
+                // Earliest-wins unification: branch 0 is always the
+                // *anchor* -- the incoming `expected`, if any, otherwise
+                // branch 0's own (widened) type once it's analyzed -- and
+                // every other branch/`else` is checked *against* that
+                // anchor, never the other way around. Unlike the old
+                // "peek every branch, use whichever non-literal one is
+                // found first" approach, this never lets a *later* branch's
+                // already-fixed type (an explicit suffix, a variable, ...)
+                // retroactively decide what an earlier adaptable literal
+                // infers to -- a later branch only has to *agree* with the
+                // anchor (see the mismatch check below), never supply it.
                 let mut checked_conds = Vec::with_capacity(branches.len());
-                let mut checked_blocks: Vec<Option<CheckedBlock>> = Vec::with_capacity(branches.len());
-                for ((cond, block), &adaptable) in branches.iter().zip(&branch_is_adaptable) {
+                let mut checked_blocks: Vec<CheckedBlock> = Vec::with_capacity(branches.len());
+                let mut anchor: Option<ResolvedType> = None;
+                for (i, (cond, block)) in branches.iter().enumerate() {
                     let checked_cond = self.analyze_expr(cond, None)?;
                     if checked_cond.r#type != ResolvedType::Bool {
                         self.errors.push(AnalysisError::new(
@@ -2301,64 +2554,31 @@ impl<'r> Analyzer<'r> {
                         return None;
                     }
                     checked_conds.push(checked_cond);
-                    let block_expected = if has_else { expected } else { None };
-                    checked_blocks.push(if adaptable { None } else { Some(self.analyze_block(block, block_expected)?) });
+                    let block_expected = if !has_else {
+                        None
+                    } else if i == 0 {
+                        expected
+                    } else {
+                        anchor.as_ref()
+                    };
+                    let checked_block = self.analyze_block(block, block_expected)?;
+                    if has_else && i == 0 {
+                        anchor = Some(match expected {
+                            Some(t) => t.clone(),
+                            None => {
+                                Self::block_type(&checked_block).map(|t| t.widened()).unwrap_or(ResolvedType::Void)
+                            }
+                        });
+                    }
+                    checked_blocks.push(checked_block);
                 }
-                let mut checked_else = match else_branch {
-                    Some(b) if !else_is_adaptable => Some(self.analyze_block(b, expected)?),
-                    _ => None,
+                let checked_else = match else_branch {
+                    Some(b) => Some(self.analyze_block(b, anchor.as_ref())?),
+                    None => None,
                 };
 
-                // The unification *anchor* used to thread an expected type
-                // into the not-yet-analyzed adaptable-literal branches
-                // above -- only meaningful when an `else` exists at all
-                // (see `has_else` above): the incoming `expected` wins
-                // outright; else the first already-analyzed (non-adaptable)
-                // branch's/`else`'s own (widened) type; else -- every
-                // branch is an adaptable literal -- fall back to analyzing
-                // the very first branch with no expected type, exactly
-                // today's byte-for-byte behavior for that all-literal case.
-                // This never decides the *final* `result_type` below on its
-                // own -- that's still re-derived the same way it always was
-                // (see the "no `else`..." comment above), so a real
-                // pre-existing mismatch (e.g. a tail-valued branch with no
-                // `else` at all) is rejected exactly as before.
-                if has_else {
-                    let anchor = match expected {
-                        Some(t) => Some(t.clone()),
-                        None => checked_blocks
-                            .iter()
-                            .flatten()
-                            .chain(checked_else.as_ref())
-                            .find_map(Self::block_type)
-                            .map(|t| t.widened()),
-                    };
-                    let anchor = match anchor {
-                        Some(t) => t,
-                        None => {
-                            let (_, first_block) = branches.first().expect("an `if` always has at least one branch");
-                            let block = self.analyze_block(first_block, None)?;
-                            let t = Self::block_type(&block).map(|t| t.widened()).unwrap_or(ResolvedType::Void);
-                            checked_blocks[0] = Some(block);
-                            t
-                        }
-                    };
-                    for ((_, block), checked) in branches.iter().zip(checked_blocks.iter_mut()) {
-                        if checked.is_none() {
-                            *checked = Some(self.analyze_block(block, Some(&anchor))?);
-                        }
-                    }
-                    if checked_else.is_none()
-                        && let Some(b) = else_branch
-                    {
-                        checked_else = Some(self.analyze_block(b, Some(&anchor))?);
-                    }
-                }
-
-                let checked_branches: Vec<(CheckedExprNode, CheckedBlock)> = checked_conds
-                    .into_iter()
-                    .zip(checked_blocks.into_iter().map(|b| b.expect("every branch analyzed above")))
-                    .collect();
+                let checked_branches: Vec<(CheckedExprNode, CheckedBlock)> =
+                    checked_conds.into_iter().zip(checked_blocks).collect();
 
                 // What the whole `if` resolves to: the first concrete
                 // (non-diverging) type among the branches and the `else`,
@@ -2489,7 +2709,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 };
                 let (checked_target, target_type, target_mutable) =
-                    self.analyze_place(assignment.target.id, assignment.target.span, place)?;
+                    self.analyze_place(assignment.target.id, assignment.target.span, place, None)?;
                 self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
                 // Resolved *before* the value, unlike almost everywhere else
@@ -2532,13 +2752,23 @@ impl<'r> Analyzer<'r> {
                 })
             }
 
+            HirExpr::CompoundAssign(HirCompoundAssign { target, op, value }) => {
+                self.analyze_compound_assign(node_id, span, target, *op, value)
+            }
+
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
+                // `&base[range]`/`&mut base[range]` -- a slice, not an
+                // ordinary pointer; see `analyze_slice`'s own doc comment
+                // for why this is the *only* way to produce one.
+                if let HirExpr::Slice(HirSlice { base: slice_base, range }) = &base.expr {
+                    return self.analyze_slice(node_id, span, slice_base, range, *mutable);
+                }
                 let HirExpr::Place(place) = &base.expr else {
                     self.errors
                         .push(AnalysisError::new(node_id, span, AnalysisErrorKind::AddressOfNotAPlace));
                     return None;
                 };
-                let (checked_place, place_type, place_mutable) = self.analyze_place(base.id, base.span, place)?;
+                let (checked_place, place_type, place_mutable) = self.analyze_place(base.id, base.span, place, None)?;
 
                 let pointee_type = if *mutable {
                     // `&mut` requires write access, and -- unlike plain `&`
@@ -2624,61 +2854,31 @@ impl<'r> Analyzer<'r> {
             HirExpr::BinaryOp(bin) => {
                 let checked_left = self.analyze_expr(&bin.left, None)?;
                 let checked_right = self.analyze_expr(&bin.right, None)?;
+                self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
+            }
 
-                for operand in [&checked_left, &checked_right] {
-                    if operand.r#type.numeric_kind().is_none() {
-                        self.errors.push(AnalysisError::new(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::InvalidBinaryOperand {
-                                op: bin.op,
-                                r#type: operand.r#type.clone(),
-                            },
-                        ));
-                        return None;
-                    }
-                }
-
-                // No implicit numeric conversions anywhere else in this
-                // language (see e.g. `AssignmentTypeMismatch`) -- arithmetic
-                // between two different numeric types is no exception.
-                if checked_left.r#type != checked_right.r#type {
+            HirExpr::BitNot(base) => {
+                // `expected` passes straight through, same reasoning as
+                // `Negate`'s arm just above -- `~` is transparent to its own
+                // result type.
+                let checked_base = self.analyze_expr(base, expected)?;
+                let bitnotable =
+                    matches!(checked_base.r#type.numeric_kind(), Some(NumericKind::Signed(_) | NumericKind::Unsigned(_)));
+                if !bitnotable {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
-                        AnalysisErrorKind::BinaryOperandTypeMismatch {
-                            left: checked_left.r#type.clone(),
-                            left_span: checked_left.span,
-                            right: checked_right.r#type.clone(),
-                            right_span: checked_right.span,
-                        },
+                        AnalysisErrorKind::InvalidBitNotOperand { r#type: checked_base.r#type },
                     ));
                     return None;
                 }
 
-                // No native float remainder instruction (see
-                // `AnalysisErrorKind::FloatRemainder`'s doc comment) --
-                // matching C, which requires `fmod`/`fmodf` instead of `%`.
-                if bin.op == BinaryOp::Rem
-                    && matches!(checked_left.r#type.numeric_kind(), Some(NumericKind::Float(_)))
-                {
-                    self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::FloatRemainder));
-                    return None;
-                }
-
-                // A comparison always produces `bool`, regardless of the
-                // (still-numeric, still-matching) operand type; an
-                // arithmetic op's result is that same operand type.
-                let r#type = if bin.op.is_comparison() { ResolvedType::Bool } else { checked_left.r#type.clone() };
+                let r#type = checked_base.r#type.clone();
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
                     r#type,
-                    kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
-                        op: bin.op,
-                        left: Box::new(checked_left),
-                        right: Box::new(checked_right),
-                    }),
+                    kind: CheckedExpr::BitNot(Box::new(checked_base)),
                 })
             }
 
@@ -2738,54 +2938,14 @@ impl<'r> Analyzer<'r> {
 
             HirExpr::StructLiteral(lit) => self.analyze_struct_literal(node_id, span, lit),
 
-            HirExpr::Slice(HirSlice { base, range }) => {
-                let (checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base)?;
-
-                // The new slice's own mutability: for inline storage
-                // (`SizedArray`), whether the storage being sliced is itself
-                // writable (the place's own mutability); for re-slicing an
-                // existing `Slice` value, that slice's own flag -- a
-                // property of the value being sliced, independent of
-                // whether the *variable* holding it happens to be `mut`.
-                let (item_type, mutable) = match base_type {
-                    ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable),
-                    ResolvedType::Slice { item, mutable } => (*item, mutable),
-                    found => {
-                        self.errors
-                            .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable { found }));
-                        return None;
-                    }
-                };
-
-                let analyze_bound = |this: &mut Self, bound: &Option<Box<HirExprNode>>| -> Option<Option<Box<CheckedExprNode>>> {
-                    let Some(bound) = bound else { return Some(None) };
-                    let checked_bound = this.analyze_expr(bound, Some(&ResolvedType::I32))?;
-                    if checked_bound.r#type != ResolvedType::I32 {
-                        this.errors.push(AnalysisError::new(
-                            bound.id,
-                            bound.span,
-                            AnalysisErrorKind::InvalidSliceBound { r#type: checked_bound.r#type },
-                        ));
-                        return None;
-                    }
-                    Some(Some(Box::new(checked_bound)))
-                };
-
-                let checked_start = analyze_bound(self, &range.start)?;
-                let checked_end = analyze_bound(self, &range.end)?;
-
-                Some(CheckedExprNode {
-                    id: node_id,
-                    span,
-                    r#type: ResolvedType::Slice { item: Box::new(item_type.clone()), mutable },
-                    kind: CheckedExpr::Slice(CheckedSlice {
-                        base: checked_base,
-                        item_type,
-                        start: checked_start,
-                        end: checked_end,
-                        inclusive: range.inclusive,
-                    }),
-                })
+            // Reached only when *not* wrapped in `&`/`&mut` (see
+            // `HirExpr::AddressOf`'s arm, which intercepts the `&`-wrapped
+            // shape and calls `analyze_slice` directly) -- a slice
+            // expression alone can't tell whether the user meant an
+            // immutable or mutable slice, so it's never valid on its own.
+            HirExpr::Slice(_) => {
+                self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::SliceRequiresAddressOf));
+                None
             }
 
             HirExpr::Match(m) => self.analyze_match(node_id, span, m),

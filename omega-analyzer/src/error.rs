@@ -131,6 +131,10 @@ pub enum AnalysisErrorKind {
     /// An assignment's value doesn't have the same resolved type as its
     /// target (e.g. assigning a pointer into an `i32` local).
     AssignmentTypeMismatch { target: ResolvedType, value: ResolvedType },
+    /// A compound assignment's (`+= -= *= /= %= &= |= ^= <<= >>=`)
+    /// left-hand side isn't syntactically a place -- same reasoning as
+    /// `AssignmentTargetNotAPlace`.
+    CompoundAssignTargetNotAPlace,
     /// A number literal doesn't fit in its resolved type.
     NumberLiteralOutOfRange { literal: String, r#type: ResolvedType },
     /// `*expr` where `expr`'s resolved type isn't a pointer.
@@ -141,9 +145,23 @@ pub enum AnalysisErrorKind {
     InvalidBinaryOperand { op: BinaryOp, r#type: ResolvedType },
     /// A unary `-` operand isn't a signed integer or float.
     InvalidNegateOperand { r#type: ResolvedType },
+    /// A unary `~` operand isn't a signed or unsigned integer.
+    InvalidBitNotOperand { r#type: ResolvedType },
+    /// A `& | ^ << >>` operand is a float -- there's no native instruction
+    /// for any of these on floating-point operands.
+    FloatBitwiseOperand,
     /// `base[start..end]` where `base`'s resolved type is neither
     /// `SizedArray` nor `Slice`.
     NotSliceable { found: ResolvedType },
+    /// `base[start..end]` written without a leading `&`/`&mut` -- a slice
+    /// expression alone doesn't say whether it should be immutable or
+    /// mutable.
+    SliceRequiresAddressOf,
+    /// `&mut base[start..end]` where `base` is itself an already-immutable
+    /// `Slice` value -- distinct from `NotMutableBinding`/`NotMutablePointer`
+    /// because the *binding* holding the slice may well be `mut`; it's the
+    /// slice value's own flag that's immutable.
+    ImmutableSliceSource,
     /// A slice's `start`/`end` bound isn't `i32`.
     InvalidSliceBound { r#type: ResolvedType },
     /// `[]` -- there's no element to infer the array's item type from.
@@ -480,6 +498,9 @@ impl AnalysisErrorKind {
             Self::AssignmentTargetNotAPlace => d
                 .with_label(span, "cannot assign to this expression")
                 .with_note("only variables, fields, indexes, and dereferences can be assigned to"),
+            Self::CompoundAssignTargetNotAPlace => d
+                .with_label(span, "cannot assign to this expression")
+                .with_note("only variables, fields, indexes, and dereferences can be assigned to"),
             Self::AssignmentTypeMismatch { target, value } => {
                 let d = d
                     .with_label(span, format!("expected `{target}`, found `{value}`"))
@@ -516,9 +537,21 @@ impl AnalysisErrorKind {
             Self::InvalidNegateOperand { r#type } => d
                 .with_label(span, format!("this has type `{}`", r#type))
                 .with_note("unary `-` requires a signed integer or a float"),
+            Self::InvalidBitNotOperand { r#type } => d
+                .with_label(span, format!("this has type `{}`", r#type))
+                .with_note("unary `~` requires a signed or unsigned integer"),
+            Self::FloatBitwiseOperand => d
+                .with_label(span, "bitwise/shift operators require integer operands")
+                .with_note("there is no native float bitwise/shift instruction"),
             Self::NotSliceable { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be sliced"))
                 .with_note("only sized arrays (`[T; N]`) and slices (`*[T]`) support `[start..end]`"),
+            Self::SliceRequiresAddressOf => d
+                .with_label(span, "a slice expression must be prefixed with `&` or `&mut`")
+                .with_note("write `&base[start..end]` for an immutable slice, or `&mut base[start..end]` for a mutable one"),
+            Self::ImmutableSliceSource => d
+                .with_label(span, "cannot take a mutable slice of an immutable slice")
+                .with_note("this slice value is immutable, regardless of whether the binding holding it is `mut`"),
             Self::InvalidSliceBound { r#type } => {
                 d.with_label(span, format!("slice bounds must be `i32`, found `{}`", r#type))
             }
@@ -932,6 +965,9 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AssignmentTargetNotAPlace => {
                 write!(f, "invalid assignment target")
             }
+            Self::CompoundAssignTargetNotAPlace => {
+                write!(f, "invalid assignment target")
+            }
             Self::AssignmentTypeMismatch { target, value } => write!(
                 f,
                 "mismatched types: cannot assign '{value}' to a target of type '{target}'"
@@ -953,8 +989,21 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "cannot negate a value of type '{}'", r#type
             ),
+            Self::InvalidBitNotOperand { r#type } => write!(
+                f,
+                "cannot apply '~' to a value of type '{}'", r#type
+            ),
+            Self::FloatBitwiseOperand => {
+                write!(f, "bitwise/shift operators are not supported on floating-point operands")
+            }
             Self::NotSliceable { found } => {
                 write!(f, "cannot slice a value of type '{found}'")
+            }
+            Self::SliceRequiresAddressOf => {
+                write!(f, "a slice expression must be prefixed with '&' or '&mut'")
+            }
+            Self::ImmutableSliceSource => {
+                write!(f, "cannot take a mutable slice of an immutable slice")
             }
             Self::InvalidSliceBound { r#type } => write!(
                 f,

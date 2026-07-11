@@ -19,6 +19,13 @@ pub enum BinaryOp {
     Le,
     Gt,
     Ge,
+    /// `& | ^ << >>` -- integer-only (rejects `Float`, same spirit as
+    /// `Rem`'s `FloatRemainder`); see `Analyzer::analyze_binary_op`.
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinaryOp {
@@ -41,6 +48,11 @@ impl BinaryOp {
             Self::Le => "<=",
             Self::Gt => ">",
             Self::Ge => ">=",
+            Self::BitAnd => "&",
+            Self::BitOr => "|",
+            Self::BitXor => "^",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
         }
     }
 }

@@ -35,7 +35,7 @@ impl Highlighter for OmegaHighlighter {
                 // A metavariable is macro syntax, not an ordinary name --
                 // keyword coloring reads right.
                 | TokenKind::Metavar(_) => TokenClass::Keyword,
-                TokenKind::Str(_) | TokenKind::Char(_) => TokenClass::String,
+                TokenKind::Str(_) | TokenKind::ByteStr(_) | TokenKind::Char(_) => TokenClass::String,
                 TokenKind::Number(_) => TokenClass::Number,
                 _ => continue,
             };

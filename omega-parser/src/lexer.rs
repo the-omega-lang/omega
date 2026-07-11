@@ -17,6 +17,12 @@ pub enum TokenKind {
     /// Decoded content (escapes already resolved) -- matches `StringExpr`'s
     /// existing shape, which wraps a decoded `String` the same way.
     Str(String),
+    /// `b"..."` -- same decoded-content shape and escape rules as `Str`
+    /// (see `Lexer::scan_string`, shared verbatim), just tagged separately
+    /// so the parser knows to produce a `ByteStringExpr` instead of a
+    /// `StringExpr`: a raw byte run with no implicit null terminator, not a
+    /// C-style string.
+    ByteStr(String),
     Char(char),
     /// `$name` -- only meaningful inside a macro definition's body; `$` has
     /// exactly one use in this grammar, so it's recognized as one atomic
@@ -80,6 +86,23 @@ pub enum TokenKind {
     DotDotLt,
     PlusPlus,
     MinusMinus,
+    /// `<<` -- see `BinaryOp::Shl`.
+    Shl,
+    /// `>>` -- see `BinaryOp::Shr`.
+    Shr,
+    /// `+= -= *= /= %= &= |= ^= <<= >>=` -- an "operate and assign" of the
+    /// matching `BinaryOp`, desugared during analysis (see `Analyzer::
+    /// analyze_compound_assign`) into `target = target op value`.
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
 
     // Single-char punctuation.
     Bang,
@@ -96,6 +119,12 @@ pub enum TokenKind {
     Lt,
     Eq,
     Gt,
+    /// `|` -- see `BinaryOp::BitOr`.
+    Pipe,
+    /// `^` -- see `BinaryOp::BitXor`.
+    Caret,
+    /// `~base` -- unary bitwise-not; see `BitNotExpr`.
+    Tilde,
 
     // Delimiters -- flat, individual tokens; nesting is the parser's
     // concern, not the lexer's (unlike the old macro-only `Token::Group`).
@@ -116,6 +145,7 @@ impl TokenKind {
             Self::Ident(s) => format!("identifier '{s}'"),
             Self::Number(_) => "a number literal".to_string(),
             Self::Str(_) => "a string literal".to_string(),
+            Self::ByteStr(_) => "a binary string literal".to_string(),
             Self::Char(_) => "a character literal".to_string(),
             Self::Metavar(s) => format!("'${s}'"),
             Self::True => "'true'".to_string(),
@@ -146,6 +176,18 @@ impl TokenKind {
             Self::DotDotLt => "'..<'".to_string(),
             Self::PlusPlus => "'++'".to_string(),
             Self::MinusMinus => "'--'".to_string(),
+            Self::Shl => "'<<'".to_string(),
+            Self::Shr => "'>>'".to_string(),
+            Self::PlusEq => "'+='".to_string(),
+            Self::MinusEq => "'-='".to_string(),
+            Self::StarEq => "'*='".to_string(),
+            Self::SlashEq => "'/='".to_string(),
+            Self::PercentEq => "'%='".to_string(),
+            Self::AmpEq => "'&='".to_string(),
+            Self::PipeEq => "'|='".to_string(),
+            Self::CaretEq => "'^='".to_string(),
+            Self::ShlEq => "'<<='".to_string(),
+            Self::ShrEq => "'>>='".to_string(),
             Self::Bang => "'!'".to_string(),
             Self::Percent => "'%'".to_string(),
             Self::Amp => "'&'".to_string(),
@@ -160,6 +202,9 @@ impl TokenKind {
             Self::Lt => "'<'".to_string(),
             Self::Eq => "'='".to_string(),
             Self::Gt => "'>'".to_string(),
+            Self::Pipe => "'|'".to_string(),
+            Self::Caret => "'^'".to_string(),
+            Self::Tilde => "'~'".to_string(),
             Self::LParen => "'('".to_string(),
             Self::RParen => "')'".to_string(),
             Self::LBracket => "'['".to_string(),
@@ -211,6 +256,21 @@ const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
     (">=", TokenKind::GtEq),
     ("++", TokenKind::PlusPlus),
     ("--", TokenKind::MinusMinus),
+    // The 3-char shift-assign forms must precede their 2-char `<<`/`>>`
+    // prefixes below -- maximal-munch here is first-match-wins by list
+    // order, not by length.
+    ("<<=", TokenKind::ShlEq),
+    (">>=", TokenKind::ShrEq),
+    ("<<", TokenKind::Shl),
+    (">>", TokenKind::Shr),
+    ("+=", TokenKind::PlusEq),
+    ("-=", TokenKind::MinusEq),
+    ("*=", TokenKind::StarEq),
+    ("/=", TokenKind::SlashEq),
+    ("%=", TokenKind::PercentEq),
+    ("&=", TokenKind::AmpEq),
+    ("|=", TokenKind::PipeEq),
+    ("^=", TokenKind::CaretEq),
 ];
 
 fn is_ident_start(c: char) -> bool {
@@ -362,6 +422,18 @@ impl<'a> Lexer<'a> {
         match c {
             '$' => self.scan_metavar(start),
             '"' => self.scan_string(start),
+            // `b"..."` -- checked ahead of the general `is_ident_start`
+            // branch below (`'b'` would otherwise just start an ordinary
+            // identifier); only committed when a `"` immediately follows,
+            // so `b` alone, or an identifier merely starting with `b`
+            // (`bar`, `byte_count`, ...), is untouched.
+            'b' if self.peek_at(1) == Some('"') => {
+                self.advance(); // 'b'
+                let TokenKind::Str(s) = self.scan_string(start)? else {
+                    unreachable!("scan_string always produces a Str token")
+                };
+                Ok(TokenKind::ByteStr(s))
+            }
             '\'' => self.scan_char(start),
             '(' => {
                 self.advance();
@@ -444,6 +516,9 @@ impl<'a> Lexer<'a> {
             '<' => TokenKind::Lt,
             '=' => TokenKind::Eq,
             '>' => TokenKind::Gt,
+            '|' => TokenKind::Pipe,
+            '^' => TokenKind::Caret,
+            '~' => TokenKind::Tilde,
             _ => {
                 self.advance();
                 return Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidCharacter(c)));

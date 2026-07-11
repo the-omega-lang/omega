@@ -5,7 +5,7 @@ use crate::ids::HirId;
 // `Type` because they only ever go through field access, never pattern
 // match on those.
 pub use omega_parser::prelude::BinaryOp;
-use omega_parser::prelude::{ExprPath, FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
+use omega_parser::prelude::{ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
 
 #[derive(Debug, Clone)]
 pub struct HirModule {
@@ -291,6 +291,8 @@ pub enum HirExpr {
     Place(HirPlace),
     Number(NumberExpr),
     String(StringExpr),
+    /// `b"..."` -- see `Expression::ByteString`'s doc comment.
+    ByteString(ByteStringExpr),
     Bool(bool),
     Char(char),
     Codeblock(HirBlock),
@@ -300,8 +302,12 @@ pub enum HirExpr {
     If(HirIf),
     FunctionCall(HirFunctionCall),
     Assignment(HirAssignment),
+    /// `target op= value` -- see `HirCompoundAssign`'s doc comment.
+    CompoundAssign(HirCompoundAssign),
     AddressOf(HirAddressOf),
     Negate(Box<HirExprNode>),
+    /// `~base` -- see `Expression::BitNot`'s doc comment.
+    BitNot(Box<HirExprNode>),
     /// `++base`/`--base` -- `base` isn't guaranteed to be a place at this
     /// level, same treatment as `AddressOf`/`Assignment`'s target; see
     /// `Analyzer::analyze_incr_decr`, which both validates that and performs
@@ -493,5 +499,16 @@ pub struct HirAddressOf {
 #[derive(Debug, Clone)]
 pub struct HirAssignment {
     pub target: Box<HirExprNode>,
+    pub value: Box<HirExprNode>,
+}
+
+/// `target op= value` -- same "not guaranteed to be a place yet" treatment
+/// as `HirAssignment.target`; see `Analyzer::analyze_compound_assign`,
+/// which both validates that and performs the actual `target = target op
+/// value` desugaring.
+#[derive(Debug, Clone)]
+pub struct HirCompoundAssign {
+    pub target: Box<HirExprNode>,
+    pub op: BinaryOp,
     pub value: Box<HirExprNode>,
 }

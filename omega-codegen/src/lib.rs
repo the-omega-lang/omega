@@ -46,9 +46,14 @@ pub struct Codegen {
     // Global state
     counter: u64, // for unique things
     strings: HashMap<String, DataId>,
+    /// A `b"..."` literal's raw bytes -- deduplicated separately from
+    /// `strings` (never null-terminated, so identical text used once as
+    /// `"..."` and once as `b"..."` must not share a `DataId`).
+    byte_strings: HashMap<String, DataId>,
 
     // Local state (must be cleared per function)
     local_strings: HashMap<String, Value>,
+    local_byte_strings: HashMap<String, Value>,
     local_args: HashMap<HirId, Vec<Value>>,
     /// One stack slot per local, sized to its type's total byte size (not
     /// one slot per scalar leaf) -- a prerequisite for `&`/`*`: a local
@@ -402,7 +407,11 @@ fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<HirId>) {
 
 fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
     match &expr.kind {
-        CheckedExpr::Number(_) | CheckedExpr::Bool(_) | CheckedExpr::Char(_) | CheckedExpr::String(_) => {}
+        CheckedExpr::Number(_)
+        | CheckedExpr::Bool(_)
+        | CheckedExpr::Char(_)
+        | CheckedExpr::String(_)
+        | CheckedExpr::ByteString(_) => {}
         CheckedExpr::Place(p) => collect_defer_ids_place(p, out),
         CheckedExpr::FunctionCall(call) => {
             collect_defer_ids_expr(&call.callee, out);
@@ -416,6 +425,7 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
         }
         CheckedExpr::AddressOf(a) => collect_defer_ids_place(&a.place, out),
         CheckedExpr::Negate(e) => collect_defer_ids_expr(e, out),
+        CheckedExpr::BitNot(e) => collect_defer_ids_expr(e, out),
         CheckedExpr::BinaryOp(b) => {
             collect_defer_ids_expr(&b.left, out);
             collect_defer_ids_expr(&b.right, out);
@@ -518,8 +528,10 @@ impl Codegen {
 
             counter: 0,
             strings: HashMap::new(),
+            byte_strings: HashMap::new(),
 
             local_strings: HashMap::new(),
+            local_byte_strings: HashMap::new(),
             stack_slots: HashMap::new(),
             local_args: HashMap::new(),
             return_block: None,
@@ -535,6 +547,7 @@ impl Codegen {
 
     fn clear_local(&mut self) {
         self.local_strings.clear();
+        self.local_byte_strings.clear();
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();
@@ -991,6 +1004,54 @@ impl Codegen {
         str_ptr
     }
 
+    /// `get_or_declare_global_string`'s byte-string counterpart -- the same
+    /// shape, minus the null terminator, deduplicated in its own map
+    /// (`byte_strings`) so identical text used once as `"..."` and once as
+    /// `b"..."` never collides.
+    fn get_or_declare_global_bytes(&mut self, s: String) -> DataId {
+        let sym = self.unique_symbol();
+        let id = self
+            .module
+            .declare_data(&sym, Linkage::Local, false, false)
+            .unwrap();
+
+        let mut desc = DataDescription::new();
+        desc.define(s.clone().into_bytes().into_boxed_slice());
+        self.module.define_data(id, &desc).unwrap();
+
+        self.byte_strings.insert(s, id);
+
+        id
+    }
+
+    /// A `b"..."` literal's two-leaf `[pointer, length]` form -- the exact
+    /// shape `ResolvedType::Slice`'s `into_ir_type` expects -- deduplicated
+    /// per module (`byte_strings`) and per function (`local_byte_strings`,
+    /// which -- like `emit_string_ptr`'s `local_strings` -- only caches the
+    /// pointer; the length is a cheap `iconst` recomputed each call, same
+    /// as an ordinary slice's own compile-time-constant length).
+    fn emit_byte_string(&mut self, builder: &mut FunctionBuilder, s: String) -> Vec<Value> {
+        let len = builder.ins().iconst(types::I32, s.len() as i64);
+
+        if let Some(local_value) = self.local_byte_strings.get(&s) {
+            return vec![*local_value, len];
+        }
+
+        let ptr_type = self.pointer_type();
+        let bytes_id = if let Some(id) = self.byte_strings.get(&s) {
+            *id
+        } else {
+            self.get_or_declare_global_bytes(s.clone())
+        };
+
+        let global_value = self.module.declare_data_in_func(bytes_id, builder.func);
+        let ptr = builder.ins().global_value(ptr_type, global_value);
+
+        self.local_byte_strings.insert(s, ptr);
+
+        vec![ptr, len]
+    }
+
     /// Emits one `ConstValue` (an enum tag or header constant) as a single
     /// scalar of `r#type` -- every const-representable type is exactly one
     /// IR leaf (see `Analyzer::const_representable`).
@@ -1330,6 +1391,7 @@ impl Codegen {
     fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
         match node.kind {
             CheckedExpr::String(s) => vec![self.emit_string_ptr(builder, s)],
+            CheckedExpr::ByteString(s) => self.emit_byte_string(builder, s),
 
             CheckedExpr::FunctionCall(CheckedFunctionCall { callee, fn_type, args }) => {
                 // Checked module guarantees the callee resolves to exactly
@@ -1455,6 +1517,13 @@ impl Codegen {
                 vec![result]
             }
 
+            CheckedExpr::BitNot(base) => {
+                // Checked module guarantees only signed/unsigned integers
+                // reach here (see `Analyzer`'s `HirExpr::BitNot` arm).
+                let value = self.process_expr(builder, *base)[0];
+                vec![builder.ins().bnot(value)]
+            }
+
             CheckedExpr::BinaryOp(CheckedBinaryOp { op, left, right }) => {
                 // Checked module guarantees both operands share the same
                 // numeric resolved type (see `Analyzer`'s `HirExpr::BinaryOp`
@@ -1484,6 +1553,20 @@ impl Codegen {
                     (BinaryOp::Rem, NumericKind::Unsigned(_)) => builder.ins().urem(left, right),
                     (BinaryOp::Rem, NumericKind::Float(_)) => {
                         unreachable!("checked module rejects '%' on float operands")
+                    }
+                    // Checked module guarantees neither operand is a float
+                    // for any of these (see `Analyzer::analyze_binary_op`'s
+                    // `FloatBitwiseOperand` check) -- signedness never
+                    // matters except for `>>`, which needs to pick
+                    // arithmetic (sign-extending) vs. logical shift.
+                    (BinaryOp::BitAnd, _) => builder.ins().band(left, right),
+                    (BinaryOp::BitOr, _) => builder.ins().bor(left, right),
+                    (BinaryOp::BitXor, _) => builder.ins().bxor(left, right),
+                    (BinaryOp::Shl, _) => builder.ins().ishl(left, right),
+                    (BinaryOp::Shr, NumericKind::Signed(_)) => builder.ins().sshr(left, right),
+                    (BinaryOp::Shr, NumericKind::Unsigned(_)) => builder.ins().ushr(left, right),
+                    (BinaryOp::Shr, NumericKind::Float(_)) => {
+                        unreachable!("checked module rejects '>>' on float operands")
                     }
                     (cmp, NumericKind::Float(_)) => {
                         let cc = match cmp {

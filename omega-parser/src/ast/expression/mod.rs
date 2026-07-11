@@ -2,10 +2,13 @@ pub mod address_of;
 pub mod array_literal;
 pub mod assignment;
 pub mod binary_op;
+pub mod bit_not;
 pub mod bool_literal;
+pub mod byte_string;
 pub mod cast;
 pub mod char_literal;
 pub mod codeblock;
+pub mod compound_assign;
 pub mod deref;
 pub mod field_access;
 pub mod function_call;
@@ -23,8 +26,9 @@ pub mod struct_literal;
 use crate::ast::identifier::ExprPath;
 use crate::ast::expression::{
     address_of::AddressOfExpr, array_literal::ArrayLiteralExpr, assignment::AssignmentExpr,
-    binary_op::BinaryOpExpr, bool_literal::BoolExpr, cast::CastExpr, char_literal::CharExpr,
-    codeblock::CodeblockExpr, deref::DerefExpr, field_access::FieldAccessExpr,
+    bit_not::BitNotExpr, binary_op::BinaryOpExpr, bool_literal::BoolExpr, byte_string::ByteStringExpr,
+    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr,
+    compound_assign::CompoundAssignExpr, deref::DerefExpr, field_access::FieldAccessExpr,
     function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
     index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
     negate::NegateExpr, number::NumberExpr, slice::SliceExpr, string::StringExpr,
@@ -49,6 +53,8 @@ pub enum Expression {
     Deref(Box<DerefExpr>),
     AddressOf(Box<AddressOfExpr>),
     Negate(Box<NegateExpr>),
+    /// `~base` -- see `BitNotExpr`'s doc comment.
+    BitNot(Box<BitNotExpr>),
     /// `<Type>base` -- see `CastExpr`'s doc comment.
     Cast(Box<CastExpr>),
     Increment(Box<IncrementExpr>),
@@ -56,6 +62,11 @@ pub enum Expression {
     BinaryOp(Box<BinaryOpExpr>),
     Number(NumberExpr),
     String(StringExpr),
+    /// `b"..."` -- a raw run of bytes, not a null-terminated C string: its
+    /// type is `*[u8]` (`ResolvedType::Slice`, a data pointer + length),
+    /// never `*u8` the way `String` is. See `Context::resolve_type`'s
+    /// `*[T]` special case for why `*[u8]` already means exactly that.
+    ByteString(ByteStringExpr),
     Bool(BoolExpr),
     Char(CharExpr),
     Codeblock(CodeblockExpr),
@@ -63,6 +74,8 @@ pub enum Expression {
     Match(Box<MatchExpr>),
     FunctionCall(FunctionCallExpr),
     Assignment(Box<AssignmentExpr>),
+    /// `target op= value` -- see `CompoundAssignExpr`'s doc comment.
+    CompoundAssign(Box<CompoundAssignExpr>),
     ArrayLiteral(ArrayLiteralExpr),
     /// `Name { field = value; ... }` -- see `StructLiteralExpr`'s doc comment.
     StructLiteral(StructLiteralExpr),

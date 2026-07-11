@@ -270,10 +270,17 @@ pub enum CheckedExpr {
     /// meaningful source-level data until codegen actually needs the bits.
     Char(char),
     String(String),
+    /// `b"..."` -- see `Expression::ByteString`'s doc comment. Its
+    /// resolved type (`r#type` on the enclosing `CheckedExprNode`) is
+    /// always `ResolvedType::Slice { item: U8, .. }`, unlike `String`'s
+    /// always-`Pointer` type.
+    ByteString(String),
     FunctionCall(CheckedFunctionCall),
     Assignment(CheckedAssignment),
     AddressOf(CheckedAddressOf),
     Negate(Box<CheckedExprNode>),
+    /// `~base` -- see `Expression::BitNot`'s doc comment.
+    BitNot(Box<CheckedExprNode>),
     /// `++base`/`--base` never survives past analysis as its own node --
     /// `Analyzer::analyze_incr_decr` desugars it directly into an ordinary
     /// `Assignment` of `base + 1`/`base - 1` (a `BinaryOp` over `base`'s own

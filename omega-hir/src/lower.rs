@@ -1,5 +1,5 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirCast, HirContinue,
+    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirCast, HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
     HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef,
     HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
@@ -320,6 +320,11 @@ impl Lowerer {
                 span: node.span,
                 expr: HirExpr::String(s.clone()),
             },
+            Expression::ByteString(s) => HirExprNode {
+                id: self.ids.next(),
+                span: node.span,
+                expr: HirExpr::ByteString(s.clone()),
+            },
             Expression::Bool(b) => HirExprNode {
                 id: self.ids.next(),
                 span: node.span,
@@ -365,6 +370,15 @@ impl Lowerer {
                     expr: HirExpr::Assignment(HirAssignment { target, value }),
                 }
             }
+            Expression::CompoundAssign(assign) => {
+                let target = Box::new(self.lower_expr(&assign.target));
+                let value = Box::new(self.lower_expr(&assign.value));
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::CompoundAssign(HirCompoundAssign { target, op: assign.op, value }),
+                }
+            }
             Expression::AddressOf(addr) => {
                 let base = Box::new(self.lower_expr(&addr.base));
                 HirExprNode {
@@ -376,6 +390,10 @@ impl Lowerer {
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Negate(base) }
+            }
+            Expression::BitNot(not) => {
+                let base = Box::new(self.lower_expr(&not.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::BitNot(base) }
             }
             Expression::Cast(cast) => {
                 let base = Box::new(self.lower_expr(&cast.base));

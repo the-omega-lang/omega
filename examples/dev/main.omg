@@ -309,14 +309,14 @@ main(argc : i32, argv : [*u8]) => i32 {
 
     arr : [i32; 3] = [1, 2, 3];
     arr2 := [1, 2, 3];
-    mut slice := arr[1...];
+    mut slice := &arr[1...];
     printf("array second item: %d\n", slice[0]);
     printf("slice len: %d\n", slice.length);
-    slice = arr[0...];
+    slice = &arr[0...];
     printf("slice len: %d\n", slice.length);
-    slice = arr[0..<2];
+    slice = &arr[0..<2];
     printf("exclusive-end slice len: %d\n", slice.length);
-    slice = arr[0...1];
+    slice = &arr[0...1];
     printf("inclusive-end slice len: %d\n", slice.length);
 
     big : i64 = 5_000_000_000i64;
@@ -565,6 +565,63 @@ main(argc : i32, argv : [*u8]) => i32 {
     mut scaled := Vec2::new(2, 3);
     scaled.scale(3);
     printf("method overload: (%d, %d)\n", scaled.x, scaled.y);
+
+    # A typed declaration annotation uniquely disambiguates which overload
+    # of `print_number2` is meant -- `print_number2_ref2 := print_number2;`
+    # (no annotation) would stay ambiguous, since nothing pins down which
+    # candidate is intended.
+    print_number2_ref : (n: u32) => void = print_number2;
+    print_number2_ref(7u32);
+
+    # Literal inference now always anchors on the *earliest* element --
+    # here, branch 0's own explicit `u16` decides the whole `if`'s type, and
+    # the later unsuffixed `8` adapts to match it, never the other way
+    # around (`if true { 8 } else { 7u16 }` would now be a type mismatch:
+    # branch 0's default `i32` doesn't retroactively become `u16`).
+    earliest_wins := if true { 7u16 } else { 8 };
+    printf("earliest-wins if: %u\n", earliest_wins);
+
+    # `&`/`&mut` make a slice's mutability explicit -- an immutable slice
+    # and a mutable slice can both be taken from the same `mut` array, and
+    # writing through the mutable one is visible through the array itself.
+    mut sliceable := [10, 20, 30];
+    imm_view := &sliceable[0...];
+    mut_view := &mut sliceable[0...];
+    mut_view[0] = 99;
+    printf("slice mutability: imm[0]=%d mut[0]=%d array[0]=%d\n", imm_view[0], mut_view[0], sliceable[0]);
+
+    # A binary string literal -- `*[u8]` (a slice, not `*u8`), no null
+    # terminator, its length known at compile time.
+    bytes : *[u8] = b"binary string here";
+    printf("byte string: len=%d first=%d\n", bytes.length, <i32>bytes[0]);
+
+    # Bitwise operators, at standard precedence (bitwise binds tighter than
+    # comparison, matching Rust rather than C's looser-than-`==` gotcha).
+    bit_and := 5 & 1;
+    bit_or := 5 | 2;
+    bit_xor := 5 ^ 1;
+    bit_not := ~bit_xor;
+    bit_shl := 5 << 2;
+    bit_shr := 5 >> 1;
+    printf(
+        "bitwise: and=%d or=%d xor=%d not=%d shl=%d shr=%d\n",
+        bit_and, bit_or, bit_xor, bit_not, bit_shl, bit_shr
+    );
+
+    # Every arithmetic/bitwise operator has an "operate and assign"
+    # counterpart.
+    mut compound := 5;
+    compound += 5;
+    compound -= 2;
+    compound *= 3;
+    compound /= 4;
+    compound %= 5;
+    compound &= 3;
+    compound ^= 1;
+    compound |= 8;
+    compound <<= 2;
+    compound >>= 1;
+    printf("compound assign: %d\n", compound);
 
     return 69;
 }
