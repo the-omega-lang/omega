@@ -1,21 +1,562 @@
-extern puts : (s: *char) => i32;
+extern puts : (s: *u8) => i32;
+extern printf : (s : *u8, ...) => i32;
 
-struct Interface {
-    do_thing: (s : *char) => i32;
-    member_function(self) => void {
-        puts("You called the member function");
+import simplemodule;
+import mymodule;
+import mymodule::thing::something2;
+
+classify(n : i32) => *u8 {
+    if n < 0 {
+        return "negative";
+    } else if n == 0 {
+        return "zero";
+    } else {
+        return "positive";
     }
 }
 
+abs_val(n : i32) => i32 {
+    if n < 0 { -n } else { n }
+}
 
-extern ___omg_Interface_member_function : (ptr: *Interface) => void;
+sum_for(n : i32) => i32 {
+    mut total := 0;
+    for mut i := 0; i < n; ++i {
+        total = total + i;
+    }
+    return total;
+}
 
-main(argc : i32, argv : [*char]) => i32 {
-    iface : Interface;
+first_even_ge(n : i32) => i32 {
+    mut i := n;
+    while true {
+        if i % 2 == 0 {
+            break;
+        }
+        ++i;
+    }
+    return i;
+}
+
+sum_skip_multiples_of_3(n : i32) => i32 {
+    mut total := 0;
+    for mut i := 1; i <= n; ++i {
+        if i % 3 == 0 {
+            continue;
+        }
+        total = total + i;
+    }
+    return total;
+}
+
+struct Interface {
+    do_thing: (s : *u8) => i32;
+    member_function(self) => void {
+        self.do_thing("You called the member function");
+    }
+}
+
+fibo(n: i32) => i32 {
+    if n <= 1 {
+        return n;
+    }
+
+    fibo(n - 2) + fibo(n - 1)
+}
+
+struct MyNode<T> {
+    value: T;
+    next: *MyNode<T>;
+}
+
+defer_test() => void {
+    puts("defer test");
+    # must print in reverse order (FILO)
+    defer puts("first");
+    defer { puts("second"); puts("followup of second"); }
+    defer puts("third");
+}
+
+# A struct with both static and member functions: a function declared
+# *without* `self` is static -- called through the struct's name
+# (`Vec2::origin()`), with no instance -- while one *with* `self` stays an
+# ordinary member function. Static bodies commonly build their result with
+# a struct literal (see `Vec2 { x: ...; y: ...; }` below), which must set
+# every field exactly once.
+struct Vec2 {
+    x: i32;
+    y: i32;
+    origin() => Vec2 {
+        Vec2 {
+            x: 0;
+            y: 0;
+        }
+    }
+    new(x: i32, y: i32) => Vec2 {
+        Vec2 { x: x; y: y; }
+    }
+    manhattan(self) => i32 {
+        abs_val(self.x) + abs_val(self.y)
+    }
+    # `mut self` (vs. plain `self` above) is what lets a method write to its
+    # own fields -- synthesizes `self: *mut Vec2` instead of `*Vec2`, and
+    # calling it requires a mutable place (`v.translate(...)` needs `v`
+    # itself declared `mut`; see `main`).
+    translate(mut self, dx: i32, dy: i32) => void {
+        self.x = self.x + dx;
+        self.y = self.y + dy;
+    }
+}
+
+# A struct-typed field, initialized below both by a nested literal and by an
+# already-built value -- literals nest like any other expression.
+struct Segment {
+    a: Vec2;
+    b: Vec2;
+}
+
+# A whole struct passed *by value* (not through a pointer like `self`) --
+# flattened into one scalar argument per field at the call site.
+vec_sum(v: Vec2) => i32 {
+    v.x + v.y
+}
+
+# The most basic omega-style enum: no header, so the tag is implicit -- an
+# auto-incrementing u16 starting at 0. Even then, every value exposes it as
+# `value.tag`.
+enum MyBasicEnum {
+    First,  # tag: 0
+    Second, # tag: 1
+    Third;  # tag: 2
+}
+
+# A header: fields present on *every* variant, whose values are per-variant
+# constants supplied Java-style in each variant's `(...)` -- baked in at the
+# definition, constant forever (`value.description` works on any variant,
+# and can never be assigned).
+enum MyEnumWithHeader(description: *u8, some_number: u32) {
+    First("This is the first variant", 10),
+    Second("This is the second variant", 25),
+    Third("This is the third variant", 30);
+}
+
+# Variant bodies: fields only *that* variant has. At runtime the body region
+# is a union of all the bodies, but the type system only ever exposes the
+# body of the variant a value provably is: `E::Second { ... }` produces a
+# value statically known to be `Second` (its type reads `E::Second`), which
+# is what makes `.some_text` compile -- and `.some_number` not. The
+# refinement never survives indirection: through `*MyEnumWithBodies` only
+# the tag and header remain accessible.
+enum MyEnumWithBodies {
+    First,
+    Second { some_text: *u8; }
+    Third { some_number: u16; pointer_to_another_instance: *MyEnumWithBodies; }
+}
+
+# An explicit tag: `tag` leads the header with the integer type of your
+# choice, and each variant supplies its own (unique, compile-time-constant)
+# value first.
+enum MyEnumWithExplicitTagAndHeader(tag: u32, description: *u8) {
+    First(10, "This is the first entry"),
+    Second(20, "This is the second entry"),
+    Third(30, "This is the third entry");
+}
+
+# Generic enums instantiate exactly like generic structs; expression paths
+# take explicit arguments here (`Optional<u32>::Some { ... }`).
+enum Optional<T> {
+    None,
+    Some { value: T; };
+}
+
+# Everything at once, plus functions after the `;` ending the variant list
+# (Java-style): with `self` = member function, without = static.
+enum MyCoolEnum(tag: i16, description: *u8) {
+    Bad(-1, "Something went wrong :("),
+    First(0, "This is the first value") {
+        message: *u8;
+    },
+    Second(1, "This is the second value") {
+        number: u64;
+        decimal: f64;
+    },
+    Third(2, "This is the third value");
+
+    print_description(self) => void {
+        puts(self.description);
+    }
+    default() => MyCoolEnum {
+        MyCoolEnum::Third
+    }
+}
+
+# A whole enum passed by value -- same flattening story as `vec_sum`, plus
+# the opaque payload chunks the union region travels as.
+cool_tag(e: MyCoolEnum) => i16 {
+    e.tag
+}
+
+# Sum-type subtyping through proofs: a variant is itself a subtype of its
+# enum, so a function can take a pointer to one exact variant directly --
+# no helper struct, no destructuring -- and access that variant's own body
+# fields right away. Calling this requires the compiler to have already
+# proved its argument is specifically `Second`, either by construction
+# (`x := MyEnumWithBodies::Second { ... }`) or by `match`.
+print_second_text(x: *MyEnumWithBodies::Second) => void {
+    printf("variant-specific field access: %s\n", x.some_text);
+}
+
+# Matching through an existing pointer: proving `b` is `Second` narrows `b`
+# itself (a `*MyEnumWithBodies`) to `*MyEnumWithBodies::Second`, so it can
+# be passed straight into `print_second_text` -- no `&`, no destructuring.
+# Outside the matched arm (and in `else`), `b` stays a plain
+# `*MyEnumWithBodies` -- only the tag is reachable there.
+describe_if_second(b: *MyEnumWithBodies) => void {
+    match b {
+        MyEnumWithBodies::Second => {
+            print_second_text(b);
+        }
+    } else {
+        printf("not the Second variant (tag=%d)\n", b.tag);
+    }
+}
+
+main(argc : i32, argv : [*u8]) => i32 {
+    mut mynode1 : MyNode<i32>;
+    mynode1.value = 20;
+
+    mut mynode0 : MyNode<i32>;
+    mynode0.value = 69;
+    mynode0.next = &mynode1;
+
+    printf("mynode0.value = %d\n", mynode0.value);
+    printf("mynode0.next.value = %d\n", mynode0.next.value);
+
+    mut iface : Interface;
     iface.do_thing = puts;
     iface.do_thing("HELLO WORLD");
     iface.do_thing("");
-    ptr : *Interface;
-    ___omg_Interface_member_function(ptr);
+    iface.member_function();
+    mut ptr : *Interface;
+    ptr = &iface;
+    (*ptr).member_function();
+    ptr.member_function();
+
+    mut a := 5;
+    mut b := 10;
+    mut c := a + b;
+    printf("%d + %d = %d", a, b, c);
+    puts("");
+
+    # this is a single line comment
+    a = 10;
+    b = 3; # this is also a comment
+    c = a * b;
+    printf("%d * %d = %d", a, b, c);
+    puts("");
+
+    ##### this is a
+    multine ###
+       ##comment #####
+
+    arr : [i32; 3] = [1, 2, 3];
+    arr2 := [1, 2, 3];
+    mut slice := arr[1...];
+    printf("array second item: %d\n", slice[0]);
+    printf("slice len: %d\n", slice.length);
+    slice = arr[0...];
+    printf("slice len: %d\n", slice.length);
+    slice = arr[0..<2];
+    printf("exclusive-end slice len: %d\n", slice.length);
+    slice = arr[0...1];
+    printf("inclusive-end slice len: %d\n", slice.length);
+
+    big : i64 = 5_000_000_000i64;
+    big2 := big + 1i64;
+    printf("i64: %lld\n", big2);
+
+    ubig : u64 = 0xFFFFFFFFFu64;
+    printf("u64 (hex): %llu\n", ubig);
+
+    oct := 0o755;
+    printf("octal 0o755 = %d\n", oct);
+
+    bin := 0b1010;
+    printf("binary 0b1010 = %d\n", bin);
+
+    small : u8 = 0xC8u8;
+    small2 := small + 5u8;
+    printf("u8: %d, %d\n", small, small2);
+
+    pi : f64 = 3.14159;
+    half : f32 = 0.5f32;
+    sum_f32 := half + half;
+    printf("f64: %f, f32: %f, f32 sum: %f\n", pi, half, sum_f32);
+
+    flag := true;
+    printf("bool: %d\n", flag);
+
+    letter := 'A';
+    printf("char codepoint: %d\n", letter);
+
+    neg_i64 := -big2;
+    neg_f64 := -pi;
+    printf("negated: %lld, %f\n", neg_i64, neg_f64);
+
+    q := big2 / 3i64;
+    r := big2 % 3i64;
+    printf("i64 div/rem: %lld %lld\n", q, r);
+
+    printf("classify(-5) = %s\n", classify(-5));
+    printf("classify(0) = %s\n", classify(0));
+    printf("classify(5) = %s\n", classify(5));
+    printf("abs_val(-7) = %d\n", abs_val(-7));
+    printf("sum_for(10) = %d\n", sum_for(10));
+    printf("first_even_ge(7) = %d\n", first_even_ge(7));
+    printf("sum_skip_multiples_of_3(10) = %d\n", sum_skip_multiples_of_3(10));
+
+    mut total := 0;
+    mut i := 0;
+    while i < 10 {
+        total = total + i;
+        ++i;
+    }
+    printf("while sum_to(10) = %d\n", total);
+
+    for mut j := 5; j > 0; --j {
+        printf("countdown: %d\n", j);
+    }
+
+    x := 3;
+    y := 3;
+    printf("3 == 3: %d, 3 != 3: %d, 3 <= 3: %d, 3 >= 4: %d\n", x == y, x != y, x <= y, x >= 4);
+
+    testvar1 := if x < 3 {
+        "lower than 3"
+    } else {
+        "not lower than 3"
+    };
+    printf("testvar1: %s\n", testvar1);
+
+    # `match` also works as an ordinary value/range switch, standardized on
+    # the same range grammar slicing uses: `..<` excludes its end, `...`
+    # includes it (or, with no bound, is fully open on that side). These
+    # three patterns cover every `u32` value between them, so no `else` is
+    # needed -- the compiler verifies that coverage itself.
+    matched_num := 100u32;
+    message := match matched_num {
+        0..<100 => "less than a hundred",
+        100 => "a hundred",
+        101... => "more than a hundred",
+    };
+    printf("match on value: matched_num=%u is %s\n", matched_num, message);
+
+    mod_a := simplemodule::something3(5);
+    mod_b := mymodule::something1();
+    mod_c := mymodule::thing::something2();
+    mod_d := something2();
+    printf("modules: %d %d %d %d\n", mod_a, mod_b, mod_c, mod_d);
+    printf("fibo(20) = %d\n", fibo(20));
+    printf("forward_declared_fn() = %d\n", forward_declared_fn());
+
+    mut head : Node;
+    head.value = 1;
+    mut mid : Node;
+    mid.value = 2;
+    mut tail : Node;
+    tail.value = 3;
+    tail.next = &head; # arbitrary, just to prove `next` is a real, usable *Node
+    head.next = &mid;
+    mid.next = &tail;
+    printf("linked list: %d -> %d -> %d\n", head.value, head.next.value, head.next.next.value);
+
+    mut gp : GenericPair<i32>;
+    gp.a = 3;
+    gp.b = 4;
+    printf("generic pair sum: %d\n", sum_generic(gp.a, gp.b));
+    printf("generic sum (f64): %f\n", sum_generic(1.5, 2.5));
+
+    mut gn : GenericNode<i32>;
+    gn.value = 7;
+    mut gn2 : GenericNode<i32>;
+    gn2.value = 8;
+    gn.next = &gn2;
+    printf("generic linked list: %d -> %d\n", gn.value, gn.next.value);
+
+    su : usize = 7usize;
+    si : isize = -2isize;
+    printf("usize: %llu, isize: %lld\n", su, si);
+
+    printf("macro sum: %d\n", sum_macro!(3, 4));
+
+    mut pt : Point;
+    pt.x = 3;
+    pt.y = 4;
+    printf("macro point magnitude_sq: %d\n", pt.magnitude_sq());
+
+    printf("defer_demo(true) = %d\n", defer_demo(true));
+    printf("defer_demo(false) = %d\n", defer_demo(false));
+    defer_test();
+
+    mut v := Vec2 { x: 3; y: -4; };
+    printf("struct literal: (%d, %d)\n", v.x, v.y);
+    v.translate(2, 6);
+    printf("translated: (%d, %d)\n", v.x, v.y);
+    o := Vec2::origin();
+    printf("static call: (%d, %d)\n", o.x, o.y);
+    w := Vec2::new(7, 9);
+    printf("static call with args: (%d, %d), manhattan = %d\n", w.x, w.y, w.manhattan());
+    printf("struct by value: vec_sum = %d\n", vec_sum(w));
+    seg := Segment {
+        a: Vec2 { x: 1; y: 2; };
+        b: w;
+    };
+    printf("nested literal: (%d,%d)-(%d,%d)\n", seg.a.x, seg.a.y, seg.b.x, seg.b.y);
+    if v.manhattan() > 5 {
+        p := simplemodule::Pair::of(4, 5);
+        printf("cross-module static: %d\n", p.sum());
+    }
+
+    e1 := MyBasicEnum::First;
+    e2 := MyBasicEnum::Third;
+    printf("enum tags: %d %d\n", e1.tag, e2.tag);
+
+    h := MyEnumWithHeader::Second;
+    printf("enum header: tag=%d desc=%s number=%u\n", h.tag, h.description, h.some_number);
+
+    s := MyEnumWithBodies::Second { some_text: "hello, this is some text"; };
+    printf("enum body: tag=%d text=%s\n", s.tag, s.some_text);
+    t := MyEnumWithBodies::Third { some_number: 777u16; pointer_to_another_instance: &s; };
+    printf("enum body2: tag=%d n=%d inner_tag=%d\n", t.tag, t.some_number, t.pointer_to_another_instance.tag);
+
+    # Sum-type subtyping: `s`'s own inferred type is `MyEnumWithBodies::Second`
+    # (permanently, since it was never widened by an explicit plain type
+    # annotation), so `&s` stays refined and can be passed directly where a
+    # variant-specific pointer is expected -- no `match` needed here, the
+    # proof already happened at construction.
+    print_second_text(&s);
+
+    # `match` proves it instead, for a value whose *static* type is plain:
+    # `describe_if_second` only ever sees `*MyEnumWithBodies`, and proves
+    # which variant it's holding at runtime via the tag.
+    describe_if_second(&s);
+    describe_if_second(&t);
+
+    # `match` as an expression: exhaustive over every variant, no `else`
+    # needed since all three are covered.
+    kind := match s {
+        MyEnumWithBodies::First => "first",
+        MyEnumWithBodies::Second => "second",
+        MyEnumWithBodies::Third => "third",
+    };
+    printf("match as expression: %s\n", kind);
+
+    xt := MyEnumWithExplicitTagAndHeader::Third;
+    printf("enum explicit: tag=%u desc=%s\n", xt.tag, xt.description);
+
+    opt := Optional<u32>::Some { value: 42u32; };
+    none := Optional<u32>::None;
+    printf("enum generic: some(tag=%d value=%u) none(tag=%d)\n", opt.tag, opt.value, none.tag);
+
+    cool := MyCoolEnum::Second { number: 123u64; decimal: 2.5; };
+    printf("enum cool: tag=%d number=%llu decimal=%f\n", cool.tag, cool.number, cool.decimal);
+    cool.print_description();
+    dflt := MyCoolEnum::default();
+    dflt.print_description();
+    printf("enum by value: %d\n", cool_tag(dflt));
+
+    mut anyvariant : MyCoolEnum = MyCoolEnum::Bad;
+    printf("enum widened: tag=%d\n", anyvariant.tag);
+    anyvariant = dflt;
+    picked := if anyvariant.tag > 0i16 { MyCoolEnum::Bad } else { MyCoolEnum::Third };
+    printf("enum picked: %s\n", picked.description);
+
+    st := simplemodule::Status::make_err(42);
+    printf("cross-module enum: tag=%d label=%s\n", st.tag, st.label);
+    okst := simplemodule::Status::Ok;
+    err := simplemodule::Status::Err { code: 7; };
+    printf("cross-module enum 2: ok=%d err_code=%d\n", okst.tag, err.code);
+
     return 69;
+}
+
+# A duck-typed generic struct: `T` is substituted with a concrete type at
+# each instantiation site (`GenericPair<i32>` above), and only then
+# type-checked, exactly as if `GenericPair` had been written by hand for
+# that one concrete type.
+struct GenericPair<T> {
+    a: T;
+    b: T;
+}
+
+# A duck-typed generic function: `T` is never written at the call site --
+# it's deduced from the call's own argument types (`i32` for `gp.a`/`gp.b`
+# above, `f64` for the literal call below), each producing its own
+# independently compiled instantiation.
+sum_generic<T>(a: T, b: T) => T {
+    a + b
+}
+
+# A self-referential generic struct: `next` points back to `GenericNode<T>`
+# itself (for whatever `T` this instantiation was substituted with), the
+# same pointer-indirection cycle-guard fast path `Node`'s self-reference
+# above already relies on, just keyed by the substituted instantiation
+# rather than the raw template.
+struct GenericNode<T> {
+    value: T;
+    next: *GenericNode<T>;
+}
+
+# Called by `main` above despite being declared after it -- proves a
+# same-module forward reference resolves.
+forward_declared_fn() => i32 {
+    42
+}
+
+# `defer` schedules a piece of code to run when *this* function exits --
+# every `return`, including the early one below, not just falling off the
+# end -- in FILO order relative to any other defers in the same function.
+# No hidden sugar (no destructors): the deferred statement/block is spelled
+# out right where it's scheduled, and runs exactly once per call.
+defer_demo(flag: bool) => i32 {
+    printf("defer_demo: start\n");
+    defer puts("defer_demo: cleanup ran");
+    if flag {
+        printf("defer_demo: early return\n");
+        return 1;
+    }
+    printf("defer_demo: normal end\n");
+    return 0;
+}
+
+# A compile-time `expr`-output macro: its body is only ever type-checked
+# once fully substituted at a call site (duck typed, like generics) -- never
+# on its own. `sum_macro!(3, 4)` above expands to `(3) + (4)` and is
+# re-parsed/re-analyzed exactly as if that had been hand-written there.
+macro sum_macro($a: expr, $b: expr) => expr {
+    ($a) + ($b)
+}
+
+# A compile-time `items`-output macro: expands to zero or more top-level
+# items (here, one `struct`). Macros are expanded before HIR lowering ever
+# runs, so `Point` below is an entirely ordinary struct by the time analysis
+# sees it -- no different from `Node`/`Interface` elsewhere in this file.
+macro make_point_type($name: type) => items {
+    struct $name {
+        x: i32;
+        y: i32;
+        magnitude_sq(self) => i32 {
+            self.x * self.x + self.y * self.y
+        }
+    }
+}
+
+make_point_type!(Point);
+
+# Self-referencing struct: `next` points back to `Node` itself, which is
+# only resolvable because the struct's own placeholder is registered before
+# its fields are analyzed.
+struct Node {
+    value: i32;
+    next: *Node;
 }

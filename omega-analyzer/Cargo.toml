@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+omega-hir = { path = "../omega-hir" }
 omega-parser = { path = "../omega-parser" }
+omega-diagnostics = { path = "../omega-diagnostics" }

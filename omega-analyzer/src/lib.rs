@@ -1,4 +1,9 @@
 pub mod analysis;
-pub mod context;
-pub mod place;
+pub mod checked;
+mod context;
+pub mod error;
+mod exhaustiveness;
+mod generics;
 pub mod resolved_type;
+pub mod resolver;
+pub mod similarity;
