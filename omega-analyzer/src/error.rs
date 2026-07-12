@@ -692,7 +692,7 @@ impl AnalysisErrorKind {
             }
             Self::EnumValueNotConstant => d
                 .with_label(span, "not a literal constant")
-                .with_note("a variant's tag and header values are baked in at the definition,\nso they must be literals (a number, string, bool, or char)"),
+                .with_note("a variant's tag and header values are baked in at the definition,\nso they must be literals (a number, string, bool, char, or `&[...]` compile-time slice)"),
             Self::EnumValueTypeMismatch { expected, found } => {
                 d.with_label(span, format!("expected `{expected}`, found {found}"))
             }

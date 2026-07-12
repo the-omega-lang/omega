@@ -859,8 +859,10 @@ impl<'r> Analyzer<'r> {
     /// (`EnumValueNotConstant`/`EnumValueTypeMismatch`) are worded
     /// specifically for enum header values, which would be a confusing
     /// thing to say about `a := &[1, f()];`. The actual literal
-    /// recognition (including its own recursive `ArrayLiteral` case, for
-    /// nested compile-time slices) is otherwise identical, and both share
+    /// recognition (including its own recursive `AddressOf`-wrapped-
+    /// `ArrayLiteral` case, for nested compile-time slices -- a *bare*
+    /// nested array is never recognized, even here, to keep `&[...]` the
+    /// one unambiguous spelling) is otherwise identical, and both share
     /// `const_number` for the real parsing/range-checking work.
     fn const_eval_slice(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
         let mismatch = |this: &mut Self, found: &str| {
@@ -897,20 +899,10 @@ impl<'r> Analyzer<'r> {
                 ResolvedType::Char => Some(ConstValue::Char(*c)),
                 _ => mismatch(self, "a character literal"),
             },
-            HirExpr::ArrayLiteral(nested) => match expected {
-                ResolvedType::Slice { item, mutable: false } => {
-                    let mut values = Vec::with_capacity(nested.len());
-                    for element in nested {
-                        values.push(self.const_eval_slice(element, item)?);
-                    }
-                    Some(ConstValue::Slice(values))
-                }
-                _ => mismatch(self, "an array literal"),
-            },
-            // A nested `&[...]` -- the explicit spelling composes with
-            // itself, exactly like the bare form just above; both are
-            // accepted once a position is already known to want a `Slice`
-            // constant. `&mut [...]` still isn't, even nested.
+            // `&[...]` is the only recognized spelling for a nested
+            // compile-time slice -- a bare `[...]` is never treated as one,
+            // even here, to avoid confusing it with an ordinary array.
+            // `&mut [...]` still isn't allowed, even nested.
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 if *mutable {
                     self.errors
@@ -4908,24 +4900,13 @@ impl<'r> Analyzer<'r> {
                 ResolvedType::Char => Some(ConstValue::Char(*c)),
                 _ => mismatch(self, "a character literal"),
             },
-            // A bare `[...]` (no `&` needed -- a header value's position is
-            // already inherently constant, same reasoning as a bare string
-            // literal above) -- recurses through `const_eval` itself, so
-            // nesting (e.g. a `*[*[i32]]` header field) falls out for free.
-            HirExpr::ArrayLiteral(elements) => match expected {
-                ResolvedType::Slice { item, mutable: false } => {
-                    let mut values = Vec::with_capacity(elements.len());
-                    for element in elements {
-                        values.push(self.const_eval(element, item)?);
-                    }
-                    Some(ConstValue::Slice(values))
-                }
-                _ => mismatch(self, "an array literal"),
-            },
-            // The explicit `&[...]` spelling composes with itself just like
-            // the bare form above -- both mean the same thing once a
-            // position already wants a `Slice` constant. `&mut [...]`
-            // still isn't allowed, even here.
+            // `&[...]` is the *only* recognized spelling for a compile-time
+            // slice, even here -- a bare `[...]` is never treated as one
+            // (it would be too easy to confuse with an ordinary array),
+            // matching `analyze_const_slice`'s own requirement in ordinary
+            // expression position. Recurses through `const_eval` itself, so
+            // nesting (e.g. a `*[*[i32]]` header field, written
+            // `&[&[1, 2], &[3, 4]]`) falls out for free.
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 if *mutable {
                     self.errors
