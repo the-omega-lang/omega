@@ -1,11 +1,10 @@
 use omega_codegen::Codegen;
 use omega_diagnostics::Renderer;
-use omega_driver::Driver;
+use omega_driver::{Driver, ExternRoot};
 use omega_parser::highlight::OmegaHighlighter;
 use omega_parser::prelude::Ident;
-use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `omega-parser`'s grammar is a hand-written recursive-descent parser,
 /// including a few genuinely stack-recursive shapes (e.g. `CodeblockExpr`'s
@@ -25,31 +24,50 @@ fn main() {
         .expect("compiler thread panicked");
 }
 
-/// One `--extern=<name>:<path>` flag, plus the entry file itself -- the
+/// One `--extern=<alias>:<file>` flag, plus the entry file itself -- the
 /// whole command line, parsed by hand (no argument-parsing dependency,
 /// matching this workspace's hand-rolled-everything style).
 struct Args {
     entry_file: PathBuf,
-    extern_roots: HashMap<Ident, PathBuf>,
+    externs: Vec<ExternRoot>,
 }
 
-/// `omgc <entry-file> [--extern=<name>:<path>]...` -- the entry file is the
-/// only positional argument; every `--extern` registers one external
-/// project's own root under the name `import extern::<name>;` selects it
-/// with (see `omega_driver::Driver`'s `extern_roots` doc comment).
+/// A module's own name (its file's stem) and search-root directory (its
+/// parent) -- the convention every module already follows
+/// (`mymodule/mymodule.omg` -> `["mymodule"]`), applied here to both the
+/// entry file and every `--extern` target: an extern file is just an entry
+/// file for someone else's project.
+fn module_from_file(file: &Path) -> Option<(Ident, PathBuf)> {
+    let name = file.file_stem()?.to_str()?.to_string();
+    let dir = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    Some((Ident(name), dir))
+}
+
+/// `omgc <entry-file> [--extern=<alias>:<file>]...` -- the entry file is
+/// the only positional argument; every `--extern` points *directly* at the
+/// external project's own entry file (not a directory), so `<alias>` can
+/// freely differ from that file's own name -- `import extern::<alias>;`
+/// selects it, but the module path used internally (and for cross-process
+/// symbol mangling) is always that file's own stem, exactly like the local
+/// entry file's own name is (see `omega_driver::Driver`'s `extern_aliases`
+/// doc comment).
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut entry_file = None;
-    let mut extern_roots = HashMap::new();
+    let mut externs = Vec::new();
 
     for arg in args {
         if let Some(rest) = arg.strip_prefix("--extern=") {
-            let Some((name, path)) = rest.split_once(':') else {
-                return Err(format!("invalid --extern flag '{arg}': expected --extern=<name>:<path>"));
+            let Some((alias, file)) = rest.split_once(':') else {
+                return Err(format!("invalid --extern flag '{arg}': expected --extern=<alias>:<file>"));
             };
-            if name.is_empty() {
-                return Err(format!("invalid --extern flag '{arg}': the name before ':' cannot be empty"));
+            if alias.is_empty() {
+                return Err(format!("invalid --extern flag '{arg}': the alias before ':' cannot be empty"));
             }
-            extern_roots.insert(Ident(name.to_string()), PathBuf::from(path));
+            let file = PathBuf::from(file);
+            let Some((module, dir)) = module_from_file(&file) else {
+                return Err(format!("invalid --extern flag '{arg}': '{}' has no usable file name", file.display()));
+            };
+            externs.push(ExternRoot { alias: Ident(alias.to_string()), dir, module });
         } else if arg.starts_with('-') {
             return Err(format!("unknown flag '{arg}'"));
         } else if entry_file.is_some() {
@@ -60,16 +78,16 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     }
 
     let entry_file = entry_file.ok_or_else(|| {
-        "usage: omgc <entry-file> [--extern=<name>:<path>]...".to_string()
+        "usage: omgc <entry-file> [--extern=<alias>:<file>]...".to_string()
     })?;
-    Ok(Args { entry_file, extern_roots })
+    Ok(Args { entry_file, externs })
 }
 
 fn run() {
     println!("[Omega Compiler]");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Args { entry_file, extern_roots } = match parse_args(&args) {
+    let Args { entry_file, externs } = match parse_args(&args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("error: {message}");
@@ -77,18 +95,11 @@ fn run() {
         }
     };
 
-    // The entry module's own name is its file's stem -- `json_parser.omg`
-    // becomes module path `["json_parser"]`, exactly the convention every
-    // other module already follows (`mymodule/mymodule.omg` ->
-    // `["mymodule"]`); its parent directory is the local project's search
-    // root, the same relationship every other module's own directory has to
-    // its search root.
-    let Some(entry_name) = entry_file.file_stem().and_then(|s| s.to_str()) else {
+    let Some((entry_name, entry_dir)) = module_from_file(&entry_file) else {
         eprintln!("error: '{}' has no usable file name", entry_file.display());
         std::process::exit(1);
     };
-    let entry_module = vec![Ident(entry_name.to_string())];
-    let entry_dir = entry_file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let entry_module = vec![entry_name.clone()];
 
     // Diagnostics go to stderr, colored only when stderr really is a
     // terminal (and the user hasn't opted out via the conventional
@@ -96,7 +107,7 @@ fn run() {
     let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
-    let mut driver = Driver::new(vec![entry_dir], extern_roots);
+    let mut driver = Driver::new(vec![entry_dir], externs);
     let program = match driver.compile(&entry_module) {
         Ok(program) => program,
         Err(errors) => {
@@ -121,7 +132,7 @@ fn run() {
         eprintln!("{}\n", renderer.render(&warning.to_diagnostic(), file.as_deref()));
     }
 
-    let modname = entry_name;
+    let modname = entry_name.as_ref();
     let codegen =
         Codegen::generate(modname, "x86_64-unknown-linux", program.modules, &program.entry, program.extern_functions);
     let object = codegen.emit_object();

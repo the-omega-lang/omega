@@ -7,7 +7,7 @@ import mymodule::thing::something2;
 # Resolved externally -- scanned (its signatures are fully known here) but
 # never compiled by this process; `examples/extern_lib/mathlib.omg` is
 # compiled by its own, separate `omgc` invocation and linked in afterward:
-#   omgc examples/dev/main.omg --extern=mathlib:examples/extern_lib
+#   omgc examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg
 #   omgc examples/extern_lib/mathlib.omg
 #   cc target/main.o target/mathlib.o -o hello
 import extern::mathlib;

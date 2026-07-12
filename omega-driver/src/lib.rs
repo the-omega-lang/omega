@@ -154,15 +154,25 @@ enum ImportCacheState {
 /// up here).
 pub struct Driver {
     roots: SearchRoots,
-    /// Every `--extern=<name>:<path>` the CLI was given, keyed by the name
-    /// the import syntax (`import extern::<name>;`) selects it with --
-    /// each is its own single-entry search root, entirely separate from
-    /// `roots`. A module path whose first segment matches a key here is an
-    /// *extern* module: it's resolved against that root instead of `roots`
-    /// (see `search_roots_for`), and it's never eagerly signature-swept or
-    /// body-checked/codegen'd by `compile` (see `is_extern_module`) -- only
-    /// scanned on demand, exactly like a generic instantiation already is.
+    /// Every `--extern=<name>:<file>` the CLI was given, keyed by that
+    /// file's own module name (its stem -- the same convention the entry
+    /// file itself follows), *not* by the `--extern` alias: a module path
+    /// whose first segment matches a key here is an *extern* module,
+    /// resolved against that single-entry search root (its parent
+    /// directory) instead of `roots` (see `search_roots_for`), and never
+    /// eagerly signature-swept or body-checked/codegen'd by `compile` (see
+    /// `is_extern_module`) -- only scanned on demand, exactly like a
+    /// generic instantiation already is.
     extern_roots: HashMap<Ident, PathBuf>,
+    /// The `--extern` alias (`import extern::<alias>;` selects it with)
+    /// each registered extern module's own real name -- kept separate from
+    /// `extern_roots` so the alias can freely differ from the file's own
+    /// name (`--extern=math:.../mathlib.omg` -- alias `math`, real name
+    /// `mathlib`); every internal module-path operation past
+    /// `import_absolute_path`'s initial alias-to-real-name translation
+    /// only ever deals in real names, exactly as if the alias never
+    /// existed.
+    extern_aliases: HashMap<Ident, Ident>,
     next_module_id: u32,
     /// Counter behind every synthetic `HirId` minted for a generic
     /// instantiation's own identity (a struct instantiation's cell, or a
@@ -271,11 +281,31 @@ pub struct Driver {
     module_errors: HashMap<Vec<Ident>, Vec<AnalysisError>>,
 }
 
+/// One `--extern=<alias>:<file>` flag, already split into its three parts --
+/// `alias` is whatever `import extern::<alias>;` selects it with; `dir`/
+/// `module` are `file`'s own parent directory and stem, the exact same
+/// derivation the entry file itself goes through (see `omgc`'s own CLI
+/// parsing) -- an extern file is just an entry file for someone else's
+/// project.
+pub struct ExternRoot {
+    pub alias: Ident,
+    pub dir: PathBuf,
+    pub module: Ident,
+}
+
 impl Driver {
-    pub fn new(roots: Vec<PathBuf>, extern_roots: HashMap<Ident, PathBuf>) -> Self {
+    pub fn new(roots: Vec<PathBuf>, externs: Vec<ExternRoot>) -> Self {
+        let mut extern_roots = HashMap::new();
+        let mut extern_aliases = HashMap::new();
+        for ExternRoot { alias, dir, module } in externs {
+            extern_roots.insert(module.clone(), dir);
+            extern_aliases.insert(alias, module);
+        }
+
         Self {
             roots: SearchRoots(roots),
             extern_roots,
+            extern_aliases,
             next_module_id: 0,
             next_synthetic_id: 0,
             parsed: HashMap::new(),
@@ -308,11 +338,13 @@ impl Driver {
 
     /// Whether `path` names an *extern* module -- a pure function of its own
     /// first segment, no separate bookkeeping needed: `import
-    /// extern::<name>::...` always makes `<name>` the resulting absolute
-    /// path's own first segment (see `import_absolute_path`), and every
-    /// module reachable *from* an extern module keeps that same segment
-    /// leading (relative/root-rooted imports only ever extend a path, never
-    /// replace its existing prefix) -- so this single check is correct
+    /// extern::<alias>::...` always resolves to that project's own real
+    /// module name as the resulting absolute path's first segment (see
+    /// `import_absolute_path`'s `Extern` case and `extern_aliases`'s doc
+    /// comment), and every module reachable *from* an extern module keeps
+    /// that same segment leading (relative/root-rooted imports only ever
+    /// extend a path, never replace its existing prefix) -- so this single
+    /// check, against `extern_roots` (keyed by real name), is correct
     /// everywhere, not just for the module an `extern::` import named
     /// directly.
     fn is_extern_module(&self, path: &[Ident]) -> bool {
@@ -365,11 +397,12 @@ impl Driver {
             }
             // "Root of *my* current project" -- if the importer is itself
             // part of an extern project (its own path leads with that
-            // project's alias), re-prepend that same alias so the result
-            // stays correctly anchored to *that* project's root rather than
-            // silently falling back to the local one (see `is_extern_module`'s
-            // doc comment on why every module reachable from an extern one
-            // must keep its alias leading).
+            // project's own real module name, never its `--extern` alias --
+            // see `extern_aliases`'s doc comment), re-prepend that same
+            // name so the result stays correctly anchored to *that*
+            // project's root rather than silently falling back to the local
+            // one (see `is_extern_module`'s doc comment on why every module
+            // reachable from an extern one must keep it leading).
             ImportRoot::ProjectRoot => {
                 let mut absolute = Vec::new();
                 if importer.first().is_some_and(|head| self.extern_roots.contains_key(head)) {
@@ -378,16 +411,18 @@ impl Driver {
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            // `path.head` *is* the extern alias, by convention -- checked
-            // eagerly here (rather than left to `locate_module`'s ordinary
-            // not-found handling) so a typo'd or forgotten `--extern` flag
-            // gets its own precise diagnostic instead of a generic "module
-            // not found".
+            // `path.head` is the `--extern` *alias*, translated to that
+            // project's own real module name -- checked eagerly here
+            // (rather than left to `locate_module`'s ordinary not-found
+            // handling) so a typo'd or forgotten `--extern` flag gets its
+            // own precise diagnostic instead of a generic "module not
+            // found". Every absolute path past this point uses the real
+            // name, never the alias (see `extern_aliases`'s doc comment).
             ImportRoot::Extern => {
-                if !self.extern_roots.contains_key(&path.head) {
+                let Some(module) = self.extern_aliases.get(&path.head) else {
                     return Err(ResolveError::UnknownExtern(path.head.clone()));
-                }
-                Ok(path.segments())
+                };
+                Ok(std::iter::once(module.clone()).chain(path.tail.iter().cloned()).collect())
             }
         }
     }
