@@ -14,6 +14,11 @@ import extern::mathlib;
 import cycle_a::cycle_a_value;
 import cycle_b::unrelated_b;
 
+enum CryptographicAlgorithm(name: *u8, variants: *[*u8]) {
+    AES("AES", &["128", "192", "256"]),
+    RSA("RSA", &["2048", "3092", "4096"])
+}
+
 classify(n : i32) => *u8 {
     if n < 0 {
         return "negative";
@@ -641,6 +646,28 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf("extern sum: %d, extern point magnitude_sq: %d\n", extern_sum, extern_point.magnitude_sq());
 
     printf("cycle fixture: %d %d\n", cycle_a_value(), unrelated_b());
+
+    # Compile-time slices: `&[...]` bakes the literal data straight into the
+    # binary's data segment (see `Codegen::emit_const_slice`), rather than
+    # building it on the stack the way a bare `[...]` array literal would --
+    # an ordinary `Slice` value in every other respect (same `.length`/
+    # indexing as a runtime slice).
+    greetings := &["hello", "there"];
+    printf("const slice: len=%d [0]=%s [1]=%s\n", greetings.length, greetings[0], greetings[1]);
+
+    # ...which is exactly what makes a slice usable as an enum header
+    # constant (a bare `[...]`, no `&` needed -- a header value's position
+    # is already inherently constant): `CryptographicAlgorithm` above.
+    aes := CryptographicAlgorithm::AES;
+    rsa := CryptographicAlgorithm::RSA;
+    printf(
+        "enum const slice: name=%s variants=[%s, %s, %s]\n",
+        aes.name, aes.variants[0], aes.variants[1], aes.variants[2]
+    );
+    printf(
+        "enum const slice 2: name=%s variants=[%s, %s, %s]\n",
+        rsa.name, rsa.variants[0], rsa.variants[1], rsa.variants[2]
+    );
 
     return 69;
 }

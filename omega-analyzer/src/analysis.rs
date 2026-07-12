@@ -804,6 +804,148 @@ impl<'r> Analyzer<'r> {
         })
     }
 
+    /// `&[...]` (compile-time slice literals are always immutable --
+    /// `&mut [...]` is rejected here, unlike `analyze_slice`, which has a
+    /// real mutable form). The element type comes from a declared/expected
+    /// `Slice` type if one is in context (e.g. `x: *[i32] = &[1, 2, 3];`),
+    /// otherwise from the first element's own ordinary-expression type
+    /// (reusing `analyze_expr`'s existing literal-default inference, e.g.
+    /// an unsuffixed number defaults to `i32`, rather than reinventing it)
+    /// -- exactly the same two-source shape the ordinary `HirExpr::
+    /// ArrayLiteral` arm above already uses. Every element is then
+    /// re-evaluated as a compile-time constant via `const_eval_slice`, and
+    /// the whole literal collapses to one `ConstValue::Slice`, baked into
+    /// the binary's data segment at codegen (`Codegen::emit_const_slice`)
+    /// rather than built on the stack.
+    fn analyze_const_slice(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        elements: &[HirExprNode],
+        mutable: bool,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
+        if mutable {
+            self.errors
+                .push(AnalysisError::new(node_id, span, AnalysisErrorKind::ConstSliceCannotBeMutable));
+            return None;
+        }
+        if elements.is_empty() {
+            self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::EmptyArrayLiteral));
+            return None;
+        }
+
+        let item_type = match expected {
+            Some(ResolvedType::Slice { item, mutable: false }) => item.as_ref().clone(),
+            _ => self.analyze_expr(&elements[0], None)?.r#type.widened(),
+        };
+
+        let mut values = Vec::with_capacity(elements.len());
+        for element in elements {
+            values.push(self.const_eval_slice(element, &item_type)?);
+        }
+
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::Slice { item: Box::new(item_type), mutable: false },
+            kind: CheckedExpr::ConstSlice(ConstValue::Slice(values)),
+        })
+    }
+
+    /// `analyze_const_slice`'s per-element evaluator -- the `&[...]`
+    /// sibling of `const_eval`, kept deliberately separate for the exact
+    /// reason `const_eval_pattern` is: `const_eval`'s fallback errors
+    /// (`EnumValueNotConstant`/`EnumValueTypeMismatch`) are worded
+    /// specifically for enum header values, which would be a confusing
+    /// thing to say about `a := &[1, f()];`. The actual literal
+    /// recognition (including its own recursive `ArrayLiteral` case, for
+    /// nested compile-time slices) is otherwise identical, and both share
+    /// `const_number` for the real parsing/range-checking work.
+    fn const_eval_slice(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+        let mismatch = |this: &mut Self, found: &str| {
+            this.errors.push(AnalysisError::new(
+                expr.id,
+                expr.span,
+                AnalysisErrorKind::ConstSliceElementTypeMismatch { expected: expected.clone(), found: found.into() },
+            ));
+            None
+        };
+        match &expr.expr {
+            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Negate(inner) => match &inner.expr {
+                HirExpr::Number(n) => {
+                    self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number)
+                }
+                _ => {
+                    self.errors
+                        .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ConstSliceElementNotConstant));
+                    None
+                }
+            },
+            HirExpr::String(s) => match expected {
+                ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8 => {
+                    Some(ConstValue::Str(s.0.clone()))
+                }
+                _ => mismatch(self, "a string literal"),
+            },
+            HirExpr::Bool(b) => match expected {
+                ResolvedType::Bool => Some(ConstValue::Bool(*b)),
+                _ => mismatch(self, "a bool literal"),
+            },
+            HirExpr::Char(c) => match expected {
+                ResolvedType::Char => Some(ConstValue::Char(*c)),
+                _ => mismatch(self, "a character literal"),
+            },
+            HirExpr::ArrayLiteral(nested) => match expected {
+                ResolvedType::Slice { item, mutable: false } => {
+                    let mut values = Vec::with_capacity(nested.len());
+                    for element in nested {
+                        values.push(self.const_eval_slice(element, item)?);
+                    }
+                    Some(ConstValue::Slice(values))
+                }
+                _ => mismatch(self, "an array literal"),
+            },
+            // A nested `&[...]` -- the explicit spelling composes with
+            // itself, exactly like the bare form just above; both are
+            // accepted once a position is already known to want a `Slice`
+            // constant. `&mut [...]` still isn't, even nested.
+            HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
+                if *mutable {
+                    self.errors
+                        .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ConstSliceCannotBeMutable));
+                    return None;
+                }
+                match &base.expr {
+                    HirExpr::ArrayLiteral(nested) => match expected {
+                        ResolvedType::Slice { item, mutable: false } => {
+                            let mut values = Vec::with_capacity(nested.len());
+                            for element in nested {
+                                values.push(self.const_eval_slice(element, item)?);
+                            }
+                            Some(ConstValue::Slice(values))
+                        }
+                        _ => mismatch(self, "an array literal"),
+                    },
+                    _ => {
+                        self.errors.push(AnalysisError::new(
+                            expr.id,
+                            expr.span,
+                            AnalysisErrorKind::ConstSliceElementNotConstant,
+                        ));
+                        None
+                    }
+                }
+            }
+            _ => {
+                self.errors
+                    .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ConstSliceElementNotConstant));
+                None
+            }
+        }
+    }
+
     /// What `alias` means as an import in this module, resolved lazily and
     /// memoized by the driver per `(module_path, alias)` pair -- `Ok(None)`
     /// means this module has no `import` statement binding `alias` at all,
@@ -2829,6 +2971,12 @@ impl<'r> Analyzer<'r> {
                 if let HirExpr::Slice(HirSlice { base: slice_base, range }) = &base.expr {
                     return self.analyze_slice(node_id, span, slice_base, range, *mutable);
                 }
+                // `&[...]`/`&mut [...]` -- a compile-time slice, not an
+                // ordinary place; see `analyze_const_slice`'s own doc
+                // comment.
+                if let HirExpr::ArrayLiteral(elements) = &base.expr {
+                    return self.analyze_const_slice(node_id, span, elements, *mutable, expected);
+                }
                 let HirExpr::Place(place) = &base.expr else {
                     self.errors
                         .push(AnalysisError::new(node_id, span, AnalysisErrorKind::AddressOfNotAPlace));
@@ -3553,7 +3701,7 @@ impl<'r> Analyzer<'r> {
                 unreachable!("match patterns are never float-typed -- integer_domain excludes floats")
             }
             ConstValue::Bool(b) => *b as i128,
-            ConstValue::Char(_) | ConstValue::Str(_) => {
+            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) => {
                 unreachable!("analyze_value_match only ever runs for an integer/bool scrutinee type")
             }
         }
@@ -3570,7 +3718,7 @@ impl<'r> Analyzer<'r> {
         let kind = match value {
             ConstValue::Number(n) => CheckedExpr::Number(n),
             ConstValue::Bool(b) => CheckedExpr::Bool(b),
-            ConstValue::Char(_) | ConstValue::Str(_) => {
+            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) => {
                 unreachable!("analyze_value_match only ever runs for an integer/bool scrutinee type")
             }
         };
@@ -4714,6 +4862,9 @@ impl<'r> Analyzer<'r> {
             // `HirExpr::String`'s arm in `analyze_expr`), so only an
             // immutable `*u8` header field could ever accept one anyway.
             || matches!(r#type, ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8)
+            // A compile-time slice (`&[...]`, or a bare `[...]` in a header
+            // value) is likewise always immutable -- see `ConstValue::Slice`.
+            || matches!(r#type, ResolvedType::Slice { item, mutable: false } if Self::const_representable(item))
     }
 
     /// Evaluates an enum variant's tag/header value: a literal (number,
@@ -4757,6 +4908,48 @@ impl<'r> Analyzer<'r> {
                 ResolvedType::Char => Some(ConstValue::Char(*c)),
                 _ => mismatch(self, "a character literal"),
             },
+            // A bare `[...]` (no `&` needed -- a header value's position is
+            // already inherently constant, same reasoning as a bare string
+            // literal above) -- recurses through `const_eval` itself, so
+            // nesting (e.g. a `*[*[i32]]` header field) falls out for free.
+            HirExpr::ArrayLiteral(elements) => match expected {
+                ResolvedType::Slice { item, mutable: false } => {
+                    let mut values = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        values.push(self.const_eval(element, item)?);
+                    }
+                    Some(ConstValue::Slice(values))
+                }
+                _ => mismatch(self, "an array literal"),
+            },
+            // The explicit `&[...]` spelling composes with itself just like
+            // the bare form above -- both mean the same thing once a
+            // position already wants a `Slice` constant. `&mut [...]`
+            // still isn't allowed, even here.
+            HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
+                if *mutable {
+                    self.errors
+                        .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ConstSliceCannotBeMutable));
+                    return None;
+                }
+                match &base.expr {
+                    HirExpr::ArrayLiteral(elements) => match expected {
+                        ResolvedType::Slice { item, mutable: false } => {
+                            let mut values = Vec::with_capacity(elements.len());
+                            for element in elements {
+                                values.push(self.const_eval(element, item)?);
+                            }
+                            Some(ConstValue::Slice(values))
+                        }
+                        _ => mismatch(self, "an array literal"),
+                    },
+                    _ => {
+                        self.errors
+                            .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::EnumValueNotConstant));
+                        None
+                    }
+                }
+            }
             _ => {
                 self.errors
                     .push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::EnumValueNotConstant));

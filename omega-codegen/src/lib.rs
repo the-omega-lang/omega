@@ -412,7 +412,9 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
         | CheckedExpr::Bool(_)
         | CheckedExpr::Char(_)
         | CheckedExpr::String(_)
-        | CheckedExpr::ByteString(_) => {}
+        | CheckedExpr::ByteString(_)
+        // A compile-time slice's contents are constants, never a `defer`.
+        | CheckedExpr::ConstSlice(_) => {}
         CheckedExpr::Place(p) => collect_defer_ids_place(p, out),
         CheckedExpr::FunctionCall(call) => {
             collect_defer_ids_expr(&call.callee, out);
@@ -1054,23 +1056,124 @@ impl Codegen {
         vec![ptr, len]
     }
 
-    /// Emits one `ConstValue` (an enum tag or header constant) as a single
-    /// scalar of `r#type` -- every const-representable type is exactly one
-    /// IR leaf (see `Analyzer::const_representable`).
-    fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Value {
+    /// Emits one `ConstValue` (an enum tag/header constant, or a
+    /// `CheckedExpr::ConstSlice`) as its leaves, in leaf order -- every
+    /// variant but `Slice` is exactly one IR leaf (see `Analyzer::
+    /// const_representable`); `Slice` is the two-leaf `[ptr, len]` fat
+    /// pointer every other `ResolvedType::Slice` value already is (see
+    /// `emit_const_slice`).
+    fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Vec<Value> {
         match value {
             ConstValue::Number(number) => {
                 let leaf = r#type.clone().into_ir_type(self)[0];
-                match number {
+                vec![match number {
                     NumberValue::Signed(v) => builder.ins().iconst(leaf, *v),
                     NumberValue::Unsigned(v) => builder.ins().iconst(leaf, *v as i64),
                     NumberValue::Float(v) if leaf == types::F32 => builder.ins().f32const(*v as f32),
                     NumberValue::Float(v) => builder.ins().f64const(*v),
-                }
+                }]
             }
-            ConstValue::Bool(b) => builder.ins().iconst(types::I8, *b as i64),
-            ConstValue::Char(c) => builder.ins().iconst(types::I32, *c as i64),
-            ConstValue::Str(s) => self.emit_string_ptr(builder, s.clone()),
+            ConstValue::Bool(b) => vec![builder.ins().iconst(types::I8, *b as i64)],
+            ConstValue::Char(c) => vec![builder.ins().iconst(types::I32, *c as i64)],
+            ConstValue::Str(s) => vec![self.emit_string_ptr(builder, s.clone())],
+            ConstValue::Slice(elements) => {
+                let ResolvedType::Slice { item, .. } = r#type else {
+                    unreachable!("checked module guarantees a Slice constant's own type is Slice");
+                };
+                self.emit_const_slice(builder, elements, item)
+            }
+        }
+    }
+
+    /// A compile-time slice's `[ptr, len]` leaves -- unlike `emit_string_ptr`/
+    /// `emit_byte_string`, deliberately *not* deduplicated across call sites:
+    /// `ConstValue` isn't cheaply hashable (it nests, and `NumberValue::Float`
+    /// has no total order), and each occurrence is a one-shot codegen site
+    /// (one enum construction, or one `&[...]` expression) rather than
+    /// something plausibly repeated many times per function the way string
+    /// literals are.
+    fn emit_const_slice(&mut self, builder: &mut FunctionBuilder, elements: &[ConstValue], item_type: &ResolvedType) -> Vec<Value> {
+        let ptr_type = self.pointer_type();
+        let len = builder.ins().iconst(types::I32, elements.len() as i64);
+        let data_id = self.build_const_slice_data(elements, item_type);
+        let global_value = self.module.declare_data_in_func(data_id, builder.func);
+        let ptr = builder.ins().global_value(ptr_type, global_value);
+        vec![ptr, len]
+    }
+
+    /// Builds one anonymous, module-level data object holding `elements`
+    /// laid out at consecutive `total_bytes(item_type)`-sized slots -- the
+    /// same packed layout `into_ir_type`'s `SizedArray` case already uses,
+    /// so the result is byte-for-byte what an ordinary runtime slice over
+    /// this data would expect. `&[]` never reaches here -- `EmptyArrayLiteral`
+    /// already rejects it at analysis, same as a bare `[]`.
+    fn build_const_slice_data(&mut self, elements: &[ConstValue], item_type: &ResolvedType) -> DataId {
+        let stride = total_bytes(item_type.clone(), self);
+        let mut bytes = vec![0u8; stride as usize * elements.len()];
+        let mut desc = DataDescription::new();
+        for (i, element) in elements.iter().enumerate() {
+            self.write_const_element(&mut desc, &mut bytes, i as u32 * stride, element, item_type);
+        }
+        desc.define(bytes.into_boxed_slice());
+
+        let sym = self.unique_symbol();
+        let id = self.module.declare_data(&sym, Linkage::Local, false, false).unwrap();
+        self.module.define_data(id, &desc).unwrap();
+        id
+    }
+
+    /// Writes one element's leaves into `bytes`/`desc` at `offset`. A scalar
+    /// (`Number`/`Bool`/`Char`) is written as literal little-endian bytes --
+    /// its address never depends on the linker. A pointer-shaped element
+    /// (`Str`, or a nested `Slice`) can't have its address known until
+    /// link/load time, so it's written as a `DataDescription::write_data_addr`
+    /// relocation into its own (recursively built, for `Slice`) data object
+    /// instead -- the same "embed a pointer to other static data" mechanism
+    /// object file formats already support for e.g. initialized pointer
+    /// tables. A nested `Slice` element's trailing length leaf has no such
+    /// address dependency, so it's still a literal byte write.
+    fn write_const_element(
+        &mut self,
+        desc: &mut DataDescription,
+        bytes: &mut [u8],
+        offset: u32,
+        value: &ConstValue,
+        r#type: &ResolvedType,
+    ) {
+        match value {
+            ConstValue::Number(number) => {
+                let leaf_bytes = r#type.clone().into_ir_type(self)[0].bytes();
+                let raw: u64 = match number {
+                    NumberValue::Signed(v) => *v as u64,
+                    NumberValue::Unsigned(v) => *v,
+                    NumberValue::Float(v) if leaf_bytes == 4 => (*v as f32).to_bits() as u64,
+                    NumberValue::Float(v) => v.to_bits(),
+                };
+                let start = offset as usize;
+                bytes[start..start + leaf_bytes as usize].copy_from_slice(&raw.to_le_bytes()[..leaf_bytes as usize]);
+            }
+            ConstValue::Bool(b) => bytes[offset as usize] = *b as u8,
+            ConstValue::Char(c) => {
+                let start = offset as usize;
+                bytes[start..start + 4].copy_from_slice(&(*c as u32).to_le_bytes());
+            }
+            ConstValue::Str(s) => {
+                let str_id = if let Some(id) = self.strings.get(s) { *id } else { self.get_or_declare_global_string(s.clone()) };
+                let global_value = self.module.declare_data_in_data(str_id, desc);
+                desc.write_data_addr(offset, global_value, 0);
+            }
+            ConstValue::Slice(nested) => {
+                let ResolvedType::Slice { item, .. } = r#type else {
+                    unreachable!("checked module guarantees a nested Slice constant's own type is Slice");
+                };
+                let nested_id = self.build_const_slice_data(nested, item);
+                let global_value = self.module.declare_data_in_data(nested_id, desc);
+                desc.write_data_addr(offset, global_value, 0);
+
+                let ptr_bytes = self.pointer_type().bytes();
+                let len_start = (offset + ptr_bytes) as usize;
+                bytes[len_start..len_start + 4].copy_from_slice(&(nested.len() as i32).to_le_bytes());
+            }
         }
     }
 
@@ -1394,6 +1497,7 @@ impl Codegen {
         match node.kind {
             CheckedExpr::String(s) => vec![self.emit_string_ptr(builder, s)],
             CheckedExpr::ByteString(s) => self.emit_byte_string(builder, s),
+            CheckedExpr::ConstSlice(value) => self.emit_const_value(builder, &value, &node.r#type),
 
             CheckedExpr::FunctionCall(CheckedFunctionCall { callee, fn_type, args }) => {
                 // Checked module guarantees the callee resolves to exactly
@@ -1683,13 +1787,13 @@ impl Codegen {
                 let slot = builder
                     .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
 
-                let tag_value = self.emit_const_value(builder, &ConstValue::Number(tag), &tag_type);
-                builder.ins().stack_store(tag_value, slot, 0);
+                let tag_values = self.emit_const_value(builder, &ConstValue::Number(tag), &tag_type);
+                self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &tag_values);
 
                 let mut offset = total_bytes(tag_type, self);
                 for (r#type, value) in &header {
-                    let const_value = self.emit_const_value(builder, value, r#type);
-                    builder.ins().stack_store(const_value, slot, offset as i32);
+                    let const_values = self.emit_const_value(builder, value, r#type);
+                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset }, &const_values);
                     offset += total_bytes(r#type.clone(), self);
                 }
 

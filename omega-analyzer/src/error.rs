@@ -170,6 +170,17 @@ pub enum AnalysisErrorKind {
     /// (the first element's type is what every other element is checked
     /// against).
     ArrayElementTypeMismatch { expected: ResolvedType, found: ResolvedType },
+    /// `&mut [...]` -- a compile-time slice is always immutable, just like
+    /// a string literal (see `ConstValue::Slice`).
+    ConstSliceCannotBeMutable,
+    /// An element of a `&[...]` compile-time slice isn't a literal constant
+    /// (the sibling of `EnumValueNotConstant`, worded for ordinary
+    /// expression position rather than an enum header value -- see
+    /// `Analyzer::const_eval_slice`'s doc comment for why these stay
+    /// separate).
+    ConstSliceElementNotConstant,
+    /// The sibling of `EnumValueTypeMismatch`, for a `&[...]` element.
+    ConstSliceElementTypeMismatch { expected: ResolvedType, found: String },
     /// A `+ - * / %` operand's types don't match each other (e.g. `i32 +
     /// i64`) -- unlike `InvalidBinaryOperand`, both operands *are* numeric,
     /// they just aren't the same numeric type; this language has no implicit
@@ -561,6 +572,18 @@ impl AnalysisErrorKind {
             Self::ArrayElementTypeMismatch { expected, found } => d
                 .with_label(span, format!("expected `{expected}`, found `{found}`"))
                 .with_note("every element of an array literal must have the first element's type"),
+            Self::ConstSliceCannotBeMutable => d
+                .with_label(span, "a compile-time slice cannot be mutable")
+                .with_note("compile-time slice data is embedded directly in the binary, like a string literal")
+                .with_help("write `&[...]` (without `mut`)"),
+            Self::ConstSliceElementNotConstant => d
+                .with_label(span, "not a literal constant")
+                .with_note(
+                    "a compile-time slice's contents are baked into the binary,\nso every element must be a literal (a number, string, bool, char, or nested compile-time slice)",
+                ),
+            Self::ConstSliceElementTypeMismatch { expected, found } => {
+                d.with_label(span, format!("expected `{expected}`, found {found}"))
+            }
             Self::BinaryOperandTypeMismatch { left, left_span, right, right_span } => d
                 .with_secondary_label(*left_span, format!("this is `{left}`"))
                 .with_label(*right_span, format!("this is `{right}`"))
@@ -660,7 +683,7 @@ impl AnalysisErrorKind {
             Self::EnumHeaderFieldUnsupportedType { found, .. } => d
                 .with_label(span, format!("`{found}` has no literal constant form"))
                 .with_note(
-                    "each variant supplies this field's value as a compile-time constant,\nso header fields are currently limited to integers, floats, bool, char, and `*u8`",
+                    "each variant supplies this field's value as a compile-time constant,\nso header fields are currently limited to integers, floats, bool, char, `*u8`, and immutable slices of those (`*[...]`)",
                 ),
             Self::EnumVariantArgCount { expected, found, has_tag, .. } => {
                 let what = if *has_tag { "the tag, then one value per header field" } else { "one value per header field" };
@@ -1016,6 +1039,15 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::ArrayElementTypeMismatch { .. } => {
                 write!(f, "mismatched types in array literal")
+            }
+            Self::ConstSliceCannotBeMutable => {
+                write!(f, "a compile-time slice cannot be mutable")
+            }
+            Self::ConstSliceElementNotConstant => {
+                write!(f, "compile-time slice elements must be literal constants")
+            }
+            Self::ConstSliceElementTypeMismatch { expected, found } => {
+                write!(f, "mismatched types: expected '{expected}', found {found}")
             }
             Self::BinaryOperandTypeMismatch { left, right, .. } => write!(
                 f,

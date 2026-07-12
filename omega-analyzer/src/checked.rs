@@ -1,4 +1,4 @@
-use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::{HirId, ModuleId};
 use omega_parser::prelude::{BinaryOp, Ident, Span};
 
@@ -362,6 +362,11 @@ pub enum CheckedExpr {
     /// `UnionLiteralTooManyFields`). The node's own `r#type` is always the
     /// union being built (`ResolvedType::Union`).
     UnionConstruct(CheckedUnionConstruct),
+    /// `&[...]` -- a compile-time slice literal (see `ConstValue::Slice`).
+    /// The node's own `r#type` is always `ResolvedType::Slice { item,
+    /// mutable: false }`, which already fully describes the element type,
+    /// so nothing else needs to be carried here.
+    ConstSlice(ConstValue),
 }
 
 /// See `CheckedExpr::UnionConstruct`. `field_index` is the field's position

@@ -175,6 +175,13 @@ pub enum ConstValue {
     Char(char),
     /// A `*u8` string constant -- the literal's decoded bytes.
     Str(String),
+    /// A compile-time slice's elements (`&[...]`, or a bare `[...]` in an
+    /// enum header/variant value) -- no item type is carried here, exactly
+    /// like `Str` doesn't carry its own type: it's always supplied
+    /// externally by the enclosing `ResolvedType::Slice { item, .. }` at
+    /// every call site (see `Analyzer::const_representable`,
+    /// `Codegen::emit_const_value`).
+    Slice(Vec<ConstValue>),
 }
 
 /// How a numeric resolved type behaves arithmetically: its signedness (or
