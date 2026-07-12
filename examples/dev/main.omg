@@ -19,6 +19,17 @@ enum CryptographicAlgorithm(name: *u8, variants: *[*u8]) {
     RSA("RSA", &["2048", "3092", "4096"])
 }
 
+# A fixed-length array header field: unlike `variants` above (a compile-time
+# *slice*, a `[ptr, len]` fat pointer written with `&[...]`), `top_movies`
+# has no indirection at all -- its 3 elements live inline, directly in the
+# enum's own header region, written as a bare `[...]` (no `&`, since there's
+# no address being taken). Every variant supplies exactly 3 elements; the
+# length is part of the field's declared type, not a per-variant choice.
+enum MovieCategory(description: *u8, top_movies: [*u8; 3]) {
+    Action("Action-packed movies", ["Some Action Movie 1", "Some Action Movie 2", "Super Action Movie"]),
+    Horror("Scary movies", ["Horror Movie 1", "Horror Movie 2", "Super Scary Movie"]),
+}
+
 classify(n : i32) => *u8 {
     if n < 0 {
         return "negative";
@@ -655,9 +666,8 @@ main(argc : i32, argv : [*u8]) => i32 {
     greetings := &["hello", "there"];
     printf("const slice: len=%d [0]=%s [1]=%s\n", greetings.length, greetings[0], greetings[1]);
 
-    # ...which is exactly what makes a slice usable as an enum header
-    # constant (a bare `[...]`, no `&` needed -- a header value's position
-    # is already inherently constant): `CryptographicAlgorithm` above.
+    # ...which is exactly what makes `&[...]` usable as an enum header
+    # constant too: `CryptographicAlgorithm` above.
     aes := CryptographicAlgorithm::AES;
     rsa := CryptographicAlgorithm::RSA;
     printf(
@@ -667,6 +677,20 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf(
         "enum const slice 2: name=%s variants=[%s, %s, %s]\n",
         rsa.name, rsa.variants[0], rsa.variants[1], rsa.variants[2]
+    );
+
+    # `MovieCategory`'s `top_movies` is a fixed-length array baked *inline*
+    # into the header (no `&`, no separate rodata blob/relocation, unlike
+    # `variants` above) -- indexes exactly like an ordinary `[*u8; 3]` would.
+    action := MovieCategory::Action;
+    horror := MovieCategory::Horror;
+    printf(
+        "enum const array: %s -> [%s, %s, %s]\n",
+        action.description, action.top_movies[0], action.top_movies[1], action.top_movies[2]
+    );
+    printf(
+        "enum const array 2: %s -> [%s, %s, %s]\n",
+        horror.description, horror.top_movies[0], horror.top_movies[1], horror.top_movies[2]
     );
 
     return 69;

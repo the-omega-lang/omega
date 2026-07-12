@@ -1058,10 +1058,13 @@ impl Codegen {
 
     /// Emits one `ConstValue` (an enum tag/header constant, or a
     /// `CheckedExpr::ConstSlice`) as its leaves, in leaf order -- every
-    /// variant but `Slice` is exactly one IR leaf (see `Analyzer::
+    /// variant but `Slice`/`Array` is exactly one IR leaf (see `Analyzer::
     /// const_representable`); `Slice` is the two-leaf `[ptr, len]` fat
     /// pointer every other `ResolvedType::Slice` value already is (see
-    /// `emit_const_slice`).
+    /// `emit_const_slice`); `Array` is every element's own leaves
+    /// concatenated in order, with no indirection at all -- the same
+    /// packed, no-padding layout `into_ir_type`'s `SizedArray` case already
+    /// flattens to.
     fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Vec<Value> {
         match value {
             ConstValue::Number(number) => {
@@ -1081,6 +1084,16 @@ impl Codegen {
                     unreachable!("checked module guarantees a Slice constant's own type is Slice");
                 };
                 self.emit_const_slice(builder, elements, item)
+            }
+            ConstValue::Array(elements) => {
+                let ResolvedType::SizedArray(item, _) = r#type else {
+                    unreachable!("checked module guarantees an Array constant's own type is SizedArray");
+                };
+                let mut values = Vec::with_capacity(elements.len());
+                for element in elements {
+                    values.extend(self.emit_const_value(builder, element, item));
+                }
+                values
             }
         }
     }
@@ -1173,6 +1186,19 @@ impl Codegen {
                 let ptr_bytes = self.pointer_type().bytes();
                 let len_start = (offset + ptr_bytes) as usize;
                 bytes[len_start..len_start + 4].copy_from_slice(&(nested.len() as i32).to_le_bytes());
+            }
+            // No indirection at all (unlike `Slice`/`Str` above) -- every
+            // element is written inline, back to back, into this same
+            // buffer, exactly like `emit_const_value`'s `Array` case does
+            // for the function-local (non-static-data) form.
+            ConstValue::Array(elements) => {
+                let ResolvedType::SizedArray(item, _) = r#type else {
+                    unreachable!("checked module guarantees a nested Array constant's own type is SizedArray");
+                };
+                let stride = total_bytes(item.as_ref().clone(), self);
+                for (i, element) in elements.iter().enumerate() {
+                    self.write_const_element(desc, bytes, offset + i as u32 * stride, element, item);
+                }
             }
         }
     }

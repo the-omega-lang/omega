@@ -899,6 +899,23 @@ impl<'r> Analyzer<'r> {
                 ResolvedType::Char => Some(ConstValue::Char(*c)),
                 _ => mismatch(self, "a character literal"),
             },
+            // A bare `[...]` -- a fixed-length array element (e.g. a slice
+            // of fixed-size arrays, `*[[i32; 2]]`) has no indirection of its
+            // own, so it's written the same way it would be as a bare enum
+            // header value: no `&`, matching `const_eval`'s identical case.
+            HirExpr::ArrayLiteral(elements) => match expected {
+                ResolvedType::SizedArray(item, size) => {
+                    if elements.len() != *size as usize {
+                        return mismatch(self, &format!("an array literal with {} elements", elements.len()));
+                    }
+                    let mut values = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        values.push(self.const_eval_slice(element, item)?);
+                    }
+                    Some(ConstValue::Array(values))
+                }
+                _ => mismatch(self, "an array literal"),
+            },
             // `&[...]` is the only recognized spelling for a nested
             // compile-time slice -- a bare `[...]` is never treated as one,
             // even here, to avoid confusing it with an ordinary array.
@@ -3693,7 +3710,7 @@ impl<'r> Analyzer<'r> {
                 unreachable!("match patterns are never float-typed -- integer_domain excludes floats")
             }
             ConstValue::Bool(b) => *b as i128,
-            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) => {
+            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
                 unreachable!("analyze_value_match only ever runs for an integer/bool scrutinee type")
             }
         }
@@ -3710,7 +3727,7 @@ impl<'r> Analyzer<'r> {
         let kind = match value {
             ConstValue::Number(n) => CheckedExpr::Number(n),
             ConstValue::Bool(b) => CheckedExpr::Bool(b),
-            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) => {
+            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
                 unreachable!("analyze_value_match only ever runs for an integer/bool scrutinee type")
             }
         };
@@ -4854,9 +4871,12 @@ impl<'r> Analyzer<'r> {
             // `HirExpr::String`'s arm in `analyze_expr`), so only an
             // immutable `*u8` header field could ever accept one anyway.
             || matches!(r#type, ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8)
-            // A compile-time slice (`&[...]`, or a bare `[...]` in a header
-            // value) is likewise always immutable -- see `ConstValue::Slice`.
+            // A compile-time slice (`&[...]`) is likewise always immutable
+            // -- see `ConstValue::Slice`.
             || matches!(r#type, ResolvedType::Slice { item, mutable: false } if Self::const_representable(item))
+            // A fixed-length array's own length is part of the field's
+            // type, shared by every variant -- see `ConstValue::Array`.
+            || matches!(r#type, ResolvedType::SizedArray(item, _) if Self::const_representable(item))
     }
 
     /// Evaluates an enum variant's tag/header value: a literal (number,
@@ -4899,6 +4919,28 @@ impl<'r> Analyzer<'r> {
             HirExpr::Char(c) => match expected {
                 ResolvedType::Char => Some(ConstValue::Char(*c)),
                 _ => mismatch(self, "a character literal"),
+            },
+            // A bare `[...]` -- unlike a compile-time *slice* (`&[...]`,
+            // just below), a fixed-length array has no pointer indirection
+            // at all: its elements live inline, directly in the header's
+            // own storage, so there's nothing to take the address of --
+            // matching how an ordinary `[T; N]`-typed place is never
+            // written with a leading `&` either. Every variant must supply
+            // exactly `size` elements (the length is part of the field's
+            // declared type, shared by every variant, unlike a slice's
+            // per-variant length).
+            HirExpr::ArrayLiteral(elements) => match expected {
+                ResolvedType::SizedArray(item, size) => {
+                    if elements.len() != *size as usize {
+                        return mismatch(self, &format!("an array literal with {} elements", elements.len()));
+                    }
+                    let mut values = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        values.push(self.const_eval(element, item)?);
+                    }
+                    Some(ConstValue::Array(values))
+                }
+                _ => mismatch(self, "an array literal"),
             },
             // `&[...]` is the *only* recognized spelling for a compile-time
             // slice, even here -- a bare `[...]` is never treated as one

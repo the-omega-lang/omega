@@ -175,13 +175,20 @@ pub enum ConstValue {
     Char(char),
     /// A `*u8` string constant -- the literal's decoded bytes.
     Str(String),
-    /// A compile-time slice's elements (`&[...]`, or a bare `[...]` in an
-    /// enum header/variant value) -- no item type is carried here, exactly
-    /// like `Str` doesn't carry its own type: it's always supplied
-    /// externally by the enclosing `ResolvedType::Slice { item, .. }` at
-    /// every call site (see `Analyzer::const_representable`,
-    /// `Codegen::emit_const_value`).
+    /// A compile-time slice's elements (`&[...]`) -- no item type is
+    /// carried here, exactly like `Str` doesn't carry its own type: it's
+    /// always supplied externally by the enclosing `ResolvedType::Slice {
+    /// item, .. }` at every call site (see `Analyzer::const_representable`,
+    /// `Codegen::emit_const_value`). Codegen builds a separate rodata blob
+    /// and stores a `[ptr, len]` fat pointer to it.
     Slice(Vec<ConstValue>),
+    /// A fixed-length compile-time array's elements (a bare `[...]` against
+    /// a `ResolvedType::SizedArray`-typed header field) -- unlike `Slice`,
+    /// there's no indirection: codegen writes every element's leaves
+    /// inline, back to back, directly into the enclosing storage (an enum's
+    /// header region, or a nested array/slice element), exactly like an
+    /// ordinary `SizedArray` value's own layout.
+    Array(Vec<ConstValue>),
 }
 
 /// How a numeric resolved type behaves arithmetically: its signedness (or
