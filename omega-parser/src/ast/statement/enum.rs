@@ -16,7 +16,7 @@ use crate::diagnostics::Span;
 /// }
 /// ```
 ///
-/// Three orthogonal pieces per the language design:
+/// Four orthogonal pieces per the language design:
 /// - a *header* (the parenthesized list): fields present on **every**
 ///   variant, whose values are per-variant constants supplied in each
 ///   variant's `(...)` -- Java-style "each variant calls the constructor
@@ -25,6 +25,12 @@ use crate::diagnostics::Span;
 ///   implicit auto-incrementing `u16`. Whether the first entry *is* the tag
 ///   is decided by semantic analysis (it's just a field named `tag` here) --
 ///   the parser records the raw list.
+/// - *shared dynamic fields* (an optional `field: Type;` list right after
+///   the opening `{`, before the first variant): also present on **every**
+///   variant like the header, but -- unlike the header -- runtime-valued,
+///   not a per-variant constant: every construction site supplies them in
+///   its body literal (see `EnumVariantStmt`), and they're freely
+///   assignable afterward, exactly like a body field.
 /// - *variants*, each optionally with a `{ field: Type; ... }` body of
 ///   variant-specific fields -- at runtime the enum's body region is a
 ///   union of all variant bodies, but the language only ever lets you touch
@@ -38,6 +44,11 @@ pub struct EnumStmt {
     /// use-site rules as `StructStmt::generics`.
     pub generics: Vec<Ident>,
     pub header: Vec<EnumHeaderField>,
+    /// The optional shared-dynamic-fields section -- empty when the enum
+    /// declares none. Plain `DeclarationStmt`s, same as a struct field or a
+    /// variant's own body field (no position-sensitive rules like the
+    /// header's `tag` has, so no dedicated span-carrying type is needed).
+    pub dynamic_fields: Vec<DeclarationStmt>,
     pub variants: Vec<EnumVariantStmt>,
     pub functions: Vec<FunctionDefinitionStmt>,
 }

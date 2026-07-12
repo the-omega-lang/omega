@@ -307,11 +307,15 @@ pub enum AnalysisErrorKind {
     /// Two variants sharing one tag value -- tags are how variants are told
     /// apart at runtime, so they must be unique per variant.
     DuplicateEnumTag { variant: Ident, value: String, previous_variant: Ident, previous: Span },
-    /// A variant body field with the same name as a shared header field --
-    /// both are reached as `value.name`, so they must not collide. Also
-    /// covers a body/header field named `tag` (`header_field` is `tag`
-    /// then), which the tag itself already claims on every enum.
-    EnumFieldShadowsHeader { field: Ident, variant: Option<Ident> },
+    /// A name already claimed elsewhere in the same enum's shared
+    /// `value.name` namespace -- the tag, a header field, a shared dynamic
+    /// field, and (when `variant` is `Some`) that variant's own body
+    /// fields all draw from one namespace, so none of them may collide
+    /// with any other. `variant` is `None` for a definition-time
+    /// collision among the tag/header/dynamic fields themselves (which
+    /// apply enum-wide), `Some` for a variant's own body field colliding
+    /// with one of those.
+    EnumFieldNameCollision { field: Ident, variant: Option<Ident> },
     /// `Enum { ... }` -- an enum can't be built by naming just the enum; a
     /// specific variant must be chosen. `example` is a real variant of this
     /// enum, for the help text.
@@ -337,15 +341,15 @@ pub enum AnalysisErrorKind {
     /// not exist in the value at all. `owner` is the variant declaring it.
     EnumFieldVariantUnknown { field: Ident, r#enum: Ident, owner: Ident },
     /// A field access naming something that is neither the tag, a header
-    /// field, nor any variant's body field.
+    /// field, a shared dynamic field, nor any variant's body field.
     NoSuchEnumField { field: Ident, r#enum: Ident, similar: Option<Ident> },
     /// A path with explicit generic arguments (`Optional<u32>::...`)
     /// continuing more than one segment past the instantiated type --
     /// nothing nests deeper than a type's own members.
     GenericPathTooDeep { r#type: Ident },
     /// An assignment to an enum value's tag or one of its header fields --
-    /// both are per-variant constants; only a variant's own body fields are
-    /// mutable.
+    /// both are per-variant constants; only a variant's own body fields and
+    /// shared dynamic fields are mutable.
     EnumFieldImmutable { field: Ident },
     /// A variant-body literal (`Enum::Variant { ... }`) trying to set a
     /// *header* field -- header values are fixed per variant by the enum's
@@ -700,12 +704,12 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("tag {value} used again here"))
                 .with_secondary_label(*previous, format!("first used by variant '{}'", previous_variant.as_ref()))
                 .with_note("the tag is how variants are told apart at runtime, so each variant needs its own"),
-            Self::EnumFieldShadowsHeader { field, .. } => {
-                let d = d.with_label(span, format!("`{}` already names a header field", field.as_ref()));
+            Self::EnumFieldNameCollision { field, .. } => {
+                let d = d.with_label(span, format!("`{}` already names a field of this enum", field.as_ref()));
                 if field.as_ref() == "tag" {
                     d.with_note("`tag` is reserved: every enum value exposes its tag as `value.tag`")
                 } else {
-                    d.with_note("header fields and body fields are both accessed as `value.name`, so they share one namespace")
+                    d.with_note("the tag, header fields, shared dynamic fields, and each variant's body fields are all accessed as `value.name`, so they share one namespace")
                 }
             }
             Self::EnumLiteralWithoutVariant { r#enum, example } => d
@@ -741,7 +745,7 @@ impl AnalysisErrorKind {
             Self::EnumFieldVariantUnknown { field, owner, .. } => d
                 .with_label(span, format!("this value's variant is not statically known here"))
                 .with_note(format!(
-                    "'{}' belongs to variant '{}', which this value may or may not be;\nonly `tag` and the shared header fields are always present",
+                    "'{}' belongs to variant '{}', which this value may or may not be;\nonly `tag`, the shared header fields, and the shared dynamic fields are always present",
                     field.as_ref(),
                     owner.as_ref()
                 )),
@@ -756,7 +760,7 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("nothing nests deeper than `{}`'s own members", r#type.as_ref())),
             Self::EnumFieldImmutable { field } => d
                 .with_label(span, format!("`{}` is fixed by the value's variant", field.as_ref()))
-                .with_note("the tag and header fields are per-variant constants; only a variant's own body fields can be assigned"),
+                .with_note("the tag and header fields are per-variant constants; only a variant's own body fields and shared dynamic fields can be assigned"),
             Self::EnumHeaderFieldInLiteral { field } => d
                 .with_label(span, format!("`{}` is a header field", field.as_ref()))
                 .with_note("header values are fixed per variant by the enum's definition, so a construction site never supplies them"),
@@ -1155,14 +1159,14 @@ impl fmt::Display for AnalysisErrorKind {
                     variant.as_ref()
                 )
             }
-            Self::EnumFieldShadowsHeader { field, variant } => match variant {
+            Self::EnumFieldNameCollision { field, variant } => match variant {
                 Some(variant) => write!(
                     f,
-                    "field '{}' of variant '{}' collides with a header field",
+                    "field '{}' of variant '{}' collides with another field of this enum",
                     field.as_ref(),
                     variant.as_ref()
                 ),
-                None => write!(f, "header field '{}' is declared more than once", field.as_ref()),
+                None => write!(f, "'{}' is declared more than once in this enum", field.as_ref()),
             },
             Self::EnumLiteralWithoutVariant { r#enum, .. } => {
                 write!(f, "cannot build enum '{}' without naming a variant", r#enum.as_ref())

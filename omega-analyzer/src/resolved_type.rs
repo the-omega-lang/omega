@@ -115,6 +115,14 @@ pub struct ResolvedEnumType {
     /// tag, which is layout-wise field -1 (always first) and accessed via
     /// the dedicated `.tag` projection instead.
     pub header: Vec<(Ident, ResolvedType)>,
+    /// The shared *dynamic* fields, in declaration order -- present on
+    /// every variant like `header`, laid out right after it, but
+    /// runtime-valued: every construction site supplies them (see
+    /// `Analyzer::analyze_struct_literal`'s `EnumVariant` arm), and they're
+    /// freely assignable afterward, exactly like a variant's own body
+    /// field. Unlike `header`, there is no per-variant constant list here
+    /// at all -- there's nothing to bake in.
+    pub dynamic_fields: Vec<(Ident, ResolvedType)>,
     pub variants: Vec<ResolvedEnumVariant>,
     /// Same shape and semantics as `ResolvedStructType::functions`.
     pub functions: Vec<(Ident, ResolvedMethod)>,

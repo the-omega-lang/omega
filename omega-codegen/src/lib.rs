@@ -184,21 +184,27 @@ impl IntoIRType for ResolvedType {
             ResolvedType::Union(union_type) => {
                 payload_chunks(union_bytes(&union_type.borrow(), codegen))
             }
-            // An enum value is `[tag][header fields][payload]` -- the tag
-            // and header flatten like ordinary struct fields, while the
-            // payload (a union of every variant's body, sized to the
-            // largest) flattens to opaque integer chunks: no single typed
-            // leaf list can describe a union, so the chunks only ever move
-            // bytes around (assignment, parameter passing); a body field is
-            // read/written through memory at its byte offset instead (see
-            // `resolve_place_storage`'s `EnumBody` arm). A statically-known
-            // variant refinement never changes the layout -- every enum
-            // value is full-size, which is exactly what makes refined ->
-            // plain widening a plain leaf copy.
+            // An enum value is `[tag][header fields][shared dynamic fields]
+            // [payload]` -- the tag, header, and shared dynamic fields all
+            // flatten like ordinary struct fields (the dynamic fields are
+            // simply ordinary per-instance storage, unlike the header's
+            // per-variant constants), while the payload (a union of every
+            // variant's body, sized to the largest) flattens to opaque
+            // integer chunks: no single typed leaf list can describe a
+            // union, so the chunks only ever move bytes around (assignment,
+            // parameter passing); a body field is read/written through
+            // memory at its byte offset instead (see `resolve_place_
+            // storage`'s `EnumBody` arm). A statically-known variant
+            // refinement never changes the layout -- every enum value is
+            // full-size, which is exactly what makes refined -> plain
+            // widening a plain leaf copy.
             ResolvedType::Enum { cell, .. } => {
                 let enum_type = cell.borrow();
                 let mut leaves = enum_type.tag_type.clone().into_ir_type(codegen);
                 for (_, field_type) in &enum_type.header {
+                    leaves.extend(field_type.clone().into_ir_type(codegen));
+                }
+                for (_, field_type) in &enum_type.dynamic_fields {
                     leaves.extend(field_type.clone().into_ir_type(codegen));
                 }
                 leaves.extend(payload_chunks(enum_payload_bytes(&enum_type, codegen)));
@@ -328,10 +334,21 @@ fn enum_header_offset(enum_type: &ResolvedEnumType, index: usize, codegen: &Code
             .sum::<u32>()
 }
 
-/// The payload region's byte offset within an enum value -- past the tag
-/// and the whole header.
-fn enum_payload_offset(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
+/// A shared dynamic field's packed byte offset within an enum value -- past
+/// the tag, the whole header, and every preceding dynamic field. Mirrors
+/// `enum_header_offset` exactly, one region further out.
+fn enum_dynamic_field_offset(enum_type: &ResolvedEnumType, index: usize, codegen: &Codegen) -> u32 {
     enum_header_offset(enum_type, enum_type.header.len(), codegen)
+        + enum_type.dynamic_fields[..index]
+            .iter()
+            .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
+            .sum::<u32>()
+}
+
+/// The payload region's byte offset within an enum value -- past the tag,
+/// the whole header, and the whole shared-dynamic-fields region.
+fn enum_payload_offset(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
+    enum_dynamic_field_offset(enum_type, enum_type.dynamic_fields.len(), codegen)
 }
 
 /// A body field's packed byte offset within an enum value: the payload
@@ -749,6 +766,40 @@ impl Codegen {
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
                             offset: offset + enum_header_offset(&enum_type, *index, self),
+                        },
+                    };
+                    current_type = r#type.clone();
+                }
+
+                // `EnumHeader`'s arm above, mirrored exactly -- the only
+                // difference between the two is which offset helper and
+                // field list to read from (dynamic fields sit right after
+                // the header); mutability is handled generically wherever a
+                // place is written to, not here (see `immutable_enum_member`).
+                CheckedProjection::EnumDynamicField { index, r#type, .. } => {
+                    let ResolvedType::Enum { cell, .. } = &current_type else {
+                        unreachable!("checked module guarantees EnumDynamicField projections are only built against an enum type");
+                    };
+                    let cell = cell.clone();
+                    let enum_type = cell.borrow();
+                    current = match current {
+                        PlaceStorage::Values(values) => {
+                            let start = enum_type.tag_type.clone().into_ir_type(self).len()
+                                + enum_type.header.iter().map(|(_, t)| t.clone().into_ir_type(self).len()).sum::<usize>()
+                                + enum_type.dynamic_fields[..*index]
+                                    .iter()
+                                    .map(|(_, t)| t.clone().into_ir_type(self).len())
+                                    .sum::<usize>();
+                            let len = enum_type.dynamic_fields[*index].1.clone().into_ir_type(self).len();
+                            PlaceStorage::Values(values[start..start + len].to_vec())
+                        }
+                        PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                            slot,
+                            offset: offset + enum_dynamic_field_offset(&enum_type, *index, self),
+                        },
+                        PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                            base,
+                            offset: offset + enum_dynamic_field_offset(&enum_type, *index, self),
                         },
                     };
                     current_type = r#type.clone();
@@ -1777,10 +1828,14 @@ impl Codegen {
 
             CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }) => {
                 // Built in an anonymous scratch slot -- constants (tag,
-                // header) and typed body fields land at their byte offsets,
-                // the rest of the payload region is zeroed (deterministic
-                // bytes for the chunk-wise copies the leaf model does) --
-                // then the whole value is read back out as ordinary leaves.
+                // header), the shared dynamic fields, and typed body fields
+                // all land at their byte offsets, the rest of the payload
+                // region is zeroed (deterministic bytes for the chunk-wise
+                // copies the leaf model does; the dynamic-fields region
+                // needs no such zeroing -- every dynamic field is always
+                // supplied by `fields` below, unlike the payload's union
+                // slack) -- then the whole value is read back out as
+                // ordinary leaves.
                 let ResolvedType::Enum { cell, .. } = &node.r#type else {
                     unreachable!("checked module guarantees a construction's own type is its enum");
                 };
@@ -1796,8 +1851,18 @@ impl Codegen {
                         .zip(&variant.header_values)
                         .map(|((_, r#type), value)| (r#type.clone(), value.clone()))
                         .collect();
-                    let field_offsets: Vec<u32> = (0..variant.fields.len())
-                        .map(|i| enum_body_field_offset(&enum_type, variant_index, i, self))
+                    // `field.field_index` (from `CheckedEnumConstruct::fields`)
+                    // spans the *combined* declared list analysis built --
+                    // shared dynamic fields first, then this variant's own
+                    // body fields (see `Analyzer::analyze_struct_literal`'s
+                    // `EnumVariant` arm) -- so this offset table is built in
+                    // that exact same order.
+                    let field_offsets: Vec<u32> = (0..enum_type.dynamic_fields.len())
+                        .map(|i| enum_dynamic_field_offset(&enum_type, i, self))
+                        .chain(
+                            (0..variant.fields.len())
+                                .map(|i| enum_body_field_offset(&enum_type, variant_index, i, self)),
+                        )
                         .collect();
                     (
                         variant.tag,
@@ -1830,8 +1895,9 @@ impl Codegen {
                     chunk_offset += chunk.bytes();
                 }
 
-                // Body values run in source order (their side effects
-                // must); each lands at its declared field's offset.
+                // Dynamic and body field values run in source order (their
+                // side effects must); each lands at its declared field's
+                // offset.
                 for field in fields {
                     let field_offset = field_offsets[field.field_index];
                     let values = self.process_expr(builder, field.value);

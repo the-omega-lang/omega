@@ -257,8 +257,11 @@ pub fn parse_union_def(p: &mut Parser) -> Option<UnionStmt> {
     Some(UnionStmt { ident, generics, fields, functions })
 }
 
-/// `enum Name<T, ...>(header) { Variant(args) { fields }, ...; functions }`
-/// -- see `EnumStmt`'s doc comment for the full shape. Variants are
+/// `enum Name<T, ...>(header) { [dynamic_fields] Variant(args) { fields }, ...; functions }`
+/// -- see `EnumStmt`'s doc comment for the full shape. The optional shared
+/// dynamic fields (if any) come first, parsed exactly like `parse_struct_def`'s
+/// field loop; a variant name is never followed by `:`, so the same `Ident`
+/// + `:` lookahead unambiguously tells the two apart. Variants are
 /// separated by `,` (optional after a `{...}` body, so a body can be
 /// followed directly by the next variant); the variant list ends at `}`
 /// (no functions) or at a `;`, after which only function definitions may
@@ -269,6 +272,20 @@ pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
     let generics = parse_optional_generics(p)?;
     let header = parse_enum_header(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
+
+    // The optional shared-dynamic-fields section -- same `Ident` + `:`
+    // lookahead and loop body `parse_struct_def`'s field loop uses, just
+    // spliced here, before the variant list, instead of a struct's `{...}`.
+    let mut dynamic_fields = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
+        match parse_declaration(p) {
+            Some(decl) => {
+                dynamic_fields.push(decl);
+                p.expect_terminator(&TokenKind::Semi, "';'");
+            }
+            None => recovery::synchronize_to_statement_boundary(p),
+        }
+    }
 
     let mut variants = Vec::new();
     let mut functions_follow = false;
@@ -329,7 +346,7 @@ pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(EnumStmt { ident, generics, header, variants, functions })
+    Some(EnumStmt { ident, generics, header, dynamic_fields, variants, functions })
 }
 
 /// The optional `(name: Type, ...)` header after the enum's name -- each

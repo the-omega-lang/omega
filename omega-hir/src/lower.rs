@@ -256,8 +256,10 @@ impl Lowerer {
     /// synthetic `self: *EnumName` inserted by `lower_function_def`, exactly
     /// like a struct's. Header entries keep their own real spans (the parser
     /// records them -- position-sensitive `tag` rules deserve precise
-    /// errors); variant body fields inherit their variant's span, the same
-    /// approximation struct fields make with their struct's.
+    /// errors); variant body fields and the shared dynamic fields (no
+    /// position-sensitive rules of their own) inherit the enum's/their
+    /// variant's span, the same approximation struct fields make with their
+    /// struct's.
     fn lower_enum_def(&mut self, e: &EnumStmt, span: Span) -> HirEnumDef {
         let id = self.ids.next();
         let header = e
@@ -270,6 +272,7 @@ impl Lowerer {
                 r#type: h.r#type.clone(),
             })
             .collect();
+        let dynamic_fields = e.dynamic_fields.iter().map(|f| self.lower_param(f, span)).collect();
         let variants = e
             .variants
             .iter()
@@ -293,6 +296,7 @@ impl Lowerer {
             name: e.ident.clone(),
             generics: e.generics.clone(),
             header,
+            dynamic_fields,
             variants,
             functions,
         }

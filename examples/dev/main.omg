@@ -189,6 +189,32 @@ enum MyEnumWithBodies {
     Third { some_number: u16; pointer_to_another_instance: *MyEnumWithBodies; }
 }
 
+# Shared *dynamic* fields (declared right after `{`, before the first
+# variant): present on every variant like a header field, so no variant
+# refinement is needed to reach them (`self.favorite_number` below works
+# for any variant) -- but unlike a header field, they're ordinary
+# per-instance storage, not a per-variant constant: every construction site
+# supplies them, and they're freely assignable afterward, exactly like a
+# variant's own body field (contrast with `description`, a real header
+# field -- fixed forever once a variant is built).
+enum MyEnumWithSharedDynamicFields(description: *u8) {
+    favorite_number: i32;
+    favorite_color: *u8;
+
+    First("This is the first variant"),
+    Second("This is the second variant") {
+        specific_field: i32;
+    },
+    Third("This is the third variant");
+
+    print_favorite_number_and_color(self) => void {
+        printf(
+            "my favorite number is %d and my favorite color is %s\n",
+            self.favorite_number, self.favorite_color
+        );
+    }
+}
+
 # An explicit tag: `tag` leads the header with the integer type of your
 # choice, and each variant supplies its own (unique, compile-time-constant)
 # value first.
@@ -523,6 +549,34 @@ main(argc : i32, argv : [*u8]) => i32 {
         MyEnumWithBodies::Third => "third",
     };
     printf("match as expression: %s\n", kind);
+
+    # Shared dynamic fields: every construction site supplies them (even
+    # `First`, which has no body fields of its own), and a shared method
+    # can read them without proving the variant.
+    shared_first := MyEnumWithSharedDynamicFields::First {
+        favorite_number = 10;
+        favorite_color = "green";
+    };
+    shared_second := MyEnumWithSharedDynamicFields::Second {
+        favorite_number = 20;
+        favorite_color = "blue";
+        specific_field = 99;
+    };
+    shared_first.print_favorite_number_and_color();
+    shared_second.print_favorite_number_and_color();
+    printf(
+        "shared dynamic fields: description=%s/%s specific_field=%d\n",
+        shared_first.description, shared_second.description, shared_second.specific_field
+    );
+
+    # Unlike a header field, a shared dynamic field is genuinely mutable --
+    # an ordinary assignment through it, exactly like a body field's.
+    mut shared_mut := MyEnumWithSharedDynamicFields::Third {
+        favorite_number = 1;
+        favorite_color = "red";
+    };
+    shared_mut.favorite_number = 42;
+    printf("shared dynamic field mutated: %d\n", shared_mut.favorite_number);
 
     xt := MyEnumWithExplicitTagAndHeader::Third;
     printf("enum explicit: tag=%u desc=%s\n", xt.tag, xt.description);

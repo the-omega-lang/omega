@@ -495,11 +495,11 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // Enum member access: `tag` and header fields exist on every value;
-        // a body field additionally requires the value's variant to be
-        // statically known (see `ResolvedType::Enum`) *and* to be the one
-        // declaring it -- anything else gets the most precise "why not"
-        // this lookup can determine.
+        // Enum member access: `tag`, header fields, and shared dynamic
+        // fields exist on every value; a body field additionally requires
+        // the value's variant to be statically known (see `ResolvedType::
+        // Enum`) *and* to be the one declaring it -- anything else gets
+        // the most precise "why not" this lookup can determine.
         if let ResolvedType::Enum { cell, variant } = &dereffed {
             let e = cell.borrow();
             if field.as_ref() == "tag" {
@@ -510,6 +510,17 @@ impl<'r> Analyzer<'r> {
             if let Some((index, (_, r#type))) = e.header.iter().enumerate().find(|(_, (name, _))| name == field) {
                 let r#type = r#type.clone();
                 projections.push(CheckedProjection::EnumHeader { field: field.clone(), index, r#type: r#type.clone() });
+                return Some(r#type);
+            }
+            if let Some((index, (_, r#type))) =
+                e.dynamic_fields.iter().enumerate().find(|(_, (name, _))| name == field)
+            {
+                let r#type = r#type.clone();
+                projections.push(CheckedProjection::EnumDynamicField {
+                    field: field.clone(),
+                    index,
+                    r#type: r#type.clone(),
+                });
                 return Some(r#type);
             }
             if let Some(current) = variant
@@ -538,11 +549,12 @@ impl<'r> Analyzer<'r> {
                 },
                 (None, _) => {
                     // Suggest across everything reachable as `value.name` on
-                    // this value: tag, header, and -- when the variant is
-                    // known -- its own body fields.
+                    // this value: tag, header, shared dynamic fields, and --
+                    // when the variant is known -- its own body fields.
                     let tag = Ident("tag".into());
                     let candidates = std::iter::once(&tag)
                         .chain(e.header.iter().map(|(name, _)| name))
+                        .chain(e.dynamic_fields.iter().map(|(name, _)| name))
                         .chain(
                             variant
                                 .iter()
@@ -1399,9 +1411,10 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `Enum::Variant` in value position -- the unit construction. Only a
-    /// body-less variant has one (there is no implicit zeroing to fill a
-    /// body with); the result is an ordinary expression place root whose
-    /// type statically knows its variant.
+    /// variant with no fields at all -- neither its own body fields nor
+    /// (now) the enum's shared dynamic fields -- has one (there is no
+    /// implicit zeroing to fill a body with); the result is an ordinary
+    /// expression place root whose type statically knows its variant.
     fn resolve_unit_variant(
         &mut self,
         node_id: HirId,
@@ -1419,14 +1432,17 @@ impl<'r> Analyzer<'r> {
             ));
             return None;
         }
-        if !variant.fields.is_empty() {
+        let dynamic_field_names: Vec<Ident> = cell.borrow().dynamic_fields.iter().map(|(n, _)| n.clone()).collect();
+        if !dynamic_field_names.is_empty() || !variant.fields.is_empty() {
+            let fields =
+                dynamic_field_names.into_iter().chain(variant.fields.iter().map(|(name, _)| name.clone())).collect();
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
                 AnalysisErrorKind::EnumVariantMissingBody {
                     r#enum: cell.borrow().name.clone(),
                     variant: variant.name.clone(),
-                    fields: variant.fields.iter().map(|(name, _)| name.clone()).collect(),
+                    fields,
                 },
             ));
             return None;
@@ -3834,7 +3850,12 @@ impl<'r> Analyzer<'r> {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
                     let header_names: Vec<Ident> = e.header.iter().map(|(name, _)| name.clone()).collect();
-                    (e.name.clone(), v.name.clone(), v.fields.clone(), header_names)
+                    // Shared dynamic fields first (declaration order), then
+                    // this variant's own body fields -- every construction
+                    // site must supply both, in one combined literal.
+                    let declared: Vec<(Ident, ResolvedType)> =
+                        e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
+                    (e.name.clone(), v.name.clone(), declared, header_names)
                 };
                 if declared.is_empty() {
                     self.errors.push(AnalysisError::new(
@@ -4660,7 +4681,7 @@ impl<'r> Analyzer<'r> {
                 self.errors.push(AnalysisError::new(
                     field.id,
                     field.span,
-                    AnalysisErrorKind::EnumFieldShadowsHeader { field: field.ident.clone(), variant: None },
+                    AnalysisErrorKind::EnumFieldNameCollision { field: field.ident.clone(), variant: None },
                 ));
                 ok = false;
                 continue;
@@ -4693,6 +4714,42 @@ impl<'r> Analyzer<'r> {
         // against the *surviving* entries would only report derived noise
         // ("must supply 1 value" because the invalid tag entry was
         // dropped), so the header's own errors stand alone.
+        if !ok {
+            return None;
+        }
+
+        // --- shared dynamic fields: present on every variant like the
+        // header, but runtime-valued -- no per-variant constant to parse,
+        // so this is header validation's `const_representable`-free,
+        // tag-free sibling. ---
+        let mut dynamic_fields: Vec<(Ident, ResolvedType)> = Vec::new();
+        let mut seen_dynamic: HashMap<Ident, Span> = HashMap::new();
+        for field in &e.dynamic_fields {
+            let collides = field.ident.as_ref() == "tag"
+                || header.iter().any(|(name, _)| *name == field.ident)
+                || seen_dynamic.contains_key(&field.ident);
+            if collides {
+                self.errors.push(AnalysisError::new(
+                    field.id,
+                    field.span,
+                    AnalysisErrorKind::EnumFieldNameCollision { field: field.ident.clone(), variant: None },
+                ));
+                ok = false;
+                continue;
+            }
+            seen_dynamic.insert(field.ident.clone(), field.span);
+            // Laid out inline in every enum value, exactly like a header
+            // field -- the same `indirect = false` a struct field passes.
+            let Some(resolved) = self.resolve_type_or_error(field.id, field.span, &field.r#type, false) else {
+                ok = false;
+                continue;
+            };
+            dynamic_fields.push((field.ident.clone(), resolved));
+        }
+
+        // Same reasoning as the header's own early bail just above: a
+        // broken dynamic-fields list makes the variant loop's shadow check
+        // against it unreliable.
         if !ok {
             return None;
         }
@@ -4777,18 +4834,20 @@ impl<'r> Analyzer<'r> {
                 }
             }
 
-            // Body fields -- must not collide with the header (both are
-            // reached as `value.name`) or the reserved `tag`.
+            // Body fields -- must not collide with the header, the shared
+            // dynamic fields (all three are reached as `value.name`), or
+            // the reserved `tag`.
             let mut fields: Vec<(Ident, ResolvedType)> = Vec::new();
             let mut seen_fields: HashMap<Ident, Span> = HashMap::new();
             for field in &variant.fields {
-                let shadows_header =
-                    field.ident.as_ref() == "tag" || header.iter().any(|(name, _)| *name == field.ident);
+                let shadows_header = field.ident.as_ref() == "tag"
+                    || header.iter().any(|(name, _)| *name == field.ident)
+                    || dynamic_fields.iter().any(|(name, _)| *name == field.ident);
                 if shadows_header {
                     self.errors.push(AnalysisError::new(
                         field.id,
                         field.span,
-                        AnalysisErrorKind::EnumFieldShadowsHeader {
+                        AnalysisErrorKind::EnumFieldNameCollision {
                             field: field.ident.clone(),
                             variant: Some(variant.name.clone()),
                         },
@@ -4842,6 +4901,7 @@ impl<'r> Analyzer<'r> {
             let mut resolved = cell.borrow_mut();
             resolved.tag_type = tag_type;
             resolved.header = header;
+            resolved.dynamic_fields = dynamic_fields;
             resolved.variants = variants;
         }
 

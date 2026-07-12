@@ -150,6 +150,10 @@ pub struct HirEnumDef {
     /// The raw header entries, in source order -- a first entry named `tag`
     /// is the explicit tag; the rest are the shared header fields.
     pub header: Vec<HirParam>,
+    /// The optional shared-dynamic-fields section -- present on every
+    /// variant like `header`, but (unlike `header`) runtime-valued, not a
+    /// per-variant constant; empty when the enum declares none.
+    pub dynamic_fields: Vec<HirParam>,
     pub variants: Vec<HirEnumVariant>,
     /// Same shape as `HirStructDef::functions` -- a member function's
     /// synthetic `self: *EnumName` parameter is already inserted by

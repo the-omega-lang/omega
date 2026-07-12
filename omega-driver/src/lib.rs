@@ -788,6 +788,7 @@ impl Driver {
                     name: key.1.clone(),
                     tag_type: ResolvedType::U16,
                     header: vec![],
+                    dynamic_fields: vec![],
                     variants: vec![],
                     functions: vec![],
                 }))

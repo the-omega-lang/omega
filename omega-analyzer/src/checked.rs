@@ -525,6 +525,17 @@ pub enum CheckedProjection {
         index: usize,
         r#type: ResolvedType,
     },
+    /// A shared *dynamic* field on an enum value -- `EnumHeader`'s sibling:
+    /// present on every variant, so no static variant knowledge is
+    /// required either, but (unlike `EnumHeader`) ordinary per-instance
+    /// storage, not a per-variant constant -- an assignment through this
+    /// projection is perfectly ordinary, exactly like `EnumBody`'s.
+    /// `index` is the field's position in `ResolvedEnumType::dynamic_fields`.
+    EnumDynamicField {
+        field: Ident,
+        index: usize,
+        r#type: ResolvedType,
+    },
     /// A body field of an enum value whose variant is statically known --
     /// analysis guarantees the base's resolved type carries exactly
     /// `variant_index` (see `ResolvedType::Enum`), so codegen can compute
