@@ -1,0 +1,17 @@
+# A small standalone project, meant to be compiled on its own
+# (`omgc examples/extern_lib/mathlib.omg`) and linked into another project
+# that references it via `import extern::mathlib;` (see `examples/dev/main.omg`,
+# compiled with `--extern=mathlib:examples/extern_lib`). Nothing here is
+# aware it's being used this way -- it's an entirely ordinary module.
+
+add_numbers(a: i32, b: i32) => i32 {
+    a + b
+}
+
+struct Point {
+    x: i32;
+    y: i32;
+    magnitude_sq(self) => i32 {
+        self.x * self.x + self.y * self.y
+    }
+}

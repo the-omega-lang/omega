@@ -17,7 +17,7 @@ use crate::{
         CastClass, ConstValue, NumericKind, ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType,
         ResolvedMethod, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
-    resolver::{GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport, ResolvedItem},
+    resolver::{GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem},
     similarity::best_match,
 };
 use omega_hir::{
@@ -190,55 +190,37 @@ fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue
 }
 
 impl<'r> Analyzer<'r> {
-    /// `imports` is this module's already-resolved import aliases/items --
-    /// computed once per module and cached by `omega_driver::Driver`
-    /// (cycle-guarded there too, since resolving one module's item-style
-    /// imports can itself need another module's), then applied fresh here
-    /// into every throwaway `Analyzer` built for one of this module's
-    /// items. This replaces the old per-call `process_import`/
-    /// `process_imports` -- imports are processed exactly once per module
-    /// now (by whoever builds this list), not once per item.
+    /// Imports are no longer pre-resolved and pre-bound here: an `import`
+    /// alias resolves lazily, the first time some name lookup that isn't
+    /// satisfied locally actually needs to know what it means (see
+    /// `Analyzer::resolve_alias`) -- this is what fixes a real false-cycle
+    /// bug the old eager-resolve-the-whole-module's-imports-up-front
+    /// approach had (two modules whose *unrelated* items happened to
+    /// cross-import each other's module would deadlock on each other's
+    /// whole import list, even though the specific items in question never
+    /// referenced each other). `omega_driver::Driver` memoizes each
+    /// `(module_path, alias)` alias resolution individually, so this
+    /// throwaway `Analyzer` doesn't need its own import-alias cache either
+    /// -- every lookup just asks the resolver directly.
     ///
     /// `generics` is the concrete substitution for the item's own declared
     /// generic parameters -- empty for an ordinary, non-generic item.
-    /// Seeded into `defined_types` *after* imports (through the same
-    /// duplicate-checking discipline: colliding with an already-bound import
-    /// alias, a builtin, or another entry in `generics` itself is a
-    /// `Redeclaration`, anchored at `owner` -- the item's own id/span, since
-    /// an individual generic parameter has none of its own). This is what
-    /// makes a generic parameter nothing more than a type name bound to a
-    /// concrete `ResolvedType` for the lifetime of one throwaway `Analyzer`:
-    /// genericity is purely a resolution-time concern, matching the
-    /// "duck typed" design (no bounds are ever declared or checked here).
+    /// Seeded into `defined_types`, with a `Redeclaration` for a duplicate
+    /// entry within `generics` itself, anchored at `owner` -- the item's own
+    /// id/span, since an individual generic parameter has none of its own.
+    /// This is what makes a generic parameter nothing more than a type name
+    /// bound to a concrete `ResolvedType` for the lifetime of one throwaway
+    /// `Analyzer`: genericity is purely a resolution-time concern, matching
+    /// the "duck typed" design (no bounds are ever declared or checked
+    /// here).
     pub fn new(
         resolver: &'r mut dyn ModuleResolver,
         module_path: Vec<Ident>,
-        imports: &[ResolvedImport],
         generics: &[(Ident, ResolvedType)],
         owner: (HirId, Span),
     ) -> Self {
         let mut context = Context::new();
         let mut errors = Vec::new();
-        for import in imports {
-            let result = match import.target.clone() {
-                ImportTarget::Module(absolute) => {
-                    context.import_module(import.alias.clone(), absolute);
-                    Ok(())
-                }
-                ImportTarget::Item(resolved) => context.bind_imported_item(import.alias.clone(), resolved, import.span),
-                ImportTarget::GenericItem(absolute) => {
-                    context.bind_generic_alias(import.alias.clone(), absolute);
-                    Ok(())
-                }
-            };
-            if let Err((name, previous)) = result {
-                errors.push(AnalysisError::new(
-                    import.id,
-                    import.span,
-                    AnalysisErrorKind::Redeclaration { name, previous },
-                ));
-            }
-        }
 
         let mut seen_generics = HashSet::new();
         for (ident, resolved_type) in generics {
@@ -822,6 +804,48 @@ impl<'r> Analyzer<'r> {
         })
     }
 
+    /// What `alias` means as an import in this module, resolved lazily and
+    /// memoized by the driver per `(module_path, alias)` pair -- `Ok(None)`
+    /// means this module has no `import` statement binding `alias` at all,
+    /// the signal every caller's own "assume this is my own module's item"
+    /// fallback keys off. This is the direct replacement for the old
+    /// `Context::absolute_path`/`generic_alias`/`bind_imported_item`, which
+    /// used to be populated eagerly, for a module's *entire* import list,
+    /// before any item in it was ever touched -- see `Analyzer::new`'s doc
+    /// comment for why that was a real false-cycle bug, not just eagerness.
+    fn resolve_alias(&mut self, alias: &Ident) -> Result<Option<ImportTarget>, ResolveError> {
+        self.resolver.resolve_import_alias(&self.module_path, alias)
+    }
+
+    /// `resolve_alias`, with a real resolution failure (a cycle, a broken
+    /// target module, ...) folded directly into `self.errors` -- the
+    /// `Option<Option<_>>` "handled or fall through" shape every *hard*
+    /// (non-probing) call site wants: outer `None` means an error was
+    /// already pushed and the caller should give up immediately (`?`);
+    /// `Some(None)` means `alias` isn't an import at all, the caller's own
+    /// fallback applies.
+    fn resolve_alias_or_error(&mut self, node_id: HirId, span: Span, alias: &Ident) -> Option<Option<ImportTarget>> {
+        match self.resolve_alias(alias) {
+            Ok(target) => Some(target),
+            Err(e) => {
+                self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                None
+            }
+        }
+    }
+
+    /// The alias (of any kind -- module, item, or generic item) this
+    /// module's own `import` statements bind that's most similar to
+    /// `target` -- the "did you mean" suggestion for a reference that named
+    /// nothing at all. Replaces `Context`'s old `similar_module_alias`
+    /// (which only ever knew about whole-module aliases, pre-populated
+    /// eagerly); `ModuleResolver::import_alias_names` is the only remaining
+    /// place that knows a module's whole alias set up front, since
+    /// resolving what each one actually *means* is lazy now.
+    fn similar_import_alias(&mut self, target: &Ident) -> Option<Ident> {
+        best_match(target, self.resolver.import_alias_names(&self.module_path).iter())
+    }
+
     /// Resolves `absolute` (already a full `[module_path.., name]`, whether
     /// built from a qualified place's import alias or an unqualified one's
     /// implicit own-module prefix) to a place root -- shared by both of
@@ -971,8 +995,18 @@ impl<'r> Analyzer<'r> {
             return self.resolve_type_member(node_id, span, &head_type, &path.tail);
         }
 
-        let absolute: Vec<Ident> =
-            self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
+        // A plain (non-generic) *type* import alias resolves outright,
+        // exactly the same lazy-alias treatment `Context::resolve_type`
+        // gives an unqualified `Type::Named` -- see its own comment for why
+        // this can no longer be caught by `find_defined_type` above.
+        let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
+        if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+            return self.resolve_type_member(node_id, span, &t, &path.tail);
+        }
+        let absolute: Vec<Ident> = match alias {
+            Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => absolute,
+            _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+        };
         let kind = match self.resolver.resolve_item(&absolute, &[], true) {
             Ok(ResolvedItem::Type(t)) => {
                 return self.resolve_type_member(node_id, span, &t, &path.tail);
@@ -983,7 +1017,7 @@ impl<'r> Analyzer<'r> {
             // actually does.
             Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
                 name: path.head.clone(),
-                similar_module: self.context.similar_module_alias(&path.head),
+                similar_module: self.similar_import_alias(&path.head),
                 similar_type: self.context.similar_type_name(&path.head).or_else(|| {
                     self.resolver.similar_item_name(&self.module_path, &path.head, ItemNamespace::Type)
                 }),
@@ -1065,21 +1099,24 @@ impl<'r> Analyzer<'r> {
     /// `Context::resolve_absolute_item_path` applies to type positions.
     fn generic_prefix_absolute(&mut self, node_id: HirId, span: Span, prefix: &[Ident]) -> Option<Vec<Ident>> {
         if let [single] = prefix {
-            if let Some(absolute) = self.context.generic_alias(single) {
-                return Some(absolute.clone());
+            if let Some(ImportTarget::GenericItem(absolute)) = self.resolve_alias_or_error(node_id, span, single)? {
+                return Some(absolute);
             }
             return Some(self.module_path.iter().cloned().chain(std::iter::once(single.clone())).collect());
         }
         let path = omega_parser::prelude::Path { head: prefix[0].clone(), tail: prefix[1..].to_vec() };
-        match self.context.absolute_path(&path) {
-            Some(absolute) => Some(absolute),
-            None => {
+        match self.resolve_alias_or_error(node_id, span, &path.head)? {
+            Some(ImportTarget::Module(target)) => {
+                Some(target.into_iter().chain(path.tail.iter().cloned()).collect())
+            }
+            _ => {
+                let similar_module = self.similar_import_alias(&path.head);
                 self.errors.push(AnalysisError::new(
                     node_id,
                     span,
                     AnalysisErrorKind::UndefinedPathHead {
                         name: path.head.clone(),
-                        similar_module: self.context.similar_module_alias(&path.head),
+                        similar_module,
                         similar_type: self.context.similar_type_name(&path.head),
                     },
                 ));
@@ -1308,27 +1345,40 @@ impl<'r> Analyzer<'r> {
                     };
                     (root, binding.r#type.clone(), binding.mutable)
                 } else {
-                    // A generic-item import alias (see `Context::
-                    // generic_alias`) takes priority over the implicit
-                    // own-module prefix, exactly like `Context::
-                    // resolve_absolute_item_path` does for types -- this
-                    // only ever reaches here for a *non-call* reference to a
-                    // generic function (a call goes through
+                    // An import alias, lazily resolved (see `resolve_alias`)
+                    // -- a plain item *value* alias resolves outright
+                    // (`bind_imported_item` used to pre-materialize this
+                    // into `find_variable` above; now it's resolved on the
+                    // spot); a *generic* item alias takes priority over the
+                    // implicit own-module prefix, exactly like type position
+                    // does -- this only ever reaches here for a *non-call*
+                    // reference to a generic function (a call goes through
                     // `resolve_generic_call` first), which has no way to
                     // supply type arguments; `ensure_item` reports that
                     // uniformly as `GenericArgCountMismatch` rather than
                     // this falling through to (and possibly silently
                     // matching) an unrelated same-named item in this module.
-                    let (absolute, unqualified) = match self.context.generic_alias(ident) {
-                        Some(absolute) => (absolute.clone(), None),
-                        None => {
-                            let absolute =
-                                self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect();
-                            (absolute, Some(ident))
-                        }
-                    };
-                    let (root, r#type) = self.resolve_qualified_value(node_id, span, absolute, unqualified, expected)?;
-                    (root, r#type, false)
+                    // A *type* alias or a bare module alias referenced this
+                    // way, like no alias at all, falls through to the
+                    // implicit own-module assumption -- `resolve_qualified_value`
+                    // reports whichever precise error fits.
+                    let alias = self.resolve_alias_or_error(node_id, span, ident)?;
+                    if let Some(ImportTarget::Item(ResolvedItem::Value { r#type, storage, decl_id })) = alias {
+                        let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+                        (root, r#type, false)
+                    } else {
+                        let (absolute, unqualified) = match alias {
+                            Some(ImportTarget::GenericItem(absolute)) => (absolute, None),
+                            _ => {
+                                let absolute =
+                                    self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect();
+                                (absolute, Some(ident))
+                            }
+                        };
+                        let (root, r#type) =
+                            self.resolve_qualified_value(node_id, span, absolute, unqualified, expected)?;
+                        (root, r#type, false)
+                    }
                 }
             }
             // A qualified place root -- either module-qualified
@@ -1341,9 +1391,13 @@ impl<'r> Analyzer<'r> {
             // can determine.
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
-                let (root, r#type) = match self.context.absolute_path(path) {
-                    Some(absolute) => self.resolve_qualified_value(node_id, span, absolute, None, expected)?,
-                    None => self.resolve_type_qualified_value(node_id, span, path)?,
+                let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
+                let (root, r#type) = match alias {
+                    Some(ImportTarget::Module(target)) => {
+                        let absolute: Vec<Ident> = target.into_iter().chain(path.tail.iter().cloned()).collect();
+                        self.resolve_qualified_value(node_id, span, absolute, None, expected)?
+                    }
+                    _ => self.resolve_type_qualified_value(node_id, span, path)?,
                 };
                 (root, r#type, false)
             }
@@ -1621,13 +1675,19 @@ impl<'r> Analyzer<'r> {
         // could apply -- the same priority `resolve_type_qualified_value`
         // gives it -- so a genuine `module::function` shape (already
         // `resolve_overloaded_call`'s concern) is never misread as
-        // `Type::function` here.
-        if self.context.absolute_path(path).is_some() {
+        // `Type::function` here. A silent probe, like the rest of this
+        // function -- a real resolution failure here isn't this function's
+        // to report; it's left for whichever fallback path ends up actually
+        // needing this same alias to surface it.
+        let alias = self.resolve_alias(&path.head).ok().flatten();
+        if matches!(alias, Some(ImportTarget::Module(_))) {
             return None;
         }
 
         let r#type = if let Some(t) = self.context.find_defined_type(&path.head) {
             t.clone()
+        } else if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+            t
         } else {
             let absolute: Vec<Ident> =
                 self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
@@ -1705,10 +1765,13 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let absolute = if path.is_unqualified() {
+        let absolute: Vec<Ident> = if path.is_unqualified() {
             self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect()
         } else {
-            self.context.absolute_path(path)?
+            match self.resolve_alias(&path.head).ok().flatten() {
+                Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
+                _ => return None,
+            }
         };
         let (name, module_path) = absolute.split_last()?;
 
@@ -1924,13 +1987,16 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let absolute = if path.is_unqualified() {
-            match self.context.generic_alias(&path.head) {
-                Some(absolute) => absolute.clone(),
-                None => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+        let absolute: Vec<Ident> = if path.is_unqualified() {
+            match self.resolve_alias(&path.head).ok().flatten() {
+                Some(ImportTarget::GenericItem(absolute)) => absolute,
+                _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
             }
         } else {
-            self.context.absolute_path(path)?
+            match self.resolve_alias(&path.head).ok().flatten() {
+                Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
+                _ => return None,
+            }
         };
 
         let sig: GenericSignature = match self.resolver.generic_function_signature(&absolute) {
@@ -3843,7 +3909,9 @@ impl<'r> Analyzer<'r> {
         // Module-qualified head: the whole path as the type first
         // (`mymodule::Vec2 { ... }`), then all-but-last as an enum whose
         // last segment names the variant (`mymodule::Shape::Circle`).
-        if let Some(absolute) = self.context.absolute_path(plain) {
+        let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
+        if let Some(ImportTarget::Module(target)) = &alias {
+            let absolute: Vec<Ident> = target.iter().cloned().chain(plain.tail.iter().cloned()).collect();
             let first_error = match self.resolver.resolve_item(&absolute, &[], true) {
                 Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
                 Ok(ResolvedItem::Value { .. }) => {
@@ -3873,8 +3941,13 @@ impl<'r> Analyzer<'r> {
         if let Some(head_type) = self.context.find_defined_type(&plain.head).cloned() {
             return self.literal_target_from_type(node_id, span, head_type, &plain.tail);
         }
-        let absolute: Vec<Ident> =
-            self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect();
+        if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+            return self.literal_target_from_type(node_id, span, t, &plain.tail);
+        }
+        let absolute: Vec<Ident> = match alias {
+            Some(ImportTarget::GenericItem(absolute)) => absolute,
+            _ => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
+        };
         let kind = match self.resolver.resolve_item(&absolute, &[], true) {
             Ok(ResolvedItem::Type(t)) => {
                 return self.literal_target_from_type(node_id, span, t, &plain.tail);
@@ -3882,7 +3955,7 @@ impl<'r> Analyzer<'r> {
             Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: plain.head.clone() },
             Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
                 name: plain.head.clone(),
-                similar_module: self.context.similar_module_alias(&plain.head),
+                similar_module: self.similar_import_alias(&plain.head),
                 similar_type: self.context.similar_type_name(&plain.head).or_else(|| {
                     self.resolver.similar_item_name(&self.module_path, &plain.head, ItemNamespace::Type)
                 }),

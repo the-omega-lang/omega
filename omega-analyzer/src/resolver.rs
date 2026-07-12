@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, Path, Span, Type};
+use omega_parser::prelude::{Ident, Type};
 use std::fmt;
 
 /// A concrete cross-module lookup result -- either a type (a struct, found
@@ -42,6 +42,9 @@ pub enum ImportTarget {
 #[derive(Debug, Clone)]
 pub enum ResolveError {
     UnknownModule(Vec<Ident>),
+    /// `import extern::name::...;` where `name` wasn't registered via
+    /// `--extern=name:path` on the command line.
+    UnknownExtern(Ident),
     UnknownItem { module: Vec<Ident>, item: Ident },
     NotVisible { module: Vec<Ident>, item: Ident },
     /// A module's signature transitively requires its own, still-in-progress
@@ -92,6 +95,12 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownModule(path) => write!(f, "cannot find module '{}'", join(path)),
+            Self::UnknownExtern(name) => write!(
+                f,
+                "no extern dependency named '{}' (missing --extern={}:<path>?)",
+                name.as_ref(),
+                name.as_ref()
+            ),
             Self::UnknownItem { module, item } => {
                 write!(f, "cannot find '{}' in module '{}'", item.as_ref(), join(module))
             }
@@ -142,9 +151,31 @@ impl std::error::Error for ResolveError {}
 /// this crate never sees a filesystem or a cache, only ever asks these two
 /// questions.
 pub trait ModuleResolver {
-    /// Called once per `import` statement while collecting signatures or
-    /// analyzing bodies for a module.
-    fn resolve_import(&mut self, path: &Path) -> Result<ImportTarget, ResolveError>;
+    /// What `alias` means as an import in `module_path`, resolved lazily and
+    /// memoized per `(module_path, alias)` pair (not per whole module) --
+    /// the fix for a real false-cycle bug a whole-module-granular version of
+    /// this used to have: two modules whose *unrelated* items happened to
+    /// cross-import each other's module would deadlock resolving each
+    /// other's *entire* import list, even though the specific items in
+    /// question never referenced each other. `Ok(None)` means `module_path`
+    /// has no `import` statement binding `alias` at all -- the caller's own
+    /// "assume this name is my own module's item" fallback applies, exactly
+    /// as if this had never been called. Called on demand, the first time a
+    /// name lookup that isn't satisfied locally actually needs to know
+    /// whether it's an import alias -- never eagerly for a module's whole
+    /// import list up front (see `Analyzer::new`, which no longer takes a
+    /// pre-resolved import list at all).
+    fn resolve_import_alias(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<ImportTarget>, ResolveError>;
+
+    /// Every alias a module's own `import` statements bind, purely for "did
+    /// you mean" typo suggestions (`Context::similar_module_alias`) -- cheap
+    /// and resolution-free (the raw alias *names* are known the moment a
+    /// module is indexed, long before any of them are actually resolved).
+    fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident>;
 
     /// Called for *any* named-type or place reference that isn't satisfied
     /// by a local (function-body-level) scope -- including a same-module
@@ -265,18 +296,3 @@ pub struct SignatureEntry {
     pub item: ResolvedItem,
 }
 
-/// One `import` statement, already resolved to what its path actually names
-/// -- `omega_driver::Driver` computes a module's whole list of these exactly
-/// once (cycle-guarded: resolving one module's item-style imports can itself
-/// need another module's -- see its `imports` cache), then hands the same
-/// `Rc<[ResolvedImport]>` to every throwaway `Analyzer` built for one of that
-/// module's items, which applies it fresh at construction (`Analyzer::new`).
-/// `id`/`span` are the originating `HirImport`'s, kept alongside so a
-/// duplicate alias can still be reported against the right source location.
-#[derive(Debug, Clone)]
-pub struct ResolvedImport {
-    pub id: HirId,
-    pub span: Span,
-    pub alias: Ident,
-    pub target: ImportTarget,
-}

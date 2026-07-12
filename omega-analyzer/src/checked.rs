@@ -28,6 +28,32 @@ pub enum CheckedItem {
     Union(CheckedUnionDef),
 }
 
+/// An extern-owned function/method a compilation actually referenced --
+/// `omega_driver::Driver::collect_extern_functions`'s output, and
+/// `omega_codegen::Codegen`'s input for declaring (never defining) a link
+/// against it. Lives here, in `omega-analyzer`, rather than in
+/// `omega-driver` (which constructs it) or `omega-codegen` (which consumes
+/// it) alone, since neither of those crates depends on the other -- the
+/// same reason `CheckedModule`/`CheckedItem` live here instead of in
+/// either.
+#[derive(Debug, Clone)]
+pub struct ExternFunctionRef {
+    pub decl_id: HirId,
+    pub module_path: Vec<Ident>,
+    pub kind: ExternFunctionKind,
+    pub fn_type: ResolvedFunctionType,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExternFunctionKind {
+    /// A top-level function, named directly.
+    Free(Ident),
+    /// A struct/enum/union method -- `type_name` is the owning type's own
+    /// name (needed alongside `module_path` for the mangled method symbol,
+    /// which is shaped differently from a free function's).
+    Method { type_name: Ident, method_name: Ident },
+}
+
 /// Where a resolved variable reference's value physically lives. Attached
 /// only to *references* (`CheckedPlaceRoot::Variable`), not to declarations
 /// themselves -- which storage a declaration gets is implied by which

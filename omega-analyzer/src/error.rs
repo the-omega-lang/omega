@@ -866,6 +866,8 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 "modules are looked up as `{name}.omg` files or `{name}/` directories under the compiler's search roots"
             ))
         }
+        ResolveError::UnknownExtern(name) => with_label(d, "no such extern dependency".to_string())
+            .with_help(format!("pass --extern={}:<path> on the command line", name.as_ref())),
         ResolveError::UnknownItem { module, .. } => with_label(d, format!("not found in `{}`", join(module))),
         ResolveError::NotVisible { .. } => with_label(d, "not visible from this module".to_string()),
         ResolveError::Cycle(_) => with_label(d, "this import completes the cycle".to_string())

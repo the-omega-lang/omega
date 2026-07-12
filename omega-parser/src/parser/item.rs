@@ -2,7 +2,7 @@ use crate::ast::identifier::Ident;
 use crate::ast::statement::{
     Item, ItemNode, declaration::DeclarationStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
-    function_definition::FunctionDefinitionStmt, import::ImportStmt, r#struct::StructStmt,
+    function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt}, r#struct::StructStmt,
     union::UnionStmt,
 };
 use crate::diagnostics::ParseErrorKind;
@@ -37,9 +37,30 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         }
         TokenKind::Import => {
             p.advance();
+            // `root::`/`extern::` are contextual keywords here (matching
+            // `mut`'s own text-comparison pattern above, and `lexer::
+            // TokenKind`'s general "stay a plain token, recognized by
+            // position" philosophy) -- `extern` is already a real keyword
+            // token, `root` an ordinary `Ident` whose text is checked; only
+            // committed to when immediately followed by `::`, so a module
+            // genuinely named `root` still parses as an ordinary `Local`
+            // import (`import root;` alone, with no trailing `::`).
+            let root = if p.check(&TokenKind::Extern) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+                p.advance(); // 'extern'
+                p.advance(); // '::'
+                ImportRoot::Extern
+            } else if matches!(p.peek(), TokenKind::Ident(name) if name == "root")
+                && matches!(p.peek_at(1), TokenKind::ColonColon)
+            {
+                p.advance(); // 'root'
+                p.advance(); // '::'
+                ImportRoot::ProjectRoot
+            } else {
+                ImportRoot::Local
+            };
             let path = parse_path(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
-            Item::Import(ImportStmt { path })
+            Item::Import(ImportStmt { root, path })
         }
         TokenKind::Struct => Item::Struct(parse_struct_def(p)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p)?),

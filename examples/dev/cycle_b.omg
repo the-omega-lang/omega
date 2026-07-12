@@ -1,0 +1,6 @@
+# See `cycle_a.omg`'s doc comment -- the other half of the same fixture.
+import cycle_a::cycle_a_value;
+
+unrelated_b() => i32 {
+    20
+}

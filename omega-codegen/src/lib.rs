@@ -19,6 +19,7 @@ use omega_analyzer::{
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedItem, CheckedMatch, CheckedMatchArm, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
         CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedUnionConstruct, CheckedWhile, CastKind, NumberValue, Storage,
+        ExternFunctionKind, ExternFunctionRef,
     },
     resolved_type::{
         ConstValue, NumericKind, ResolvedEnumType, ResolvedFunctionType, ResolvedStructType,
@@ -497,6 +498,7 @@ impl Codegen {
         isa: &str,
         modules: Vec<(Vec<Ident>, CheckedModule)>,
         entry: &[Ident],
+        extern_functions: Vec<ExternFunctionRef>,
     ) -> Self {
         let isa = {
             let mut builder = settings::builder();
@@ -540,7 +542,7 @@ impl Codegen {
             defer_bodies: HashMap::new(),
         };
 
-        codegen.update_all(modules, entry);
+        codegen.update_all(modules, entry, extern_functions);
 
         codegen
     }
@@ -2000,6 +2002,31 @@ impl Codegen {
         function_id
     }
 
+    /// `declare_function_def`'s extern-module counterpart: declares a
+    /// link against an extern-owned function/method using the *same*
+    /// mangling scheme a local function gets, but `Linkage::Import` only --
+    /// no paired `Export` declare, and `define_item`'s pass 2 never sees
+    /// this `HirId` at all (it isn't in any `CheckedModule.items`), so no
+    /// body is ever generated for it here. Trusts that the *other* `omgc`
+    /// invocation compiling that module standalone mangles its own
+    /// definition identically -- see `CompiledProgram::extern_functions`'s
+    /// doc comment for why that's a safe assumption.
+    fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
+        let mangled = match &extern_fn.kind {
+            ExternFunctionKind::Free(name) => {
+                Self::mangled_symbol(&extern_fn.module_path, &[], name, extern_fn.decl_id)
+            }
+            ExternFunctionKind::Method { type_name, method_name } => {
+                Self::mangled_method_symbol(&extern_fn.module_path, type_name, method_name, extern_fn.decl_id)
+            }
+        };
+        let sig = self.make_function_sig(extern_fn.fn_type.clone());
+        let demangled = Self::demangle(&mangled);
+
+        let function_id = self.module.declare_function(&demangled, Linkage::Import, &sig).unwrap();
+        self.functions.insert(extern_fn.decl_id, function_id);
+    }
+
     /// Builds a function/method's body -- everything `update_function_def`
     /// used to do after declaring, now looking up the `FuncId` every item
     /// across every module already got in the declare pass, rather than
@@ -2217,11 +2244,19 @@ impl Codegen {
     /// doc comment), then define every body. Mirrors the identical
     /// signature/body split `omega_analyzer::Analyzer` does for the same
     /// underlying reason.
-    fn update_all(&mut self, modules: Vec<(Vec<Ident>, CheckedModule)>, entry: &[Ident]) {
+    fn update_all(
+        &mut self,
+        modules: Vec<(Vec<Ident>, CheckedModule)>,
+        entry: &[Ident],
+        extern_functions: Vec<ExternFunctionRef>,
+    ) {
         for (path, checked) in &modules {
             for item in &checked.items {
                 self.declare_item(item, path, entry);
             }
+        }
+        for extern_fn in &extern_functions {
+            self.declare_extern_function(extern_fn);
         }
         for (_, checked) in modules {
             for item in checked.items {

@@ -4,7 +4,7 @@ use crate::ids::HirId;
 // omega-parser directly, the same way they never need to spell `Ident`/
 // `Type` because they only ever go through field access, never pattern
 // match on those.
-pub use omega_parser::prelude::BinaryOp;
+pub use omega_parser::prelude::{BinaryOp, ImportRoot};
 use omega_parser::prelude::{ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
 
 #[derive(Debug, Clone)]
@@ -27,11 +27,15 @@ pub enum HirItem {
 /// `import a::b::c;` -- carried raw and unresolved, same philosophy as every
 /// other HIR node (lowering never does symbol resolution). Whether `path`
 /// names a whole module or an item inside one is decided later by
-/// `omega_analyzer::resolver::ModuleResolver`.
+/// `omega_analyzer::resolver::ModuleResolver`. `root` says what `path` is
+/// anchored to (see `ImportRoot`'s own doc comment) -- turning the two into
+/// an actual absolute module path is `omega_driver::Driver::
+/// import_absolute_path`'s job.
 #[derive(Debug, Clone)]
 pub struct HirImport {
     pub id: HirId,
     pub span: Span,
+    pub root: ImportRoot,
     pub path: Path,
 }
 

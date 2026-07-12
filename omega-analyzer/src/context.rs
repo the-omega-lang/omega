@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
-use crate::resolver::{ItemNamespace, ModuleResolver, ResolveError, ResolvedItem};
+use crate::resolver::{ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem};
 use crate::similarity::best_match;
 use omega_hir::HirId;
 use omega_parser::prelude::*;
@@ -81,28 +81,6 @@ impl ScopeContext {
 #[derive(Debug, Clone)]
 pub struct Context {
     scopes: Vec<ScopeContext>,
-    /// Whole-module `import` aliases (`import mymodule;`, or `import
-    /// mymodule::thing;` where `thing` turns out to be a submodule rather
-    /// than an item) -- flat, not scope-stacked, since imports are root-level
-    /// only (see `omega_parser::ast::statement::import`). Maps the bound
-    /// alias (always the import path's *last* segment) to the absolute
-    /// module path it names. An *item*-level import (`import
-    /// mymodule::foo;`) never goes here -- it binds `foo` directly into the
-    /// current scope's `declared_variables`/`defined_types` instead, via
-    /// `bind_imported_item`, exactly like `Context::new` already seeds
-    /// builtin primitives.
-    imported_modules: HashMap<Ident, Vec<Ident>>,
-    /// `import`ed *generic* item aliases (`import mymodule::List;` where
-    /// `List` turns out to be a generic struct or function) -- maps the
-    /// bound alias to the item's absolute path. Kept separate from
-    /// `imported_modules`/the ordinary local-binding tables `bind_imported_item`
-    /// uses, since a generic item has no concrete `ResolvedType`/`VarBinding`
-    /// to bind yet (there's nothing concrete until a use site supplies type
-    /// arguments) -- this just records "this name means that absolute path,"
-    /// substituted in wherever an unqualified reference would otherwise fall
-    /// through to an implicit own-module-prefixed one (see
-    /// `resolve_absolute_item_path`).
-    generic_aliases: HashMap<Ident, Vec<Ident>>,
 }
 
 impl Context {
@@ -126,11 +104,7 @@ impl Context {
             (Ident("f32".into()), ResolvedType::F32),
             (Ident("f64".into()), ResolvedType::F64),
         ]);
-        Self {
-            scopes: vec![global_scope],
-            imported_modules: HashMap::new(),
-            generic_aliases: HashMap::new(),
-        }
+        Self { scopes: vec![global_scope] }
     }
 
     // Finder functions
@@ -168,93 +142,19 @@ impl Context {
             .find_map(|scope| scope.defined_types.get(name))
     }
 
-    /// The visible value name (any scope, plus imported-module aliases) most
-    /// similar to `target`, if any is close enough -- the "did you mean"
-    /// candidate for an undefined-variable diagnostic.
+    /// The visible value name (this scope chain only -- an import alias
+    /// isn't known here at all anymore, see `Analyzer::similar_import_alias`)
+    /// most similar to `target`, if any is close enough -- the "did you
+    /// mean" candidate for an undefined-variable diagnostic.
     pub fn similar_variable_name(&self, target: &Ident) -> Option<Ident> {
-        best_match(
-            target,
-            self.scopes
-                .iter()
-                .flat_map(|scope| scope.declared_variables.keys())
-                .chain(self.imported_modules.keys()),
-        )
+        best_match(target, self.scopes.iter().flat_map(|scope| scope.declared_variables.keys()))
     }
 
-    /// The visible type name most similar to `target` -- builtins, locally
-    /// defined/imported types, and generic-item aliases alike.
+    /// The visible type name most similar to `target` -- builtins and
+    /// locally defined types only (see `similar_variable_name`'s doc
+    /// comment on why import aliases aren't known here anymore).
     pub fn similar_type_name(&self, target: &Ident) -> Option<Ident> {
-        best_match(
-            target,
-            self.scopes
-                .iter()
-                .flat_map(|scope| scope.defined_types.keys())
-                .chain(self.generic_aliases.keys()),
-        )
-    }
-
-    /// Binds a whole-module import alias (`import mymodule;`, or the
-    /// submodule case of `import mymodule::thing;`) -- `alias` is always the
-    /// import path's last segment (see `omega_analyzer::analysis::Analyzer::
-    /// process_import`).
-    pub fn import_module(&mut self, alias: Ident, absolute_path: Vec<Ident>) {
-        self.imported_modules.insert(alias, absolute_path);
-    }
-
-    /// Binds an imported *generic* item alias (`import mymodule::List;`
-    /// where `List` is a generic struct/function) -- see `generic_aliases`'s
-    /// doc comment.
-    pub fn bind_generic_alias(&mut self, alias: Ident, absolute_path: Vec<Ident>) {
-        self.generic_aliases.insert(alias, absolute_path);
-    }
-
-    /// Binds an imported *item* directly by name (`import mymodule::foo;`
-    /// then bare `foo()`) -- one mechanism, reused from `Context::new`'s own
-    /// builtin-primitive seeding: an imported item just becomes an ordinary
-    /// local binding in the current (module-level) scope.
-    /// `span` is the import statement's own span -- recorded as the
-    /// binding's declaration site so a later collision can point back at
-    /// it. A collision here reports the previous span where one exists
-    /// (`None` for a `defined_types` clash: builtins and type imports don't
-    /// track one).
-    pub fn bind_imported_item(&mut self, name: Ident, item: ResolvedItem, span: Span) -> Result<(), (Ident, Option<Span>)> {
-        match item {
-            ResolvedItem::Type(resolved_type) => {
-                if self.current_scope().defined_types.contains_key(&name) {
-                    return Err((name, None));
-                }
-                self.current_scope().defined_types.insert(name, resolved_type);
-                Ok(())
-            }
-            // Conservatively immutable, like every other cross-module value
-            // reference (see `Analyzer::analyze_place`'s doc comment) --
-            // nothing threads a real mutability flag through `ResolvedItem`
-            // yet, and `false` is the safe default.
-            ResolvedItem::Value { r#type, storage, decl_id } => self
-                .current_scope()
-                .declare(name, VarBinding { decl_id, storage, r#type, span, narrowed: false, mutable: false })
-                .map_err(|(name, previous)| (name, Some(previous))),
-        }
-    }
-
-    /// Substitutes `path`'s head for whatever absolute module path it's
-    /// aliased to (via a whole-module `import`), producing a full absolute
-    /// path (e.g. after `import mymodule;`, `mymodule::thing::foo` becomes
-    /// `["mymodule", "thing", "foo"]`). `None` means `path`'s head isn't an
-    /// imported module alias at all -- per requirement 7 ("whatever is not
-    /// imported is not visible"), that's a hard error the caller reports,
-    /// not a fallback to some other lookup.
-    pub fn absolute_path(&self, path: &Path) -> Option<Vec<Ident>> {
-        let target = self.imported_modules.get(&path.head)?;
-        Some(target.iter().cloned().chain(path.tail.iter().cloned()).collect())
-    }
-
-    /// An imported *generic* item alias's absolute path, if `alias` is one
-    /// (see `generic_aliases`'s doc comment) -- the `Analyzer::
-    /// resolve_generic_call` counterpart to `absolute_path`, for the
-    /// unqualified-only case a generic item import always is.
-    pub fn generic_alias(&self, alias: &Ident) -> Option<&Vec<Ident>> {
-        self.generic_aliases.get(alias)
+        best_match(target, self.scopes.iter().flat_map(|scope| scope.defined_types.keys()))
     }
 
     /// A function/method signature's param and return types are never
@@ -286,27 +186,33 @@ impl Context {
     /// Resolves `path` to an absolute `[module_path.., name]`, the shared
     /// logic behind `Type::Named`'s and `Type::Generic`'s unqualified/
     /// qualified branches (kept as one method so this priority order is only
-    /// written once): for an unqualified `path`, a `generic_aliases` hit
-    /// (an imported generic item, see its doc comment) wins over the
-    /// implicit own-module-prefixed fallback -- a generic item is never
-    /// itself a `find_defined_type` entry, so callers still check that
-    /// first, separately, for ordinary local shadowing. For a qualified
-    /// `path`, this is exactly `absolute_path` (an imported module alias).
+    /// written once): for an unqualified `path`, an import alias resolving
+    /// to a *generic* item wins over the implicit own-module-prefixed
+    /// fallback -- a generic item is never itself a `find_defined_type`
+    /// entry, so callers still check that first, separately, for ordinary
+    /// local shadowing. For a qualified `path`, `path`'s head must resolve
+    /// to a *module* alias; the rest is appended onto its absolute path.
     fn resolve_absolute_item_path(
         &self,
+        resolver: &mut dyn ModuleResolver,
         path: &Path,
         module_path: &[Ident],
     ) -> Result<Vec<Ident>, TypeResolutionError> {
         if path.is_unqualified() {
-            if let Some(absolute) = self.generic_aliases.get(&path.head) {
-                return Ok(absolute.clone());
+            if let Some(ImportTarget::GenericItem(absolute)) =
+                resolver.resolve_import_alias(module_path, &path.head).map_err(TypeResolutionError::ModuleResolution)?
+            {
+                return Ok(absolute);
             }
             Ok(module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect())
         } else {
-            self.absolute_path(path).ok_or_else(|| TypeResolutionError::ModuleNotImported {
-                name: path.head.clone(),
-                similar: self.similar_module_alias(&path.head),
-            })
+            match resolver.resolve_import_alias(module_path, &path.head).map_err(TypeResolutionError::ModuleResolution)? {
+                Some(ImportTarget::Module(target)) => Ok(target.into_iter().chain(path.tail.iter().cloned()).collect()),
+                _ => Err(TypeResolutionError::ModuleNotImported {
+                    name: path.head.clone(),
+                    similar: best_match(&path.head, resolver.import_alias_names(module_path).iter()),
+                }),
+            }
         }
     }
 
@@ -347,38 +253,65 @@ impl Context {
                     if let Some(local) = self.find_defined_type(&path.head) {
                         local.to_owned()
                     } else {
-                        let absolute = self.resolve_absolute_item_path(&path, module_path)?;
-                        match resolver.resolve_item(&absolute, &[], indirect) {
-                            Ok(ResolvedItem::Type(t)) => t,
-                            Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
-                            // The implicit own-module fallback missing isn't a
-                            // module problem from the user's point of view --
-                            // they wrote a bare type name that doesn't exist.
-                            // Report it as exactly that, with a typo suggestion
-                            // where one is close enough -- from the visible
-                            // scopes first, then this module's own top-level
-                            // structs (which only the resolver can enumerate).
-                            // (A `generic_aliases` hit points at a *different*
-                            // module, where `UnknownItem` really is about that
-                            // module.)
-                            Err(ResolveError::UnknownItem { .. }) if self.generic_aliases.get(&path.head).is_none() => {
-                                let similar = self.similar_type_name(&path.head).or_else(|| {
-                                    resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type)
-                                });
-                                return Err(TypeResolutionError::UnrecognizedNamedType {
-                                    name: path.head.clone(),
-                                    similar,
-                                });
+                        // An import alias, lazily resolved -- an ordinary,
+                        // non-generic *type* alias resolves outright
+                        // (`bind_imported_item` used to pre-materialize this
+                        // into `find_defined_type` above; now it's just
+                        // resolved on the spot, the first time this miss
+                        // actually happens); a *generic* item or *module*
+                        // alias falls through to `resolve_item` with no
+                        // type arguments, reproducing the exact
+                        // `GenericArgCountMismatch`/`NotAType` a bare
+                        // reference to either should get; no alias at all
+                        // falls through to the implicit own-module
+                        // assumption, exactly as before.
+                        let alias = resolver
+                            .resolve_import_alias(module_path, &path.head)
+                            .map_err(TypeResolutionError::ModuleResolution)?;
+                        if let Some(ImportTarget::Item(ResolvedItem::Value { .. })) = alias {
+                            return Err(TypeResolutionError::NotAType(vec![path.head.clone()]));
+                        }
+                        if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+                            t
+                        } else {
+                            let absolute = match alias {
+                                Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => {
+                                    absolute
+                                }
+                                _ => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+                            };
+                            match resolver.resolve_item(&absolute, &[], indirect) {
+                                Ok(ResolvedItem::Type(t)) => t,
+                                Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
+                                // The implicit own-module fallback missing isn't
+                                // a module problem from the user's point of
+                                // view -- they wrote a bare type name that
+                                // doesn't exist. Report it as exactly that, with
+                                // a typo suggestion where one is close enough --
+                                // from the visible scopes, this module's own
+                                // import aliases, then its top-level structs
+                                // (which only the resolver can enumerate).
+                                Err(ResolveError::UnknownItem { .. }) => {
+                                    let similar = self
+                                        .similar_type_name(&path.head)
+                                        .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
+                                        .or_else(|| {
+                                            resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type)
+                                        });
+                                    return Err(TypeResolutionError::UnrecognizedNamedType {
+                                        name: path.head.clone(),
+                                        similar,
+                                    });
+                                }
+                                Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                             }
-                            Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                         }
                     }
                 } else {
                     // A qualified type reference (`mymodule::Foo`) -- `path`'s
-                    // head must already be an imported module alias (see
-                    // `absolute_path`); the rest is resolved across modules
-                    // by `resolver`, never locally.
-                    let absolute = self.resolve_absolute_item_path(&path, module_path)?;
+                    // head must already be an imported module alias; the rest
+                    // is resolved across modules by `resolver`, never locally.
+                    let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                     match resolver
                         .resolve_item(&absolute, &[], indirect)
                         .map_err(TypeResolutionError::ModuleResolution)?
@@ -401,7 +334,7 @@ impl Context {
                     .into_iter()
                     .map(|arg| self.resolve_type(arg, resolver, module_path, true))
                     .collect::<Result<Vec<_>, _>>()?;
-                let absolute = self.resolve_absolute_item_path(&path, module_path)?;
+                let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
                     .resolve_item(&absolute, &resolved_args, indirect)
                     .map_err(TypeResolutionError::ModuleResolution)?
@@ -475,13 +408,6 @@ impl Context {
                 })
             }
         }
-    }
-
-    /// The imported-module alias most similar to `target` -- for a
-    /// qualified reference whose head module was never imported (a likely
-    /// typo of one that was).
-    pub fn similar_module_alias(&self, target: &Ident) -> Option<Ident> {
-        best_match(target, self.imported_modules.keys())
     }
 
     // Scope helpers

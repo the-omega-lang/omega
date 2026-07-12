@@ -4,6 +4,15 @@ extern printf : (s : *u8, ...) => i32;
 import simplemodule;
 import mymodule;
 import mymodule::thing::something2;
+# Resolved externally -- scanned (its signatures are fully known here) but
+# never compiled by this process; `examples/extern_lib/mathlib.omg` is
+# compiled by its own, separate `omgc` invocation and linked in afterward:
+#   omgc examples/dev/main.omg --extern=mathlib:examples/extern_lib
+#   omgc examples/extern_lib/mathlib.omg
+#   cc target/main.o target/mathlib.o -o hello
+import extern::mathlib;
+import cycle_a::cycle_a_value;
+import cycle_b::unrelated_b;
 
 classify(n : i32) => *u8 {
     if n < 0 {
@@ -622,6 +631,16 @@ main(argc : i32, argv : [*u8]) => i32 {
     compound <<= 2;
     compound >>= 1;
     printf("compound assign: %d\n", compound);
+
+    # An external project's function and struct, resolved and type-checked
+    # here but compiled by mathlib's own, separate `omgc` invocation (see
+    # this file's `import extern::mathlib;`) -- the two object files are
+    # linked together afterward.
+    extern_sum := mathlib::add_numbers(3, 4);
+    extern_point := mathlib::Point { x = 3; y = 4; };
+    printf("extern sum: %d, extern point magnitude_sq: %d\n", extern_sum, extern_point.magnitude_sq());
+
+    printf("cycle fixture: %d %d\n", cycle_a_value(), unrelated_b());
 
     return 69;
 }

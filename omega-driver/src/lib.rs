@@ -2,20 +2,19 @@ mod fs_resolve;
 
 use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer};
-use omega_analyzer::checked::{CheckedItem, CheckedModule, Storage};
+use omega_analyzer::checked::{CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
 use omega_analyzer::resolved_type::{
     ResolvedEnumType, ResolvedFunctionType, ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{
-    GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedImport,
-    ResolvedItem, Visibility,
+    GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem, Visibility,
 };
 use omega_analyzer::similarity::best_match;
 use omega_diagnostics::{Diagnostic, SourceFile, Span};
-use omega_hir::{HirId, HirItem, HirModule, ModuleId, SYNTHETIC_MODULE};
+use omega_hir::{HirId, HirImport, HirItem, HirModule, ModuleId, SYNTHETIC_MODULE};
 use omega_parser::macros::MacroError;
-use omega_parser::prelude::{Ident, ParseError, Path, SourceModule};
+use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -90,6 +89,16 @@ pub struct CompiledProgram {
     /// Each warning tagged with the module it was found in, so the CLI can
     /// render it against the right source file.
     pub warnings: Vec<(Vec<Ident>, AnalysisWarning)>,
+    /// Every extern-owned function/method this compilation actually
+    /// referenced (see `Driver::collect_extern_functions`) -- `modules`
+    /// never contains a body for any of these (an extern module's ordinary
+    /// items are scanned, never compiled), so codegen must declare each one
+    /// itself, `Linkage::Import`-only, trusting that the *other* `omgc`
+    /// invocation compiling that module standalone produces the exact same
+    /// mangled symbol (a pure function of module path + name + the item's
+    /// own per-module `HirId.local`, deterministic across processes parsing
+    /// the same source file) -- never defining a body for it here.
+    pub extern_functions: Vec<ExternFunctionRef>,
 }
 
 /// One item query's identity: its owning module, its name, and the concrete
@@ -117,18 +126,22 @@ enum QueryState {
     Done,
 }
 
-/// A module's resolved-import-list query's memoized state -- its own guard,
-/// separate from `QueryState`, because resolving one module's *item-style*
-/// imports (`import b::thing;`, unlike a whole-module import, which is a
-/// pure filesystem check needing no signature at all) can itself need
-/// another module's imports resolved first. If module A imports an item
-/// from B and B imports an item from A, building A's list triggers building
-/// B's, which triggers building A's again -- *before* either module has any
-/// per-item `QueryState` entry to catch it. This guard is what turns that
-/// into a clean `ResolveError::Cycle` instead of unbounded recursion.
+/// One `(module_path, alias)` import-alias query's memoized state -- the
+/// same white/gray/black cycle guard `QueryState` already gives items,
+/// applied at the same fine granularity instead of a whole module at once.
+/// This granularity is what actually fixes the false-cycle bug a
+/// module-wide version of this guard used to have: resolving one item's
+/// `Context` used to require its *entire* module's import list resolved
+/// first (every alias, whether or not that specific item's signature/body
+/// even mentions it), so two modules whose *unrelated* items happened to
+/// cross-import each other's module would deadlock on each other's whole
+/// list -- even though the specific aliases in question never referenced
+/// each other. Per-alias, only a name that genuinely, directly needs
+/// itself (module A's alias `x` requiring module B's alias `y` requiring
+/// module A's *same* alias `x` again) still reports `Cycle`.
 enum ImportCacheState {
     InProgress,
-    Done(Result<Rc<Vec<ResolvedImport>>, ResolveError>),
+    Done(Result<ImportTarget, ResolveError>),
 }
 
 /// Owns everything module-tree-shaped: filesystem discovery, a parsed-HIR
@@ -141,6 +154,15 @@ enum ImportCacheState {
 /// up here).
 pub struct Driver {
     roots: SearchRoots,
+    /// Every `--extern=<name>:<path>` the CLI was given, keyed by the name
+    /// the import syntax (`import extern::<name>;`) selects it with --
+    /// each is its own single-entry search root, entirely separate from
+    /// `roots`. A module path whose first segment matches a key here is an
+    /// *extern* module: it's resolved against that root instead of `roots`
+    /// (see `search_roots_for`), and it's never eagerly signature-swept or
+    /// body-checked/codegen'd by `compile` (see `is_extern_module`) -- only
+    /// scanned on demand, exactly like a generic instantiation already is.
+    extern_roots: HashMap<Ident, PathBuf>,
     next_module_id: u32,
     /// Counter behind every synthetic `HirId` minted for a generic
     /// instantiation's own identity (a struct instantiation's cell, or a
@@ -151,6 +173,15 @@ pub struct Driver {
     next_synthetic_id: u32,
     parsed: HashMap<Vec<Ident>, Rc<HirModule>>,
     module_ids: HashMap<Vec<Ident>, ModuleId>,
+    /// Whether a parsed module is *directory-shaped* (has its own
+    /// `children_dir` -- see `fs_resolve::ModuleLocation`), recorded the
+    /// moment it's first located in `parse_module`. This is exactly what
+    /// `relative_base` needs to know "where do THIS module's own relative
+    /// imports start looking": a directory-shaped module's children live
+    /// directly under it (its own path *is* its relative base), while a
+    /// leaf file's siblings live in its parent directory (its relative base
+    /// is its path minus its last segment).
+    module_shapes: HashMap<Vec<Ident>, bool>,
     /// Every parsed module's source text + on-disk path, kept for
     /// diagnostic rendering (an error snippet needs the original text long
     /// after parsing) -- see `source_file`.
@@ -187,7 +218,21 @@ pub struct Driver {
     /// during `compile`'s overload sweep, mirroring how an ordinary item's
     /// checked body is collected.
     overload_bodies: HashMap<(Vec<Ident>, usize), (CheckedItem, Vec<AnalysisWarning>)>,
-    imports: HashMap<Vec<Ident>, ImportCacheState>,
+    /// Every module's own `import` statements, indexed by the alias each
+    /// one binds -- built once per module (alongside `local_items`'s
+    /// duplicate-*name* detection, this is `ensure_module_indexed`'s
+    /// duplicate-*alias* detection), and purely syntactic: computing the
+    /// absolute path an import's `root`+`path` names (`Driver::
+    /// import_absolute_path`) needs no signature lookup, no recursion, no
+    /// filesystem access beyond what's already cached -- only *resolving*
+    /// what that absolute path actually is (a module vs. an item) is
+    /// deferred, lazily, to `resolve_import_alias`.
+    raw_imports: HashMap<Vec<Ident>, HashMap<Ident, (HirId, Span, Vec<Ident>)>>,
+    /// One `(module_path, alias)` import alias's resolved target, memoized
+    /// and cycle-guarded (see `ImportCacheState`'s doc comment) at that same
+    /// fine granularity -- replaces the old whole-module-granular version of
+    /// this cache entirely.
+    import_cache: HashMap<(Vec<Ident>, Ident), ImportCacheState>,
     /// Every struct's shared identity cell, decoupled from any one module's
     /// analysis -- created the moment *anyone* (same-module or foreign)
     /// first asks about a given struct (instantiation included), independent
@@ -227,13 +272,15 @@ pub struct Driver {
 }
 
 impl Driver {
-    pub fn new(roots: Vec<PathBuf>) -> Self {
+    pub fn new(roots: Vec<PathBuf>, extern_roots: HashMap<Ident, PathBuf>) -> Self {
         Self {
             roots: SearchRoots(roots),
+            extern_roots,
             next_module_id: 0,
             next_synthetic_id: 0,
             parsed: HashMap::new(),
             module_ids: HashMap::new(),
+            module_shapes: HashMap::new(),
             sources: HashMap::new(),
             parse_failures: HashMap::new(),
             macro_failures: HashMap::new(),
@@ -241,7 +288,8 @@ impl Driver {
             function_overloads: HashMap::new(),
             overload_signatures: HashMap::new(),
             overload_bodies: HashMap::new(),
-            imports: HashMap::new(),
+            raw_imports: HashMap::new(),
+            import_cache: HashMap::new(),
             struct_cells: HashMap::new(),
             enum_cells: HashMap::new(),
             union_cells: HashMap::new(),
@@ -256,6 +304,92 @@ impl Driver {
         let id = ModuleId(self.next_module_id);
         self.next_module_id += 1;
         id
+    }
+
+    /// Whether `path` names an *extern* module -- a pure function of its own
+    /// first segment, no separate bookkeeping needed: `import
+    /// extern::<name>::...` always makes `<name>` the resulting absolute
+    /// path's own first segment (see `import_absolute_path`), and every
+    /// module reachable *from* an extern module keeps that same segment
+    /// leading (relative/root-rooted imports only ever extend a path, never
+    /// replace its existing prefix) -- so this single check is correct
+    /// everywhere, not just for the module an `extern::` import named
+    /// directly.
+    fn is_extern_module(&self, path: &[Ident]) -> bool {
+        path.first().is_some_and(|head| self.extern_roots.contains_key(head))
+    }
+
+    /// Which filesystem root(s) to search for `path`: its own registered
+    /// extern root (see `is_extern_module`) if it's an extern module, else
+    /// the local project's own `roots`. Every `locate_module` call site goes
+    /// through this instead of reading `self.roots` directly.
+    fn search_roots_for(&self, path: &[Ident]) -> Vec<PathBuf> {
+        if let Some(head) = path.first()
+            && let Some(root) = self.extern_roots.get(head)
+        {
+            return vec![root.clone()];
+        }
+        self.roots.0.clone()
+    }
+
+    /// Where `module_path`'s own *unrooted* (`ImportRoot::Local`) imports
+    /// start looking -- see `module_shapes`'s doc comment for the rule.
+    /// Always called with an already-parsed module (an import can only be
+    /// resolved for a module whose own `HirItem::Import` list is already in
+    /// hand), so `module_shapes` is guaranteed populated.
+    fn relative_base(&self, module_path: &[Ident]) -> Vec<Ident> {
+        if self.module_shapes.get(module_path).copied().unwrap_or(false) {
+            module_path.to_vec()
+        } else {
+            module_path[..module_path.len().saturating_sub(1)].to_vec()
+        }
+    }
+
+    /// The absolute module path one `import` statement's `root`+`path`
+    /// names, given the *importing* module's own path -- pure path
+    /// arithmetic (no recursive item resolution, no filesystem access
+    /// beyond what `relative_base` already cached), mirroring
+    /// `reachable_target`'s existing cheap, non-recursive nature. See
+    /// `ImportRoot`'s own doc comment for what each variant means.
+    fn import_absolute_path(
+        &self,
+        importer: &[Ident],
+        root: ImportRoot,
+        path: &Path,
+    ) -> Result<Vec<Ident>, ResolveError> {
+        match root {
+            ImportRoot::Local => {
+                let mut absolute = self.relative_base(importer);
+                absolute.extend(path.segments());
+                Ok(absolute)
+            }
+            // "Root of *my* current project" -- if the importer is itself
+            // part of an extern project (its own path leads with that
+            // project's alias), re-prepend that same alias so the result
+            // stays correctly anchored to *that* project's root rather than
+            // silently falling back to the local one (see `is_extern_module`'s
+            // doc comment on why every module reachable from an extern one
+            // must keep its alias leading).
+            ImportRoot::ProjectRoot => {
+                let mut absolute = Vec::new();
+                if importer.first().is_some_and(|head| self.extern_roots.contains_key(head)) {
+                    absolute.push(importer[0].clone());
+                }
+                absolute.extend(path.segments());
+                Ok(absolute)
+            }
+            // `path.head` *is* the extern alias, by convention -- checked
+            // eagerly here (rather than left to `locate_module`'s ordinary
+            // not-found handling) so a typo'd or forgotten `--extern` flag
+            // gets its own precise diagnostic instead of a generic "module
+            // not found".
+            ImportRoot::Extern => {
+                if !self.extern_roots.contains_key(&path.head) {
+                    return Err(ResolveError::UnknownExtern(path.head.clone()));
+                }
+                Ok(path.segments())
+            }
+        }
     }
 
     /// A fresh, globally unique `HirId` for a generic instantiation's own
@@ -282,7 +416,8 @@ impl Driver {
             return Ok(hir.clone());
         }
 
-        let location = locate_module(&self.roots.0, path)?;
+        let location = locate_module(&self.search_roots_for(path), path)?;
+        self.module_shapes.insert(path.to_vec(), location.children_dir.is_some());
         let module_id = self.fresh_module_id();
 
         let hir = match location.own_file {
@@ -317,17 +452,19 @@ impl Driver {
     }
 
     /// Determines which module path must become reachable for one `import`
-    /// statement's raw path -- itself, if it names a real module (a
-    /// whole-module import), otherwise its parent (an item import: only the
-    /// item's *owning* module needs to be parsed, never a same-named
-    /// own-file it doesn't need). Same undecidable-from-syntax-alone
-    /// disambiguation `resolve_import` does at analysis time, but cheaper --
-    /// a filesystem check is all "which file(s) must be parsed" needs; it
-    /// doesn't require a signature lookup the way "what does this name
-    /// resolve to" does.
-    fn reachable_target(&self, import_path: &Path) -> Result<Vec<Ident>, ResolveError> {
-        let segments = import_path.segments();
-        match locate_module(&self.roots.0, &segments) {
+    /// statement -- itself, if it names a real module (a whole-module
+    /// import), otherwise its parent (an item import: only the item's
+    /// *owning* module needs to be parsed, never a same-named own-file it
+    /// doesn't need). Same undecidable-from-syntax-alone disambiguation
+    /// `resolve_import` does at analysis time, but cheaper -- a filesystem
+    /// check is all "which file(s) must be parsed" needs; it doesn't
+    /// require a signature lookup the way "what does this name resolve to"
+    /// does. `importer` is the module the `import` statement itself lives
+    /// in, needed to make sense of `Local`/`ProjectRoot`-rooted paths (see
+    /// `import_absolute_path`).
+    fn reachable_target(&self, importer: &[Ident], import: &HirImport) -> Result<Vec<Ident>, ResolveError> {
+        let segments = self.import_absolute_path(importer, import.root, &import.path)?;
+        match locate_module(&self.search_roots_for(&segments), &segments) {
             Ok(_) => return Ok(segments),
             // A structural problem with `segments` itself (two filesystem
             // entries claiming the same name) -- real regardless of whether
@@ -340,7 +477,7 @@ impl Driver {
         }
         if segments.len() > 1 {
             let parent = &segments[..segments.len() - 1];
-            if locate_module(&self.roots.0, parent).is_ok() {
+            if locate_module(&self.search_roots_for(parent), parent).is_ok() {
                 return Ok(parent.to_vec());
             }
         }
@@ -372,7 +509,7 @@ impl Driver {
             };
             for item in &hir.items {
                 let HirItem::Import(import) = item else { continue };
-                let target = match self.reachable_target(&import.path) {
+                let target = match self.reachable_target(&path, import) {
                     Ok(target) => target,
                     Err(error) => {
                         return Err(CompileError::Resolve { error, importer: Some((path.clone(), import.span)) });
@@ -458,6 +595,43 @@ impl Driver {
         }
         self.local_items.insert(path.to_vec(), index);
         self.function_overloads.insert(path.to_vec(), overloads);
+
+        // The raw import-alias index: purely syntactic (see `raw_imports`'s
+        // doc comment), so this stays cheap and resolution-free even though
+        // it runs eagerly for every module the moment it's indexed --
+        // there's no cycle risk here, only in actually *resolving* what
+        // each alias's absolute path names (`resolve_import_alias`).
+        let mut aliases: HashMap<Ident, (HirId, Span, Vec<Ident>)> = HashMap::new();
+        for item in &hir.items {
+            let HirItem::Import(import) = item else { continue };
+            let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
+            let absolute = match self.import_absolute_path(path, import.root, &import.path) {
+                Ok(absolute) => absolute,
+                Err(e) => {
+                    self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
+                        import.id,
+                        import.span,
+                        AnalysisErrorKind::ModuleResolution(e),
+                    ));
+                    continue;
+                }
+            };
+            match aliases.entry(alias) {
+                Entry::Occupied(existing) => {
+                    let (_, previous_span, _) = *existing.get();
+                    self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
+                        import.id,
+                        import.span,
+                        AnalysisErrorKind::Redeclaration { name: existing.key().clone(), previous: Some(previous_span) },
+                    ));
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert((import.id, import.span, absolute));
+                }
+            }
+        }
+        self.raw_imports.insert(path.to_vec(), aliases);
+
         Ok(())
     }
 
@@ -495,44 +669,60 @@ impl Driver {
         })
     }
 
-    /// Module `path`'s resolved import list, built once and cached --
-    /// cycle-guarded by `ImportCacheState` (see its doc comment). An
-    /// individual import statement that fails to resolve for an ordinary
-    /// reason (unknown module/item, ...) is recorded into `module_errors`
-    /// and simply left out of the list, rather than failing the whole
-    /// module's import cache -- the rest of the module can still be checked
-    /// against whatever *did* resolve.
-    fn resolved_imports(&mut self, path: &[Ident]) -> Result<Rc<Vec<ResolvedImport>>, ResolveError> {
-        match self.imports.get(path) {
+    /// `alias`'s resolved target in `module_path`, given its already-raw-
+    /// indexed absolute path (`raw_imports`) -- cycle-guarded per
+    /// `(module_path, alias)` pair (see `ImportCacheState`'s doc comment).
+    /// The `ModuleResolver::resolve_import_alias` trait method (`impl
+    /// ModuleResolver for Driver`, below) is a thin wrapper around this that
+    /// also handles "not an alias at all" (`Ok(None)`, no `raw_imports`
+    /// entry -- never enters the cache, since there's nothing to resolve).
+    fn resolve_import_alias_cached(&mut self, module_path: &[Ident], alias: &Ident, absolute: &[Ident]) -> Result<ImportTarget, ResolveError> {
+        let key = (module_path.to_vec(), alias.clone());
+        match self.import_cache.get(&key) {
             Some(ImportCacheState::Done(result)) => return result.clone(),
-            Some(ImportCacheState::InProgress) => return Err(ResolveError::Cycle(vec![path.to_vec()])),
+            Some(ImportCacheState::InProgress) => return Err(ResolveError::Cycle(vec![module_path.to_vec()])),
             None => {}
         }
 
-        self.imports.insert(path.to_vec(), ImportCacheState::InProgress);
-        let result = self.compute_resolved_imports(path);
-        self.imports.insert(path.to_vec(), ImportCacheState::Done(result.clone()));
+        self.import_cache.insert(key.clone(), ImportCacheState::InProgress);
+        let result = self.resolve_absolute_import_target(absolute);
+        self.import_cache.insert(key, ImportCacheState::Done(result.clone()));
         result
     }
 
-    fn compute_resolved_imports(&mut self, path: &[Ident]) -> Result<Rc<Vec<ResolvedImport>>, ResolveError> {
-        let hir = self.parse_module(path)?;
-        let mut resolved = Vec::new();
-        for item in &hir.items {
-            let HirItem::Import(import) = item else { continue };
-            let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
-            match self.resolve_import(&import.path) {
-                Ok(target) => resolved.push(ResolvedImport { id: import.id, span: import.span, alias, target }),
-                Err(e) => {
-                    self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
-                        import.id,
-                        import.span,
-                        AnalysisErrorKind::ModuleResolution(e),
-                    ));
-                }
-            }
+    /// What an already-absolute path names -- a real module (a pure
+    /// filesystem check, no recursion at all), a generic item (deferred,
+    /// see `ImportTarget::GenericItem`'s doc comment), or an ordinary item
+    /// (eagerly resolved via `ensure_item`). Exactly `resolve_import`'s old
+    /// body, just taking an already-computed absolute path instead of
+    /// re-deriving `segments` from a raw `Path` itself.
+    fn resolve_absolute_import_target(&mut self, segments: &[Ident]) -> Result<ImportTarget, ResolveError> {
+        match locate_module(&self.search_roots_for(segments), segments) {
+            Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
+            // Real regardless of whether this turns out to be a
+            // whole-module or item import -- must surface here, not be
+            // masked by the item-import fallback below (see
+            // `Driver::reachable_target`'s identical fix).
+            Err(e @ ResolveError::AmbiguousModule(_)) => return Err(e),
+            Err(_) => {}
         }
-        Ok(Rc::new(resolved))
+
+        let Some((item_name, module_path)) = segments.split_last() else {
+            return Err(ResolveError::UnknownModule(segments.to_vec()));
+        };
+
+        // A *generic* item import supplies no type arguments at all (those
+        // only ever appear at a use site) -- eagerly instantiating via
+        // `ensure_item` here would always fail with a spurious arg-count
+        // mismatch, so this defers entirely, carrying just the absolute
+        // path for `Context::generic_aliases` to substitute in later.
+        if !self.raw_item_generics(module_path, item_name)?.is_empty() {
+            return Ok(ImportTarget::GenericItem(segments.to_vec()));
+        }
+
+        // Capturing "what does this alias refer to" never embeds anything
+        // inline the way a struct field does -- always indirect.
+        Ok(ImportTarget::Item(self.ensure_item(module_path, item_name, &[], true)?))
     }
 
     /// Gets (or creates) `key`'s shared identity cell -- see `struct_cells`'s
@@ -703,7 +893,6 @@ impl Driver {
         type_args: &[ResolvedType],
         generics: &[Ident],
     ) -> Result<ResolvedItem, ResolveError> {
-        let imports = self.resolved_imports(module_path)?;
         let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
         let item = &hir.items[index];
         let substitution: Vec<(Ident, ResolvedType)> =
@@ -712,7 +901,7 @@ impl Driver {
         let (result, errors) = match item {
             HirItem::Declaration(decl) => {
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (decl.id, decl.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (decl.id, decl.span));
                 let checked = analyzer.analyze_declaration(decl, Storage::Global);
                 let (errors, _warnings) = analyzer.finish();
                 let result = checked
@@ -721,7 +910,7 @@ impl Driver {
             }
             HirItem::ExternDeclaration(decl) => {
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (decl.id, decl.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (decl.id, decl.span));
                 let checked = analyzer.analyze_extern_decl(decl);
                 let (errors, _warnings) = analyzer.finish();
                 let result = checked.map(|c| {
@@ -734,7 +923,7 @@ impl Driver {
             HirItem::FunctionDefinition(f) => {
                 let id = if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() };
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (f.id, f.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (f.id, f.span));
                 let checked = analyzer.collect_function_signature(f);
                 let (errors, _warnings) = analyzer.finish();
                 let result = checked.map(|fn_type| ResolvedItem::Value {
@@ -754,7 +943,7 @@ impl Driver {
                     .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
                     .collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (s.id, s.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (s.id, s.span));
                 let ok = analyzer.signature_of_struct(s, &cell, &method_ids);
                 let (errors, _warnings) = analyzer.finish();
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Struct(cell)));
@@ -770,7 +959,7 @@ impl Driver {
                     .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
                     .collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (e.id, e.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (e.id, e.span));
                 let ok = analyzer.signature_of_enum(e, &cell, &method_ids);
                 let (errors, _warnings) = analyzer.finish();
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Enum { cell, variant: None }));
@@ -786,7 +975,7 @@ impl Driver {
                     .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
                     .collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &imports, &substitution, (u.id, u.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (u.id, u.span));
                 let ok = analyzer.signature_of_union(u, &cell, &method_ids);
                 let (errors, _warnings) = analyzer.finish();
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Union(cell)));
@@ -816,7 +1005,6 @@ impl Driver {
         module_path: &[Ident],
         name: &Ident,
         item: &HirItem,
-        imports: &[ResolvedImport],
         type_args: &[ResolvedType],
     ) -> Option<(CheckedItem, Vec<AnalysisWarning>)> {
         let key: ItemKey = (module_path.to_vec(), name.clone(), type_args.to_vec());
@@ -855,7 +1043,7 @@ impl Driver {
                 let substitution: Vec<(Ident, ResolvedType)> =
                     f.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), imports, &substitution, (f.id, f.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (f.id, f.span));
                 let checked = analyzer.check_function_body(f, &fn_type, decl_id);
                 let (errors, warnings) = analyzer.finish();
                 if !errors.is_empty() {
@@ -868,7 +1056,7 @@ impl Driver {
                 let substitution: Vec<(Ident, ResolvedType)> =
                     s.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), imports, &substitution, (s.id, s.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (s.id, s.span));
                 let checked = analyzer.check_struct_body(s, &cell);
                 let (errors, warnings) = analyzer.finish();
                 if !errors.is_empty() {
@@ -881,7 +1069,7 @@ impl Driver {
                 let substitution: Vec<(Ident, ResolvedType)> =
                     e.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), imports, &substitution, (e.id, e.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (e.id, e.span));
                 let checked = analyzer.check_enum_body(e, &cell);
                 let (errors, warnings) = analyzer.finish();
                 if !errors.is_empty() {
@@ -894,7 +1082,7 @@ impl Driver {
                 let substitution: Vec<(Ident, ResolvedType)> =
                     u.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), imports, &substitution, (u.id, u.span));
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (u.id, u.span));
                 let checked = analyzer.check_union_body(u, &cell);
                 let (errors, warnings) = analyzer.finish();
                 if !errors.is_empty() {
@@ -923,10 +1111,9 @@ impl Driver {
         type_args: &[ResolvedType],
         index: usize,
     ) {
-        let Ok(imports) = self.resolved_imports(module_path) else { return };
         let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
         let item = &hir.items[index];
-        if let Some((checked, warnings)) = self.check_item_body(module_path, name, item, &imports, type_args) {
+        if let Some((checked, warnings)) = self.check_item_body(module_path, name, item, type_args) {
             let key: ItemKey = (module_path.to_vec(), name.clone(), type_args.to_vec());
             self.generic_instantiations.insert(key, (checked, warnings));
         }
@@ -951,12 +1138,11 @@ impl Driver {
         if let Some(fn_type) = self.overload_signatures.get(&key) {
             return Ok(fn_type.clone());
         }
-        let imports = self.resolved_imports(module_path)?;
         let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
         let HirItem::FunctionDefinition(f) = &hir.items[index] else {
             unreachable!("only ever called with an index ensure_module_indexed confirmed is a function");
         };
-        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &imports, &[], (f.id, f.span));
+        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &[], (f.id, f.span));
         let checked = analyzer.collect_function_signature(f);
         let (errors, _warnings) = analyzer.finish();
         if !errors.is_empty() {
@@ -979,12 +1165,11 @@ impl Driver {
             return Some(result.clone());
         }
         let fn_type = self.ensure_overload_signature(module_path, index).ok()?;
-        let imports = self.resolved_imports(module_path).ok()?;
         let hir = self.parsed.get(module_path).expect("parsed by ensure_module_indexed").clone();
         let HirItem::FunctionDefinition(f) = &hir.items[index] else {
             unreachable!("only ever called with an index ensure_module_indexed confirmed is a function");
         };
-        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &imports, &[], (f.id, f.span));
+        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &[], (f.id, f.span));
         let checked = analyzer.check_function_body(f, &fn_type, f.id);
         let (errors, warnings) = analyzer.finish();
         if !errors.is_empty() {
@@ -1064,8 +1249,22 @@ impl Driver {
     pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
         let resolve = |e: ResolveError| vec![CompileError::Resolve { error: e, importer: None }];
         let reachable = self.discover_reachable(entry).map_err(|e| vec![e])?;
+        // Only ever swept eagerly for *local* modules -- an extern module's
+        // items resolve lazily, on demand, exactly like a generic
+        // instantiation already does (see `is_extern_module`'s doc comment):
+        // "scanned, not compiled" means its signatures are fully available
+        // to whatever local code actually references them, but nothing in
+        // it is ever eagerly resolved, body-checked, or handed to codegen
+        // for a *definition* -- that's the separate `omgc` invocation
+        // compiling it standalone's job. Errors purely internal to an
+        // extern module (e.g. one of its own broken imports that nothing
+        // local ever actually needed) are correspondingly never surfaced by
+        // this compilation either -- see `drain_errors`'s call sites below,
+        // both scoped to `local_reachable`, not `reachable`.
+        let local_reachable: Vec<Vec<Ident>> =
+            reachable.iter().filter(|p| !self.is_extern_module(p)).cloned().collect();
 
-        for path in &reachable {
+        for path in &local_reachable {
             self.ensure_module_indexed(path).map_err(resolve)?;
             let overloaded_names: std::collections::HashSet<Ident> =
                 self.function_overloads[path].keys().cloned().collect();
@@ -1102,7 +1301,7 @@ impl Driver {
             }
         }
 
-        let errors = self.drain_errors(&reachable);
+        let errors = self.drain_errors(&local_reachable);
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -1110,34 +1309,44 @@ impl Driver {
         let mut modules = Vec::new();
         let mut warnings = Vec::new();
         for path in &reachable {
-            let hir = self.parsed.get(path).expect("reachable modules are always parsed").clone();
-            let imports = self.resolved_imports(path).map_err(resolve)?;
-
-            let overloaded_names: std::collections::HashSet<Ident> =
-                self.function_overloads[path].keys().cloned().collect();
+            let extern_module = self.is_extern_module(path);
             let mut items = Vec::new();
-            for item in hir.items.iter().filter(|i| !matches!(i, HirItem::Import(_))) {
-                let Some(name) = item_name(item) else { continue };
-                // Handled below instead -- `check_item_body`'s `ItemKey`
-                // lookup would collide across every candidate sharing this
-                // name (see this loop's overload-sweep counterpart below).
-                if overloaded_names.contains(&name) {
-                    continue;
-                }
-                let generics = self.raw_item_generics(path, &name).map_err(resolve)?;
-                if !generics.is_empty() {
-                    continue;
-                }
-                if let Some((checked, item_warnings)) = self.check_item_body(path, &name, item, &imports, &[]) {
-                    items.push(checked);
-                    warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
-                }
-            }
-            for indices in self.function_overloads[path].clone().into_values() {
-                for index in indices {
-                    if let Some((checked, item_warnings)) = self.ensure_overload_body(path, index) {
+
+            // An extern module's *ordinary* (non-generic) items are never
+            // body-checked or defined here -- only a generic instantiation
+            // of one of its templates is (see the loop below this one):
+            // nothing else will ever compile that exact instantiation, so
+            // it must happen here, in whichever project actually asked for
+            // it, even though the template itself lives in someone else's
+            // project.
+            if !extern_module {
+                let hir = self.parsed.get(path).expect("reachable modules are always parsed").clone();
+                let overloaded_names: std::collections::HashSet<Ident> =
+                    self.function_overloads[path].keys().cloned().collect();
+                for item in hir.items.iter().filter(|i| !matches!(i, HirItem::Import(_))) {
+                    let Some(name) = item_name(item) else { continue };
+                    // Handled below instead -- `check_item_body`'s `ItemKey`
+                    // lookup would collide across every candidate sharing
+                    // this name (see this loop's overload-sweep counterpart
+                    // below).
+                    if overloaded_names.contains(&name) {
+                        continue;
+                    }
+                    let generics = self.raw_item_generics(path, &name).map_err(resolve)?;
+                    if !generics.is_empty() {
+                        continue;
+                    }
+                    if let Some((checked, item_warnings)) = self.check_item_body(path, &name, item, &[]) {
                         items.push(checked);
                         warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
+                    }
+                }
+                for indices in self.function_overloads[path].clone().into_values() {
+                    for index in indices {
+                        if let Some((checked, item_warnings)) = self.ensure_overload_body(path, index) {
+                            items.push(checked);
+                            warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
+                        }
                     }
                 }
             }
@@ -1147,10 +1356,11 @@ impl Driver {
         }
 
         // Every generic instantiation discovered along the way (during
-        // either phase above, from any module) is merged in here, only now
-        // that both phases have fully finished -- see `compile`'s own doc
-        // comment for why this can't be folded into the per-module loop
-        // above.
+        // either phase above, from any module -- extern-owned templates
+        // included, see this loop's own module list above) is merged in
+        // here, only now that both phases have fully finished -- see
+        // `compile`'s own doc comment for why this can't be folded into the
+        // per-module loop above.
         for (path, checked_module) in modules.iter_mut() {
             for ((inst_path, _, _), (item, item_warnings)) in &self.generic_instantiations {
                 if inst_path == path {
@@ -1160,45 +1370,110 @@ impl Driver {
             }
         }
 
-        let errors = self.drain_errors(&reachable);
+        let errors = self.drain_errors(&local_reachable);
         if !errors.is_empty() {
             return Err(errors);
         }
 
-        Ok(CompiledProgram { modules, entry: entry.to_vec(), warnings })
+        let extern_functions = self.collect_extern_functions();
+
+        Ok(CompiledProgram { modules, entry: entry.to_vec(), warnings, extern_functions })
+    }
+
+    /// Every extern-owned, *non-generic* function/method actually
+    /// referenced by this compilation -- everything codegen needs to
+    /// declare (never define -- see `CompiledProgram::extern_functions`'s
+    /// doc comment) a link against. Swept once, at the very end of
+    /// `compile`, directly over whatever ended up in the already-populated
+    /// per-item caches (`resolved_items` for free functions,
+    /// `struct_cells`/`enum_cells`/`union_cells` for methods) -- nothing
+    /// dedicated is tracked eagerly in `ensure_item`'s own hot path, since
+    /// anything actually referenced is already sitting in these caches by
+    /// construction. A *generic* instantiation of an extern template is
+    /// deliberately excluded here (`type_args.is_empty()` guards): it's
+    /// fully compiled locally instead (see `compile`'s own generic-
+    /// instantiation merge step), since no other compilation will ever
+    /// produce it.
+    fn collect_extern_functions(&self) -> Vec<ExternFunctionRef> {
+        let mut extern_functions = Vec::new();
+
+        for ((module_path, name, type_args), (_, item)) in &self.resolved_items {
+            if type_args.is_empty()
+                && self.is_extern_module(module_path)
+                && let ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage: Storage::Function, decl_id } =
+                    item
+            {
+                extern_functions.push(ExternFunctionRef {
+                    decl_id: *decl_id,
+                    module_path: module_path.clone(),
+                    kind: ExternFunctionKind::Free(name.clone()),
+                    fn_type: fn_type.clone(),
+                });
+            }
+        }
+
+        // Free-function *overloads* live in their own cache, addressed by
+        // item index rather than `ItemKey` (see `overload_signatures`'s doc
+        // comment) -- the function's own name/id are read back off the
+        // parsed HIR at that same index.
+        for ((module_path, index), fn_type) in &self.overload_signatures {
+            if !self.is_extern_module(module_path) {
+                continue;
+            }
+            let hir = self.parsed.get(module_path).expect("parsed by ensure_overload_signature");
+            let HirItem::FunctionDefinition(f) = &hir.items[*index] else {
+                unreachable!("overload_signatures only ever indexes a function");
+            };
+            extern_functions.push(ExternFunctionRef {
+                decl_id: f.id,
+                module_path: module_path.clone(),
+                kind: ExternFunctionKind::Free(f.name.clone()),
+                fn_type: fn_type.clone(),
+            });
+        }
+
+        let method_cells = self
+            .struct_cells
+            .iter()
+            .map(|(key, cell)| (key, cell.borrow().functions.clone()))
+            .chain(self.enum_cells.iter().map(|(key, cell)| (key, cell.borrow().functions.clone())))
+            .chain(self.union_cells.iter().map(|(key, cell)| (key, cell.borrow().functions.clone())));
+        for ((module_path, type_name, type_args), functions) in method_cells {
+            if !type_args.is_empty() || !self.is_extern_module(module_path) {
+                continue;
+            }
+            for (method_name, method) in functions {
+                extern_functions.push(ExternFunctionRef {
+                    decl_id: method.decl_id,
+                    module_path: module_path.clone(),
+                    kind: ExternFunctionKind::Method { type_name: type_name.clone(), method_name },
+                    fn_type: method.fn_type,
+                });
+            }
+        }
+
+        extern_functions
     }
 }
 
 impl ModuleResolver for Driver {
-    fn resolve_import(&mut self, path: &Path) -> Result<ImportTarget, ResolveError> {
-        let segments = path.segments();
-
-        match locate_module(&self.roots.0, &segments) {
-            Ok(_) => return Ok(ImportTarget::Module(segments)),
-            // Real regardless of whether this turns out to be a
-            // whole-module or item import -- must surface here, not be
-            // masked by the item-import fallback below (see
-            // `Driver::reachable_target`'s identical fix).
-            Err(e @ ResolveError::AmbiguousModule(_)) => return Err(e),
-            Err(_) => {}
-        }
-
-        let Some((item_name, module_path)) = segments.split_last() else {
-            return Err(ResolveError::UnknownModule(segments));
+    fn resolve_import_alias(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<ImportTarget>, ResolveError> {
+        self.ensure_module_indexed(module_path)?;
+        let Some((_, _, absolute)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned() else {
+            return Ok(None);
         };
+        self.resolve_import_alias_cached(module_path, alias, &absolute).map(Some)
+    }
 
-        // A *generic* item import supplies no type arguments at all (those
-        // only ever appear at a use site) -- eagerly instantiating via
-        // `ensure_item` here would always fail with a spurious arg-count
-        // mismatch, so this defers entirely, carrying just the absolute
-        // path for `Context::generic_aliases` to substitute in later.
-        if !self.raw_item_generics(module_path, item_name)?.is_empty() {
-            return Ok(ImportTarget::GenericItem(segments));
+    fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident> {
+        if self.ensure_module_indexed(module_path).is_err() {
+            return vec![];
         }
-
-        // Capturing "what does this alias refer to" never embeds anything
-        // inline the way a struct field does -- always indirect.
-        Ok(ImportTarget::Item(self.ensure_item(module_path, item_name, &[], true)?))
+        self.raw_imports.get(module_path).map(|m| m.keys().cloned().collect()).unwrap_or_default()
     }
 
     fn resolve_item(

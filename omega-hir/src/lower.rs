@@ -47,6 +47,7 @@ impl Lowerer {
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
+                root: import.root,
                 path: import.path.clone(),
             }),
             Item::MacroDefinition(_) | Item::MacroInvocation(_) => {

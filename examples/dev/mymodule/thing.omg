@@ -1,3 +1,14 @@
+# `helper` is resolved *relative to this module's own directory*
+# (`mymodule/`, the default for a bare, unrooted import) -- reaches
+# `mymodule/helper.omg`, a sibling of this file, without needing the full
+# `mymodule::helper` path an absolute-from-root import would require.
+import helper;
+# `root::` always escapes back to the project's own root, regardless of how
+# deeply nested the importing module is -- reaches `simplemodule.omg`
+# sitting directly at the project root, exactly as if this import had been
+# written in `main.omg` itself.
+import root::simplemodule;
+
 something2() => i32 {
-    2
+    helper::helper_value() + simplemodule::something3(1)
 }

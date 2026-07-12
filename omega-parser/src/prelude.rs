@@ -15,7 +15,7 @@ pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode, declaration::DeclarationStmt,
     defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
-    function_definition::FunctionDefinitionStmt, import::ImportStmt,
+    function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
     macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
     r#return::ReturnStmt, r#struct::StructStmt, union::UnionStmt, while_stmt::WhileStmt,
 };

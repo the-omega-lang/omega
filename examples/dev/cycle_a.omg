@@ -1,0 +1,13 @@
+# A standing regression fixture for a real bug: two modules whose imports
+# mutually depend on each other's *module*, even though the specific items
+# in question (`cycle_a_value`/`unrelated_b`) never reference one another,
+# used to produce a false `cyclic module dependency` error -- resolving one
+# item's whole module import list eagerly required the other's, which
+# required the first's again, before either item's own signature had even
+# started. Import aliases now resolve lazily, one at a time, so this
+# compiles cleanly.
+import cycle_b::unrelated_b;
+
+cycle_a_value() => i32 {
+    10
+}
