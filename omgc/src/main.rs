@@ -39,7 +39,10 @@ struct Args {
 /// file for someone else's project.
 fn module_from_file(file: &Path) -> Option<(Ident, PathBuf)> {
     let name = file.file_stem()?.to_str()?.to_string();
-    let dir = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let dir = file
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     Some((Ident(name), dir))
 }
 
@@ -58,36 +61,52 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     for arg in args {
         if let Some(rest) = arg.strip_prefix("--extern=") {
             let Some((alias, file)) = rest.split_once(':') else {
-                return Err(format!("invalid --extern flag '{arg}': expected --extern=<alias>:<file>"));
+                return Err(format!(
+                    "invalid --extern flag '{arg}': expected --extern=<alias>:<file>"
+                ));
             };
             if alias.is_empty() {
-                return Err(format!("invalid --extern flag '{arg}': the alias before ':' cannot be empty"));
+                return Err(format!(
+                    "invalid --extern flag '{arg}': the alias before ':' cannot be empty"
+                ));
             }
             let file = PathBuf::from(file);
             let Some((module, dir)) = module_from_file(&file) else {
-                return Err(format!("invalid --extern flag '{arg}': '{}' has no usable file name", file.display()));
+                return Err(format!(
+                    "invalid --extern flag '{arg}': '{}' has no usable file name",
+                    file.display()
+                ));
             };
-            externs.push(ExternRoot { alias: Ident(alias.to_string()), dir, module });
+            externs.push(ExternRoot {
+                alias: Ident(alias.to_string()),
+                dir,
+                module,
+            });
         } else if arg.starts_with('-') {
             return Err(format!("unknown flag '{arg}'"));
         } else if entry_file.is_some() {
-            return Err(format!("unexpected extra argument '{arg}' (the entry file was already given)"));
+            return Err(format!(
+                "unexpected extra argument '{arg}' (the entry file was already given)"
+            ));
         } else {
             entry_file = Some(PathBuf::from(arg));
         }
     }
 
-    let entry_file = entry_file.ok_or_else(|| {
-        "usage: omgc <entry-file> [--extern=<alias>:<file>]...".to_string()
-    })?;
-    Ok(Args { entry_file, externs })
+    let entry_file = entry_file
+        .ok_or_else(|| "usage: omgc <entry-file> [--extern=<alias>:<file>]...".to_string())?;
+    Ok(Args {
+        entry_file,
+        externs,
+    })
 }
 
 fn run() {
-    println!("[Omega Compiler]");
-
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Args { entry_file, externs } = match parse_args(&args) {
+    let Args {
+        entry_file,
+        externs,
+    } = match parse_args(&args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("error: {message}");
@@ -120,8 +139,9 @@ fn run() {
                 }
             }
             let plural = if count == 1 { "error" } else { "errors" };
-            let summary =
-                omega_diagnostics::Diagnostic::error(format!("could not compile the program due to {count} previous {plural}"));
+            let summary = omega_diagnostics::Diagnostic::error(format!(
+                "could not compile the program due to {count} previous {plural}"
+            ));
             eprintln!("{}", renderer.render(&summary, None));
             std::process::exit(1);
         }
@@ -129,15 +149,22 @@ fn run() {
 
     for (module, warning) in &program.warnings {
         let file = driver.source_file(module);
-        eprintln!("{}\n", renderer.render(&warning.to_diagnostic(), file.as_deref()));
+        eprintln!(
+            "{}\n",
+            renderer.render(&warning.to_diagnostic(), file.as_deref())
+        );
     }
 
     let modname = entry_name.as_ref();
-    let codegen =
-        Codegen::generate(modname, "x86_64-unknown-linux", program.modules, &program.entry, program.extern_functions);
+    let codegen = Codegen::generate(
+        modname,
+        "x86_64-unknown-linux",
+        program.modules,
+        &program.entry,
+        program.extern_functions,
+    );
     let object = codegen.emit_object();
 
     let output_file = format!("target/{modname}.o");
     std::fs::write(&output_file, object).expect("Failed to write object");
-    println!("Saved object to: {output_file}");
 }
