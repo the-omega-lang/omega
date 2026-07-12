@@ -1,11 +1,13 @@
 run-exec DEBUGGER="": build-asm build-exe
     # ld target/hello.o target/shims.o -o target/example # no libc
-    cc target/hello.o -o target/example   # with libc
+    cc target/main.o target/mathlib.o -o target/example   # with libc
     {{DEBUGGER}} ./target/example firstarg secondarg; echo -e "\nexit code: $?"
 
 build-exe:
     rm target/example || true
-    RUST_BACKTRACE=1 cargo run
+    RUST_BACKTRACE=1 cargo build
+    ./target/debug/omgc examples/extern_lib/mathlib.omg
+    ./target/debug/omgc examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg
 
 run-asm: build-asm
     ld target/shims.o -o target/shims
