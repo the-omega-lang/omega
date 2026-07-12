@@ -30,19 +30,84 @@ use omega_hir::{BinaryOp, HirId};
 use omega_parser::prelude::Ident;
 use std::{collections::HashMap, sync::Arc};
 
-/// Codegen never fails: everything it would otherwise need to reject was
-/// already enforced while building the `CheckedModule` (place validity, type
-/// compatibility, field/index existence, redeclaration). What remains here
-/// are cases the language genuinely hasn't decided yet (array memory layout,
-/// global data storage, ...) -- those `panic!`/`todo!()` rather than
-/// returning an error, since there is no rejectable *user* input left by the
-/// time codegen runs, only unimplemented compiler features.
+mod target;
+pub use target::{Arch, Os, Target, TargetParseError};
+
+/// How aggressively Cranelift optimizes the generated code -- `-O<n>` maps
+/// onto this. Cranelift's own `opt_level` setting only has three values
+/// (`none`/`speed`/`speed_and_size`), one fewer than the four levels this
+/// enum offers, so `O1`/`O2` deliberately collapse onto the same Cranelift
+/// setting (see `cranelift_setting`) rather than inventing a distinction
+/// Cranelift itself doesn't make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptLevel {
+    #[default]
+    O0,
+    O1,
+    O2,
+    O3,
+}
+
+impl OptLevel {
+    fn cranelift_setting(self) -> &'static str {
+        match self {
+            OptLevel::O0 => "none",
+            OptLevel::O1 | OptLevel::O2 => "speed",
+            OptLevel::O3 => "speed_and_size",
+        }
+    }
+}
+
+/// What `Codegen::finish` should produce -- see its own doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmitKind {
+    #[default]
+    Obj,
+    /// Cranelift's own CLIF text for every function -- backend-dependent by
+    /// nature (a future non-Cranelift backend would have its own IR, or
+    /// none at all); always available here at zero cost, since
+    /// `cranelift_codegen::ir::Function` already implements `Display`.
+    Ir,
+    /// Cranelift's own per-target instruction listing for every function
+    /// (`Context::set_disasm`/`CompiledCode.disasm`) -- real per-target
+    /// assembly mnemonics, but generated during codegen rather than by
+    /// disassembling the final linked object's bytes (that would need
+    /// Cranelift's `disas` feature, which pulls in `capstone`, a C
+    /// library -- deliberately not taken on for this).
+    Asm,
+}
+
+/// `Codegen::finish`'s result -- an object file's bytes for `EmitKind::Obj`,
+/// or human-readable text (CLIF/assembly, one section per function) for
+/// `Ir`/`Asm`. The caller (`omgc`) writes either straight to the output
+/// path via `std::fs::write`, which accepts both.
+pub enum EmitOutput {
+    Object(Vec<u8>),
+    Text(String),
+}
+
+/// Codegen never fails on the *program* itself: everything it would
+/// otherwise need to reject was already enforced while building the
+/// `CheckedModule` (place validity, type compatibility, field/index
+/// existence, redeclaration). What remains here are cases the language
+/// genuinely hasn't decided yet (array memory layout, global data storage,
+/// ...) -- those `panic!`/`todo!()` rather than returning an error, since
+/// there is no rejectable *program* input left by the time codegen runs,
+/// only unimplemented compiler features. The one exception is `generate`
+/// itself: a `--target`/ISA construction failure is genuinely rejectable
+/// *CLI* input (unlike anything about the program being compiled), so it
+/// alone returns a `Result`.
 pub struct Codegen {
     // Backend
     isa: Arc<dyn isa::TargetIsa>,
     pub module: ObjectModule,
     functions: HashMap<HirId, FuncId>,
     ctx: codegen::Context,
+    emit: EmitKind,
+    /// Accumulated by `define_function_def` when `emit` is `Ir`/`Asm` --
+    /// empty (and never appended to) for `Obj`, so the common case pays no
+    /// cost for a feature it isn't using.
+    captured_text: String,
 
     // Global state
     counter: u64, // for unique things
@@ -512,25 +577,35 @@ fn collect_defer_ids_place(place: &CheckedPlace, out: &mut Vec<HirId>) {
 }
 
 impl Codegen {
+    /// Builds a `TargetIsa` from `target`/`opt_level` and runs the whole
+    /// declare-then-define pipeline. The only fallible step is ISA
+    /// construction (see the struct's own doc comment for why) -- a `target`
+    /// this build of the compiler can't support, or one Cranelift itself
+    /// rejects, comes back as a plain `String` (matching `omgc`'s own
+    /// CLI-error convention, e.g. `parse_args`'s `Result<Args, String>`)
+    /// rather than the panic `isa::lookup_by_name` (a thin `.expect()`
+    /// wrapper unsuitable for untrusted CLI input) would have produced.
     pub fn generate(
         module_name: &str,
-        isa: &str,
+        target: Target,
+        opt_level: OptLevel,
+        emit: EmitKind,
         modules: Vec<(Vec<Ident>, CheckedModule)>,
         entry: &[Ident],
         extern_functions: Vec<ExternFunctionRef>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let isa = {
             let mut builder = settings::builder();
 
-            builder.set("opt_level", "none").unwrap();
+            builder.set("opt_level", opt_level.cranelift_setting()).unwrap();
             builder.enable("is_pic").unwrap();
 
             let flags = settings::Flags::new(builder);
 
-            isa::lookup_by_name(isa)
-                .unwrap_or_else(|_| panic!("Invalid ISA: {}", isa))
+            isa::lookup(target.to_triple())
+                .map_err(|e| format!("target '{target}' is not supported by this build of the compiler: {e}"))?
                 .finish(flags)
-                .unwrap()
+                .map_err(|e| format!("failed to build a code generator for target '{target}': {e}"))?
         };
 
         let module = {
@@ -546,6 +621,8 @@ impl Codegen {
             module,
             functions: HashMap::new(),
             ctx: codegen::Context::new(),
+            emit,
+            captured_text: String::new(),
 
             counter: 0,
             strings: HashMap::new(),
@@ -563,7 +640,7 @@ impl Codegen {
 
         codegen.update_all(modules, entry, extern_functions);
 
-        codegen
+        Ok(codegen)
     }
 
     fn clear_local(&mut self) {
@@ -2239,6 +2316,10 @@ impl Codegen {
         // this function can still freely borrow `self` (e.g. `into_ir_type(&self)`,
         // `self.process_statement(...)`) while `builder` holds onto it.
         let mut ctx = std::mem::replace(&mut self.ctx, codegen::Context::new());
+        // `ctx.clear()` (called for every function via `clear_local`, below)
+        // resets `want_disasm` back to `false` each time, so this has to be
+        // set again per function, not once up front.
+        ctx.set_disasm(self.emit == EmitKind::Asm);
         let mut fbctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         builder.func.signature = sig;
@@ -2365,6 +2446,25 @@ impl Codegen {
         builder.finalize();
 
         self.module.define_function(function_id, &mut ctx).unwrap();
+
+        // `ctx.func` (the CLIF) and `ctx.compiled_code()` (populated by the
+        // `define_function` call just above, since `set_disasm` was set
+        // on this same `ctx` above) are both still valid to read here --
+        // `define_function` fills in the compile *result*, it doesn't
+        // consume the IR that produced it.
+        match self.emit {
+            EmitKind::Ir => {
+                let name = self.module.declarations().get_function_decl(function_id).name.clone().unwrap_or_default();
+                self.captured_text.push_str(&format!("; {name}\n{}\n\n", ctx.func));
+            }
+            EmitKind::Asm => {
+                let name = self.module.declarations().get_function_decl(function_id).name.clone().unwrap_or_default();
+                let vcode = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
+                self.captured_text.push_str(&format!("; {name}\n{vcode}\n\n"));
+            }
+            EmitKind::Obj => {}
+        }
+
         self.ctx = ctx;
 
         self.clear_local();
@@ -2465,8 +2565,15 @@ impl Codegen {
         self.module.target_config().pointer_type()
     }
 
-    pub fn emit_object(self) -> Vec<u8> {
-        let product = self.module.finish();
-        product.emit().unwrap()
+    /// Produces whatever `emit` (passed to `generate`) asked for. `Obj`
+    /// finishes and links the object exactly like the old `emit_object`
+    /// did; `Ir`/`Asm` skip linking entirely -- nothing downstream needs
+    /// the linked object in those modes, only the text `define_function_def`
+    /// already accumulated into `captured_text` as each function compiled.
+    pub fn finish(self) -> EmitOutput {
+        match self.emit {
+            EmitKind::Obj => EmitOutput::Object(self.module.finish().emit().unwrap()),
+            EmitKind::Ir | EmitKind::Asm => EmitOutput::Text(self.captured_text),
+        }
     }
 }

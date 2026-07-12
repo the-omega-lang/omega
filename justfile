@@ -6,8 +6,8 @@ run-exec DEBUGGER="": build-asm build-exe
 build-exe:
     rm target/example || true
     RUST_BACKTRACE=1 cargo build
-    ./target/debug/omgc examples/extern_lib/mathlib.omg
-    ./target/debug/omgc examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg
+    ./target/debug/omgc -v examples/extern_lib/mathlib.omg -o target/mathlib.o
+    ./target/debug/omgc -v examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg -o target/main.o
 
 run-asm: build-asm
     ld target/shims.o -o target/shims

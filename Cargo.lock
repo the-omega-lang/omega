@@ -326,12 +326,14 @@ name = "omega-codegen"
 version = "0.1.0"
 dependencies = [
  "cranelift",
+ "cranelift-codegen",
  "cranelift-module",
  "cranelift-object",
  "cranelift-reader",
  "omega-analyzer",
  "omega-hir",
  "omega-parser",
+ "target-lexicon",
 ]
 
 [[package]]

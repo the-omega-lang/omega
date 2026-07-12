@@ -37,17 +37,29 @@ use crate::highlight::{Highlighter, TokenClass};
 use crate::source::SourceFile;
 use crate::span::Span;
 
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const RED: &str = "\x1b[1;31m";
-const YELLOW: &str = "\x1b[1;33m";
-const BLUE: &str = "\x1b[1;34m";
-const CYAN: &str = "\x1b[1;36m";
+/// ANSI color/style codes -- `pub` so callers outside this crate (e.g.
+/// `omgc`'s `-h`/`-v` output) can render text in the same palette as
+/// diagnostics without duplicating escape-code logic; see `paint`.
+pub const RESET: &str = "\x1b[0m";
+pub const BOLD: &str = "\x1b[1m";
+pub const RED: &str = "\x1b[1;31m";
+pub const YELLOW: &str = "\x1b[1;33m";
+pub const GREEN: &str = "\x1b[1;32m";
+pub const BLUE: &str = "\x1b[1;34m";
+pub const CYAN: &str = "\x1b[1;36m";
 
 const SYNTAX_KEYWORD: &str = "\x1b[35m";
 const SYNTAX_STRING: &str = "\x1b[32m";
 const SYNTAX_NUMBER: &str = "\x1b[36m";
 const SYNTAX_COMMENT: &str = "\x1b[90m";
+
+/// Wraps `text` in `code`/`RESET` when `colors` is on and `text` isn't
+/// empty (an empty span shouldn't grow escape codes around nothing) --
+/// the single place every color decision in this crate (and any caller
+/// reusing it) funnels through.
+pub fn paint(colors: bool, code: &str, text: &str) -> String {
+    if colors && !text.is_empty() { format!("{code}{text}{RESET}") } else { text.to_string() }
+}
 
 /// How many display columns a tab expands to -- rustc uses 4 as well; the
 /// expansion is what keeps underline carets aligned under tabbed source.
@@ -105,7 +117,7 @@ impl Renderer {
     }
 
     fn paint(&self, code: &str, text: &str) -> String {
-        if self.colors && !text.is_empty() { format!("{code}{text}{RESET}") } else { text.to_string() }
+        paint(self.colors, code, text)
     }
 
     fn severity_color(&self, severity: Severity) -> &'static str {

@@ -17,6 +17,6 @@ mod span;
 
 pub use diagnostic::{Diagnostic, Label, LabelStyle, Severity};
 pub use highlight::{Highlighter, TokenClass};
-pub use render::Renderer;
+pub use render::{BLUE, BOLD, CYAN, GREEN, RED, RESET, Renderer, YELLOW, paint};
 pub use source::SourceFile;
 pub use span::Span;

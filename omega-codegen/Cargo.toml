@@ -11,3 +11,11 @@ cranelift = "0.131.1"
 cranelift-reader = "0.131.1"
 cranelift-module = "0.131.1"
 cranelift-object = "0.131.1"
+target-lexicon = "0.13.5"
+# The `cranelift` facade crate's own Cargo.toml requests neither `x86` nor
+# `arm64` from `cranelift-codegen` explicitly (it happens to work for
+# x86_64 today only because some other dependency in the graph already
+# requests it) -- depend on `cranelift-codegen` directly, purely to turn
+# both on via Cargo's additive feature unification, so `Target::Aarch64`
+# (see `target.rs`) is actually buildable, not just structurally present.
+cranelift-codegen = { version = "0.131.1", features = ["x86", "arm64"] }
