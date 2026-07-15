@@ -78,6 +78,12 @@ impl ParseError {
             ParseErrorKind::UnionNotAllowedHere => d
                 .with_label(self.span, "not allowed inside a function body")
                 .with_help("move this `union` to the module's top level"),
+            ParseErrorKind::SpecNotAllowedHere => d
+                .with_label(self.span, "not allowed inside a function body")
+                .with_help("move this `spec` to the module's top level"),
+            ParseErrorKind::SpecAliasCannotDeclareFunctions => d
+                .with_label(self.span, "an alias spec (`= A | B`) can't declare its own functions")
+                .with_help("give this spec a `{ ... }` body instead of `= ...` if it needs functions"),
             ParseErrorKind::ExclusiveRangeMissingEnd => d
                 .with_label(self.span, "exclusive range has no end bound")
                 .with_help("give it an end (`..<end`), or use an inclusive range instead (`...`)"),
@@ -135,6 +141,14 @@ pub enum ParseErrorKind {
     /// A `union` declaration in statement position -- same reasoning as
     /// `StructNotAllowedHere`.
     UnionNotAllowedHere,
+    /// A `spec` declaration in statement position -- same reasoning as
+    /// `StructNotAllowedHere`.
+    SpecNotAllowedHere,
+    /// `spec Name = A | B { ... }` -- the alias form is pure union syntax
+    /// sugar (see `ast::statement::spec::SpecStmt`'s doc comment) and can't
+    /// carry its own function members the way a `spec Name : A, B { ... }`
+    /// declaration can.
+    SpecAliasCannotDeclareFunctions,
     /// `..<` with no end bound (`a..<` or bare `..<`) -- unlike `...`, an
     /// exclusive range's whole point is excluding its end, so an
     /// open-ended one is meaningless; see `ast::range::RangeExpr`.
@@ -167,6 +181,12 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::UnionNotAllowedHere => {
                 write!(f, "unions can only be declared at the top level of a module")
+            }
+            Self::SpecNotAllowedHere => {
+                write!(f, "specs can only be declared at the top level of a module")
+            }
+            Self::SpecAliasCannotDeclareFunctions => {
+                write!(f, "an alias spec can't declare its own functions")
             }
             Self::ExclusiveRangeMissingEnd => {
                 write!(f, "an exclusive range ('..<') must have an end bound")

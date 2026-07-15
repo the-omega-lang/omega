@@ -1,5 +1,5 @@
-use omega_hir::HirId;
-use omega_parser::prelude::Ident;
+use omega_hir::{HirBlock, HirId, HirParam};
+use omega_parser::prelude::{Ident, Span, Type};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -170,6 +170,75 @@ impl Hash for ResolvedEnumType {
     }
 }
 
+/// A `spec`'s fully resolved shape, shared behind `ResolvedType::Spec`'s
+/// `Rc<RefCell<_>>` for the same nominal-identity reasons `ResolvedStructType`
+/// is (see its doc comment) -- though a spec is never self-referential the
+/// way a struct field can be, so the placeholder-then-patch dance doesn't
+/// apply here; it's still behind a cell purely so every reference to "this
+/// spec" (an implements clause, a generic bound, a spec-object type) shares
+/// one identity to compare/hash against, exactly like a struct reference
+/// does.
+///
+/// `dependencies` are already resolved (not raw) -- a spec's own dependency
+/// list needs no `Self`/generic substitution to know *which* specs it
+/// requires (only the functions those specs require need substitution,
+/// deferred to implementation time -- see `RawSpecFunctionSig`), so
+/// resolving them eagerly here is what makes dependency-cycle detection
+/// fall out of the ordinary `omega_driver::Driver::ensure_item`
+/// `InProgress`/cycle machinery for free, with no spec-specific cycle guard
+/// needed.
+#[derive(Debug)]
+pub struct ResolvedSpecType {
+    pub id: HirId,
+    pub name: Ident,
+    pub generics: Vec<Ident>,
+    pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    pub functions: Vec<(Ident, RawSpecFunctionSig)>,
+}
+
+impl PartialEq for ResolvedSpecType {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ResolvedSpecType {}
+
+impl Hash for ResolvedSpecType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+/// One function member of a spec, kept **raw** (unresolved `Type`s, an
+/// unlowered `HirBlock` default body) -- directly mirroring
+/// `omega_analyzer::resolver::GenericSignature`'s existing precedent for an
+/// ordinary generic function's signature: a `Self`-referencing (or spec-
+/// generic-referencing) type can't be resolved to a concrete
+/// `ResolvedType` until a concrete implementor is known, so resolution is
+/// deferred to that point (see `Analyzer::signature_of_struct`'s
+/// implements-clause handling) rather than attempted here, at the spec's
+/// own definition.
+#[derive(Debug, Clone)]
+pub struct RawSpecFunctionSig {
+    pub decl_id: HirId,
+    pub name: Ident,
+    pub span: Span,
+    pub is_member_function: bool,
+    /// Raw `HirParam`s (own id/span kept, per-param) rather than a plain
+    /// `(Ident, Type)` list -- this is what lets a queued default-method
+    /// instantiation reconstruct a real, ordinary `HirFunctionDef` later
+    /// (see `Analyzer::check_pending_spec_method`) and reuse
+    /// `check_function_body` wholesale, rather than duplicating its
+    /// param-binding logic.
+    pub params: Vec<HirParam>,
+    pub return_type: Type,
+    /// `None` for a required function (every implementor must provide its
+    /// own matching method); `Some` for a default, used as-is unless a
+    /// concrete implementor overrides it with its own same-named,
+    /// same-signature method.
+    pub default_body: Option<HirBlock>,
+}
+
 /// A compile-time constant value -- what an enum variant's tag and header
 /// values evaluate to at the definition, and what construction sites
 /// re-emit. Covers exactly the primitive types a constant can currently be
@@ -292,6 +361,25 @@ pub enum ResolvedType {
         cell: Rc<RefCell<ResolvedEnumType>>,
         variant: Option<usize>,
     },
+    /// A reference to a spec *definition* -- what an implements clause
+    /// (`struct Dog : Animal`), a generic bound (`T: Animal`), or a
+    /// spec-object type's pointee (`spec *Animal`) resolves the name
+    /// `Animal` to. Never itself the type of a runtime value -- a `spec
+    /// *Animal` *value*'s type is `SpecObject` below, not this.
+    Spec(Rc<RefCell<ResolvedSpecType>>),
+    /// `spec *Animal` (`mutable: false`) or `spec *mut Animal` (`mutable:
+    /// true`) -- a dynamic-dispatch trait-object value: at runtime, a fat
+    /// pointer (a data pointer plus a compiler-generated vtable pointer),
+    /// exactly like `Slice`'s `[data_ptr, len]` shape is a fat pointer of a
+    /// different kind (see `Codegen`'s `IntoIRType` impl, which flattens
+    /// both to two leaves). The concrete pointee type is erased -- only
+    /// that it implements `spec` (with these `type_args`, for a generic
+    /// spec) is known.
+    SpecObject {
+        spec: Rc<RefCell<ResolvedSpecType>>,
+        type_args: Vec<ResolvedType>,
+        mutable: bool,
+    },
 }
 
 /// Can't `#[derive(Hash)]` -- `Rc<RefCell<ResolvedStructType>>` isn't
@@ -339,6 +427,12 @@ impl Hash for ResolvedType {
             Self::Enum { cell, variant } => {
                 cell.borrow().hash(state);
                 variant.hash(state);
+            }
+            Self::Spec(cell) => cell.borrow().hash(state),
+            Self::SpecObject { spec, type_args, mutable } => {
+                spec.borrow().hash(state);
+                type_args.hash(state);
+                mutable.hash(state);
             }
         }
     }
@@ -405,6 +499,22 @@ impl std::fmt::Display for ResolvedType {
                 write!(f, "{}", e.name.as_ref())?;
                 if let Some(index) = variant {
                     write!(f, "::{}", e.variants[*index].name.as_ref())?;
+                }
+                Ok(())
+            }
+            Self::Spec(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
+            Self::SpecObject { spec, type_args, mutable } => {
+                write!(f, "spec *{}", if *mutable { "mut " } else { "" })?;
+                write!(f, "{}", spec.borrow().name.as_ref())?;
+                if !type_args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ">")?;
                 }
                 Ok(())
             }

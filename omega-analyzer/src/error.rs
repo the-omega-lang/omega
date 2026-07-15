@@ -34,6 +34,10 @@ pub enum TypeResolutionError {
     /// `Name` isn't one of `Enum`'s variants -- the type-position mirror of
     /// `AnalysisErrorKind::NoSuchEnumMember`.
     NoSuchVariantForType { r#enum: Ident, name: Ident, similar: Option<Ident> },
+    /// `spec *Foo`/`spec *mut Foo` where `Foo` resolved to something other
+    /// than a spec (a struct, a primitive, ...) -- a dynamic-dispatch
+    /// pointer's pointee must always be a spec.
+    NotASpec(Ident),
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -53,6 +57,7 @@ impl fmt::Display for TypeResolutionError {
             Self::NoSuchVariantForType { r#enum, name, .. } => {
                 write!(f, "no variant '{}' on enum '{}'", name.as_ref(), r#enum.as_ref())
             }
+            Self::NotASpec(name) => write!(f, "'{}' is not a spec", name.as_ref()),
         }
     }
 }
@@ -443,6 +448,23 @@ pub enum AnalysisErrorKind {
     /// means (fewest literal arguments needing a non-default type).
     /// `candidates` lists every *tied* candidate.
     AmbiguousOverload { name: Ident, candidates: Vec<ResolvedFunctionType> },
+
+    // -- specs --
+    /// A struct/enum/union's `implements` list requires `function` (from
+    /// `spec`, possibly by way of one of its dependencies), but the type
+    /// provides neither its own matching method nor does `spec` supply a
+    /// default -- `implementor` is the concrete type's own name.
+    MissingSpecFunction { implementor: Ident, spec: Ident, function: Ident },
+    /// Two specs (`first_spec`/`second_spec`, reached via one implements
+    /// clause's transitive dependency flattening) both require a function
+    /// named `name`, but with different signatures -- unlike two identical
+    /// requirements (silently deduplicated, per the language's own "same
+    /// name and signature -> one implementation" rule), a genuine mismatch
+    /// is ambiguous: no single method could satisfy both.
+    ConflictingSpecFunctions { name: Ident, first_spec: Ident, second_spec: Ident },
+    /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
+    /// isn't one of `Spec`'s (flattened, dependencies included) functions.
+    NoSuchSpecFunction { spec: Ident, function: Ident },
 }
 
 impl AnalysisErrorKind {
@@ -833,6 +855,32 @@ impl AnalysisErrorKind {
                 }
                 d
             }
+            Self::MissingSpecFunction { implementor, spec, function } => d
+                .with_label(span, format!("`{}` does not implement `{}`", implementor.as_ref(), spec.as_ref()))
+                .with_help(format!(
+                    "add a `{}` method to `{}`, or give `{}` a default implementation",
+                    function.as_ref(),
+                    implementor.as_ref(),
+                    function.as_ref()
+                )),
+            Self::ConflictingSpecFunctions { name, first_spec, second_spec } => d
+                .with_label(
+                    span,
+                    format!(
+                        "`{}` and `{}` both require `{}`, with different signatures",
+                        first_spec.as_ref(),
+                        second_spec.as_ref(),
+                        name.as_ref()
+                    ),
+                )
+                .with_help(format!(
+                    "give the implementing type its own `{}` method matching both",
+                    name.as_ref()
+                )),
+            Self::NoSuchSpecFunction { spec, function } => d.with_label(
+                span,
+                format!("no function `{}` on spec `{}`", function.as_ref(), spec.as_ref()),
+            ),
         }
     }
 }
@@ -874,6 +922,9 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
                 None => d,
             }
         }
+        TypeResolutionError::NotASpec(_) => d
+            .with_label(span, "not a spec")
+            .with_help("`spec *...`'s pointee must name a spec, e.g. `spec *Animal`"),
     }
 }
 
@@ -917,6 +968,12 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         }
         ResolveError::GenericArgCountMismatch { expected, .. } => {
             with_label(d, format!("expected {expected} type {}", plural(*expected, "argument")))
+        }
+        ResolveError::SpecNotImplemented { missing, .. } => {
+            with_label(d, "does not implement this spec".to_string()).with_note(format!(
+                "missing: {}",
+                missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
+            ))
         }
     }
 }
@@ -1249,6 +1306,23 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::NoMatchingOverload { name, .. } => write!(f, "no overload of '{}' matches this call", name.as_ref()),
             Self::AmbiguousOverload { name, .. } => write!(f, "ambiguous reference to overloaded '{}'", name.as_ref()),
+            Self::MissingSpecFunction { implementor, spec, function } => write!(
+                f,
+                "'{}' does not implement spec '{}': missing '{}'",
+                implementor.as_ref(),
+                spec.as_ref(),
+                function.as_ref()
+            ),
+            Self::ConflictingSpecFunctions { name, first_spec, second_spec } => write!(
+                f,
+                "conflicting requirements for '{}' from specs '{}' and '{}'",
+                name.as_ref(),
+                first_spec.as_ref(),
+                second_spec.as_ref()
+            ),
+            Self::NoSuchSpecFunction { spec, function } => {
+                write!(f, "no function '{}' on spec '{}'", function.as_ref(), spec.as_ref())
+            }
         }
     }
 }

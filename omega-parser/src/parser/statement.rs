@@ -83,6 +83,10 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             reject_local_type_decl(p, ParseErrorKind::UnionNotAllowedHere);
             None
         }
+        TokenKind::Spec => {
+            reject_local_type_decl(p, ParseErrorKind::SpecNotAllowedHere);
+            None
+        }
         TokenKind::While => Some((Statement::While(parse_while(p)?), true)),
         TokenKind::For => Some((Statement::For(Box::new(parse_for(p)?)), true)),
         TokenKind::Defer => {

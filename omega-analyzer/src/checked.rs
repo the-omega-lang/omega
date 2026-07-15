@@ -367,6 +367,50 @@ pub enum CheckedExpr {
     /// mutable: false }`, which already fully describes the element type,
     /// so nothing else needs to be carried here.
     ConstSlice(ConstValue),
+    /// An implicit `*Concrete` -> `spec *Spec` dynamic-dispatch coercion
+    /// (see `Analyzer::coerce_to_expected`) -- unlike every other
+    /// coercion this language has (all representation-preserving, handled
+    /// by `ResolvedType::accepts` alone), this one genuinely changes the
+    /// value's runtime shape: a thin pointer becomes a fat one (a data
+    /// pointer plus a compiler-generated vtable pointer), so it needs an
+    /// explicit node here for codegen to act on. The node's own `r#type`
+    /// is always the target `ResolvedType::SpecObject`; `base`'s own
+    /// `r#type` (always a `Pointer` to a struct/enum/union) is what
+    /// codegen reads to know the *concrete* type a vtable is needed for.
+    SpecCoerce(CheckedSpecCoerce),
+    /// `base.method(args)` where `base`'s type is `spec *Spec` -- a
+    /// dynamic-dispatch call through a vtable, rather than an ordinary
+    /// direct call to a statically-known symbol (`CheckedExpr::
+    /// FunctionCall`'s `callee` is always a `Storage::Function` place;
+    /// there is no such place here, since the concrete function differs
+    /// per underlying implementor at runtime). See `CheckedDynamicCall`.
+    DynamicCall(CheckedDynamicCall),
+}
+
+/// See `CheckedExpr::SpecCoerce`.
+#[derive(Debug, Clone)]
+pub struct CheckedSpecCoerce {
+    pub base: Box<CheckedExprNode>,
+}
+
+/// See `CheckedExpr::DynamicCall`. `base` is the `spec *Spec` fat-pointer
+/// value being called through (its own two leaves: a data pointer and a
+/// vtable pointer -- see `ResolvedType::SpecObject`'s doc comment);
+/// `slot_index` is this method's position in the spec's own flattened
+/// function list (`Analyzer::flatten_spec`), which is also the exact
+/// vtable slot order `Codegen`'s vtable builder uses, so the two always
+/// agree. `fn_type`'s `self` param (`params[0]`) has no meaningful
+/// pointee type (`Self` was resolved against a placeholder -- see
+/// `Analyzer::finish_dynamic_dispatch_call`) and must never be read for
+/// anything beyond "this is a single-leaf pointer"; codegen supplies the
+/// real `self` value itself, from `base`'s own data-pointer leaf, not
+/// from `args`.
+#[derive(Debug, Clone)]
+pub struct CheckedDynamicCall {
+    pub base: CheckedPlace,
+    pub slot_index: usize,
+    pub fn_type: ResolvedFunctionType,
+    pub args: Vec<CheckedExprNode>,
 }
 
 /// See `CheckedExpr::UnionConstruct`. `field_index` is the field's position

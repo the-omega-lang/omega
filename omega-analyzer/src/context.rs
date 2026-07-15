@@ -367,6 +367,36 @@ impl Context {
                     size,
                 )
             }
+            // `spec *Animal`/`spec *mut Animal` -- a dynamic-dispatch
+            // trait-object pointer. The pointee is always a spec reference
+            // (`Named`/`Generic`), resolved via the ordinary path above
+            // (producing `ResolvedType::Spec`); its own generic args (if
+            // any, e.g. `Iterator<i32>`) are re-extracted from the raw
+            // `Type` here and resolved separately, since `resolve_type`'s
+            // own `Generic` arm consumes them internally without handing
+            // them back on its `ResolvedType::Spec` result. Never
+            // `indirect`-sensitive itself -- a spec object is always a fat
+            // pointer, never embedded inline.
+            Type::SpecObject(pointee, mutable) => {
+                let type_args = match pointee.as_ref() {
+                    Type::Generic(_, args) => args.clone(),
+                    _ => vec![],
+                };
+                let resolved_args = type_args
+                    .into_iter()
+                    .map(|a| self.resolve_type(a, resolver, module_path, true))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let pointee_name = match pointee.as_ref() {
+                    Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
+                    _ => Ident("<spec>".to_string()),
+                };
+                match self.resolve_type(*pointee, resolver, module_path, true)? {
+                    ResolvedType::Spec(spec) => {
+                        ResolvedType::SpecObject { spec, type_args: resolved_args, mutable }
+                    }
+                    _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
+                }
+            }
         };
 
         Ok(resolved)

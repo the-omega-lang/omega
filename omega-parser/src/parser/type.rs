@@ -13,6 +13,7 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
         TokenKind::Star => parse_pointer_type(p),
         TokenKind::LBracket => parse_array_type(p),
         TokenKind::LParen => parse_function_type(p),
+        TokenKind::Spec => parse_spec_object_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
         _ => {
             p.error(ParseErrorKind::Expected { expected: "a type", found: p.peek().describe() });
@@ -36,6 +37,27 @@ fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
     };
     let inner = parse_type(p)?;
     Some(Type::Pointer(Box::new(inner), mutable))
+}
+
+/// `spec *Animal` or `spec *mut Animal` -- mirrors `parse_pointer_type`
+/// exactly (same `mut` contextual-keyword handling), just requiring a `*`
+/// to immediately follow `spec` and producing `Type::SpecObject` instead of
+/// `Type::Pointer`. The pointee is parsed via the ordinary named-type path
+/// (`Path` or `Path<...>`), never recursing back into `parse_type` -- a
+/// spec object's pointee is always a spec reference, never another pointer.
+fn parse_spec_object_type(p: &mut Parser) -> Option<Type> {
+    p.advance(); // 'spec'
+    p.expect(&TokenKind::Star, "'*'");
+    let mutable = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+    {
+        p.advance();
+        true
+    } else {
+        false
+    };
+    let inner = parse_named_type(p)?;
+    Some(Type::SpecObject(Box::new(inner), mutable))
 }
 
 fn parse_array_type(p: &mut Parser) -> Option<Type> {

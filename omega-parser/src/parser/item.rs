@@ -1,8 +1,10 @@
-use crate::ast::identifier::Ident;
+use crate::ast::generics::GenericParam;
+use crate::ast::r#type::Type;
 use crate::ast::statement::{
     Item, ItemNode, declaration::DeclarationStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
-    function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt}, r#struct::StructStmt,
+    function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
+    spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,
     union::UnionStmt,
 };
 use crate::diagnostics::ParseErrorKind;
@@ -65,6 +67,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Struct => Item::Struct(parse_struct_def(p)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p)?),
         TokenKind::Union => Item::Union(parse_union_def(p)?),
+        TokenKind::Spec => Item::Spec(parse_spec_def(p)?),
         TokenKind::Macro => Item::MacroDefinition(parse_macro_definition(p)?),
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
             let inv = parse_macro_invocation(p)?;
@@ -128,17 +131,43 @@ pub fn parse_function_definition(p: &mut Parser) -> Option<FunctionDefinitionStm
     Some(FunctionDefinitionStmt { ident, generics, is_member_function, self_mutable, params, return_type, codeblock })
 }
 
-/// `<T, U, ...>` -- optional, at least one name if present.
-fn parse_optional_generics(p: &mut Parser) -> Option<Vec<Ident>> {
+/// `<T, U: Bound, ...>` -- optional, at least one name if present. Each
+/// name may carry a single optional spec bound (`T: Animal`) -- see
+/// `GenericParam`'s doc comment for why only one is ever parsed here.
+fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
     if !p.eat(&TokenKind::Lt) {
         return Some(Vec::new());
     }
-    let mut generics = vec![p.expect_ident()?];
+    let mut generics = vec![parse_generic_param(p)?];
     while p.eat(&TokenKind::Comma) {
-        generics.push(p.expect_ident()?);
+        generics.push(parse_generic_param(p)?);
     }
     p.expect(&TokenKind::Gt, "'>'");
     Some(generics)
+}
+
+fn parse_generic_param(p: &mut Parser) -> Option<GenericParam> {
+    let ident = p.expect_ident()?;
+    let bound = if p.eat(&TokenKind::Colon) { Some(crate::parser::r#type::parse_type(p)?) } else { None };
+    Some(GenericParam { ident, bound })
+}
+
+/// `: Spec, Spec, ...` -- the specs a struct/union/enum implements,
+/// parsed right after the generics list. Absent entirely (no leading `:`)
+/// is the overwhelmingly common case, returning an empty list. Shares its
+/// comma-separated-`Type`-list shape with a spec's own `: Dep, Dep`
+/// dependency clause (see `parse_spec_def`) -- both mean "must also
+/// satisfy these specs," just said from opposite sides (a concrete type
+/// implementing one, vs. a spec requiring one).
+fn parse_optional_implements(p: &mut Parser) -> Option<Vec<Type>> {
+    if !p.eat(&TokenKind::Colon) {
+        return Some(Vec::new());
+    }
+    let mut specs = vec![crate::parser::r#type::parse_type(p)?];
+    while p.eat(&TokenKind::Comma) {
+        specs.push(crate::parser::r#type::parse_type(p)?);
+    }
+    Some(specs)
 }
 
 /// `self` / `mut self` (optionally followed by `, ident: Type, ...`), or
@@ -199,6 +228,7 @@ pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
     p.expect(&TokenKind::Struct, "'struct'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
+    let implements = parse_optional_implements(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
@@ -221,7 +251,7 @@ pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(StructStmt { ident, generics, fields, functions })
+    Some(StructStmt { ident, generics, implements, fields, functions })
 }
 
 /// `union Name<T, ...> { field: Type; ... method(...) => T { ... } ... }`
@@ -232,6 +262,7 @@ pub fn parse_union_def(p: &mut Parser) -> Option<UnionStmt> {
     p.expect(&TokenKind::Union, "'union'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
+    let implements = parse_optional_implements(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
@@ -254,7 +285,65 @@ pub fn parse_union_def(p: &mut Parser) -> Option<UnionStmt> {
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(UnionStmt { ident, generics, fields, functions })
+    Some(UnionStmt { ident, generics, implements, fields, functions })
+}
+
+/// `spec Name<T, ...> : Dep, Dep { functions }` (declaration form) or
+/// `spec Name<T, ...> = Dep | Dep | Dep;` (alias form) -- see `SpecStmt`'s
+/// doc comment for the two forms' shared meaning. The leading `:`/`=` token
+/// is what disambiguates them; both keep parsing a `Type`-list afterward
+/// (`,`-separated for `:`, `|`-separated for `=`), just with different
+/// terminators (`{ ... }` vs `;`).
+pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
+    p.expect(&TokenKind::Spec, "'spec'");
+    let ident = p.expect_ident()?;
+    let generics = parse_optional_generics(p)?;
+
+    if p.eat(&TokenKind::Eq) {
+        let mut dependencies = vec![crate::parser::r#type::parse_type(p)?];
+        while p.eat(&TokenKind::Pipe) {
+            dependencies.push(crate::parser::r#type::parse_type(p)?);
+        }
+        if p.check(&TokenKind::LBrace) {
+            p.error(ParseErrorKind::SpecAliasCannotDeclareFunctions);
+            recovery::skip_balanced_group(p);
+        } else {
+            p.expect_terminator(&TokenKind::Semi, "';'");
+        }
+        return Some(SpecStmt { ident, generics, dependencies, functions: Vec::new() });
+    }
+
+    let dependencies = parse_optional_implements(p)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut functions = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) {
+        match parse_spec_function(p) {
+            Some(f) => functions.push(f),
+            None => recovery::synchronize_to_statement_boundary(p),
+        }
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(SpecStmt { ident, generics, dependencies, functions })
+}
+
+/// `name(params) => Ret;` (required -- every implementor must provide a
+/// matching method) or `name(params) => Ret { block }` (default -- used
+/// as-is unless overridden). No per-function generics here (unlike
+/// `parse_function_definition`) -- not part of the language's spec design.
+fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
+    let ident = p.expect_ident()?;
+    p.expect(&TokenKind::LParen, "'('");
+    let (is_member_function, self_mutable, params) = parse_param_list(p);
+    p.expect(&TokenKind::RParen, "')'");
+    p.expect(&TokenKind::FatArrow, "'=>'");
+    let return_type = crate::parser::r#type::parse_type(p)?;
+    let body = if p.check(&TokenKind::LBrace) {
+        Some(parse_codeblock(p)?)
+    } else {
+        p.expect_terminator(&TokenKind::Semi, "';'");
+        None
+    };
+    Some(SpecFunctionStmt { ident, is_member_function, self_mutable, params, return_type, body })
 }
 
 /// `enum Name<T, ...>(header) { [dynamic_fields] Variant(args) { fields }, ...; functions }`
@@ -270,6 +359,7 @@ pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
     p.expect(&TokenKind::Enum, "'enum'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
+    let implements = parse_optional_implements(p)?;
     let header = parse_enum_header(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
@@ -346,7 +436,7 @@ pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(EnumStmt { ident, generics, header, dynamic_fields, variants, functions })
+    Some(EnumStmt { ident, generics, implements, header, dynamic_fields, variants, functions })
 }
 
 /// The optional `(name: Type, ...)` header after the enum's name -- each

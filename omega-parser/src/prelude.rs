@@ -9,6 +9,7 @@ pub use crate::ast::expression::{
     negate::NegateExpr, number::{NumberBase, NumberExpr}, slice::SliceExpr, string::StringExpr,
     struct_literal::{StructLiteralExpr, StructLiteralField},
 };
+pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{ExprPath, Ident, Path};
 pub use crate::ast::range::RangeExpr;
 pub use crate::ast::statement::{
@@ -17,7 +18,8 @@ pub use crate::ast::statement::{
     extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
     macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
-    r#return::ReturnStmt, r#struct::StructStmt, union::UnionStmt, while_stmt::WhileStmt,
+    r#return::ReturnStmt, spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,
+    union::UnionStmt, while_stmt::WhileStmt,
 };
 pub use crate::ast::r#type::{FunctionType, Type};
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};

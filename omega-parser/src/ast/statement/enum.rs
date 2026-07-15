@@ -1,4 +1,5 @@
 use crate::ast::expression::ExpressionNode;
+use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{declaration::DeclarationStmt, function_definition::FunctionDefinitionStmt};
 use crate::ast::r#type::Type;
@@ -42,7 +43,9 @@ pub struct EnumStmt {
     pub ident: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum; same
     /// use-site rules as `StructStmt::generics`.
-    pub generics: Vec<Ident>,
+    pub generics: Vec<GenericParam>,
+    /// See `StructStmt::implements`'s doc comment -- same rules.
+    pub implements: Vec<Type>,
     pub header: Vec<EnumHeaderField>,
     /// The optional shared-dynamic-fields section -- empty when the enum
     /// declares none. Plain `DeclarationStmt`s, same as a struct field or a

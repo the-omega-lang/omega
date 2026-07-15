@@ -1,11 +1,13 @@
 mod fs_resolve;
 
 use fs_resolve::locate_module;
-use omega_analyzer::analysis::{item_id_span, item_name, Analyzer};
-use omega_analyzer::checked::{CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage};
+use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, PendingSpecMethod};
+use omega_analyzer::checked::{
+    CheckedFunctionDef, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage,
+};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
 use omega_analyzer::resolved_type::{
-    ResolvedEnumType, ResolvedFunctionType, ResolvedStructType, ResolvedType, ResolvedUnionType,
+    ResolvedEnumType, ResolvedFunctionType, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{
     GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem, Visibility,
@@ -258,6 +260,14 @@ pub struct Driver {
     enum_cells: HashMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
     /// The union counterpart of `struct_cells` -- same lifecycle, same role.
     union_cells: HashMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
+    /// Every queued spec-default-method instantiation an implementor's
+    /// `implements` clause needed (no own override -- see
+    /// `Analyzer::resolve_implements_clause`), keyed by the implementor's
+    /// own `ItemKey` -- populated during phase 1 (`compute_item`'s Struct/
+    /// Enum/Union arms), drained during phase 2
+    /// (`check_pending_spec_methods`, called from `check_item_body`'s
+    /// matching arms) once that implementor's own body is checked.
+    pending_spec_methods: HashMap<ItemKey, Vec<PendingSpecMethod>>,
     query_state: HashMap<ItemKey, QueryState>,
     /// Every item that finished its query successfully -- absent for one
     /// that's `Done` but failed (see `ensure_item`); the real diagnostics
@@ -323,6 +333,7 @@ impl Driver {
             struct_cells: HashMap::new(),
             enum_cells: HashMap::new(),
             union_cells: HashMap::new(),
+            pending_spec_methods: HashMap::new(),
             query_state: HashMap::new(),
             resolved_items: HashMap::new(),
             generic_instantiations: HashMap::new(),
@@ -692,6 +703,17 @@ impl Driver {
     /// skip an uninstantiated template rather than fail it with a spurious
     /// arg-count mismatch), and `ensure_item`'s own arg-count validation.
     fn raw_item_generics(&mut self, module_path: &[Ident], name: &Ident) -> Result<Vec<Ident>, ResolveError> {
+        Ok(self.raw_item_generic_params(module_path, name)?.iter().map(|g| g.ident.clone()).collect())
+    }
+
+    /// Like `raw_item_generics`, but keeps each generic's own declared
+    /// bound (if any) -- what `ensure_item`'s bound-checking block needs
+    /// that a bare name list doesn't carry.
+    fn raw_item_generic_params(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Vec<omega_hir::HirGenericParam>, ResolveError> {
         let index = self.local_item_index(module_path, name)?;
         let hir = self.parsed.get(module_path).expect("parsed by local_item_index");
         Ok(match &hir.items[index] {
@@ -699,6 +721,7 @@ impl Driver {
             HirItem::Enum(e) => e.generics.clone(),
             HirItem::Union(u) => u.generics.clone(),
             HirItem::FunctionDefinition(f) => f.generics.clone(),
+            HirItem::Spec(sp) => sp.generics.clone(),
             HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => vec![],
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
         })
@@ -868,15 +891,19 @@ impl Driver {
         }
 
         let index = self.local_item_index(module_path, name)?;
-        let generics = self.raw_item_generics(module_path, name)?;
-        if generics.len() != type_args.len() {
+        let generic_params = self.raw_item_generic_params(module_path, name)?;
+        if generic_params.len() != type_args.len() {
             return Err(ResolveError::GenericArgCountMismatch {
                 module: module_path.to_vec(),
                 item: name.clone(),
-                expected: generics.len(),
+                expected: generic_params.len(),
                 found: type_args.len(),
             });
         }
+        if generic_params.iter().any(|g| g.bound.is_some()) {
+            self.check_generic_bounds(module_path, name, index, &generic_params, type_args)?;
+        }
+        let generics: Vec<Ident> = generic_params.iter().map(|g| g.ident.clone()).collect();
 
         self.query_state.insert(key.clone(), QueryState::InProgress);
         let result = self.compute_item(module_path, name, index, type_args, &generics);
@@ -900,6 +927,47 @@ impl Driver {
         }
 
         result
+    }
+
+    /// Checks every bound generic parameter (`T: Animal`) among
+    /// `generic_params` against its own concrete `type_args[i]` -- see
+    /// `Analyzer::check_generic_bound`. Skipped by `ensure_item`'s own
+    /// guard entirely (not even called) for the overwhelmingly common
+    /// all-unbound case, so an ordinary duck-typed generic pays nothing
+    /// extra. A resolution failure inside the bound itself (a typo'd spec
+    /// name, say) folds into `module_errors` the ordinary way and this
+    /// call fails soft with `ItemFailed`; a bound that resolved fine but
+    /// isn't satisfied is the real, structured `SpecNotImplemented`.
+    fn check_generic_bounds(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+        index: usize,
+        generic_params: &[omega_hir::HirGenericParam],
+        type_args: &[ResolvedType],
+    ) -> Result<(), ResolveError> {
+        let hir = self.parsed.get(module_path).expect("parsed by local_item_index").clone();
+        let (owner_id, owner_span) = item_id_span(&hir.items[index]);
+        let substitution: Vec<(Ident, ResolvedType)> =
+            generic_params.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
+        for (param, concrete) in generic_params.iter().zip(type_args) {
+            let Some(bound) = &param.bound else { continue };
+            let mut analyzer = Analyzer::new(self, module_path.to_vec(), &substitution, (owner_id, owner_span));
+            let result = analyzer.check_generic_bound(owner_id, owner_span, bound, concrete);
+            let (errors, _warnings) = analyzer.finish();
+            if !errors.is_empty() {
+                self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+                return Err(ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() });
+            }
+            if let Some(Err((spec_name, missing))) = result {
+                return Err(ResolveError::SpecNotImplemented {
+                    type_name: concrete.to_string(),
+                    spec: spec_name,
+                    missing,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Does the actual work `ensure_item` defers to the first time a name is
@@ -978,10 +1046,15 @@ impl Driver {
                     .iter()
                     .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
                     .collect();
+                let mut self_substitution = substitution.clone();
+                self_substitution.push((Ident("Self".to_string()), ResolvedType::Struct(cell.clone())));
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &substitution, (s.id, s.span));
-                let ok = analyzer.signature_of_struct(s, &cell, &method_ids);
+                    Analyzer::new(self, module_path.to_vec(), &self_substitution, (s.id, s.span));
+                let (ok, pending_spec_methods) = analyzer.signature_of_struct(s, &cell, &method_ids);
                 let (errors, _warnings) = analyzer.finish();
+                if ok.is_some() {
+                    self.pending_spec_methods.insert(key, pending_spec_methods);
+                }
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Struct(cell)));
                 (result, errors)
             }
@@ -994,10 +1067,16 @@ impl Driver {
                     .iter()
                     .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
                     .collect();
+                let mut self_substitution = substitution.clone();
+                self_substitution
+                    .push((Ident("Self".to_string()), ResolvedType::Enum { cell: cell.clone(), variant: None }));
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &substitution, (e.id, e.span));
-                let ok = analyzer.signature_of_enum(e, &cell, &method_ids);
+                    Analyzer::new(self, module_path.to_vec(), &self_substitution, (e.id, e.span));
+                let (ok, pending_spec_methods) = analyzer.signature_of_enum(e, &cell, &method_ids);
                 let (errors, _warnings) = analyzer.finish();
+                if ok.is_some() {
+                    self.pending_spec_methods.insert(key, pending_spec_methods);
+                }
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Enum { cell, variant: None }));
                 (result, errors)
             }
@@ -1010,11 +1089,38 @@ impl Driver {
                     .iter()
                     .map(|f| if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() })
                     .collect();
+                let mut self_substitution = substitution.clone();
+                self_substitution.push((Ident("Self".to_string()), ResolvedType::Union(cell.clone())));
                 let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &substitution, (u.id, u.span));
-                let ok = analyzer.signature_of_union(u, &cell, &method_ids);
+                    Analyzer::new(self, module_path.to_vec(), &self_substitution, (u.id, u.span));
+                let (ok, pending_spec_methods) = analyzer.signature_of_union(u, &cell, &method_ids);
                 let (errors, _warnings) = analyzer.finish();
+                if ok.is_some() {
+                    self.pending_spec_methods.insert(key, pending_spec_methods);
+                }
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Union(cell)));
+                (result, errors)
+            }
+            HirItem::Spec(sp) => {
+                let id = if type_args.is_empty() { sp.id } else { self.fresh_synthetic_id() };
+                let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+                let mut analyzer =
+                    Analyzer::new(self, module_path.to_vec(), &substitution, (sp.id, sp.span));
+                let dependencies = analyzer.resolve_spec_dependencies(sp);
+                let functions = analyzer.resolve_spec_functions(sp);
+                let (errors, _warnings) = analyzer.finish();
+                let result = if errors.is_empty() {
+                    let cell = Rc::new(RefCell::new(ResolvedSpecType {
+                        id,
+                        name: sp.name.clone(),
+                        generics,
+                        dependencies,
+                        functions,
+                    }));
+                    Some(ResolvedItem::Type(ResolvedType::Spec(cell)))
+                } else {
+                    None
+                };
                 (result, errors)
             }
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
@@ -1077,7 +1183,7 @@ impl Driver {
                     unreachable!("a function's own resolved item is always ResolvedType::Function");
                 };
                 let substitution: Vec<(Ident, ResolvedType)> =
-                    f.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
+                    f.generics.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (f.id, f.span));
                 let checked = analyzer.check_function_body(f, &fn_type, decl_id);
@@ -1089,45 +1195,95 @@ impl Driver {
             }
             HirItem::Struct(s) => {
                 let cell = self.struct_cells.get(&key).expect("resolved in phase 1").clone();
-                let substitution: Vec<(Ident, ResolvedType)> =
-                    s.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
+                let mut substitution: Vec<(Ident, ResolvedType)> =
+                    s.generics.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
+                substitution.push((Ident("Self".to_string()), ResolvedType::Struct(cell.clone())));
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (s.id, s.span));
                 let checked = analyzer.check_struct_body(s, &cell);
-                let (errors, warnings) = analyzer.finish();
+                let (errors, mut warnings) = analyzer.finish();
                 if !errors.is_empty() {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
                 }
-                checked.map(|c| (CheckedItem::Struct(c), warnings))
+                let (spec_functions, spec_warnings) = self.check_pending_spec_methods(module_path, &key);
+                warnings.extend(spec_warnings);
+                checked.map(|mut c| {
+                    c.functions.extend(spec_functions);
+                    (CheckedItem::Struct(c), warnings)
+                })
             }
             HirItem::Enum(e) => {
                 let cell = self.enum_cells.get(&key).expect("resolved in phase 1").clone();
-                let substitution: Vec<(Ident, ResolvedType)> =
-                    e.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
+                let mut substitution: Vec<(Ident, ResolvedType)> =
+                    e.generics.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
+                substitution.push((Ident("Self".to_string()), ResolvedType::Enum { cell: cell.clone(), variant: None }));
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (e.id, e.span));
                 let checked = analyzer.check_enum_body(e, &cell);
-                let (errors, warnings) = analyzer.finish();
+                let (errors, mut warnings) = analyzer.finish();
                 if !errors.is_empty() {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
                 }
-                checked.map(|c| (CheckedItem::Enum(c), warnings))
+                let (spec_functions, spec_warnings) = self.check_pending_spec_methods(module_path, &key);
+                warnings.extend(spec_warnings);
+                checked.map(|mut c| {
+                    c.functions.extend(spec_functions);
+                    (CheckedItem::Enum(c), warnings)
+                })
             }
             HirItem::Union(u) => {
                 let cell = self.union_cells.get(&key).expect("resolved in phase 1").clone();
-                let substitution: Vec<(Ident, ResolvedType)> =
-                    u.generics.iter().cloned().zip(type_args.iter().cloned()).collect();
+                let mut substitution: Vec<(Ident, ResolvedType)> =
+                    u.generics.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
+                substitution.push((Ident("Self".to_string()), ResolvedType::Union(cell.clone())));
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (u.id, u.span));
                 let checked = analyzer.check_union_body(u, &cell);
-                let (errors, warnings) = analyzer.finish();
+                let (errors, mut warnings) = analyzer.finish();
                 if !errors.is_empty() {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
                 }
-                checked.map(|c| (CheckedItem::Union(c), warnings))
+                let (spec_functions, spec_warnings) = self.check_pending_spec_methods(module_path, &key);
+                warnings.extend(spec_warnings);
+                checked.map(|mut c| {
+                    c.functions.extend(spec_functions);
+                    (CheckedItem::Union(c), warnings)
+                })
             }
+            HirItem::Spec(_) => None,
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
         }
+    }
+
+    /// Checks every spec-default-method instantiation queued for `key`
+    /// during phase 1 (see `pending_spec_methods`'s doc comment) -- each
+    /// one gets its own fresh `Analyzer`, seeded with exactly its own
+    /// `Self`/spec-generics substitution (never the implementor's own
+    /// generics substitution -- see `PendingSpecMethod`'s doc comment for
+    /// why that's correct), mirroring how an ordinary generic
+    /// instantiation's body gets its own fresh `Analyzer` too.
+    fn check_pending_spec_methods(
+        &mut self,
+        module_path: &[Ident],
+        key: &ItemKey,
+    ) -> (Vec<CheckedFunctionDef>, Vec<AnalysisWarning>) {
+        let pending = self.pending_spec_methods.get(key).cloned().unwrap_or_default();
+        let mut functions = Vec::with_capacity(pending.len());
+        let mut warnings = Vec::new();
+        for p in pending {
+            let span = p.raw.span;
+            let mut analyzer = Analyzer::new(self, module_path.to_vec(), &p.substitution, (p.id, span));
+            let checked = analyzer.check_pending_spec_method(&p);
+            let (errors, item_warnings) = analyzer.finish();
+            if !errors.is_empty() {
+                self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+            }
+            if let Some(c) = checked {
+                functions.push(c);
+            }
+            warnings.extend(item_warnings);
+        }
+        (functions, warnings)
     }
 
     /// Body-checks a *specific* generic instantiation the moment its own
@@ -1524,6 +1680,12 @@ impl ModuleResolver for Driver {
         self.ensure_item(module_path, item_name, type_args, indirect)
     }
 
+    fn fresh_synthetic_id(&mut self) -> HirId {
+        let id = HirId { module: SYNTHETIC_MODULE, local: self.next_synthetic_id };
+        self.next_synthetic_id += 1;
+        id
+    }
+
     fn generic_function_signature(
         &mut self,
         absolute_path: &[Ident],
@@ -1545,7 +1707,7 @@ impl ModuleResolver for Driver {
             return Ok(None);
         }
         Ok(Some(GenericSignature {
-            generics: f.generics.clone(),
+            generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))
     }
@@ -1597,7 +1759,9 @@ impl ModuleResolver for Driver {
         let candidates = index
             .iter()
             .filter(|&(_, &i)| match &hir.items[i] {
-                HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) => namespace == ItemNamespace::Type,
+                HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) | HirItem::Spec(_) => {
+                    namespace == ItemNamespace::Type
+                }
                 HirItem::FunctionDefinition(_) | HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => {
                     namespace == ItemNamespace::Value
                 }

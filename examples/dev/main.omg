@@ -292,6 +292,106 @@ union Value {
     as_f32: f32;
 }
 
+# --- Specs: interfaces/traits, with both static and dynamic dispatch ---
+
+enum AnimalKind {
+    Dog, Cat, Wolf
+}
+
+# A spec is a function-only contract: `kind`/`make_sound` are *required*
+# (every implementor must provide its own matching method); `is_dog`/
+# `same_kind` are *defaults* (used as-is unless a concrete implementor
+# overrides them -- see `Cat` below, which overrides `is_dog`). `Self`
+# inside a default body means "whatever concrete type is implementing
+# this spec" -- `other: *Self` in `same_kind` becomes `*Dog` for `Dog`'s
+# own instantiation of this default, `*Cat` for `Cat`'s, and so on.
+spec Animal {
+    kind(self) => AnimalKind;
+    make_sound(self) => *u8;
+    is_dog(self) => bool {
+        self.kind().tag == AnimalKind::Dog.tag
+    }
+    same_kind(self, other: *Self) => bool {
+        self.kind().tag == other.kind().tag
+    }
+}
+
+struct Dog : Animal {
+    id: i32;
+    kind(self) => AnimalKind { AnimalKind::Dog }
+    make_sound(self) => *u8 { "woof woof" }
+}
+
+struct Cat : Animal {
+    id: i32;
+    kind(self) => AnimalKind { AnimalKind::Cat }
+    make_sound(self) => *u8 { "meow" }
+    # Overrides the default: a cat is never a dog, no matter what its own
+    # (never actually called through this override) `kind()` says.
+    is_dog(self) => bool { false }
+}
+
+# A spec with no dependencies of its own, purely to demonstrate one:
+# `Mammal` below requires both `Animal` and `Dummy`.
+spec Dummy {
+    dummy(self) => void;
+    something_else(self) => void {
+        self.dummy();
+        puts("something else");
+    }
+}
+
+# `: Animal, Dummy` -- a spec may itself depend on other specs; an
+# implementor of `Mammal` must satisfy all three specs' requirements
+# (`Mammal`'s own, plus `Animal`'s and `Dummy`'s), and `Mammal`'s own
+# defaults may freely call functions from either dependency on `self`.
+# `Mammal`'s own `dummy` also demonstrates a spec satisfying one of its
+# own dependencies' requirements (`Dummy`'s bare `dummy`) with a default
+# of its own -- an implementor of `Mammal` never has to provide `dummy`
+# itself.
+spec Mammal : Animal, Dummy {
+    dummy(self) => void {
+        puts("i satisfied the dummy function");
+    }
+    call_something_else(self) => void {
+        self.something_else();
+    }
+}
+
+# A pure alias: "implements `MySpec`" means "implements both `Dummy` and
+# `Mammal`" -- nothing declared here of its own.
+spec MySpec = Dummy | Mammal;
+
+struct Wolf : Mammal {
+    id: i32;
+    kind(self) => AnimalKind { AnimalKind::Wolf }
+    make_sound(self) => *u8 { "howl" }
+}
+
+# Static dispatch: `T: Animal` is monomorphized once per concrete `T`
+# actually used below -- a real, independently compiled copy per type, not
+# a shared/erased body -- so `animal.make_sound()` resolves directly
+# against whichever concrete type this particular instantiation was built
+# for, exactly like any other generic function/struct in this file.
+make_sound_with_static_dispatch<T: Animal>(animal: *T) => void {
+    puts(animal.make_sound());
+}
+
+# Dynamic dispatch: `animal`'s concrete type is erased -- a runtime fat
+# pointer (a data pointer plus a compiler-generated vtable pointer) picks
+# the right `make_sound` at the call site, inside this one function body,
+# which is compiled exactly once regardless of how many concrete types
+# ever get passed to it.
+make_sound_with_dynamic_dispatch(animal: spec *Animal) => void {
+    puts(animal.make_sound());
+}
+
+# A spec-alias bound: `T: MySpec` requires every function `Dummy`/`Mammal`
+# (and their own dependencies) demand, all at once.
+accepts_myspec<T: MySpec>(value: *T) => void {
+    value.call_something_else();
+}
+
 # Function overloading, resolved by parameter count and type. An unsuffixed
 # literal argument is free to adapt to whichever candidate it fits (see the
 # untyped-constant inference this builds on) as long as that candidate is
@@ -746,6 +846,33 @@ main(argc : i32, argv : [*u8]) => i32 {
         "enum const array 2: %s -> [%s, %s, %s]\n",
         horror.description, horror.top_movies[0], horror.top_movies[1], horror.top_movies[2]
     );
+
+    # Specs: declarations, overrides, dependencies, aliases, and `Self`.
+    dog := Dog { id = 1; };
+    dog2 := Dog { id = 2; };
+    cat := Cat { id = 3; };
+    wolf := Wolf { id = 4; };
+
+    printf("dog.is_dog=%d cat.is_dog=%d\n", dog.is_dog(), cat.is_dog());
+    printf("dog same_kind as dog2: %d\n", dog.same_kind(&dog2));
+    wolf.call_something_else();
+
+    # Static dispatch: two independently monomorphized copies of the same
+    # generic function body, one per concrete type.
+    make_sound_with_static_dispatch(&dog);
+    make_sound_with_static_dispatch(&cat);
+
+    # Dynamic dispatch: one compiled function, called three times with
+    # three different concrete types coerced to `spec *Animal` at each
+    # call site -- the vtable picks the right `make_sound` at runtime.
+    make_sound_with_dynamic_dispatch(&dog);
+    make_sound_with_dynamic_dispatch(&cat);
+    make_sound_with_dynamic_dispatch(&wolf);
+
+    animal_var : spec *Animal = &dog;
+    puts(animal_var.make_sound());
+
+    accepts_myspec(&wolf);
 
     return 69;
 }

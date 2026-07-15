@@ -14,21 +14,22 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
+        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
+        CheckedEnumConstruct,
         CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedItem, CheckedMatch, CheckedMatchArm, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedSlice, CheckedStmt, CheckedStructLiteral, CheckedUnionConstruct, CheckedWhile, CastKind, NumberValue, Storage,
+        CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructLiteral, CheckedUnionConstruct, CheckedWhile, CastKind, NumberValue, Storage,
         ExternFunctionKind, ExternFunctionRef,
     },
     resolved_type::{
-        ConstValue, NumericKind, ResolvedEnumType, ResolvedFunctionType, ResolvedStructType,
+        ConstValue, NumericKind, ResolvedEnumType, ResolvedFunctionType, ResolvedSpecType, ResolvedStructType,
         ResolvedType, ResolvedUnionType,
     },
 };
 use omega_hir::{BinaryOp, HirId};
 use omega_parser::prelude::Ident;
-use std::{collections::HashMap, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
 mod target;
 pub use target::{Arch, Os, Target, TargetParseError};
@@ -116,6 +117,15 @@ pub struct Codegen {
     /// `strings` (never null-terminated, so identical text used once as
     /// `"..."` and once as `b"..."` must not share a `DataId`).
     byte_strings: HashMap<String, DataId>,
+    /// One vtable per `(concrete type, spec)` pair actually coerced to a
+    /// `spec *Spec` value somewhere in this compilation -- built lazily,
+    /// the first time a `CheckedExpr::SpecCoerce` for that exact pair is
+    /// codegen'd (see `vtable_for`), and shared by every later coercion of
+    /// the same pair. Keyed by each side's own `HirId` rather than the
+    /// full `ResolvedType`/`Rc<RefCell<_>>` -- cheap, `Eq`/`Hash`, and
+    /// already the identity both `ResolvedType`'s own manual `PartialEq`/
+    /// `Hash` and `self.functions` use.
+    vtables: HashMap<(HirId, HirId), DataId>,
 
     // Local state (must be cleared per function)
     local_strings: HashMap<String, Value>,
@@ -290,6 +300,15 @@ impl IntoIRType for ResolvedType {
             ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_) => {
                 vec![codegen.pointer_type()]
             }
+            // `Spec` is a reference to a spec *definition*, never a runtime
+            // value of its own -- it never actually reaches codegen (only
+            // `SpecObject`, an actual value type, does); no leaves make
+            // sense for it.
+            ResolvedType::Spec(_) => unreachable!("a spec definition is never itself a value type"),
+            // `spec *Animal`: a fat pointer, exactly like `Slice`'s
+            // `[data_ptr, len]` shape above -- a data pointer plus a
+            // compiler-generated vtable pointer, both plain thin pointers.
+            ResolvedType::SpecObject { .. } => vec![codegen.pointer_type(), codegen.pointer_type()],
         }
     }
 }
@@ -562,6 +581,13 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
         }
         CheckedExpr::Cast(cast) => collect_defer_ids_expr(&cast.base, out),
         CheckedExpr::UnionConstruct(construct) => collect_defer_ids_expr(&construct.value, out),
+        CheckedExpr::SpecCoerce(coerce) => collect_defer_ids_expr(&coerce.base, out),
+        CheckedExpr::DynamicCall(call) => {
+            collect_defer_ids_place(&call.base, out);
+            for arg in &call.args {
+                collect_defer_ids_expr(arg, out);
+            }
+        }
     }
 }
 
@@ -627,6 +653,7 @@ impl Codegen {
             counter: 0,
             strings: HashMap::new(),
             byte_strings: HashMap::new(),
+            vtables: HashMap::new(),
 
             local_strings: HashMap::new(),
             local_byte_strings: HashMap::new(),
@@ -1331,6 +1358,125 @@ impl Codegen {
         }
     }
 
+    /// `concrete`'s own declaring `HirId` -- the identity half of a
+    /// vtable's `(concrete type, spec)` cache key. Every spec-object
+    /// coercion's pointee is always a struct/enum/union (see
+    /// `Analyzer::coerce_to_expected`) -- nothing else ever implements a
+    /// spec.
+    fn concrete_type_id(concrete: &ResolvedType) -> HirId {
+        match concrete {
+            ResolvedType::Struct(cell) => cell.borrow().id,
+            ResolvedType::Enum { cell, .. } => cell.borrow().id,
+            ResolvedType::Union(cell) => cell.borrow().id,
+            other => unreachable!("a spec-object coercion's concrete pointee is always struct/enum/union, found {other}"),
+        }
+    }
+
+    /// `concrete`'s own name, plus every method it already carries (name +
+    /// declaring `HirId`, including a spec-default instantiation -- by the
+    /// time codegen runs, one is indistinguishable from an ordinary
+    /// override; see `Analyzer::resolve_implements_clause`) -- everything
+    /// `vtable_for` needs to resolve each of the spec's flattened slot
+    /// names to a concrete `FuncId`.
+    fn concrete_type_name_and_functions(concrete: &ResolvedType) -> (Ident, Vec<(Ident, HirId)>) {
+        let functions = |fs: &[(Ident, omega_analyzer::resolved_type::ResolvedMethod)]| {
+            fs.iter().map(|(name, m)| (name.clone(), m.decl_id)).collect()
+        };
+        match concrete {
+            ResolvedType::Struct(cell) => {
+                let cell = cell.borrow();
+                (cell.name.clone(), functions(&cell.functions))
+            }
+            ResolvedType::Enum { cell, .. } => {
+                let cell = cell.borrow();
+                (cell.name.clone(), functions(&cell.functions))
+            }
+            ResolvedType::Union(cell) => {
+                let cell = cell.borrow();
+                (cell.name.clone(), functions(&cell.functions))
+            }
+            other => unreachable!("a spec-object coercion's concrete pointee is always struct/enum/union, found {other}"),
+        }
+    }
+
+    /// `spec`'s full, ordered, deduplicated slot-name list -- dependencies
+    /// (in declaration order) before `spec`'s own functions, first-seen
+    /// name wins -- structurally identical to (and must stay in lockstep
+    /// with) `Analyzer::flatten_spec`'s own walk, which is what decided
+    /// `CheckedDynamicCall::slot_index` for every call through this same
+    /// spec. Unlike `flatten_spec`, this never needs to resolve a raw
+    /// signature or detect a conflict: by the time codegen runs, the
+    /// program already passed analysis, so every name collision here is
+    /// already known-identical.
+    fn flatten_spec_slot_names(spec: &Rc<RefCell<ResolvedSpecType>>) -> Vec<Ident> {
+        let mut out = Vec::new();
+        Self::flatten_spec_slot_names_into(spec, &mut out);
+        out
+    }
+
+    fn flatten_spec_slot_names_into(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut Vec<Ident>) {
+        let spec = spec.borrow();
+        for (dependency, _) in &spec.dependencies {
+            Self::flatten_spec_slot_names_into(dependency, out);
+        }
+        for (name, _) in &spec.functions {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+    }
+
+    /// Lazily builds (and memoizes) the vtable data object for `(concrete,
+    /// spec)` -- a compiler-generated, module-level array of function
+    /// pointers, one per slot in `flatten_spec_slot_names`'s order, each
+    /// pointing at `concrete`'s own already-declared method for that name
+    /// (mirrors `build_const_slice_data`'s static-data-with-relocations
+    /// shape exactly, just relocating to function symbols via
+    /// `declare_func_in_data`/`write_function_addr` instead of
+    /// `declare_data_in_data`/`write_data_addr`). `concrete`'s methods are
+    /// guaranteed already `declare_item`'d (never yet *defined* -- codegen
+    /// visits every item's declarations before any body, see
+    /// `declare_item`'s own doc comment) by the time any expression
+    /// (necessarily inside some function body) could coerce it, so
+    /// `self.functions` always already has every `FuncId` this needs.
+    fn vtable_for(&mut self, concrete: &ResolvedType, spec: &Rc<RefCell<ResolvedSpecType>>) -> DataId {
+        let key = (Self::concrete_type_id(concrete), spec.borrow().id);
+        if let Some(&id) = self.vtables.get(&key) {
+            return id;
+        }
+
+        let slot_names = Self::flatten_spec_slot_names(spec);
+        let (concrete_name, concrete_functions) = Self::concrete_type_name_and_functions(concrete);
+
+        let ptr_bytes = self.pointer_type().bytes();
+        let bytes = vec![0u8; slot_names.len() * ptr_bytes as usize];
+        let mut desc = DataDescription::new();
+        for (i, name) in slot_names.iter().enumerate() {
+            let decl_id = concrete_functions
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, id)| *id)
+                .unwrap_or_else(|| {
+                    panic!("checked module guarantees '{concrete_name}' provides '{name}' (required by spec '{}')", spec.borrow().name.as_ref())
+                });
+            let func_id = *self.functions.get(&decl_id).expect("every method is declared before any vtable needs it");
+            let fref = self.module.declare_func_in_data(func_id, &mut desc);
+            desc.write_function_addr(i as u32 * ptr_bytes, fref);
+        }
+        desc.define(bytes.into_boxed_slice());
+
+        let symbol = Self::demangle(&format!(
+            "{}::{}$$vtable",
+            concrete_name.as_ref(),
+            spec.borrow().name.as_ref()
+        ));
+        let data_id = self.module.declare_data(&symbol, Linkage::Local, false, false).unwrap();
+        self.module.define_data(data_id, &desc).unwrap();
+
+        self.vtables.insert(key, data_id);
+        data_id
+    }
+
     /// C's variadic calling convention requires the caller to promote each
     /// *variadic* argument (never a fixed/named one, whose width is fixed by
     /// the callee's prototype) before passing it: any integer narrower than
@@ -1713,6 +1859,79 @@ impl Codegen {
                     return vec![];
                 }
 
+                match sret_slot {
+                    Some(slot) => {
+                        let storage = PlaceStorage::Slot { slot, offset: 0 };
+                        self.load_scalars(builder, &storage, &fn_type.return_type)
+                    }
+                    None => builder.inst_results(call).to_vec(),
+                }
+            }
+
+            // `*Concrete` -> `spec *Spec`: builds the fat pointer's two
+            // leaves -- `base`'s own value unchanged (the data pointer)
+            // plus the address of a lazily-built, memoized vtable (see
+            // `vtable_for`). `node.r#type` is always `SpecObject` here
+            // (`Analyzer::coerce_to_expected` guarantees it); `base`'s own
+            // type is always a plain `Pointer` to the concrete struct/enum/
+            // union that vtable is built for.
+            CheckedExpr::SpecCoerce(CheckedSpecCoerce { base }) => {
+                let ResolvedType::SpecObject { spec, .. } = &node.r#type else {
+                    unreachable!("checked module guarantees a SpecCoerce's own type is SpecObject");
+                };
+                let spec = spec.clone();
+                let ResolvedType::Pointer { pointee, .. } = &base.r#type else {
+                    unreachable!("checked module guarantees a SpecCoerce's base is a plain pointer");
+                };
+                let concrete = (**pointee).clone();
+                let data_ptr = self.process_expr(builder, *base)[0];
+                let vtable_id = self.vtable_for(&concrete, &spec);
+                let global_value = self.module.declare_data_in_func(vtable_id, builder.func);
+                let vtable_ptr = builder.ins().global_value(self.pointer_type(), global_value);
+                vec![data_ptr, vtable_ptr]
+            }
+
+            // `base.method(args)` through a `spec *Spec` value -- loads the
+            // function pointer out of `base`'s own vtable leaf at
+            // `slot_index * pointer_width` and calls through it, reusing
+            // the exact same `call_indirect`/`make_function_sig` path
+            // every ordinary call already goes through; only how the
+            // callee address itself is obtained differs (a vtable load
+            // here, `func_addr`/`get_place_value` for an ordinary call).
+            // `self` is `base`'s own data-pointer leaf, prepended exactly
+            // like an ordinary method call's own implicit self.
+            CheckedExpr::DynamicCall(CheckedDynamicCall { base, slot_index, fn_type, args }) => {
+                let base_leaves = self.get_place_value(&base, builder);
+                let [data_ptr, vtable_ptr] = base_leaves.as_slice() else {
+                    panic!("checked module guarantees a SpecObject place has exactly 2 leaves");
+                };
+                let (data_ptr, vtable_ptr) = (*data_ptr, *vtable_ptr);
+
+                let ptr_bytes = self.pointer_type().bytes();
+                let slot_offset = slot_index as i32 * ptr_bytes as i32;
+                let fnaddr = builder.ins().load(self.pointer_type(), MemFlags::new(), vtable_ptr, slot_offset);
+
+                let mut ir_args = vec![data_ptr];
+                for arg in args {
+                    ir_args.extend(self.process_expr(builder, arg));
+                }
+
+                let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
+                    let size = total_bytes((*fn_type.return_type).clone(), self);
+                    let slot = builder
+                        .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                    let pointer = builder.ins().stack_addr(self.pointer_type(), slot, 0);
+                    ir_args.insert(0, pointer);
+                    slot
+                });
+
+                let sig = self.make_function_sig(fn_type.clone());
+                let sigref = builder.import_signature(sig);
+                let call = builder.ins().call_indirect(sigref, fnaddr, &ir_args);
+
+                if *fn_type.return_type == ResolvedType::Void {
+                    return vec![];
+                }
                 match sret_slot {
                     Some(slot) => {
                         let storage = PlaceStorage::Slot { slot, offset: 0 };

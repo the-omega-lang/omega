@@ -104,6 +104,7 @@ fn starts_item(kind: &TokenKind) -> bool {
             | TokenKind::Import
             | TokenKind::Struct
             | TokenKind::Union
+            | TokenKind::Spec
             | TokenKind::Macro
             | TokenKind::Ident(_)
     )
@@ -117,6 +118,7 @@ fn starts_statement(kind: &TokenKind) -> bool {
             | TokenKind::For
             | TokenKind::Struct
             | TokenKind::Union
+            | TokenKind::Spec
             | TokenKind::Return
             | TokenKind::Break
             | TokenKind::Continue

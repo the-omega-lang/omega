@@ -21,7 +21,19 @@ pub enum HirItem {
     Struct(HirStructDef),
     Enum(HirEnumDef),
     Union(HirUnionDef),
+    Spec(HirSpecDef),
     Import(HirImport),
+}
+
+/// One `<...>` generic parameter -- a name, plus an optional single spec
+/// bound, kept as a raw, unresolved `Type` (resolved per-instantiation, the
+/// same way every other type reference in HIR is). See
+/// `omega_parser::ast::generics::GenericParam`'s doc comment for why only
+/// one bound is ever carried.
+#[derive(Debug, Clone)]
+pub struct HirGenericParam {
+    pub ident: Ident,
+    pub bound: Option<Type>,
 }
 
 /// `import a::b::c;` -- carried raw and unresolved, same philosophy as every
@@ -81,7 +93,7 @@ pub struct HirFunctionDef {
     /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
     /// `omega_parser::ast::statement::function_definition::
     /// FunctionDefinitionStmt::generics`'s doc comment.
-    pub generics: Vec<Ident>,
+    pub generics: Vec<HirGenericParam>,
     pub is_member_function: bool,
     /// For member functions, the synthetic `self: *StructName` parameter is
     /// already inserted here by lowering -- downstream consumers never need
@@ -116,7 +128,10 @@ pub struct HirStructDef {
     /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
     /// `omega_parser::ast::statement::r#struct::StructStmt::generics`'s
     /// doc comment.
-    pub generics: Vec<Ident>,
+    pub generics: Vec<HirGenericParam>,
+    /// The specs this struct implements -- see `HirSpecDef`'s doc comment
+    /// and `Analyzer::signature_of_struct`'s implements-clause resolution.
+    pub implements: Vec<Type>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
 }
@@ -130,7 +145,9 @@ pub struct HirUnionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub generics: Vec<Ident>,
+    pub generics: Vec<HirGenericParam>,
+    /// See `HirStructDef::implements`'s doc comment.
+    pub implements: Vec<Type>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
 }
@@ -146,7 +163,9 @@ pub struct HirEnumDef {
     pub span: Span,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum.
-    pub generics: Vec<Ident>,
+    pub generics: Vec<HirGenericParam>,
+    /// See `HirStructDef::implements`'s doc comment.
+    pub implements: Vec<Type>,
     /// The raw header entries, in source order -- a first entry named `tag`
     /// is the explicit tag; the rest are the shared header fields.
     pub header: Vec<HirParam>,
@@ -174,6 +193,41 @@ pub struct HirEnumVariant {
     pub args: Vec<HirExprNode>,
     /// The variant's own body fields -- empty for a body-less variant.
     pub fields: Vec<HirParam>,
+}
+
+/// A `spec` -- see `omega_parser::ast::statement::spec::SpecStmt`'s doc
+/// comment for the full language shape (declaration vs. alias forms; both
+/// lower to this one shape, an alias just has `functions: vec![]`).
+/// `dependencies` and each `HirSpecFunction`'s `params`/`return_type` are
+/// kept raw/unresolved, same philosophy as everywhere else in HIR -- a
+/// `Self`-referencing type can't be resolved until a concrete implementor
+/// is known (see `omega_analyzer::resolved_type::ResolvedSpecType`).
+#[derive(Debug, Clone)]
+pub struct HirSpecDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub generics: Vec<HirGenericParam>,
+    pub dependencies: Vec<Type>,
+    pub functions: Vec<HirSpecFunction>,
+}
+
+/// One function member of a spec. `body: None` for a required function --
+/// every implementor must provide a matching method, own or default;
+/// `body: Some` for a default, used as-is unless a concrete implementor
+/// overrides it with its own same-named, same-signature method.
+#[derive(Debug, Clone)]
+pub struct HirSpecFunction {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub is_member_function: bool,
+    /// For a member function, the synthetic `self: *Self`/`*mut Self`
+    /// parameter is already inserted here by lowering, exactly like an
+    /// ordinary method's -- see `lower_function_def`'s spec-aware case.
+    pub params: Vec<HirParam>,
+    pub return_type: Type,
+    pub body: Option<HirBlock>,
 }
 
 #[derive(Debug, Clone)]

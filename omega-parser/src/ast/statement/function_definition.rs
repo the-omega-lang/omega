@@ -1,4 +1,5 @@
 use crate::ast::expression::codeblock::CodeblockExpr;
+use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::{FunctionType, Type};
 use crate::ast::statement::declaration::DeclarationStmt;
@@ -10,7 +11,9 @@ pub struct FunctionDefinitionStmt {
     /// ordinary, non-generic function. Unlike a struct's, these are never
     /// referenced with explicit arguments at a call site: they're deduced
     /// from the call's own argument types (see `Analyzer::resolve_generic_call`).
-    pub generics: Vec<Ident>,
+    /// A bound generic (`T: Animal`) additionally requires the deduced
+    /// argument type to nominally implement that spec.
+    pub generics: Vec<GenericParam>,
     pub is_member_function: bool,
     /// Whether `self` was written `mut self` -- meaningless when
     /// `is_member_function` is `false`. Determines whether the synthesized

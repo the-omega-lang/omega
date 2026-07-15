@@ -177,6 +177,10 @@ fn expand_item_list(
                 item: Item::Union(expand_union_def(u, defs, budget)?),
                 span: node.span,
             }),
+            Item::Spec(sp) => result.push(ItemNode {
+                item: Item::Spec(expand_spec_def(sp, defs, budget)?),
+                span: node.span,
+            }),
             other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
                 result.push(ItemNode { item: other, span: node.span });
             }
@@ -400,6 +404,22 @@ fn expand_enum_def(
         .map(|f| expand_function_def(f, defs, budget))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(EnumStmt { variants, functions, ..e })
+}
+
+fn expand_spec_def(
+    sp: SpecStmt,
+    defs: &HashMap<Ident, MacroDefinitionStmt>,
+    budget: &mut u32,
+) -> Result<SpecStmt, MacroError> {
+    let functions = sp
+        .functions
+        .into_iter()
+        .map(|f| {
+            let body = f.body.map(|b| expand_codeblock(b, defs, budget)).transpose()?;
+            Ok(SpecFunctionStmt { body, ..f })
+        })
+        .collect::<Result<Vec<_>, MacroError>>()?;
+    Ok(SpecStmt { functions, ..sp })
 }
 
 fn expand_codeblock(

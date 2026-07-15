@@ -1,21 +1,22 @@
 use crate::{
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedEnumConstruct,
+        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
+        CheckedEnumConstruct,
         CheckedEnumDef, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedMatch, CheckedMatchArm,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedSlice, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
+        CheckedProjection, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
         CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile, CastKind, NumberValue,
         Storage,
     },
     context::{Context, VarBinding},
-    error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind},
+    error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError},
     generics::unify_generic_type,
     resolved_type::{
-        CastClass, ConstValue, NumericKind, ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType,
-        ResolvedMethod, ResolvedStructType, ResolvedType, ResolvedUnionType,
+        CastClass, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedEnumType, ResolvedEnumVariant,
+        ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem},
     similarity::best_match,
@@ -24,7 +25,7 @@ use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
     HirExternDeclaration,
     HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
-    HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
+    HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, Span, Type};
@@ -55,6 +56,25 @@ struct ResolvedCallee {
     checked_args: Option<Vec<CheckedExprNode>>,
 }
 
+/// `resolve_callee`'s real result: either an ordinary callee (the ordinary
+/// case, handled by the `FunctionCall` arm's own existing argument loop)
+/// or a fully-resolved dynamic-dispatch call (`base.method(...)` where
+/// `base`'s type is a `spec *Spec` value) -- built entirely inside
+/// `resolve_callee` itself, since a dynamic call's shape has no ordinary
+/// "callee expression" to hand back at all (see `CheckedExpr::DynamicCall`).
+/// Folding this into `resolve_callee` itself, rather than a separate
+/// sibling interceptor (like `resolve_overloaded_call`'s), is deliberate:
+/// every interceptor's `None`-means-"not applicable" contract requires a
+/// cheap, side-effect-free peek, but telling a dynamic call apart from an
+/// ordinary one needs the base place's *resolved type* -- exactly what
+/// `resolve_callee` already computes, once, via `analyze_place`. A second,
+/// separate `analyze_place` call on the same base would risk reporting a
+/// broken base's own errors twice.
+enum CalleeResolution {
+    Ordinary(ResolvedCallee),
+    Dynamic(Option<CheckedExprNode>),
+}
+
 /// What a `Name { ... }` literal's path resolved to -- see
 /// `Analyzer::resolve_literal_target`.
 enum LiteralTarget {
@@ -63,6 +83,36 @@ enum LiteralTarget {
     EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
     /// Always wraps `ResolvedType::Union`.
     Union(ResolvedType),
+}
+
+/// One spec function requirement, flattened out of a (possibly generic,
+/// possibly multiply-inherited) spec reference and resolved for one
+/// specific concrete implementor -- see `Analyzer::flatten_spec`.
+struct FlattenedSpecFn {
+    name: Ident,
+    fn_type: ResolvedFunctionType,
+    raw: RawSpecFunctionSig,
+    spec_name: Ident,
+    /// `Self` + the owning spec's own generics, bound to concrete types --
+    /// exactly what resolved `fn_type` above, kept around so a queued
+    /// default instantiation's *body* can be checked later (phase 2, see
+    /// `PendingSpecMethod`) with the identical substitution its signature
+    /// already used.
+    substitution: Vec<(Ident, ResolvedType)>,
+}
+
+/// A spec-default method an implementor needs (no override, spec supplied
+/// a body) -- signature already resolved and merged into the implementor's
+/// `functions` list in phase 1 (`Analyzer::resolve_implements_clause`);
+/// this is only what phase 2 (`check_struct_body`/`_enum`/`_union`) still
+/// needs to check the body itself with the same `Self`/generics binding --
+/// see `Analyzer::check_pending_spec_method`.
+#[derive(Clone)]
+pub struct PendingSpecMethod {
+    pub id: HirId,
+    pub fn_type: ResolvedFunctionType,
+    pub raw: RawSpecFunctionSig,
+    pub substitution: Vec<(Ident, ResolvedType)>,
 }
 
 pub struct Analyzer<'r> {
@@ -133,6 +183,7 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::Struct(s) => Some(s.name.clone()),
         HirItem::Enum(e) => Some(e.name.clone()),
         HirItem::Union(u) => Some(u.name.clone()),
+        HirItem::Spec(sp) => Some(sp.name.clone()),
         HirItem::Import(_) => None,
     }
 }
@@ -147,6 +198,7 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::Struct(s) => (s.id, s.span),
         HirItem::Enum(e) => (e.id, e.span),
         HirItem::Union(u) => (u.id, u.span),
+        HirItem::Spec(sp) => (sp.id, sp.span),
         HirItem::Import(i) => (i.id, i.span),
     }
 }
@@ -295,6 +347,405 @@ impl<'r> Analyzer<'r> {
                     .push(AnalysisError::new(id, span, AnalysisErrorKind::UnresolvedType(err)));
                 None
             }
+        }
+    }
+
+    /// Resolves a raw `Type` that's expected to name a spec (an implements
+    /// clause entry, a spec dependency, a generic bound) to its cell plus
+    /// its own resolved generic arguments (e.g. `Iterator<i32>`'s `[i32]`)
+    /// -- `None` on failure (already reported, either as an ordinary
+    /// `UnresolvedType` or, if it resolved to something other than a spec,
+    /// `TypeResolutionError::NotASpec`).
+    fn resolve_spec_reference(
+        &mut self,
+        id: HirId,
+        span: Span,
+        ty: &Type,
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
+        let raw_args: Vec<Type> = match ty {
+            Type::Generic(_, args) => args.clone(),
+            _ => vec![],
+        };
+        let mut resolved_args = Vec::with_capacity(raw_args.len());
+        let mut ok = true;
+        for arg in &raw_args {
+            match self.resolve_type_or_error(id, span, arg, true) {
+                Some(r) => resolved_args.push(r),
+                None => ok = false,
+            }
+        }
+        let name = match ty {
+            Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
+            _ => Ident("<spec>".to_string()),
+        };
+        let resolved = self.resolve_type_or_error(id, span, ty, true)?;
+        if !ok {
+            return None;
+        }
+        match resolved {
+            ResolvedType::Spec(spec) => Some((spec, resolved_args)),
+            _ => {
+                self.errors.push(AnalysisError::new(
+                    id,
+                    span,
+                    AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(name)),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Builds a spec's own raw (unresolved) function signature list --
+    /// `RawSpecFunctionSig`'s doc comment explains why no type resolution
+    /// happens here at all (deferred to `flatten_spec`, once a concrete
+    /// implementor's `Self` is known). Checks only for a duplicate name
+    /// among the spec's own functions -- a genuine signature conflict
+    /// between *dependencies* is a `flatten_spec`-time concern instead
+    /// (only detectable once both sides are resolved with a concrete
+    /// `Self`).
+    pub fn resolve_spec_functions(&mut self, sp: &HirSpecDef) -> Vec<(Ident, RawSpecFunctionSig)> {
+        let mut functions = Vec::new();
+        let mut seen: HashSet<Ident> = HashSet::new();
+        for f in &sp.functions {
+            if !seen.insert(f.name.clone()) {
+                self.errors.push(AnalysisError::new(
+                    f.id,
+                    f.span,
+                    AnalysisErrorKind::Redeclaration { name: f.name.clone(), previous: None },
+                ));
+                continue;
+            }
+            functions.push((
+                f.name.clone(),
+                RawSpecFunctionSig {
+                    decl_id: f.id,
+                    name: f.name.clone(),
+                    span: f.span,
+                    is_member_function: f.is_member_function,
+                    params: f.params.clone(),
+                    return_type: f.return_type.clone(),
+                    default_body: f.body.clone(),
+                },
+            ));
+        }
+        functions
+    }
+
+    /// Resolves a spec's own declared dependency list (`spec Mammal :
+    /// Animal, Dummy`) to their cells + resolved type args -- see
+    /// `ResolvedSpecType::dependencies`'s doc comment for why these are
+    /// eagerly, fully resolved (unlike function signatures): a dependency
+    /// can't forward the *depending* spec's own still-abstract generics
+    /// into its own type arguments in this design (a documented scope
+    /// boundary, not an oversight) -- `spec Foo<T> : Bar<i32>` resolves
+    /// fine, `spec Foo<T> : Bar<T>` reports `T` as an unrecognized type,
+    /// same as if it were written outside any generic context at all.
+    pub fn resolve_spec_dependencies(
+        &mut self,
+        sp: &HirSpecDef,
+    ) -> Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
+        sp.dependencies.iter().filter_map(|dep| self.resolve_spec_reference(sp.id, sp.span, dep)).collect()
+    }
+
+    /// Resolves one spec function's raw signature against `substitution`
+    /// (`Self` plus the spec's own generics, bound to concrete types) --
+    /// pushed as a temporary scope so this never disturbs whatever's
+    /// already bound in the calling implementor's own `Context` (its own
+    /// generics, already seeded when this `Analyzer` was constructed).
+    fn resolve_raw_spec_fn_type(
+        &mut self,
+        id: HirId,
+        span: Span,
+        raw: &RawSpecFunctionSig,
+        substitution: &[(Ident, ResolvedType)],
+    ) -> Option<ResolvedFunctionType> {
+        self.context.enter_scope();
+        for (name, ty) in substitution {
+            self.context.current_scope().defined_types.insert(name.clone(), ty.clone());
+        }
+        let mut params = Vec::with_capacity(raw.params.len());
+        let mut ok = true;
+        for p in &raw.params {
+            match self.resolve_type_or_error(id, span, &p.r#type, true) {
+                Some(r) => params.push((p.ident.clone(), r)),
+                None => ok = false,
+            }
+        }
+        let return_type = self.resolve_type_or_error(id, span, &raw.return_type, true);
+        self.context.leave_scope();
+        if !ok {
+            return None;
+        }
+        Some(ResolvedFunctionType {
+            params,
+            return_type: Box::new(return_type?),
+            is_variadic: false,
+            is_member_function: raw.is_member_function,
+        })
+    }
+
+    /// The full, ordered, deduplicated set of functions `spec<type_args>`
+    /// requires from an implementor of type `self_type` -- walks
+    /// `dependencies` depth-first (each dependency's own requirements
+    /// appear before this spec's own, matching read-order intuition),
+    /// substituting `Self -> self_type` and this spec's own generics ->
+    /// `type_args` into every raw signature along the way. Two entries
+    /// sharing a name must resolve to *structurally identical*
+    /// `ResolvedFunctionType`s (point 5 of the user's design: "the type
+    /// will only implement it once... the compiler may assume the same
+    /// function for both") -- silently deduplicated when they match,
+    /// `ConflictingSpecFunctions` when they don't. This one ordered list is
+    /// also dynamic dispatch's vtable slot order (`Codegen`'s vtable
+    /// builder walks it identically) -- see [[omega-enums-design]]/the
+    /// spec design plan for why one flattening serves both purposes.
+    fn flatten_spec(
+        &mut self,
+        id: HirId,
+        span: Span,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        type_args: &[ResolvedType],
+        self_type: &ResolvedType,
+    ) -> Option<Vec<FlattenedSpecFn>> {
+        let mut out = Vec::new();
+        self.flatten_spec_into(id, span, spec, type_args, self_type, &mut out)?;
+        Some(out)
+    }
+
+    fn flatten_spec_into(
+        &mut self,
+        id: HirId,
+        span: Span,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        type_args: &[ResolvedType],
+        self_type: &ResolvedType,
+        out: &mut Vec<FlattenedSpecFn>,
+    ) -> Option<()> {
+        let (spec_name, generics, dependencies, functions) = {
+            let s = spec.borrow();
+            (s.name.clone(), s.generics.clone(), s.dependencies.clone(), s.functions.clone())
+        };
+        for (dep_spec, dep_args) in &dependencies {
+            self.flatten_spec_into(id, span, dep_spec, dep_args, self_type, out)?;
+        }
+
+        let self_ident = Ident("Self".to_string());
+        let substitution: Vec<(Ident, ResolvedType)> = std::iter::once((self_ident, self_type.clone()))
+            .chain(generics.iter().cloned().zip(type_args.iter().cloned()))
+            .collect();
+
+        for (name, raw) in &functions {
+            let fn_type = self.resolve_raw_spec_fn_type(id, span, raw, &substitution)?;
+            if let Some(existing_index) = out.iter().position(|f| &f.name == name) {
+                let existing = &out[existing_index];
+                if existing.fn_type != fn_type {
+                    self.errors.push(AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::ConflictingSpecFunctions {
+                            name: name.clone(),
+                            first_spec: existing.spec_name.clone(),
+                            second_spec: spec_name.clone(),
+                        },
+                    ));
+                    return None;
+                }
+                // Same signature, already present -- ordinarily a silent
+                // dedup (point 5 of the language design: one implementation
+                // serves every spec that required it). But if the earlier
+                // occurrence came from a bare *requirement* (no default
+                // body -- typically a dependency, like `Dummy`'s own
+                // `dummy`) and this one provides an actual default (a
+                // dependent spec satisfying its own dependency, like
+                // `Mammal`'s `dummy`), this later, more-specific default
+                // must win -- an implementor should never be asked for a
+                // function its own declared spec already gave it a body
+                // for, just because that spec happened to flatten a bare
+                // requirement first.
+                if existing.raw.default_body.is_none() && raw.default_body.is_some() {
+                    out[existing_index] = FlattenedSpecFn {
+                        name: name.clone(),
+                        fn_type,
+                        raw: raw.clone(),
+                        spec_name: spec_name.clone(),
+                        substitution: substitution.clone(),
+                    };
+                }
+                continue;
+            }
+            out.push(FlattenedSpecFn {
+                name: name.clone(),
+                fn_type,
+                raw: raw.clone(),
+                spec_name: spec_name.clone(),
+                substitution: substitution.clone(),
+            });
+        }
+        Some(())
+    }
+
+    /// Resolves a struct/enum/union's `implements` clause: flattens every
+    /// declared spec (dependencies included, cross-entry dedup/conflict
+    /// handled the same way `flatten_spec_into` already handles it within
+    /// one spec -- everything accumulates into one shared list), then for
+    /// each required function not already provided by `own_functions`,
+    /// either queues a default-method instantiation (spec supplied a body)
+    /// or reports `MissingSpecFunction`. An own method whose *name*
+    /// matches but whose signature doesn't is treated the same as missing
+    /// -- it doesn't actually satisfy the contract. Returns the additional
+    /// `(name, ResolvedMethod)` entries to merge into the implementor's own
+    /// `functions` list (already carrying freshly minted `decl_id`s) plus
+    /// every queued default body still needing to be checked in phase 2.
+    fn resolve_implements_clause(
+        &mut self,
+        id: HirId,
+        span: Span,
+        implementor_name: &Ident,
+        implements: &[Type],
+        own_functions: &[(Ident, ResolvedMethod)],
+        self_type: &ResolvedType,
+    ) -> (Vec<(Ident, ResolvedMethod)>, Vec<PendingSpecMethod>) {
+        let mut flattened: Vec<FlattenedSpecFn> = Vec::new();
+        for spec_type in implements {
+            let Some((spec, type_args)) = self.resolve_spec_reference(id, span, spec_type) else { continue };
+            // A conflict within this flattening is already reported inline
+            // (`ConflictingSpecFunctions`) -- nothing further to do here on
+            // `None` besides skipping this entry's remaining contribution.
+            let _ = self.flatten_spec_into(id, span, &spec, &type_args, self_type, &mut flattened);
+        }
+
+        let mut extra_methods = Vec::new();
+        let mut pending = Vec::new();
+        for req in flattened {
+            if let Some((_, own)) = own_functions.iter().find(|(name, _)| *name == req.name) {
+                if own.fn_type != req.fn_type {
+                    self.errors.push(AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::MissingSpecFunction {
+                            implementor: implementor_name.clone(),
+                            spec: req.spec_name.clone(),
+                            function: req.name.clone(),
+                        },
+                    ));
+                }
+                continue;
+            }
+            match &req.raw.default_body {
+                Some(_) => {
+                    let minted_id = self.resolver.fresh_synthetic_id();
+                    extra_methods
+                        .push((req.name.clone(), ResolvedMethod { decl_id: minted_id, fn_type: req.fn_type.clone() }));
+                    pending.push(PendingSpecMethod {
+                        id: minted_id,
+                        fn_type: req.fn_type,
+                        raw: req.raw,
+                        substitution: req.substitution,
+                    });
+                }
+                None => {
+                    self.errors.push(AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::MissingSpecFunction {
+                            implementor: implementor_name.clone(),
+                            spec: req.spec_name.clone(),
+                            function: req.name.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        (extra_methods, pending)
+    }
+
+    /// Whether `ty` (an already-concrete, resolved type) implements
+    /// `spec<spec_type_args>` -- flattens the spec's requirements with
+    /// `Self = ty` and checks each one is actually present, by name and
+    /// exact signature, in `ty`'s own method list (`find_methods`). By the
+    /// time this ever runs, any type that genuinely implements a spec
+    /// already has every required function merged into its own list (own
+    /// override or spec-default instantiation -- see
+    /// `resolve_implements_clause`); this never re-derives that, only
+    /// confirms it. In practice this only ever fires for a primitive type
+    /// (which has no method list at all -- spec implementation is scoped
+    /// to struct/enum/union) or a genuine caller mistake (a spec-bound
+    /// generic instantiated with a type that never declared `: Spec` at
+    /// all). Returns the missing function names on failure.
+    fn type_implements_spec(
+        &mut self,
+        id: HirId,
+        span: Span,
+        ty: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_type_args: &[ResolvedType],
+    ) -> Result<(), Vec<Ident>> {
+        let Some(required) = self.flatten_spec(id, span, spec, spec_type_args, ty) else {
+            return Err(vec![]);
+        };
+        let missing: Vec<Ident> = required
+            .iter()
+            .filter(|req| !self.find_methods(ty, &req.name).iter().any(|m| m.fn_type == req.fn_type))
+            .map(|req| req.name.clone())
+            .collect();
+        if missing.is_empty() { Ok(()) } else { Err(missing) }
+    }
+
+    /// Checks a single generic bound (`T: Animal`) against the concrete
+    /// type `T` was instantiated with -- the public entry point
+    /// `omega_driver::Driver::ensure_item`'s bound-checking uses (spec
+    /// resolution/flattening themselves stay private implementation
+    /// details). `None` when `bound` itself failed to resolve at all
+    /// (already recorded as an ordinary `AnalysisError`, folded into
+    /// `self.errors`/`finish()` as usual) -- distinguished from
+    /// `Some(Err(..))` (`bound` resolved fine, `concrete` just doesn't
+    /// satisfy it) so the caller can tell "my own error already reported"
+    /// apart from a real, reportable `SpecNotImplemented`.
+    pub fn check_generic_bound(
+        &mut self,
+        id: HirId,
+        span: Span,
+        bound: &Type,
+        concrete: &ResolvedType,
+    ) -> Option<Result<(), (Ident, Vec<Ident>)>> {
+        let (spec, spec_args) = self.resolve_spec_reference(id, span, bound)?;
+        let spec_name = spec.borrow().name.clone();
+        match self.type_implements_spec(id, span, concrete, &spec, &spec_args) {
+            Ok(()) => Some(Ok(())),
+            Err(missing) => Some(Err((spec_name, missing))),
+        }
+    }
+
+    /// Wraps `value` in `CheckedExpr::SpecCoerce` when `expected` is a
+    /// `SpecObject` and `value`'s own type is a plain pointer to a struct/
+    /// enum/union that implements the target spec -- see
+    /// `CheckedExpr::SpecCoerce`'s doc comment for why this needs an
+    /// explicit node rather than being folded into `ResolvedType::accepts`
+    /// itself. A no-op (returns `value` unchanged) whenever no such
+    /// coercion applies -- including when `expected` already structurally
+    /// `accepts` `value`, or when the spec isn't actually implemented (in
+    /// which case the caller's own ordinary `accepts` check reports the
+    /// mismatch exactly as before, just without this specific "why" -- an
+    /// accepted simplification, not every coercion site needs its own
+    /// bespoke diagnostic).
+    fn coerce_to_expected(&mut self, expected: Option<&ResolvedType>, value: CheckedExprNode) -> CheckedExprNode {
+        let Some(target @ ResolvedType::SpecObject { spec, type_args, mutable: expected_mutable }) = expected else {
+            return value;
+        };
+        if target.accepts(&value.r#type) {
+            return value;
+        }
+        let ResolvedType::Pointer { pointee, mutable: value_mutable } = &value.r#type else { return value };
+        if !*value_mutable && *expected_mutable {
+            return value;
+        }
+        if self.type_implements_spec(value.id, value.span, pointee, spec, type_args).is_err() {
+            return value;
+        }
+        CheckedExprNode {
+            id: value.id,
+            span: value.span,
+            r#type: target.clone(),
+            kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(value) }),
         }
     }
 
@@ -1636,7 +2087,7 @@ impl<'r> Analyzer<'r> {
         Some((CheckedPlace { root, projections }, current_type, mutable))
     }
 
-    fn resolve_callee(&mut self, callee: &HirExprNode, args: &[HirExprNode]) -> Option<ResolvedCallee> {
+    fn resolve_callee(&mut self, callee: &HirExprNode, args: &[HirExprNode]) -> Option<CalleeResolution> {
         if let HirExpr::Place(place) = &callee.expr
             && let Some(HirProjection::FieldAccess(field)) = place.projections.last()
         {
@@ -1645,6 +2096,19 @@ impl<'r> Analyzer<'r> {
                 projections: place.projections[..place.projections.len() - 1].to_vec(),
             };
             let (checked_base, base_type, base_mutable) = self.analyze_place(callee.id, callee.span, &base_place, None)?;
+
+            // Dynamic dispatch: `base`'s type is a `spec *Spec` value, not a
+            // concrete struct/enum/union -- `method` is looked up in the
+            // spec's own flattened function list instead of any one
+            // concrete type's `functions` (there is none; the concrete
+            // type is erased). See `finish_dynamic_dispatch_call`.
+            if let ResolvedType::SpecObject { spec, type_args, .. } = &base_type {
+                let spec = spec.clone();
+                let type_args = type_args.clone();
+                return Some(CalleeResolution::Dynamic(self.finish_dynamic_dispatch_call(
+                    callee.id, callee.span, checked_base, &spec, &type_args, field, args,
+                )));
+            }
 
             let methods = self.find_methods(&base_type, field);
             if !methods.is_empty() {
@@ -1763,12 +2227,12 @@ impl<'r> Analyzer<'r> {
                     }),
                 };
 
-                return Some(ResolvedCallee {
+                return Some(CalleeResolution::Ordinary(ResolvedCallee {
                     callee: callee_expr,
                     fn_type: method.fn_type,
                     implicit_self: Some(self_arg),
                     checked_args,
-                });
+                }));
             }
 
             // Not a method -- finish resolving the ordinary field access
@@ -1795,7 +2259,12 @@ impl<'r> Analyzer<'r> {
                     .push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::UnresolvedCallee));
                 return None;
             };
-            return Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None, checked_args: None });
+            return Some(CalleeResolution::Ordinary(ResolvedCallee {
+                callee: checked_callee,
+                fn_type,
+                implicit_self: None,
+                checked_args: None,
+            }));
         }
 
         let checked_callee = self.analyze_expr(callee, None)?;
@@ -1804,7 +2273,98 @@ impl<'r> Analyzer<'r> {
                 .push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::UnresolvedCallee));
             return None;
         };
-        Some(ResolvedCallee { callee: checked_callee, fn_type, implicit_self: None, checked_args: None })
+        Some(CalleeResolution::Ordinary(ResolvedCallee {
+            callee: checked_callee,
+            fn_type,
+            implicit_self: None,
+            checked_args: None,
+        }))
+    }
+
+    /// Finishes resolving `base.field(args)` once `resolve_callee` has
+    /// already determined `base`'s type is `spec<type_args> *_` --
+    /// `field` is looked up by *position* in the spec's flattened
+    /// function list (`flatten_spec`), which is exactly the vtable slot
+    /// order `Codegen`'s vtable builder uses too, so the two always agree.
+    /// `Self` is bound to a placeholder (`Void`) purely to give the
+    /// resolved signature the right *leaf shape* for codegen -- a
+    /// pointer's own leaf count never depends on what it points to, so
+    /// this is sound for every purpose the resolved `fn_type` is used for
+    /// here (argument type-checking, `self`'s param count). Argument
+    /// checking mirrors `resolve_callee`'s/`FunctionCall`'s own ordinary
+    /// loop (including `coerce_to_expected`, so a `spec *Animal` argument
+    /// passed through to a *further* dynamic call still coerces/no-ops
+    /// correctly) -- kept separate rather than shared, since there's no
+    /// ordinary `callee`/`fn_type` pairing this shape can reuse that loop
+    /// through.
+    fn finish_dynamic_dispatch_call(
+        &mut self,
+        id: HirId,
+        span: Span,
+        base: CheckedPlace,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        type_args: &[ResolvedType],
+        field: &Ident,
+        args: &[HirExprNode],
+    ) -> Option<CheckedExprNode> {
+        let self_placeholder = ResolvedType::Void;
+        let flattened = self.flatten_spec(id, span, spec, type_args, &self_placeholder)?;
+        let Some(slot_index) = flattened.iter().position(|f| &f.name == field) else {
+            let spec_name = spec.borrow().name.clone();
+            self.errors.push(AnalysisError::new(
+                id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction { spec: spec_name, function: field.clone() },
+            ));
+            return None;
+        };
+        let fn_type = flattened[slot_index].fn_type.clone();
+        // params[0] is the synthesized self -- never counted against the
+        // user's own written arguments, exactly like an ordinary method
+        // call's implicit self.
+        let param_types = fn_type.params[1..].to_vec();
+
+        if args.len() != param_types.len() {
+            self.errors.push(AnalysisError::new(
+                id,
+                span,
+                AnalysisErrorKind::WrongArgumentCount { expected: param_types.len(), found: args.len() },
+            ));
+            return None;
+        }
+
+        let mut checked_args = Vec::with_capacity(args.len());
+        let mut ok = true;
+        for (arg, (_, expected_type)) in args.iter().zip(&param_types) {
+            let Some(checked_arg) = self.analyze_expr(arg, Some(expected_type)) else {
+                ok = false;
+                continue;
+            };
+            let checked_arg = self.coerce_to_expected(Some(expected_type), checked_arg);
+            if !expected_type.accepts(&checked_arg.r#type) {
+                self.errors.push(AnalysisError::new(
+                    arg.id,
+                    arg.span,
+                    AnalysisErrorKind::ArgumentTypeMismatch {
+                        expected: expected_type.clone(),
+                        found: checked_arg.r#type.clone(),
+                    },
+                ));
+                ok = false;
+                continue;
+            }
+            checked_args.push(checked_arg);
+        }
+        if !ok {
+            return None;
+        }
+
+        Some(CheckedExprNode {
+            id,
+            span,
+            r#type: (*fn_type.return_type).clone(),
+            kind: CheckedExpr::DynamicCall(CheckedDynamicCall { base, slot_index, fn_type, args: checked_args }),
+        })
     }
 
     /// If `call`'s callee is `Type::function(args)` -- a static function
@@ -2866,7 +3426,10 @@ impl<'r> Analyzer<'r> {
                 }
 
                 let ResolvedCallee { callee, fn_type, implicit_self, checked_args } =
-                    self.resolve_callee(&call.callee, &call.args)?;
+                    match self.resolve_callee(&call.callee, &call.args)? {
+                        CalleeResolution::Dynamic(result) => return result,
+                        CalleeResolution::Ordinary(resolved) => resolved,
+                    };
 
                 let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
                 args.extend(implicit_self);
@@ -2903,6 +3466,7 @@ impl<'r> Analyzer<'r> {
                             let expected_type =
                                 (param_index < fn_type.params.len()).then(|| &fn_type.params[param_index].1);
                             let checked_arg = self.analyze_expr(arg, expected_type)?;
+                            let checked_arg = self.coerce_to_expected(expected_type, checked_arg);
 
                             if let Some(expected_type) = expected_type {
                                 if !expected_type.accepts(&checked_arg.r#type) {
@@ -2949,6 +3513,7 @@ impl<'r> Analyzer<'r> {
                 // in this match -- the target's own type is exactly the
                 // expected type an unsuffixed literal value should adapt to.
                 let checked_value = self.analyze_expr(&assignment.value, Some(&target_type))?;
+                let checked_value = self.coerce_to_expected(Some(&target_type), checked_value);
 
                 if !target_type.accepts(&checked_value.r#type) {
                     self.errors.push(AnalysisError::new(
@@ -4213,6 +4778,7 @@ impl<'r> Analyzer<'r> {
     fn analyze_declaration_with_init(&mut self, decl: &HirDeclaration, value: &HirExprNode) -> Option<[CheckedStmt; 2]> {
         let checked_decl = self.analyze_declaration(decl, Storage::Local)?;
         let checked_value = self.analyze_expr(value, Some(&checked_decl.r#type))?;
+        let checked_value = self.coerce_to_expected(Some(&checked_decl.r#type), checked_value);
 
         if !checked_decl.r#type.accepts(&checked_value.r#type) {
             self.errors.push(AnalysisError::new(
@@ -4304,6 +4870,7 @@ impl<'r> Analyzer<'r> {
                 }
                 let return_type = self.current_return_type.clone();
                 let checked = self.analyze_expr(expr, Some(&return_type))?;
+                let checked = self.coerce_to_expected(Some(&return_type), checked);
                 if !self.current_return_type.accepts(&checked.r#type) {
                     self.errors.push(AnalysisError::new(
                         expr.id,
@@ -4582,16 +5149,16 @@ impl<'r> Analyzer<'r> {
         s: &HirStructDef,
         cell: &Rc<RefCell<ResolvedStructType>>,
         method_ids: &[HirId],
-    ) -> Option<()> {
-        let fields = self.analyze_struct_fields(&s.fields)?;
+    ) -> (Option<()>, Vec<PendingSpecMethod>) {
+        let Some(fields) = self.analyze_struct_fields(&s.fields) else { return (None, vec![]) };
         cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
         self.context.enter_scope();
         let functions = self.analyze_all(&s.functions, Self::collect_function_signature);
         self.context.leave_scope();
-        let functions = functions?;
+        let Some(functions) = functions else { return (None, vec![]) };
         self.check_overload_duplicates(&s.functions, &functions);
-        cell.borrow_mut().functions = s
+        let own_functions: Vec<(Ident, ResolvedMethod)> = s
             .functions
             .iter()
             .zip(functions)
@@ -4599,7 +5166,14 @@ impl<'r> Analyzer<'r> {
             .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
             .collect();
 
-        Some(())
+        let self_type = ResolvedType::Struct(cell.clone());
+        let (extra_methods, pending) =
+            self.resolve_implements_clause(s.id, s.span, &s.name, &s.implements, &own_functions, &self_type);
+        let mut all_functions = own_functions;
+        all_functions.extend(extra_methods);
+        cell.borrow_mut().functions = all_functions;
+
+        (Some(()), pending)
     }
 
     /// A union's *signature* -- identical contract to `signature_of_struct`
@@ -4610,16 +5184,16 @@ impl<'r> Analyzer<'r> {
         u: &HirUnionDef,
         cell: &Rc<RefCell<ResolvedUnionType>>,
         method_ids: &[HirId],
-    ) -> Option<()> {
-        let fields = self.analyze_struct_fields(&u.fields)?;
+    ) -> (Option<()>, Vec<PendingSpecMethod>) {
+        let Some(fields) = self.analyze_struct_fields(&u.fields) else { return (None, vec![]) };
         cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
         self.context.enter_scope();
         let functions = self.analyze_all(&u.functions, Self::collect_function_signature);
         self.context.leave_scope();
-        let functions = functions?;
+        let Some(functions) = functions else { return (None, vec![]) };
         self.check_overload_duplicates(&u.functions, &functions);
-        cell.borrow_mut().functions = u
+        let own_functions: Vec<(Ident, ResolvedMethod)> = u
             .functions
             .iter()
             .zip(functions)
@@ -4627,7 +5201,14 @@ impl<'r> Analyzer<'r> {
             .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
             .collect();
 
-        Some(())
+        let self_type = ResolvedType::Union(cell.clone());
+        let (extra_methods, pending) =
+            self.resolve_implements_clause(u.id, u.span, &u.name, &u.implements, &own_functions, &self_type);
+        let mut all_functions = own_functions;
+        all_functions.extend(extra_methods);
+        cell.borrow_mut().functions = all_functions;
+
+        (Some(()), pending)
     }
 
     /// A top-level enum's *signature*: tag type, header fields, every
@@ -4642,7 +5223,7 @@ impl<'r> Analyzer<'r> {
         e: &HirEnumDef,
         cell: &Rc<RefCell<ResolvedEnumType>>,
         method_ids: &[HirId],
-    ) -> Option<()> {
+    ) -> (Option<()>, Vec<PendingSpecMethod>) {
         let mut ok = true;
 
         // --- header: optional leading explicit tag, then shared fields ---
@@ -4715,7 +5296,7 @@ impl<'r> Analyzer<'r> {
         // ("must supply 1 value" because the invalid tag entry was
         // dropped), so the header's own errors stand alone.
         if !ok {
-            return None;
+            return (None, vec![]);
         }
 
         // --- shared dynamic fields: present on every variant like the
@@ -4751,7 +5332,7 @@ impl<'r> Analyzer<'r> {
         // broken dynamic-fields list makes the variant loop's shadow check
         // against it unreliable.
         if !ok {
-            return None;
+            return (None, vec![]);
         }
 
         // --- variants ---
@@ -4894,7 +5475,7 @@ impl<'r> Analyzer<'r> {
         }
 
         if !ok {
-            return None;
+            return (None, vec![]);
         }
 
         {
@@ -4908,9 +5489,9 @@ impl<'r> Analyzer<'r> {
         self.context.enter_scope();
         let functions = self.analyze_all(&e.functions, Self::collect_function_signature);
         self.context.leave_scope();
-        let functions = functions?;
+        let Some(functions) = functions else { return (None, vec![]) };
         self.check_overload_duplicates(&e.functions, &functions);
-        cell.borrow_mut().functions = e
+        let own_functions: Vec<(Ident, ResolvedMethod)> = e
             .functions
             .iter()
             .zip(functions)
@@ -4918,7 +5499,14 @@ impl<'r> Analyzer<'r> {
             .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
             .collect();
 
-        Some(())
+        let self_type = ResolvedType::Enum { cell: cell.clone(), variant: None };
+        let (extra_methods, pending) =
+            self.resolve_implements_clause(e.id, e.span, &e.name, &e.implements, &own_functions, &self_type);
+        let mut all_functions = own_functions;
+        all_functions.extend(extra_methods);
+        cell.borrow_mut().functions = all_functions;
+
+        (Some(()), pending)
     }
 
     /// Whether `r#type` has a literal constant form -- the requirement on
@@ -5230,6 +5818,36 @@ impl<'r> Analyzer<'r> {
             return_type: (*fn_type.return_type).clone(),
             body,
         })
+    }
+
+    /// Checks one queued default-method instantiation's body (see
+    /// `PendingSpecMethod`) -- reconstructs an ordinary, synthetic
+    /// `HirFunctionDef` straight out of the spec's own raw signature (see
+    /// `RawSpecFunctionSig`'s doc comment for why it carries real
+    /// `HirParam`s, not just names/types) and reuses `check_function_body`
+    /// wholesale, rather than duplicating its param-binding/return-checking
+    /// logic. The caller (`omega_driver::Driver::check_item_body`)
+    /// constructs `self` fresh, seeded with exactly `pending.substitution`
+    /// (`Self` + the owning spec's own generics) -- the implementor's own
+    /// generics are never relevant here, since the spec's HIR can't
+    /// reference a name it doesn't know about.
+    pub fn check_pending_spec_method(&mut self, pending: &PendingSpecMethod) -> Option<CheckedFunctionDef> {
+        let body = pending
+            .raw
+            .default_body
+            .clone()
+            .expect("only ever queued (resolve_implements_clause) when a default body exists");
+        let synthetic = HirFunctionDef {
+            id: pending.raw.decl_id,
+            span: pending.raw.span,
+            name: pending.raw.name.clone(),
+            generics: vec![],
+            is_member_function: pending.raw.is_member_function,
+            params: pending.raw.params.clone(),
+            return_type: pending.raw.return_type.clone(),
+            body,
+        };
+        self.check_function_body(&synthetic, &pending.fn_type, pending.id)
     }
 
     /// Checks a top-level struct's methods' *bodies* only -- its fields and

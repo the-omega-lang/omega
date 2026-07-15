@@ -41,4 +41,15 @@ pub enum Type {
     /// one at the type level; only semantic analysis knows whether a given
     /// path actually names a generic item.
     Generic(Path, Vec<Type>),
+    /// `spec *Animal` (immutable, `mutable: false`) or `spec *mut Animal`
+    /// (`mutable: true`) -- a *dynamic-dispatch* trait-object pointer,
+    /// unlike an ordinary `Pointer`: at runtime this is a fat pointer (a
+    /// data pointer plus a compiler-generated vtable pointer), and the
+    /// pointee's *concrete* type is erased -- only that it implements the
+    /// named spec is known. The boxed `Type` is always a `Named`/`Generic`
+    /// spec reference (e.g. `Animal`, `Iterator<i32>`), never itself a
+    /// pointer. Contrast with a *static*-dispatch spec bound (`T: Animal`
+    /// on a `GenericParam`), which stays a thin, ordinary pointer once `T`
+    /// is monomorphized to a concrete type.
+    SpecObject(Box<Type>, bool),
 }

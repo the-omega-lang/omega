@@ -1,16 +1,16 @@
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirCast, HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
-    HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef,
+    HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirGenericParam,
     HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
-    HirPlaceRoot, HirProjection, HirRange, HirSlice, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
+    HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirSpecFunction, HirStmt,
+    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
     CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode, ExternDeclarationStmt,
-    FunctionDefinitionStmt, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
-    Statement, StatementNode, StructStmt, Type, UnionStmt,
+    FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
+    SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -44,6 +44,7 @@ impl Lowerer {
             Item::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
             Item::Enum(e) => HirItem::Enum(self.lower_enum_def(e, node.span)),
             Item::Union(u) => HirItem::Union(self.lower_union_def(u, node.span)),
+            Item::Spec(sp) => HirItem::Spec(self.lower_spec_def(sp, node.span)),
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
@@ -177,15 +178,10 @@ impl Lowerer {
         enclosing_struct: Option<&Ident>,
     ) -> HirFunctionDef {
         let mut params = Vec::with_capacity(f.params.len() + 1);
-        if f.is_member_function
-            && let Some(struct_ident) = enclosing_struct
+        if let Some(struct_ident) = enclosing_struct
+            && let Some(p) = self.self_param(f.is_member_function, f.self_mutable, struct_ident, span)
         {
-            params.push(HirParam {
-                id: self.ids.next(),
-                span,
-                ident: Ident("self".to_string()),
-                r#type: Type::Pointer(Box::new(Type::Named(struct_ident.clone().into())), f.self_mutable),
-            });
+            params.push(p);
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
 
@@ -195,7 +191,73 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             name: f.ident.clone(),
-            generics: f.generics.clone(),
+            generics: Self::lower_generics(&f.generics),
+            is_member_function: f.is_member_function,
+            params,
+            return_type: f.return_type.clone(),
+            body,
+        }
+    }
+
+    /// The synthetic `self: *TypeName`/`*mut TypeName` parameter every
+    /// member function gets, shared between ordinary struct/enum/union
+    /// methods (`type_name` = the owning type's own name) and spec
+    /// functions (`type_name` = the literal identifier `Self`, resolved
+    /// later like any other in-scope type name -- see
+    /// `omega_analyzer::analysis::Analyzer`'s `Self` seeding). `None` for a
+    /// non-member function, so callers can push the result unconditionally
+    /// via `if let Some(p) = ...`.
+    fn self_param(
+        &mut self,
+        is_member_function: bool,
+        self_mutable: bool,
+        type_name: &Ident,
+        span: Span,
+    ) -> Option<HirParam> {
+        if !is_member_function {
+            return None;
+        }
+        Some(HirParam {
+            id: self.ids.next(),
+            span,
+            ident: Ident("self".to_string()),
+            r#type: Type::Pointer(Box::new(Type::Named(type_name.clone().into())), self_mutable),
+        })
+    }
+
+    /// Mechanical clone of a parsed generics list into HIR's own shape --
+    /// bounds stay raw/unresolved, same as everywhere else.
+    fn lower_generics(generics: &[GenericParam]) -> Vec<HirGenericParam> {
+        generics.iter().map(|g| HirGenericParam { ident: g.ident.clone(), bound: g.bound.clone() }).collect()
+    }
+
+    fn lower_spec_def(&mut self, sp: &SpecStmt, span: Span) -> HirSpecDef {
+        let id = self.ids.next();
+        let generics = Self::lower_generics(&sp.generics);
+        let dependencies = sp.dependencies.clone();
+        let functions = sp.functions.iter().map(|f| self.lower_spec_function(f, span)).collect();
+
+        HirSpecDef { id, span, name: sp.ident.clone(), generics, dependencies, functions }
+    }
+
+    /// `Self` is the type-name lowering hands to `self_param` here --
+    /// meaningless until a concrete implementor is known, resolved the same
+    /// way as any other in-scope type name (see `HirSpecDef`'s doc
+    /// comment).
+    fn lower_spec_function(&mut self, f: &SpecFunctionStmt, span: Span) -> HirSpecFunction {
+        let self_type_name = Ident("Self".to_string());
+        let mut params = Vec::with_capacity(f.params.len() + 1);
+        if let Some(p) = self.self_param(f.is_member_function, f.self_mutable, &self_type_name, span) {
+            params.push(p);
+        }
+        params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
+
+        let body = f.body.as_ref().map(|b| self.lower_block(b));
+
+        HirSpecFunction {
+            id: self.ids.next(),
+            span,
+            name: f.ident.clone(),
             is_member_function: f.is_member_function,
             params,
             return_type: f.return_type.clone(),
@@ -225,7 +287,8 @@ impl Lowerer {
             id,
             span,
             name: s.ident.clone(),
-            generics: s.generics.clone(),
+            generics: Self::lower_generics(&s.generics),
+            implements: s.implements.clone(),
             fields,
             functions,
         }
@@ -246,7 +309,8 @@ impl Lowerer {
             id,
             span,
             name: u.ident.clone(),
-            generics: u.generics.clone(),
+            generics: Self::lower_generics(&u.generics),
+            implements: u.implements.clone(),
             fields,
             functions,
         }
@@ -294,7 +358,8 @@ impl Lowerer {
             id,
             span,
             name: e.ident.clone(),
-            generics: e.generics.clone(),
+            generics: Self::lower_generics(&e.generics),
+            implements: e.implements.clone(),
             header,
             dynamic_fields,
             variants,

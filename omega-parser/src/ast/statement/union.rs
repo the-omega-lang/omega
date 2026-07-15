@@ -1,4 +1,6 @@
+use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
+use crate::ast::r#type::Type;
 use crate::ast::statement::{declaration::DeclarationStmt, function_definition::FunctionDefinitionStmt};
 
 /// A C/Rust-style union: every field overlaps the same storage (no tag, no
@@ -8,7 +10,9 @@ use crate::ast::statement::{declaration::DeclarationStmt, function_definition::F
 #[derive(Debug, Clone)]
 pub struct UnionStmt {
     pub ident: Ident,
-    pub generics: Vec<Ident>,
+    pub generics: Vec<GenericParam>,
+    /// See `StructStmt::implements`'s doc comment -- same rules.
+    pub implements: Vec<Type>,
     pub fields: Vec<DeclarationStmt>,
     pub functions: Vec<FunctionDefinitionStmt>,
 }

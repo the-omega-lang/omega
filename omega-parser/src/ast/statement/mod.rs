@@ -7,6 +7,7 @@ pub mod function_definition;
 pub mod import;
 pub mod macro_definition;
 pub mod r#return;
+pub mod spec;
 pub mod r#struct;
 pub mod union;
 pub mod walrus;
@@ -17,8 +18,8 @@ use crate::ast::statement::{
     declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
     extern_declaration::ExternDeclarationStmt,
     for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
-    macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, r#struct::StructStmt,
-    union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
+    macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
+    r#struct::StructStmt, union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::diagnostics::Span;
 
@@ -39,6 +40,9 @@ pub enum Item {
     /// See `UnionStmt`'s doc comment -- same top-level-only reasoning as
     /// `Struct`/`Enum` above.
     Union(UnionStmt),
+    /// See `SpecStmt`'s doc comment -- same top-level-only reasoning as
+    /// `Struct`/`Enum`/`Union` above.
+    Spec(SpecStmt),
     Import(ImportStmt),
     /// Expanded away entirely (along with `MacroInvocation` below) by
     /// `omega_parser::macros::expand` before HIR lowering ever runs -- see

@@ -85,6 +85,12 @@ pub enum ResolveError {
     /// referenced with no arguments at all (a bare `Type::Named`, `found:
     /// 0`) and a `Type::Generic`/instantiation with the wrong count.
     GenericArgCountMismatch { module: Vec<Ident>, item: Ident, expected: usize, found: usize },
+    /// A bound generic (`T: Animal`) was instantiated with a concrete type
+    /// that doesn't nominally implement `spec` -- `missing` names every
+    /// spec function the type doesn't provide (own or default). Also used
+    /// for a `spec *Animal` coercion from a concrete pointer whose pointee
+    /// doesn't implement the spec.
+    SpecNotImplemented { type_name: String, spec: Ident, missing: Vec<Ident> },
 }
 
 fn join(path: &[Ident]) -> String {
@@ -137,6 +143,12 @@ impl fmt::Display for ResolveError {
                 "'{}::{}' expects {expected} type argument(s), found {found}",
                 join(module),
                 item.as_ref()
+            ),
+            Self::SpecNotImplemented { type_name, spec, missing } => write!(
+                f,
+                "'{type_name}' does not implement spec '{}' (missing: {})",
+                spec.as_ref(),
+                missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ),
         }
     }
@@ -242,6 +254,17 @@ pub trait ModuleResolver {
         module_path: &[Ident],
         name: &Ident,
     ) -> Result<Option<Vec<(HirId, ResolvedFunctionType)>>, ResolveError>;
+
+
+    /// Mints a fresh `HirId` with no corresponding HIR node of its own --
+    /// used for a spec-default method instantiated for a concrete
+    /// implementor that didn't override it (see
+    /// `Analyzer::signature_of_struct`'s implements-clause resolution),
+    /// exactly the same minting `omega_driver::Driver::compute_item`
+    /// already does internally for a generic instantiation's own identity,
+    /// surfaced here so `Analyzer` (which has no minting of its own) can
+    /// request one too.
+    fn fresh_synthetic_id(&mut self) -> HirId;
 
     /// The name of a top-level item in `module_path` most similar to
     /// `target` (see `crate::similarity::best_match`), drawn only from
