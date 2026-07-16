@@ -35,17 +35,22 @@ struct Args {
     /// falls back to today's previously-hardcoded behavior when omitted).
     output_file: PathBuf,
     externs: Vec<ExternRoot>,
+    /// `--name=<name>` -- overrides the entry module's own declared
+    /// identity; `None` (the default) keeps `module_from_file`'s
+    /// stem-derived name.
+    name: Option<Ident>,
     opt_level: OptLevel,
     target: Target,
     emit: EmitKind,
     verbose: bool,
 }
 
-/// A module's own name (its file's stem) and search-root directory (its
-/// parent) -- the convention every module already follows
-/// (`mymodule/mymodule.omg` -> `["mymodule"]`), applied here to both the
-/// entry file and every `--extern` target: an extern file is just an entry
-/// file for someone else's project.
+/// A module's own *default* identity (its file's stem) and search-root
+/// directory (its parent) -- the convention every module follows unless
+/// explicitly overridden, applied here to both the entry file and every
+/// `--extern` target before any `--name=`/explicit `--extern=<name>:<file>`
+/// name is applied on top (see `parse_args`): an extern file is just an
+/// entry file for someone else's project.
 fn module_from_file(file: &Path) -> Option<(Ident, PathBuf)> {
     let name = file.file_stem()?.to_str()?.to_string();
     let dir = file
@@ -64,6 +69,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut entry_file = None;
     let mut output_file = None;
     let mut externs = Vec::new();
+    let mut name = None;
     let mut opt_level = OptLevel::default();
     let mut target = Target::DEFAULT;
     let mut emit = EmitKind::default();
@@ -72,28 +78,41 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if let Some(rest) = arg.strip_prefix("--extern=") {
-            let Some((alias, file)) = rest.split_once(':') else {
-                return Err(format!(
-                    "invalid --extern flag '{arg}': expected --extern=<alias>:<file>"
-                ));
+            // Two shapes: a bare `--extern=<file>` (the common case --
+            // identity inferred from the file's own stem, exactly like the
+            // entry file), or an explicit `--extern=<name>:<file>` (the
+            // name is author-stated and used exactly as typed -- never
+            // re-derived, never a separate translated alias). Distinguished
+            // by whether `rest` contains a `:` at all; `split_once` takes
+            // only the *first* one, so a file path containing later colons
+            // still parses correctly in the explicit form, same as before.
+            let (explicit_name, file) = match rest.split_once(':') {
+                Some((name, file)) => {
+                    if name.is_empty() {
+                        return Err(format!(
+                            "invalid --extern flag '{arg}': the name before ':' cannot be empty"
+                        ));
+                    }
+                    (Some(Ident(name.to_string())), PathBuf::from(file))
+                }
+                None => (None, PathBuf::from(rest)),
             };
-            if alias.is_empty() {
-                return Err(format!(
-                    "invalid --extern flag '{arg}': the alias before ':' cannot be empty"
-                ));
-            }
-            let file = PathBuf::from(file);
-            let Some((module, dir)) = module_from_file(&file) else {
+            let Some((inferred_name, dir)) = module_from_file(&file) else {
                 return Err(format!(
                     "invalid --extern flag '{arg}': '{}' has no usable file name",
                     file.display()
                 ));
             };
             externs.push(ExternRoot {
-                alias: Ident(alias.to_string()),
+                name: explicit_name.unwrap_or(inferred_name),
                 dir,
-                module,
+                file,
             });
+        } else if let Some(rest) = arg.strip_prefix("--name=") {
+            if rest.is_empty() {
+                return Err(format!("invalid --name flag '{arg}': the name cannot be empty"));
+            }
+            name = Some(Ident(rest.to_string()));
         } else if arg == "-o" {
             let file = iter.next().ok_or_else(|| "expected a file path after '-o'".to_string())?;
             output_file = Some(PathBuf::from(file));
@@ -134,7 +153,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let entry_file = entry_file
         .ok_or_else(|| "usage: omgc <entry-file> -o <output-file> [OPTIONS] (see --help)".to_string())?;
     let output_file = output_file.ok_or_else(|| "the -o <file> flag is required".to_string())?;
-    Ok(Args { entry_file, output_file, externs, opt_level, target, emit, verbose })
+    Ok(Args { entry_file, output_file, externs, name, opt_level, target, emit, verbose })
 }
 
 /// One `-h`/`--help` line: `flag` padded to a fixed column *before* being
@@ -165,7 +184,12 @@ fn print_help() {
         &format!("Target triplet, e.g. x86_64-unknown-linux (default: {})", Target::DEFAULT),
     );
     help_option(colors, "--emit=<obj|ir|asm>", "What to emit: object file (default), Cranelift IR, or assembly");
-    help_option(colors, "--extern=<alias>:<file>", "Register an external module dependency (repeatable)");
+    help_option(
+        colors,
+        "--extern=[<name>:]<file>",
+        "Register an external module (name inferred from the file by default, repeatable)",
+    );
+    help_option(colors, "--name=<name>", "Override the entry module's own identity (default: derived from its file name)");
     help_option(colors, "-v, --verbose", "Print progress information");
     help_option(colors, "-h, --help", "Print this help message");
 }
@@ -185,7 +209,7 @@ fn run() {
     }
 
     let start = Instant::now();
-    let Args { entry_file, output_file, externs, opt_level, target, emit, verbose } = match parse_args(&args) {
+    let Args { entry_file, output_file, externs, name, opt_level, target, emit, verbose } = match parse_args(&args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("error: {message}");
@@ -193,10 +217,11 @@ fn run() {
         }
     };
 
-    let Some((entry_name, entry_dir)) = module_from_file(&entry_file) else {
+    let Some((stem_name, entry_dir)) = module_from_file(&entry_file) else {
         eprintln!("error: '{}' has no usable file name", entry_file.display());
         std::process::exit(1);
     };
+    let entry_name = name.unwrap_or(stem_name);
     let entry_module = vec![entry_name.clone()];
 
     // Diagnostics (and verbose output, which shares the same stream) go to
@@ -211,7 +236,7 @@ fn run() {
     }
 
     let mut driver = Driver::new(vec![entry_dir], externs);
-    let program = match driver.compile(&entry_module) {
+    let program = match driver.compile(&entry_module, &entry_file) {
         Ok(program) => program,
         Err(errors) => {
             let mut count = 0usize;

@@ -50,18 +50,32 @@ pub enum CompileError {
     /// Ordinary semantic errors from one module's own signature/body
     /// analysis.
     Analysis { module: Vec<Ident>, errors: Vec<AnalysisError> },
+    /// Two different files both claim the same top-level module identity --
+    /// the entry's own real name, or a `--extern`'s real name (inferred
+    /// from its file's stem, or explicitly given), collide. Detected once,
+    /// eagerly, by `Driver::resolve_root_identities` before any module is
+    /// ever parsed -- prior to that check, the second registration would
+    /// have just silently overwritten the first's entry in `extern_roots`,
+    /// misrouting every reference to that name at whichever root happened
+    /// to lose the race. Carries no module/span -- there's no single
+    /// module's source snippet this is "about," it's about two *different*
+    /// files at once -- renders headline-only, same precedent as
+    /// `MacroExpansion`.
+    DuplicateModuleIdentity { name: Ident, first: PathBuf, second: PathBuf },
 }
 
 impl CompileError {
     /// The module whose source file this error's diagnostics render
-    /// against -- `None` only for a resolve error with no known
-    /// referencing site.
+    /// against -- `None` for a resolve error with no known referencing
+    /// site, or a module-identity collision (which is about two different
+    /// files/roots at once, not one module's own source).
     pub fn module(&self) -> Option<&[Ident]> {
         match self {
             Self::Resolve { importer, .. } => importer.as_ref().map(|(module, _)| module.as_slice()),
             Self::Parse { module, .. } | Self::MacroExpansion { module, .. } | Self::Analysis { module, .. } => {
                 Some(module)
             }
+            Self::DuplicateModuleIdentity { .. } => None,
         }
     }
 
@@ -77,6 +91,13 @@ impl CompileError {
             // as a headline-only diagnostic.
             Self::MacroExpansion { error, .. } => vec![Diagnostic::error(error.to_string())],
             Self::Analysis { errors, .. } => errors.iter().map(AnalysisError::to_diagnostic).collect(),
+            Self::DuplicateModuleIdentity { name, first, second } => vec![Diagnostic::error(format!(
+                "module identity '{}' is claimed by two different files: '{}' and '{}' -- \
+                 give one an explicit --name=/--extern=<name>:<file> to disambiguate",
+                name.as_ref(),
+                first.display(),
+                second.display(),
+            ))],
         }
     }
 }
@@ -99,7 +120,15 @@ pub struct CompiledProgram {
     /// invocation compiling that module standalone produces the exact same
     /// mangled symbol (a pure function of module path + name + the item's
     /// own per-module `HirId.local`, deterministic across processes parsing
-    /// the same source file) -- never defining a body for it here.
+    /// the same source file) -- never defining a body for it here. This
+    /// trust has one precondition worth stating explicitly: both the
+    /// producing and consuming `omgc` invocations must agree on that
+    /// module's declared identity (see `--name=`/`--extern=<name>:<file>`)
+    /// -- automatic when neither side overrides it (both infer the same
+    /// name from the same file), but if the library was compiled under a
+    /// custom name, the consumer's `--extern=` must use that same name, or
+    /// the two mangled symbols diverge and the link step fails loudly
+    /// (undefined symbol) rather than anything more dangerous.
     pub extern_functions: Vec<ExternFunctionRef>,
 }
 
@@ -156,25 +185,34 @@ enum ImportCacheState {
 /// up here).
 pub struct Driver {
     roots: SearchRoots,
-    /// Every `--extern=<name>:<file>` the CLI was given, keyed by that
-    /// file's own module name (its stem -- the same convention the entry
-    /// file itself follows), *not* by the `--extern` alias: a module path
-    /// whose first segment matches a key here is an *extern* module,
-    /// resolved against that single-entry search root (its parent
-    /// directory) instead of `roots` (see `search_roots_for`), and never
-    /// eagerly signature-swept or body-checked/codegen'd by `compile` (see
-    /// `is_extern_module`) -- only scanned on demand, exactly like a
-    /// generic instantiation already is.
+    /// Every `--extern` the CLI was given, keyed by its declared name --
+    /// by default inferred from the file's own stem, or explicitly given
+    /// via `--extern=<name>:<file>` (see `omgc`'s CLI parsing). This
+    /// declared name is the *only* identity concept an extern module has:
+    /// it's both what `import extern::<name>;` selects it with and its
+    /// real ABI/mangling identity -- there is no separate local alias
+    /// translated to something else. A module path whose first segment
+    /// matches a key here is an *extern* module, resolved against that
+    /// single-entry search root (its parent directory) instead of `roots`
+    /// (see `search_roots_for`), and never eagerly signature-swept or
+    /// body-checked/codegen'd by `compile` (see `is_extern_module`) -- only
+    /// scanned on demand, exactly like a generic instantiation already is.
     extern_roots: HashMap<Ident, PathBuf>,
-    /// The `--extern` alias (`import extern::<alias>;` selects it with)
-    /// each registered extern module's own real name -- kept separate from
-    /// `extern_roots` so the alias can freely differ from the file's own
-    /// name (`--extern=math:.../mathlib.omg` -- alias `math`, real name
-    /// `mathlib`); every internal module-path operation past
-    /// `import_absolute_path`'s initial alias-to-real-name translation
-    /// only ever deals in real names, exactly as if the alias never
-    /// existed.
-    extern_aliases: HashMap<Ident, Ident>,
+    /// Every registered extern's declared name paired with its original
+    /// file, in **registration order** (not a `HashMap` -- collision
+    /// diagnostics need a stable, deterministic "which one came first"
+    /// instead of hash-iteration order, matching CLI argument order) --
+    /// see `resolve_root_identities`, the only reader.
+    extern_files: Vec<(Ident, PathBuf)>,
+    /// Every registered root's declared identity (the entry, plus every
+    /// extern) mapped to the concrete on-disk file that identity's content
+    /// actually comes from -- empty until `compile`'s first step
+    /// (`resolve_root_identities`) populates it. Every `locate_module` call
+    /// site reads it through `physical_lookup_path` to find the *real*
+    /// on-disk stem to search for whenever a root's declared name doesn't
+    /// match its file's own stem (an explicit `--name=`/`--extern=<name>:
+    /// <file>` override) -- see that method's doc comment.
+    root_physical_files: HashMap<Ident, PathBuf>,
     next_module_id: u32,
     /// Counter behind every synthetic `HirId` minted for a generic
     /// instantiation's own identity (a struct instantiation's cell, or a
@@ -291,31 +329,39 @@ pub struct Driver {
     module_errors: HashMap<Vec<Ident>, Vec<AnalysisError>>,
 }
 
-/// One `--extern=<alias>:<file>` flag, already split into its three parts --
-/// `alias` is whatever `import extern::<alias>;` selects it with; `dir`/
-/// `module` are `file`'s own parent directory and stem, the exact same
-/// derivation the entry file itself goes through (see `omgc`'s own CLI
-/// parsing) -- an extern file is just an entry file for someone else's
-/// project.
+/// One `--extern` flag, already split into its parts -- `name` is this
+/// module's declared identity (by default `file`'s own stem, or an
+/// explicit override from `--extern=<name>:<file>`; see `omgc`'s own CLI
+/// parsing) and doubles as both what `import extern::<name>;` selects it
+/// with *and* its real ABI/mangling identity -- there is no separate local
+/// alias. `dir` is `file`'s own parent directory, the search root for this
+/// module and its children (an extern file is just an entry file for
+/// someone else's project). `file` is kept even after `dir`/`name` are
+/// split out of it -- needed both to name the concrete file in a
+/// `CompileError::DuplicateModuleIdentity` diagnostic and so `Driver` can
+/// still find this root's own content on disk by its *real* on-disk stem
+/// when `name` was explicitly overridden away from it (see
+/// `Driver::physical_lookup_path`).
 pub struct ExternRoot {
-    pub alias: Ident,
+    pub name: Ident,
     pub dir: PathBuf,
-    pub module: Ident,
+    pub file: PathBuf,
 }
 
 impl Driver {
     pub fn new(roots: Vec<PathBuf>, externs: Vec<ExternRoot>) -> Self {
         let mut extern_roots = HashMap::new();
-        let mut extern_aliases = HashMap::new();
-        for ExternRoot { alias, dir, module } in externs {
-            extern_roots.insert(module.clone(), dir);
-            extern_aliases.insert(alias, module);
+        let mut extern_files = Vec::new();
+        for ExternRoot { name, dir, file } in externs {
+            extern_files.push((name.clone(), file));
+            extern_roots.insert(name, dir);
         }
 
         Self {
             roots: SearchRoots(roots),
             extern_roots,
-            extern_aliases,
+            extern_files,
+            root_physical_files: HashMap::new(),
             next_module_id: 0,
             next_synthetic_id: 0,
             parsed: HashMap::new(),
@@ -349,15 +395,14 @@ impl Driver {
 
     /// Whether `path` names an *extern* module -- a pure function of its own
     /// first segment, no separate bookkeeping needed: `import
-    /// extern::<alias>::...` always resolves to that project's own real
+    /// extern::<name>::...` always resolves to that project's own declared
     /// module name as the resulting absolute path's first segment (see
-    /// `import_absolute_path`'s `Extern` case and `extern_aliases`'s doc
-    /// comment), and every module reachable *from* an extern module keeps
-    /// that same segment leading (relative/root-rooted imports only ever
-    /// extend a path, never replace its existing prefix) -- so this single
-    /// check, against `extern_roots` (keyed by real name), is correct
-    /// everywhere, not just for the module an `extern::` import named
-    /// directly.
+    /// `import_absolute_path`'s `Extern` case), and every module reachable
+    /// *from* an extern module keeps that same segment leading
+    /// (relative/root-rooted imports only ever extend a path, never replace
+    /// its existing prefix) -- so this single check, against `extern_roots`
+    /// (keyed by declared name), is correct everywhere, not just for the
+    /// module an `extern::` import named directly.
     fn is_extern_module(&self, path: &[Ident]) -> bool {
         path.first().is_some_and(|head| self.extern_roots.contains_key(head))
     }
@@ -365,7 +410,11 @@ impl Driver {
     /// Which filesystem root(s) to search for `path`: its own registered
     /// extern root (see `is_extern_module`) if it's an extern module, else
     /// the local project's own `roots`. Every `locate_module` call site goes
-    /// through this instead of reading `self.roots` directly.
+    /// through this instead of reading `self.roots` directly. Directory
+    /// selection is always keyed by `path`'s *declared* name -- unlike the
+    /// filename ultimately opened inside that directory (see
+    /// `physical_lookup_path`), which name resolves to isn't affected by
+    /// any `--name=`/`--extern=<name>:<file>` override.
     fn search_roots_for(&self, path: &[Ident]) -> Vec<PathBuf> {
         if let Some(head) = path.first()
             && let Some(root) = self.extern_roots.get(head)
@@ -373,6 +422,91 @@ impl Driver {
             return vec![root.clone()];
         }
         self.roots.0.clone()
+    }
+
+    /// Builds `root_physical_files` -- every registered root's own declared
+    /// (by default stem-derived, but explicitly overridable) identity
+    /// mapped to the concrete on-disk file that identity's content actually
+    /// comes from -- and, as a side effect of the very same pass, detects
+    /// every case where two *different* files claim the *same* declared
+    /// identity: two `--extern` entries colliding with each other, or the
+    /// entry itself colliding with a registered extern. Without this check,
+    /// two differently registered roots that happen to share a declared
+    /// name would previously just silently overwrite one another in
+    /// `extern_roots`'s plain `HashMap::insert` (see `Driver::new` prior to
+    /// this check existing) -- misrouting any reference to that name to
+    /// whichever root happened to be registered last, with zero
+    /// diagnostic. Iterates `extern_files` in registration order (not
+    /// `HashMap` order) so which file is reported as "first" vs. "second"
+    /// is deterministic and matches CLI argument order, with the entry
+    /// always checked first (mirroring how it's always the first thing
+    /// discovered in `discover_reachable`).
+    ///
+    /// Must run before `discover_reachable`/`parse_module` ever run: every
+    /// `locate_module` call site translates its query through
+    /// `physical_lookup_path`, which reads `root_physical_files` -- called
+    /// first thing inside `compile`.
+    fn resolve_root_identities(
+        &mut self,
+        entry: &[Ident],
+        entry_file: &std::path::Path,
+    ) -> Result<(), Vec<CompileError>> {
+        let mut map: HashMap<Ident, PathBuf> = HashMap::new();
+        let mut errors = Vec::new();
+
+        if let Some(head) = entry.first() {
+            map.insert(head.clone(), entry_file.to_path_buf());
+        }
+        for (name, file) in &self.extern_files {
+            match map.get(name) {
+                Some(existing) if existing != file => {
+                    errors.push(CompileError::DuplicateModuleIdentity {
+                        name: name.clone(),
+                        first: existing.clone(),
+                        second: file.clone(),
+                    });
+                }
+                Some(_) => {} // identical file registered twice -- harmless
+                None => {
+                    map.insert(name.clone(), file.clone());
+                }
+            }
+        }
+
+        self.root_physical_files = map;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// The on-disk segments to actually search for when locating `path` --
+    /// identical to `path` itself unless its own root segment's declared
+    /// identity was explicitly overridden away from the file it points at's
+    /// real stem (`--name=`/`--extern=<name>:<file>`), in which case the
+    /// leading segment is swapped for that real stem before the filesystem
+    /// walk (see `resolve_root_identities`/`root_physical_files`). Every
+    /// segment *after* the root is untouched -- nested module paths are
+    /// never renamed, only a root's own top-level identity can be.
+    /// Critically, the *declared* `path` passed in, not this substituted
+    /// return value, is what every other piece of `Driver` state (`parsed`,
+    /// `sources`, `module_shapes`, mangled symbols, diagnostics,
+    /// `is_extern_module`, ...) keys off of -- this exists purely to find
+    /// the right bytes on disk; when no override is active for `path`'s
+    /// root (the overwhelming common case), `physical_stem == head.as_ref()`
+    /// and this returns `path`'s own segments unchanged.
+    fn physical_lookup_path(&self, path: &[Ident]) -> Vec<Ident> {
+        let Some(head) = path.first() else { return path.to_vec() };
+        let Some(file) = self.root_physical_files.get(head) else { return path.to_vec() };
+        let Some(physical_stem) = file.file_stem().and_then(|s| s.to_str()) else { return path.to_vec() };
+        if physical_stem == head.as_ref() {
+            return path.to_vec();
+        }
+        let mut result = Vec::with_capacity(path.len());
+        result.push(Ident(physical_stem.to_string()));
+        result.extend_from_slice(&path[1..]);
+        result
     }
 
     /// Where `module_path`'s own *unrooted* (`ImportRoot::Local`) imports
@@ -408,8 +542,7 @@ impl Driver {
             }
             // "Root of *my* current project" -- if the importer is itself
             // part of an extern project (its own path leads with that
-            // project's own real module name, never its `--extern` alias --
-            // see `extern_aliases`'s doc comment), re-prepend that same
+            // project's own declared module name), re-prepend that same
             // name so the result stays correctly anchored to *that*
             // project's root rather than silently falling back to the local
             // one (see `is_extern_module`'s doc comment on why every module
@@ -422,18 +555,17 @@ impl Driver {
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            // `path.head` is the `--extern` *alias*, translated to that
-            // project's own real module name -- checked eagerly here
-            // (rather than left to `locate_module`'s ordinary not-found
-            // handling) so a typo'd or forgotten `--extern` flag gets its
-            // own precise diagnostic instead of a generic "module not
-            // found". Every absolute path past this point uses the real
-            // name, never the alias (see `extern_aliases`'s doc comment).
+            // `path.head` is the extern module's own declared name (the
+            // same `Ident` `--extern` registered it under -- no separate
+            // local alias to translate) -- checked eagerly here (rather
+            // than left to `locate_module`'s ordinary not-found handling)
+            // so a typo'd or forgotten `--extern` flag gets its own precise
+            // diagnostic instead of a generic "module not found".
             ImportRoot::Extern => {
-                let Some(module) = self.extern_aliases.get(&path.head) else {
+                if !self.extern_roots.contains_key(&path.head) {
                     return Err(ResolveError::UnknownExtern(path.head.clone()));
-                };
-                Ok(std::iter::once(module.clone()).chain(path.tail.iter().cloned()).collect())
+                }
+                Ok(std::iter::once(path.head.clone()).chain(path.tail.iter().cloned()).collect())
             }
         }
     }
@@ -462,7 +594,7 @@ impl Driver {
             return Ok(hir.clone());
         }
 
-        let location = locate_module(&self.search_roots_for(path), path)?;
+        let location = locate_module(&self.search_roots_for(path), &self.physical_lookup_path(path))?;
         self.module_shapes.insert(path.to_vec(), location.children_dir.is_some());
         let module_id = self.fresh_module_id();
 
@@ -510,7 +642,7 @@ impl Driver {
     /// `import_absolute_path`).
     fn reachable_target(&self, importer: &[Ident], import: &HirImport) -> Result<Vec<Ident>, ResolveError> {
         let segments = self.import_absolute_path(importer, import.root, &import.path)?;
-        match locate_module(&self.search_roots_for(&segments), &segments) {
+        match locate_module(&self.search_roots_for(&segments), &self.physical_lookup_path(&segments)) {
             Ok(_) => return Ok(segments),
             // A structural problem with `segments` itself (two filesystem
             // entries claiming the same name) -- real regardless of whether
@@ -523,7 +655,7 @@ impl Driver {
         }
         if segments.len() > 1 {
             let parent = &segments[..segments.len() - 1];
-            if locate_module(&self.search_roots_for(parent), parent).is_ok() {
+            if locate_module(&self.search_roots_for(parent), &self.physical_lookup_path(parent)).is_ok() {
                 return Ok(parent.to_vec());
             }
         }
@@ -755,7 +887,7 @@ impl Driver {
     /// body, just taking an already-computed absolute path instead of
     /// re-deriving `segments` from a raw `Path` itself.
     fn resolve_absolute_import_target(&mut self, segments: &[Ident]) -> Result<ImportTarget, ResolveError> {
-        match locate_module(&self.search_roots_for(segments), segments) {
+        match locate_module(&self.search_roots_for(segments), &self.physical_lookup_path(segments)) {
             Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
             // Real regardless of whether this turns out to be a
             // whole-module or item import -- must surface here, not be
@@ -1437,8 +1569,17 @@ impl Driver {
     /// by then). Mirrors the identical split `omega_codegen::Codegen` does
     /// at the codegen layer, for the same underlying reason (a cross-module
     /// call in either direction must never need something that isn't ready
-    /// yet).
-    pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
+    /// yet). `entry_file` is the concrete on-disk file backing `entry` --
+    /// needed by the very first step, `resolve_root_identities`, both to
+    /// register the entry's own identity for collision detection against
+    /// every registered `--extern` and to seed `physical_lookup_path`'s
+    /// translation table.
+    pub fn compile(
+        &mut self,
+        entry: &[Ident],
+        entry_file: &std::path::Path,
+    ) -> Result<CompiledProgram, Vec<CompileError>> {
+        self.resolve_root_identities(entry, entry_file)?;
         let resolve = |e: ResolveError| vec![CompileError::Resolve { error: e, importer: None }];
         let reachable = self.discover_reachable(entry).map_err(|e| vec![e])?;
         // Only ever swept eagerly for *local* modules -- an extern module's
