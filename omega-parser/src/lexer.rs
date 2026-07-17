@@ -126,6 +126,9 @@ pub enum TokenKind {
     Caret,
     /// `~base` -- unary bitwise-not; see `BitNotExpr`.
     Tilde,
+    /// `@` -- leads an item annotation (`@inline(always)`); see
+    /// `parser::item::parse_attributes`.
+    At,
 
     // Delimiters -- flat, individual tokens; nesting is the parser's
     // concern, not the lexer's (unlike the old macro-only `Token::Group`).
@@ -207,6 +210,7 @@ impl TokenKind {
             Self::Pipe => "'|'".to_string(),
             Self::Caret => "'^'".to_string(),
             Self::Tilde => "'~'".to_string(),
+            Self::At => "'@'".to_string(),
             Self::LParen => "'('".to_string(),
             Self::RParen => "')'".to_string(),
             Self::LBracket => "'['".to_string(),
@@ -522,6 +526,7 @@ impl<'a> Lexer<'a> {
             '|' => TokenKind::Pipe,
             '^' => TokenKind::Caret,
             '~' => TokenKind::Tilde,
+            '@' => TokenKind::At,
             _ => {
                 self.advance();
                 return Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidCharacter(c)));

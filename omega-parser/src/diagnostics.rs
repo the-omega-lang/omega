@@ -87,6 +87,9 @@ impl ParseError {
             ParseErrorKind::ExclusiveRangeMissingEnd => d
                 .with_label(self.span, "exclusive range has no end bound")
                 .with_help("give it an end (`..<end`), or use an inclusive range instead (`...`)"),
+            ParseErrorKind::AnnotationNotAllowedHere => d
+                .with_label(self.span, "this item can't carry annotations")
+                .with_help("annotations are only allowed on structs, enums, unions, and functions"),
         }
     }
 }
@@ -153,6 +156,12 @@ pub enum ParseErrorKind {
     /// exclusive range's whole point is excluding its end, so an
     /// open-ended one is meaningless; see `ast::range::RangeExpr`.
     ExclusiveRangeMissingEnd,
+    /// One or more `@name(...)` annotations directly above an item that has
+    /// nowhere to store them -- only structs, enums, unions, and functions
+    /// (top-level or member) carry an `attributes` list at all; annotating
+    /// an `extern`/`import`/plain declaration/macro is rejected here rather
+    /// than silently dropped.
+    AnnotationNotAllowedHere,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -190,6 +199,9 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::ExclusiveRangeMissingEnd => {
                 write!(f, "an exclusive range ('..<') must have an end bound")
+            }
+            Self::AnnotationNotAllowedHere => {
+                write!(f, "annotations are only allowed on structs, enums, unions, and functions")
             }
         }
     }

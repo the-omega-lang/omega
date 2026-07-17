@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod attributes;
 pub mod checked;
 mod context;
 pub mod error;

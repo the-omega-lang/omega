@@ -1,3 +1,4 @@
+use crate::ast::attribute::{AttributeArg, AttributeNode};
 use crate::ast::generics::GenericParam;
 use crate::ast::r#type::Type;
 use crate::ast::statement::{
@@ -30,14 +31,17 @@ pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
 }
 
 pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
+    let attributes = parse_attributes(p);
     let start = p.peek_span();
     let item = match p.peek() {
         TokenKind::Extern => {
+            reject_attributes(p, &attributes);
             let decl = parse_extern_declaration(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::ExternDeclaration(decl)
         }
         TokenKind::Import => {
+            reject_attributes(p, &attributes);
             p.advance();
             // `root::`/`extern::` are contextual keywords here (matching
             // `mut`'s own text-comparison pattern above, and `lexer::
@@ -64,12 +68,19 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::Import(ImportStmt { root, path })
         }
-        TokenKind::Struct => Item::Struct(parse_struct_def(p)?),
-        TokenKind::Enum => Item::Enum(parse_enum_def(p)?),
-        TokenKind::Union => Item::Union(parse_union_def(p)?),
-        TokenKind::Spec => Item::Spec(parse_spec_def(p)?),
-        TokenKind::Macro => Item::MacroDefinition(parse_macro_definition(p)?),
+        TokenKind::Struct => Item::Struct(parse_struct_def(p, attributes)?),
+        TokenKind::Enum => Item::Enum(parse_enum_def(p, attributes)?),
+        TokenKind::Union => Item::Union(parse_union_def(p, attributes)?),
+        TokenKind::Spec => {
+            reject_attributes(p, &attributes);
+            Item::Spec(parse_spec_def(p)?)
+        }
+        TokenKind::Macro => {
+            reject_attributes(p, &attributes);
+            Item::MacroDefinition(parse_macro_definition(p)?)
+        }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
+            reject_attributes(p, &attributes);
             let inv = parse_macro_invocation(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
@@ -81,13 +92,14 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         // straight to `parse_declaration` rather than the function-
         // definition-or-declaration dispatch below.
         TokenKind::Ident(name) if name == "mut" => {
+            reject_attributes(p, &attributes);
             p.advance(); // 'mut'
             let mut decl = parse_declaration(p)?;
             decl.mutable = true;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::Declaration(decl)
         }
-        TokenKind::Ident(_) => parse_declaration_or_function_definition(p)?,
+        TokenKind::Ident(_) => parse_declaration_or_function_definition(p, attributes)?,
         _ => {
             p.error(ParseErrorKind::Expected { expected: "a top-level item", found: p.peek().describe() });
             return None;
@@ -97,6 +109,82 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     Some(ItemNode { item, span })
 }
 
+/// Zero or more `@name(args)` annotations, one per line, immediately above
+/// an item -- see `AttributeNode`'s doc comment. Consumes nothing (and
+/// allocates nothing) when no `@` is present, the overwhelmingly common
+/// case.
+fn parse_attributes(p: &mut Parser) -> Vec<AttributeNode> {
+    let mut attributes = Vec::new();
+    while p.check(&TokenKind::At) {
+        match parse_attribute(p) {
+            Some(attr) => attributes.push(attr),
+            None => recovery::synchronize_to_statement_boundary(p),
+        }
+    }
+    attributes
+}
+
+/// `@name(arg, arg, ...)` -- parens are always required (no annotation
+/// needs a bare `@name` form), so this is the one shape every current and
+/// planned annotation shares.
+fn parse_attribute(p: &mut Parser) -> Option<AttributeNode> {
+    let start = p.peek_span();
+    p.expect(&TokenKind::At, "'@'");
+    let name = p.expect_ident()?;
+    p.expect(&TokenKind::LParen, "'('");
+    let mut args = Vec::new();
+    if !p.check(&TokenKind::RParen) {
+        loop {
+            args.push(parse_attribute_arg(p)?);
+            if !p.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+    }
+    p.expect(&TokenKind::RParen, "')'");
+    let span = start.to(p.last_span());
+    Some(AttributeNode { name, args, span })
+}
+
+/// `ident` (`packed`, `always`, a `@suppress` warning name, ...) or
+/// `ident = N` (`align = 4`) -- `N` is kept as raw decimal digit text,
+/// exactly like `parser::type::parse_array_size`'s "shape, not value"
+/// convention: no base prefix, suffix, or fraction is accepted here, so a
+/// malformed numeric shape is rejected at parse time rather than silently
+/// misread later.
+fn parse_attribute_arg(p: &mut Parser) -> Option<AttributeArg> {
+    let ident = p.expect_ident()?;
+    if !p.eat(&TokenKind::Eq) {
+        return Some(AttributeArg::Ident(ident));
+    }
+    match p.peek() {
+        TokenKind::Number(n)
+            if matches!(n.base, crate::ast::expression::number::NumberBase::Decimal)
+                && n.fractional_part.is_none()
+                && n.explicit_type.is_none() =>
+        {
+            let value = n.integer_part.clone();
+            p.advance();
+            Some(AttributeArg::KeyValue(ident, value))
+        }
+        _ => {
+            p.error(ParseErrorKind::Expected { expected: "a plain integer", found: p.peek().describe() });
+            None
+        }
+    }
+}
+
+/// Errors (without aborting the surrounding item) if `attributes` is
+/// non-empty -- for item kinds that have nowhere to store an attribute list
+/// at all (`extern`/`import`/plain declarations/macros/specs). Anchored at
+/// the first annotation's own span, not wherever parsing has reached by
+/// the time the surrounding item finishes.
+fn reject_attributes(p: &mut Parser, attributes: &[AttributeNode]) {
+    if let Some(first) = attributes.first() {
+        p.error_at(first.span, ParseErrorKind::AnnotationNotAllowedHere);
+    }
+}
+
 /// A leading identifier could start either a plain `Declaration`
 /// (`ident: Type;`) or a `FunctionDefinition` (`ident<generics>(params) =>
 /// Type { ... }`) -- disambiguated with a single-token lookahead, no
@@ -104,10 +192,13 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
 /// `(params)` at all in this position, so seeing `<` or `(` immediately
 /// after the name is already conclusive on its own, without needing to look
 /// *past* the (possibly absent, possibly multi-token) generics list first.
-fn parse_declaration_or_function_definition(p: &mut Parser) -> Option<Item> {
+fn parse_declaration_or_function_definition(p: &mut Parser, attributes: Vec<AttributeNode>) -> Option<Item> {
     match p.peek_at(1) {
-        TokenKind::Lt | TokenKind::LParen => Some(Item::FunctionDefinition(parse_function_definition(p)?)),
+        TokenKind::Lt | TokenKind::LParen => {
+            Some(Item::FunctionDefinition(parse_function_definition(p, attributes)?))
+        }
         _ => {
+            reject_attributes(p, &attributes);
             let decl = parse_declaration(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Some(Item::Declaration(decl))
@@ -118,8 +209,12 @@ fn parse_declaration_or_function_definition(p: &mut Parser) -> Option<Item> {
 /// `name<T, U, ...>(params) => ReturnType { body }` -- shared verbatim
 /// between a top-level function definition and a struct method (see
 /// `parse_struct_def`), exactly like the old grammar's single
-/// `FunctionDefinitionStmt::parser` was.
-pub fn parse_function_definition(p: &mut Parser) -> Option<FunctionDefinitionStmt> {
+/// `FunctionDefinitionStmt::parser` was. `attributes` is whatever
+/// `parse_attributes` already consumed immediately above this function --
+/// passed in rather than parsed here, since the caller (a member-function
+/// loop, or `parse_declaration_or_function_definition`) needs to see them
+/// *before* deciding this is a function at all.
+pub fn parse_function_definition(p: &mut Parser, attributes: Vec<AttributeNode>) -> Option<FunctionDefinitionStmt> {
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
@@ -128,7 +223,16 @@ pub fn parse_function_definition(p: &mut Parser) -> Option<FunctionDefinitionStm
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = crate::parser::r#type::parse_type(p)?;
     let codeblock = parse_codeblock(p)?;
-    Some(FunctionDefinitionStmt { ident, generics, is_member_function, self_mutable, params, return_type, codeblock })
+    Some(FunctionDefinitionStmt {
+        attributes,
+        ident,
+        generics,
+        is_member_function,
+        self_mutable,
+        params,
+        return_type,
+        codeblock,
+    })
 }
 
 /// `<T, U: Bound, ...>` -- optional, at least one name if present. Each
@@ -224,7 +328,7 @@ fn parse_declaration_list(p: &mut Parser) -> Vec<DeclarationStmt> {
 /// root-item position (`Item::Struct`) and nested statement
 /// position (`Statement::Struct`, see `parser::statement`) exactly like the
 /// old grammar's single `StructStmt::parser` was.
-pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
+pub fn parse_struct_def(p: &mut Parser, attributes: Vec<AttributeNode>) -> Option<StructStmt> {
     p.expect(&TokenKind::Struct, "'struct'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -243,22 +347,23 @@ pub fn parse_struct_def(p: &mut Parser) -> Option<StructStmt> {
     }
 
     let mut functions = Vec::new();
-    while matches!(p.peek(), TokenKind::Ident(_)) {
-        match parse_function_definition(p) {
+    while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
+        let fn_attributes = parse_attributes(p);
+        match parse_function_definition(p, fn_attributes) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(StructStmt { ident, generics, implements, fields, functions })
+    Some(StructStmt { attributes, ident, generics, implements, fields, functions })
 }
 
 /// `union Name<T, ...> { field: Type; ... method(...) => T { ... } ... }`
 /// -- identical shape and parsing strategy to `parse_struct_def`; the only
 /// difference is semantic (fields overlap in storage instead of being laid
 /// out sequentially), which is entirely an analyzer/codegen concern.
-pub fn parse_union_def(p: &mut Parser) -> Option<UnionStmt> {
+pub fn parse_union_def(p: &mut Parser, attributes: Vec<AttributeNode>) -> Option<UnionStmt> {
     p.expect(&TokenKind::Union, "'union'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -277,15 +382,16 @@ pub fn parse_union_def(p: &mut Parser) -> Option<UnionStmt> {
     }
 
     let mut functions = Vec::new();
-    while matches!(p.peek(), TokenKind::Ident(_)) {
-        match parse_function_definition(p) {
+    while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
+        let fn_attributes = parse_attributes(p);
+        match parse_function_definition(p, fn_attributes) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(UnionStmt { ident, generics, implements, fields, functions })
+    Some(UnionStmt { attributes, ident, generics, implements, fields, functions })
 }
 
 /// `spec Name<T, ...> : Dep, Dep { functions }` (declaration form) or
@@ -355,7 +461,7 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
 /// followed directly by the next variant); the variant list ends at `}`
 /// (no functions) or at a `;`, after which only function definitions may
 /// follow -- Java's "constants first, then a `;`, then members" rule.
-pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
+pub fn parse_enum_def(p: &mut Parser, attributes: Vec<AttributeNode>) -> Option<EnumStmt> {
     p.expect(&TokenKind::Enum, "'enum'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -427,8 +533,9 @@ pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
 
     let mut functions = Vec::new();
     if functions_follow {
-        while matches!(p.peek(), TokenKind::Ident(_)) {
-            match parse_function_definition(p) {
+        while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
+            let fn_attributes = parse_attributes(p);
+            match parse_function_definition(p, fn_attributes) {
                 Some(f) => functions.push(f),
                 None => recovery::synchronize_to_statement_boundary(p),
             }
@@ -436,7 +543,7 @@ pub fn parse_enum_def(p: &mut Parser) -> Option<EnumStmt> {
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(EnumStmt { ident, generics, implements, header, dynamic_fields, variants, functions })
+    Some(EnumStmt { attributes, ident, generics, implements, header, dynamic_fields, variants, functions })
 }
 
 /// The optional `(name: Type, ...)` header after the enum's name -- each

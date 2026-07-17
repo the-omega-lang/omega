@@ -465,6 +465,33 @@ pub enum AnalysisErrorKind {
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction { spec: Ident, function: Ident },
+
+    // -- annotations --
+    /// `@some_unknown_name(...)` -- not a recognized annotation at all
+    /// (most likely a typo). See `crate::attributes`'s applicability table.
+    UnknownAnnotation { name: Ident },
+    /// A recognized annotation used on an item kind it doesn't support
+    /// (e.g. `@inline` on a struct) -- `allowed` lists every item kind it
+    /// *is* valid on.
+    AnnotationNotApplicable { name: Ident, found: crate::attributes::ItemKind, allowed: Vec<crate::attributes::ItemKind> },
+    /// The same annotation name written twice on one item.
+    DuplicateAnnotation { name: Ident },
+    /// A recognized annotation whose argument(s) don't parse into anything
+    /// meaningful (wrong shape, an unrecognized mode word, a non-power-of-
+    /// two `align`, ...) -- `reason` is a short, already-formatted
+    /// explanation; the ways an argument can be malformed vary per
+    /// annotation and don't share one structured shape worth a dedicated
+    /// field each.
+    InvalidAnnotationArgs { name: Ident, reason: String },
+    /// `@mangling(disabled)` on a function with any generic parameters --
+    /// the `$$N` instantiation suffix mangling normally adds is the only
+    /// thing that keeps distinct instantiations from colliding on one
+    /// linker symbol once mangling is off.
+    ManglingDisabledOnGeneric,
+    /// `@mangling(disabled)` on a struct/enum/union method -- rejected for
+    /// now: a bare method name has no owning-type prefix once mangling is
+    /// off, a much easier accidental collision than a top-level function's.
+    ManglingDisabledOnMethod,
 }
 
 impl AnalysisErrorKind {
@@ -881,6 +908,30 @@ impl AnalysisErrorKind {
                 span,
                 format!("no function `{}` on spec `{}`", function.as_ref(), spec.as_ref()),
             ),
+            Self::UnknownAnnotation { name } => {
+                d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
+            }
+            Self::AnnotationNotApplicable { name, found, allowed } => d
+                .with_label(span, format!("cannot be used on {found}"))
+                .with_note(format!(
+                    "'@{}' only applies to {}",
+                    name.as_ref(),
+                    crate::attributes::item_kind_list(allowed)
+                )),
+            Self::DuplicateAnnotation { name } => {
+                d.with_label(span, format!("'@{}' is already applied to this item", name.as_ref()))
+            }
+            Self::InvalidAnnotationArgs { name, reason } => {
+                d.with_label(span, format!("'@{}' {reason}", name.as_ref()))
+            }
+            Self::ManglingDisabledOnGeneric => d
+                .with_label(span, "cannot disable mangling on a generic function")
+                .with_note(
+                    "the compiler-generated instantiation suffix is the only thing keeping distinct instantiations from colliding on one symbol",
+                ),
+            Self::ManglingDisabledOnMethod => d
+                .with_label(span, "cannot disable mangling on a struct/enum/union method")
+                .with_help("only top-level functions can disable mangling for now"),
         }
     }
 }
@@ -1323,6 +1374,16 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NoSuchSpecFunction { spec, function } => {
                 write!(f, "no function '{}' on spec '{}'", function.as_ref(), spec.as_ref())
             }
+            Self::UnknownAnnotation { name } => write!(f, "unknown annotation '@{}'", name.as_ref()),
+            Self::AnnotationNotApplicable { name, found, .. } => {
+                write!(f, "'@{}' cannot be applied to {found}", name.as_ref())
+            }
+            Self::DuplicateAnnotation { name } => write!(f, "duplicate '@{}' annotation", name.as_ref()),
+            Self::InvalidAnnotationArgs { name, reason } => {
+                write!(f, "invalid arguments for '@{}': {reason}", name.as_ref())
+            }
+            Self::ManglingDisabledOnGeneric => write!(f, "cannot disable mangling on a generic function"),
+            Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
         }
     }
 }
@@ -1348,6 +1409,9 @@ impl AnalysisWarning {
             AnalysisWarningKind::UnreachableCode => d
                 .with_label(self.span, "this can never run")
                 .with_note("it follows something that always diverges (`return`, `break`, or `continue`)"),
+            AnalysisWarningKind::InlineNotEnforced => d
+                .with_label(self.span, "this hint is recorded but not acted on")
+                .with_note("this backend has no function-inlining support yet"),
         }
     }
 }
@@ -1367,12 +1431,35 @@ pub enum AnalysisWarningKind {
     /// `analyze_block`) rather than risking codegen emitting instructions
     /// into an already-terminated cranelift block.
     UnreachableCode,
+    /// A function carries `@inline(always)`/`@inline(never)`, but this
+    /// backend has no per-function inlining mechanism to honor it with yet
+    /// (see `omega_codegen`) -- `@inline` is purely a hint (per the
+    /// language design), so this warns rather than errors, and is
+    /// suppressible like any other warning (`@suppress(inline_not_enforced)`).
+    InlineNotEnforced,
+}
+
+impl AnalysisWarningKind {
+    /// A stable, machine-readable slug for `@suppress(...)` to match
+    /// against -- deliberately independent of `Display`'s human sentence
+    /// (which is free to change wording without breaking anyone's
+    /// `@suppress` list) and never validated for existence at the
+    /// `@suppress` site (see `attributes::resolve`'s doc comment): a
+    /// renamed/removed warning just makes an old suppression silently
+    /// inert, not an error.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::UnreachableCode => "unreachable_code",
+            Self::InlineNotEnforced => "inline_not_enforced",
+        }
+    }
 }
 
 impl fmt::Display for AnalysisWarningKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnreachableCode => write!(f, "unreachable code"),
+            Self::InlineNotEnforced => write!(f, "'@inline' is not enforced by this backend yet"),
         }
     }
 }

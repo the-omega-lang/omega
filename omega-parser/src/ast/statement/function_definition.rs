@@ -1,3 +1,4 @@
+use crate::ast::attribute::AttributeNode;
 use crate::ast::expression::codeblock::CodeblockExpr;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
@@ -6,6 +7,12 @@ use crate::ast::statement::declaration::DeclarationStmt;
 
 #[derive(Debug, Clone)]
 pub struct FunctionDefinitionStmt {
+    /// `@inline(...)`/`@mangling(...)`/`@suppress(...)` written directly
+    /// above this function -- applies identically whether this is a
+    /// top-level function or a struct/enum/union method, since both are
+    /// this same node (see `is_member_function`). See
+    /// `omega_analyzer::attributes`.
+    pub attributes: Vec<AttributeNode>,
     pub ident: Ident,
     /// `<T, U, ...>` immediately after `ident` -- empty for an
     /// ordinary, non-generic function. Unlike a struct's, these are never

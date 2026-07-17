@@ -1,3 +1,4 @@
+use crate::ast::attribute::AttributeNode;
 use crate::ast::expression::ExpressionNode;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
@@ -40,6 +41,8 @@ use crate::diagnostics::Span;
 ///   ordinary struct-style functions (`self` = member, no `self` = static).
 #[derive(Debug, Clone)]
 pub struct EnumStmt {
+    /// See `StructStmt::attributes`'s doc comment.
+    pub attributes: Vec<AttributeNode>,
     pub ident: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum; same
     /// use-site rules as `StructStmt::generics`.

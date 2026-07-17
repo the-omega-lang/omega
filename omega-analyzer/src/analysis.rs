@@ -166,6 +166,13 @@ pub struct Analyzer<'r> {
     /// one of them) and nested `defer`. Reset at the start of each
     /// `check_function_body` call, same reasoning as `current_return_type`.
     in_defer_body: bool,
+    /// A stack of `@suppress(...)` name lists, one frame per item/method
+    /// currently being checked (innermost last) -- a method's own frame and
+    /// its owning struct/enum/union's frame are both active while that
+    /// method's body is checked, so either one suppresses a given warning
+    /// (see `Analyzer::warn`), the same lexical-nesting behavior Rust's
+    /// `#[allow]` has.
+    suppressed: Vec<Vec<Ident>>,
 }
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
@@ -297,6 +304,7 @@ impl<'r> Analyzer<'r> {
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
             in_defer_body: false,
+            suppressed: vec![],
         }
     }
 
@@ -305,6 +313,23 @@ impl<'r> Analyzer<'r> {
     /// per-module `module_errors`/warnings after every signature/body call.
     pub fn finish(self) -> (Vec<AnalysisError>, Vec<AnalysisWarning>) {
         (self.errors, self.warnings)
+    }
+
+    /// Whether any currently active `@suppress(...)` frame (see
+    /// `suppressed`'s doc comment) names this warning's stable slug (see
+    /// `AnalysisWarningKind::name`).
+    fn is_suppressed(&self, kind: &AnalysisWarningKind) -> bool {
+        self.suppressed.iter().any(|frame| frame.iter().any(|name| name.as_ref() == kind.name()))
+    }
+
+    /// The single choke point every warning is pushed through -- replaces
+    /// a raw `self.warnings.push(AnalysisWarning::new(...))`, silently
+    /// dropping the warning when `@suppress` has named it in an active
+    /// frame instead.
+    fn warn(&mut self, node_id: HirId, span: Span, kind: AnalysisWarningKind) {
+        if !self.is_suppressed(&kind) {
+            self.warnings.push(AnalysisWarning::new(node_id, span, kind));
+        }
     }
 
     // Small generic fold used everywhere a list of HIR nodes is analyzed
@@ -3039,7 +3064,7 @@ impl<'r> Analyzer<'r> {
         };
         if let Some(first_dead) = stmts.get(cutoff + 1) {
             let (id, span) = Self::checked_stmt_id_span(first_dead);
-            self.warnings.push(AnalysisWarning::new(id, span, AnalysisWarningKind::UnreachableCode));
+            self.warn(id, span, AnalysisWarningKind::UnreachableCode);
         }
         stmts.truncate(cutoff + 1);
         stmts
@@ -3071,7 +3096,7 @@ impl<'r> Analyzer<'r> {
         // is unreachable too, for the same reason.
         let tail = match &tail {
             Some(t) if stmts.last().is_some_and(Self::stmt_diverges) => {
-                self.warnings.push(AnalysisWarning::new(t.id, t.span, AnalysisWarningKind::UnreachableCode));
+                self.warn(t.id, t.span, AnalysisWarningKind::UnreachableCode);
                 None
             }
             _ => tail,
@@ -5150,6 +5175,16 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedStructType>>,
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
+        let resolved_attrs = crate::attributes::resolve(
+            &s.attributes,
+            crate::attributes::ItemKind::Struct,
+            false,
+            false,
+            |span, kind| self.errors.push(AnalysisError::new(s.id, span, kind)),
+        );
+        cell.borrow_mut().packing = resolved_attrs.packing;
+        cell.borrow_mut().suppress = resolved_attrs.suppress;
+
         let Some(fields) = self.analyze_struct_fields(&s.fields) else { return (None, vec![]) };
         cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
@@ -5185,6 +5220,15 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedUnionType>>,
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
+        let resolved_attrs = crate::attributes::resolve(
+            &u.attributes,
+            crate::attributes::ItemKind::Union,
+            false,
+            false,
+            |span, kind| self.errors.push(AnalysisError::new(u.id, span, kind)),
+        );
+        cell.borrow_mut().suppress = resolved_attrs.suppress;
+
         let Some(fields) = self.analyze_struct_fields(&u.fields) else { return (None, vec![]) };
         cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
 
@@ -5224,6 +5268,16 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedEnumType>>,
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
+        let resolved_attrs = crate::attributes::resolve(
+            &e.attributes,
+            crate::attributes::ItemKind::Enum,
+            false,
+            false,
+            |span, kind| self.errors.push(AnalysisError::new(e.id, span, kind)),
+        );
+        cell.borrow_mut().packing = resolved_attrs.packing;
+        cell.borrow_mut().suppress = resolved_attrs.suppress;
+
         let mut ok = true;
 
         // --- header: optional leading explicit tag, then shared fields ---
@@ -5748,6 +5802,7 @@ impl<'r> Analyzer<'r> {
         let methods: Vec<(ResolvedFunctionType, HirId)> =
             cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
 
+        self.suppressed.push(cell.borrow().suppress.clone());
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(e.functions.len());
         let mut ok = true;
@@ -5758,6 +5813,7 @@ impl<'r> Analyzer<'r> {
             }
         }
         self.context.leave_scope();
+        self.suppressed.pop();
         if !ok {
             return None;
         }
@@ -5784,6 +5840,18 @@ impl<'r> Analyzer<'r> {
         fn_type: &ResolvedFunctionType,
         id: HirId,
     ) -> Option<CheckedFunctionDef> {
+        let resolved_attrs = crate::attributes::resolve(
+            &f.attributes,
+            crate::attributes::ItemKind::Function,
+            f.is_member_function,
+            !f.generics.is_empty(),
+            |span, kind| self.errors.push(AnalysisError::new(f.id, span, kind)),
+        );
+        self.suppressed.push(resolved_attrs.suppress.clone());
+        if resolved_attrs.inline.is_some() {
+            self.warn(f.id, f.span, AnalysisWarningKind::InlineNotEnforced);
+        }
+
         self.context.enter_scope();
         let params = self.analyze_all(&f.params, Self::analyze_param);
 
@@ -5803,6 +5871,7 @@ impl<'r> Analyzer<'r> {
         let body = self.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
 
         self.context.leave_scope();
+        self.suppressed.pop();
 
         let params = params?;
         let body = body?;
@@ -5817,6 +5886,8 @@ impl<'r> Analyzer<'r> {
             params,
             return_type: (*fn_type.return_type).clone(),
             body,
+            inline: resolved_attrs.inline,
+            mangling: resolved_attrs.mangling,
         })
     }
 
@@ -5840,6 +5911,10 @@ impl<'r> Analyzer<'r> {
         let synthetic = HirFunctionDef {
             id: pending.raw.decl_id,
             span: pending.raw.span,
+            // Spec default methods carry no annotations of their own -- not
+            // yet part of the language's spec-function grammar (see
+            // `omega_analyzer::attributes`'s doc comment).
+            attributes: Vec::new(),
             name: pending.raw.name.clone(),
             generics: vec![],
             is_member_function: pending.raw.is_member_function,
@@ -5878,6 +5953,7 @@ impl<'r> Analyzer<'r> {
         let methods: Vec<(ResolvedFunctionType, HirId)> =
             cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
 
+        self.suppressed.push(cell.borrow().suppress.clone());
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(s.functions.len());
         let mut ok = true;
@@ -5888,6 +5964,7 @@ impl<'r> Analyzer<'r> {
             }
         }
         self.context.leave_scope();
+        self.suppressed.pop();
         if !ok {
             return None;
         }
@@ -5913,6 +5990,7 @@ impl<'r> Analyzer<'r> {
         let methods: Vec<(ResolvedFunctionType, HirId)> =
             cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
 
+        self.suppressed.push(cell.borrow().suppress.clone());
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(u.functions.len());
         let mut ok = true;
@@ -5923,6 +6001,7 @@ impl<'r> Analyzer<'r> {
             }
         }
         self.context.leave_scope();
+        self.suppressed.pop();
         if !ok {
             return None;
         }

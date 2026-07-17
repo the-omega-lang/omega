@@ -926,7 +926,14 @@ impl Driver {
         self.struct_cells
             .entry(key.clone())
             .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedStructType { id, name: key.1.clone(), fields: vec![], functions: vec![] }))
+                Rc::new(RefCell::new(ResolvedStructType {
+                    id,
+                    name: key.1.clone(),
+                    fields: vec![],
+                    functions: vec![],
+                    packing: Default::default(),
+                    suppress: vec![],
+                }))
             })
             .clone()
     }
@@ -946,6 +953,8 @@ impl Driver {
                     dynamic_fields: vec![],
                     variants: vec![],
                     functions: vec![],
+                    packing: Default::default(),
+                    suppress: vec![],
                 }))
             })
             .clone()
@@ -957,7 +966,13 @@ impl Driver {
         self.union_cells
             .entry(key.clone())
             .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedUnionType { id, name: key.1.clone(), fields: vec![], functions: vec![] }))
+                Rc::new(RefCell::new(ResolvedUnionType {
+                    id,
+                    name: key.1.clone(),
+                    fields: vec![],
+                    functions: vec![],
+                    suppress: vec![],
+                }))
             })
             .clone()
     }

@@ -12,6 +12,7 @@ use cranelift::{
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
+    attributes::{ManglingMode, Packing},
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
@@ -168,6 +169,21 @@ pub struct Codegen {
     /// once, after the whole function body has been walked and every flag
     /// is known.
     defer_bodies: HashMap<HirId, CheckedBlock>,
+
+    /// Every locally-defined function/method's final (post-mangling-or-not)
+    /// linker symbol, keyed by the demangled string actually handed to
+    /// `cranelift_module::declare_function` -- built up as
+    /// `declare_function_def` runs for every item across every module (see
+    /// `update_all`). A second, different function claiming a symbol
+    /// already seen (only possible via `@mangling(disabled)`, since a
+    /// mangled name always embeds a unique module path + `HirId`) is caught
+    /// here instead of surfacing as a confusing linker error or, worse, a
+    /// silent single-definition merge.
+    declared_symbols: HashMap<String, HirId>,
+    /// The first symbol collision found (see `declared_symbols`) -- checked
+    /// once, at the end of `Codegen::generate`, and turned into that
+    /// function's `Err`.
+    symbol_error: Option<String>,
 }
 
 /// Where `break`/`continue` jump to for one loop. `continue_blk` is *not*
@@ -246,16 +262,30 @@ impl IntoIRType for ResolvedType {
             ResolvedType::USize | ResolvedType::ISize => vec![codegen.pointer_type()],
             ResolvedType::F32 => vec![types::F32],
             ResolvedType::F64 => vec![types::F64],
-            ResolvedType::Struct(struct_type) => struct_type
-                .borrow()
-                .fields
-                .iter()
-                .flat_map(|x| x.1.clone().into_ir_type(codegen))
-                .collect(),
+            // Interior gaps (when a field's own type demands alignment --
+            // see `type_alignment`) and any trailing padding this struct's
+            // own `@packing(align = n)` demands are real filler `I8` leaves
+            // here, not just a byte-offset bookkeeping detail: this leaf
+            // list is also what a `Storage::Parameter` struct value *is*
+            // (flattened positional scalars, see this file's module doc),
+            // so the gaps have to actually exist as leaves for
+            // `field_byte_offset`'s memory-side byte offsets and this
+            // leaf-list's own positions to keep agreeing with each other.
+            ResolvedType::Struct(struct_type) => {
+                let struct_type = struct_type.borrow();
+                let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
+                let layout = layout_fields(&field_types, codegen);
+                let mut leaves = layout.leaves;
+                let final_size = round_up(layout.packed_end, packing_align(struct_type.packing));
+                leaves.extend(std::iter::repeat_n(types::I8, (final_size - layout.packed_end) as usize));
+                leaves
+            }
             // Every field overlaps the same storage -- exactly the shape a
             // single enum variant's payload has (see `enum_payload_bytes`'s
             // doc comment), so this reuses the same opaque-chunk flattening,
-            // with no tag/header leaves in front of it.
+            // with no tag/header leaves in front of it. Unions don't support
+            // `@packing` (see `ResolvedUnionType::suppress`'s doc comment),
+            // so there's no alignment/padding concern here at all.
             ResolvedType::Union(union_type) => {
                 payload_chunks(union_bytes(&union_type.borrow(), codegen))
             }
@@ -272,17 +302,31 @@ impl IntoIRType for ResolvedType {
             // storage`'s `EnumBody` arm). A statically-known variant
             // refinement never changes the layout -- every enum value is
             // full-size, which is exactly what makes refined -> plain
-            // widening a plain leaf copy.
+            // widening a plain leaf copy. Interior/trailing padding is
+            // handled exactly like `Struct`'s arm above -- see its doc
+            // comment; the payload's own start additionally respects the
+            // largest alignment any variant's own body field demands (see
+            // `enum_payload_alignment`), since every variant shares that one
+            // starting offset.
             ResolvedType::Enum { cell, .. } => {
                 let enum_type = cell.borrow();
-                let mut leaves = enum_type.tag_type.clone().into_ir_type(codegen);
-                for (_, field_type) in &enum_type.header {
-                    leaves.extend(field_type.clone().into_ir_type(codegen));
-                }
-                for (_, field_type) in &enum_type.dynamic_fields {
-                    leaves.extend(field_type.clone().into_ir_type(codegen));
-                }
-                leaves.extend(payload_chunks(enum_payload_bytes(&enum_type, codegen)));
+                let mut prefix_types = vec![enum_type.tag_type.clone()];
+                prefix_types.extend(enum_type.header.iter().map(|(_, t)| t.clone()));
+                prefix_types.extend(enum_type.dynamic_fields.iter().map(|(_, t)| t.clone()));
+                let prefix = layout_fields(&prefix_types, codegen);
+                let mut leaves = prefix.leaves;
+
+                let payload_align = enum_payload_alignment(&enum_type);
+                let payload_offset = round_up(prefix.packed_end, payload_align);
+                leaves.extend(std::iter::repeat_n(types::I8, (payload_offset - prefix.packed_end) as usize));
+                let payload_size = enum_payload_bytes(&enum_type, codegen);
+                leaves.extend(payload_chunks(payload_size));
+
+                let final_size = round_up(payload_offset + payload_size, packing_align(enum_type.packing));
+                leaves.extend(std::iter::repeat_n(
+                    types::I8,
+                    (final_size - (payload_offset + payload_size)) as usize,
+                ));
                 leaves
             }
             // `N` copies of the item type's own leaves, back to back -- the
@@ -325,10 +369,8 @@ fn project_field_access<T: Clone>(
     struct_type: &ResolvedStructType,
     field_index: usize,
 ) -> Vec<T> {
-    let start: usize = struct_type.fields[..field_index]
-        .iter()
-        .map(|(_, r#type)| r#type.clone().into_ir_type(codegen).len())
-        .sum();
+    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
+    let start = layout_fields(&field_types, codegen).leaf_starts[field_index];
     let len = struct_type.fields[field_index].1.clone().into_ir_type(codegen).len();
 
     values[start..start + len].to_vec()
@@ -342,37 +384,147 @@ fn block_args(values: &[Value]) -> Vec<BlockArg> {
 }
 
 /// A resolved type's total in-memory size, in bytes: the sum of its scalar
-/// leaves' sizes (`into_ir_type` already flattens a struct recursively into
-/// its leaves, so this needs no separate struct case). Layout is packed --
-/// each field is placed at the raw running byte sum of its predecessors,
-/// with no alignment padding. x86_64 tolerates unaligned loads/stores with
-/// no correctness issue, so this is safe; it's just not C-ABI-compatible
-/// layout, consistent with the rest of this codegen not implementing true
-/// C-ABI struct-passing conventions at function boundaries either (structs
-/// are passed as flattened positional scalars, not per SysV aggregate rules).
+/// leaves' sizes (`into_ir_type` already flattens a struct/enum recursively
+/// into its leaves -- interior/trailing padding included, see their
+/// `into_ir_type` arms -- so this needs no separate struct/enum case of its
+/// own). Layout is packed by default -- each field sits at the raw running
+/// byte sum of its predecessors -- unless `@packing(align = n)` says
+/// otherwise somewhere in the type graph (see `type_alignment`); x86_64
+/// tolerates unaligned loads/stores with no correctness issue, so packed is
+/// safe as a default, it's just not C-ABI-compatible layout, consistent
+/// with the rest of this codegen not implementing true C-ABI struct-passing
+/// conventions at function boundaries either (structs are passed as
+/// flattened positional scalars, not per SysV aggregate rules).
 fn total_bytes(r#type: ResolvedType, codegen: &Codegen) -> u32 {
     r#type.into_ir_type(codegen).iter().map(|t| t.bytes()).sum()
 }
 
-/// A `FieldAccess` projection's already-resolved `field_index`'s packed byte
-/// offset within `struct_type` -- the memory-backed (`Slot`/`Address`)
-/// counterpart to `project_field_access`'s positional (`Values`) slicing.
-fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codegen: &Codegen) -> u32 {
-    struct_type.fields[..field_index]
-        .iter()
-        .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
-        .sum()
+/// A struct/enum's own alignment requirement when embedded as a field --
+/// `1` (no alignment; today's implicit default) for everything except an
+/// explicit `@packing(align = n)` struct/enum, which imposes `n`. The
+/// *only* source of alignment anywhere in this layout model: never inferred
+/// from a primitive's own natural width, so a struct/enum with no
+/// `@packing(align = ...)` anywhere in its own or its fields' types keeps
+/// today's byte-identical fully packed layout.
+fn type_alignment(r#type: &ResolvedType) -> u32 {
+    let packing = match r#type {
+        ResolvedType::Struct(cell) => cell.borrow().packing,
+        ResolvedType::Enum { cell, .. } => cell.borrow().packing,
+        _ => Packing::Packed,
+    };
+    packing_align(packing)
 }
 
-/// The size of an enum's payload region: the largest variant body, in
-/// packed bytes -- `0` for an enum with no variant bodies at all.
+fn packing_align(packing: Packing) -> u32 {
+    match packing {
+        Packing::Packed => 1,
+        Packing::Align(n) => n,
+    }
+}
+
+fn round_up(offset: u32, align: u32) -> u32 {
+    if align <= 1 { offset } else { offset.div_ceil(align) * align }
+}
+
+/// The alignment *shift* `StackSlotData::new` wants (2^shift bytes) for a
+/// stack slot holding a value whose own required alignment (`type_alignment`)
+/// is `align` bytes (always a power of two, or `1` -- see
+/// `attributes::resolve_packing`'s validation). Never lower than `4` (16
+/// bytes) -- every stack slot's existing baseline (see `process_decl`'s doc
+/// comment) -- so this is a pure no-op for the overwhelming common case (no
+/// `@packing(align = ...)` anywhere, where `align` is `1`); only a
+/// `@packing(align = n)` type with `n > 16` raises it further.
+fn stack_align_shift(align: u32) -> u8 {
+    align.max(1).ilog2().max(4) as u8
+}
+
+/// One field-sequence's full layout -- struct fields, an enum's own
+/// `[tag, header..., dynamic...]` run, or a single variant's body fields.
+/// Tracks *both* byte offsets (for `Slot`/`Address`-backed memory access --
+/// `field_byte_offset`, the enum offset functions below) and leaf-list
+/// start indices (for `Values`-backed/register access --
+/// `project_field_access`, the `EnumHeader`/`EnumDynamicField` projection
+/// arms): once an `@packing(align = n)` field can insert a gap, the two stop
+/// being derivable from each other by a flat per-field leaf-count sum, so
+/// both are computed together, once, here -- the single source of truth
+/// every other layout function in this file reads from, so none of them can
+/// drift out of agreement with each other or with `into_ir_type`'s own
+/// `Struct`/`Enum` arms (which use this directly).
+struct FieldLayout {
+    byte_offsets: Vec<u32>,
+    leaf_starts: Vec<usize>,
+    leaves: Vec<IRType>,
+    /// The packed-with-interior-alignment running offset just past the
+    /// last field -- *not* yet rounded up to the whole sequence's own
+    /// trailing alignment (callers embedding a struct/enum's own
+    /// `@packing(align = n)` round this up themselves; an enum's
+    /// tag/header/dynamic run has no trailing alignment of its own at all,
+    /// only the payload's start and the enum's overall end do).
+    packed_end: u32,
+}
+
+fn layout_fields(types: &[ResolvedType], codegen: &Codegen) -> FieldLayout {
+    let mut byte_offsets = Vec::with_capacity(types.len());
+    let mut leaf_starts = Vec::with_capacity(types.len());
+    let mut leaves = Vec::new();
+    let mut offset = 0u32;
+    for r#type in types {
+        let aligned = round_up(offset, type_alignment(r#type));
+        leaves.extend(std::iter::repeat_n(types::I8, (aligned - offset) as usize));
+        byte_offsets.push(aligned);
+        leaf_starts.push(leaves.len());
+        let field_leaves = r#type.clone().into_ir_type(codegen);
+        offset = aligned + field_leaves.iter().map(|t| t.bytes()).sum::<u32>();
+        leaves.extend(field_leaves);
+    }
+    FieldLayout { byte_offsets, leaf_starts, leaves, packed_end: offset }
+}
+
+/// A `FieldAccess` projection's already-resolved `field_index`'s byte offset
+/// within `struct_type` (honoring interior alignment gaps -- see
+/// `type_alignment`) -- the memory-backed (`Slot`/`Address`) counterpart to
+/// `project_field_access`'s positional (`Values`) slicing.
+fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codegen: &Codegen) -> u32 {
+    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
+    layout_fields(&field_types, codegen).byte_offsets[field_index]
+}
+
+/// The size of an enum's payload region: the largest variant body, each
+/// laid out via `layout_fields` (so a variant whose own fields need
+/// internal alignment is sized correctly) -- `0` for an enum with no
+/// variant bodies at all.
 fn enum_payload_bytes(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
     enum_type
         .variants
         .iter()
-        .map(|v| v.fields.iter().map(|(_, r#type)| total_bytes(r#type.clone(), codegen)).sum::<u32>())
+        .map(|v| {
+            let field_types: Vec<ResolvedType> = v.fields.iter().map(|(_, t)| t.clone()).collect();
+            layout_fields(&field_types, codegen).packed_end
+        })
         .max()
         .unwrap_or(0)
+}
+
+/// The largest alignment any variant's own body field demands -- every
+/// variant's body shares the same starting offset (the payload region is
+/// one shared union of all of them), so the payload's own start (see
+/// `enum_payload_offset`) has to satisfy whichever variant needs the most.
+/// `1` (no alignment) when no variant has any field demanding one.
+fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
+    enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|(_, t)| type_alignment(t))).max().unwrap_or(1)
+}
+
+/// The enum's own `[tag, header..., dynamic...]` run, laid out as one
+/// `layout_fields` sequence -- shared by every offset function below, so
+/// `enum_header_offset`/`enum_dynamic_field_offset`/`enum_payload_offset`
+/// (and their `Values`-storage counterparts in the projection-handling
+/// code) all index into the exact same layout `into_ir_type`'s `Enum` arm
+/// built its leaves from.
+fn enum_prefix_layout(enum_type: &ResolvedEnumType, codegen: &Codegen) -> FieldLayout {
+    let mut types = vec![enum_type.tag_type.clone()];
+    types.extend(enum_type.header.iter().map(|(_, t)| t.clone()));
+    types.extend(enum_type.dynamic_fields.iter().map(|(_, t)| t.clone()));
+    layout_fields(&types, codegen)
 }
 
 /// The size of a union's storage: its largest field, in packed bytes -- `0`
@@ -408,48 +560,45 @@ fn payload_chunks(mut bytes: u32) -> Vec<IRType> {
     chunks
 }
 
-/// A header field's packed byte offset within an enum value -- past the tag
-/// and every preceding header field.
+/// A header field's byte offset within an enum value (honoring interior
+/// alignment gaps) -- past the tag and every preceding header field. Index
+/// `1 + index` into `enum_prefix_layout`'s combined run: index `0` is
+/// always the tag.
 fn enum_header_offset(enum_type: &ResolvedEnumType, index: usize, codegen: &Codegen) -> u32 {
-    total_bytes(enum_type.tag_type.clone(), codegen)
-        + enum_type.header[..index]
-            .iter()
-            .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
-            .sum::<u32>()
+    enum_prefix_layout(enum_type, codegen).byte_offsets[1 + index]
 }
 
-/// A shared dynamic field's packed byte offset within an enum value -- past
-/// the tag, the whole header, and every preceding dynamic field. Mirrors
-/// `enum_header_offset` exactly, one region further out.
+/// A shared dynamic field's byte offset within an enum value -- past the
+/// tag, the whole header, and every preceding dynamic field. Mirrors
+/// `enum_header_offset` exactly, one region further into the same combined
+/// run.
 fn enum_dynamic_field_offset(enum_type: &ResolvedEnumType, index: usize, codegen: &Codegen) -> u32 {
-    enum_header_offset(enum_type, enum_type.header.len(), codegen)
-        + enum_type.dynamic_fields[..index]
-            .iter()
-            .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
-            .sum::<u32>()
+    enum_prefix_layout(enum_type, codegen).byte_offsets[1 + enum_type.header.len() + index]
 }
 
 /// The payload region's byte offset within an enum value -- past the tag,
-/// the whole header, and the whole shared-dynamic-fields region.
+/// the whole header, and the whole shared-dynamic-fields region, rounded up
+/// to whatever alignment the largest variant field demands (see
+/// `enum_payload_alignment`) -- every variant's body shares this one
+/// starting offset.
 fn enum_payload_offset(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
-    enum_dynamic_field_offset(enum_type, enum_type.dynamic_fields.len(), codegen)
+    let prefix = enum_prefix_layout(enum_type, codegen);
+    round_up(prefix.packed_end, enum_payload_alignment(enum_type))
 }
 
-/// A body field's packed byte offset within an enum value: the payload
-/// region's start plus every preceding field of the *same variant* (each
-/// variant's body independently starts at the payload's start -- that's
-/// the union).
+/// A body field's byte offset within an enum value: the payload region's
+/// start plus every preceding field of the *same variant*, honoring
+/// interior alignment gaps within that variant's own fields (each variant's
+/// body independently starts at the payload's start -- that's the union).
 fn enum_body_field_offset(
     enum_type: &ResolvedEnumType,
     variant_index: usize,
     field_index: usize,
     codegen: &Codegen,
 ) -> u32 {
-    enum_payload_offset(enum_type, codegen)
-        + enum_type.variants[variant_index].fields[..field_index]
-            .iter()
-            .map(|(_, r#type)| total_bytes(r#type.clone(), codegen))
-            .sum::<u32>()
+    let field_types: Vec<ResolvedType> =
+        enum_type.variants[variant_index].fields.iter().map(|(_, t)| t.clone()).collect();
+    enum_payload_offset(enum_type, codegen) + layout_fields(&field_types, codegen).byte_offsets[field_index]
 }
 
 /// Every `defer`'s `HirId` reachable inside `block`, in declaration (program)
@@ -663,9 +812,15 @@ impl Codegen {
             loop_stack: Vec::new(),
             defer_flags: HashMap::new(),
             defer_bodies: HashMap::new(),
+            declared_symbols: HashMap::new(),
+            symbol_error: None,
         };
 
         codegen.update_all(modules, entry, extern_functions);
+
+        if let Some(error) = codegen.symbol_error {
+            return Err(error);
+        }
 
         Ok(codegen)
     }
@@ -728,9 +883,10 @@ impl Codegen {
             CheckedPlaceRoot::Expr(expr) => {
                 let r#type = expr.r#type.clone();
                 let values = self.process_expr(builder, (**expr).clone());
+                let shift = stack_align_shift(type_alignment(&r#type));
                 let size = total_bytes(r#type.clone(), self);
                 let slot = builder
-                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
                 let storage = PlaceStorage::Slot { slot, offset: 0 };
                 self.store_scalars(builder, &storage, &values);
                 (storage, r#type)
@@ -770,9 +926,10 @@ impl Codegen {
                 // then letting `current_type` advance to the field's type.
                 CheckedProjection::UnionField { r#type, .. } => {
                     if let PlaceStorage::Values(values) = &current {
+                        let shift = stack_align_shift(type_alignment(&current_type));
                         let size = total_bytes(current_type.clone(), self);
                         let slot = builder
-                            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
                         let spilled = PlaceStorage::Slot { slot, offset: 0 };
                         self.store_scalars(builder, &spilled, &values.clone());
                         current = spilled;
@@ -853,13 +1010,12 @@ impl Codegen {
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            // Positional, by leaf count -- the tag's leaves,
-                            // then every preceding header field's.
-                            let start = enum_type.tag_type.clone().into_ir_type(self).len()
-                                + enum_type.header[..*index]
-                                    .iter()
-                                    .map(|(_, t)| t.clone().into_ir_type(self).len())
-                                    .sum::<usize>();
+                            // Positional, by leaf-list start index -- shares
+                            // `enum_header_offset`'s exact layout (see
+                            // `enum_prefix_layout`), so an interior gap
+                            // before this field (from an earlier field's own
+                            // alignment demand) is accounted for here too.
+                            let start = enum_prefix_layout(&enum_type, self).leaf_starts[1 + *index];
                             let len = enum_type.header[*index].1.clone().into_ir_type(self).len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
@@ -888,12 +1044,9 @@ impl Codegen {
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            let start = enum_type.tag_type.clone().into_ir_type(self).len()
-                                + enum_type.header.iter().map(|(_, t)| t.clone().into_ir_type(self).len()).sum::<usize>()
-                                + enum_type.dynamic_fields[..*index]
-                                    .iter()
-                                    .map(|(_, t)| t.clone().into_ir_type(self).len())
-                                    .sum::<usize>();
+                            // See `EnumHeader`'s identical `Values` arm above.
+                            let start =
+                                enum_prefix_layout(&enum_type, self).leaf_starts[1 + enum_type.header.len() + *index];
                             let len = enum_type.dynamic_fields[*index].1.clone().into_ir_type(self).len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
@@ -920,9 +1073,10 @@ impl Codegen {
                     // first, exactly like a temporary place root, so the
                     // field is an ordinary byte offset from there.
                     if let PlaceStorage::Values(values) = &current {
+                        let shift = stack_align_shift(type_alignment(&current_type));
                         let size = total_bytes(current_type.clone(), self);
                         let slot = builder
-                            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
                         let spilled = PlaceStorage::Slot { slot, offset: 0 };
                         self.store_scalars(builder, &spilled, &values.clone());
                         current = spilled;
@@ -1827,9 +1981,10 @@ impl Codegen {
                 // `make_function_sig`/`define_function_def`); the value's
                 // leaves are read back out of it after the call.
                 let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
+                    let shift = stack_align_shift(type_alignment(&fn_type.return_type));
                     let size = total_bytes((*fn_type.return_type).clone(), self);
                     let slot = builder
-                        .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                        .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
                     let pointer = builder.ins().stack_addr(self.pointer_type(), slot, 0);
                     ir_args.insert(0, pointer);
                     slot
@@ -1917,9 +2072,10 @@ impl Codegen {
                 }
 
                 let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
+                    let shift = stack_align_shift(type_alignment(&fn_type.return_type));
                     let size = total_bytes((*fn_type.return_type).clone(), self);
                     let slot = builder
-                        .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                        .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
                     let pointer = builder.ins().stack_addr(self.pointer_type(), slot, 0);
                     ir_args.insert(0, pointer);
                     slot
@@ -2170,9 +2326,10 @@ impl Codegen {
                     )
                 };
 
+                let shift = stack_align_shift(type_alignment(&node.r#type));
                 let total = total_bytes(node.r#type.clone(), self);
                 let slot = builder
-                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
+                    .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, shift));
 
                 let tag_values = self.emit_const_value(builder, &ConstValue::Number(tag), &tag_type);
                 self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &tag_values);
@@ -2323,6 +2480,7 @@ impl Codegen {
     }
 
     fn process_decl(&mut self, builder: &mut FunctionBuilder, decl: CheckedDeclaration) {
+        let shift = stack_align_shift(type_alignment(&decl.r#type));
         let size = total_bytes(decl.r#type, self);
         // `StackSlotData::new`'s third parameter is an alignment *shift*
         // (alignment = 2^align_shift), not a byte count -- `4` means
@@ -2333,8 +2491,10 @@ impl Codegen {
         // but it's a real bug that surfaces once a function has enough
         // locals (see the regression this fixes: a large function's
         // earlier float locals started reading back as zero once later
-        // additions pushed the slot count high enough).
-        let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+        // additions pushed the slot count high enough). `shift` only ever
+        // raises this baseline further, for a local whose own type demands
+        // more than 16-byte alignment (see `stack_align_shift`).
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
         self.stack_slots.insert(decl.id, slot);
     }
 
@@ -2481,6 +2641,31 @@ impl Codegen {
         let sig = self.function_signature(function_def);
         let demangled_symbol = Self::demangle(&mangled_symbol);
 
+        if let Some(&existing_id) = self.declared_symbols.get(&demangled_symbol)
+            && existing_id != function_def.id
+        {
+            self.symbol_error.get_or_insert_with(|| {
+                format!(
+                    "two different functions both produce the linker symbol '{demangled_symbol}' -- this can \
+                     happen when '@mangling(disabled)' is used on more than one function with the same name; \
+                     give one of them a different name, or re-enable mangling"
+                )
+            });
+            // Don't ask `cranelift_module` to declare a second `Export` for
+            // a symbol it already has one for -- it rejects that outright
+            // (a real, deliberate safety check on its part), which would
+            // panic here instead of surfacing `symbol_error` cleanly. The
+            // object file is discarded either way once `symbol_error` is
+            // set (see `Codegen::generate`), so reusing the first
+            // definition's `FuncId` for this one is harmless -- it only
+            // has to survive long enough to let this pass finish.
+            let existing_function_id =
+                *self.functions.get(&existing_id).expect("a declared symbol's owner is always already in `functions`");
+            self.functions.insert(function_def.id, existing_function_id);
+            return existing_function_id;
+        }
+        self.declared_symbols.insert(demangled_symbol.clone(), function_def.id);
+
         let function_id = self
             .module
             .declare_function(&demangled_symbol, Linkage::Import, &sig)
@@ -2524,6 +2709,19 @@ impl Codegen {
     /// across every module already got in the declare pass, rather than
     /// declaring (and re-registering) it itself.
     fn define_function_def(&mut self, function_def: CheckedFunctionDef) {
+        // A symbol collision (see `declare_function_def`) is always found
+        // during the declare pass, which fully finishes before any define
+        // pass starts (see `update_all`'s doc comment) -- so once one's
+        // been found, every remaining body is skipped outright rather than
+        // defined against whatever `FuncId` `declare_function_def` had to
+        // improvise for the colliding function (which would otherwise ask
+        // `cranelift_module` to define the same `FuncId` twice and panic).
+        // `Codegen::generate` discards this whole `Codegen` once
+        // `symbol_error` is `Some`, so an incomplete module here is fine.
+        if self.symbol_error.is_some() {
+            return;
+        }
+
         let function_id = *self
             .functions
             .get(&function_def.id)
@@ -2697,7 +2895,18 @@ impl Codegen {
             // handled here, in one shot.
             CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
             CheckedItem::FunctionDefinition(f) => {
-                let mangled = Self::mangled_symbol(path, entry, &f.name, f.id);
+                // A member function can never reach `Disabled` here --
+                // `omega_analyzer::attributes::resolve` hard-rejects
+                // `@mangling(disabled)` on a method (and on a generic
+                // function) before a `CheckedModule` can exist at all (see
+                // its own doc comment: every enforcement point has already
+                // settled by the time codegen sees one), so only a
+                // top-level, non-generic function ever gets here with
+                // `Disabled`.
+                let mangled = match f.mangling {
+                    ManglingMode::Disabled => f.name.as_ref().to_string(),
+                    ManglingMode::Enabled => Self::mangled_symbol(path, entry, &f.name, f.id),
+                };
                 self.declare_function_def(f, mangled);
             }
             CheckedItem::Struct(s) => {

@@ -114,6 +114,14 @@ pub struct CheckedFunctionDef {
     /// statement-level `return` -- codegen relies on this to know it never
     /// has to fall off the end of a non-`Void` function.
     pub body: CheckedBlock,
+    /// `@inline(...)`'s resolved mode, if any -- `None` when no hint was
+    /// given at all. Purely a hint today (see
+    /// `crate::error::AnalysisWarningKind::InlineNotEnforced`); codegen has
+    /// no per-function inlining mechanism to act on it with yet.
+    pub inline: Option<crate::attributes::InlineMode>,
+    /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
+    /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
+    pub mangling: crate::attributes::ManglingMode,
 }
 
 impl CheckedFunctionDef {

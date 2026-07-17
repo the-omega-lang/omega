@@ -40,6 +40,17 @@ pub struct ResolvedStructType {
     pub name: Ident,
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
+    /// `@packing(...)`'s resolved mode -- `Packing::Packed` (today's
+    /// implicit, zero-padding layout) unless overridden. See
+    /// `omega_codegen`'s layout functions (`total_bytes`/
+    /// `field_byte_offset`), which are this field's only reader.
+    pub packing: crate::attributes::Packing,
+    /// `@suppress(...)`'s warning names -- resolved once here (alongside
+    /// `packing`, by whatever first builds this cell) rather than
+    /// re-resolved every time a method body is checked, so
+    /// `Analyzer::check_struct_body` can just read it back without risking
+    /// re-emitting the same annotation errors a second time.
+    pub suppress: Vec<Ident>,
 }
 
 /// Nominal, not structural: two struct types are the same type iff they're
@@ -77,6 +88,9 @@ pub struct ResolvedUnionType {
     pub name: Ident,
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
+    /// See `ResolvedStructType::suppress`'s doc comment. Unions don't
+    /// support `@packing` yet -- only `@suppress` applies here.
+    pub suppress: Vec<Ident>,
 }
 
 impl PartialEq for ResolvedUnionType {
@@ -126,6 +140,12 @@ pub struct ResolvedEnumType {
     pub variants: Vec<ResolvedEnumVariant>,
     /// Same shape and semantics as `ResolvedStructType::functions`.
     pub functions: Vec<(Ident, ResolvedMethod)>,
+    /// Same shape and semantics as `ResolvedStructType::packing`, applied
+    /// to the enum's own aggregate `[tag][header][dynamic][payload]`
+    /// layout as a whole.
+    pub packing: crate::attributes::Packing,
+    /// See `ResolvedStructType::suppress`'s doc comment.
+    pub suppress: Vec<Ident>,
 }
 
 /// One resolved variant: its unique tag value, its per-variant header

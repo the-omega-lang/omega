@@ -1,5 +1,6 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirBinaryOp, HirBlock, HirBreak, HirCast, HirCompoundAssign, HirContinue,
+    HirAddressOf, HirAssignment, HirAttribute, HirAttributeArg, HirBinaryOp, HirBlock, HirBreak, HirCast,
+    HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
     HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirGenericParam,
     HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
@@ -8,7 +9,8 @@ use crate::hir::{
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
-    CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode, ExternDeclarationStmt,
+    AttributeArg, AttributeNode, CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode,
+    ExternDeclarationStmt,
     FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
     SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
 };
@@ -190,6 +192,7 @@ impl Lowerer {
         HirFunctionDef {
             id: self.ids.next(),
             span,
+            attributes: Self::lower_attributes(&f.attributes),
             name: f.ident.clone(),
             generics: Self::lower_generics(&f.generics),
             is_member_function: f.is_member_function,
@@ -229,6 +232,27 @@ impl Lowerer {
     /// bounds stay raw/unresolved, same as everywhere else.
     fn lower_generics(generics: &[GenericParam]) -> Vec<HirGenericParam> {
         generics.iter().map(|g| HirGenericParam { ident: g.ident.clone(), bound: g.bound.clone() }).collect()
+    }
+
+    /// Mechanical clone of a parsed attribute list into HIR's own shape --
+    /// unvalidated, same as everywhere else (see `HirAttribute`'s doc
+    /// comment).
+    fn lower_attributes(attributes: &[AttributeNode]) -> Vec<HirAttribute> {
+        attributes
+            .iter()
+            .map(|a| HirAttribute {
+                name: a.name.clone(),
+                args: a
+                    .args
+                    .iter()
+                    .map(|arg| match arg {
+                        AttributeArg::Ident(ident) => HirAttributeArg::Ident(ident.clone()),
+                        AttributeArg::KeyValue(key, value) => HirAttributeArg::KeyValue(key.clone(), value.clone()),
+                    })
+                    .collect(),
+                span: a.span,
+            })
+            .collect()
     }
 
     fn lower_spec_def(&mut self, sp: &SpecStmt, span: Span) -> HirSpecDef {
@@ -286,6 +310,7 @@ impl Lowerer {
         HirStructDef {
             id,
             span,
+            attributes: Self::lower_attributes(&s.attributes),
             name: s.ident.clone(),
             generics: Self::lower_generics(&s.generics),
             implements: s.implements.clone(),
@@ -308,6 +333,7 @@ impl Lowerer {
         HirUnionDef {
             id,
             span,
+            attributes: Self::lower_attributes(&u.attributes),
             name: u.ident.clone(),
             generics: Self::lower_generics(&u.generics),
             implements: u.implements.clone(),
@@ -357,6 +383,7 @@ impl Lowerer {
         HirEnumDef {
             id,
             span,
+            attributes: Self::lower_attributes(&e.attributes),
             name: e.ident.clone(),
             generics: Self::lower_generics(&e.generics),
             implements: e.implements.clone(),
