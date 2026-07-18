@@ -1,4 +1,4 @@
-use crate::ast::annotation::{AnnotationArg, AnnotationNode};
+use crate::ast::annotation::{AnnotationArg, AnnotationNode, AnnotationValue};
 use crate::ast::generics::GenericParam;
 use crate::ast::r#type::Type;
 use crate::ast::statement::{
@@ -124,34 +124,38 @@ fn parse_annotations(p: &mut Parser) -> Vec<AnnotationNode> {
     annotations
 }
 
-/// `@name(arg, arg, ...)` -- parens are always required (no annotation
-/// needs a bare `@name` form), so this is the one shape every current and
-/// planned annotation shares.
+/// `@name` or `@name(arg, arg, ...)` -- parens (and their whole contents)
+/// are optional: an absent `(...)` means the same thing an empty `()` would
+/// (zero arguments), for an annotation whose resolver gives every argument
+/// a default (see `omega_analyzer::annotations::resolve`, e.g. bare
+/// `@inline` means `@inline(always)`).
 fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
     let start = p.peek_span();
     p.expect(&TokenKind::At, "'@'");
     let name = p.expect_ident()?;
-    p.expect(&TokenKind::LParen, "'('");
     let mut args = Vec::new();
-    if !p.check(&TokenKind::RParen) {
-        loop {
-            args.push(parse_annotation_arg(p)?);
-            if !p.eat(&TokenKind::Comma) {
-                break;
+    if p.eat(&TokenKind::LParen) {
+        if !p.check(&TokenKind::RParen) {
+            loop {
+                args.push(parse_annotation_arg(p)?);
+                if !p.eat(&TokenKind::Comma) {
+                    break;
+                }
             }
         }
+        p.expect(&TokenKind::RParen, "')'");
     }
-    p.expect(&TokenKind::RParen, "')'");
     let span = start.to(p.last_span());
     Some(AnnotationNode { name, args, span })
 }
 
-/// `ident` (`packed`, `always`, a `@suppress` warning name, ...) or
-/// `ident = N` (`align = 4`) -- `N` is kept as raw decimal digit text,
-/// exactly like `parser::type::parse_array_size`'s "shape, not value"
-/// convention: no base prefix, suffix, or fraction is accepted here, so a
-/// malformed numeric shape is rejected at parse time rather than silently
-/// misread later.
+/// `ident` (`always`, `enabled`, a `@suppress` warning name, ...) or
+/// `ident = value`, where `value` is either a plain integer (kept as raw
+/// decimal digit text, exactly like `parser::type::parse_array_size`'s
+/// "shape, not value" convention: no base prefix, suffix, or fraction is
+/// accepted here, so a malformed numeric shape is rejected at parse time
+/// rather than silently misread later) or `sizeof<Type>` (`align = 4`,
+/// `pack = sizeof<usize>`).
 fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
     let ident = p.expect_ident()?;
     if !p.eat(&TokenKind::Eq) {
@@ -165,10 +169,17 @@ fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
         {
             let value = n.integer_part.clone();
             p.advance();
-            Some(AnnotationArg::KeyValue(ident, value))
+            Some(AnnotationArg::KeyValue(ident, AnnotationValue::IntLiteral(value)))
+        }
+        TokenKind::Ident(name) if name == "sizeof" && matches!(p.peek_at(1), TokenKind::Lt) => {
+            p.advance(); // 'sizeof'
+            p.advance(); // '<'
+            let r#type = crate::parser::r#type::parse_type(p)?;
+            p.expect(&TokenKind::Gt, "'>'");
+            Some(AnnotationArg::KeyValue(ident, AnnotationValue::Sizeof(r#type)))
         }
         _ => {
-            p.error(ParseErrorKind::Expected { expected: "a plain integer", found: p.peek().describe() });
+            p.error(ParseErrorKind::Expected { expected: "a plain integer or 'sizeof<Type>'", found: p.peek().describe() });
             None
         }
     }

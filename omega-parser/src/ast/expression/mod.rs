@@ -19,6 +19,7 @@ pub mod macro_invocation;
 pub mod match_expr;
 pub mod negate;
 pub mod number;
+pub mod sizeof;
 pub mod slice;
 pub mod string;
 pub mod struct_literal;
@@ -31,7 +32,7 @@ use crate::ast::expression::{
     compound_assign::CompoundAssignExpr, deref::DerefExpr, field_access::FieldAccessExpr,
     function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
     index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
-    negate::NegateExpr, number::NumberExpr, slice::SliceExpr, string::StringExpr,
+    negate::NegateExpr, number::NumberExpr, sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr,
     struct_literal::StructLiteralExpr,
 };
 use crate::diagnostics::Span;
@@ -57,6 +58,8 @@ pub enum Expression {
     BitNot(Box<BitNotExpr>),
     /// `<Type>base` -- see `CastExpr`'s doc comment.
     Cast(Box<CastExpr>),
+    /// `sizeof<Type>` -- see `SizeofExpr`'s doc comment.
+    Sizeof(Box<SizeofExpr>),
     Increment(Box<IncrementExpr>),
     Decrement(Box<DecrementExpr>),
     BinaryOp(Box<BinaryOpExpr>),

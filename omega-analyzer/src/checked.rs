@@ -374,6 +374,11 @@ pub enum CheckedExpr {
     /// in codegen's dispatch); `kind` is exactly which conversion
     /// (`Analyzer::resolve_cast_kind`) `base`'s value needs to become it.
     Cast(CheckedCast),
+    /// `sizeof<Type>` -- the node's own `r#type` is always `ResolvedType::
+    /// USize`; the resolved `Type` being sized is carried here directly
+    /// (no separate `Checked*` wrapper struct needed, unlike `Cast`, since
+    /// there's no `base`/`kind` to go with it).
+    Sizeof(ResolvedType),
     /// `Union { field = value; }` -- builds a whole union value by writing
     /// exactly one field; analysis guarantees exactly one initializer was
     /// given (see `AnalysisErrorKind::UnionLiteralMissingField`/

@@ -12,7 +12,7 @@ use cranelift::{
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
-    annotations::{ManglingMode, Packing},
+    annotations::ManglingMode,
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
@@ -262,21 +262,22 @@ impl IntoIRType for ResolvedType {
             ResolvedType::USize | ResolvedType::ISize => vec![codegen.pointer_type()],
             ResolvedType::F32 => vec![types::F32],
             ResolvedType::F64 => vec![types::F64],
-            // Interior gaps (when a field's own type demands alignment --
-            // see `type_alignment`) and any trailing padding this struct's
-            // own `@packing(align = n)` demands are real filler `I8` leaves
-            // here, not just a byte-offset bookkeeping detail: this leaf
-            // list is also what a `Storage::Parameter` struct value *is*
-            // (flattened positional scalars, see this file's module doc),
-            // so the gaps have to actually exist as leaves for
-            // `field_byte_offset`'s memory-side byte offsets and this
-            // leaf-list's own positions to keep agreeing with each other.
+            // Interior gaps (from a field's own transitive `align`, or from
+            // this struct's own `@layout(pack = n)` chunking -- see
+            // `place_field`) and any trailing padding this struct's own
+            // `@layout(align = n)` demands are real filler `I8` leaves here,
+            // not just a byte-offset bookkeeping detail: this leaf list is
+            // also what a `Storage::Parameter` struct value *is* (flattened
+            // positional scalars, see this file's module doc), so the gaps
+            // have to actually exist as leaves for `field_byte_offset`'s
+            // memory-side byte offsets and this leaf-list's own positions to
+            // keep agreeing with each other.
             ResolvedType::Struct(struct_type) => {
                 let struct_type = struct_type.borrow();
                 let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
-                let layout = layout_fields(&field_types, codegen);
+                let layout = layout_fields(&field_types, struct_type.layout.pack, codegen);
                 let mut leaves = layout.leaves;
-                let final_size = round_up(layout.packed_end, packing_align(struct_type.packing));
+                let final_size = round_up(layout.packed_end, struct_type.layout.align);
                 leaves.extend(std::iter::repeat_n(types::I8, (final_size - layout.packed_end) as usize));
                 leaves
             }
@@ -284,7 +285,7 @@ impl IntoIRType for ResolvedType {
             // single enum variant's payload has (see `enum_payload_bytes`'s
             // doc comment), so this reuses the same opaque-chunk flattening,
             // with no tag/header leaves in front of it. Unions don't support
-            // `@packing` (see `ResolvedUnionType::suppress`'s doc comment),
+            // `@layout` (see `ResolvedUnionType::suppress`'s doc comment),
             // so there's no alignment/padding concern here at all.
             ResolvedType::Union(union_type) => {
                 payload_chunks(union_bytes(&union_type.borrow(), codegen))
@@ -310,19 +311,16 @@ impl IntoIRType for ResolvedType {
             // starting offset.
             ResolvedType::Enum { cell, .. } => {
                 let enum_type = cell.borrow();
-                let mut prefix_types = vec![enum_type.tag_type.clone()];
-                prefix_types.extend(enum_type.header.iter().map(|(_, t)| t.clone()));
-                prefix_types.extend(enum_type.dynamic_fields.iter().map(|(_, t)| t.clone()));
-                let prefix = layout_fields(&prefix_types, codegen);
+                let prefix = enum_prefix_layout(&enum_type, codegen);
                 let mut leaves = prefix.leaves;
 
                 let payload_align = enum_payload_alignment(&enum_type);
-                let payload_offset = round_up(prefix.packed_end, payload_align);
+                let payload_size = enum_payload_bytes(&enum_type, enum_type.layout.pack, codegen);
+                let payload_offset = place_field(prefix.packed_end, payload_align, payload_size, enum_type.layout.pack);
                 leaves.extend(std::iter::repeat_n(types::I8, (payload_offset - prefix.packed_end) as usize));
-                let payload_size = enum_payload_bytes(&enum_type, codegen);
                 leaves.extend(payload_chunks(payload_size));
 
-                let final_size = round_up(payload_offset + payload_size, packing_align(enum_type.packing));
+                let final_size = round_up(payload_offset + payload_size, enum_type.layout.align);
                 leaves.extend(std::iter::repeat_n(
                     types::I8,
                     (final_size - (payload_offset + payload_size)) as usize,
@@ -370,7 +368,7 @@ fn project_field_access<T: Clone>(
     field_index: usize,
 ) -> Vec<T> {
     let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
-    let start = layout_fields(&field_types, codegen).leaf_starts[field_index];
+    let start = layout_fields(&field_types, struct_type.layout.pack, codegen).leaf_starts[field_index];
     let len = struct_type.fields[field_index].1.clone().into_ir_type(codegen).len();
 
     values[start..start + len].to_vec()
@@ -388,37 +386,31 @@ fn block_args(values: &[Value]) -> Vec<BlockArg> {
 /// into its leaves -- interior/trailing padding included, see their
 /// `into_ir_type` arms -- so this needs no separate struct/enum case of its
 /// own). Layout is packed by default -- each field sits at the raw running
-/// byte sum of its predecessors -- unless `@packing(align = n)` says
-/// otherwise somewhere in the type graph (see `type_alignment`); x86_64
-/// tolerates unaligned loads/stores with no correctness issue, so packed is
-/// safe as a default, it's just not C-ABI-compatible layout, consistent
-/// with the rest of this codegen not implementing true C-ABI struct-passing
-/// conventions at function boundaries either (structs are passed as
-/// flattened positional scalars, not per SysV aggregate rules).
+/// byte sum of its predecessors -- unless `@layout(pack = ...)`/`@layout(
+/// align = ...)` says otherwise somewhere in the type graph (see
+/// `type_alignment`/`place_field`); x86_64 tolerates unaligned loads/stores
+/// with no correctness issue, so packed is safe as a default, it's just not
+/// C-ABI-compatible layout, consistent with the rest of this codegen not
+/// implementing true C-ABI struct-passing conventions at function
+/// boundaries either (structs are passed as flattened positional scalars,
+/// not per SysV aggregate rules).
 fn total_bytes(r#type: ResolvedType, codegen: &Codegen) -> u32 {
     r#type.into_ir_type(codegen).iter().map(|t| t.bytes()).sum()
 }
 
 /// A struct/enum's own alignment requirement when embedded as a field --
 /// `1` (no alignment; today's implicit default) for everything except an
-/// explicit `@packing(align = n)` struct/enum, which imposes `n`. The
-/// *only* source of alignment anywhere in this layout model: never inferred
-/// from a primitive's own natural width, so a struct/enum with no
-/// `@packing(align = ...)` anywhere in its own or its fields' types keeps
-/// today's byte-identical fully packed layout.
+/// explicit `@layout(align = n)` struct/enum, which imposes `n`. The *only*
+/// source of alignment anywhere in this layout model: never inferred from a
+/// primitive's own natural width, so a struct/enum with no `@layout(align =
+/// ...)` anywhere in its own or its fields' types keeps today's
+/// byte-identical fully packed layout. Unrelated to `pack` -- see `Layout`'s
+/// own doc comment for why the two are orthogonal.
 fn type_alignment(r#type: &ResolvedType) -> u32 {
-    let packing = match r#type {
-        ResolvedType::Struct(cell) => cell.borrow().packing,
-        ResolvedType::Enum { cell, .. } => cell.borrow().packing,
-        _ => Packing::Packed,
-    };
-    packing_align(packing)
-}
-
-fn packing_align(packing: Packing) -> u32 {
-    match packing {
-        Packing::Packed => 1,
-        Packing::Align(n) => n,
+    match r#type {
+        ResolvedType::Struct(cell) => cell.borrow().layout.align,
+        ResolvedType::Enum { cell, .. } => cell.borrow().layout.align,
+        _ => 1,
     }
 }
 
@@ -426,14 +418,39 @@ fn round_up(offset: u32, align: u32) -> u32 {
     if align <= 1 { offset } else { offset.div_ceil(align) * align }
 }
 
+/// Places one field at `offset`, honoring both its own transitive alignment
+/// (`field_align`, from `type_alignment`) and the enclosing type's own
+/// `pack` (see `omega_analyzer::annotations::Layout::pack`'s doc comment):
+/// a chunk of size `pack` starts at every multiple of `pack`; a field is
+/// placed at its own (already alignment-rounded) offset if it fits in what
+/// remains of the chunk it would start in, *or* if it would be the first
+/// thing placed in that chunk (`offset_in_chunk == 0` -- without this, a
+/// single field bigger than `pack` itself could never "fit" and would
+/// uselessly bounce to the next chunk boundary forever); otherwise padding
+/// advances to the start of the next chunk. `pack == 1` (the default) is a
+/// true no-op: every offset is already a multiple of `1`, so
+/// `offset_in_chunk` is always `0` and every field lands at its plain
+/// aligned offset -- byte-identical to this type's layout before `@layout`
+/// existed at all.
+fn place_field(offset: u32, field_align: u32, field_size: u32, pack: u32) -> u32 {
+    let aligned = round_up(offset, field_align);
+    let chunk_start = (aligned / pack) * pack;
+    let offset_in_chunk = aligned - chunk_start;
+    if offset_in_chunk == 0 || offset_in_chunk + field_size <= pack {
+        aligned
+    } else {
+        round_up(chunk_start + pack, field_align)
+    }
+}
+
 /// The alignment *shift* `StackSlotData::new` wants (2^shift bytes) for a
 /// stack slot holding a value whose own required alignment (`type_alignment`)
 /// is `align` bytes (always a power of two, or `1` -- see
-/// `annotations::resolve_packing`'s validation). Never lower than `4` (16
+/// `annotations::resolve_layout`'s validation). Never lower than `4` (16
 /// bytes) -- every stack slot's existing baseline (see `process_decl`'s doc
 /// comment) -- so this is a pure no-op for the overwhelming common case (no
-/// `@packing(align = ...)` anywhere, where `align` is `1`); only a
-/// `@packing(align = n)` type with `n > 16` raises it further.
+/// `@layout(align = ...)` anywhere, where `align` is `1`); only a
+/// `@layout(align = n)` type with `n > 16` raises it further.
 fn stack_align_shift(align: u32) -> u8 {
     align.max(1).ilog2().max(4) as u8
 }
@@ -444,62 +461,67 @@ fn stack_align_shift(align: u32) -> u8 {
 /// `field_byte_offset`, the enum offset functions below) and leaf-list
 /// start indices (for `Values`-backed/register access --
 /// `project_field_access`, the `EnumHeader`/`EnumDynamicField` projection
-/// arms): once an `@packing(align = n)` field can insert a gap, the two stop
-/// being derivable from each other by a flat per-field leaf-count sum, so
-/// both are computed together, once, here -- the single source of truth
-/// every other layout function in this file reads from, so none of them can
-/// drift out of agreement with each other or with `into_ir_type`'s own
-/// `Struct`/`Enum` arms (which use this directly).
+/// arms): once an `@layout(align = n)`/`@layout(pack = n)` field can insert
+/// a gap, the two stop being derivable from each other by a flat per-field
+/// leaf-count sum, so both are computed together, once, here -- the single
+/// source of truth every other layout function in this file reads from, so
+/// none of them can drift out of agreement with each other or with
+/// `into_ir_type`'s own `Struct`/`Enum` arms (which use this directly).
 struct FieldLayout {
     byte_offsets: Vec<u32>,
     leaf_starts: Vec<usize>,
     leaves: Vec<IRType>,
-    /// The packed-with-interior-alignment running offset just past the
-    /// last field -- *not* yet rounded up to the whole sequence's own
-    /// trailing alignment (callers embedding a struct/enum's own
-    /// `@packing(align = n)` round this up themselves; an enum's
-    /// tag/header/dynamic run has no trailing alignment of its own at all,
-    /// only the payload's start and the enum's overall end do).
+    /// The packed-with-interior-layout running offset just past the last
+    /// field -- *not* yet rounded up to the whole sequence's own trailing
+    /// alignment (callers embedding a struct/enum's own `@layout(align =
+    /// n)` round this up themselves; an enum's tag/header/dynamic run has
+    /// no trailing alignment of its own at all, only the payload's start
+    /// and the enum's overall end do).
     packed_end: u32,
 }
 
-fn layout_fields(types: &[ResolvedType], codegen: &Codegen) -> FieldLayout {
+/// `pack` is the *enclosing* struct/enum's own resolved `@layout(pack =
+/// ...)` (see `place_field`) -- applied uniformly to every field in `types`,
+/// whether this call is laying out a struct's own fields, an enum's
+/// `[tag, header..., dynamic...]` run, or one variant's body fields.
+fn layout_fields(types: &[ResolvedType], pack: u32, codegen: &Codegen) -> FieldLayout {
     let mut byte_offsets = Vec::with_capacity(types.len());
     let mut leaf_starts = Vec::with_capacity(types.len());
     let mut leaves = Vec::new();
     let mut offset = 0u32;
     for r#type in types {
-        let aligned = round_up(offset, type_alignment(r#type));
-        leaves.extend(std::iter::repeat_n(types::I8, (aligned - offset) as usize));
-        byte_offsets.push(aligned);
-        leaf_starts.push(leaves.len());
         let field_leaves = r#type.clone().into_ir_type(codegen);
-        offset = aligned + field_leaves.iter().map(|t| t.bytes()).sum::<u32>();
+        let field_size = field_leaves.iter().map(|t| t.bytes()).sum::<u32>();
+        let placed = place_field(offset, type_alignment(r#type), field_size, pack);
+        leaves.extend(std::iter::repeat_n(types::I8, (placed - offset) as usize));
+        byte_offsets.push(placed);
+        leaf_starts.push(leaves.len());
+        offset = placed + field_size;
         leaves.extend(field_leaves);
     }
     FieldLayout { byte_offsets, leaf_starts, leaves, packed_end: offset }
 }
 
 /// A `FieldAccess` projection's already-resolved `field_index`'s byte offset
-/// within `struct_type` (honoring interior alignment gaps -- see
-/// `type_alignment`) -- the memory-backed (`Slot`/`Address`) counterpart to
+/// within `struct_type` (honoring interior alignment/pack gaps -- see
+/// `place_field`) -- the memory-backed (`Slot`/`Address`) counterpart to
 /// `project_field_access`'s positional (`Values`) slicing.
 fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codegen: &Codegen) -> u32 {
     let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
-    layout_fields(&field_types, codegen).byte_offsets[field_index]
+    layout_fields(&field_types, struct_type.layout.pack, codegen).byte_offsets[field_index]
 }
 
-/// The size of an enum's payload region: the largest variant body, each
-/// laid out via `layout_fields` (so a variant whose own fields need
-/// internal alignment is sized correctly) -- `0` for an enum with no
-/// variant bodies at all.
-fn enum_payload_bytes(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
+/// The size of an enum's payload region: the largest variant body, each laid
+/// out via `layout_fields` with the enum's own `pack` (so a variant whose
+/// own fields need internal alignment/pack-chunking is sized correctly) --
+/// `0` for an enum with no variant bodies at all.
+fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, codegen: &Codegen) -> u32 {
     enum_type
         .variants
         .iter()
         .map(|v| {
             let field_types: Vec<ResolvedType> = v.fields.iter().map(|(_, t)| t.clone()).collect();
-            layout_fields(&field_types, codegen).packed_end
+            layout_fields(&field_types, pack, codegen).packed_end
         })
         .max()
         .unwrap_or(0)
@@ -514,17 +536,18 @@ fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
     enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|(_, t)| type_alignment(t))).max().unwrap_or(1)
 }
 
-/// The enum's own `[tag, header..., dynamic...]` run, laid out as one
-/// `layout_fields` sequence -- shared by every offset function below, so
-/// `enum_header_offset`/`enum_dynamic_field_offset`/`enum_payload_offset`
-/// (and their `Values`-storage counterparts in the projection-handling
-/// code) all index into the exact same layout `into_ir_type`'s `Enum` arm
-/// built its leaves from.
+/// The enum's own `[tag, header..., dynamic...]` run, laid out (with the
+/// enum's own `@layout(pack = ...)`) as one `layout_fields` sequence --
+/// shared by every offset function below, so `enum_header_offset`/
+/// `enum_dynamic_field_offset`/`enum_payload_offset` (and their
+/// `Values`-storage counterparts in the projection-handling code) all index
+/// into the exact same layout `into_ir_type`'s `Enum` arm built its leaves
+/// from.
 fn enum_prefix_layout(enum_type: &ResolvedEnumType, codegen: &Codegen) -> FieldLayout {
     let mut types = vec![enum_type.tag_type.clone()];
     types.extend(enum_type.header.iter().map(|(_, t)| t.clone()));
     types.extend(enum_type.dynamic_fields.iter().map(|(_, t)| t.clone()));
-    layout_fields(&types, codegen)
+    layout_fields(&types, enum_type.layout.pack, codegen)
 }
 
 /// The size of a union's storage: its largest field, in packed bytes -- `0`
@@ -561,8 +584,8 @@ fn payload_chunks(mut bytes: u32) -> Vec<IRType> {
 }
 
 /// A header field's byte offset within an enum value (honoring interior
-/// alignment gaps) -- past the tag and every preceding header field. Index
-/// `1 + index` into `enum_prefix_layout`'s combined run: index `0` is
+/// alignment/pack gaps) -- past the tag and every preceding header field.
+/// Index `1 + index` into `enum_prefix_layout`'s combined run: index `0` is
 /// always the tag.
 fn enum_header_offset(enum_type: &ResolvedEnumType, index: usize, codegen: &Codegen) -> u32 {
     enum_prefix_layout(enum_type, codegen).byte_offsets[1 + index]
@@ -577,19 +600,22 @@ fn enum_dynamic_field_offset(enum_type: &ResolvedEnumType, index: usize, codegen
 }
 
 /// The payload region's byte offset within an enum value -- past the tag,
-/// the whole header, and the whole shared-dynamic-fields region, rounded up
-/// to whatever alignment the largest variant field demands (see
-/// `enum_payload_alignment`) -- every variant's body shares this one
-/// starting offset.
+/// the whole header, and the whole shared-dynamic-fields region, placed (via
+/// `place_field`, honoring both the enum's own `pack` and whatever alignment
+/// the largest variant field demands -- see `enum_payload_alignment`) right
+/// after the prefix run -- every variant's body shares this one starting
+/// offset.
 fn enum_payload_offset(enum_type: &ResolvedEnumType, codegen: &Codegen) -> u32 {
     let prefix = enum_prefix_layout(enum_type, codegen);
-    round_up(prefix.packed_end, enum_payload_alignment(enum_type))
+    let payload_size = enum_payload_bytes(enum_type, enum_type.layout.pack, codegen);
+    place_field(prefix.packed_end, enum_payload_alignment(enum_type), payload_size, enum_type.layout.pack)
 }
 
 /// A body field's byte offset within an enum value: the payload region's
 /// start plus every preceding field of the *same variant*, honoring
-/// interior alignment gaps within that variant's own fields (each variant's
-/// body independently starts at the payload's start -- that's the union).
+/// interior alignment/pack gaps within that variant's own fields (each
+/// variant's body independently starts at the payload's start -- that's
+/// the union).
 fn enum_body_field_offset(
     enum_type: &ResolvedEnumType,
     variant_index: usize,
@@ -598,7 +624,8 @@ fn enum_body_field_offset(
 ) -> u32 {
     let field_types: Vec<ResolvedType> =
         enum_type.variants[variant_index].fields.iter().map(|(_, t)| t.clone()).collect();
-    enum_payload_offset(enum_type, codegen) + layout_fields(&field_types, codegen).byte_offsets[field_index]
+    enum_payload_offset(enum_type, codegen)
+        + layout_fields(&field_types, enum_type.layout.pack, codegen).byte_offsets[field_index]
 }
 
 /// Every `defer`'s `HirId` reachable inside `block`, in declaration (program)
@@ -664,7 +691,9 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
         | CheckedExpr::String(_)
         | CheckedExpr::ByteString(_)
         // A compile-time slice's contents are constants, never a `defer`.
-        | CheckedExpr::ConstSlice(_) => {}
+        | CheckedExpr::ConstSlice(_)
+        // A bare resolved type, no sub-expression at all.
+        | CheckedExpr::Sizeof(_) => {}
         CheckedExpr::Place(p) => collect_defer_ids_place(p, out),
         CheckedExpr::FunctionCall(call) => {
             collect_defer_ids_expr(&call.callee, out);
@@ -2116,6 +2145,17 @@ impl Codegen {
 
             CheckedExpr::Bool(b) => vec![builder.ins().iconst(types::I8, b as i64)],
 
+            // `sizeof<Type>` -- a compile-time-known `usize` constant.
+            // Fully general (unlike `sizeof<Type>` used *inside* an
+            // `@layout` argument, which is scoped to primitives -- see
+            // `ResolvedType::primitive_byte_size`'s doc comment): `Type`
+            // may be any struct/enum/primitive, since `total_bytes` already
+            // handles all of them uniformly.
+            CheckedExpr::Sizeof(target_type) => {
+                let size = total_bytes(target_type, self);
+                vec![builder.ins().iconst(self.pointer_type(), size as i64)]
+            }
+
             // Cranelift has no dedicated char/codepoint type -- a `char`'s
             // one IR leaf is just its `u32` codepoint stored in an `I32`
             // (see `Char`'s `into_ir_type` arm).
@@ -2321,7 +2361,7 @@ impl Codegen {
                         enum_type.tag_type.clone(),
                         header,
                         enum_payload_offset(&enum_type, self),
-                        payload_chunks(enum_payload_bytes(&enum_type, self)),
+                        payload_chunks(enum_payload_bytes(&enum_type, enum_type.layout.pack, self)),
                         field_offsets,
                     )
                 };

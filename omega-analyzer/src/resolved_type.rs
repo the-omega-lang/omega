@@ -48,13 +48,13 @@ pub struct ResolvedStructType {
     pub name: Ident,
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
-    /// `@packing(...)`'s resolved mode -- `Packing::Packed` (today's
+    /// `@layout(...)`'s resolved `pack`/`align` -- `{1, 1}` (today's
     /// implicit, zero-padding layout) unless overridden. See
     /// `omega_codegen`'s layout functions (`total_bytes`/
     /// `field_byte_offset`), which are this field's only reader.
-    pub packing: crate::annotations::Packing,
+    pub layout: crate::annotations::Layout,
     /// `@suppress(...)`'s warning names -- resolved once here (alongside
-    /// `packing`, by whatever first builds this cell) rather than
+    /// `layout`, by whatever first builds this cell) rather than
     /// re-resolved every time a method body is checked, so
     /// `Analyzer::check_struct_body` can just read it back without risking
     /// re-emitting the same annotation errors a second time.
@@ -97,7 +97,7 @@ pub struct ResolvedUnionType {
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     /// See `ResolvedStructType::suppress`'s doc comment. Unions don't
-    /// support `@packing` yet -- only `@suppress` applies here.
+    /// support `@layout` yet -- only `@suppress` applies here.
     pub suppress: Vec<Ident>,
 }
 
@@ -148,10 +148,10 @@ pub struct ResolvedEnumType {
     pub variants: Vec<ResolvedEnumVariant>,
     /// Same shape and semantics as `ResolvedStructType::functions`.
     pub functions: Vec<(Ident, ResolvedMethod)>,
-    /// Same shape and semantics as `ResolvedStructType::packing`, applied
+    /// Same shape and semantics as `ResolvedStructType::layout`, applied
     /// to the enum's own aggregate `[tag][header][dynamic][payload]`
     /// layout as a whole.
-    pub packing: crate::annotations::Packing,
+    pub layout: crate::annotations::Layout,
     /// See `ResolvedStructType::suppress`'s doc comment.
     pub suppress: Vec<Ident>,
 }
@@ -572,6 +572,33 @@ impl ResolvedType {
             Self::F64 => NumericKind::Float(64),
             _ => return None,
         })
+    }
+
+    /// This type's byte size, for a `sizeof<...>` used *inside* an
+    /// annotation argument (`@layout(pack = sizeof<usize>)`) -- deliberately
+    /// scoped to primitives only (`None` for structs/enums/unions/arrays/
+    /// slices/functions/spec objects): a primitive's size needs no real
+    /// backend to know, only the same hardcoded-64-bit-pointer convention
+    /// `numeric_kind`/`cast_class` already use (see their doc comments), so
+    /// `@layout`'s arguments can be resolved eagerly, in the analyzer, with
+    /// the same span-anchored `Diagnostic` quality a plain integer literal
+    /// gets. `sizeof<Type>` used as an ordinary *expression* (see
+    /// `CheckedExpr::Sizeof`) is not scoped this way -- it supports any
+    /// type, computed in codegen via the already-general `total_bytes`.
+    pub fn primitive_byte_size(&self) -> Option<u32> {
+        match self {
+            Self::Bool => Some(1),
+            Self::Char => Some(4),
+            // Hardcoded 64-bit -- see `cast_class`'s identical precedent for
+            // treating a pointer as a 64-bit integer.
+            Self::Pointer { .. } => Some(8),
+            _ => self.numeric_kind().map(|kind| {
+                let width = match kind {
+                    NumericKind::Signed(w) | NumericKind::Unsigned(w) | NumericKind::Float(w) => w,
+                };
+                width / 8
+            }),
+        }
     }
 
     /// This type's shape for `<Target>expr` casting purposes -- `None` for

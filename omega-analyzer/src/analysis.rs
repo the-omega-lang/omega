@@ -116,7 +116,7 @@ pub struct PendingSpecMethod {
 }
 
 pub struct Analyzer<'r> {
-    errors: Vec<AnalysisError>,
+    pub(crate) errors: Vec<AnalysisError>,
     /// Non-fatal findings -- currently just unreachable code (see
     /// `truncate_unreachable`) -- returned alongside a successful
     /// `CheckedModule` rather than folded into `errors`, since none of them
@@ -364,7 +364,7 @@ impl<'r> Analyzer<'r> {
     /// here now happens inline, inside `Context::resolve_type` itself (it
     /// calls the resolver directly on an unqualified miss), so this is just
     /// a thin error-reporting wrapper around it.
-    fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
+    pub(crate) fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
         match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -3834,6 +3834,16 @@ impl<'r> Analyzer<'r> {
                     }),
                 })
             }
+
+            HirExpr::Sizeof(target) => {
+                let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::USize,
+                    kind: CheckedExpr::Sizeof(target_type),
+                })
+            }
         }
     }
 
@@ -5137,11 +5147,12 @@ impl<'r> Analyzer<'r> {
         })?;
         let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type, true)?;
         let annotations = crate::annotations::resolve(
+            self,
+            f.id,
             &f.annotations,
             crate::annotations::ItemKind::Function,
             f.is_member_function,
             !f.generics.is_empty(),
-            |span, kind| self.errors.push(AnalysisError::new(f.id, span, kind)),
         );
         Some((
             ResolvedFunctionType {
@@ -5220,13 +5231,14 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
         let resolved_attrs = crate::annotations::resolve(
+            self,
+            s.id,
             &s.annotations,
             crate::annotations::ItemKind::Struct,
             false,
             false,
-            |span, kind| self.errors.push(AnalysisError::new(s.id, span, kind)),
         );
-        cell.borrow_mut().packing = resolved_attrs.packing;
+        cell.borrow_mut().layout = resolved_attrs.layout;
         cell.borrow_mut().suppress = resolved_attrs.suppress;
 
         let Some(fields) = self.analyze_struct_fields(&s.fields) else { return (None, vec![]) };
@@ -5267,11 +5279,12 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
         let resolved_attrs = crate::annotations::resolve(
+            self,
+            u.id,
             &u.annotations,
             crate::annotations::ItemKind::Union,
             false,
             false,
-            |span, kind| self.errors.push(AnalysisError::new(u.id, span, kind)),
         );
         cell.borrow_mut().suppress = resolved_attrs.suppress;
 
@@ -5317,13 +5330,14 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
         let resolved_attrs = crate::annotations::resolve(
+            self,
+            e.id,
             &e.annotations,
             crate::annotations::ItemKind::Enum,
             false,
             false,
-            |span, kind| self.errors.push(AnalysisError::new(e.id, span, kind)),
         );
-        cell.borrow_mut().packing = resolved_attrs.packing;
+        cell.borrow_mut().layout = resolved_attrs.layout;
         cell.borrow_mut().suppress = resolved_attrs.suppress;
 
         let mut ok = true;

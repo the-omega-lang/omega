@@ -547,6 +547,11 @@ fn expand_expr(
             let cast = *cast;
             Expression::Cast(Box::new(CastExpr { target: cast.target, base: expand_expr(cast.base, defs, budget)? }))
         }
+        // No `base` expression to recurse into, and a bare `Type` can never
+        // contain a macro metavariable (`$name` is only meaningful in
+        // expression position -- see `lexer::TokenKind::Metavar`'s doc
+        // comment) -- a plain passthrough, like `Expression::Path` above.
+        Expression::Sizeof(sizeof) => Expression::Sizeof(sizeof),
         Expression::Increment(incr) => {
             let incr = *incr;
             Expression::Increment(Box::new(IncrementExpr { base: expand_expr(incr.base, defs, budget)? }))

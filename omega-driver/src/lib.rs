@@ -953,7 +953,7 @@ impl Driver {
                     name: key.1.clone(),
                     fields: vec![],
                     functions: vec![],
-                    packing: Default::default(),
+                    layout: Default::default(),
                     suppress: vec![],
                 }))
             })
@@ -975,7 +975,7 @@ impl Driver {
                     dynamic_fields: vec![],
                     variants: vec![],
                     functions: vec![],
-                    packing: Default::default(),
+                    layout: Default::default(),
                     suppress: vec![],
                 }))
             })

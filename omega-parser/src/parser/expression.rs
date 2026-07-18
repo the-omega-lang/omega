@@ -5,7 +5,7 @@ use crate::ast::expression::{
     codeblock::CodeblockExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
-    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, slice::SliceExpr,
+    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, sizeof::SizeofExpr, slice::SliceExpr,
     string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 use crate::ast::range::RangeExpr;
@@ -420,6 +420,19 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             let inv = parse_macro_invocation(p)?;
             let span = start.to(p.last_span());
             Some(ExpressionNode { expression: Expression::MacroInvocation(inv), span })
+        }
+        // `sizeof<Type>` -- `sizeof` is a contextual keyword (see
+        // `lexer::TokenKind`'s doc comment), committed to only when
+        // immediately followed by `<`; a variable actually named `sizeof`
+        // used any other way still parses as a plain identifier below.
+        TokenKind::Ident(name) if name == "sizeof" && matches!(p.peek_at(1), TokenKind::Lt) => {
+            p.advance(); // 'sizeof'
+            p.advance(); // '<'
+            let r#type = crate::parser::r#type::parse_type(p)?;
+            let close_span = p.peek_span();
+            p.expect(&TokenKind::Gt, "'>'");
+            let span = start.to(close_span);
+            Some(ExpressionNode { expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })), span })
         }
         TokenKind::Ident(_) => {
             let path = parse_expr_path(p)?;

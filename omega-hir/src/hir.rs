@@ -21,7 +21,14 @@ pub struct HirAnnotation {
 #[derive(Debug, Clone)]
 pub enum HirAnnotationArg {
     Ident(Ident),
-    KeyValue(Ident, String),
+    KeyValue(Ident, HirAnnotationValue),
+}
+
+/// Mirror of `omega_parser`'s `AnnotationValue` -- see its doc comment.
+#[derive(Debug, Clone)]
+pub enum HirAnnotationValue {
+    IntLiteral(String),
+    Sizeof(Type),
 }
 
 #[derive(Debug, Clone)]
@@ -426,6 +433,9 @@ pub enum HirExpr {
     /// (and, if so, exactly which conversion it needs) is analysis's
     /// question (see `omega_analyzer::resolved_type::ResolvedType::cast_class`).
     Cast(HirCast),
+    /// `sizeof<Type>` -- `Type` carried raw/unresolved, same philosophy as
+    /// `Cast`'s `target`; no `base` at all (see `SizeofExpr`'s doc comment).
+    Sizeof(Type),
 }
 
 /// See `HirExpr::Cast`.

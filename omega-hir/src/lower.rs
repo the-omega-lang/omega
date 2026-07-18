@@ -1,5 +1,6 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirAnnotation, HirAnnotationArg, HirBinaryOp, HirBlock, HirBreak, HirCast,
+    HirAddressOf, HirAssignment, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBinaryOp, HirBlock,
+    HirBreak, HirCast,
     HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
     HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirGenericParam,
@@ -9,7 +10,8 @@ use crate::hir::{
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
-    AnnotationArg, AnnotationNode, CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode,
+    AnnotationArg, AnnotationNode, AnnotationValue, CodeblockExpr, DeclarationStmt, EnumStmt, Expression,
+    ExpressionNode,
     ExternDeclarationStmt,
     FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
     SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
@@ -247,7 +249,12 @@ impl Lowerer {
                     .iter()
                     .map(|arg| match arg {
                         AnnotationArg::Ident(ident) => HirAnnotationArg::Ident(ident.clone()),
-                        AnnotationArg::KeyValue(key, value) => HirAnnotationArg::KeyValue(key.clone(), value.clone()),
+                        AnnotationArg::KeyValue(key, AnnotationValue::IntLiteral(value)) => {
+                            HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::IntLiteral(value.clone()))
+                        }
+                        AnnotationArg::KeyValue(key, AnnotationValue::Sizeof(r#type)) => {
+                            HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::Sizeof(r#type.clone()))
+                        }
                     })
                     .collect(),
                 span: a.span,
@@ -499,6 +506,9 @@ impl Lowerer {
                     span: node.span,
                     expr: HirExpr::Cast(HirCast { target: cast.target.clone(), base }),
                 }
+            }
+            Expression::Sizeof(sizeof) => {
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Sizeof(sizeof.r#type.clone()) }
             }
             Expression::Increment(incr) => {
                 let base = Box::new(self.lower_expr(&incr.base));

@@ -1405,14 +1405,19 @@ impl AnalysisWarning {
 
     pub fn to_diagnostic(&self) -> Diagnostic {
         let d = Diagnostic::warning(self.kind.to_string());
-        match self.kind {
+        let d = match self.kind {
             AnalysisWarningKind::UnreachableCode => d
                 .with_label(self.span, "this can never run")
                 .with_note("it follows something that always diverges (`return`, `break`, or `continue`)"),
             AnalysisWarningKind::InlineNotEnforced => d
                 .with_label(self.span, "this hint is recorded but not acted on")
                 .with_note("this backend has no function-inlining support yet"),
-        }
+        };
+        // Always last, after any warning-specific notes above -- a trailing,
+        // low-priority hint (mirrors rustc's own `` `#[warn(...)]` on by
+        // default `` note) so the warning's own reason stays the focus and
+        // this doesn't read as "you should probably suppress this."
+        d.with_note(format!("suppress this with '@suppress({})'", self.kind.name()))
     }
 }
 
