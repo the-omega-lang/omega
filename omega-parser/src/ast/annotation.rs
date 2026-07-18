@@ -2,15 +2,15 @@ use crate::ast::identifier::Ident;
 use crate::diagnostics::Span;
 
 /// `@name(arg, arg, ...)` -- one annotation, attached above a struct/enum/
-/// union/function declaration (see `parser::item::parse_attributes`). The
+/// union/function declaration (see `parser::item::parse_annotations`). The
 /// parser only records shape; which names are recognized, which item kinds
 /// they're allowed on, and whether their arguments make sense is entirely
-/// `omega_analyzer::attributes`'s concern, same division of labor as every
+/// `omega_analyzer::annotations`'s concern, same division of labor as every
 /// other semantic check in this compiler.
 #[derive(Debug, Clone)]
-pub struct AttributeNode {
+pub struct AnnotationNode {
     pub name: Ident,
-    pub args: Vec<AttributeArg>,
+    pub args: Vec<AnnotationArg>,
     pub span: Span,
 }
 
@@ -22,7 +22,7 @@ pub struct AttributeNode {
 /// accepted here at all, so a based/suffixed/fractional literal is rejected
 /// at parse time rather than silently misread later.
 #[derive(Debug, Clone)]
-pub enum AttributeArg {
+pub enum AnnotationArg {
     Ident(Ident),
     KeyValue(Ident, String),
 }

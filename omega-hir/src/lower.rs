@@ -1,5 +1,5 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirAttribute, HirAttributeArg, HirBinaryOp, HirBlock, HirBreak, HirCast,
+    HirAddressOf, HirAssignment, HirAnnotation, HirAnnotationArg, HirBinaryOp, HirBlock, HirBreak, HirCast,
     HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
     HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirGenericParam,
@@ -9,7 +9,7 @@ use crate::hir::{
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
-    AttributeArg, AttributeNode, CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode,
+    AnnotationArg, AnnotationNode, CodeblockExpr, DeclarationStmt, EnumStmt, Expression, ExpressionNode,
     ExternDeclarationStmt,
     FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
     SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
@@ -192,7 +192,7 @@ impl Lowerer {
         HirFunctionDef {
             id: self.ids.next(),
             span,
-            attributes: Self::lower_attributes(&f.attributes),
+            annotations: Self::lower_annotations(&f.annotations),
             name: f.ident.clone(),
             generics: Self::lower_generics(&f.generics),
             is_member_function: f.is_member_function,
@@ -234,20 +234,20 @@ impl Lowerer {
         generics.iter().map(|g| HirGenericParam { ident: g.ident.clone(), bound: g.bound.clone() }).collect()
     }
 
-    /// Mechanical clone of a parsed attribute list into HIR's own shape --
-    /// unvalidated, same as everywhere else (see `HirAttribute`'s doc
+    /// Mechanical clone of a parsed annotation list into HIR's own shape --
+    /// unvalidated, same as everywhere else (see `HirAnnotation`'s doc
     /// comment).
-    fn lower_attributes(attributes: &[AttributeNode]) -> Vec<HirAttribute> {
-        attributes
+    fn lower_annotations(annotations: &[AnnotationNode]) -> Vec<HirAnnotation> {
+        annotations
             .iter()
-            .map(|a| HirAttribute {
+            .map(|a| HirAnnotation {
                 name: a.name.clone(),
                 args: a
                     .args
                     .iter()
                     .map(|arg| match arg {
-                        AttributeArg::Ident(ident) => HirAttributeArg::Ident(ident.clone()),
-                        AttributeArg::KeyValue(key, value) => HirAttributeArg::KeyValue(key.clone(), value.clone()),
+                        AnnotationArg::Ident(ident) => HirAnnotationArg::Ident(ident.clone()),
+                        AnnotationArg::KeyValue(key, value) => HirAnnotationArg::KeyValue(key.clone(), value.clone()),
                     })
                     .collect(),
                 span: a.span,
@@ -310,7 +310,7 @@ impl Lowerer {
         HirStructDef {
             id,
             span,
-            attributes: Self::lower_attributes(&s.attributes),
+            annotations: Self::lower_annotations(&s.annotations),
             name: s.ident.clone(),
             generics: Self::lower_generics(&s.generics),
             implements: s.implements.clone(),
@@ -333,7 +333,7 @@ impl Lowerer {
         HirUnionDef {
             id,
             span,
-            attributes: Self::lower_attributes(&u.attributes),
+            annotations: Self::lower_annotations(&u.annotations),
             name: u.ident.clone(),
             generics: Self::lower_generics(&u.generics),
             implements: u.implements.clone(),
@@ -383,7 +383,7 @@ impl Lowerer {
         HirEnumDef {
             id,
             span,
-            attributes: Self::lower_attributes(&e.attributes),
+            annotations: Self::lower_annotations(&e.annotations),
             name: e.ident.clone(),
             generics: Self::lower_generics(&e.generics),
             implements: e.implements.clone(),

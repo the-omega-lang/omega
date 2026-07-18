@@ -127,7 +127,7 @@ pub enum TokenKind {
     /// `~base` -- unary bitwise-not; see `BitNotExpr`.
     Tilde,
     /// `@` -- leads an item annotation (`@inline(always)`); see
-    /// `parser::item::parse_attributes`.
+    /// `parser::item::parse_annotations`.
     At,
 
     // Delimiters -- flat, individual tokens; nesting is the parser's

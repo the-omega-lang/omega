@@ -3,7 +3,7 @@
 //! an inline `impl X { parser!(...) }` chumsky combinator), parsing logic
 //! lives entirely in `crate::parser`; these types are just what it builds.
 //! Kept in the same file-per-construct layout as before for continuity.
-pub mod attribute;
+pub mod annotation;
 pub mod expression;
 pub mod generics;
 pub mod identifier;

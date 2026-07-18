@@ -1,4 +1,4 @@
-use crate::ast::attribute::AttributeNode;
+use crate::ast::annotation::AnnotationNode;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
@@ -10,10 +10,10 @@ use crate::ast::statement::{declaration::DeclarationStmt, function_definition::F
 /// parallel item pipeline, same precedent as `enum` alongside `struct`.
 #[derive(Debug, Clone)]
 pub struct UnionStmt {
-    /// See `StructStmt::attributes`'s doc comment. `@packing` isn't
+    /// See `StructStmt::annotations`'s doc comment. `@packing` isn't
     /// recognized on a union yet (only asked for on structs/enums) --
     /// `@suppress` is.
-    pub attributes: Vec<AttributeNode>,
+    pub annotations: Vec<AnnotationNode>,
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     /// See `StructStmt::implements`'s doc comment -- same rules.

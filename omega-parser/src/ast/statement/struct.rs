@@ -1,4 +1,4 @@
-use crate::ast::attribute::AttributeNode;
+use crate::ast::annotation::AnnotationNode;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
@@ -7,8 +7,8 @@ use crate::ast::statement::{declaration::DeclarationStmt, function_definition::F
 #[derive(Debug, Clone)]
 pub struct StructStmt {
     /// `@packing(...)`/`@suppress(...)` written directly above the `struct`
-    /// keyword -- see `omega_analyzer::attributes`.
-    pub attributes: Vec<AttributeNode>,
+    /// keyword -- see `omega_analyzer::annotations`.
+    pub annotations: Vec<AnnotationNode>,
     pub ident: Ident,
     /// `<T, U, ...>` immediately after `ident` -- empty for an ordinary,
     /// non-generic struct. See `Type::Generic`'s doc comment for how these

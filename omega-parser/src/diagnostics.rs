@@ -158,7 +158,7 @@ pub enum ParseErrorKind {
     ExclusiveRangeMissingEnd,
     /// One or more `@name(...)` annotations directly above an item that has
     /// nowhere to store them -- only structs, enums, unions, and functions
-    /// (top-level or member) carry an `attributes` list at all; annotating
+    /// (top-level or member) carry an `annotations` list at all; annotating
     /// an `extern`/`import`/plain declaration/macro is rejected here rather
     /// than silently dropped.
     AnnotationNotAllowedHere,

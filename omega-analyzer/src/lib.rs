@@ -1,5 +1,5 @@
 pub mod analysis;
-pub mod attributes;
+pub mod annotations;
 pub mod checked;
 mod context;
 pub mod error;

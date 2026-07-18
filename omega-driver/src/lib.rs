@@ -2,6 +2,7 @@ mod fs_resolve;
 
 use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, PendingSpecMethod};
+use omega_analyzer::annotations::ResolvedAnnotations;
 use omega_analyzer::checked::{
     CheckedFunctionDef, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage,
 };
@@ -263,6 +264,26 @@ pub struct Driver {
     /// another struct), so this is a plain memoizing cache, no `InProgress`
     /// guard needed.
     overload_signatures: HashMap<(Vec<Ident>, usize), ResolvedFunctionType>,
+    /// Every free (non-method) function/overload candidate's resolved
+    /// `@inline`/`@mangling`/`@suppress`, keyed by its own declaration
+    /// `HirId` (`decl_id` in `ResolvedItem::Value`/`overload_signatures`'
+    /// own identity) -- populated alongside `resolved_items`/
+    /// `overload_signatures` (see `compute_item`'s `FunctionDefinition` arm
+    /// and `ensure_overload_signature`), the free-function counterpart of
+    /// `ResolvedMethod::annotations` (methods already carry theirs inline,
+    /// since `ResolvedMethod` already exists as their own per-declaration
+    /// identity record -- see its doc comment). One flat `HirId`-keyed map
+    /// here because free functions have no equivalent "extra facts beyond
+    /// the type" struct of their own the way a method does: `ResolvedItem`
+    /// is shared with non-function values (globals/externs-data), so this
+    /// stays a sibling cache rather than a field bolted onto it. This is
+    /// what makes `collect_extern_functions` see the same resolved
+    /// annotations an extern-owned function was declared with, without
+    /// ever needing to check (or even see) its body -- see
+    /// `Analyzer::collect_function_signature`'s doc comment for why
+    /// resolving annotations at signature time, once, is what closes that
+    /// gap architecturally instead of patching it per-annotation.
+    function_annotations: HashMap<HirId, ResolvedAnnotations>,
     /// One overload candidate's fully checked body, memoized the same way
     /// (see `ensure_overload_body`) -- merged into its module's `items`
     /// during `compile`'s overload sweep, mirroring how an ordinary item's
@@ -373,6 +394,7 @@ impl Driver {
             local_items: HashMap::new(),
             function_overloads: HashMap::new(),
             overload_signatures: HashMap::new(),
+            function_annotations: HashMap::new(),
             overload_bodies: HashMap::new(),
             raw_imports: HashMap::new(),
             import_cache: HashMap::new(),
@@ -1177,10 +1199,13 @@ impl Driver {
                     Analyzer::new(self, module_path.to_vec(), &substitution, (f.id, f.span));
                 let checked = analyzer.collect_function_signature(f);
                 let (errors, _warnings) = analyzer.finish();
-                let result = checked.map(|fn_type| ResolvedItem::Value {
-                    r#type: ResolvedType::Function(fn_type),
-                    storage: Storage::Function,
-                    decl_id: id,
+                let result = checked.map(|(fn_type, annotations)| {
+                    self.function_annotations.insert(id, annotations);
+                    ResolvedItem::Value {
+                        r#type: ResolvedType::Function(fn_type),
+                        storage: Storage::Function,
+                        decl_id: id,
+                    }
                 });
                 (result, errors)
             }
@@ -1331,9 +1356,10 @@ impl Driver {
                 };
                 let substitution: Vec<(Ident, ResolvedType)> =
                     f.generics.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
+                let annotations = self.function_annotations.get(&decl_id).cloned().unwrap_or_default();
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (f.id, f.span));
-                let checked = analyzer.check_function_body(f, &fn_type, decl_id);
+                let checked = analyzer.check_function_body(f, &fn_type, decl_id, &annotations);
                 let (errors, warnings) = analyzer.finish();
                 if !errors.is_empty() {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
@@ -1487,8 +1513,9 @@ impl Driver {
         if !errors.is_empty() {
             self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
         }
-        let fn_type =
+        let (fn_type, annotations) =
             checked.ok_or_else(|| ResolveError::ItemFailed { module: module_path.to_vec(), item: f.name.clone() })?;
+        self.function_annotations.insert(f.id, annotations);
         self.overload_signatures.insert(key, fn_type.clone());
         Ok(fn_type)
     }
@@ -1508,8 +1535,9 @@ impl Driver {
         let HirItem::FunctionDefinition(f) = &hir.items[index] else {
             unreachable!("only ever called with an index ensure_module_indexed confirmed is a function");
         };
+        let annotations = self.function_annotations.get(&f.id).cloned().unwrap_or_default();
         let mut analyzer = Analyzer::new(self, module_path.to_vec(), &[], (f.id, f.span));
-        let checked = analyzer.check_function_body(f, &fn_type, f.id);
+        let checked = analyzer.check_function_body(f, &fn_type, f.id, &annotations);
         let (errors, warnings) = analyzer.finish();
         if !errors.is_empty() {
             self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
@@ -1756,6 +1784,11 @@ impl Driver {
                     module_path: module_path.clone(),
                     kind: ExternFunctionKind::Free(name.clone()),
                     fn_type: fn_type.clone(),
+                    mangling: self
+                        .function_annotations
+                        .get(decl_id)
+                        .map(|a| a.mangling)
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -1777,6 +1810,7 @@ impl Driver {
                 module_path: module_path.clone(),
                 kind: ExternFunctionKind::Free(f.name.clone()),
                 fn_type: fn_type.clone(),
+                mangling: self.function_annotations.get(&f.id).map(|a| a.mangling).unwrap_or_default(),
             });
         }
 
@@ -1795,6 +1829,7 @@ impl Driver {
                     decl_id: method.decl_id,
                     module_path: module_path.clone(),
                     kind: ExternFunctionKind::Method { type_name: type_name.clone(), method_name },
+                    mangling: method.annotations.mangling,
                     fn_type: method.fn_type,
                 });
             }

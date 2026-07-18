@@ -21,6 +21,14 @@ pub struct ResolvedFunctionType {
 pub struct ResolvedMethod {
     pub decl_id: HirId,
     pub fn_type: ResolvedFunctionType,
+    /// This method's own resolved `@inline`/`@mangling`/`@suppress` --
+    /// resolved once, here, at signature time (never re-resolved at body-
+    /// check time) so it's already known even for a method whose body this
+    /// compilation never checks at all (an extern-owned method referenced
+    /// via `--extern`) -- see `omega_driver::Driver::collect_extern_functions`,
+    /// this field's only reader outside `check_struct_body`/`check_enum_body`/
+    /// `check_union_body`.
+    pub annotations: crate::annotations::ResolvedAnnotations,
 }
 
 /// A struct's fields and methods, shared behind `ResolvedType::Struct`'s
@@ -44,7 +52,7 @@ pub struct ResolvedStructType {
     /// implicit, zero-padding layout) unless overridden. See
     /// `omega_codegen`'s layout functions (`total_bytes`/
     /// `field_byte_offset`), which are this field's only reader.
-    pub packing: crate::attributes::Packing,
+    pub packing: crate::annotations::Packing,
     /// `@suppress(...)`'s warning names -- resolved once here (alongside
     /// `packing`, by whatever first builds this cell) rather than
     /// re-resolved every time a method body is checked, so
@@ -143,7 +151,7 @@ pub struct ResolvedEnumType {
     /// Same shape and semantics as `ResolvedStructType::packing`, applied
     /// to the enum's own aggregate `[tag][header][dynamic][payload]`
     /// layout as a whole.
-    pub packing: crate::attributes::Packing,
+    pub packing: crate::annotations::Packing,
     /// See `ResolvedStructType::suppress`'s doc comment.
     pub suppress: Vec<Ident>,
 }

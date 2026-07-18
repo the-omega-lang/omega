@@ -658,8 +658,18 @@ impl<'r> Analyzer<'r> {
             match &req.raw.default_body {
                 Some(_) => {
                     let minted_id = self.resolver.fresh_synthetic_id();
-                    extra_methods
-                        .push((req.name.clone(), ResolvedMethod { decl_id: minted_id, fn_type: req.fn_type.clone() }));
+                    // A spec-default method carries no annotations of its
+                    // own -- not yet part of the spec-function grammar (see
+                    // `check_pending_spec_method`'s identical `attributes:
+                    // Vec::new()` on its synthetic `HirFunctionDef`).
+                    extra_methods.push((
+                        req.name.clone(),
+                        ResolvedMethod {
+                            decl_id: minted_id,
+                            fn_type: req.fn_type.clone(),
+                            annotations: crate::annotations::ResolvedAnnotations::default(),
+                        },
+                    ));
                     pending.push(PendingSpecMethod {
                         id: minted_id,
                         fn_type: req.fn_type,
@@ -5103,19 +5113,45 @@ impl<'r> Analyzer<'r> {
     /// once every sibling's signature is known). A top-level (non-method)
     /// caller never had a meaningful use for the binding either -- it
     /// always got a fresh, empty `Context`, so nothing could ever collide.
-    pub fn collect_function_signature(&mut self, f: &HirFunctionDef) -> Option<ResolvedFunctionType> {
+    /// A function's (or method's) signature *and* its resolved
+    /// `@inline`/`@mangling`/`@suppress` -- resolved together, here, once,
+    /// and never again at body-check time (see `check_function_body`'s own
+    /// doc comment for why): this is the one point in the whole pipeline
+    /// that's guaranteed to run for *every* function this compilation knows
+    /// about, whether its body is ever actually checked here or not (an
+    /// extern-owned function/method, referenced via `--extern`, only ever
+    /// has its signature collected -- see
+    /// `omega_driver::Driver::collect_extern_functions`). Resolving
+    /// annotations anywhere body-only would silently strand that
+    /// information from anything that only ever sees the signature, which
+    /// is exactly the bug `@mangling(disabled)` on an extern function used
+    /// to have.
+    pub fn collect_function_signature(
+        &mut self,
+        f: &HirFunctionDef,
+    ) -> Option<(ResolvedFunctionType, crate::annotations::ResolvedAnnotations)> {
         // Param/return types are a function's signature, never inline data --
         // always indirect (see `analyze_param`'s identical reasoning).
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
         })?;
         let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type, true)?;
-        Some(ResolvedFunctionType {
-            params,
-            return_type: Box::new(return_type),
-            is_variadic: false,
-            is_member_function: f.is_member_function,
-        })
+        let annotations = crate::annotations::resolve(
+            &f.annotations,
+            crate::annotations::ItemKind::Function,
+            f.is_member_function,
+            !f.generics.is_empty(),
+            |span, kind| self.errors.push(AnalysisError::new(f.id, span, kind)),
+        );
+        Some((
+            ResolvedFunctionType {
+                params,
+                return_type: Box::new(return_type),
+                is_variadic: false,
+                is_member_function: f.is_member_function,
+            },
+            annotations,
+        ))
     }
 
     /// Compares every pair of `functions`' signatures by param-type list,
@@ -5125,14 +5161,22 @@ impl<'r> Analyzer<'r> {
     /// valid overload as long as their signatures genuinely differ; an
     /// identical pair is a real duplicate, reported the same way a plain
     /// same-name collision always has been.
-    fn check_overload_duplicates(&mut self, functions: &[HirFunctionDef], signatures: &[ResolvedFunctionType]) {
+    fn check_overload_duplicates(
+        &mut self,
+        functions: &[HirFunctionDef],
+        signatures: &[(ResolvedFunctionType, crate::annotations::ResolvedAnnotations)],
+    ) {
         for i in 1..functions.len() {
             for j in 0..i {
                 if functions[i].name != functions[j].name {
                     continue;
                 }
-                let same_params =
-                    signatures[i].params.iter().map(|(_, t)| t).eq(signatures[j].params.iter().map(|(_, t)| t));
+                let same_params = signatures[i]
+                    .0
+                    .params
+                    .iter()
+                    .map(|(_, t)| t)
+                    .eq(signatures[j].0.params.iter().map(|(_, t)| t));
                 if same_params {
                     self.errors.push(AnalysisError::new(
                         functions[i].id,
@@ -5175,9 +5219,9 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedStructType>>,
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
-        let resolved_attrs = crate::attributes::resolve(
-            &s.attributes,
-            crate::attributes::ItemKind::Struct,
+        let resolved_attrs = crate::annotations::resolve(
+            &s.annotations,
+            crate::annotations::ItemKind::Struct,
             false,
             false,
             |span, kind| self.errors.push(AnalysisError::new(s.id, span, kind)),
@@ -5198,7 +5242,9 @@ impl<'r> Analyzer<'r> {
             .iter()
             .zip(functions)
             .zip(method_ids)
-            .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
+            .map(|((f, (fn_type, annotations)), &decl_id)| {
+                (f.name.clone(), ResolvedMethod { decl_id, fn_type, annotations })
+            })
             .collect();
 
         let self_type = ResolvedType::Struct(cell.clone());
@@ -5220,9 +5266,9 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedUnionType>>,
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
-        let resolved_attrs = crate::attributes::resolve(
-            &u.attributes,
-            crate::attributes::ItemKind::Union,
+        let resolved_attrs = crate::annotations::resolve(
+            &u.annotations,
+            crate::annotations::ItemKind::Union,
             false,
             false,
             |span, kind| self.errors.push(AnalysisError::new(u.id, span, kind)),
@@ -5242,7 +5288,9 @@ impl<'r> Analyzer<'r> {
             .iter()
             .zip(functions)
             .zip(method_ids)
-            .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
+            .map(|((f, (fn_type, annotations)), &decl_id)| {
+                (f.name.clone(), ResolvedMethod { decl_id, fn_type, annotations })
+            })
             .collect();
 
         let self_type = ResolvedType::Union(cell.clone());
@@ -5268,9 +5316,9 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedEnumType>>,
         method_ids: &[HirId],
     ) -> (Option<()>, Vec<PendingSpecMethod>) {
-        let resolved_attrs = crate::attributes::resolve(
-            &e.attributes,
-            crate::attributes::ItemKind::Enum,
+        let resolved_attrs = crate::annotations::resolve(
+            &e.annotations,
+            crate::annotations::ItemKind::Enum,
             false,
             false,
             |span, kind| self.errors.push(AnalysisError::new(e.id, span, kind)),
@@ -5550,7 +5598,9 @@ impl<'r> Analyzer<'r> {
             .iter()
             .zip(functions)
             .zip(method_ids)
-            .map(|((f, fn_type), &decl_id)| (f.name.clone(), ResolvedMethod { decl_id, fn_type }))
+            .map(|((f, (fn_type, annotations)), &decl_id)| {
+                (f.name.clone(), ResolvedMethod { decl_id, fn_type, annotations })
+            })
             .collect();
 
         let self_type = ResolvedType::Enum { cell: cell.clone(), variant: None };
@@ -5799,15 +5849,19 @@ impl<'r> Analyzer<'r> {
         e: &HirEnumDef,
         cell: &Rc<RefCell<ResolvedEnumType>>,
     ) -> Option<CheckedEnumDef> {
-        let methods: Vec<(ResolvedFunctionType, HirId)> =
-            cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
+        let methods: Vec<(ResolvedFunctionType, HirId, crate::annotations::ResolvedAnnotations)> = cell
+            .borrow()
+            .functions
+            .iter()
+            .map(|(_, method)| (method.fn_type.clone(), method.decl_id, method.annotations.clone()))
+            .collect();
 
         self.suppressed.push(cell.borrow().suppress.clone());
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(e.functions.len());
         let mut ok = true;
-        for (f, (fn_type, decl_id)) in e.functions.iter().zip(methods.iter()) {
-            match self.check_function_body(f, fn_type, *decl_id) {
+        for (f, (fn_type, decl_id, annotations)) in e.functions.iter().zip(methods.iter()) {
+            match self.check_function_body(f, fn_type, *decl_id, annotations) {
                 Some(checked) => functions.push(checked),
                 None => ok = false,
             }
@@ -5821,34 +5875,34 @@ impl<'r> Analyzer<'r> {
         Some(CheckedEnumDef { id: e.id, span: e.span, name: e.name.clone(), functions })
     }
 
-    /// Checks a function's (or method's) *body* only -- its signature, and
-    /// its own name bound so any call to it (including a recursive one from
-    /// its own body) resolves, are already handled by
-    /// `omega_driver::Driver::ensure_item`/`collect_function_signature`.
-    /// Enters a fresh scope to bind `f`'s params by name (signature
-    /// collection only ever resolved their *types*, never bound them --
-    /// that's a body-analysis-time concern, same as it always was).
+    /// Checks a function's (or method's) *body* only -- its signature *and*
+    /// its resolved annotations, along with its own name bound so any call
+    /// to it (including a recursive one from its own body) resolves, are
+    /// already handled by `omega_driver::Driver::ensure_item`/
+    /// `collect_function_signature`. Enters a fresh scope to bind `f`'s
+    /// params by name (signature collection only ever resolved their
+    /// *types*, never bound them -- that's a body-analysis-time concern,
+    /// same as it always was).
     /// `id` is stamped onto the produced `CheckedFunctionDef` in place of
     /// always reading `f.id` -- for an ordinary (non-generic) function this
     /// is just `f.id` (behavior-preserving); for a generic instantiation
     /// it's the same freshly-minted synthetic id `omega_driver::Driver`
     /// already decided (and stored) during the signature phase, so codegen
     /// gets one distinct compiled function per instantiation.
+    /// `annotations` is read back, never re-resolved -- `collect_function_
+    /// signature` already resolved it once, at signature time, which is
+    /// also what makes it visible to an extern-owned function/method whose
+    /// body this compilation never checks at all (see
+    /// `collect_function_signature`'s own doc comment).
     pub fn check_function_body(
         &mut self,
         f: &HirFunctionDef,
         fn_type: &ResolvedFunctionType,
         id: HirId,
+        annotations: &crate::annotations::ResolvedAnnotations,
     ) -> Option<CheckedFunctionDef> {
-        let resolved_attrs = crate::attributes::resolve(
-            &f.attributes,
-            crate::attributes::ItemKind::Function,
-            f.is_member_function,
-            !f.generics.is_empty(),
-            |span, kind| self.errors.push(AnalysisError::new(f.id, span, kind)),
-        );
-        self.suppressed.push(resolved_attrs.suppress.clone());
-        if resolved_attrs.inline.is_some() {
+        self.suppressed.push(annotations.suppress.clone());
+        if annotations.inline.is_some() {
             self.warn(f.id, f.span, AnalysisWarningKind::InlineNotEnforced);
         }
 
@@ -5886,8 +5940,8 @@ impl<'r> Analyzer<'r> {
             params,
             return_type: (*fn_type.return_type).clone(),
             body,
-            inline: resolved_attrs.inline,
-            mangling: resolved_attrs.mangling,
+            inline: annotations.inline,
+            mangling: annotations.mangling,
         })
     }
 
@@ -5913,8 +5967,8 @@ impl<'r> Analyzer<'r> {
             span: pending.raw.span,
             // Spec default methods carry no annotations of their own -- not
             // yet part of the language's spec-function grammar (see
-            // `omega_analyzer::attributes`'s doc comment).
-            attributes: Vec::new(),
+            // `omega_analyzer::annotations`'s doc comment).
+            annotations: Vec::new(),
             name: pending.raw.name.clone(),
             generics: vec![],
             is_member_function: pending.raw.is_member_function,
@@ -5922,7 +5976,12 @@ impl<'r> Analyzer<'r> {
             return_type: pending.raw.return_type.clone(),
             body,
         };
-        self.check_function_body(&synthetic, &pending.fn_type, pending.id)
+        self.check_function_body(
+            &synthetic,
+            &pending.fn_type,
+            pending.id,
+            &crate::annotations::ResolvedAnnotations::default(),
+        )
     }
 
     /// Checks a top-level struct's methods' *bodies* only -- its fields and
@@ -5950,15 +6009,19 @@ impl<'r> Analyzer<'r> {
         // `decl_id` is read back from the cell (not `f.id`) so a generic
         // instantiation's methods get the same synthetic ids the signature
         // phase already decided -- see `signature_of_struct`'s doc comment.
-        let methods: Vec<(ResolvedFunctionType, HirId)> =
-            cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
+        let methods: Vec<(ResolvedFunctionType, HirId, crate::annotations::ResolvedAnnotations)> = cell
+            .borrow()
+            .functions
+            .iter()
+            .map(|(_, method)| (method.fn_type.clone(), method.decl_id, method.annotations.clone()))
+            .collect();
 
         self.suppressed.push(cell.borrow().suppress.clone());
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(s.functions.len());
         let mut ok = true;
-        for (f, (fn_type, decl_id)) in s.functions.iter().zip(methods.iter()) {
-            match self.check_function_body(f, fn_type, *decl_id) {
+        for (f, (fn_type, decl_id, annotations)) in s.functions.iter().zip(methods.iter()) {
+            match self.check_function_body(f, fn_type, *decl_id, annotations) {
                 Some(checked) => functions.push(checked),
                 None => ok = false,
             }
@@ -5987,15 +6050,19 @@ impl<'r> Analyzer<'r> {
             })
             .collect();
 
-        let methods: Vec<(ResolvedFunctionType, HirId)> =
-            cell.borrow().functions.iter().map(|(_, method)| (method.fn_type.clone(), method.decl_id)).collect();
+        let methods: Vec<(ResolvedFunctionType, HirId, crate::annotations::ResolvedAnnotations)> = cell
+            .borrow()
+            .functions
+            .iter()
+            .map(|(_, method)| (method.fn_type.clone(), method.decl_id, method.annotations.clone()))
+            .collect();
 
         self.suppressed.push(cell.borrow().suppress.clone());
         self.context.enter_scope();
         let mut functions = Vec::with_capacity(u.functions.len());
         let mut ok = true;
-        for (f, (fn_type, decl_id)) in u.functions.iter().zip(methods.iter()) {
-            match self.check_function_body(f, fn_type, *decl_id) {
+        for (f, (fn_type, decl_id, annotations)) in u.functions.iter().zip(methods.iter()) {
+            match self.check_function_body(f, fn_type, *decl_id, annotations) {
                 Some(checked) => functions.push(checked),
                 None => ok = false,
             }

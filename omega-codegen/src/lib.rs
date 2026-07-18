@@ -12,7 +12,7 @@ use cranelift::{
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
-    attributes::{ManglingMode, Packing},
+    annotations::{ManglingMode, Packing},
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
@@ -429,7 +429,7 @@ fn round_up(offset: u32, align: u32) -> u32 {
 /// The alignment *shift* `StackSlotData::new` wants (2^shift bytes) for a
 /// stack slot holding a value whose own required alignment (`type_alignment`)
 /// is `align` bytes (always a power of two, or `1` -- see
-/// `attributes::resolve_packing`'s validation). Never lower than `4` (16
+/// `annotations::resolve_packing`'s validation). Never lower than `4` (16
 /// bytes) -- every stack slot's existing baseline (see `process_decl`'s doc
 /// comment) -- so this is a pure no-op for the overwhelming common case (no
 /// `@packing(align = ...)` anywhere, where `align` is `1`); only a
@@ -2679,21 +2679,35 @@ impl Codegen {
         function_id
     }
 
-    /// `declare_function_def`'s extern-module counterpart: declares a
-    /// link against an extern-owned function/method using the *same*
-    /// mangling scheme a local function gets, but `Linkage::Import` only --
-    /// no paired `Export` declare, and `define_item`'s pass 2 never sees
+    /// `declare_function_def`'s extern-module counterpart: declares a link
+    /// against an extern-owned function/method, but `Linkage::Import` only
+    /// -- no paired `Export` declare, and `define_item`'s pass 2 never sees
     /// this `HirId` at all (it isn't in any `CheckedModule.items`), so no
-    /// body is ever generated for it here. Trusts that the *other* `omgc`
-    /// invocation compiling that module standalone mangles its own
-    /// definition identically -- see `CompiledProgram::extern_functions`'s
-    /// doc comment for why that's a safe assumption.
+    /// body is ever generated for it here. `extern_fn.mangling` (resolved
+    /// by the *declaring* compilation, at signature time -- see
+    /// `omega_analyzer::annotations`' doc comment and `ExternFunctionRef::
+    /// mangling`'s own) decides which symbol-shape branch below applies,
+    /// mirroring `declare_item`'s identical branch for a local function:
+    /// whatever that other `omgc` invocation actually mangled this
+    /// declaration as is exactly what gets linked against here, never
+    /// assumed. Trusts that the *other* `omgc` invocation compiling that
+    /// module standalone mangles its own definition identically -- see
+    /// `CompiledProgram::extern_functions`'s doc comment for why that's a
+    /// safe assumption.
     fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
-        let mangled = match &extern_fn.kind {
-            ExternFunctionKind::Free(name) => {
+        let mangled = match (extern_fn.mangling, &extern_fn.kind) {
+            (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
+            // `@mangling(disabled)` is rejected on methods at analysis time
+            // (see `AnalysisErrorKind::ManglingDisabledOnMethod`) -- an
+            // extern method's own declaration went through the exact same
+            // check, so this combination can't actually occur.
+            (ManglingMode::Disabled, ExternFunctionKind::Method { .. }) => {
+                unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
+            }
+            (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
                 Self::mangled_symbol(&extern_fn.module_path, &[], name, extern_fn.decl_id)
             }
-            ExternFunctionKind::Method { type_name, method_name } => {
+            (ManglingMode::Enabled, ExternFunctionKind::Method { type_name, method_name }) => {
                 Self::mangled_method_symbol(&extern_fn.module_path, type_name, method_name, extern_fn.decl_id)
             }
         };
@@ -2896,7 +2910,7 @@ impl Codegen {
             CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
             CheckedItem::FunctionDefinition(f) => {
                 // A member function can never reach `Disabled` here --
-                // `omega_analyzer::attributes::resolve` hard-rejects
+                // `omega_analyzer::annotations::resolve` hard-rejects
                 // `@mangling(disabled)` on a method (and on a generic
                 // function) before a `CheckedModule` can exist at all (see
                 // its own doc comment: every enforcement point has already

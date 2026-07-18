@@ -468,12 +468,12 @@ pub enum AnalysisErrorKind {
 
     // -- annotations --
     /// `@some_unknown_name(...)` -- not a recognized annotation at all
-    /// (most likely a typo). See `crate::attributes`'s applicability table.
+    /// (most likely a typo). See `crate::annotations`'s applicability table.
     UnknownAnnotation { name: Ident },
     /// A recognized annotation used on an item kind it doesn't support
     /// (e.g. `@inline` on a struct) -- `allowed` lists every item kind it
     /// *is* valid on.
-    AnnotationNotApplicable { name: Ident, found: crate::attributes::ItemKind, allowed: Vec<crate::attributes::ItemKind> },
+    AnnotationNotApplicable { name: Ident, found: crate::annotations::ItemKind, allowed: Vec<crate::annotations::ItemKind> },
     /// The same annotation name written twice on one item.
     DuplicateAnnotation { name: Ident },
     /// A recognized annotation whose argument(s) don't parse into anything
@@ -916,7 +916,7 @@ impl AnalysisErrorKind {
                 .with_note(format!(
                     "'@{}' only applies to {}",
                     name.as_ref(),
-                    crate::attributes::item_kind_list(allowed)
+                    crate::annotations::item_kind_list(allowed)
                 )),
             Self::DuplicateAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is already applied to this item", name.as_ref()))
@@ -1444,7 +1444,7 @@ impl AnalysisWarningKind {
     /// against -- deliberately independent of `Display`'s human sentence
     /// (which is free to change wording without breaking anyone's
     /// `@suppress` list) and never validated for existence at the
-    /// `@suppress` site (see `attributes::resolve`'s doc comment): a
+    /// `@suppress` site (see `annotations::resolve`'s doc comment): a
     /// renamed/removed warning just makes an old suppression silently
     /// inert, not an error.
     pub fn name(&self) -> &'static str {

@@ -1,4 +1,4 @@
-pub use crate::ast::attribute::{AttributeArg, AttributeNode};
+pub use crate::ast::annotation::{AnnotationArg, AnnotationNode};
 pub use crate::ast::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
     assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},

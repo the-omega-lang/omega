@@ -8,18 +8,18 @@ pub use omega_parser::prelude::{BinaryOp, ImportRoot};
 use omega_parser::prelude::{ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
 
 /// A lowered `@name(args)` annotation -- mechanical clone of `omega_parser`'s
-/// `AttributeNode`/`AttributeArg` (see their doc comments), unvalidated:
+/// `AnnotationNode`/`AnnotationArg` (see their doc comments), unvalidated:
 /// which names exist, which item kinds they're allowed on, and what their
-/// arguments mean is `omega_analyzer::attributes`'s job, not lowering's.
+/// arguments mean is `omega_analyzer::annotations`'s job, not lowering's.
 #[derive(Debug, Clone)]
-pub struct HirAttribute {
+pub struct HirAnnotation {
     pub name: Ident,
-    pub args: Vec<HirAttributeArg>,
+    pub args: Vec<HirAnnotationArg>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
-pub enum HirAttributeArg {
+pub enum HirAnnotationArg {
     Ident(Ident),
     KeyValue(Ident, String),
 }
@@ -107,8 +107,8 @@ pub struct HirFunctionDef {
     pub id: HirId,
     pub span: Span,
     /// `@inline(...)`/`@mangling(...)`/`@suppress(...)` -- see
-    /// `omega_analyzer::attributes::resolve`.
-    pub attributes: Vec<HirAttribute>,
+    /// `omega_analyzer::annotations::resolve`.
+    pub annotations: Vec<HirAnnotation>,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
     /// `omega_parser::ast::statement::function_definition::
@@ -145,8 +145,8 @@ pub struct HirStructDef {
     pub id: HirId,
     pub span: Span,
     /// `@packing(...)`/`@suppress(...)` -- see
-    /// `omega_analyzer::attributes::resolve`.
-    pub attributes: Vec<HirAttribute>,
+    /// `omega_analyzer::annotations::resolve`.
+    pub annotations: Vec<HirAnnotation>,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
     /// `omega_parser::ast::statement::r#struct::StructStmt::generics`'s
@@ -168,8 +168,8 @@ pub struct HirUnionDef {
     pub id: HirId,
     pub span: Span,
     /// `@suppress(...)` -- `@packing` isn't recognized on a union yet. See
-    /// `omega_analyzer::attributes::resolve`.
-    pub attributes: Vec<HirAttribute>,
+    /// `omega_analyzer::annotations::resolve`.
+    pub annotations: Vec<HirAnnotation>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     /// See `HirStructDef::implements`'s doc comment.
@@ -188,8 +188,8 @@ pub struct HirEnumDef {
     pub id: HirId,
     pub span: Span,
     /// `@packing(...)`/`@suppress(...)` -- see
-    /// `omega_analyzer::attributes::resolve`.
-    pub attributes: Vec<HirAttribute>,
+    /// `omega_analyzer::annotations::resolve`.
+    pub annotations: Vec<HirAnnotation>,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum.
     pub generics: Vec<HirGenericParam>,

@@ -42,6 +42,16 @@ pub struct ExternFunctionRef {
     pub module_path: Vec<Ident>,
     pub kind: ExternFunctionKind,
     pub fn_type: ResolvedFunctionType,
+    /// The extern declaration's *own* resolved `@mangling(...)` -- read
+    /// straight off `Driver::function_annotations`/`ResolvedMethod::
+    /// annotations` (see either's doc comment), the same signature-time-
+    /// resolved value a same-compilation reference to this function would
+    /// see. Without this, a consuming compilation would always assume
+    /// `Enabled` regardless of what the declaring compilation actually
+    /// mangled it as -- exactly the mismatch `omega_codegen::Codegen::
+    /// declare_extern_function` now avoids by checking this instead of
+    /// unconditionally calling `mangled_symbol`/`mangled_method_symbol`.
+    pub mangling: crate::annotations::ManglingMode,
 }
 
 #[derive(Debug, Clone)]
@@ -118,10 +128,10 @@ pub struct CheckedFunctionDef {
     /// given at all. Purely a hint today (see
     /// `crate::error::AnalysisWarningKind::InlineNotEnforced`); codegen has
     /// no per-function inlining mechanism to act on it with yet.
-    pub inline: Option<crate::attributes::InlineMode>,
+    pub inline: Option<crate::annotations::InlineMode>,
     /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
     /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
-    pub mangling: crate::attributes::ManglingMode,
+    pub mangling: crate::annotations::ManglingMode,
 }
 
 impl CheckedFunctionDef {

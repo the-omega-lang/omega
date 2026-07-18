@@ -1,5 +1,5 @@
 //! Resolves the raw `@name(args)` lists `omega_hir` carries on struct/enum/
-//! union/function nodes (see `HirAttribute`'s doc comment) into typed,
+//! union/function nodes (see `HirAnnotation`'s doc comment) into typed,
 //! validated values. This is the one place that knows which annotation
 //! names exist, which item kinds each is allowed on, and what its
 //! arguments mean -- everywhere else (codegen, the checked tree) only ever
@@ -9,7 +9,7 @@
 //! downstream.
 
 use crate::error::AnalysisErrorKind;
-use omega_hir::{HirAttribute, HirAttributeArg};
+use omega_hir::{HirAnnotation, HirAnnotationArg};
 use omega_parser::prelude::{Ident, Span};
 use std::fmt;
 
@@ -101,8 +101,8 @@ pub enum ManglingMode {
 /// field(s) relevant to their own item kind (a struct/enum reads
 /// `packing`, a function reads `inline`/`mangling`), since `resolve`
 /// already rejected any annotation that doesn't belong on `kind`.
-#[derive(Debug, Clone, Default)]
-pub struct ResolvedAttributes {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedAnnotations {
     pub packing: Packing,
     pub inline: Option<InlineMode>,
     pub mangling: ManglingMode,
@@ -113,7 +113,7 @@ pub struct ResolvedAttributes {
     pub suppress: Vec<Ident>,
 }
 
-/// Validates `attrs` against what `kind` allows, reporting every problem
+/// Validates `annotations` against what `kind` allows, reporting every problem
 /// through `on_error` (span first, matching `AnalysisError::new`'s own
 /// `(node_id, span, kind)` order once the caller wraps this with its own
 /// `node_id`) and returning a resolved, typed result regardless -- callers
@@ -126,19 +126,19 @@ pub struct ResolvedAttributes {
 /// restrictions (see `AnalysisErrorKind::ManglingDisabledOnMethod`/
 /// `ManglingDisabledOnGeneric`'s doc comments).
 pub fn resolve(
-    attrs: &[HirAttribute],
+    annotations: &[HirAnnotation],
     kind: ItemKind,
     is_member_function: bool,
     is_generic: bool,
     mut on_error: impl FnMut(Span, AnalysisErrorKind),
-) -> ResolvedAttributes {
-    let mut result = ResolvedAttributes::default();
+) -> ResolvedAnnotations {
+    let mut result = ResolvedAnnotations::default();
     let mut seen: Vec<&str> = Vec::new();
 
-    for attr in attrs {
-        let name = attr.name.as_ref();
+    for annotation in annotations {
+        let name = annotation.name.as_ref();
         if seen.contains(&name) {
-            on_error(attr.span, AnalysisErrorKind::DuplicateAnnotation { name: attr.name.clone() });
+            on_error(annotation.span, AnalysisErrorKind::DuplicateAnnotation { name: annotation.name.clone() });
         } else {
             seen.push(name);
         }
@@ -147,77 +147,77 @@ pub fn resolve(
             "packing" => {
                 if !matches!(kind, ItemKind::Struct | ItemKind::Enum) {
                     on_error(
-                        attr.span,
+                        annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
-                            name: attr.name.clone(),
+                            name: annotation.name.clone(),
                             found: kind,
                             allowed: vec![ItemKind::Struct, ItemKind::Enum],
                         },
                     );
                     continue;
                 }
-                match resolve_packing(attr) {
+                match resolve_packing(annotation) {
                     Ok(packing) => result.packing = packing,
                     Err(reason) => {
-                        on_error(attr.span, AnalysisErrorKind::InvalidAnnotationArgs { name: attr.name.clone(), reason })
+                        on_error(annotation.span, AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason })
                     }
                 }
             }
             "inline" => {
                 if kind != ItemKind::Function {
                     on_error(
-                        attr.span,
+                        annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
-                            name: attr.name.clone(),
+                            name: annotation.name.clone(),
                             found: kind,
                             allowed: vec![ItemKind::Function],
                         },
                     );
                     continue;
                 }
-                match resolve_inline(attr) {
+                match resolve_inline(annotation) {
                     Ok(mode) => result.inline = Some(mode),
                     Err(reason) => {
-                        on_error(attr.span, AnalysisErrorKind::InvalidAnnotationArgs { name: attr.name.clone(), reason })
+                        on_error(annotation.span, AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason })
                     }
                 }
             }
             "mangling" => {
                 if kind != ItemKind::Function {
                     on_error(
-                        attr.span,
+                        annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
-                            name: attr.name.clone(),
+                            name: annotation.name.clone(),
                             found: kind,
                             allowed: vec![ItemKind::Function],
                         },
                     );
                     continue;
                 }
-                match resolve_mangling(attr) {
+                match resolve_mangling(annotation) {
                     Ok(ManglingMode::Disabled) if is_member_function => {
-                        on_error(attr.span, AnalysisErrorKind::ManglingDisabledOnMethod)
+                        on_error(annotation.span, AnalysisErrorKind::ManglingDisabledOnMethod)
                     }
                     Ok(ManglingMode::Disabled) if is_generic => {
-                        on_error(attr.span, AnalysisErrorKind::ManglingDisabledOnGeneric)
+                        on_error(annotation.span, AnalysisErrorKind::ManglingDisabledOnGeneric)
                     }
                     Ok(mode) => result.mangling = mode,
                     Err(reason) => {
-                        on_error(attr.span, AnalysisErrorKind::InvalidAnnotationArgs { name: attr.name.clone(), reason })
+                        on_error(annotation.span, AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason })
                     }
                 }
             }
             "suppress" => {
-                result.suppress = attr
+                result.suppress = annotation
                     .args
                     .iter()
                     .filter_map(|arg| match arg {
-                        HirAttributeArg::Ident(warning) => Some(warning.clone()),
-                        HirAttributeArg::KeyValue(key, _) => {
+                        HirAnnotationArg::Ident(warning) => Some(warning.clone()),
+                        HirAnnotationArg::KeyValue(key, _) => {
                             on_error(
-                                attr.span,
+                                annotation.span,
                                 AnalysisErrorKind::InvalidAnnotationArgs {
-                                    name: attr.name.clone(),
+                                    name: annotation.name.clone(),
                                     reason: format!(
                                         "'{}' should be a bare warning name, not a key = value pair",
                                         key.as_ref()
@@ -229,7 +229,7 @@ pub fn resolve(
                     })
                     .collect();
             }
-            _ => on_error(attr.span, AnalysisErrorKind::UnknownAnnotation { name: attr.name.clone() }),
+            _ => on_error(annotation.span, AnalysisErrorKind::UnknownAnnotation { name: annotation.name.clone() }),
         }
     }
 
@@ -239,10 +239,10 @@ pub fn resolve(
 /// `packed` or `align = N` (`N` a power-of-two decimal literal) -- anything
 /// else is a malformed argument, reported through the shared
 /// `InvalidAnnotationArgs` error rather than a dedicated variant per shape.
-fn resolve_packing(attr: &HirAttribute) -> Result<Packing, String> {
-    match attr.args.as_slice() {
-        [HirAttributeArg::Ident(mode)] if mode.as_ref() == "packed" => Ok(Packing::Packed),
-        [HirAttributeArg::KeyValue(key, value)] if key.as_ref() == "align" => {
+fn resolve_packing(annotation: &HirAnnotation) -> Result<Packing, String> {
+    match annotation.args.as_slice() {
+        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "packed" => Ok(Packing::Packed),
+        [HirAnnotationArg::KeyValue(key, value)] if key.as_ref() == "align" => {
             let n: u32 = value.parse().map_err(|_| format!("'{value}' does not fit a u32"))?;
             if n == 0 || !n.is_power_of_two() {
                 return Err(format!("alignment must be a power of two, found {n}"));
@@ -253,18 +253,18 @@ fn resolve_packing(attr: &HirAttribute) -> Result<Packing, String> {
     }
 }
 
-fn resolve_inline(attr: &HirAttribute) -> Result<InlineMode, String> {
-    match attr.args.as_slice() {
-        [HirAttributeArg::Ident(mode)] if mode.as_ref() == "always" => Ok(InlineMode::Always),
-        [HirAttributeArg::Ident(mode)] if mode.as_ref() == "never" => Ok(InlineMode::Never),
+fn resolve_inline(annotation: &HirAnnotation) -> Result<InlineMode, String> {
+    match annotation.args.as_slice() {
+        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "always" => Ok(InlineMode::Always),
+        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "never" => Ok(InlineMode::Never),
         _ => Err("expected 'always' or 'never'".to_string()),
     }
 }
 
-fn resolve_mangling(attr: &HirAttribute) -> Result<ManglingMode, String> {
-    match attr.args.as_slice() {
-        [HirAttributeArg::Ident(mode)] if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
-        [HirAttributeArg::Ident(mode)] if mode.as_ref() == "disabled" => Ok(ManglingMode::Disabled),
+fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> {
+    match annotation.args.as_slice() {
+        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
+        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "disabled" => Ok(ManglingMode::Disabled),
         _ => Err("expected 'enabled' or 'disabled'".to_string()),
     }
 }
