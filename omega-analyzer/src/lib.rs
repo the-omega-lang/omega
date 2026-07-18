@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod annotations;
 pub mod checked;
 mod context;
+pub mod dead_code;
 pub mod error;
 mod exhaustiveness;
 mod generics;

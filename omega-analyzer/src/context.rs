@@ -45,6 +45,24 @@ pub struct VarBinding {
     /// concern, unrelated to this field). See `Analyzer::analyze_place`'s
     /// doc comment for how this feeds into a whole place's mutability.
     pub mutable: bool,
+    /// Whether this binding has been read at least once since declaration
+    /// -- live-tracked (not a post-hoc tree walk, since `mutable` never
+    /// survives onto the checked tree at all -- see `mark_written`'s doc
+    /// comment) via `Context::mark_used`, called from the one place an
+    /// ordinary read of a place actually happens (`Analyzer::analyze_expr`'s
+    /// `HirExpr::Place` arm). Checked at scope-exit for
+    /// `AnalysisWarningKind::UnusedVariable`/`UnusedParameter` -- see
+    /// `Analyzer::warn_unused_bindings`.
+    pub used: bool,
+    /// Whether this binding has actually been reassigned (`=`, a compound
+    /// assignment, `++`/`--`, or `&mut`) since declaration -- live-tracked
+    /// via `Context::mark_written`, called from `Analyzer::
+    /// require_mutable_place`, the one existing choke point for "this place
+    /// is about to be written through." Only ever meaningful when `mutable`
+    /// is also `true` (an un-`mut` binding can never reach
+    /// `require_mutable_place` successfully in the first place); checked at
+    /// scope-exit for `AnalysisWarningKind::UnnecessaryMut`.
+    pub written: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +148,40 @@ impl Context {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.declared_variables.get_mut(ident) {
                 binding.r#type = binding.r#type.widened();
+                return;
+            }
+        }
+    }
+
+    /// Marks the binding identified by `decl_id` as having been read at
+    /// least once -- scans live scopes innermost-first (same walk as
+    /// `widen_variable`), but by `decl_id` rather than name: the caller only
+    /// ever has a resolved `CheckedPlace`'s `decl_id` by the time it can
+    /// call this, and keying by name could hit the wrong binding if a
+    /// same-named shadow was declared in between resolution and marking.
+    /// A no-op if `decl_id` doesn't belong to any live scope (e.g. it names
+    /// a field/global, which aren't tracked this way at all).
+    pub fn mark_used(&mut self, decl_id: HirId) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.declared_variables.values_mut().find(|b| b.decl_id == decl_id) {
+                binding.used = true;
+                return;
+            }
+        }
+    }
+
+    /// Same shape as `mark_used`, for "this binding was actually
+    /// reassigned" -- deliberately independent of `used` (a write is *not*
+    /// itself treated as a read): a write-only binding (reassigned but
+    /// never read back) still reports `UnusedVariable` -- it matches that
+    /// warning's exact definition, "never read" -- while correctly *not*
+    /// also reporting `UnnecessaryMut`, since `mut` genuinely was exercised
+    /// here (see `Analyzer::warn_unused_bindings`'s `used &&`-gated check,
+    /// which relies on this independence).
+    pub fn mark_written(&mut self, decl_id: HirId) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.declared_variables.values_mut().find(|b| b.decl_id == decl_id) {
+                binding.written = true;
                 return;
             }
         }

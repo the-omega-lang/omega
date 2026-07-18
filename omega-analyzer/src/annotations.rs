@@ -11,6 +11,8 @@
 use crate::analysis::Analyzer;
 use crate::error::AnalysisError;
 use crate::error::AnalysisErrorKind;
+use crate::error::AnalysisWarningKind;
+use crate::resolved_type::ResolvedType;
 use omega_hir::{HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirId};
 use omega_parser::prelude::{Ident, Span};
 use std::fmt;
@@ -26,6 +28,11 @@ pub enum ItemKind {
     Enum,
     Union,
     Function,
+    /// An `import` statement -- unlike the other three, this one allows
+    /// only `@suppress` (needed so `UnusedImport` has any suppress path at
+    /// all); every other annotation stays rejected on it via the ordinary
+    /// `AnnotationNotApplicable` path, no new error-handling code needed.
+    Import,
 }
 
 impl ItemKind {
@@ -35,6 +42,7 @@ impl ItemKind {
             Self::Enum => "an enum",
             Self::Union => "a union",
             Self::Function => "a function",
+            Self::Import => "an import",
         }
     }
 
@@ -44,6 +52,7 @@ impl ItemKind {
             Self::Enum => "enums",
             Self::Union => "unions",
             Self::Function => "functions",
+            Self::Import => "imports",
         }
     }
 }
@@ -344,6 +353,13 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
         }
     }
 
+    // Bare `@layout`/`@layout()` (no keys at all) is the sanctioned
+    // shorthand for the default -- only warn when at least one key was
+    // explicitly written and it still landed back on the default anyway.
+    if !seen_keys.is_empty() && layout == Layout::default() {
+        analyzer.warn(node_id, annotation.span, AnalysisWarningKind::RedundantLayoutAnnotation);
+    }
+
     layout
 }
 
@@ -392,5 +408,51 @@ fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> 
         [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
         [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "disabled" => Ok(ManglingMode::Disabled),
         _ => Err("expected 'enabled' or 'disabled'".to_string()),
+    }
+}
+
+/// `LargeStructByValue`'s threshold, in bytes -- a round "bigger than a
+/// couple cache lines" default. No CLI flag: not asked for, and one more
+/// knob nobody's requested yet isn't worth the surface.
+pub const LARGE_STRUCT_BY_VALUE_THRESHOLD: u32 = 128;
+
+/// A deliberately approximate, analyzer-only lower bound on a type's
+/// in-memory size -- unlike `omega_codegen`'s real layout algorithm, this
+/// ignores every `@layout` pack/align padding rule entirely, so it can only
+/// ever *underestimate* a real type's size, never overestimate it: a
+/// padded real struct can only be *larger* than this estimate. Good enough
+/// to flag "this is clearly a large struct" (`LargeStructByValue`'s only
+/// job); the only failure mode this trades away is a false negative right
+/// at the threshold, never a false positive from ignored padding.
+pub fn estimate_type_size(r#type: &ResolvedType) -> u32 {
+    if let Some(n) = r#type.primitive_byte_size() {
+        return n;
+    }
+    match r#type {
+        ResolvedType::Struct(cell) => cell.borrow().fields.iter().map(|(_, t)| estimate_type_size(t)).sum(),
+        ResolvedType::Union(cell) => {
+            cell.borrow().fields.iter().map(|(_, t)| estimate_type_size(t)).max().unwrap_or(0)
+        }
+        ResolvedType::Enum { cell, .. } => {
+            let cell = cell.borrow();
+            let tag = estimate_type_size(&cell.tag_type);
+            let header: u32 = cell.header.iter().map(|(_, t)| estimate_type_size(t)).sum();
+            let dynamic: u32 = cell.dynamic_fields.iter().map(|(_, t)| estimate_type_size(t)).sum();
+            let body = cell
+                .variants
+                .iter()
+                .map(|v| v.fields.iter().map(|(_, t)| estimate_type_size(t)).sum::<u32>())
+                .max()
+                .unwrap_or(0);
+            tag + header + dynamic + body
+        }
+        // `N` copies of the item type's own size, back to back -- an
+        // embedded fixed-size array is inline data, not indirection (see
+        // `omega_codegen`'s identical `SizedArray` leaf-flattening).
+        ResolvedType::SizedArray(item, size) => estimate_type_size(item) * size,
+        // A fat pointer: a data pointer plus an `i32` length (see
+        // `omega_codegen`'s `IntoIRType` for `Slice`).
+        ResolvedType::Slice { .. } => 12,
+        _ => 0,
     }
 }

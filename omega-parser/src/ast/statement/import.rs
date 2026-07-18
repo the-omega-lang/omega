@@ -1,3 +1,4 @@
+use crate::ast::annotation::AnnotationNode;
 use crate::ast::identifier::Path;
 
 /// `import a::b::c;` -- root-level only (like `extern`/`struct`), never
@@ -9,6 +10,11 @@ use crate::ast::identifier::Path;
 /// `omega-driver`). The parser only knows this is a path to *something*.
 #[derive(Debug, Clone)]
 pub struct ImportStmt {
+    /// `@suppress(...)` written directly above `import` -- the only
+    /// annotation an import accepts (see `omega_analyzer::annotations::
+    /// ItemKind::Import`); anything else is rejected the ordinary
+    /// `AnnotationNotApplicable` way.
+    pub annotations: Vec<AnnotationNode>,
     pub root: ImportRoot,
     pub path: Path,
 }

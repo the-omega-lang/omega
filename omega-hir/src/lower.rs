@@ -52,6 +52,7 @@ impl Lowerer {
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
+                annotations: Self::lower_annotations(&import.annotations),
                 root: import.root,
                 path: import.path.clone(),
             }),

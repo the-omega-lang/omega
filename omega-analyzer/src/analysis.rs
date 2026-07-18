@@ -11,7 +11,7 @@ use crate::{
         CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile, CastKind, NumberValue,
         Storage,
     },
-    context::{Context, VarBinding},
+    context::{Context, ScopeContext, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError},
     generics::unify_generic_type,
     resolved_type::{
@@ -326,7 +326,7 @@ impl<'r> Analyzer<'r> {
     /// a raw `self.warnings.push(AnalysisWarning::new(...))`, silently
     /// dropping the warning when `@suppress` has named it in an active
     /// frame instead.
-    fn warn(&mut self, node_id: HirId, span: Span, kind: AnalysisWarningKind) {
+    pub(crate) fn warn(&mut self, node_id: HirId, span: Span, kind: AnalysisWarningKind) {
         if !self.is_suppressed(&kind) {
             self.warnings.push(AnalysisWarning::new(node_id, span, kind));
         }
@@ -826,7 +826,7 @@ impl<'r> Analyzer<'r> {
         narrowed: bool,
         mutable: bool,
     ) -> Option<()> {
-        let binding = VarBinding { decl_id: id, storage, r#type, span, narrowed, mutable };
+        let binding = VarBinding { decl_id: id, storage, r#type, span, narrowed, mutable, used: false, written: false };
         match self.context.current_scope().declare(ident.clone(), binding) {
             Ok(()) => Some(()),
             Err((name, previous)) => {
@@ -1183,6 +1183,41 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Hand-written structural equality between two checked places, used
+    /// only to detect self-assignment (`x = x;`). Never attempts recursive
+    /// sub-expression equality -- an `Expr` root, or an `Index`/`Deref`
+    /// projection (whose "index" or "pointer" sub-expressions could
+    /// themselves have side effects or simply differ at runtime), makes the
+    /// comparison bail out as "not provably equal" rather than risk a false
+    /// positive. A false negative here (missing a self-assignment) is fine;
+    /// a false positive (warning on `a.foo = b.foo`) is not.
+    fn places_provably_equal(a: &CheckedPlace, b: &CheckedPlace) -> bool {
+        let roots_equal = match (&a.root, &b.root) {
+            (CheckedPlaceRoot::Variable { decl_id: a, .. }, CheckedPlaceRoot::Variable { decl_id: b, .. }) => a == b,
+            _ => false,
+        };
+        if !roots_equal || a.projections.len() != b.projections.len() {
+            return false;
+        }
+
+        a.projections.iter().zip(b.projections.iter()).all(|(a, b)| match (a, b) {
+            (CheckedProjection::FieldAccess { index: a, .. }, CheckedProjection::FieldAccess { index: b, .. }) => a == b,
+            (CheckedProjection::SliceLength, CheckedProjection::SliceLength) => true,
+            (CheckedProjection::EnumTag { .. }, CheckedProjection::EnumTag { .. }) => true,
+            (CheckedProjection::EnumHeader { index: a, .. }, CheckedProjection::EnumHeader { index: b, .. }) => a == b,
+            (
+                CheckedProjection::EnumDynamicField { index: a, .. },
+                CheckedProjection::EnumDynamicField { index: b, .. },
+            ) => a == b,
+            (
+                CheckedProjection::EnumBody { variant_index: av, field_index: af, .. },
+                CheckedProjection::EnumBody { variant_index: bv, field_index: bf, .. },
+            ) => av == bv && af == bf,
+            (CheckedProjection::UnionField { index: a, .. }, CheckedProjection::UnionField { index: b, .. }) => a == b,
+            _ => false,
+        })
+    }
+
     /// Errors (returning `None`) unless a place `analyze_place` already
     /// resolved (`mutable` is its own third return value) may be written
     /// to. Shared by every requirement that ultimately means the same
@@ -1206,6 +1241,16 @@ impl<'r> Analyzer<'r> {
         mutable: bool,
     ) -> Option<()> {
         if mutable {
+            // This place is genuinely about to be written through -- the
+            // one choke point every real reassignment (`=`, a compound
+            // assignment, `++`/`--`, `&mut`) funnels through, so it's also
+            // the one place `Context::mark_written` needs calling from.
+            // Only a bare local variable root has a `decl_id` worth
+            // tracking this way; a projection through a pointer/field/temp
+            // isn't itself a *binding* `UnnecessaryMut` could ever fire on.
+            if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
+                self.context.mark_written(decl_id);
+            }
             return Some(());
         }
         let through_pointer = checked_place.projections.iter().any(|p| matches!(p, CheckedProjection::Deref { .. }));
@@ -3080,6 +3125,32 @@ impl<'r> Analyzer<'r> {
         stmts
     }
 
+    /// Walks a just-left scope's own declared bindings, warning about any
+    /// that were never read (`UnusedVariable`/`UnusedParameter`, depending
+    /// on `is_params`) or declared `mut` but never actually reassigned
+    /// (`UnnecessaryMut`, gated on having been read at all -- see
+    /// `VarBinding::written`'s doc comment for why a write-only binding
+    /// reports as unused instead of unnecessarily-`mut`). Skips `narrowed`
+    /// shadows (not user-declared) and, in a parameter scope, the implicit
+    /// `self` (unused `self` is idiomatic in plenty of methods).
+    fn warn_unused_bindings(&mut self, scope: ScopeContext, is_params: bool) {
+        for (name, binding) in &scope.declared_variables {
+            if binding.narrowed || (is_params && name.as_ref() == "self") {
+                continue;
+            }
+            if !binding.used {
+                let kind = if is_params {
+                    AnalysisWarningKind::UnusedParameter { name: name.clone() }
+                } else {
+                    AnalysisWarningKind::UnusedVariable { name: name.clone() }
+                };
+                self.warn(binding.decl_id, binding.span, kind);
+            } else if binding.mutable && !binding.written {
+                self.warn(binding.decl_id, binding.span, AnalysisWarningKind::UnnecessaryMut { name: name.clone() });
+            }
+        }
+    }
+
     /// Analyzes a `{ stmts... tail }` block in its own nested scope --
     /// shared by bare codeblock expressions, `if`/`while`/`for` bodies, and
     /// function bodies. Scope is always entered/left even on failure (before
@@ -3092,7 +3163,8 @@ impl<'r> Analyzer<'r> {
         self.context.enter_scope();
         let checked_stmts = self.analyze_stmts(&block.stmts);
         let checked_tail = block.tail.as_ref().map(|e| self.analyze_expr(e, expected));
-        self.context.leave_scope();
+        let scope = self.context.leave_scope();
+        self.warn_unused_bindings(scope, false);
 
         let stmts = checked_stmts?;
         let tail = match checked_tail {
@@ -3230,6 +3302,10 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        if op.is_comparison() {
+            self.check_always_true_false_comparison(node_id, span, op, &checked_left, &checked_right);
+        }
+
         // A comparison always produces `bool`, regardless of the
         // (still-numeric, still-matching) operand type; an
         // arithmetic op's result is that same operand type.
@@ -3240,6 +3316,74 @@ impl<'r> Analyzer<'r> {
             r#type,
             kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(checked_left), right: Box::new(checked_right) }),
         })
+    }
+
+    /// The operand's value as an `i128`, if it's a bare literal (`Number`
+    /// or `Bool`) rather than a runtime-varying place/expression --
+    /// `AlwaysTrueFalseComparison`'s "exactly one side is a literal" check
+    /// reads this from both sides and keeps whichever one succeeds.
+    fn literal_i128(expr: &CheckedExprNode) -> Option<i128> {
+        match &expr.kind {
+            CheckedExpr::Number(NumberValue::Signed(n)) => Some(*n as i128),
+            CheckedExpr::Number(NumberValue::Unsigned(n)) => Some(*n as i128),
+            CheckedExpr::Bool(b) => Some(*b as i128),
+            _ => None,
+        }
+    }
+
+    /// A comparison whose truth value doesn't depend on its non-literal
+    /// operand at all -- e.g. `unsigned_var < 0` (always false) or
+    /// `unsigned_var >= 0` (always true) -- computed via plain bound
+    /// arithmetic against the operand type's `integer_domain()`, the same
+    /// domain `exhaustiveness::check` already treats as "the whole range" a
+    /// match must cover. Only fires when exactly one side is a literal;
+    /// both-literal or both-variable comparisons say nothing about the
+    /// *type's* range and are out of scope here.
+    fn check_always_true_false_comparison(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        op: BinaryOp,
+        left: &CheckedExprNode,
+        right: &CheckedExprNode,
+    ) {
+        let Some((lo, hi)) = left.r#type.integer_domain() else { return };
+
+        let (literal, literal_on_right) = match (Self::literal_i128(left), Self::literal_i128(right)) {
+            (Some(l), None) => (l, false),
+            (None, Some(r)) => (r, true),
+            _ => return,
+        };
+
+        // `x op literal` if `literal_on_right`, else `literal op x` --
+        // each arm picks the bound that pins the result to `true`, then
+        // the one that pins it to `false`; anything left over genuinely
+        // depends on `x`'s runtime value.
+        let fixed = if literal_on_right {
+            match op {
+                BinaryOp::Lt => (hi < literal).then_some(true).or((lo >= literal).then_some(false)),
+                BinaryOp::Le => (hi <= literal).then_some(true).or((lo > literal).then_some(false)),
+                BinaryOp::Gt => (lo > literal).then_some(true).or((hi <= literal).then_some(false)),
+                BinaryOp::Ge => (lo >= literal).then_some(true).or((hi < literal).then_some(false)),
+                BinaryOp::Eq => (literal < lo || literal > hi).then_some(false),
+                BinaryOp::Ne => (literal < lo || literal > hi).then_some(true),
+                _ => None,
+            }
+        } else {
+            match op {
+                BinaryOp::Lt => (literal < lo).then_some(true).or((literal >= hi).then_some(false)),
+                BinaryOp::Le => (literal <= lo).then_some(true).or((literal > hi).then_some(false)),
+                BinaryOp::Gt => (literal > hi).then_some(true).or((literal <= lo).then_some(false)),
+                BinaryOp::Ge => (literal >= hi).then_some(true).or((literal < lo).then_some(false)),
+                BinaryOp::Eq => (literal < lo || literal > hi).then_some(false),
+                BinaryOp::Ne => (literal < lo || literal > hi).then_some(true),
+                _ => None,
+            }
+        };
+
+        if let Some(result) = fixed {
+            self.warn(node_id, span, AnalysisWarningKind::AlwaysTrueFalseComparison { result });
+        }
     }
 
     /// `target op= value` -- desugars directly into `target = target op
@@ -3305,6 +3449,16 @@ impl<'r> Analyzer<'r> {
         match &node.expr {
             HirExpr::Place(place) => {
                 let (checked_place, r#type, _mutable) = self.analyze_place(node_id, span, place, expected)?;
+                // This is the one place an ordinary *read* of a place
+                // happens (an assignment's own target is resolved
+                // separately, never through here -- see
+                // `require_mutable_place`'s own `mark_written` call for the
+                // write side) -- including a compound-assign/increment's
+                // synthesized read component, since those desugar to a
+                // `HirExpr::Place` of their own.
+                if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
+                    self.context.mark_used(decl_id);
+                }
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
             }
 
@@ -3574,6 +3728,12 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
 
+                if let CheckedExpr::Place(value_place) = &checked_value.kind {
+                    if Self::places_provably_equal(&checked_target, value_place) {
+                        self.warn(node_id, span, AnalysisWarningKind::SelfAssignment);
+                    }
+                }
+
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
@@ -3823,12 +3983,17 @@ impl<'r> Analyzer<'r> {
                     return None;
                 };
 
+                let cast_kind = Self::resolve_cast_kind(source_class, target_class);
+                if cast_kind == CastKind::Reinterpret && checked_base.r#type == target_type {
+                    self.warn(node_id, span, AnalysisWarningKind::NoOpCast { r#type: target_type.clone() });
+                }
+
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
                     r#type: target_type.clone(),
                     kind: CheckedExpr::Cast(CheckedCast {
-                        kind: Self::resolve_cast_kind(source_class, target_class),
+                        kind: cast_kind,
                         target_type,
                         base: Box::new(checked_base),
                     }),
@@ -4907,7 +5072,12 @@ impl<'r> Analyzer<'r> {
             HirStmt::ExternDeclaration(decl) => {
                 self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
             }
-            HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| vec![CheckedStmt::Expression(e)]),
+            HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| {
+                if matches!(e.kind, CheckedExpr::FunctionCall(_)) && e.r#type != ResolvedType::Void {
+                    self.warn(e.id, e.span, AnalysisWarningKind::UnusedReturnValue);
+                }
+                vec![CheckedStmt::Expression(e)]
+            }),
             HirStmt::Return(expr) => {
                 if self.in_defer_body {
                     self.errors.push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer));
@@ -5041,7 +5211,8 @@ impl<'r> Analyzer<'r> {
         self.loop_stack.pop();
         ok &= checked_body.is_some();
 
-        self.context.leave_scope();
+        let scope = self.context.leave_scope();
+        self.warn_unused_bindings(scope, false);
 
         if !ok {
             return None;
@@ -5145,6 +5316,16 @@ impl<'r> Analyzer<'r> {
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
         })?;
+
+        for (p, (_, r#type)) in f.params.iter().zip(params.iter()) {
+            if matches!(r#type, ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }) {
+                let size = crate::annotations::estimate_type_size(r#type);
+                if size > crate::annotations::LARGE_STRUCT_BY_VALUE_THRESHOLD {
+                    self.warn(p.id, p.span, AnalysisWarningKind::LargeStructByValue { r#type: r#type.clone(), size });
+                }
+            }
+        }
+
         let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type, true)?;
         let annotations = crate::annotations::resolve(
             self,
@@ -5938,7 +6119,8 @@ impl<'r> Analyzer<'r> {
         // gets (see `HirStmt::Return`'s arm above).
         let body = self.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
 
-        self.context.leave_scope();
+        let scope = self.context.leave_scope();
+        self.warn_unused_bindings(scope, true);
         self.suppressed.pop();
 
         let params = params?;

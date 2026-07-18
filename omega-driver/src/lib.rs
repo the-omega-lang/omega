@@ -2,11 +2,12 @@ mod fs_resolve;
 
 use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, PendingSpecMethod};
-use omega_analyzer::annotations::ResolvedAnnotations;
+use omega_analyzer::annotations::{self, ItemKind, ResolvedAnnotations};
 use omega_analyzer::checked::{
     CheckedFunctionDef, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage,
 };
-use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
+use omega_analyzer::dead_code;
+use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind};
 use omega_analyzer::resolved_type::{
     ResolvedEnumType, ResolvedFunctionType, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
@@ -15,12 +16,14 @@ use omega_analyzer::resolver::{
 };
 use omega_analyzer::similarity::best_match;
 use omega_diagnostics::{Diagnostic, SourceFile, Span};
-use omega_hir::{HirId, HirImport, HirItem, HirModule, ModuleId, SYNTHETIC_MODULE};
+use omega_hir::{
+    HirEnumDef, HirId, HirImport, HirItem, HirModule, HirStructDef, HirUnionDef, ModuleId, SYNTHETIC_MODULE,
+};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -298,7 +301,13 @@ pub struct Driver {
     /// filesystem access beyond what's already cached -- only *resolving*
     /// what that absolute path actually is (a module vs. an item) is
     /// deferred, lazily, to `resolve_import_alias`.
-    raw_imports: HashMap<Vec<Ident>, HashMap<Ident, (HirId, Span, Vec<Ident>)>>,
+    /// The trailing `Vec<Ident>` is this one import's own resolved
+    /// `@suppress(...)` list (see `ItemKind::Import`) -- resolved once,
+    /// here, via a throwaway `Analyzer` (same precedent as
+    /// `check_generic_bounds`'s one-off call), since an import has no
+    /// per-item analysis pass of its own for `UnusedImport` to hook into
+    /// otherwise.
+    raw_imports: HashMap<Vec<Ident>, HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>)>>,
     /// One `(module_path, alias)` import alias's resolved target, memoized
     /// and cycle-guarded (see `ImportCacheState`'s doc comment) at that same
     /// fine granularity -- replaces the old whole-module-granular version of
@@ -348,6 +357,21 @@ pub struct Driver {
     /// the body phase (`compile`'s second pass), since neither one is a
     /// single long-lived whole-module `Analyzer` pass anymore.
     module_errors: HashMap<Vec<Ident>, Vec<AnalysisError>>,
+    /// `module_errors`'s warning counterpart -- signature-phase warnings
+    /// (`compute_item`) have nowhere else to go: unlike a body-check's
+    /// `Vec<AnalysisWarning>`, which flows straight back through
+    /// `check_item_body`'s return value into `compile`'s local `warnings`
+    /// list, a signature is resolved once, memoized, and never revisited
+    /// (`ensure_item`'s whole point), so its warnings must be captured the
+    /// one time it actually runs and held here until `compile`'s final
+    /// assembly drains them the same way it already drains `module_errors`.
+    module_warnings: HashMap<Vec<Ident>, Vec<AnalysisWarning>>,
+    /// Every `(module_path, alias)` pair `resolve_import_alias` has ever
+    /// successfully looked up -- the single choke point every alias use
+    /// funnels through, so this is a complete record of "was this import
+    /// ever actually used" by the time a module's items finish body-
+    /// checking. `UnusedImport`'s sweep diffs this against `raw_imports`.
+    used_imports: HashSet<(Vec<Ident>, Ident)>,
 }
 
 /// One `--extern` flag, already split into its parts -- `name` is this
@@ -406,6 +430,8 @@ impl Driver {
             resolved_items: HashMap::new(),
             generic_instantiations: HashMap::new(),
             module_errors: HashMap::new(),
+            module_warnings: HashMap::new(),
+            used_imports: HashSet::new(),
         }
     }
 
@@ -801,7 +827,7 @@ impl Driver {
         // it runs eagerly for every module the moment it's indexed --
         // there's no cycle risk here, only in actually *resolving* what
         // each alias's absolute path names (`resolve_import_alias`).
-        let mut aliases: HashMap<Ident, (HirId, Span, Vec<Ident>)> = HashMap::new();
+        let mut aliases: HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>)> = HashMap::new();
         for item in &hir.items {
             let HirItem::Import(import) = item else { continue };
             let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
@@ -816,9 +842,21 @@ impl Driver {
                     continue;
                 }
             };
+            // A throwaway `Analyzer` purely to resolve `@suppress(...)` --
+            // matches `check_generic_bounds`'s identical one-off-`Analyzer`
+            // precedent for a spot that isn't part of the ordinary per-item
+            // signature/body flow. `@suppress` is the only annotation an
+            // import can carry (`ItemKind::Import`); anything else here
+            // pushes its own `AnnotationNotApplicable` into `module_errors`.
+            let mut analyzer = Analyzer::new(self, path.to_vec(), &[], (import.id, import.span));
+            let suppress = annotations::resolve(&mut analyzer, import.id, &import.annotations, ItemKind::Import, false, false).suppress;
+            let (errors, _warnings) = analyzer.finish();
+            if !errors.is_empty() {
+                self.module_errors.entry(path.to_vec()).or_default().extend(errors);
+            }
             match aliases.entry(alias) {
                 Entry::Occupied(existing) => {
-                    let (_, previous_span, _) = *existing.get();
+                    let (_, previous_span, _, _) = *existing.get();
                     self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
                         import.id,
                         import.span,
@@ -826,7 +864,7 @@ impl Driver {
                     ));
                 }
                 Entry::Vacant(entry) => {
-                    entry.insert((import.id, import.span, absolute));
+                    entry.insert((import.id, import.span, absolute, suppress));
                 }
             }
         }
@@ -1171,34 +1209,34 @@ impl Driver {
         let substitution: Vec<(Ident, ResolvedType)> =
             generics.iter().cloned().zip(type_args.iter().cloned()).collect();
 
-        let (result, errors) = match item {
+        let (result, errors, warnings) = match item {
             HirItem::Declaration(decl) => {
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (decl.id, decl.span));
                 let checked = analyzer.analyze_declaration(decl, Storage::Global);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 let result = checked
                     .map(|c| ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id });
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::ExternDeclaration(decl) => {
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (decl.id, decl.span));
                 let checked = analyzer.analyze_extern_decl(decl);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 let result = checked.map(|c| {
                     let storage =
                         if matches!(c.r#type, ResolvedType::Function(_)) { Storage::Function } else { Storage::Global };
                     ResolvedItem::Value { r#type: c.r#type, storage, decl_id: c.id }
                 });
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::FunctionDefinition(f) => {
                 let id = if type_args.is_empty() { f.id } else { self.fresh_synthetic_id() };
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (f.id, f.span));
                 let checked = analyzer.collect_function_signature(f);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 let result = checked.map(|(fn_type, annotations)| {
                     self.function_annotations.insert(id, annotations);
                     ResolvedItem::Value {
@@ -1207,7 +1245,7 @@ impl Driver {
                         decl_id: id,
                     }
                 });
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::Struct(s) => {
                 let id = if type_args.is_empty() { s.id } else { self.fresh_synthetic_id() };
@@ -1223,12 +1261,12 @@ impl Driver {
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &self_substitution, (s.id, s.span));
                 let (ok, pending_spec_methods) = analyzer.signature_of_struct(s, &cell, &method_ids);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 if ok.is_some() {
                     self.pending_spec_methods.insert(key, pending_spec_methods);
                 }
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Struct(cell)));
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::Enum(e) => {
                 let id = if type_args.is_empty() { e.id } else { self.fresh_synthetic_id() };
@@ -1245,12 +1283,12 @@ impl Driver {
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &self_substitution, (e.id, e.span));
                 let (ok, pending_spec_methods) = analyzer.signature_of_enum(e, &cell, &method_ids);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 if ok.is_some() {
                     self.pending_spec_methods.insert(key, pending_spec_methods);
                 }
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Enum { cell, variant: None }));
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::Union(u) => {
                 let id = if type_args.is_empty() { u.id } else { self.fresh_synthetic_id() };
@@ -1266,12 +1304,12 @@ impl Driver {
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &self_substitution, (u.id, u.span));
                 let (ok, pending_spec_methods) = analyzer.signature_of_union(u, &cell, &method_ids);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 if ok.is_some() {
                     self.pending_spec_methods.insert(key, pending_spec_methods);
                 }
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Union(cell)));
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::Spec(sp) => {
                 let id = if type_args.is_empty() { sp.id } else { self.fresh_synthetic_id() };
@@ -1280,7 +1318,7 @@ impl Driver {
                     Analyzer::new(self, module_path.to_vec(), &substitution, (sp.id, sp.span));
                 let dependencies = analyzer.resolve_spec_dependencies(sp);
                 let functions = analyzer.resolve_spec_functions(sp);
-                let (errors, _warnings) = analyzer.finish();
+                let (errors, warnings) = analyzer.finish();
                 let result = if errors.is_empty() {
                     let cell = Rc::new(RefCell::new(ResolvedSpecType {
                         id,
@@ -1293,13 +1331,16 @@ impl Driver {
                 } else {
                     None
                 };
-                (result, errors)
+                (result, errors, warnings)
             }
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
         };
 
         if !errors.is_empty() {
             self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+        }
+        if !warnings.is_empty() {
+            self.module_warnings.entry(module_path.to_vec()).or_default().extend(warnings);
         }
 
         result.ok_or_else(|| ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() })
@@ -1509,9 +1550,12 @@ impl Driver {
         };
         let mut analyzer = Analyzer::new(self, module_path.to_vec(), &[], (f.id, f.span));
         let checked = analyzer.collect_function_signature(f);
-        let (errors, _warnings) = analyzer.finish();
+        let (errors, warnings) = analyzer.finish();
         if !errors.is_empty() {
             self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+        }
+        if !warnings.is_empty() {
+            self.module_warnings.entry(module_path.to_vec()).or_default().extend(warnings);
         }
         let (fn_type, annotations) =
             checked.ok_or_else(|| ResolveError::ItemFailed { module: module_path.to_vec(), item: f.name.clone() })?;
@@ -1591,6 +1635,204 @@ impl Driver {
                 (!errors.is_empty()).then(|| CompileError::Analysis { module: path.clone(), errors })
             })
             .collect()
+    }
+
+    /// `drain_errors`'s warning counterpart -- see `module_warnings`'s doc
+    /// comment for why signature-phase warnings need this separate path at
+    /// all, instead of just flowing back through a return value the way a
+    /// body-check's warnings do.
+    fn drain_warnings(&mut self, reachable: &[Vec<Ident>]) -> Vec<(Vec<Ident>, AnalysisWarning)> {
+        reachable
+            .iter()
+            .flat_map(|path| {
+                self.module_warnings.remove(path).into_iter().flatten().map(move |w| (path.clone(), w))
+            })
+            .collect()
+    }
+
+    /// The raw HIR item a struct/union/enum cell's `(module_path, name)`
+    /// names -- `local_items`'s index gets us there in one lookup, with no
+    /// linear scan. Used only for real per-field/per-variant *spans*
+    /// (`sweep_dead_code`'s whole reason for needing this at all): unlike
+    /// `ResolvedStructType`/`ResolvedUnionType`/`ResolvedEnumType`'s own
+    /// `fields`/`dynamic_fields`/`variants` lists, which drop the span the
+    /// moment a field is resolved (nothing downstream of that point has
+    /// ever needed it back), the original `HirParam`/`HirEnumVariant` nodes
+    /// still carry it. Positional indexing lines up exactly with the
+    /// resolved lists because both are built by iterating the same source
+    /// list, in the same order (see `Analyzer::signature_of_struct`/
+    /// `signature_of_union`/`signature_of_enum`).
+    fn hir_item(&self, module_path: &[Ident], name: &Ident) -> Option<&HirItem> {
+        let index = *self.local_items.get(module_path)?.get(name)?;
+        self.parsed.get(module_path)?.items.get(index)
+    }
+
+    fn hir_struct_def(&self, module_path: &[Ident], name: &Ident) -> Option<&HirStructDef> {
+        match self.hir_item(module_path, name)? {
+            HirItem::Struct(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn hir_union_def(&self, module_path: &[Ident], name: &Ident) -> Option<&HirUnionDef> {
+        match self.hir_item(module_path, name)? {
+            HirItem::Union(u) => Some(u),
+            _ => None,
+        }
+    }
+
+    fn hir_enum_def(&self, module_path: &[Ident], name: &Ident) -> Option<&HirEnumDef> {
+        match self.hir_item(module_path, name)? {
+            HirItem::Enum(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// `UnusedField`/`NeverConstructedVariant`'s whole-program sweep -- run
+    /// once, after every reachable module's items are fully checked
+    /// (`usage` is `dead_code::collect_module`'s accumulated result across
+    /// every `CheckedModule` in the compiled program), diffed against every
+    /// *local* struct/union/enum cell's own declared fields/variants.
+    /// Scoped to `local_reachable`, matching every other end-of-compile
+    /// sweep -- an extern-owned type's "unused" status only reflects what
+    /// *this* compilation happens to touch, not what any downstream
+    /// consumer of the library might, so warning on it here would be a
+    /// false positive by construction, not a real finding.
+    ///
+    /// Enum header fields are deliberately never checked here at all (no
+    /// `usage.enum_header_fields` even exists) -- see
+    /// `AnalysisWarningKind::UnusedField`'s doc comment for why they're
+    /// exempt: a per-variant compile-time constant, not mutable data, so
+    /// "never read" is a much weaker signal for them than for an ordinary
+    /// field.
+    fn sweep_dead_code(
+        &self,
+        local_reachable: &[Vec<Ident>],
+        usage: &dead_code::FieldUsage,
+    ) -> Vec<(Vec<Ident>, AnalysisWarning)> {
+        let mut warnings = Vec::new();
+
+        for ((module_path, name, _), cell) in &self.struct_cells {
+            if !local_reachable.contains(module_path) {
+                continue;
+            }
+            let cell = cell.borrow();
+            if cell.suppress.iter().any(|s| s.as_ref() == "unused_field") {
+                continue;
+            }
+            let Some(hir_fields) = self.hir_struct_def(module_path, name).map(|s| &s.fields) else { continue };
+            for (index, (field_name, _)) in cell.fields.iter().enumerate() {
+                if usage.struct_fields.contains(&(cell.id, index)) {
+                    continue;
+                }
+                if let Some(hir_field) = hir_fields.get(index) {
+                    warnings.push((
+                        module_path.clone(),
+                        AnalysisWarning::new(
+                            hir_field.id,
+                            hir_field.span,
+                            AnalysisWarningKind::UnusedField { owner: name.clone(), field: field_name.clone() },
+                        ),
+                    ));
+                }
+            }
+        }
+
+        for ((module_path, name, _), cell) in &self.union_cells {
+            if !local_reachable.contains(module_path) {
+                continue;
+            }
+            let cell = cell.borrow();
+            if cell.suppress.iter().any(|s| s.as_ref() == "unused_field") {
+                continue;
+            }
+            let Some(hir_fields) = self.hir_union_def(module_path, name).map(|u| &u.fields) else { continue };
+            for (index, (field_name, _)) in cell.fields.iter().enumerate() {
+                if usage.union_fields.contains(&(cell.id, index)) {
+                    continue;
+                }
+                if let Some(hir_field) = hir_fields.get(index) {
+                    warnings.push((
+                        module_path.clone(),
+                        AnalysisWarning::new(
+                            hir_field.id,
+                            hir_field.span,
+                            AnalysisWarningKind::UnusedField { owner: name.clone(), field: field_name.clone() },
+                        ),
+                    ));
+                }
+            }
+        }
+
+        for ((module_path, name, _), cell) in &self.enum_cells {
+            if !local_reachable.contains(module_path) {
+                continue;
+            }
+            let cell = cell.borrow();
+            let Some(hir_enum) = self.hir_enum_def(module_path, name) else { continue };
+
+            if !cell.suppress.iter().any(|s| s.as_ref() == "unused_field") {
+                for (index, (field_name, _)) in cell.dynamic_fields.iter().enumerate() {
+                    if usage.enum_dynamic_fields.contains(&(cell.id, index)) {
+                        continue;
+                    }
+                    if let Some(hir_field) = hir_enum.dynamic_fields.get(index) {
+                        warnings.push((
+                            module_path.clone(),
+                            AnalysisWarning::new(
+                                hir_field.id,
+                                hir_field.span,
+                                AnalysisWarningKind::UnusedField { owner: name.clone(), field: field_name.clone() },
+                            ),
+                        ));
+                    }
+                }
+                for (variant_index, variant) in cell.variants.iter().enumerate() {
+                    let Some(hir_variant) = hir_enum.variants.get(variant_index) else { continue };
+                    for (field_index, (field_name, _)) in variant.fields.iter().enumerate() {
+                        if usage.enum_body_fields.contains(&(cell.id, variant_index, field_index)) {
+                            continue;
+                        }
+                        if let Some(hir_field) = hir_variant.fields.get(field_index) {
+                            warnings.push((
+                                module_path.clone(),
+                                AnalysisWarning::new(
+                                    hir_field.id,
+                                    hir_field.span,
+                                    AnalysisWarningKind::UnusedField {
+                                        owner: name.clone(),
+                                        field: field_name.clone(),
+                                    },
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            if !cell.suppress.iter().any(|s| s.as_ref() == "never_constructed_variant") {
+                for (variant_index, variant) in cell.variants.iter().enumerate() {
+                    if usage.enum_variants.contains(&(cell.id, variant_index)) {
+                        continue;
+                    }
+                    if let Some(hir_variant) = hir_enum.variants.get(variant_index) {
+                        warnings.push((
+                            module_path.clone(),
+                            AnalysisWarning::new(
+                                hir_variant.id,
+                                hir_variant.span,
+                                AnalysisWarningKind::NeverConstructedVariant {
+                                    r#enum: name.clone(),
+                                    variant: variant.name.clone(),
+                                },
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        warnings
     }
 
     /// Compiles every module reachable from `entry`: discovers the
@@ -1725,6 +1967,24 @@ impl Driver {
                         }
                     }
                 }
+
+                // `UnusedImport` -- every alias this module declared that
+                // `resolve_import_alias` never once looked up, now that its
+                // whole body is checked (an alias used only inside a method
+                // body reached through `check_item_body`/`ensure_overload_body`
+                // just above is exactly why this can't run any earlier).
+                if let Some(aliases) = self.raw_imports.get(path) {
+                    for (alias, (id, span, _, suppress)) in aliases {
+                        if self.used_imports.contains(&(path.clone(), alias.clone())) {
+                            continue;
+                        }
+                        let kind = AnalysisWarningKind::UnusedImport { alias: alias.clone() };
+                        if suppress.iter().any(|s| s.as_ref() == kind.name()) {
+                            continue;
+                        }
+                        warnings.push((path.clone(), AnalysisWarning::new(*id, *span, kind)));
+                    }
+                }
             }
 
             let module_id = *self.module_ids.get(path).expect("parsed modules always get an id");
@@ -1750,6 +2010,13 @@ impl Driver {
         if !errors.is_empty() {
             return Err(errors);
         }
+        warnings.extend(self.drain_warnings(&local_reachable));
+
+        let mut usage = dead_code::FieldUsage::default();
+        for (_, checked_module) in &modules {
+            dead_code::collect_module(checked_module, &mut usage);
+        }
+        warnings.extend(self.sweep_dead_code(&local_reachable, &usage));
 
         let extern_functions = self.collect_extern_functions();
 
@@ -1846,9 +2113,10 @@ impl ModuleResolver for Driver {
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
         self.ensure_module_indexed(module_path)?;
-        let Some((_, _, absolute)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned() else {
+        let Some((_, _, absolute, _)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned() else {
             return Ok(None);
         };
+        self.used_imports.insert((module_path.to_vec(), alias.clone()));
         self.resolve_import_alias_cached(module_path, alias, &absolute).map(Some)
     }
 

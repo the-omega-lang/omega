@@ -71,6 +71,9 @@ pub struct HirGenericParam {
 pub struct HirImport {
     pub id: HirId,
     pub span: Span,
+    /// `@suppress(...)` only -- see `omega_analyzer::annotations::
+    /// ItemKind::Import`.
+    pub annotations: Vec<HirAnnotation>,
     pub root: ImportRoot,
     pub path: Path,
 }

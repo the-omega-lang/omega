@@ -41,7 +41,6 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             Item::ExternDeclaration(decl)
         }
         TokenKind::Import => {
-            reject_annotations(p, &annotations);
             p.advance();
             // `root::`/`extern::` are contextual keywords here (matching
             // `mut`'s own text-comparison pattern above, and `lexer::
@@ -66,7 +65,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             };
             let path = parse_path(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
-            Item::Import(ImportStmt { root, path })
+            Item::Import(ImportStmt { annotations, root, path })
         }
         TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations)?),
