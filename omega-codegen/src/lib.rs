@@ -113,7 +113,6 @@ pub struct Codegen {
     captured_text: String,
 
     // Global state
-    counter: u64, // for unique things
     strings: HashMap<String, DataId>,
     /// A `b"..."` literal's raw bytes -- deduplicated separately from
     /// `strings` (never null-terminated, so identical text used once as
@@ -829,7 +828,6 @@ impl Codegen {
             emit,
             captured_text: String::new(),
 
-            counter: 0,
             strings: HashMap::new(),
             byte_strings: HashMap::new(),
             vtables: HashMap::new(),
@@ -1296,22 +1294,32 @@ impl Codegen {
         }
     }
 
-    fn unique_symbol(&mut self) -> String {
-        let sym = format!("__sym_{}", self.counter);
-        self.counter += 1;
-        sym
+    /// An anonymous data object's symbol -- a pure function of its own
+    /// bytes, not an arbitrary per-process counter (today's `__sym_<N>`,
+    /// which this replaces): two identical constants, in the same
+    /// compilation or two separate ones, always name themselves
+    /// identically, the same "stable, type/content-derived name" property
+    /// `omega_mangle` gives real functions/methods -- see its own design
+    /// notes for why that matters. XXH3-64 (`twox-hash`, `oneshot`) is a
+    /// deliberately non-cryptographic choice: nothing here is
+    /// adversarial (the input is always the compiler's own already-
+    /// resolved constant data), so all that's needed is a fast hash with
+    /// a low *accidental* collision rate at realistic program sizes, not
+    /// preimage/collision resistance against a deliberate attacker.
+    fn data_symbol(bytes: &[u8]) -> String {
+        format!("_omgdata_{:016x}", twox_hash::XxHash3_64::oneshot(bytes))
     }
 
     fn get_or_declare_global_string(&mut self, s: String) -> DataId {
-        let sym = self.unique_symbol();
+        let mut str_bytes = s.clone().into_bytes();
+        str_bytes.push(b'\0'); // null terminator
+        let sym = Self::data_symbol(&str_bytes);
         let id = self
             .module
-            .declare_data(&sym, Linkage::Local, false, false)
+            .declare_data(&sym, Linkage::Preemptible, false, false)
             .unwrap();
 
         let mut str_desc = DataDescription::new();
-        let mut str_bytes = s.clone().into_bytes();
-        str_bytes.push(b'\0'); // null terminator
         str_desc.define(str_bytes.into_boxed_slice());
         self.module.define_data(id, &str_desc).unwrap();
 
@@ -1352,10 +1360,10 @@ impl Codegen {
     /// (`byte_strings`) so identical text used once as `"..."` and once as
     /// `b"..."` never collides.
     fn get_or_declare_global_bytes(&mut self, s: String) -> DataId {
-        let sym = self.unique_symbol();
+        let sym = Self::data_symbol(s.as_bytes());
         let id = self
             .module
-            .declare_data(&sym, Linkage::Local, false, false)
+            .declare_data(&sym, Linkage::Preemptible, false, false)
             .unwrap();
 
         let mut desc = DataDescription::new();
@@ -1468,10 +1476,73 @@ impl Codegen {
         }
         desc.define(bytes.into_boxed_slice());
 
-        let sym = self.unique_symbol();
-        let id = self.module.declare_data(&sym, Linkage::Local, false, false).unwrap();
+        let mut hash_input = Vec::new();
+        for element in elements {
+            self.hash_const_element(&mut hash_input, element, item_type);
+        }
+        let sym = Self::data_symbol(&hash_input);
+        let id = self.module.declare_data(&sym, Linkage::Preemptible, false, false).unwrap();
         self.module.define_data(id, &desc).unwrap();
         id
+    }
+
+    /// Appends `value`'s canonical, unambiguous content bytes to `out`,
+    /// purely for `data_symbol`'s naming purposes -- deliberately
+    /// *not* the same bytes `write_const_element` writes into the real
+    /// data object. `write_const_element` leaves a pointer-shaped
+    /// element (`Str`, nested `Slice`) as a zero placeholder in the
+    /// physical buffer -- the actual target only exists as a
+    /// `write_data_addr` relocation recorded in `desc`, invisible to a
+    /// hash over raw bytes alone. Hashing the physical buffer directly
+    /// would therefore let two constant slices that point at *different*
+    /// strings collide on one symbol name whenever their non-pointer
+    /// bytes happen to coincide (e.g. `&["a"]` and `&["b"]`, both a
+    /// single same-length string) -- harmless under today's `Local`
+    /// linkage, but a real silent miscompile risk if these ever move to
+    /// weak/COMDAT linkage (two genuinely different constants folded
+    /// into one because the linker trusted a colliding name). So this
+    /// walks the *logical* `ConstValue` tree instead, writing a
+    /// string's real bytes (length-prefixed, since it's the only
+    /// variable-length leaf here) rather than a placeholder. Every
+    /// other leaf is fixed-width (given `r#type`, shared across one
+    /// call) or already length-prefixed (`Slice`'s element count), so
+    /// the whole traversal is self-delimiting with no separators needed.
+    fn hash_const_element(&mut self, out: &mut Vec<u8>, value: &ConstValue, r#type: &ResolvedType) {
+        match value {
+            ConstValue::Number(number) => {
+                let leaf_bytes = r#type.clone().into_ir_type(self)[0].bytes();
+                let raw: u64 = match number {
+                    NumberValue::Signed(v) => *v as u64,
+                    NumberValue::Unsigned(v) => *v,
+                    NumberValue::Float(v) if leaf_bytes == 4 => (*v as f32).to_bits() as u64,
+                    NumberValue::Float(v) => v.to_bits(),
+                };
+                out.extend_from_slice(&raw.to_le_bytes()[..leaf_bytes as usize]);
+            }
+            ConstValue::Bool(b) => out.push(*b as u8),
+            ConstValue::Char(c) => out.extend_from_slice(&(*c as u32).to_le_bytes()),
+            ConstValue::Str(s) => {
+                out.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                out.extend_from_slice(s.as_bytes());
+            }
+            ConstValue::Slice(nested) => {
+                let ResolvedType::Slice { item, .. } = r#type else {
+                    unreachable!("checked module guarantees a nested Slice constant's own type is Slice");
+                };
+                out.extend_from_slice(&(nested.len() as u32).to_le_bytes());
+                for element in nested {
+                    self.hash_const_element(out, element, item);
+                }
+            }
+            ConstValue::Array(elements) => {
+                let ResolvedType::SizedArray(item, _) = r#type else {
+                    unreachable!("checked module guarantees a nested Array constant's own type is SizedArray");
+                };
+                for element in elements {
+                    self.hash_const_element(out, element, item);
+                }
+            }
+        }
     }
 
     /// Writes one element's leaves into `bytes`/`desc` at `offset`. A scalar
