@@ -1698,8 +1698,18 @@ impl Codegen {
         }
         desc.define(bytes.into_boxed_slice());
 
+        // `Preemptible` (weak), not `Local`, for the same reason a generic
+        // instantiation's own symbol is (see `linkage_for`): a vtable's
+        // content is a pure function of `(concrete, spec)` -- relocations
+        // to method symbols whose own names are themselves stable, in a
+        // slot order `flatten_spec_slot_names` derives deterministically
+        // from the spec's own declaration -- so two separate compilations
+        // that both coerce the same concrete type to the same spec are
+        // guaranteed to build byte-identical vtables under the identical
+        // name, and are just as safe (and worth) folding into one copy at
+        // link time as a generic function/method instantiation is.
         let symbol = mangle::encode(&mangle::vtable_symbol(concrete, &spec.borrow().name));
-        let data_id = self.module.declare_data(&symbol, Linkage::Local, false, false).unwrap();
+        let data_id = self.module.declare_data(&symbol, Linkage::Preemptible, false, false).unwrap();
         self.module.define_data(data_id, &desc).unwrap();
 
         self.vtables.insert(key, data_id);
@@ -2678,7 +2688,19 @@ impl Codegen {
     /// either import direction would panic the first time one module's body
     /// needed another module's not-yet-declared `FuncId` (see the plan's
     /// "codegen declare/define split" note).
-    fn declare_function_def(&mut self, function_def: &CheckedFunctionDef, symbol: String) -> FuncId {
+    ///
+    /// `linkage` is `Linkage::Export` (strong) for an ordinary item and
+    /// `Linkage::Preemptible` (weak) for a generic instantiation -- see
+    /// `declare_item`'s `linkage_for`, this function's only caller for the
+    /// choice. A within-process collision between two *different* strong
+    /// symbols is still exactly the `@mangling(disabled)` user error this
+    /// check has always caught; it's untouched by generics, since the
+    /// driver's own `ItemKey` cache already guarantees at most one
+    /// `CheckedFunctionDef` per instantiation reaches this function at all
+    /// within a single compilation -- weak linkage is what lets two
+    /// *separate* compilations' independently-generated copies fold into
+    /// one at link time, a scenario this in-process map never sees.
+    fn declare_function_def(&mut self, function_def: &CheckedFunctionDef, symbol: String, linkage: Linkage) -> FuncId {
         let sig = self.function_signature(function_def);
 
         if let Some(&existing_id) = self.declared_symbols.get(&symbol)
@@ -2708,7 +2730,7 @@ impl Codegen {
 
         let function_id = self.module.declare_function(&symbol, Linkage::Import, &sig).unwrap();
 
-        self.module.declare_function(&symbol, Linkage::Export, &sig).unwrap();
+        self.module.declare_function(&symbol, linkage, &sig).unwrap();
 
         self.functions.insert(function_def.id, function_id);
         function_id
@@ -2939,6 +2961,34 @@ impl Codegen {
         self.clear_local();
     }
 
+    /// `Linkage::Export` (strong) for an ordinary item, `Linkage::
+    /// Preemptible` (weak) for a generic instantiation -- `Preemptible`
+    /// maps to a genuine weak ELF/Mach-O/COFF symbol (`cranelift-object`'s
+    /// `translate_linkage`, `let weak = linkage == Linkage::Preemptible`),
+    /// empirically confirmed (see the data-symbol-hashing work) to let a
+    /// linker silently fold multiple independently-compiled definitions
+    /// of the *same* symbol name into one, rather than erroring on
+    /// "multiple definition" the way two strong symbols with the same
+    /// name always would. Every separate `omgc` invocation that
+    /// instantiates e.g. `CustomStruct<i32>` still fully regenerates its
+    /// own copy locally (nothing here skips that -- there is no
+    /// cross-process build cache), exactly like Rust/C++ generics: the
+    /// deduplication happens once, at final link time, not at compile
+    /// time. This is only sound because a generic instantiation's mangled
+    /// symbol is now a pure function of `(module_path, name, type_args)`
+    /// (see the mangling work) -- two independent compilations of the
+    /// exact same instantiation are therefore guaranteed to produce
+    /// byte-identical bodies under the identical name, which is the
+    /// actual precondition weak-symbol folding relies on (the linker
+    /// trusts the name, it doesn't diff the bytes). An ordinary,
+    /// non-generic symbol keeps strong linkage unconditionally -- two
+    /// *different* object files defining the same non-generic symbol is
+    /// always a genuine user error, and should still be a hard link
+    /// error, not silently tolerated.
+    fn linkage_for(type_args: &[ResolvedType]) -> Linkage {
+        if type_args.is_empty() { Linkage::Export } else { Linkage::Preemptible }
+    }
+
     /// Declares every function/method/extern in one item -- pass 1 of 2 (see
     /// `update_all`).
     fn declare_item(&mut self, item: &CheckedItem, path: &[Ident], entry: &[Ident]) {
@@ -2961,6 +3011,9 @@ impl Codegen {
                 // looks for -- checked here, before a `Symbol` is even
                 // built, rather than inside `mangle::free_function_symbol`,
                 // which only ever needs to know how to name a real symbol.
+                // `main` is never itself generic, so `linkage_for` already
+                // gives it `Export`, same as today, with no special case
+                // needed beyond the name.
                 let mangled = match f.mangling {
                     ManglingMode::Disabled => f.name.as_ref().to_string(),
                     ManglingMode::Enabled if path == entry && f.name.as_ref() == "main" => "main".to_string(),
@@ -2968,27 +3021,27 @@ impl Codegen {
                         mangle::encode(&mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()))
                     }
                 };
-                self.declare_function_def(f, mangled);
+                self.declare_function_def(f, mangled, Self::linkage_for(&f.type_args));
             }
             CheckedItem::Struct(s) => {
                 for f in &s.functions {
                     let mangled =
                         mangle::encode(&mangle::method_symbol(path, &s.name, &s.type_args, &f.name, &f.fn_type()));
-                    self.declare_function_def(f, mangled);
+                    self.declare_function_def(f, mangled, Self::linkage_for(&s.type_args));
                 }
             }
             CheckedItem::Enum(e) => {
                 for f in &e.functions {
                     let mangled =
                         mangle::encode(&mangle::method_symbol(path, &e.name, &e.type_args, &f.name, &f.fn_type()));
-                    self.declare_function_def(f, mangled);
+                    self.declare_function_def(f, mangled, Self::linkage_for(&e.type_args));
                 }
             }
             CheckedItem::Union(u) => {
                 for f in &u.functions {
                     let mangled =
                         mangle::encode(&mangle::method_symbol(path, &u.name, &u.type_args, &f.name, &f.fn_type()));
-                    self.declare_function_def(f, mangled);
+                    self.declare_function_def(f, mangled, Self::linkage_for(&u.type_args));
                 }
             }
             CheckedItem::Declaration(_) => {
