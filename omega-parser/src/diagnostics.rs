@@ -42,6 +42,9 @@ impl ParseError {
                 .with_note(
                     "a comment opened by N `#`s (N >= 2) spans multiple lines\nand is closed only by a run of exactly N `#`s",
                 ),
+            ParseErrorKind::EvenMultilineStringDelimiter { count } => d
+                .with_label(self.span, format!("this delimiter has {count} quotes, an even number"))
+                .with_help("use an odd number of quotes (e.g. 3, 5, 7, ...) to open a multi-line string"),
             ParseErrorKind::UnterminatedGroup { open } => {
                 let close = match open {
                     '(' => ')',
@@ -101,7 +104,7 @@ impl ParseError {
 /// from.
 pub type TokenDescription = String;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParseErrorKind {
     /// The general-purpose "this grammar rule didn't match" case, covering
     /// most parser call sites -- `expected` is a short, static description
@@ -111,6 +114,15 @@ pub enum ParseErrorKind {
     UnterminatedString,
     UnterminatedChar,
     UnterminatedComment,
+    /// A multi-line string's opening delimiter (`"""..."""`-style, N >= 3
+    /// quotes) used an even `count` -- disallowed, since an even-length
+    /// delimiter could otherwise be confused with two shorter,
+    /// separately-closed runs; see `Lexer::scan_string_or_multiline`.
+    /// Recorded but non-fatal: lexing still produces a best-effort `Str`
+    /// token (searching for a closing run of the same `count` regardless)
+    /// so a single malformed delimiter doesn't cascade into unrelated
+    /// downstream errors.
+    EvenMultilineStringDelimiter { count: usize },
     /// A macro-body/argument capture (`{ ... }`/`( ... )`) never found its
     /// matching close delimiter before EOF.
     UnterminatedGroup { open: char },
@@ -171,6 +183,9 @@ impl fmt::Display for ParseErrorKind {
             Self::UnterminatedString => write!(f, "unterminated string literal"),
             Self::UnterminatedChar => write!(f, "unterminated character literal"),
             Self::UnterminatedComment => write!(f, "unterminated comment"),
+            Self::EvenMultilineStringDelimiter { count } => {
+                write!(f, "multi-line string delimiter must use an odd number of quotes (found {count})")
+            }
             Self::UnterminatedGroup { open } => write!(f, "unterminated '{open}' (no matching close found)"),
             Self::InvalidCharacter(c) => write!(f, "unexpected character '{c}'"),
             Self::InvalidMetavariable => write!(f, "expected an identifier after '$'"),

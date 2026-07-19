@@ -398,12 +398,27 @@ impl Context {
             // `*[T]` is a slice (a fat pointer), not a thin `Pointer` to an
             // `Array` -- `[T]` alone is unsized, so a pointer to it is
             // necessarily a different, wider representation (data pointer +
-            // length), the same reasoning Rust's `&[T]` follows. Any other
-            // pointee resolves to an ordinary thin `Pointer`, unchanged.
+            // length), the same reasoning Rust's `&[T]` follows. `*str` is
+            // handled *before* recursing into the pointee at all, unlike
+            // `*[T]` above: `"str"` is deliberately never registered in
+            // `Context::new()`'s `defined_types`, so resolving it as an
+            // ordinary pointee would fail with "unrecognized type" before
+            // ever reaching a match on the resolved result -- the raw,
+            // unresolved AST has to be checked first. Any other pointee
+            // resolves via the unchanged logic below (ordinary thin
+            // `Pointer`, or `*[T]`'s `Slice` special case).
             Type::Pointer(pointee_type, mutable) => {
-                match self.resolve_type(*pointee_type, resolver, module_path, true)? {
-                    ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
-                    other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
+                let is_bare_str = matches!(
+                    pointee_type.as_ref(),
+                    Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str"
+                );
+                if is_bare_str {
+                    ResolvedType::Str { mutable }
+                } else {
+                    match self.resolve_type(*pointee_type, resolver, module_path, true)? {
+                        ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
+                        other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
+                    }
                 }
             }
             Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path)?),

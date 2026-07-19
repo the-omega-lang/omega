@@ -14,7 +14,7 @@ import extern::mathlib;
 import cycle_a::cycle_a_value;
 import cycle_b::unrelated_b;
 
-enum CryptographicAlgorithm(name: *u8, variants: *[*u8]) {
+enum CryptographicAlgorithm(name: *str, variants: *[*str]) {
     AES("AES", &["128", "192", "256"]),
     RSA("RSA", &["2048", "3092", "4096"])
 }
@@ -25,18 +25,18 @@ enum CryptographicAlgorithm(name: *u8, variants: *[*u8]) {
 # enum's own header region, written as a bare `[...]` (no `&`, since there's
 # no address being taken). Every variant supplies exactly 3 elements; the
 # length is part of the field's declared type, not a per-variant choice.
-enum MovieCategory(description: *u8, top_movies: [*u8; 3]) {
+enum MovieCategory(description: *str, top_movies: [*str; 3]) {
     Action("Action-packed movies", ["Some Action Movie 1", "Some Action Movie 2", "Super Action Movie"]),
     Horror("Scary movies", ["Horror Movie 1", "Horror Movie 2", "Super Scary Movie"]),
 }
 
 classify(n : i32) => *u8 {
     if n < 0 {
-        return "negative";
+        return <*u8>b"negative\0";
     } else if n == 0 {
-        return "zero";
+        return <*u8>b"zero\0";
     } else {
-        return "positive";
+        return <*u8>b"positive\0";
     }
 }
 
@@ -77,7 +77,7 @@ sum_skip_multiples_of_3(n : i32) => i32 {
 struct Interface {
     do_thing: (s : *u8) => i32;
     member_function(*self) => void {
-        self.do_thing("You called the member function");
+        self.do_thing(<*u8>b"You called the member function\0");
     }
 }
 
@@ -95,11 +95,11 @@ struct MyNode<T> {
 }
 
 defer_test() => void {
-    puts("defer test");
+    puts(<*u8>b"defer test\0");
     # must print in reverse order (FILO)
-    defer puts("first");
-    defer { puts("second"); puts("followup of second"); }
-    defer puts("third");
+    defer puts(<*u8>b"first\0");
+    defer { puts(<*u8>b"second\0"); puts(<*u8>b"followup of second\0"); }
+    defer puts(<*u8>b"third\0");
 }
 
 # A struct with both static and member functions: a function declared
@@ -146,7 +146,7 @@ struct Vec2 {
         self.y = self.y * factor;
     }
     scale(*mut self, factor: f64) => void {
-        puts("scale: f64 overload called");
+        puts(<*u8>b"scale: f64 overload called\0");
     }
 }
 
@@ -209,7 +209,7 @@ enum MyBasicEnum {
 # constants supplied Java-style in each variant's `(...)` -- baked in at the
 # definition, constant forever (`value.description` works on any variant,
 # and can never be assigned).
-enum MyEnumWithHeader(description: *u8, some_number: u32) {
+enum MyEnumWithHeader(description: *str, some_number: u32) {
     First("This is the first variant", 10),
     Second("This is the second variant", 25),
     Third("This is the third variant", 30);
@@ -236,7 +236,7 @@ enum MyEnumWithBodies {
 # supplies them, and they're freely assignable afterward, exactly like a
 # variant's own body field (contrast with `description`, a real header
 # field -- fixed forever once a variant is built).
-enum MyEnumWithSharedDynamicFields(description: *u8) {
+enum MyEnumWithSharedDynamicFields(description: *str) {
     favorite_number: i32;
     favorite_color: *u8;
 
@@ -248,7 +248,7 @@ enum MyEnumWithSharedDynamicFields(description: *u8) {
 
     print_favorite_number_and_color(*self) => void {
         printf(
-            "my favorite number is %d and my favorite color is %s\n",
+            <*u8>b"my favorite number is %d and my favorite color is %s\n\0",
             self.favorite_number, self.favorite_color
         );
     }
@@ -257,7 +257,7 @@ enum MyEnumWithSharedDynamicFields(description: *u8) {
 # An explicit tag: `tag` leads the header with the integer type of your
 # choice, and each variant supplies its own (unique, compile-time-constant)
 # value first.
-enum MyEnumWithExplicitTagAndHeader(tag: u32, description: *u8) {
+enum MyEnumWithExplicitTagAndHeader(tag: u32, description: *str) {
     First(10, "This is the first entry"),
     Second(20, "This is the second entry"),
     Third(30, "This is the third entry");
@@ -272,7 +272,7 @@ enum Optional<T> {
 
 # Everything at once, plus functions after the `;` ending the variant list
 # (Java-style): with `self` = member function, without = static.
-enum MyCoolEnum(tag: i16, description: *u8) {
+enum MyCoolEnum(tag: i16, description: *str) {
     Bad(-1, "Something went wrong :("),
     First(0, "This is the first value") {
         message: *u8;
@@ -284,7 +284,14 @@ enum MyCoolEnum(tag: i16, description: *u8) {
     Third(2, "This is the third value");
 
     print_description(*self) => void {
-        puts(self.description);
+        # `self.description` is `*str` -- no null terminator, so `puts`
+        # (which scans for one) can't take it directly. `%.*s` is C's own
+        # sound answer to this: an explicit length (consumed first) plus
+        # a bare pointer, printing exactly that many bytes with no
+        # terminator assumption at all -- `<*u8>` here only drops the
+        # length leaf (`CastKind::DropLength`), it never claims the
+        # result is itself null-terminated.
+        printf(<*u8>b"%.*s\n\0", self.description.length, <*u8>self.description);
     }
     default() => MyCoolEnum {
         MyCoolEnum::Third
@@ -304,7 +311,7 @@ cool_tag(e: MyCoolEnum) => i16 {
 # proved its argument is specifically `Second`, either by construction
 # (`x := MyEnumWithBodies::Second { ... }`) or by `match`.
 print_second_text(x: *MyEnumWithBodies::Second) => void {
-    printf("variant-specific field access: %s\n", x.some_text);
+    printf(<*u8>b"variant-specific field access: %s\n\0", x.some_text);
 }
 
 # Matching through an existing pointer: proving `b` is `Second` narrows `b`
@@ -318,7 +325,7 @@ describe_if_second(b: *MyEnumWithBodies) => void {
             print_second_text(b);
         }
     } else {
-        printf("not the Second variant (tag=%d)\n", b.tag);
+        printf(<*u8>b"not the Second variant (tag=%d)\n\0", b.tag);
     }
 }
 
@@ -364,13 +371,13 @@ spec Animal {
 struct Dog : Animal {
     id: i32;
     kind(*self) => AnimalKind { AnimalKind::Dog }
-    make_sound(*self) => *u8 { "woof woof" }
+    make_sound(*self) => *u8 { <*u8>b"woof woof\0" }
 }
 
 struct Cat : Animal {
     id: i32;
     kind(*self) => AnimalKind { AnimalKind::Cat }
-    make_sound(*self) => *u8 { "meow" }
+    make_sound(*self) => *u8 { <*u8>b"meow\0" }
     # Overrides the default: a cat is never a dog, no matter what its own
     # (never actually called through this override) `kind()` says.
     is_dog(*self) => bool { false }
@@ -382,7 +389,7 @@ spec Dummy {
     dummy(*self) => void;
     something_else(*self) => void {
         self.dummy();
-        puts("something else");
+        puts(<*u8>b"something else\0");
     }
 }
 
@@ -396,7 +403,7 @@ spec Dummy {
 # itself.
 spec Mammal : Animal, Dummy {
     dummy(*self) => void {
-        puts("i satisfied the dummy function");
+        puts(<*u8>b"i satisfied the dummy function\0");
     }
     call_something_else(*self) => void {
         self.something_else();
@@ -410,7 +417,7 @@ spec MySpec = Dummy | Mammal;
 struct Wolf : Mammal {
     id: i32;
     kind(*self) => AnimalKind { AnimalKind::Wolf }
-    make_sound(*self) => *u8 { "howl" }
+    make_sound(*self) => *u8 { <*u8>b"howl\0" }
 }
 
 # Static dispatch: `T: Animal` is monomorphized once per concrete `T`
@@ -444,13 +451,13 @@ accepts_myspec<T: MySpec>(value: *T) => void {
 # literal never adapts to `*u8`/`f64`), so it's picked with no ambiguity
 # even though it isn't `10`'s own default type.
 print_any(thing: *u8) => void {
-    printf("print_any: string '%s'\n", thing);
+    printf(<*u8>b"print_any: string '%s'\n\0", thing);
 }
 print_any(thing: u32) => void {
-    printf("print_any: u32 %u\n", thing);
+    printf(<*u8>b"print_any: u32 %u\n\0", thing);
 }
 print_any(thing: f64) => void {
-    puts("print_any: f64 overload called");
+    puts(<*u8>b"print_any: f64 overload called\0");
 }
 
 # Two overloads distinguished purely by which type an unsuffixed literal's
@@ -459,10 +466,10 @@ print_any(thing: f64) => void {
 # free) -- see `AmbiguousOverload`'s doc comment for the case where no
 # candidate's default matches (rejected, not guessed).
 print_number2(n: i32) => void {
-    printf("print_number2: i32 %d\n", n);
+    printf(<*u8>b"print_number2: i32 %d\n\0", n);
 }
 print_number2(n: u32) => void {
-    printf("print_number2: u32 %u\n", n);
+    printf(<*u8>b"print_number2: u32 %u\n\0", n);
 }
 
 @layout(pack = sizeof<usize>, align = sizeof<usize>)
@@ -494,13 +501,13 @@ main(argc : i32, argv : [*u8]) => i32 {
     mynode0.value = 69;
     mynode0.next = &mynode1;
 
-    printf("mynode0.value = %d\n", mynode0.value);
-    printf("mynode0.next.value = %d\n", mynode0.next.value);
+    printf(<*u8>b"mynode0.value = %d\n\0", mynode0.value);
+    printf(<*u8>b"mynode0.next.value = %d\n\0", mynode0.next.value);
 
     mut iface : Interface;
     iface.do_thing = puts;
-    iface.do_thing("HELLO WORLD");
-    iface.do_thing("");
+    iface.do_thing(<*u8>b"HELLO WORLD\0");
+    iface.do_thing(<*u8>b"\0");
     iface.member_function();
     mut ptr : *Interface;
     ptr = &iface;
@@ -510,15 +517,15 @@ main(argc : i32, argv : [*u8]) => i32 {
     mut a := 5;
     mut b := 10;
     mut c := a + b;
-    printf("%d + %d = %d", a, b, c);
-    puts("");
+    printf(<*u8>b"%d + %d = %d\0", a, b, c);
+    puts(<*u8>b"\0");
 
     # this is a single line comment
     a = 10;
     b = 3; # this is also a comment
     c = a * b;
-    printf("%d * %d = %d", a, b, c);
-    puts("");
+    printf(<*u8>b"%d * %d = %d\0", a, b, c);
+    puts(<*u8>b"\0");
 
     ##### this is a
     multine ###
@@ -527,58 +534,58 @@ main(argc : i32, argv : [*u8]) => i32 {
     arr : [i32; 3] = [1, 2, 3];
     arr2 := [1, 2, 3];
     mut slice := &arr[1...];
-    printf("array second item: %d\n", slice[0]);
-    printf("slice len: %d\n", slice.length);
+    printf(<*u8>b"array second item: %d\n\0", slice[0]);
+    printf(<*u8>b"slice len: %d\n\0", slice.length);
     slice = &arr[0...];
-    printf("slice len: %d\n", slice.length);
+    printf(<*u8>b"slice len: %d\n\0", slice.length);
     slice = &arr[0..<2];
-    printf("exclusive-end slice len: %d\n", slice.length);
+    printf(<*u8>b"exclusive-end slice len: %d\n\0", slice.length);
     slice = &arr[0...1];
-    printf("inclusive-end slice len: %d\n", slice.length);
+    printf(<*u8>b"inclusive-end slice len: %d\n\0", slice.length);
 
     big : i64 = 5_000_000_000i64;
     big2 := big + 1i64;
-    printf("i64: %lld\n", big2);
+    printf(<*u8>b"i64: %lld\n\0", big2);
 
     ubig : u64 = 0xFFFFFFFFFu64;
-    printf("u64 (hex): %llu\n", ubig);
+    printf(<*u8>b"u64 (hex): %llu\n\0", ubig);
 
     oct := 0o755;
-    printf("octal 0o755 = %d\n", oct);
+    printf(<*u8>b"octal 0o755 = %d\n\0", oct);
 
     bin := 0b1010;
-    printf("binary 0b1010 = %d\n", bin);
+    printf(<*u8>b"binary 0b1010 = %d\n\0", bin);
 
     small : u8 = 0xC8u8;
     small2 := small + 5u8;
-    printf("u8: %d, %d\n", small, small2);
+    printf(<*u8>b"u8: %d, %d\n\0", small, small2);
 
     pi : f64 = 3.14159;
     half : f32 = 0.5f32;
     sum_f32 := half + half;
-    printf("f64: %f, f32: %f, f32 sum: %f\n", pi, half, sum_f32);
+    printf(<*u8>b"f64: %f, f32: %f, f32 sum: %f\n\0", pi, half, sum_f32);
 
     flag := true;
-    printf("bool: %d\n", flag);
+    printf(<*u8>b"bool: %d\n\0", flag);
 
     letter := 'A';
-    printf("char codepoint: %d\n", letter);
+    printf(<*u8>b"char codepoint: %d\n\0", letter);
 
     neg_i64 := -big2;
     neg_f64 := -pi;
-    printf("negated: %lld, %f\n", neg_i64, neg_f64);
+    printf(<*u8>b"negated: %lld, %f\n\0", neg_i64, neg_f64);
 
     q := big2 / 3i64;
     r := big2 % 3i64;
-    printf("i64 div/rem: %lld %lld\n", q, r);
+    printf(<*u8>b"i64 div/rem: %lld %lld\n\0", q, r);
 
-    printf("classify(-5) = %s\n", classify(-5));
-    printf("classify(0) = %s\n", classify(0));
-    printf("classify(5) = %s\n", classify(5));
-    printf("abs_val(-7) = %d\n", abs_val(-7));
-    printf("sum_for(10) = %d\n", sum_for(10));
-    printf("first_even_ge(7) = %d\n", first_even_ge(7));
-    printf("sum_skip_multiples_of_3(10) = %d\n", sum_skip_multiples_of_3(10));
+    printf(<*u8>b"classify(-5) = %s\n\0", classify(-5));
+    printf(<*u8>b"classify(0) = %s\n\0", classify(0));
+    printf(<*u8>b"classify(5) = %s\n\0", classify(5));
+    printf(<*u8>b"abs_val(-7) = %d\n\0", abs_val(-7));
+    printf(<*u8>b"sum_for(10) = %d\n\0", sum_for(10));
+    printf(<*u8>b"first_even_ge(7) = %d\n\0", first_even_ge(7));
+    printf(<*u8>b"sum_skip_multiples_of_3(10) = %d\n\0", sum_skip_multiples_of_3(10));
 
     mut total := 0;
     mut i := 0;
@@ -586,22 +593,22 @@ main(argc : i32, argv : [*u8]) => i32 {
         total = total + i;
         ++i;
     }
-    printf("while sum_to(10) = %d\n", total);
+    printf(<*u8>b"while sum_to(10) = %d\n\0", total);
 
     for mut j := 5; j > 0; --j {
-        printf("countdown: %d\n", j);
+        printf(<*u8>b"countdown: %d\n\0", j);
     }
 
     x := 3;
     y := 3;
-    printf("3 == 3: %d, 3 != 3: %d, 3 <= 3: %d, 3 >= 4: %d\n", x == y, x != y, x <= y, x >= 4);
+    printf(<*u8>b"3 == 3: %d, 3 != 3: %d, 3 <= 3: %d, 3 >= 4: %d\n\0", x == y, x != y, x <= y, x >= 4);
 
     testvar1 := if x < 3 {
-        "lower than 3"
+        <*u8>b"lower than 3\0"
     } else {
-        "not lower than 3"
+        <*u8>b"not lower than 3\0"
     };
-    printf("testvar1: %s\n", testvar1);
+    printf(<*u8>b"testvar1: %s\n\0", testvar1);
 
     # `match` also works as an ordinary value/range switch, standardized on
     # the same range grammar slicing uses: `..<` excludes its end, `...`
@@ -610,19 +617,19 @@ main(argc : i32, argv : [*u8]) => i32 {
     # needed -- the compiler verifies that coverage itself.
     matched_num := 100u32;
     message := match matched_num {
-        0..<100 => "less than a hundred",
-        100 => "a hundred",
-        101... => "more than a hundred",
+        0..<100 => <*u8>b"less than a hundred\0",
+        100 => <*u8>b"a hundred\0",
+        101... => <*u8>b"more than a hundred\0",
     };
-    printf("match on value: matched_num=%u is %s\n", matched_num, message);
+    printf(<*u8>b"match on value: matched_num=%u is %s\n\0", matched_num, message);
 
     mod_a := simplemodule::something3(5);
     mod_b := mymodule::something1();
     mod_c := mymodule::thing::something2();
     mod_d := something2();
-    printf("modules: %d %d %d %d\n", mod_a, mod_b, mod_c, mod_d);
-    printf("fibo(20) = %d\n", fibo(20));
-    printf("forward_declared_fn() = %d\n", forward_declared_fn());
+    printf(<*u8>b"modules: %d %d %d %d\n\0", mod_a, mod_b, mod_c, mod_d);
+    printf(<*u8>b"fibo(20) = %d\n\0", fibo(20));
+    printf(<*u8>b"forward_declared_fn() = %d\n\0", forward_declared_fn());
 
     mut head : Node;
     head.value = 1;
@@ -633,53 +640,53 @@ main(argc : i32, argv : [*u8]) => i32 {
     tail.next = &head; # arbitrary, just to prove `next` is a real, usable *Node
     head.next = &mid;
     mid.next = &tail;
-    printf("linked list: %d -> %d -> %d\n", head.value, head.next.value, head.next.next.value);
+    printf(<*u8>b"linked list: %d -> %d -> %d\n\0", head.value, head.next.value, head.next.next.value);
 
     mut gp : GenericPair<i32>;
     gp.a = 3;
     gp.b = 4;
-    printf("generic pair sum: %d\n", sum_generic(gp.a, gp.b));
-    printf("generic sum (f64): %f\n", sum_generic(1.5, 2.5));
+    printf(<*u8>b"generic pair sum: %d\n\0", sum_generic(gp.a, gp.b));
+    printf(<*u8>b"generic sum (f64): %f\n\0", sum_generic(1.5, 2.5));
 
     mut gn : GenericNode<i32>;
     gn.value = 7;
     mut gn2 : GenericNode<i32>;
     gn2.value = 8;
     gn.next = &gn2;
-    printf("generic linked list: %d -> %d\n", gn.value, gn.next.value);
+    printf(<*u8>b"generic linked list: %d -> %d\n\0", gn.value, gn.next.value);
 
     su : usize = 7usize;
     si : isize = -2isize;
-    printf("usize: %llu, isize: %lld\n", su, si);
+    printf(<*u8>b"usize: %llu, isize: %lld\n\0", su, si);
 
-    printf("macro sum: %d\n", sum_macro!(3, 4));
+    printf(<*u8>b"macro sum: %d\n\0", sum_macro!(3, 4));
 
     mut pt : Point;
     pt.x = 3;
     pt.y = 4;
-    printf("macro point magnitude_sq: %d\n", pt.magnitude_sq());
+    printf(<*u8>b"macro point magnitude_sq: %d\n\0", pt.magnitude_sq());
 
-    printf("defer_demo(true) = %d\n", defer_demo(true));
-    printf("defer_demo(false) = %d\n", defer_demo(false));
+    printf(<*u8>b"defer_demo(true) = %d\n\0", defer_demo(true));
+    printf(<*u8>b"defer_demo(false) = %d\n\0", defer_demo(false));
     defer_test();
 
     mut v := Vec2 { x = 3; y = -4; };
-    printf("struct literal: (%d, %d)\n", v.x, v.y);
+    printf(<*u8>b"struct literal: (%d, %d)\n\0", v.x, v.y);
     v.translate(2, 6);
-    printf("translated: (%d, %d)\n", v.x, v.y);
+    printf(<*u8>b"translated: (%d, %d)\n\0", v.x, v.y);
     o := Vec2::origin();
-    printf("static call: (%d, %d)\n", o.x, o.y);
+    printf(<*u8>b"static call: (%d, %d)\n\0", o.x, o.y);
     w := Vec2::new(7, 9);
-    printf("static call with args: (%d, %d), manhattan = %d\n", w.x, w.y, w.manhattan());
-    printf("struct by value: vec_sum = %d\n", vec_sum(w));
+    printf(<*u8>b"static call with args: (%d, %d), manhattan = %d\n\0", w.x, w.y, w.manhattan());
+    printf(<*u8>b"struct by value: vec_sum = %d\n\0", vec_sum(w));
     seg := Segment {
         a = Vec2 { x = 1; y = 2; };
         b = w;
     };
-    printf("nested literal: (%d,%d)-(%d,%d)\n", seg.a.x, seg.a.y, seg.b.x, seg.b.y);
+    printf(<*u8>b"nested literal: (%d,%d)-(%d,%d)\n\0", seg.a.x, seg.a.y, seg.b.x, seg.b.y);
     if v.manhattan() > 5 {
         p := simplemodule::Pair::of(4, 5);
-        printf("cross-module static: %d\n", p.sum());
+        printf(<*u8>b"cross-module static: %d\n\0", p.sum());
     }
 
     # By-value vs. by-pointer `self`: a by-value method's mutation is never
@@ -692,7 +699,7 @@ main(argc : i32, argv : [*u8]) => i32 {
     vbv.gets_mutable_pointer();
     after_mut_by_pointer := vbv.gets_copy();
     printf(
-        "self modes: before=%d after-mut-by-value=%d (unchanged) after-mut-by-pointer=%d (changed)\n",
+        <*u8>b"self modes: before=%d after-mut-by-value=%d (unchanged) after-mut-by-pointer=%d (changed)\n\0",
         before, after_mut_by_value, after_mut_by_pointer
     );
 
@@ -701,26 +708,29 @@ main(argc : i32, argv : [*u8]) => i32 {
     # both directions work no matter which one `self` actually declares.
     vbv_ptr := &vbv;
     printf(
-        "auto-adapt: value->value=%d value->pointer=%d pointer->value=%d pointer->pointer=%d\n",
+        <*u8>b"auto-adapt: value->value=%d value->pointer=%d pointer->value=%d pointer->pointer=%d\n\0",
         vbv.gets_copy(), vbv.gets_pointer(), vbv_ptr.gets_copy(), vbv_ptr.gets_pointer()
     );
 
     # Overloading on self's mode alone is illegal (see `Ghi` below, which
     # doesn't compile) -- but legal as soon as another parameter differs
     # too, disambiguated purely by `abc`'s type, never by self's mode.
-    printf("self-mode overload: %d %d\n", vbv.do_thing(10), vbv.do_thing("hi"));
+    printf(<*u8>b"self-mode overload: %d %d\n\0", vbv.do_thing(10), vbv.do_thing(<*u8>b"hi\0"));
 
     e1 := MyBasicEnum::First;
     e2 := MyBasicEnum::Third;
-    printf("enum tags: %d %d\n", e1.tag, e2.tag);
+    printf(<*u8>b"enum tags: %d %d\n\0", e1.tag, e2.tag);
 
     h := MyEnumWithHeader::Second;
-    printf("enum header: tag=%d desc=%s number=%u\n", h.tag, h.description, h.some_number);
+    printf(
+        <*u8>b"enum header: tag=%d desc=%.*s number=%u\n\0",
+        h.tag, h.description.length, <*u8>h.description, h.some_number
+    );
 
-    s := MyEnumWithBodies::Second { some_text = "hello, this is some text"; };
-    printf("enum body: tag=%d text=%s\n", s.tag, s.some_text);
+    s := MyEnumWithBodies::Second { some_text = <*u8>b"hello, this is some text\0"; };
+    printf(<*u8>b"enum body: tag=%d text=%s\n\0", s.tag, s.some_text);
     t := MyEnumWithBodies::Third { some_number = 777u16; pointer_to_another_instance = &s; };
-    printf("enum body2: tag=%d n=%d inner_tag=%d\n", t.tag, t.some_number, t.pointer_to_another_instance.tag);
+    printf(<*u8>b"enum body2: tag=%d n=%d inner_tag=%d\n\0", t.tag, t.some_number, t.pointer_to_another_instance.tag);
 
     # Sum-type subtyping: `s`'s own inferred type is `MyEnumWithBodies::Second`
     # (permanently, since it was never widened by an explicit plain type
@@ -738,82 +748,84 @@ main(argc : i32, argv : [*u8]) => i32 {
     # `match` as an expression: exhaustive over every variant, no `else`
     # needed since all three are covered.
     kind := match s {
-        MyEnumWithBodies::First => "first",
-        MyEnumWithBodies::Second => "second",
-        MyEnumWithBodies::Third => "third",
+        MyEnumWithBodies::First => <*u8>b"first\0",
+        MyEnumWithBodies::Second => <*u8>b"second\0",
+        MyEnumWithBodies::Third => <*u8>b"third\0",
     };
-    printf("match as expression: %s\n", kind);
+    printf(<*u8>b"match as expression: %s\n\0", kind);
 
     # Shared dynamic fields: every construction site supplies them (even
     # `First`, which has no body fields of its own), and a shared method
     # can read them without proving the variant.
     shared_first := MyEnumWithSharedDynamicFields::First {
         favorite_number = 10;
-        favorite_color = "green";
+        favorite_color = <*u8>b"green\0";
     };
     shared_second := MyEnumWithSharedDynamicFields::Second {
         favorite_number = 20;
-        favorite_color = "blue";
+        favorite_color = <*u8>b"blue\0";
         specific_field = 99;
     };
     shared_first.print_favorite_number_and_color();
     shared_second.print_favorite_number_and_color();
     printf(
-        "shared dynamic fields: description=%s/%s specific_field=%d\n",
-        shared_first.description, shared_second.description, shared_second.specific_field
+        <*u8>b"shared dynamic fields: description=%.*s/%.*s specific_field=%d\n\0",
+        shared_first.description.length, <*u8>shared_first.description,
+        shared_second.description.length, <*u8>shared_second.description,
+        shared_second.specific_field
     );
 
     # Unlike a header field, a shared dynamic field is genuinely mutable --
     # an ordinary assignment through it, exactly like a body field's.
     mut shared_mut := MyEnumWithSharedDynamicFields::Third {
         favorite_number = 1;
-        favorite_color = "red";
+        favorite_color = <*u8>b"red\0";
     };
     shared_mut.favorite_number = 42;
-    printf("shared dynamic field mutated: %d\n", shared_mut.favorite_number);
+    printf(<*u8>b"shared dynamic field mutated: %d\n\0", shared_mut.favorite_number);
 
     xt := MyEnumWithExplicitTagAndHeader::Third;
-    printf("enum explicit: tag=%u desc=%s\n", xt.tag, xt.description);
+    printf(<*u8>b"enum explicit: tag=%u desc=%.*s\n\0", xt.tag, xt.description.length, <*u8>xt.description);
 
     opt := Optional<u32>::Some { value = 42u32; };
     none := Optional<u32>::None;
-    printf("enum generic: some(tag=%d value=%u) none(tag=%d)\n", opt.tag, opt.value, none.tag);
+    printf(<*u8>b"enum generic: some(tag=%d value=%u) none(tag=%d)\n\0", opt.tag, opt.value, none.tag);
 
     cool := MyCoolEnum::Second { number = 123u64; decimal = 2.5; };
-    printf("enum cool: tag=%d number=%llu decimal=%f\n", cool.tag, cool.number, cool.decimal);
+    printf(<*u8>b"enum cool: tag=%d number=%llu decimal=%f\n\0", cool.tag, cool.number, cool.decimal);
     cool.print_description();
     dflt := MyCoolEnum::default();
     dflt.print_description();
-    printf("enum by value: %d\n", cool_tag(dflt));
+    printf(<*u8>b"enum by value: %d\n\0", cool_tag(dflt));
 
     mut anyvariant : MyCoolEnum = MyCoolEnum::Bad;
-    printf("enum widened: tag=%d\n", anyvariant.tag);
+    printf(<*u8>b"enum widened: tag=%d\n\0", anyvariant.tag);
     anyvariant = dflt;
     picked := if anyvariant.tag > 0i16 { MyCoolEnum::Bad } else { MyCoolEnum::Third };
-    printf("enum picked: %s\n", picked.description);
+    printf(<*u8>b"enum picked: %.*s\n\0", picked.description.length, <*u8>picked.description);
 
     st := simplemodule::Status::make_err(42);
-    printf("cross-module enum: tag=%d label=%s\n", st.tag, st.label);
+    printf(<*u8>b"cross-module enum: tag=%d label=%.*s\n\0", st.tag, st.label.length, <*u8>st.label);
     okst := simplemodule::Status::Ok;
     err := simplemodule::Status::Err { code = 7; };
-    printf("cross-module enum 2: ok=%d err_code=%d\n", okst.tag, err.code);
+    printf(<*u8>b"cross-module enum 2: ok=%d err_code=%d\n\0", okst.tag, err.code);
 
     # A union's fields overlap the same storage: written as `as_i32`, read
     # back as `as_f32` -- exactly the bit pattern of pi as an IEEE-754 f32.
     val := Value { as_i32 = 1078530011; };
-    printf("union overlap: as_i32=%d as_f32=%f\n", val.as_i32, val.as_f32);
+    printf(<*u8>b"union overlap: as_i32=%d as_f32=%f\n\0", val.as_i32, val.as_f32);
 
     # `<Type>expr` casts: a numeric conversion (real width/signedness-aware
     # codegen, not just relabeling) and a pointer reinterpretation.
     ci := 10;
     cf := <f32>ci;
-    printf("cast i32->f32: %d -> %f\n", ci, cf);
+    printf(<*u8>b"cast i32->f32: %d -> %f\n\0", ci, cf);
 
     thing := Vec2::new(11, 22);
     thing_ptr := &thing;
     void_ptr := <*void>thing_ptr;
     back := <*Vec2>void_ptr;
-    printf("cast pointer roundtrip: (%d, %d)\n", back.x, back.y);
+    printf(<*u8>b"cast pointer roundtrip: (%d, %d)\n\0", back.x, back.y);
 
     # Untyped-constant inference: an unsuffixed literal adapts to whatever
     # concrete type context expects, as long as the *kind* still matches
@@ -826,18 +838,18 @@ main(argc : i32, argv : [*u8]) => i32 {
     coerced_arr : [u64; 3] = [1, 2, 3];
     coerced_branch := if coerced_u64 > 5u64 { 5u64 } else { 10 };
     printf(
-        "literal coercion: u64=%llu f64=%f f32=%f neg=%d arr[2]=%llu branch=%llu\n",
+        <*u8>b"literal coercion: u64=%llu f64=%f f32=%f neg=%d arr[2]=%llu branch=%llu\n\0",
         coerced_u64, coerced_f64, coerced_f32, coerced_neg, coerced_arr[2], coerced_branch
     );
 
-    print_any("hello");
+    print_any(<*u8>b"hello\0");
     print_any(10);
     print_any(10.0);
     print_number2(10);
 
     mut scaled := Vec2::new(2, 3);
     scaled.scale(3);
-    printf("method overload: (%d, %d)\n", scaled.x, scaled.y);
+    printf(<*u8>b"method overload: (%d, %d)\n\0", scaled.x, scaled.y);
 
     # A typed declaration annotation uniquely disambiguates which overload
     # of `print_number2` is meant -- `print_number2_ref2 := print_number2;`
@@ -852,7 +864,7 @@ main(argc : i32, argv : [*u8]) => i32 {
     # around (`if true { 8 } else { 7u16 }` would now be a type mismatch:
     # branch 0's default `i32` doesn't retroactively become `u16`).
     earliest_wins := if true { 7u16 } else { 8 };
-    printf("earliest-wins if: %u\n", earliest_wins);
+    printf(<*u8>b"earliest-wins if: %u\n\0", earliest_wins);
 
     # `&`/`&mut` make a slice's mutability explicit -- an immutable slice
     # and a mutable slice can both be taken from the same `mut` array, and
@@ -861,12 +873,63 @@ main(argc : i32, argv : [*u8]) => i32 {
     imm_view := &sliceable[0...];
     mut_view := &mut sliceable[0...];
     mut_view[0] = 99;
-    printf("slice mutability: imm[0]=%d mut[0]=%d array[0]=%d\n", imm_view[0], mut_view[0], sliceable[0]);
+    printf(<*u8>b"slice mutability: imm[0]=%d mut[0]=%d array[0]=%d\n\0", imm_view[0], mut_view[0], sliceable[0]);
 
     # A binary string literal -- `*[u8]` (a slice, not `*u8`), no null
     # terminator, its length known at compile time.
     bytes : *[u8] = b"binary string here";
-    printf("byte string: len=%d first=%d\n", bytes.length, <i32>bytes[0]);
+    printf(<*u8>b"byte string: len=%d first=%d\n\0", bytes.length, <i32>bytes[0]);
+
+    # `*str`: a UTF-8 string slice, distinct from `*[u8]` even though both
+    # are the exact same `[data_ptr, len]` fat pointer at runtime -- no
+    # implicit coercion either way (see `ResolvedType::Str`). Every
+    # `"..."` literal is one of these now.
+    greeting : *str = "hello, omega";
+    printf(<*u8>b"str: len=%d\n\0", greeting.length);
+
+    # Byte indexing and range-slicing both work exactly like `*[u8]` does
+    # (symmetric, no artificial restriction) -- `[i]` yields a raw `u8`,
+    # `&s[a..b]` yields another `*str` over the same underlying bytes.
+    first_byte := greeting[0];
+    str_tail : *str = &greeting[7...];
+    printf(<*u8>b"str[0]=%d tail.length=%d\n\0", <i32>first_byte, str_tail.length);
+
+    # Freely castable to the types you'd expect -- `*u8`/`*i8` drop the
+    # length (`CastKind::DropLength`, a sound "give me just the pointer"
+    # narrowing, not a claim of null-termination); `*[u8]`/`*[i8]` keep
+    # both leaves unchanged (`CastKind::Reinterpret`, since the runtime
+    # shape is already identical).
+    as_u8_slice : *[u8] = <*[u8]>greeting;
+    as_i8_slice : *[i8] = <*[i8]>greeting;
+    as_thin_u8 : *u8 = <*u8>&greeting[0..<5];
+    printf(
+        <*u8>b"str casts: [u8]len=%d [i8]len=%d thin[0]=%d\n\0",
+        as_u8_slice.length, as_i8_slice.length, <i32>*as_thin_u8
+    );
+
+    # Multi-line strings: an opening run of N quotes (N odd, N >= 3),
+    # closed only by an exact run of N quotes -- content in between is
+    # verbatim (no escape processing), so shorter runs of quotes, even
+    # right next to real content, don't terminate it early.
+    my_long_string := """
+  this is a long string! it can even have quotes ("") inside of it!
+  as long as it doesnt contain with the same amount of quotes that it started, it's fine.
+  otherwise, it will terminate the string.
+""";
+
+    my_even_longer_string := """""""""
+  this is also allowed!
+  look how many quotes i inserted.
+  there are 9 quotes in the beginning.
+  so there must be 9 quotes to terminate the string.
+  if i do just 7, for instance, the string wont terminate: """""""
+  im gonna terminate now.
+""""""""";
+
+    printf(
+        <*u8>b"multiline lengths: %d %d\n\0",
+        my_long_string.length, my_even_longer_string.length
+    );
 
     # Bitwise operators, at standard precedence (bitwise binds tighter than
     # comparison, matching Rust rather than C's looser-than-`==` gotcha).
@@ -877,7 +940,7 @@ main(argc : i32, argv : [*u8]) => i32 {
     bit_shl := 5 << 2;
     bit_shr := 5 >> 1;
     printf(
-        "bitwise: and=%d or=%d xor=%d not=%d shl=%d shr=%d\n",
+        <*u8>b"bitwise: and=%d or=%d xor=%d not=%d shl=%d shr=%d\n\0",
         bit_and, bit_or, bit_xor, bit_not, bit_shl, bit_shr
     );
 
@@ -894,7 +957,7 @@ main(argc : i32, argv : [*u8]) => i32 {
     compound |= 8;
     compound <<= 2;
     compound >>= 1;
-    printf("compound assign: %d\n", compound);
+    printf(<*u8>b"compound assign: %d\n\0", compound);
 
     # An external project's function and struct, resolved and type-checked
     # here but compiled by mathlib's own, separate `omgc` invocation (see
@@ -902,9 +965,9 @@ main(argc : i32, argv : [*u8]) => i32 {
     # linked together afterward.
     extern_sum := mathlib::add_numbers(3, 4);
     extern_point := mathlib::Point { x = 3; y = 4; };
-    printf("extern sum: %d, extern point magnitude_sq: %d\n", extern_sum, extern_point.magnitude_sq());
+    printf(<*u8>b"extern sum: %d, extern point magnitude_sq: %d\n\0", extern_sum, extern_point.magnitude_sq());
 
-    printf("cycle fixture: %d %d\n", cycle_a_value(), unrelated_b());
+    printf(<*u8>b"cycle fixture: %d %d\n\0", cycle_a_value(), unrelated_b());
 
     # Compile-time slices: `&[...]` bakes the literal data straight into the
     # binary's data segment (see `Codegen::emit_const_slice`), rather than
@@ -912,19 +975,28 @@ main(argc : i32, argv : [*u8]) => i32 {
     # an ordinary `Slice` value in every other respect (same `.length`/
     # indexing as a runtime slice).
     greetings := &["hello", "there"];
-    printf("const slice: len=%d [0]=%s [1]=%s\n", greetings.length, greetings[0], greetings[1]);
+    printf(
+        <*u8>b"const slice: len=%d [0]=%.*s [1]=%.*s\n\0",
+        greetings.length, greetings[0].length, <*u8>greetings[0], greetings[1].length, <*u8>greetings[1]
+    );
 
     # ...which is exactly what makes `&[...]` usable as an enum header
     # constant too: `CryptographicAlgorithm` above.
     aes := CryptographicAlgorithm::AES;
     rsa := CryptographicAlgorithm::RSA;
     printf(
-        "enum const slice: name=%s variants=[%s, %s, %s]\n",
-        aes.name, aes.variants[0], aes.variants[1], aes.variants[2]
+        <*u8>b"enum const slice: name=%.*s variants=[%.*s, %.*s, %.*s]\n\0",
+        aes.name.length, <*u8>aes.name,
+        aes.variants[0].length, <*u8>aes.variants[0],
+        aes.variants[1].length, <*u8>aes.variants[1],
+        aes.variants[2].length, <*u8>aes.variants[2]
     );
     printf(
-        "enum const slice 2: name=%s variants=[%s, %s, %s]\n",
-        rsa.name, rsa.variants[0], rsa.variants[1], rsa.variants[2]
+        <*u8>b"enum const slice 2: name=%.*s variants=[%.*s, %.*s, %.*s]\n\0",
+        rsa.name.length, <*u8>rsa.name,
+        rsa.variants[0].length, <*u8>rsa.variants[0],
+        rsa.variants[1].length, <*u8>rsa.variants[1],
+        rsa.variants[2].length, <*u8>rsa.variants[2]
     );
 
     # `MovieCategory`'s `top_movies` is a fixed-length array baked *inline*
@@ -933,12 +1005,18 @@ main(argc : i32, argv : [*u8]) => i32 {
     action := MovieCategory::Action;
     horror := MovieCategory::Horror;
     printf(
-        "enum const array: %s -> [%s, %s, %s]\n",
-        action.description, action.top_movies[0], action.top_movies[1], action.top_movies[2]
+        <*u8>b"enum const array: %.*s -> [%.*s, %.*s, %.*s]\n\0",
+        action.description.length, <*u8>action.description,
+        action.top_movies[0].length, <*u8>action.top_movies[0],
+        action.top_movies[1].length, <*u8>action.top_movies[1],
+        action.top_movies[2].length, <*u8>action.top_movies[2]
     );
     printf(
-        "enum const array 2: %s -> [%s, %s, %s]\n",
-        horror.description, horror.top_movies[0], horror.top_movies[1], horror.top_movies[2]
+        <*u8>b"enum const array 2: %.*s -> [%.*s, %.*s, %.*s]\n\0",
+        horror.description.length, <*u8>horror.description,
+        horror.top_movies[0].length, <*u8>horror.top_movies[0],
+        horror.top_movies[1].length, <*u8>horror.top_movies[1],
+        horror.top_movies[2].length, <*u8>horror.top_movies[2]
     );
 
     # Specs: declarations, overrides, dependencies, aliases, and `Self`.
@@ -947,8 +1025,8 @@ main(argc : i32, argv : [*u8]) => i32 {
     cat := Cat { id = 3; };
     wolf := Wolf { id = 4; };
 
-    printf("dog.is_dog=%d cat.is_dog=%d\n", dog.is_dog(), cat.is_dog());
-    printf("dog same_kind as dog2: %d\n", dog.same_kind(&dog2));
+    printf(<*u8>b"dog.is_dog=%d cat.is_dog=%d\n\0", dog.is_dog(), cat.is_dog());
+    printf(<*u8>b"dog same_kind as dog2: %d\n\0", dog.same_kind(&dog2));
     wolf.call_something_else();
 
     # Static dispatch: two independently monomorphized copies of the same
@@ -973,12 +1051,12 @@ main(argc : i32, argv : [*u8]) => i32 {
     packed_enum := EnumWithCLikePacking::First;
 
     mut offset := <usize>&c_like_packing.longthing - <usize>&c_like_packing;
-    printf("type = CLikePacking, size = %lu, offset of longthing: %lu\n", sizeof<CLikePacking>, offset);
+    printf(<*u8>b"type = CLikePacking, size = %lu, offset of longthing: %lu\n\0", sizeof<CLikePacking>, offset);
 
     offset = <usize>&regular_packing.longthing - <usize>&regular_packing;
-    printf("type = Packed, size = %lu, offset of longthing: %lu\n", sizeof<Packed>, offset);
+    printf(<*u8>b"type = Packed, size = %lu, offset of longthing: %lu\n\0", sizeof<Packed>, offset);
     offset = <usize>&packed_enum.longthing - <usize>&packed_enum;
-    printf("type = EnumWithCLikePacking, size = %lu, offset of longthing: %lu\n", sizeof<EnumWithCLikePacking>, offset);
+    printf(<*u8>b"type = EnumWithCLikePacking, size = %lu, offset of longthing: %lu\n\0", sizeof<EnumWithCLikePacking>, offset);
 
     return 69;
 }
@@ -1022,13 +1100,13 @@ forward_declared_fn() => i32 {
 # No hidden sugar (no destructors): the deferred statement/block is spelled
 # out right where it's scheduled, and runs exactly once per call.
 defer_demo(flag: bool) => i32 {
-    printf("defer_demo: start\n");
-    defer puts("defer_demo: cleanup ran");
+    printf(<*u8>b"defer_demo: start\n\0");
+    defer puts(<*u8>b"defer_demo: cleanup ran\0");
     if flag {
-        printf("defer_demo: early return\n");
+        printf(<*u8>b"defer_demo: early return\n\0");
         return 1;
     }
-    printf("defer_demo: normal end\n");
+    printf(<*u8>b"defer_demo: normal end\n\0");
     return 0;
 }
 

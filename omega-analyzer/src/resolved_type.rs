@@ -314,7 +314,7 @@ pub enum ConstValue {
     Number(crate::checked::NumberValue),
     Bool(bool),
     Char(char),
-    /// A `*u8` string constant -- the literal's decoded bytes.
+    /// A `*str` string constant -- the literal's decoded UTF-8 bytes.
     Str(String),
     /// A compile-time slice's elements (`&[...]`) -- no item type is
     /// carried here, exactly like `Str` doesn't carry its own type: it's
@@ -410,6 +410,19 @@ pub enum ResolvedType {
     /// `Pointer(Array(_))`; see `Context::resolve_type`. `mutable` carries
     /// the same meaning `Pointer::mutable` does, for `slice[i] = value`.
     Slice { item: Box<ResolvedType>, mutable: bool },
+    /// `*str` (`mutable: false`) or `*mut str` (`mutable: true`) -- a
+    /// UTF-8 string slice: at runtime, the exact same fat-pointer shape
+    /// `Slice { item: U8, .. }` has (`[data_ptr, len]`, no null
+    /// terminator), but a genuinely distinct nominal type -- no implicit
+    /// coercion to/from `Slice`/`Pointer` in either direction (see
+    /// `accepts` below). No `item` field: always byte-shaped, so there's
+    /// nothing to parameterize. `str` alone (unwrapped by `*`/`*mut`)
+    /// names nothing -- it's deliberately never registered in
+    /// `Context::new()`'s `defined_types`, so it only ever resolves to
+    /// this variant via the raw-pointee special case in
+    /// `Context::resolve_type`'s `Type::Pointer` arm; any other use falls
+    /// through to the ordinary "unrecognized type name" diagnostic.
+    Str { mutable: bool },
     Struct(Rc<RefCell<ResolvedStructType>>),
     /// A C/Rust-style union value -- see `ResolvedUnionType`'s doc comment.
     Union(Rc<RefCell<ResolvedUnionType>>),
@@ -481,6 +494,7 @@ impl Hash for ResolvedType {
                 item.hash(state);
                 mutable.hash(state);
             }
+            Self::Str { mutable } => mutable.hash(state),
             Self::Function(fn_type) => fn_type.hash(state),
             Self::SizedArray(inner, size) => {
                 inner.hash(state);
@@ -550,6 +564,8 @@ impl std::fmt::Display for ResolvedType {
             Self::SizedArray(inner, size) => write!(f, "[{inner}; {size}]"),
             Self::Slice { item, mutable: false } => write!(f, "*[{item}]"),
             Self::Slice { item, mutable: true } => write!(f, "*mut [{item}]"),
+            Self::Str { mutable: false } => write!(f, "*str"),
+            Self::Str { mutable: true } => write!(f, "*mut str"),
             // Only the name, never the fields -- a struct may reference
             // itself, and its name is how source refers to it anyway.
             Self::Struct(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
@@ -754,7 +770,24 @@ impl ResolvedType {
             (Self::Slice { item: expected, mutable: false }, Self::Slice { item: found, .. }) => {
                 expected.accepts(found)
             }
+            // No `item` to recurse on, unlike `Slice` above -- and
+            // deliberately its own arm, not folded into `Slice`'s: `*str`
+            // and `*[u8]` must never accept one another implicitly (see
+            // `Str`'s own doc comment), only `*mut str` -> `*str` widening.
+            (Self::Str { mutable: false }, Self::Str { .. }) => true,
             _ => false,
+        }
+    }
+
+    /// The `mutable` flag of any pointer-shaped type (`Pointer`/`Slice`/
+    /// `Str`) -- `None` for anything else. Lets a single check (e.g. "a
+    /// cast can't turn an immutable pointer-shaped value into a mutable
+    /// one") apply uniformly across all three instead of being duplicated
+    /// per shape.
+    pub fn pointer_like_mutable(&self) -> Option<bool> {
+        match self {
+            Self::Pointer { mutable, .. } | Self::Slice { mutable, .. } | Self::Str { mutable } => Some(*mutable),
+            _ => None,
         }
     }
 }

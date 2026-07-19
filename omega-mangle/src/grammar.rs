@@ -34,6 +34,8 @@ pub const TAG_SPEC_OBJECT_MUT: u8 = b'K';
 pub const TAG_FUNCTION: u8 = b'F';
 pub const TAG_VARIADIC: u8 = b'V';
 pub const TAG_REFINED: u8 = b'R';
+pub const TAG_STR: u8 = b'T';
+pub const TAG_STR_MUT: u8 = b'U';
 
 pub const VENDOR_SUFFIX_SEP: u8 = b'.';
 

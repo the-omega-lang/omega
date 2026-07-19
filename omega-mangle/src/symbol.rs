@@ -79,6 +79,15 @@ pub enum MangleType {
     Pointer(Box<MangleType>, bool),
     /// `*[T]` (`false`) / `*mut [T]` (`true`)
     Slice(Box<MangleType>, bool),
+    /// `*str` (`false`) / `*mut str` (`true`) -- a leaf, unlike `Pointer`/
+    /// `Slice`: `str` is always byte-shaped, so there's no inner type to
+    /// parameterize. Structurally identical to `Slice(U8, _)` once
+    /// encoded (both flatten to the same `[ptr, len]` shape at the
+    /// codegen level), but a distinct grammar production (`T`/`U`, see
+    /// `crate::grammar`) so the two are never confused -- mirrors
+    /// `ResolvedType::Str` being a fully separate variant from `Slice`,
+    /// not a structural alias.
+    Str(bool),
     /// `[T]` -- a decayed, unsized array parameter.
     Array(Box<MangleType>),
     /// `[T; N]`

@@ -113,11 +113,14 @@ pub struct Codegen {
     captured_text: String,
 
     // Global state
-    strings: HashMap<String, DataId>,
-    /// A `b"..."` literal's raw bytes -- deduplicated separately from
-    /// `strings` (never null-terminated, so identical text used once as
-    /// `"..."` and once as `b"..."` must not share a `DataId`).
-    byte_strings: HashMap<String, DataId>,
+    /// Every anonymous byte-run constant this module has emitted so far --
+    /// `"..."` (`*str`) and `b"..."` (`*[u8]`) literals alike, deduplicated
+    /// by raw content in one map: neither is null-terminated, so identical
+    /// text used once each way produces byte-for-byte identical storage,
+    /// and sharing one `DataId` between them is exactly right (they only
+    /// ever differ in the *type* the surrounding expression carries, never
+    /// in the bytes themselves).
+    bytes: HashMap<String, DataId>,
     /// One vtable per `(concrete type, spec)` pair actually coerced to a
     /// `spec *Spec` value somewhere in this compilation -- built lazily,
     /// the first time a `CheckedExpr::SpecCoerce` for that exact pair is
@@ -129,8 +132,10 @@ pub struct Codegen {
     vtables: HashMap<(HirId, HirId), DataId>,
 
     // Local state (must be cleared per function)
-    local_strings: HashMap<String, Value>,
-    local_byte_strings: HashMap<String, Value>,
+    /// `bytes`'s per-function counterpart -- caches just the data pointer
+    /// (the length, when needed, is a cheap `iconst` recomputed each call,
+    /// same as any other compile-time-constant length).
+    local_bytes: HashMap<String, Value>,
     local_args: HashMap<HirId, Vec<Value>>,
     /// One stack slot per local, sized to its type's total byte size (not
     /// one slot per scalar leaf) -- a prerequisite for `&`/`*`: a local
@@ -335,8 +340,12 @@ impl IntoIRType for ResolvedType {
             }
             // A fat pointer: a data pointer plus an `i32` length. See
             // `ResolvedType::Slice`'s doc comment for why this is a distinct
-            // variant rather than `Pointer(Array(_))`.
-            ResolvedType::Slice { .. } => vec![codegen.pointer_type(), types::I32],
+            // variant rather than `Pointer(Array(_))`. `Str` shares the
+            // identical leaf shape (see its own doc comment) but is kept a
+            // separate arm rather than folded into this one, matching how
+            // it's a fully separate `ResolvedType` variant, not a
+            // structural alias.
+            ResolvedType::Slice { .. } | ResolvedType::Str { .. } => vec![codegen.pointer_type(), types::I32],
             // `Pointer`, `Function`, and the legacy unsized `Array` (see its
             // doc comment) are all a single thin pointer value.
             ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_) => {
@@ -828,12 +837,10 @@ impl Codegen {
             emit,
             captured_text: String::new(),
 
-            strings: HashMap::new(),
-            byte_strings: HashMap::new(),
+            bytes: HashMap::new(),
             vtables: HashMap::new(),
 
-            local_strings: HashMap::new(),
-            local_byte_strings: HashMap::new(),
+            local_bytes: HashMap::new(),
             stack_slots: HashMap::new(),
             local_args: HashMap::new(),
             return_block: None,
@@ -854,8 +861,7 @@ impl Codegen {
     }
 
     fn clear_local(&mut self) {
-        self.local_strings.clear();
-        self.local_byte_strings.clear();
+        self.local_bytes.clear();
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();
@@ -987,15 +993,16 @@ impl Codegen {
                         // directly in `current`.
                         ResolvedType::SizedArray(_, _) => self.place_storage_address(builder, &current),
                         // `Array` (the legacy thin-pointer unsized form,
-                        // e.g. `argv`) *is* a pointer value; `Slice`'s first
-                        // flattened leaf is its data pointer (the second,
-                        // its length, isn't needed for a single-element
-                        // index).
-                        ResolvedType::Array(_) | ResolvedType::Slice { .. } => {
+                        // e.g. `argv`) *is* a pointer value; `Slice`/`Str`'s
+                        // first flattened leaf is its data pointer (the
+                        // second, its length, isn't needed for a
+                        // single-element index) -- identical leaf layout,
+                        // so the same one-leaf load works for both.
+                        ResolvedType::Array(_) | ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                             self.load_scalars(builder, &current, &current_type)[0]
                         }
                         _ => unreachable!(
-                            "checked module guarantees Index projections only apply to Array/SizedArray/Slice"
+                            "checked module guarantees Index projections only apply to Array/SizedArray/Slice/Str"
                         ),
                     };
                     let mut index = self.process_expr(builder, (**index_expr).clone())[0];
@@ -1310,20 +1317,23 @@ impl Codegen {
         format!("_omgdata_{:016x}", twox_hash::XxHash3_64::oneshot(bytes))
     }
 
-    fn get_or_declare_global_string(&mut self, s: String) -> DataId {
-        let mut str_bytes = s.clone().into_bytes();
-        str_bytes.push(b'\0'); // null terminator
-        let sym = Self::data_symbol(&str_bytes);
+    /// Declares (and defines) `s`'s bytes as an anonymous module-level data
+    /// object, verbatim -- no null terminator, shared by `"..."` (`*str`)
+    /// and `b"..."` (`*[u8]`) literals alike (see `bytes`'s own doc
+    /// comment for why one function/map correctly serves both now).
+    fn get_or_declare_global_bytes(&mut self, s: String) -> DataId {
+        let bytes = s.clone().into_bytes();
+        let sym = Self::data_symbol(&bytes);
         let id = self
             .module
             .declare_data(&sym, Linkage::Preemptible, false, false)
             .unwrap();
 
-        let mut str_desc = DataDescription::new();
-        str_desc.define(str_bytes.into_boxed_slice());
-        self.module.define_data(id, &str_desc).unwrap();
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        self.module.define_data(id, &desc).unwrap();
 
-        self.strings.insert(s, id);
+        self.bytes.insert(s, id);
 
         id
     }
@@ -1332,73 +1342,33 @@ impl Codegen {
         self.module.declare_func_in_func(func_id, builder.func)
     }
 
-    /// A string constant's pointer value, deduplicated per module
-    /// (`strings`) and per function (`local_strings`) -- shared by string
-    /// literal expressions and enum header constants.
-    fn emit_string_ptr(&mut self, builder: &mut FunctionBuilder, s: String) -> Value {
-        if let Some(local_value) = self.local_strings.get(&s) {
-            return *local_value;
-        }
-
-        let ptr_type = self.pointer_type();
-        let str_id = if let Some(id) = self.strings.get(&s) {
-            *id
-        } else {
-            self.get_or_declare_global_string(s.clone())
-        };
-
-        let global_value = self.module.declare_data_in_func(str_id, builder.func);
-        let str_ptr = builder.ins().global_value(ptr_type, global_value);
-
-        self.local_strings.insert(s, str_ptr);
-
-        str_ptr
-    }
-
-    /// `get_or_declare_global_string`'s byte-string counterpart -- the same
-    /// shape, minus the null terminator, deduplicated in its own map
-    /// (`byte_strings`) so identical text used once as `"..."` and once as
-    /// `b"..."` never collides.
-    fn get_or_declare_global_bytes(&mut self, s: String) -> DataId {
-        let sym = Self::data_symbol(s.as_bytes());
-        let id = self
-            .module
-            .declare_data(&sym, Linkage::Preemptible, false, false)
-            .unwrap();
-
-        let mut desc = DataDescription::new();
-        desc.define(s.clone().into_bytes().into_boxed_slice());
-        self.module.define_data(id, &desc).unwrap();
-
-        self.byte_strings.insert(s, id);
-
-        id
-    }
-
-    /// A `b"..."` literal's two-leaf `[pointer, length]` form -- the exact
-    /// shape `ResolvedType::Slice`'s `into_ir_type` expects -- deduplicated
-    /// per module (`byte_strings`) and per function (`local_byte_strings`,
-    /// which -- like `emit_string_ptr`'s `local_strings` -- only caches the
-    /// pointer; the length is a cheap `iconst` recomputed each call, same
-    /// as an ordinary slice's own compile-time-constant length).
-    fn emit_byte_string(&mut self, builder: &mut FunctionBuilder, s: String) -> Vec<Value> {
+    /// A byte-run constant's two-leaf `[pointer, length]` form -- the
+    /// shape both `ResolvedType::Slice` and `ResolvedType::Str`'s
+    /// `into_ir_type` expect (identical for both) -- deduplicated per
+    /// module (`bytes`) and per function (`local_bytes`, which only
+    /// caches the pointer; the length is a cheap `iconst` recomputed each
+    /// call, same as any other compile-time-constant length). Shared by
+    /// string literal expressions, byte-string literal expressions, and
+    /// enum header/dynamic-field constants -- the caller alone decides
+    /// whether the surrounding value is typed `*str` or `*[u8]`.
+    fn emit_bytes(&mut self, builder: &mut FunctionBuilder, s: String) -> Vec<Value> {
         let len = builder.ins().iconst(types::I32, s.len() as i64);
 
-        if let Some(local_value) = self.local_byte_strings.get(&s) {
+        if let Some(local_value) = self.local_bytes.get(&s) {
             return vec![*local_value, len];
         }
 
         let ptr_type = self.pointer_type();
-        let bytes_id = if let Some(id) = self.byte_strings.get(&s) {
+        let data_id = if let Some(id) = self.bytes.get(&s) {
             *id
         } else {
             self.get_or_declare_global_bytes(s.clone())
         };
 
-        let global_value = self.module.declare_data_in_func(bytes_id, builder.func);
+        let global_value = self.module.declare_data_in_func(data_id, builder.func);
         let ptr = builder.ins().global_value(ptr_type, global_value);
 
-        self.local_byte_strings.insert(s, ptr);
+        self.local_bytes.insert(s, ptr);
 
         vec![ptr, len]
     }
@@ -1425,7 +1395,7 @@ impl Codegen {
             }
             ConstValue::Bool(b) => vec![builder.ins().iconst(types::I8, *b as i64)],
             ConstValue::Char(c) => vec![builder.ins().iconst(types::I32, *c as i64)],
-            ConstValue::Str(s) => vec![self.emit_string_ptr(builder, s.clone())],
+            ConstValue::Str(s) => self.emit_bytes(builder, s.clone()),
             ConstValue::Slice(elements) => {
                 let ResolvedType::Slice { item, .. } = r#type else {
                     unreachable!("checked module guarantees a Slice constant's own type is Slice");
@@ -1445,8 +1415,8 @@ impl Codegen {
         }
     }
 
-    /// A compile-time slice's `[ptr, len]` leaves -- unlike `emit_string_ptr`/
-    /// `emit_byte_string`, deliberately *not* deduplicated across call sites:
+    /// A compile-time slice's `[ptr, len]` leaves -- unlike `emit_bytes`,
+    /// deliberately *not* deduplicated across call sites:
     /// `ConstValue` isn't cheaply hashable (it nests, and `NumberValue::Float`
     /// has no total order), and each occurrence is a one-shot codegen site
     /// (one enum construction, or one `&[...]` expression) rather than
@@ -1581,9 +1551,17 @@ impl Codegen {
                 bytes[start..start + 4].copy_from_slice(&(*c as u32).to_le_bytes());
             }
             ConstValue::Str(s) => {
-                let str_id = if let Some(id) = self.strings.get(s) { *id } else { self.get_or_declare_global_string(s.clone()) };
+                let str_id =
+                    if let Some(id) = self.bytes.get(s) { *id } else { self.get_or_declare_global_bytes(s.clone()) };
                 let global_value = self.module.declare_data_in_data(str_id, desc);
                 desc.write_data_addr(offset, global_value, 0);
+
+                // `*str` (unlike the old, always-null-terminated `*u8` this
+                // used to be) is a fat pointer -- the length leaf needs
+                // writing too, exactly like `ConstValue::Slice` below.
+                let ptr_bytes = self.pointer_type().bytes();
+                let len_start = (offset + ptr_bytes) as usize;
+                bytes[len_start..len_start + 4].copy_from_slice(&(s.len() as i32).to_le_bytes());
             }
             ConstValue::Slice(nested) => {
                 let ResolvedType::Slice { item, .. } = r#type else {
@@ -2046,8 +2024,8 @@ impl Codegen {
 
     fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
         match node.kind {
-            CheckedExpr::String(s) => vec![self.emit_string_ptr(builder, s)],
-            CheckedExpr::ByteString(s) => self.emit_byte_string(builder, s),
+            CheckedExpr::String(s) => self.emit_bytes(builder, s),
+            CheckedExpr::ByteString(s) => self.emit_bytes(builder, s),
             CheckedExpr::ConstSlice(value) => self.emit_const_value(builder, &value, &node.r#type),
 
             CheckedExpr::FunctionCall(CheckedFunctionCall { callee, fn_type, args }) => {
@@ -2498,19 +2476,22 @@ impl Codegen {
                 // A slice's data pointer and full length, however `base` is
                 // actually stored: a `SizedArray`'s elements live inline, so
                 // the pointer is the storage's own address and the length is
-                // a compile-time constant; a `Slice` already carries both as
-                // its two flattened leaves.
+                // a compile-time constant; a `Slice`/`Str` already carries
+                // both as its two flattened leaves (identical layout for
+                // both -- re-slicing a `*str` produces another `*str`,
+                // decided by `node.r#type` above this match, not by
+                // anything read here).
                 let (data_ptr, full_len) = match &base_type {
                     ResolvedType::SizedArray(_, size) => {
                         let ptr = self.place_storage_address(builder, &storage);
                         let len = builder.ins().iconst(types::I32, *size as i64);
                         (ptr, len)
                     }
-                    ResolvedType::Slice { .. } => {
+                    ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], leaves[1])
                     }
-                    _ => unreachable!("checked module guarantees a slice's base is SizedArray or Slice"),
+                    _ => unreachable!("checked module guarantees a slice's base is SizedArray/Slice/Str"),
                 };
 
                 let elem_size = total_bytes(item_type, self) as i64;
@@ -2546,21 +2527,30 @@ impl Codegen {
             }
 
             CheckedExpr::Cast(CheckedCast { kind, target_type, base }) => {
-                let value = self.process_expr(builder, *base)[0];
+                // Captures every leaf, not just the first -- `Reinterpret`
+                // needs all of them (a fat pointer's `[ptr, len]` passed
+                // through unchanged, same as a numeric cast's own single
+                // leaf passed through unchanged); every other `CastKind`
+                // only ever applies to a single-leaf numeric source (`Str`/
+                // `Slice` never reach them -- `cast_class` stays `None` for
+                // both, so `byte_pointer_cast_kind` always intercepts
+                // first), so indexing `[0]` for those is still exactly
+                // right.
+                let base_leaves = self.process_expr(builder, *base);
                 let target_ir = target_type.into_ir_type(self)[0];
-                let result = match kind {
-                    CastKind::Reinterpret => value,
-                    CastKind::IntExtend { signed: true } => builder.ins().sextend(target_ir, value),
-                    CastKind::IntExtend { signed: false } => builder.ins().uextend(target_ir, value),
-                    CastKind::IntTruncate => builder.ins().ireduce(target_ir, value),
-                    CastKind::IntToFloat { signed: true } => builder.ins().fcvt_from_sint(target_ir, value),
-                    CastKind::IntToFloat { signed: false } => builder.ins().fcvt_from_uint(target_ir, value),
-                    CastKind::FloatToInt { signed: true } => builder.ins().fcvt_to_sint_sat(target_ir, value),
-                    CastKind::FloatToInt { signed: false } => builder.ins().fcvt_to_uint_sat(target_ir, value),
-                    CastKind::FloatExtend => builder.ins().fpromote(target_ir, value),
-                    CastKind::FloatTruncate => builder.ins().fdemote(target_ir, value),
-                };
-                vec![result]
+                match kind {
+                    CastKind::Reinterpret => base_leaves,
+                    CastKind::DropLength => vec![base_leaves[0]],
+                    CastKind::IntExtend { signed: true } => vec![builder.ins().sextend(target_ir, base_leaves[0])],
+                    CastKind::IntExtend { signed: false } => vec![builder.ins().uextend(target_ir, base_leaves[0])],
+                    CastKind::IntTruncate => vec![builder.ins().ireduce(target_ir, base_leaves[0])],
+                    CastKind::IntToFloat { signed: true } => vec![builder.ins().fcvt_from_sint(target_ir, base_leaves[0])],
+                    CastKind::IntToFloat { signed: false } => vec![builder.ins().fcvt_from_uint(target_ir, base_leaves[0])],
+                    CastKind::FloatToInt { signed: true } => vec![builder.ins().fcvt_to_sint_sat(target_ir, base_leaves[0])],
+                    CastKind::FloatToInt { signed: false } => vec![builder.ins().fcvt_to_uint_sat(target_ir, base_leaves[0])],
+                    CastKind::FloatExtend => vec![builder.ins().fpromote(target_ir, base_leaves[0])],
+                    CastKind::FloatTruncate => vec![builder.ins().fdemote(target_ir, base_leaves[0])],
+                }
             }
 
             CheckedExpr::UnionConstruct(CheckedUnionConstruct { field_index: _, value }) => {

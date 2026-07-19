@@ -29,6 +29,7 @@
 //!             | "G" <type>                     // [T] (decayed array param)
 //!             | "A" <type> <base62>            // [T; N]
 //!             | "D" <type> | "K" <type>        // spec *T / spec *mut T
+//!             | "T" | "U"                       // *str / *mut str
 //!             | "F" ["V"] {<type>} "E" <type>  // fn(...) -> ...; "V" marks variadic
 //!             | <backref>
 //! <basic>     = one letter per primitive (void/bool/char/i8/i16/i32/i64/isize/u8/u16/u32/u64/usize/f32/f64)

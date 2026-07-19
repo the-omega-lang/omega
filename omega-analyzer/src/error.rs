@@ -750,7 +750,7 @@ impl AnalysisErrorKind {
             Self::EnumHeaderFieldUnsupportedType { found, .. } => d
                 .with_label(span, format!("`{found}` has no literal constant form"))
                 .with_note(
-                    "each variant supplies this field's value as a compile-time constant,\nso header fields are currently limited to integers, floats, bool, char, `*u8`, and immutable slices of those (`*[...]`)",
+                    "each variant supplies this field's value as a compile-time constant,\nso header fields are currently limited to integers, floats, bool, char, `*str`, and immutable slices of those (`*[...]`)",
                 ),
             Self::EnumVariantArgCount { expected, found, has_tag, .. } => {
                 let what = if *has_tag { "the tag, then one value per header field" } else { "one value per header field" };
@@ -878,10 +878,13 @@ impl AnalysisErrorKind {
                 .with_help(format!("`{}`'s fields overlap the same storage; pick exactly one", r#union.as_ref())),
             Self::InvalidCast { from, to } => d
                 .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
-                .with_note("casts are only supported between numeric types and pointers"),
+                .with_note(
+                    "casts are only supported between numeric types, pointers, \
+                     and the str/byte-slice family (*str, *[u8], *[i8])",
+                ),
             Self::CastToMutablePointer { from, to } => d
                 .with_label(span, format!("cannot cast '{from}' to '{to}'"))
-                .with_help("a pointer cast can only target `*mut T` if the source is already `*mut`"),
+                .with_help("a cast can only target a mutable pointer/slice/str if the source is already mutable"),
             Self::NoMatchingOverload { name, candidates } => {
                 let mut d = d.with_label(span, format!("no overload of `{}` matches this", name.as_ref()));
                 for candidate in candidates {
@@ -1381,7 +1384,7 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::InvalidCast { from, to } => write!(f, "cannot cast '{from}' to '{to}'"),
             Self::CastToMutablePointer { from, to } => {
-                write!(f, "cannot cast '{from}' to '{to}': target is a mutable pointer")
+                write!(f, "cannot cast '{from}' to '{to}': target is mutable, source is not")
             }
             Self::NoMatchingOverload { name, .. } => write!(f, "no overload of '{}' matches this call", name.as_ref()),
             Self::AmbiguousOverload { name, .. } => write!(f, "ambiguous reference to overloaded '{}'", name.as_ref()),

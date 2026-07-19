@@ -143,6 +143,8 @@ fn wrapped_types() {
         MangleType::Pointer(Box::new(MangleType::I32), true),
         MangleType::Slice(Box::new(MangleType::U8), false),
         MangleType::Slice(Box::new(MangleType::U8), true),
+        MangleType::Str(false),
+        MangleType::Str(true),
         MangleType::Array(Box::new(MangleType::Char)),
         MangleType::SizedArray(Box::new(MangleType::I32), 17),
         MangleType::SpecObject(Box::new(named(nested(root("mymod"), Namespace::Type, "Animal"))), false),
@@ -154,6 +156,41 @@ fn wrapped_types() {
     ];
     let sym = Symbol { path, signature: Some((params, MangleType::Void)), vendor_suffix: None };
     assert_round_trips(&sym);
+}
+
+#[test]
+fn str_never_collides_with_slice_u8() {
+    // `*str` and `*[u8]` share an identical runtime shape but must never
+    // mangle to the same symbol -- otherwise two overloads differing only
+    // in one taking `*str` and the other `*[u8]` would collide.
+    let path = nested(root("mymod"), Namespace::Value, "do_thing");
+    let str_sym = Symbol {
+        path: path.clone(),
+        signature: Some((vec![MangleType::Str(false)], MangleType::Void)),
+        vendor_suffix: None,
+    };
+    let slice_sym = Symbol {
+        path,
+        signature: Some((vec![MangleType::Slice(Box::new(MangleType::U8), false)], MangleType::Void)),
+        vendor_suffix: None,
+    };
+    let m_str = assert_round_trips(&str_sym);
+    let m_slice = assert_round_trips(&slice_sym);
+    assert_ne!(m_str, m_slice);
+    assert_eq!(demangle(&m_str).unwrap(), "mymod::do_thing(*str) -> void");
+    assert_eq!(demangle(&m_slice).unwrap(), "mymod::do_thing(*[u8]) -> void");
+}
+
+#[test]
+fn mut_str_round_trips_and_demangles() {
+    let path = nested(root("mymod"), Namespace::Value, "takes_mut_str");
+    let sym = Symbol {
+        path,
+        signature: Some((vec![MangleType::Str(true)], MangleType::Str(false))),
+        vendor_suffix: None,
+    };
+    let mangled = assert_round_trips(&sym);
+    assert_eq!(demangle(&mangled).unwrap(), "mymod::takes_mut_str(*mut str) -> *str");
 }
 
 #[test]

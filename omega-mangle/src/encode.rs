@@ -91,6 +91,15 @@ impl Encoder {
             self.out.push(letter as char);
             return;
         }
+        // `Str` is a leaf too (no inner type, just a `mutable` flag) --
+        // exactly as cheap as a basic-type letter, so it gets the same
+        // treatment: never worth registering as a substitution candidate,
+        // since a backref (2+ chars) is never shorter than repeating this
+        // single tag byte.
+        if let MangleType::Str(mutable) = ty {
+            self.out.push(if *mutable { TAG_STR_MUT } else { TAG_STR } as char);
+            return;
+        }
         if let Some(&pos) = self.type_subs.get(ty) {
             self.emit_backref(pos);
             return;
@@ -149,7 +158,7 @@ impl Encoder {
                 self.encode_path(path);
                 self.out.push_str(&base62::encode(*variant as u64));
             }
-            _ => unreachable!("basic types are handled by the basic_letter early return above"),
+            _ => unreachable!("basic types and Str are handled by the early returns above"),
         }
         self.type_subs.insert(ty.clone(), start);
     }

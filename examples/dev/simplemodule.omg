@@ -19,7 +19,7 @@ struct Pair {
 # `simplemodule::Status::Err { ... }` / `simplemodule::Status::make_err(...)`
 # -- enum variants and static functions resolve through an imported module
 # alias exactly like a struct's statics do.
-enum Status(tag: u8, label: *u8) {
+enum Status(tag: u8, label: *str) {
     Ok(0, "all good"),
     Err(1, "something failed") { code: i32; };
 

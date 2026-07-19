@@ -58,6 +58,7 @@ fn mangle_type(ty: &ResolvedType) -> MangleType {
         ResolvedType::F64 => MangleType::F64,
         ResolvedType::Pointer { pointee, mutable } => MangleType::Pointer(Box::new(mangle_type(pointee)), *mutable),
         ResolvedType::Slice { item, mutable } => MangleType::Slice(Box::new(mangle_type(item)), *mutable),
+        ResolvedType::Str { mutable } => MangleType::Str(*mutable),
         ResolvedType::Array(inner) => MangleType::Array(Box::new(mangle_type(inner))),
         ResolvedType::SizedArray(inner, len) => MangleType::SizedArray(Box::new(mangle_type(inner)), u64::from(*len)),
         ResolvedType::Function(fn_type) => {

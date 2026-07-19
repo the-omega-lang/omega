@@ -977,11 +977,14 @@ impl<'r> Analyzer<'r> {
             other => other.clone(),
         };
 
-        // `slice.length` -- not a real field (a slice isn't a `Struct`), so
-        // this is checked before the struct-only path below rejects it. Any
-        // other field name on a slice is simply `NoSuchField`, same message a
-        // struct without that field would give.
-        if let ResolvedType::Slice { .. } = &dereffed {
+        // `slice.length` / `str.length` -- not a real field (neither is a
+        // `Struct`), so this is checked before the struct-only path below
+        // rejects it. `Str` shares `Slice`'s exact fat-pointer leaf layout
+        // (`[ptr, len]`), so the same `SliceLength` projection kind means
+        // the same thing (byte count) for both -- no separate projection
+        // needed. Any other field name is simply `NoSuchField`, same
+        // message a struct without that field would give.
+        if matches!(&dereffed, ResolvedType::Slice { .. } | ResolvedType::Str { .. }) {
             if field.as_ref() == "length" {
                 projections.push(CheckedProjection::SliceLength);
                 return Some(ResolvedType::I32);
@@ -1307,22 +1310,27 @@ impl<'r> Analyzer<'r> {
         // `&`/`&mut` the user actually wrote) may never exceed this: you
         // can't get a mutable slice out of an immutable array or an
         // already-immutable slice.
-        let (item_type, source_mutable, from_slice) = match base_type {
-            ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false),
-            ResolvedType::Slice { item, mutable } => (*item, mutable, true),
+        // `is_str` tracks whether the *result* should be a `Str` instead of
+        // a `Slice` -- re-slicing a `*str` produces another `*str`, not a
+        // `*[u8]`, even though `item_type` (used for the byte-offset math
+        // both share) is `U8` either way.
+        let (item_type, source_mutable, from_fat_pointer, is_str) = match base_type {
+            ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false, false),
+            ResolvedType::Slice { item, mutable } => (*item, mutable, true, false),
+            ResolvedType::Str { mutable } => (ResolvedType::U8, mutable, true, true),
             found => {
                 self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotSliceable { found }));
                 return None;
             }
         };
         if requested_mutable && !source_mutable {
-            // Re-slicing an already-immutable `Slice` value: `require_
+            // Re-slicing an already-immutable `Slice`/`Str` value: `require_
             // mutable_place` below would blame the *binding* (`&base.root`),
             // which is misleading here -- the binding may well be `mut`,
-            // it's the slice *value* it holds that's immutable (see the
-            // comment above). Only the plain-array case is a genuine
+            // it's the fat-pointer *value* it holds that's immutable (see
+            // the comment above). Only the plain-array case is a genuine
             // binding-mutability question.
-            if from_slice {
+            if from_fat_pointer {
                 self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ImmutableSliceSource));
                 return None;
             }
@@ -1346,10 +1354,15 @@ impl<'r> Analyzer<'r> {
         let checked_start = analyze_bound(self, &range.start)?;
         let checked_end = analyze_bound(self, &range.end)?;
 
+        let result_type = if is_str {
+            ResolvedType::Str { mutable: requested_mutable }
+        } else {
+            ResolvedType::Slice { item: Box::new(item_type.clone()), mutable: requested_mutable }
+        };
         Some(CheckedExprNode {
             id: node_id,
             span,
-            r#type: ResolvedType::Slice { item: Box::new(item_type.clone()), mutable: requested_mutable },
+            r#type: result_type,
             kind: CheckedExpr::Slice(CheckedSlice {
                 base: checked_base,
                 item_type,
@@ -1442,9 +1455,7 @@ impl<'r> Analyzer<'r> {
                 }
             },
             HirExpr::String(s) => match expected {
-                ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8 => {
-                    Some(ConstValue::Str(s.0.clone()))
-                }
+                ResolvedType::Str { mutable: false } => Some(ConstValue::Str(s.0.clone())),
                 _ => mismatch(self, "a string literal"),
             },
             HirExpr::Bool(b) => match expected {
@@ -2147,6 +2158,14 @@ impl<'r> Analyzer<'r> {
                         ResolvedType::Slice { item, mutable: slice_mutable } => {
                             mutable = slice_mutable;
                             *item
+                        }
+                        // Byte indexing, same as `*[u8]` -- symmetric with
+                        // `Slice` above, no artificial restriction (unlike
+                        // Rust's `str`, which disallows this entirely to
+                        // avoid a byte/char-boundary footgun).
+                        ResolvedType::Str { mutable: str_mutable } => {
+                            mutable = str_mutable;
+                            ResolvedType::U8
                         }
                         found => {
                             self.errors
@@ -3518,15 +3537,15 @@ impl<'r> Analyzer<'r> {
                 Some(CheckedExprNode { id: node_id, span, r#type: ResolvedType::Char, kind: CheckedExpr::Char(*c) })
             }
 
-            // A string literal's bytes are raw UTF-8 bytes, not decoded
-            // characters -- `*u8`, not `*char` (see `ResolvedType::Char`'s
-            // doc comment), the same type C's own string literals decay to.
+            // A string literal is a `*str` -- a UTF-8 byte run with
+            // compile-time-known length, no null terminator (see
+            // `ResolvedType::Str`'s doc comment). Its bytes are raw UTF-8,
+            // not decoded characters, unlike `*char`. Immutable, matching
+            // every other literal.
             HirExpr::String(s) => Some(CheckedExprNode {
                 id: node_id,
                 span,
-                // Immutable, like a C string literal -- writing through it
-                // would be just as unsound here as there.
-                r#type: ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false },
+                r#type: ResolvedType::Str { mutable: false },
                 kind: CheckedExpr::String(s.0.clone()),
             }),
 
@@ -4004,8 +4023,14 @@ impl<'r> Analyzer<'r> {
                 // just relabel an already-f32 literal).
                 let checked_base = self.analyze_expr(base, None)?;
 
-                if let (ResolvedType::Pointer { mutable: true, .. }, ResolvedType::Pointer { mutable: false, .. }) =
-                    (&target_type, &checked_base.r#type)
+                // Generalized over `Pointer`/`Slice`/`Str` alike (see
+                // `ResolvedType::pointer_like_mutable`'s doc comment) --
+                // stays first and unconditional, before either cast-kind
+                // path below, so e.g. `<*mut str>` on an immutable `*str`
+                // is caught here rather than silently succeeding as a
+                // `Reinterpret`.
+                if target_type.pointer_like_mutable() == Some(true)
+                    && checked_base.r#type.pointer_like_mutable() == Some(false)
                 {
                     self.errors.push(AnalysisError::new(
                         node_id,
@@ -4018,18 +4043,29 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
 
-                let (Some(source_class), Some(target_class)) =
-                    (checked_base.r#type.cast_class(), target_type.cast_class())
-                else {
-                    self.errors.push(AnalysisError::new(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::InvalidCast { from: checked_base.r#type.clone(), to: target_type.clone() },
-                    ));
-                    return None;
+                // The str/byte-slice family (`*str`/`*[u8]`/`*[i8]`) is
+                // tried first: a fat pointer doesn't fit `cast_class`'s
+                // scalar-width model at all (`Str`/`Slice` both return
+                // `None` from it), so this is genuinely separate machinery,
+                // not an extension of the numeric path below.
+                let cast_kind = if let Some(kind) = Self::byte_pointer_cast_kind(&checked_base.r#type, &target_type) {
+                    kind
+                } else {
+                    let (Some(source_class), Some(target_class)) =
+                        (checked_base.r#type.cast_class(), target_type.cast_class())
+                    else {
+                        self.errors.push(AnalysisError::new(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::InvalidCast {
+                                from: checked_base.r#type.clone(),
+                                to: target_type.clone(),
+                            },
+                        ));
+                        return None;
+                    };
+                    Self::resolve_cast_kind(source_class, target_class)
                 };
-
-                let cast_kind = Self::resolve_cast_kind(source_class, target_class);
                 if cast_kind == CastKind::Reinterpret && checked_base.r#type == target_type {
                     self.warn(node_id, span, AnalysisWarningKind::NoOpCast { r#type: target_type.clone() });
                 }
@@ -4087,6 +4123,34 @@ impl<'r> Analyzer<'r> {
                 }
             }
         }
+    }
+
+    /// The str/byte-slice family's cast resolution -- a fat pointer
+    /// (`Str`/`Slice{item:U8|I8}`) never has a `cast_class` (it doesn't fit
+    /// the scalar-width model at all), so this is genuinely separate
+    /// machinery from `resolve_cast_kind` above, not an extension of it.
+    /// Two directions only: fat-to-fat is always a `Reinterpret` (every
+    /// member already shares the identical `[ptr, len]` leaf shape, so
+    /// there's nothing to actually convert); fat-to-thin
+    /// (`*u8`/`*i8`) is `DropLength`. No reverse (thin-to-fat) --
+    /// fabricating a length from a bare pointer isn't a cast, it's
+    /// conjuring data that isn't there, so it's simply not offered.
+    fn byte_pointer_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
+        fn is_byte_run(t: &ResolvedType) -> bool {
+            matches!(t, ResolvedType::Str { .. })
+                || matches!(t, ResolvedType::Slice { item, .. } if matches!(**item, ResolvedType::U8 | ResolvedType::I8))
+        }
+        if !is_byte_run(source) {
+            return None;
+        }
+        if is_byte_run(target) {
+            return Some(CastKind::Reinterpret);
+        }
+        if matches!(target, ResolvedType::Pointer { pointee, .. } if matches!(**pointee, ResolvedType::U8 | ResolvedType::I8))
+        {
+            return Some(CastKind::DropLength);
+        }
+        None
     }
 
     /// `match scrutinee { pattern => body, ... } else { ... }` -- both an
@@ -5880,8 +5944,10 @@ impl<'r> Analyzer<'r> {
             || matches!(r#type, ResolvedType::Bool | ResolvedType::Char)
             // A string constant's own type is always immutable (see
             // `HirExpr::String`'s arm in `analyze_expr`), so only an
-            // immutable `*u8` header field could ever accept one anyway.
-            || matches!(r#type, ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8)
+            // immutable `*str` header field could ever accept one anyway.
+            // No recursion needed (unlike `Slice`/`SizedArray` below) --
+            // `Str` has no `item` to check.
+            || matches!(r#type, ResolvedType::Str { mutable: false })
             // A compile-time slice (`&[...]`) is likewise always immutable
             // -- see `ConstValue::Slice`.
             || matches!(r#type, ResolvedType::Slice { item, mutable: false } if Self::const_representable(item))
@@ -5918,9 +5984,7 @@ impl<'r> Analyzer<'r> {
                 }
             },
             HirExpr::String(s) => match expected {
-                ResolvedType::Pointer { pointee, mutable: false } if **pointee == ResolvedType::U8 => {
-                    Some(ConstValue::Str(s.0.clone()))
-                }
+                ResolvedType::Str { mutable: false } => Some(ConstValue::Str(s.0.clone())),
                 _ => mismatch(self, "a string literal"),
             },
             HirExpr::Bool(b) => match expected {

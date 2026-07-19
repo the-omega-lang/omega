@@ -451,8 +451,9 @@ pub fn estimate_type_size(r#type: &ResolvedType) -> u32 {
         // `omega_codegen`'s identical `SizedArray` leaf-flattening).
         ResolvedType::SizedArray(item, size) => estimate_type_size(item) * size,
         // A fat pointer: a data pointer plus an `i32` length (see
-        // `omega_codegen`'s `IntoIRType` for `Slice`).
-        ResolvedType::Slice { .. } => 12,
+        // `omega_codegen`'s `IntoIRType` for `Slice`/`Str` -- identical
+        // leaf shape for both).
+        ResolvedType::Slice { .. } | ResolvedType::Str { .. } => 12,
         _ => 0,
     }
 }

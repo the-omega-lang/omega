@@ -428,7 +428,7 @@ impl<'a> Lexer<'a> {
     fn scan_token(&mut self, c: char, start: usize) -> Result<TokenKind, ParseError> {
         match c {
             '$' => self.scan_metavar(start),
-            '"' => self.scan_string(start),
+            '"' => self.scan_string_or_multiline(start),
             // `b"..."` -- checked ahead of the general `is_ident_start`
             // branch below (`'b'` would otherwise just start an ordinary
             // identifier); only committed when a `"` immediately follows,
@@ -436,8 +436,8 @@ impl<'a> Lexer<'a> {
             // (`bar`, `byte_count`, ...), is untouched.
             'b' if self.peek_at(1) == Some('"') => {
                 self.advance(); // 'b'
-                let TokenKind::Str(s) = self.scan_string(start)? else {
-                    unreachable!("scan_string always produces a Str token")
+                let TokenKind::Str(s) = self.scan_string_or_multiline(start)? else {
+                    unreachable!("scan_string_or_multiline always produces a Str token")
                 };
                 Ok(TokenKind::ByteStr(s))
             }
@@ -641,6 +641,66 @@ impl<'a> Lexer<'a> {
         false
     }
 
+    /// Dispatches between an ordinary single-quote string (`scan_string`,
+    /// completely unchanged below -- this is what makes today's `""`
+    /// (empty string, immediately followed by whatever's next) keep
+    /// working with zero special-casing: a run of exactly 2 never reaches
+    /// the multi-line path at all) and a multi-line string (`"""..."""`,
+    /// N >= 3 quotes). Mirrors `skip_comment`'s own hashes-counting
+    /// dispatch, parameterized by `"` instead of `#`, with two
+    /// differences: N must additionally be odd here (an even count is
+    /// rejected with a dedicated diagnostic rather than silently
+    /// reinterpreted, since it could otherwise be confused with two
+    /// shorter, separately-closed runs), and content is accumulated into
+    /// a `String` instead of discarded. Shared by both `scan_token` call
+    /// sites (`"..."` and `b"..."`) so `b"""..."""` gets identical
+    /// treatment to `"""..."""` rather than silently mis-lexing.
+    fn scan_string_or_multiline(&mut self, start: usize) -> Result<TokenKind, ParseError> {
+        let quote_run = self.source[self.pos..].chars().take_while(|&c| c == '"').count();
+        if quote_run < 3 {
+            return self.scan_string(start);
+        }
+        for _ in 0..quote_run {
+            self.advance();
+        }
+        if quote_run % 2 == 0 {
+            self.errors.push(ParseError::new(
+                self.span_from(start),
+                ParseErrorKind::EvenMultilineStringDelimiter { count: quote_run },
+            ));
+        }
+        // No backslash-escape processing here, unlike `scan_string` below
+        // -- raw/verbatim content, matching multi-line comments exactly
+        // (which have none at all). This also means there's no ambiguity
+        // to resolve about whether an escaped quote should count toward a
+        // terminating run, the way an ordinary string has to.
+        let mut content = String::new();
+        loop {
+            match self.peek() {
+                None => return Err(ParseError::new(self.span_from(start), ParseErrorKind::UnterminatedString)),
+                Some('"') => {
+                    let run_start = self.pos;
+                    let mut run = 0usize;
+                    while self.peek() == Some('"') {
+                        self.advance();
+                        run += 1;
+                    }
+                    if run == quote_run {
+                        return Ok(TokenKind::Str(content));
+                    }
+                    // Not a match -- exact-run-only, same as `skip_comment`
+                    // (no prefix/greedy matching) -- these quotes are
+                    // ordinary literal content.
+                    content.push_str(&self.source[run_start..self.pos]);
+                }
+                Some(c) => {
+                    content.push(c);
+                    self.advance();
+                }
+            }
+        }
+    }
+
     fn scan_string(&mut self, start: usize) -> Result<TokenKind, ParseError> {
         self.advance(); // opening quote
         let mut content = String::new();
@@ -787,5 +847,80 @@ impl<'a> Lexer<'a> {
             .and_then(char::from_u32)
             .map(Some)
             .ok_or_else(|| ParseError::new(self.span_from(literal_start), ParseErrorKind::InvalidUnicodeEscape(hex)))
+    }
+}
+
+#[cfg(test)]
+mod multiline_string_tests {
+    use super::{TokenKind, lex};
+    use crate::diagnostics::ParseErrorKind;
+
+    fn single_str_token(source: &str) -> (TokenKind, Vec<ParseErrorKind>) {
+        let lexed = lex(source);
+        let errors: Vec<ParseErrorKind> = lexed.errors.into_iter().map(|e| e.kind).collect();
+        assert_eq!(lexed.tokens.len(), 2, "expected exactly one Str token then Eof, got {:?}", lexed.tokens);
+        (lexed.tokens[0].kind.clone(), errors)
+    }
+
+    #[test]
+    fn ordinary_string_unaffected() {
+        let (kind, errors) = single_str_token(r#""hello""#);
+        assert_eq!(kind, TokenKind::Str("hello".to_string()));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn empty_string_unaffected() {
+        // A bare `""` must never be swept into the multi-line path.
+        let (kind, errors) = single_str_token(r#""""#);
+        assert_eq!(kind, TokenKind::Str(String::new()));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn three_quote_multiline_closes_on_matching_run() {
+        let (kind, errors) = single_str_token("\"\"\"hello\"\"\"");
+        assert_eq!(kind, TokenKind::Str("hello".to_string()));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn mismatched_inner_run_is_literal_content() {
+        // A run of 2 quotes inside a 3-quote-delimited string doesn't
+        // terminate it -- straight from the user's own worked example.
+        let (kind, errors) = single_str_token("\"\"\"a (\"\") b\"\"\"");
+        assert_eq!(kind, TokenKind::Str("a (\"\") b".to_string()));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn nine_quote_multiline_with_seven_quote_run_inside() {
+        // The user's second worked example: opening with 9 quotes, a run
+        // of 7 inside must not terminate it.
+        let source = "\"\"\"\"\"\"\"\"\"middle \"\"\"\"\"\"\" end\"\"\"\"\"\"\"\"\"";
+        let (kind, errors) = single_str_token(source);
+        assert_eq!(kind, TokenKind::Str("middle \"\"\"\"\"\"\" end".to_string()));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn even_count_delimiter_is_a_dedicated_error_but_still_produces_a_token() {
+        let (kind, errors) = single_str_token("\"\"\"\"content\"\"\"\"");
+        assert_eq!(kind, TokenKind::Str("content".to_string()));
+        assert_eq!(errors, vec![ParseErrorKind::EvenMultilineStringDelimiter { count: 4 }]);
+    }
+
+    #[test]
+    fn unterminated_multiline_string_errors() {
+        let lexed = lex("\"\"\"never closes");
+        assert!(matches!(lexed.tokens[0].kind, TokenKind::Eof) || lexed.tokens.len() == 1);
+        assert!(matches!(lexed.errors.last().map(|e| &e.kind), Some(ParseErrorKind::UnterminatedString)));
+    }
+
+    #[test]
+    fn byte_string_multiline_works_identically() {
+        let lexed = lex("b\"\"\"hello\"\"\"");
+        assert_eq!(lexed.tokens[0].kind, TokenKind::ByteStr("hello".to_string()));
+        assert!(lexed.errors.is_empty());
     }
 }

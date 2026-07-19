@@ -462,10 +462,12 @@ pub struct CheckedUnionConstruct {
     pub value: Box<CheckedExprNode>,
 }
 
-/// See `CheckedExpr::Cast`. Every castable type flattens to exactly one IR
-/// leaf (numeric or pointer), so this never touches the multi-leaf
-/// flattening machinery at all -- codegen is a single instruction (or none,
-/// for `CastKind::Reinterpret`) applied to `base`'s own one leaf.
+/// See `CheckedExpr::Cast`. Most castable types flatten to exactly one IR
+/// leaf (numeric or thin pointer), needing a single instruction (or none,
+/// for `CastKind::Reinterpret`) applied to `base`'s own one leaf -- the
+/// str/byte-slice family (`ResolvedType::Str`/`Slice{item:U8|I8}`) is the
+/// exception, at two leaves (`[ptr, len]`); see `CastKind::Reinterpret`/
+/// `DropLength`'s own doc comments for how each handles that.
 #[derive(Debug, Clone)]
 pub struct CheckedCast {
     pub kind: CastKind,
@@ -473,16 +475,23 @@ pub struct CheckedCast {
     pub base: Box<CheckedExprNode>,
 }
 
-/// Exactly which conversion a cast needs, already resolved from both
-/// sides' `ResolvedType::cast_class` -- codegen never re-derives this, it
-/// just picks the one Cranelift instruction (or none) each variant maps to.
+/// Exactly which conversion a cast needs, resolved from either both sides'
+/// `ResolvedType::cast_class` (the numeric/pointer family) or the
+/// dedicated str/byte-slice family check (`Analyzer::byte_pointer_cast_kind`,
+/// since a fat pointer doesn't fit `cast_class`'s scalar-width model) --
+/// codegen never re-derives this, it just picks the one Cranelift
+/// instruction (or leaf-selection, for `Reinterpret`/`DropLength`) each
+/// variant maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
     /// No instruction needed at all -- source and target already share the
-    /// same underlying IR representation: same-width int-family (regardless
-    /// of Omega-level signedness -- Cranelift has no separate signed/
-    /// unsigned integer *types*, only signed/unsigned *operations*, and a
-    /// pointer uses that same width-64 type too), or identical float width.
+    /// same underlying IR representation. For the numeric/pointer family:
+    /// same-width int-family (regardless of Omega-level signedness --
+    /// Cranelift has no separate signed/unsigned integer *types*, only
+    /// signed/unsigned *operations*, and a pointer uses that same width-64
+    /// type too), or identical float width -- one leaf, unchanged. For the
+    /// str/byte-slice family (`*str`/`*[u8]`/`*[i8]`, all `[ptr, len]`):
+    /// both leaves, unchanged -- e.g. `<*[u8]>a_str_slice`.
     Reinterpret,
     IntExtend { signed: bool },
     IntTruncate,
@@ -493,6 +502,13 @@ pub enum CastKind {
     FloatToInt { signed: bool },
     FloatExtend,
     FloatTruncate,
+    /// The str/byte-slice family's only other cast direction: fat pointer
+    /// (`*str`/`*[u8]`/`*[i8]`, `[ptr, len]`) down to a thin one (`*u8`/
+    /// `*i8`) -- keeps the pointer leaf, discards the length leaf. There is
+    /// no reverse (thin pointer up to a fat one): that would need a length
+    /// from somewhere a bare pointer can never supply, so it's not a cast
+    /// at all, just not offered.
+    DropLength,
 }
 
 /// See `CheckedExpr::EnumConstruct`.
