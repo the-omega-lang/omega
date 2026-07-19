@@ -332,6 +332,7 @@ dependencies = [
  "cranelift-reader",
  "omega-analyzer",
  "omega-hir",
+ "omega-mangle",
  "omega-parser",
  "target-lexicon",
 ]
@@ -356,6 +357,10 @@ version = "0.1.0"
 dependencies = [
  "omega-parser",
 ]
+
+[[package]]
+name = "omega-mangle"
+version = "0.1.0"
 
 [[package]]
 name = "omega-parser"

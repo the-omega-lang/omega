@@ -1,0 +1,10 @@
+[package]
+name = "omega-mangle"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bin]]
+name = "omg-demangle"
+path = "src/bin/omg_demangle.rs"

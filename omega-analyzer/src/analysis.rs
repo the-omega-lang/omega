@@ -6131,7 +6131,7 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        Some(CheckedEnumDef { id: e.id, span: e.span, name: e.name.clone(), functions })
+        Some(CheckedEnumDef { id: e.id, span: e.span, name: e.name.clone(), type_args: vec![], functions })
     }
 
     /// Checks a function's (or method's) *body* only -- its signature *and*
@@ -6195,6 +6195,7 @@ impl<'r> Analyzer<'r> {
             id,
             span: f.span,
             name: f.name.clone(),
+            type_args: vec![],
             self_mode: f.self_mode,
             is_variadic: false,
             params,
@@ -6292,7 +6293,7 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), fields, functions })
+        Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), type_args: vec![], fields, functions })
     }
 
     /// Checks a union's methods' *bodies* only -- identical contract to
@@ -6333,7 +6334,7 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        Some(CheckedUnionDef { id: u.id, span: u.span, name: u.name.clone(), fields, functions })
+        Some(CheckedUnionDef { id: u.id, span: u.span, name: u.name.clone(), type_args: vec![], fields, functions })
     }
 }
 

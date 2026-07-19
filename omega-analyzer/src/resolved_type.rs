@@ -51,6 +51,20 @@ pub struct ResolvedMethod {
 pub struct ResolvedStructType {
     pub id: HirId,
     pub name: Ident,
+    /// The absolute path of the module this struct is declared in --
+    /// needed for the same reason `type_args` is (see its doc comment):
+    /// a reference to this type from anywhere else only ever sees this
+    /// cell, never the declaration site itself, and mangling a full
+    /// symbol needs a full path, not just a bare name.
+    pub module_path: Vec<Ident>,
+    /// The concrete generic arguments this cell was instantiated with --
+    /// empty for a non-generic struct. This is what lets a *reference* to
+    /// this type from somewhere else (a field, a parameter, a return
+    /// type -- anywhere that only ever sees this `Rc<RefCell<_>>` cell,
+    /// never the original declaration site) still be mangled with its
+    /// generic arguments intact; see `omega_driver::Driver::struct_cell`,
+    /// this field's only writer.
+    pub type_args: Vec<ResolvedType>,
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     /// `@layout(...)`'s resolved `pack`/`align` -- `{1, 1}` (today's
@@ -99,6 +113,10 @@ impl Hash for ResolvedStructType {
 pub struct ResolvedUnionType {
     pub id: HirId,
     pub name: Ident,
+    /// See `ResolvedStructType::module_path`'s doc comment.
+    pub module_path: Vec<Ident>,
+    /// See `ResolvedStructType::type_args`'s doc comment.
+    pub type_args: Vec<ResolvedType>,
     pub fields: Vec<(Ident, ResolvedType)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     /// See `ResolvedStructType::suppress`'s doc comment. Unions don't
@@ -132,6 +150,10 @@ impl Hash for ResolvedUnionType {
 pub struct ResolvedEnumType {
     pub id: HirId,
     pub name: Ident,
+    /// See `ResolvedStructType::module_path`'s doc comment.
+    pub module_path: Vec<Ident>,
+    /// See `ResolvedStructType::type_args`'s doc comment.
+    pub type_args: Vec<ResolvedType>,
     /// Always an integer type -- `U16` for an implicit tag; whatever the
     /// header's leading `tag:` entry declared for an explicit one. Kept as
     /// a full `ResolvedType` (not a width/signedness pair) deliberately:
@@ -225,6 +247,12 @@ pub struct ResolvedSpecType {
     pub id: HirId,
     pub name: Ident,
     pub generics: Vec<Ident>,
+    /// See `ResolvedStructType::module_path`'s doc comment.
+    pub module_path: Vec<Ident>,
+    /// See `ResolvedStructType::type_args`'s doc comment -- the concrete
+    /// arguments `generics` was substituted with, empty for a
+    /// non-generic spec.
+    pub type_args: Vec<ResolvedType>,
     pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
 }

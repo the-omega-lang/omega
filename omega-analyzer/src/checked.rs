@@ -115,6 +115,15 @@ pub struct CheckedFunctionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
+    /// The concrete generic arguments this instantiation was checked
+    /// with -- empty for a non-generic function/method. Populated by
+    /// `omega_driver::Driver::check_item_body`, the only place that has
+    /// both the `type_args` slice and the freshly-built `CheckedItem` in
+    /// scope at once; needed so `omega_codegen` can mangle *this*
+    /// declaration's own symbol with its generic arguments (see
+    /// `ResolvedStructType::type_args`'s doc comment for the analogous
+    /// problem on the *referenced*-type side).
+    pub type_args: Vec<ResolvedType>,
     /// See `ResolvedFunctionType::self_mode`.
     pub self_mode: Option<SelfMode>,
     pub is_variadic: bool,
@@ -155,6 +164,8 @@ pub struct CheckedStructDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
+    /// See `CheckedFunctionDef::type_args`'s doc comment.
+    pub type_args: Vec<ResolvedType>,
     pub fields: Vec<CheckedParam>,
     pub functions: Vec<CheckedFunctionDef>,
 }
@@ -166,6 +177,8 @@ pub struct CheckedUnionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
+    /// See `CheckedFunctionDef::type_args`'s doc comment.
+    pub type_args: Vec<ResolvedType>,
     pub fields: Vec<CheckedParam>,
     pub functions: Vec<CheckedFunctionDef>,
 }
@@ -181,6 +194,8 @@ pub struct CheckedEnumDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
+    /// See `CheckedFunctionDef::type_args`'s doc comment.
+    pub type_args: Vec<ResolvedType>,
     pub functions: Vec<CheckedFunctionDef>,
 }
 

@@ -32,6 +32,7 @@ use omega_hir::{BinaryOp, HirId};
 use omega_parser::prelude::Ident;
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
+mod mangle;
 mod target;
 pub use target::{Arch, Os, Target, TargetParseError};
 
@@ -1648,11 +1649,7 @@ impl Codegen {
         }
         desc.define(bytes.into_boxed_slice());
 
-        let symbol = Self::demangle(&format!(
-            "{}::{}$$vtable",
-            concrete_name.as_ref(),
-            spec.borrow().name.as_ref()
-        ));
+        let symbol = mangle::encode(&mangle::vtable_symbol(concrete, &spec.borrow().name));
         let data_id = self.module.declare_data(&symbol, Linkage::Local, false, false).unwrap();
         self.module.define_data(data_id, &desc).unwrap();
 
@@ -2601,63 +2598,6 @@ impl Codegen {
             .expect("checked module guarantees a break/continue's loop_id is a currently-enclosing loop")
     }
 
-    fn demangle(symbol: &str) -> String {
-        if !symbol.contains("::") {
-            return symbol.to_owned();
-        }
-
-        format!("___omg_{}", symbol.replace("::", "_"))
-    }
-
-    /// A `(path, name)` pair alone no longer uniquely identifies a compiled
-    /// function: two different instantiations of the same generic function/
-    /// method share both, but must never share a link-time symbol -- and
-    /// neither do two overloads sharing a name in one real module (see
-    /// `omega_analyzer::resolver::ModuleResolver::function_overload_signatures`).
-    /// `id.local` is unique within its own module regardless of *why* two
-    /// items share a name (a generic instantiation's synthetic id, or two
-    /// ordinary overloads' real ones), so appending it unconditionally is
-    /// what makes every case collision-free at once -- these mangled names
-    /// are entirely internal/opaque (never typed by a human, never an
-    /// external symbol other than the one `main` exception below), so this
-    /// has no observable effect on program behavior.
-    fn instantiation_suffix(id: HirId) -> String {
-        format!("$${}", id.local)
-    }
-
-    /// A top-level function's mangled symbol -- its full module path plus its
-    /// own name, except the program's literal entry point (`main`, in the
-    /// `entry` module), which must keep the bare unmangled symbol `"main"`
-    /// the OS/linker looks for. Every *other* function, including other
-    /// entry-module functions, gets module-path-qualified: these mangled
-    /// names are entirely internal/opaque (never typed by a human, never an
-    /// external symbol), so changing them from today's single-module scheme
-    /// has no observable effect on program behavior.
-    fn mangled_symbol(path: &[Ident], entry: &[Ident], name: &Ident, id: HirId) -> String {
-        if path == entry && name.as_ref() == "main" {
-            return "main".to_string();
-        }
-        format!(
-            "{}::{}{}",
-            path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
-            name.as_ref(),
-            Self::instantiation_suffix(id)
-        )
-    }
-
-    /// A struct method's mangled symbol -- same reasoning as
-    /// `mangled_symbol`, but a method is never itself the program's entry
-    /// point, so there's no bare-symbol exception to check for here.
-    fn mangled_method_symbol(path: &[Ident], struct_name: &Ident, method_name: &Ident, id: HirId) -> String {
-        format!(
-            "{}::{}::{}{}",
-            path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
-            struct_name.as_ref(),
-            method_name.as_ref(),
-            Self::instantiation_suffix(id)
-        )
-    }
-
     /// A function/method's cranelift `Signature`, built the same way
     /// regardless of whether it's being declared (pass 1) or defined (pass
     /// 2) -- and, crucially, the same way *call sites* build it: one
@@ -2677,16 +2617,15 @@ impl Codegen {
     /// either import direction would panic the first time one module's body
     /// needed another module's not-yet-declared `FuncId` (see the plan's
     /// "codegen declare/define split" note).
-    fn declare_function_def(&mut self, function_def: &CheckedFunctionDef, mangled_symbol: String) -> FuncId {
+    fn declare_function_def(&mut self, function_def: &CheckedFunctionDef, symbol: String) -> FuncId {
         let sig = self.function_signature(function_def);
-        let demangled_symbol = Self::demangle(&mangled_symbol);
 
-        if let Some(&existing_id) = self.declared_symbols.get(&demangled_symbol)
+        if let Some(&existing_id) = self.declared_symbols.get(&symbol)
             && existing_id != function_def.id
         {
             self.symbol_error.get_or_insert_with(|| {
                 format!(
-                    "two different functions both produce the linker symbol '{demangled_symbol}' -- this can \
+                    "two different functions both produce the linker symbol '{symbol}' -- this can \
                      happen when '@mangling(disabled)' is used on more than one function with the same name; \
                      give one of them a different name, or re-enable mangling"
                 )
@@ -2704,16 +2643,11 @@ impl Codegen {
             self.functions.insert(function_def.id, existing_function_id);
             return existing_function_id;
         }
-        self.declared_symbols.insert(demangled_symbol.clone(), function_def.id);
+        self.declared_symbols.insert(symbol.clone(), function_def.id);
 
-        let function_id = self
-            .module
-            .declare_function(&demangled_symbol, Linkage::Import, &sig)
-            .unwrap();
+        let function_id = self.module.declare_function(&symbol, Linkage::Import, &sig).unwrap();
 
-        self.module
-            .declare_function(&demangled_symbol, Linkage::Export, &sig)
-            .unwrap();
+        self.module.declare_function(&symbol, Linkage::Export, &sig).unwrap();
 
         self.functions.insert(function_def.id, function_id);
         function_id
@@ -2744,17 +2678,20 @@ impl Codegen {
             (ManglingMode::Disabled, ExternFunctionKind::Method { .. }) => {
                 unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
             }
+            // `collect_extern_functions` only ever surfaces non-generic
+            // extern items (a generic reached through `--extern` is always
+            // fully recompiled locally instead), so there's no owner/free
+            // generic-args data to pass here -- always `&[]`.
             (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
-                Self::mangled_symbol(&extern_fn.module_path, &[], name, extern_fn.decl_id)
+                mangle::encode(&mangle::free_function_symbol(&extern_fn.module_path, name, &[], &extern_fn.fn_type))
             }
-            (ManglingMode::Enabled, ExternFunctionKind::Method { type_name, method_name }) => {
-                Self::mangled_method_symbol(&extern_fn.module_path, type_name, method_name, extern_fn.decl_id)
-            }
+            (ManglingMode::Enabled, ExternFunctionKind::Method { type_name, method_name }) => mangle::encode(
+                &mangle::method_symbol(&extern_fn.module_path, type_name, &[], method_name, &extern_fn.fn_type),
+            ),
         };
         let sig = self.make_function_sig(extern_fn.fn_type.clone());
-        let demangled = Self::demangle(&mangled);
 
-        let function_id = self.module.declare_function(&demangled, Linkage::Import, &sig).unwrap();
+        let function_id = self.module.declare_function(&mangled, Linkage::Import, &sig).unwrap();
         self.functions.insert(extern_fn.decl_id, function_id);
     }
 
@@ -2957,27 +2894,39 @@ impl Codegen {
                 // settled by the time codegen sees one), so only a
                 // top-level, non-generic function ever gets here with
                 // `Disabled`.
+                //
+                // The program's literal entry point (`main`, in the entry
+                // module) keeps the bare, unmangled symbol the OS/linker
+                // looks for -- checked here, before a `Symbol` is even
+                // built, rather than inside `mangle::free_function_symbol`,
+                // which only ever needs to know how to name a real symbol.
                 let mangled = match f.mangling {
                     ManglingMode::Disabled => f.name.as_ref().to_string(),
-                    ManglingMode::Enabled => Self::mangled_symbol(path, entry, &f.name, f.id),
+                    ManglingMode::Enabled if path == entry && f.name.as_ref() == "main" => "main".to_string(),
+                    ManglingMode::Enabled => {
+                        mangle::encode(&mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()))
+                    }
                 };
                 self.declare_function_def(f, mangled);
             }
             CheckedItem::Struct(s) => {
                 for f in &s.functions {
-                    let mangled = Self::mangled_method_symbol(path, &s.name, &f.name, f.id);
+                    let mangled =
+                        mangle::encode(&mangle::method_symbol(path, &s.name, &s.type_args, &f.name, &f.fn_type()));
                     self.declare_function_def(f, mangled);
                 }
             }
             CheckedItem::Enum(e) => {
                 for f in &e.functions {
-                    let mangled = Self::mangled_method_symbol(path, &e.name, &f.name, f.id);
+                    let mangled =
+                        mangle::encode(&mangle::method_symbol(path, &e.name, &e.type_args, &f.name, &f.fn_type()));
                     self.declare_function_def(f, mangled);
                 }
             }
             CheckedItem::Union(u) => {
                 for f in &u.functions {
-                    let mangled = Self::mangled_method_symbol(path, &u.name, &f.name, f.id);
+                    let mangled =
+                        mangle::encode(&mangle::method_symbol(path, &u.name, &u.type_args, &f.name, &f.fn_type()));
                     self.declare_function_def(f, mangled);
                 }
             }

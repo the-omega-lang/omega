@@ -989,6 +989,8 @@ impl Driver {
                 Rc::new(RefCell::new(ResolvedStructType {
                     id,
                     name: key.1.clone(),
+                    module_path: key.0.clone(),
+                    type_args: key.2.clone(),
                     fields: vec![],
                     functions: vec![],
                     layout: Default::default(),
@@ -1008,6 +1010,8 @@ impl Driver {
                 Rc::new(RefCell::new(ResolvedEnumType {
                     id,
                     name: key.1.clone(),
+                    module_path: key.0.clone(),
+                    type_args: key.2.clone(),
                     tag_type: ResolvedType::U16,
                     header: vec![],
                     dynamic_fields: vec![],
@@ -1029,6 +1033,8 @@ impl Driver {
                 Rc::new(RefCell::new(ResolvedUnionType {
                     id,
                     name: key.1.clone(),
+                    module_path: key.0.clone(),
+                    type_args: key.2.clone(),
                     fields: vec![],
                     functions: vec![],
                     suppress: vec![],
@@ -1324,6 +1330,8 @@ impl Driver {
                         id,
                         name: sp.name.clone(),
                         generics,
+                        module_path: module_path.to_vec(),
+                        type_args: type_args.to_vec(),
                         dependencies,
                         functions,
                     }));
@@ -1405,7 +1413,10 @@ impl Driver {
                 if !errors.is_empty() {
                     self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
                 }
-                checked.map(|c| (CheckedItem::FunctionDefinition(c), warnings))
+                checked.map(|mut c| {
+                    c.type_args = type_args.to_vec();
+                    (CheckedItem::FunctionDefinition(c), warnings)
+                })
             }
             HirItem::Struct(s) => {
                 let cell = self.struct_cells.get(&key).expect("resolved in phase 1").clone();
@@ -1423,6 +1434,7 @@ impl Driver {
                 warnings.extend(spec_warnings);
                 checked.map(|mut c| {
                     c.functions.extend(spec_functions);
+                    c.type_args = type_args.to_vec();
                     (CheckedItem::Struct(c), warnings)
                 })
             }
@@ -1442,6 +1454,7 @@ impl Driver {
                 warnings.extend(spec_warnings);
                 checked.map(|mut c| {
                     c.functions.extend(spec_functions);
+                    c.type_args = type_args.to_vec();
                     (CheckedItem::Enum(c), warnings)
                 })
             }
@@ -1461,6 +1474,7 @@ impl Driver {
                 warnings.extend(spec_warnings);
                 checked.map(|mut c| {
                     c.functions.extend(spec_functions);
+                    c.type_args = type_args.to_vec();
                     (CheckedItem::Union(c), warnings)
                 })
             }
