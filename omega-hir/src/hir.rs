@@ -5,7 +5,9 @@ use crate::ids::HirId;
 // `Type` because they only ever go through field access, never pattern
 // match on those.
 pub use omega_parser::prelude::{BinaryOp, ImportRoot};
-use omega_parser::prelude::{ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, Span, StringExpr, Type};
+use omega_parser::prelude::{
+    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, SelfMode, Span, StringExpr, Type,
+};
 
 /// A lowered `@name(args)` annotation -- mechanical clone of `omega_parser`'s
 /// `AnnotationNode`/`AnnotationArg` (see their doc comments), unvalidated:
@@ -124,10 +126,12 @@ pub struct HirFunctionDef {
     /// `omega_parser::ast::statement::function_definition::
     /// FunctionDefinitionStmt::generics`'s doc comment.
     pub generics: Vec<HirGenericParam>,
-    pub is_member_function: bool,
-    /// For member functions, the synthetic `self: *StructName` parameter is
-    /// already inserted here by lowering -- downstream consumers never need
-    /// to special-case it.
+    /// `None` for an ordinary, non-member function; `Some` for a
+    /// struct/enum/union method -- see `SelfMode`.
+    pub self_mode: Option<SelfMode>,
+    /// For member functions, the synthetic `self: StructName`/`*StructName`
+    /// parameter (shape depending on `self_mode`) is already inserted here
+    /// by lowering -- downstream consumers never need to special-case it.
     pub params: Vec<HirParam>,
     pub return_type: Type,
     pub body: HirBlock,
@@ -145,7 +149,7 @@ impl HirFunctionDef {
             params,
             return_type: Box::new(self.return_type.clone()),
             is_variadic: false,
-            is_member_function: self.is_member_function,
+            self_mode: self.self_mode,
         }
     }
 }
@@ -260,7 +264,11 @@ pub struct HirSpecFunction {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub is_member_function: bool,
+    /// `None` for an ordinary, non-member function; `Some` for a spec
+    /// method -- see `SelfMode`. Always `Pointer`/`MutPointer` in practice
+    /// (by-value self is rejected during spec signature resolution, since
+    /// it can't survive `spec *T` dynamic dispatch's `Self`-erasure).
+    pub self_mode: Option<SelfMode>,
     /// For a member function, the synthetic `self: *Self`/`*mut Self`
     /// parameter is already inserted here by lowering, exactly like an
     /// ordinary method's -- see `lower_function_def`'s spec-aware case.

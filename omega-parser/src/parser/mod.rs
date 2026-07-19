@@ -224,3 +224,51 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
     }
     Some(crate::ast::identifier::Path { head, tail })
 }
+
+/// `self` / `mut self` / `*self` / `*mut self` -- the four ways a member
+/// function's `self` parameter can be spelled, shared by both parameter-list
+/// parsers (`parser::item::parse_param_list` for real function/method
+/// definitions, `parser::type::parse_param_list` for member-function type
+/// annotations). Returns `None` (consuming nothing) if what follows isn't
+/// one of these four shapes, so callers fall through to ordinary
+/// parameter-list parsing untouched.
+pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode> {
+    use crate::ast::self_mode::SelfMode;
+
+    // '*' can never legally start an ordinary `ident: Type` parameter (a
+    // parameter always starts with its own name), so eating it here is
+    // unambiguous -- but once eaten, only `self`/`mut self` may follow;
+    // anything else is a real, specific parse error rather than a silent
+    // fallback, since that's a strictly better diagnostic than letting
+    // parsing continue and fail later with a generic "expected an
+    // identifier".
+    let by_pointer = p.eat(&TokenKind::Star);
+    // Mirrors the pre-existing `mut self` lookahead exactly: `mut` must NOT
+    // be eaten until `self` is confirmed at peek_at(1), because `mut` is a
+    // legal ordinary identifier (e.g. an unrelated parameter literally
+    // named `mut`) everywhere outside this exact position.
+    let mutable = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+        && matches!(p.peek_at(1), TokenKind::Ident(name) if name == "self")
+    {
+        p.advance(); // 'mut'
+        true
+    } else {
+        false
+    };
+    if let TokenKind::Ident(name) = p.peek()
+        && name == "self"
+    {
+        p.advance();
+        return Some(match (by_pointer, mutable) {
+            (false, false) => SelfMode::Value,
+            (false, true) => SelfMode::MutValue,
+            (true, false) => SelfMode::Pointer,
+            (true, true) => SelfMode::MutPointer,
+        });
+    }
+    if by_pointer {
+        p.error(ParseErrorKind::Expected { expected: "'self' after '*'/'*mut'", found: p.peek().describe() });
+    }
+    None
+}

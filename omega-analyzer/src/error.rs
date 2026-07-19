@@ -448,6 +448,13 @@ pub enum AnalysisErrorKind {
     /// means (fewest literal arguments needing a non-default type).
     /// `candidates` lists every *tied* candidate.
     AmbiguousOverload { name: Ident, candidates: Vec<ResolvedFunctionType> },
+    /// Two methods on the same type share a name and, once `self` is set
+    /// aside, the exact same remaining parameter types -- ambiguous, since
+    /// a call site has no syntax to choose between "receives self by
+    /// value" and "receives self by pointer" (see
+    /// `Analyzer::check_overload_duplicates`). Unlike `Redeclaration`, this
+    /// is two deliberately distinct declarations, not a scope collision.
+    AmbiguousSelfOverload { name: Ident, previous: Span },
 
     // -- specs --
     /// A struct/enum/union's `implements` list requires `function` (from
@@ -465,6 +472,13 @@ pub enum AnalysisErrorKind {
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction { spec: Ident, function: Ident },
+    /// A spec function declared with by-value `self`/`mut self` -- rejected
+    /// unconditionally, at the spec's own definition: `spec *T` dynamic
+    /// dispatch erases `Self` down to a single opaque data pointer (see
+    /// `Analyzer::finish_dynamic_dispatch_call`), which has no way to carry
+    /// or reconstruct a full by-value copy of the concrete type. A spec
+    /// function's self must always be `*self`/`*mut self`.
+    SpecSelfMustBePointer { name: Ident },
 
     // -- annotations --
     /// `@some_unknown_name(...)` -- not a recognized annotation at all
@@ -882,6 +896,13 @@ impl AnalysisErrorKind {
                 }
                 d
             }
+            Self::AmbiguousSelfOverload { name, previous } => d
+                .with_label(span, format!("`{}` differs from the other declaration only in how it receives `self`", name.as_ref()))
+                .with_secondary_label(*previous, format!("`{}` first declared here", name.as_ref()))
+                .with_help(
+                    "a call site has no syntax to choose between receiving `self` by value and by pointer -- \
+                     give these methods different names, or make another parameter differ too",
+                ),
             Self::MissingSpecFunction { implementor, spec, function } => d
                 .with_label(span, format!("`{}` does not implement `{}`", implementor.as_ref(), spec.as_ref()))
                 .with_help(format!(
@@ -908,6 +929,13 @@ impl AnalysisErrorKind {
                 span,
                 format!("no function `{}` on spec `{}`", function.as_ref(), spec.as_ref()),
             ),
+            Self::SpecSelfMustBePointer { name } => d
+                .with_label(span, format!("`{}` receives `self` by value", name.as_ref()))
+                .with_help(
+                    "spec functions must receive `self` by pointer (`*self`/`*mut self`) -- `spec *T` dynamic \
+                     dispatch erases the concrete type down to a bare data pointer, which can't carry a \
+                     by-value copy",
+                ),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
             }
@@ -1357,6 +1385,9 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::NoMatchingOverload { name, .. } => write!(f, "no overload of '{}' matches this call", name.as_ref()),
             Self::AmbiguousOverload { name, .. } => write!(f, "ambiguous reference to overloaded '{}'", name.as_ref()),
+            Self::AmbiguousSelfOverload { name, .. } => {
+                write!(f, "'{}' is declared twice, differing only in how it receives 'self'", name.as_ref())
+            }
             Self::MissingSpecFunction { implementor, spec, function } => write!(
                 f,
                 "'{}' does not implement spec '{}': missing '{}'",
@@ -1373,6 +1404,9 @@ impl fmt::Display for AnalysisErrorKind {
             ),
             Self::NoSuchSpecFunction { spec, function } => {
                 write!(f, "no function '{}' on spec '{}'", function.as_ref(), spec.as_ref())
+            }
+            Self::SpecSelfMustBePointer { name } => {
+                write!(f, "spec function '{}' must receive 'self' by pointer", name.as_ref())
             }
             Self::UnknownAnnotation { name } => write!(f, "unknown annotation '@{}'", name.as_ref()),
             Self::AnnotationNotApplicable { name, found, .. } => {

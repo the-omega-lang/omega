@@ -231,7 +231,7 @@ impl Context {
             params,
             return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, true)?),
             is_variadic: fntype.is_variadic,
-            is_member_function: fntype.is_member_function,
+            self_mode: fntype.self_mode,
         })
     }
 

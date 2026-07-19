@@ -13,6 +13,7 @@ pub use crate::ast::expression::{
 pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{ExprPath, Ident, Path};
 pub use crate::ast::range::RangeExpr;
+pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode, declaration::DeclarationStmt,
     defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},

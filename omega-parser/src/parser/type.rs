@@ -1,5 +1,6 @@
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::{FunctionType, Type};
+use crate::ast::self_mode::SelfMode;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, parse_path};
@@ -100,7 +101,7 @@ fn parse_array_size(p: &mut Parser) -> Option<String> {
 
 fn parse_function_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '('
-    let (is_member_function, params) = parse_param_list(p);
+    let (self_mode, params) = parse_param_list(p);
     let is_variadic = if p.eat(&TokenKind::Comma) {
         p.expect(&TokenKind::DotDotDot, "'...'");
         true
@@ -114,23 +115,21 @@ fn parse_function_type(p: &mut Parser) -> Option<Type> {
         params,
         return_type: Box::new(return_type),
         is_variadic,
-        is_member_function,
+        self_mode,
     }))
 }
 
-/// `self` (optionally followed by `, ident: Type, ...`), or just
-/// `ident: Type, ...` -- `self` is a contextual keyword here (see
-/// `lexer::TokenKind`'s doc comment on why it's not a global one), checked
-/// by comparing an already-lexed `Ident`'s text.
-fn parse_param_list(p: &mut Parser) -> (bool, Vec<(Ident, Type)>) {
-    if let TokenKind::Ident(name) = p.peek()
-        && name == "self"
-    {
-        p.advance();
-        let rest = if p.eat(&TokenKind::Comma) { parse_decl_list(p) } else { Vec::new() };
-        return (true, rest);
+/// `self` / `mut self` / `*self` / `*mut self` (optionally followed by `,
+/// ident: Type, ...`), or just `ident: Type, ...` -- see
+/// `crate::parser::parse_self_mode`.
+fn parse_param_list(p: &mut Parser) -> (Option<SelfMode>, Vec<(Ident, Type)>) {
+    match crate::parser::parse_self_mode(p) {
+        Some(mode) => {
+            let rest = if p.eat(&TokenKind::Comma) { parse_decl_list(p) } else { Vec::new() };
+            (Some(mode), rest)
+        }
+        None => (None, parse_decl_list(p)),
     }
-    (false, parse_decl_list(p))
 }
 
 /// Zero or more `ident: Type` pairs, comma-separated -- a comma is only

@@ -13,8 +13,8 @@ use omega_parser::prelude::{
     AnnotationArg, AnnotationNode, AnnotationValue, CodeblockExpr, DeclarationStmt, EnumStmt, Expression,
     ExpressionNode,
     ExternDeclarationStmt,
-    FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Pattern, RangeExpr, Span, SourceModule,
-    SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
+    FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Path, Pattern, RangeExpr, SelfMode, Span,
+    SourceModule, SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -184,13 +184,16 @@ impl Lowerer {
     ) -> HirFunctionDef {
         let mut params = Vec::with_capacity(f.params.len() + 1);
         if let Some(struct_ident) = enclosing_struct
-            && let Some(p) = self.self_param(f.is_member_function, f.self_mutable, struct_ident, span)
+            && let Some(p) = self.self_param(f.self_mode, struct_ident, span)
         {
             params.push(p);
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
 
-        let body = self.lower_block(&f.codeblock);
+        let mut body = self.lower_block(&f.codeblock);
+        if f.self_mode == Some(SelfMode::MutValue) {
+            body.stmts.insert(0, self.self_shadow_stmt(span));
+        }
 
         HirFunctionDef {
             id: self.ids.next(),
@@ -198,36 +201,61 @@ impl Lowerer {
             annotations: Self::lower_annotations(&f.annotations),
             name: f.ident.clone(),
             generics: Self::lower_generics(&f.generics),
-            is_member_function: f.is_member_function,
+            self_mode: f.self_mode,
             params,
             return_type: f.return_type.clone(),
             body,
         }
     }
 
-    /// The synthetic `self: *TypeName`/`*mut TypeName` parameter every
-    /// member function gets, shared between ordinary struct/enum/union
-    /// methods (`type_name` = the owning type's own name) and spec
-    /// functions (`type_name` = the literal identifier `Self`, resolved
-    /// later like any other in-scope type name -- see
-    /// `omega_analyzer::analysis::Analyzer`'s `Self` seeding). `None` for a
-    /// non-member function, so callers can push the result unconditionally
-    /// via `if let Some(p) = ...`.
-    fn self_param(
-        &mut self,
-        is_member_function: bool,
-        self_mutable: bool,
-        type_name: &Ident,
-        span: Span,
-    ) -> Option<HirParam> {
-        if !is_member_function {
-            return None;
-        }
-        Some(HirParam {
+    /// The synthetic `self` parameter every member function gets, shared
+    /// between ordinary struct/enum/union methods (`type_name` = the owning
+    /// type's own name) and spec functions (`type_name` = the literal
+    /// identifier `Self`, resolved later like any other in-scope type name
+    /// -- see `omega_analyzer::analysis::Analyzer`'s `Self` seeding). `None`
+    /// for a non-member function, so callers can push the result
+    /// unconditionally via `if let Some(p) = ...`. The built type depends on
+    /// `self_mode`: `Type::Pointer(Named(type_name), mutable)` for
+    /// `Pointer`/`MutPointer`, or plain `Type::Named(type_name)` for
+    /// `Value`/`MutValue` -- `MutValue`'s local mutability is *not*
+    /// represented here at all, since parameters can never be mutable
+    /// bindings; see `self_shadow_stmt`.
+    fn self_param(&mut self, self_mode: Option<SelfMode>, type_name: &Ident, span: Span) -> Option<HirParam> {
+        let mode = self_mode?;
+        let r#type = if mode.is_pointer() {
+            Type::Pointer(Box::new(Type::Named(type_name.clone().into())), mode.is_mutable())
+        } else {
+            Type::Named(type_name.clone().into())
+        };
+        Some(HirParam { id: self.ids.next(), span, ident: Ident("self".to_string()), r#type })
+    }
+
+    /// Desugars `mut self` (by value) into an implicit `mut self := self;`
+    /// as the body's first statement -- parameters can never be mutable
+    /// bindings themselves (`Analyzer::analyze_param` always declares them
+    /// immutable, and codegen has no support for writing into one), but a
+    /// parameter can always be *shadowed* by a mutable local of the same
+    /// name (the pre-existing, hand-writable `mut x := param;` idiom -- see
+    /// `Analyzer::analyze_param`'s doc comment). Auto-generating exactly
+    /// that shadow here means `mut self` needs zero new mutability
+    /// machinery anywhere downstream: the shadow is just an ordinary
+    /// mutable local in a stack slot, ranging over the rest of the body,
+    /// which already works.
+    fn self_shadow_stmt(&mut self, span: Span) -> HirStmt {
+        let self_ident = Ident("self".to_string());
+        HirStmt::WalrusDeclaration(HirWalrusDeclaration {
             id: self.ids.next(),
             span,
-            ident: Ident("self".to_string()),
-            r#type: Type::Pointer(Box::new(Type::Named(type_name.clone().into())), self_mutable),
+            ident: self_ident.clone(),
+            value: HirExprNode {
+                id: self.ids.next(),
+                span,
+                expr: HirExpr::Place(HirPlace {
+                    root: HirPlaceRoot::Path(Path::from(self_ident).into()),
+                    projections: vec![],
+                }),
+            },
+            mutable: true,
         })
     }
 
@@ -279,18 +307,23 @@ impl Lowerer {
     fn lower_spec_function(&mut self, f: &SpecFunctionStmt, span: Span) -> HirSpecFunction {
         let self_type_name = Ident("Self".to_string());
         let mut params = Vec::with_capacity(f.params.len() + 1);
-        if let Some(p) = self.self_param(f.is_member_function, f.self_mutable, &self_type_name, span) {
+        if let Some(p) = self.self_param(f.self_mode, &self_type_name, span) {
             params.push(p);
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
 
-        let body = f.body.as_ref().map(|b| self.lower_block(b));
+        let mut body = f.body.as_ref().map(|b| self.lower_block(b));
+        if f.self_mode == Some(SelfMode::MutValue)
+            && let Some(body) = &mut body
+        {
+            body.stmts.insert(0, self.self_shadow_stmt(span));
+        }
 
         HirSpecFunction {
             id: self.ids.next(),
             span,
             name: f.ident.clone(),
-            is_member_function: f.is_member_function,
+            self_mode: f.self_mode,
             params,
             return_type: f.return_type.clone(),
             body,

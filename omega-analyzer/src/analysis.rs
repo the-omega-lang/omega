@@ -28,7 +28,7 @@ use omega_hir::{
     HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirUnionDef, HirWalrusDeclaration,
 };
-use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, Span, Type};
+use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, SelfMode, Span, Type};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -440,13 +440,26 @@ impl<'r> Analyzer<'r> {
                 ));
                 continue;
             }
+            // `spec *T` dynamic dispatch erases `Self` down to a bare data
+            // pointer (see `finish_dynamic_dispatch_call`) -- a by-value
+            // self has no way to survive that, so it's rejected here,
+            // unconditionally, rather than only where a `spec *T` coercion
+            // actually happens (a spec used only for static bounds today
+            // could gain one anywhere else in the program later).
+            if matches!(f.self_mode, Some(SelfMode::Value) | Some(SelfMode::MutValue)) {
+                self.errors.push(AnalysisError::new(
+                    f.id,
+                    f.span,
+                    AnalysisErrorKind::SpecSelfMustBePointer { name: f.name.clone() },
+                ));
+            }
             functions.push((
                 f.name.clone(),
                 RawSpecFunctionSig {
                     decl_id: f.id,
                     name: f.name.clone(),
                     span: f.span,
-                    is_member_function: f.is_member_function,
+                    self_mode: f.self_mode,
                     params: f.params.clone(),
                     return_type: f.return_type.clone(),
                     default_body: f.body.clone(),
@@ -505,7 +518,7 @@ impl<'r> Analyzer<'r> {
             params,
             return_type: Box::new(return_type?),
             is_variadic: false,
-            is_member_function: raw.is_member_function,
+            self_mode: raw.self_mode,
         })
     }
 
@@ -1646,7 +1659,7 @@ impl<'r> Analyzer<'r> {
     /// signatures that structurally matches `expected` -- a function-typed
     /// declaration/assignment annotation naming exactly which overload is
     /// meant (`f : (a: u64) => void = f;`). Compared by shape only (param
-    /// types in order, return type, `is_variadic`/`is_member_function`),
+    /// types in order, return type, `is_variadic`/`self_mode`),
     /// never by parameter name -- the annotation's own parameter names have
     /// no reason to match the target function's, same "types only" spirit
     /// as `check_overload_duplicates`'s pairwise comparison. Zero or 2+
@@ -1659,7 +1672,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<(HirId, ResolvedFunctionType)> {
         let mut matches = candidates.iter().filter(|(_, fn_type)| {
             fn_type.is_variadic == expected.is_variadic
-                && fn_type.is_member_function == expected.is_member_function
+                && fn_type.self_mode == expected.self_mode
                 && fn_type.return_type == expected.return_type
                 && fn_type.params.len() == expected.params.len()
                 && fn_type.params.iter().zip(&expected.params).all(|((_, a), (_, b))| a == b)
@@ -1920,7 +1933,7 @@ impl<'r> Analyzer<'r> {
             ));
             return None;
         }
-        if method.fn_type.is_member_function {
+        if method.fn_type.self_mode.is_some() {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -2200,7 +2213,7 @@ impl<'r> Analyzer<'r> {
                 // so overload resolution (when there's more than one) never
                 // needs to consider the static ones at all.
                 let member_methods: Vec<ResolvedMethod> =
-                    methods.into_iter().filter(|m| m.fn_type.is_member_function).collect();
+                    methods.into_iter().filter(|m| m.fn_type.self_mode.is_some()).collect();
 
                 let (method, checked_args) = if member_methods.len() > 1 {
                     // Scored without each candidate's own synthesized `self`
@@ -2241,56 +2254,89 @@ impl<'r> Analyzer<'r> {
                     return None;
                 };
 
-                // `self`'s own declared type (always the first param, a
-                // synthesized `*Self`/`*mut Self` -- see
-                // `omega_hir::lower::Lowerer::lower_function_def`) says
-                // whether this call needs write access to `base`.
-                let self_mutable = match method.fn_type.params.first() {
-                    Some((_, ResolvedType::Pointer { mutable, .. })) => *mutable,
-                    _ => unreachable!("a member function's first param is always the synthesized self: *Self/*mut Self"),
-                };
+                // `self`'s own declared mode (`self`/`mut self`/`*self`/
+                // `*mut self` -- see `SelfMode`) is read directly off the
+                // resolved signature, never reverse-engineered from
+                // `params[0]`'s type shape.
+                let self_mode = method
+                    .fn_type
+                    .self_mode
+                    .expect("a method resolved through find_methods always has a self mode");
 
-                // `self` is `&base`/`&mut base` -- or, if `base` is already a
-                // pointer, `base` itself, coerced to exactly the pointer
-                // shape `self` expects (that's what a seamless deref would
-                // have produced anyway, so there's no need to materialize a
-                // Deref-then-AddressOf round trip just to get back the same
-                // pointer value).
-                let self_arg = if let ResolvedType::Pointer { pointee: base_pointee, mutable: base_ptr_mutable } =
-                    &base_type
-                {
-                    if self_mutable && !base_ptr_mutable {
-                        self.errors.push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::NotMutablePointer));
-                        return None;
-                    }
-                    let pointer_type =
-                        ResolvedType::Pointer { pointee: Box::new(base_pointee.widened()), mutable: self_mutable };
-                    CheckedExprNode {
-                        id: callee.id,
-                        span: callee.span,
-                        r#type: pointer_type,
-                        kind: CheckedExpr::Place(checked_base),
-                    }
-                } else {
-                    if self_mutable {
-                        self.require_mutable_place(callee.id, callee.span, &base_place.root, &checked_base, base_mutable)?;
-                        // De-assumption, exactly like an explicit `&mut`: a
-                        // writable alias to `base` now exists for the
-                        // duration of this call.
-                        if let Some((ident, ..)) = self.narrowable_place(&base_place) {
-                            self.context.widen_variable(&ident);
+                // Adapts `base` to whatever `self_mode` needs, regardless of
+                // whether `base` itself is already a pointer or a plain
+                // value -- a 2x2 matrix of (self wants pointer/value) x
+                // (base is pointer/value):
+                let self_arg = match (&base_type, self_mode.is_pointer()) {
+                    // self wants a pointer, base is already one -- reuse it,
+                    // coerced to exactly the pointer shape self expects
+                    // (that's what a seamless deref would have produced
+                    // anyway, so there's no need to materialize a
+                    // Deref-then-AddressOf round trip just to get back the
+                    // same pointer value).
+                    (ResolvedType::Pointer { pointee: base_pointee, mutable: base_ptr_mutable }, true) => {
+                        if self_mode.is_mutable() && !base_ptr_mutable {
+                            self.errors.push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::NotMutablePointer));
+                            return None;
+                        }
+                        let pointer_type = ResolvedType::Pointer {
+                            pointee: Box::new(base_pointee.widened()),
+                            mutable: self_mode.is_mutable(),
+                        };
+                        CheckedExprNode {
+                            id: callee.id,
+                            span: callee.span,
+                            r#type: pointer_type,
+                            kind: CheckedExpr::Place(checked_base),
                         }
                     }
-                    // Widened for the same reason an explicit `&`/`&mut`
-                    // widens: a method's `self` is `*Self`/`*mut Self`, never
-                    // `*Self::Variant`.
-                    let pointer_type = ResolvedType::Pointer { pointee: Box::new(base_type.widened()), mutable: self_mutable };
-                    CheckedExprNode {
+                    // self wants a pointer, base is a plain value -- auto-ref
+                    // (`&base`/`&mut base`).
+                    (_, true) => {
+                        if self_mode.is_mutable() {
+                            self.require_mutable_place(callee.id, callee.span, &base_place.root, &checked_base, base_mutable)?;
+                            // De-assumption, exactly like an explicit
+                            // `&mut`: a writable alias to `base` now exists
+                            // for the duration of this call.
+                            if let Some((ident, ..)) = self.narrowable_place(&base_place) {
+                                self.context.widen_variable(&ident);
+                            }
+                        }
+                        // Widened for the same reason an explicit `&`/`&mut`
+                        // widens: a method's `self` is `*Self`/`*mut Self`,
+                        // never `*Self::Variant`.
+                        let pointer_type =
+                            ResolvedType::Pointer { pointee: Box::new(base_type.widened()), mutable: self_mode.is_mutable() };
+                        CheckedExprNode {
+                            id: callee.id,
+                            span: callee.span,
+                            r#type: pointer_type,
+                            kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_base }),
+                        }
+                    }
+                    // self wants a value, base is a pointer -- auto-deref-
+                    // and-copy. No mutability check: reading through any
+                    // pointer (mut or not) to produce a copy is always
+                    // legal, unlike writing through one.
+                    (ResolvedType::Pointer { pointee: base_pointee, .. }, false) => {
+                        let pointee_type = base_pointee.widened();
+                        let mut place = checked_base;
+                        place.projections.push(CheckedProjection::Deref { r#type: pointee_type.clone() });
+                        CheckedExprNode { id: callee.id, span: callee.span, r#type: pointee_type, kind: CheckedExpr::Place(place) }
+                    }
+                    // self wants a value, base is already one -- pass
+                    // `checked_base` through unchanged; the copy happens
+                    // naturally via ordinary by-value argument-passing
+                    // ABI semantics. `base`'s own binding mutability is
+                    // irrelevant here -- mutating a `mut self` copy inside
+                    // the method body never needs to touch the caller's
+                    // original.
+                    (_, false) => CheckedExprNode {
                         id: callee.id,
                         span: callee.span,
-                        r#type: pointer_type,
-                        kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_base }),
-                    }
+                        r#type: base_type.widened(),
+                        kind: CheckedExpr::Place(checked_base),
+                    },
                 };
 
                 let callee_expr = CheckedExprNode {
@@ -2512,7 +2558,7 @@ impl<'r> Analyzer<'r> {
         };
         let statics: Vec<ResolvedMethod> = all_methods
             .into_iter()
-            .filter(|(name, m)| name == member && !m.fn_type.is_member_function)
+            .filter(|(name, m)| name == member && m.fn_type.self_mode.is_none())
             .map(|(_, m)| m)
             .collect();
         if statics.len() < 2 {
@@ -5332,7 +5378,7 @@ impl<'r> Analyzer<'r> {
             f.id,
             &f.annotations,
             crate::annotations::ItemKind::Function,
-            f.is_member_function,
+            f.self_mode.is_some(),
             !f.generics.is_empty(),
         );
         Some((
@@ -5340,7 +5386,7 @@ impl<'r> Analyzer<'r> {
                 params,
                 return_type: Box::new(return_type),
                 is_variadic: false,
-                is_member_function: f.is_member_function,
+                self_mode: f.self_mode,
             },
             annotations,
         ))
@@ -5353,6 +5399,14 @@ impl<'r> Analyzer<'r> {
     /// valid overload as long as their signatures genuinely differ; an
     /// identical pair is a real duplicate, reported the same way a plain
     /// same-name collision always has been.
+    ///
+    /// A second, self-aware test runs alongside the first: when both
+    /// candidates are member functions and their *non-self* parameters
+    /// match, that's ambiguous too, even though the full parameter lists
+    /// (self included) differ -- a call site (`obj.method(...)`) has no
+    /// syntax to pick "receives self by value" vs. "by pointer", so self's
+    /// own mode can never be the sole thing distinguishing two overloads
+    /// (see `AnalysisErrorKind::AmbiguousSelfOverload`).
     fn check_overload_duplicates(
         &mut self,
         functions: &[HirFunctionDef],
@@ -5363,12 +5417,8 @@ impl<'r> Analyzer<'r> {
                 if functions[i].name != functions[j].name {
                     continue;
                 }
-                let same_params = signatures[i]
-                    .0
-                    .params
-                    .iter()
-                    .map(|(_, t)| t)
-                    .eq(signatures[j].0.params.iter().map(|(_, t)| t));
+                let (sig_i, sig_j) = (&signatures[i].0, &signatures[j].0);
+                let same_params = sig_i.params.iter().map(|(_, t)| t).eq(sig_j.params.iter().map(|(_, t)| t));
                 if same_params {
                     self.errors.push(AnalysisError::new(
                         functions[i].id,
@@ -5379,6 +5429,20 @@ impl<'r> Analyzer<'r> {
                         },
                     ));
                     break;
+                }
+                if sig_i.self_mode.is_some() && sig_j.self_mode.is_some() {
+                    let same_rest = sig_i.params[1..].iter().map(|(_, t)| t).eq(sig_j.params[1..].iter().map(|(_, t)| t));
+                    if same_rest {
+                        self.errors.push(AnalysisError::new(
+                            functions[i].id,
+                            functions[i].span,
+                            AnalysisErrorKind::AmbiguousSelfOverload {
+                                name: functions[i].name.clone(),
+                                previous: functions[j].span,
+                            },
+                        ));
+                        break;
+                    }
                 }
             }
         }
@@ -6131,7 +6195,7 @@ impl<'r> Analyzer<'r> {
             id,
             span: f.span,
             name: f.name.clone(),
-            is_member_function: f.is_member_function,
+            self_mode: f.self_mode,
             is_variadic: false,
             params,
             return_type: (*fn_type.return_type).clone(),
@@ -6167,7 +6231,7 @@ impl<'r> Analyzer<'r> {
             annotations: Vec::new(),
             name: pending.raw.name.clone(),
             generics: vec![],
-            is_member_function: pending.raw.is_member_function,
+            self_mode: pending.raw.self_mode,
             params: pending.raw.params.clone(),
             return_type: pending.raw.return_type.clone(),
             body,

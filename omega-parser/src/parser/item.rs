@@ -1,5 +1,6 @@
 use crate::ast::annotation::{AnnotationArg, AnnotationNode, AnnotationValue};
 use crate::ast::generics::GenericParam;
+use crate::ast::self_mode::SelfMode;
 use crate::ast::r#type::Type;
 use crate::ast::statement::{
     Item, ItemNode, declaration::DeclarationStmt,
@@ -228,7 +229,7 @@ pub fn parse_function_definition(p: &mut Parser, annotations: Vec<AnnotationNode
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
-    let (is_member_function, self_mutable, params) = parse_param_list(p);
+    let (self_mode, params) = parse_param_list(p);
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = crate::parser::r#type::parse_type(p)?;
@@ -237,8 +238,7 @@ pub fn parse_function_definition(p: &mut Parser, annotations: Vec<AnnotationNode
         annotations,
         ident,
         generics,
-        is_member_function,
-        self_mutable,
+        self_mode,
         params,
         return_type,
         codeblock,
@@ -284,28 +284,17 @@ fn parse_optional_implements(p: &mut Parser) -> Option<Vec<Type>> {
     Some(specs)
 }
 
-/// `self` / `mut self` (optionally followed by `, ident: Type, ...`), or
-/// just `ident: Type, ...` -- `self`/`mut` are contextual keywords here (see
-/// `lexer::TokenKind`'s doc comment), checked by comparing an already-lexed
-/// `Ident`'s text. Returns `(is_member_function, self_mutable, params)`.
-fn parse_param_list(p: &mut Parser) -> (bool, bool, Vec<DeclarationStmt>) {
-    let self_mutable = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-        && matches!(p.peek_at(1), TokenKind::Ident(name) if name == "self")
-    {
-        p.advance(); // 'mut'
-        true
-    } else {
-        false
-    };
-    if let TokenKind::Ident(name) = p.peek()
-        && name == "self"
-    {
-        p.advance();
-        let rest = if p.eat(&TokenKind::Comma) { parse_declaration_list(p) } else { Vec::new() };
-        return (true, self_mutable, rest);
+/// `self` / `mut self` / `*self` / `*mut self` (optionally followed by `,
+/// ident: Type, ...`), or just `ident: Type, ...` -- see
+/// `crate::parser::parse_self_mode`. Returns `(self_mode, params)`.
+fn parse_param_list(p: &mut Parser) -> (Option<SelfMode>, Vec<DeclarationStmt>) {
+    match crate::parser::parse_self_mode(p) {
+        Some(mode) => {
+            let rest = if p.eat(&TokenKind::Comma) { parse_declaration_list(p) } else { Vec::new() };
+            (Some(mode), rest)
+        }
+        None => (None, parse_declaration_list(p)),
     }
-    (false, false, parse_declaration_list(p))
 }
 
 /// Zero or more `ident: Type` pairs, comma-separated -- a comma is only
@@ -449,7 +438,7 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
 fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::LParen, "'('");
-    let (is_member_function, self_mutable, params) = parse_param_list(p);
+    let (self_mode, params) = parse_param_list(p);
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = crate::parser::r#type::parse_type(p)?;
@@ -459,7 +448,7 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
         p.expect_terminator(&TokenKind::Semi, "';'");
         None
     };
-    Some(SpecFunctionStmt { ident, is_member_function, self_mutable, params, return_type, body })
+    Some(SpecFunctionStmt { ident, self_mode, params, return_type, body })
 }
 
 /// `enum Name<T, ...>(header) { [dynamic_fields] Variant(args) { fields }, ...; functions }`

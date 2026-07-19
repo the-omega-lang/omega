@@ -1,6 +1,6 @@
 use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::{HirId, ModuleId};
-use omega_parser::prelude::{BinaryOp, Ident, Span};
+use omega_parser::prelude::{BinaryOp, Ident, SelfMode, Span};
 
 /// The output of semantic analysis: a fully resolved and verified tree, not a
 /// side-table report. By the time a `CheckedModule` exists, every
@@ -115,7 +115,8 @@ pub struct CheckedFunctionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub is_member_function: bool,
+    /// See `ResolvedFunctionType::self_mode`.
+    pub self_mode: Option<SelfMode>,
     pub is_variadic: bool,
     pub params: Vec<CheckedParam>,
     pub return_type: ResolvedType,
@@ -144,7 +145,7 @@ impl CheckedFunctionDef {
                 .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
-            is_member_function: self.is_member_function,
+            self_mode: self.self_mode,
         }
     }
 }

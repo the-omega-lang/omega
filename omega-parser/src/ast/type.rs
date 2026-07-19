@@ -1,11 +1,15 @@
 use crate::ast::identifier::{Ident, Path};
+use crate::ast::self_mode::SelfMode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
     pub params: Vec<(Ident, Type)>,
     pub return_type: Box<Type>,
     pub is_variadic: bool,
-    pub is_member_function: bool,
+    /// `None` for an ordinary function type; `Some` for a member-function
+    /// type, carrying exactly how `self` is spelled (`self`/`mut self`/
+    /// `*self`/`*mut self`). See `SelfMode`.
+    pub self_mode: Option<SelfMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

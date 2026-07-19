@@ -1,6 +1,7 @@
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
+use crate::ast::self_mode::SelfMode;
 use crate::ast::statement::declaration::DeclarationStmt;
 use crate::ast::expression::codeblock::CodeblockExpr;
 
@@ -47,8 +48,12 @@ pub struct SpecStmt {
 #[derive(Debug, Clone)]
 pub struct SpecFunctionStmt {
     pub ident: Ident,
-    pub is_member_function: bool,
-    pub self_mutable: bool,
+    /// See `FunctionDefinitionStmt::self_mode`. Always `*self`/`*mut self`
+    /// (`SelfMode::Pointer`/`MutPointer`) for a spec function -- by-value
+    /// self is rejected during spec signature resolution (see
+    /// `Analyzer::resolve_spec_functions`), since it can't survive `spec
+    /// *T` dynamic dispatch's `Self`-erasure.
+    pub self_mode: Option<SelfMode>,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,
     pub body: Option<CodeblockExpr>,

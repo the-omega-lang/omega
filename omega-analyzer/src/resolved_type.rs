@@ -1,5 +1,5 @@
 use omega_hir::{HirBlock, HirId, HirParam};
-use omega_parser::prelude::{Ident, Span, Type};
+use omega_parser::prelude::{Ident, SelfMode, Span, Type};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -9,7 +9,12 @@ pub struct ResolvedFunctionType {
     pub params: Vec<(Ident, ResolvedType)>,
     pub return_type: Box<ResolvedType>,
     pub is_variadic: bool,
-    pub is_member_function: bool,
+    /// `None` for an ordinary function; `Some` for a member function,
+    /// carrying exactly how it receives `self` -- see `SelfMode`. The
+    /// single source of truth for self's passing convention at any call
+    /// site; never reverse-engineered from `params[0]`'s resolved type
+    /// shape.
+    pub self_mode: Option<SelfMode>,
 }
 
 /// A struct method's resolved type, plus the `HirId` of its declaring
@@ -251,7 +256,10 @@ pub struct RawSpecFunctionSig {
     pub decl_id: HirId,
     pub name: Ident,
     pub span: Span,
-    pub is_member_function: bool,
+    /// See `ResolvedFunctionType::self_mode`. Always `Pointer`/`MutPointer`
+    /// in practice -- by-value self is rejected at spec signature
+    /// resolution (`Analyzer::resolve_spec_functions`).
+    pub self_mode: Option<SelfMode>,
     /// Raw `HirParam`s (own id/span kept, per-param) rather than a plain
     /// `(Ident, Type)` list -- this is what lets a queued default-method
     /// instantiation reconstruct a real, ordinary `HirFunctionDef` later

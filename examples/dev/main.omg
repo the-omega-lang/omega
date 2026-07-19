@@ -76,7 +76,7 @@ sum_skip_multiples_of_3(n : i32) => i32 {
 
 struct Interface {
     do_thing: (s : *u8) => i32;
-    member_function(self) => void {
+    member_function(*self) => void {
         self.do_thing("You called the member function");
     }
 }
@@ -120,14 +120,20 @@ struct Vec2 {
     new(x: i32, y: i32) => Vec2 {
         Vec2 { x = x; y = y; }
     }
+    # Plain `self` -- a by-value copy, cheap here (two `i32`s) and never
+    # observable to the caller even if this body reassigned it; only ever
+    # reads, so a copy vs. a pointer makes no difference either way.
     manhattan(self) => i32 {
         abs_val(self.x) + abs_val(self.y)
     }
-    # `mut self` (vs. plain `self` above) is what lets a method write to its
-    # own fields -- synthesizes `self: *mut Vec2` instead of `*Vec2`, and
-    # calling it requires a mutable place (`v.translate(...)` needs `v`
-    # itself declared `mut`; see `main`).
-    translate(mut self, dx: i32, dy: i32) => void {
+    # `*mut self` -- a pointer to the caller's own `Vec2`, mutable pointee,
+    # is what lets a method write back to fields the caller actually sees.
+    # Calling it requires a mutable place (`v.translate(...)` needs `v`
+    # itself declared `mut`; see `main`). Contrast with plain `mut self`
+    # (by value): that would only mutate a local copy, invisible to the
+    # caller once the call returns -- see `Vec2ByValue` below for exactly
+    # that comparison.
+    translate(*mut self, dx: i32, dy: i32) => void {
         self.x = self.x + dx;
         self.y = self.y + dy;
     }
@@ -135,12 +141,45 @@ struct Vec2 {
     # free function's (see `print_any`/`print_number2` below) -- an
     # unsuffixed literal argument (`v.scale(3)`) picks whichever candidate
     # it fits, preferring its own default type when more than one would fit.
-    scale(mut self, factor: i32) => void {
+    scale(*mut self, factor: i32) => void {
         self.x = self.x * factor;
         self.y = self.y * factor;
     }
-    scale(mut self, factor: f64) => void {
+    scale(*mut self, factor: f64) => void {
         puts("scale: f64 overload called");
+    }
+}
+
+# Demonstrates by-value `self` vs. by-pointer `self` side by side on
+# otherwise-identical structs: `gets_copy`/`gets_mutable_copy` never affect
+# the caller's own value, no matter how they're called (through a plain
+# value or through a pointer -- both auto-adapt, see `main`); only
+# `gets_mutable_pointer` does.
+struct Vec2ByValue {
+    x: i32;
+    y: i32;
+    gets_copy(self) => i32 {
+        self.x + self.y
+    }
+    gets_mutable_copy(mut self) => void {
+        self.x = 999;
+        self.y = 999;
+    }
+    gets_pointer(*self) => i32 {
+        self.x + self.y
+    }
+    gets_mutable_pointer(*mut self) => void {
+        self.x = 999;
+        self.y = 999;
+    }
+    # Overloading on `self`'s mode is legal as long as the *other*
+    # parameters differ too -- a call site disambiguates on `abc` alone,
+    # never on how `self` happens to be received.
+    do_thing(self, abc: i32) => i32 {
+        self.x + abc
+    }
+    do_thing(*self, abc: *u8) => i32 {
+        self.x + puts(abc)
     }
 }
 
@@ -207,7 +246,7 @@ enum MyEnumWithSharedDynamicFields(description: *u8) {
     },
     Third("This is the third variant");
 
-    print_favorite_number_and_color(self) => void {
+    print_favorite_number_and_color(*self) => void {
         printf(
             "my favorite number is %d and my favorite color is %s\n",
             self.favorite_number, self.favorite_color
@@ -244,7 +283,7 @@ enum MyCoolEnum(tag: i16, description: *u8) {
     },
     Third(2, "This is the third value");
 
-    print_description(self) => void {
+    print_description(*self) => void {
         puts(self.description);
     }
     default() => MyCoolEnum {
@@ -305,37 +344,43 @@ enum AnimalKind {
 # inside a default body means "whatever concrete type is implementing
 # this spec" -- `other: *Self` in `same_kind` becomes `*Dog` for `Dog`'s
 # own instantiation of this default, `*Cat` for `Cat`'s, and so on.
+#
+# Spec functions always receive `self` by pointer (`*self`/`*mut self`) --
+# by-value self is rejected here at the spec's own definition, since `spec
+# *T` dynamic dispatch (see `make_sound_with_dynamic_dispatch` below) erases
+# the concrete type down to a bare data pointer with no way to carry a
+# by-value copy.
 spec Animal {
-    kind(self) => AnimalKind;
-    make_sound(self) => *u8;
-    is_dog(self) => bool {
+    kind(*self) => AnimalKind;
+    make_sound(*self) => *u8;
+    is_dog(*self) => bool {
         self.kind().tag == AnimalKind::Dog.tag
     }
-    same_kind(self, other: *Self) => bool {
+    same_kind(*self, other: *Self) => bool {
         self.kind().tag == other.kind().tag
     }
 }
 
 struct Dog : Animal {
     id: i32;
-    kind(self) => AnimalKind { AnimalKind::Dog }
-    make_sound(self) => *u8 { "woof woof" }
+    kind(*self) => AnimalKind { AnimalKind::Dog }
+    make_sound(*self) => *u8 { "woof woof" }
 }
 
 struct Cat : Animal {
     id: i32;
-    kind(self) => AnimalKind { AnimalKind::Cat }
-    make_sound(self) => *u8 { "meow" }
+    kind(*self) => AnimalKind { AnimalKind::Cat }
+    make_sound(*self) => *u8 { "meow" }
     # Overrides the default: a cat is never a dog, no matter what its own
     # (never actually called through this override) `kind()` says.
-    is_dog(self) => bool { false }
+    is_dog(*self) => bool { false }
 }
 
 # A spec with no dependencies of its own, purely to demonstrate one:
 # `Mammal` below requires both `Animal` and `Dummy`.
 spec Dummy {
-    dummy(self) => void;
-    something_else(self) => void {
+    dummy(*self) => void;
+    something_else(*self) => void {
         self.dummy();
         puts("something else");
     }
@@ -350,10 +395,10 @@ spec Dummy {
 # of its own -- an implementor of `Mammal` never has to provide `dummy`
 # itself.
 spec Mammal : Animal, Dummy {
-    dummy(self) => void {
+    dummy(*self) => void {
         puts("i satisfied the dummy function");
     }
-    call_something_else(self) => void {
+    call_something_else(*self) => void {
         self.something_else();
     }
 }
@@ -364,8 +409,8 @@ spec MySpec = Dummy | Mammal;
 
 struct Wolf : Mammal {
     id: i32;
-    kind(self) => AnimalKind { AnimalKind::Wolf }
-    make_sound(self) => *u8 { "howl" }
+    kind(*self) => AnimalKind { AnimalKind::Wolf }
+    make_sound(*self) => *u8 { "howl" }
 }
 
 # Static dispatch: `T: Animal` is monomorphized once per concrete `T`
@@ -636,6 +681,34 @@ main(argc : i32, argv : [*u8]) => i32 {
         p := simplemodule::Pair::of(4, 5);
         printf("cross-module static: %d\n", p.sum());
     }
+
+    # By-value vs. by-pointer `self`: a by-value method's mutation is never
+    # observed by the caller, no matter how it's called -- only a
+    # by-pointer *mutable* method's mutation is.
+    mut vbv := Vec2ByValue { x = 1; y = 2; };
+    before := vbv.gets_copy();
+    vbv.gets_mutable_copy();
+    after_mut_by_value := vbv.gets_copy();
+    vbv.gets_mutable_pointer();
+    after_mut_by_pointer := vbv.gets_copy();
+    printf(
+        "self modes: before=%d after-mut-by-value=%d (unchanged) after-mut-by-pointer=%d (changed)\n",
+        before, after_mut_by_value, after_mut_by_pointer
+    );
+
+    # Call-site auto-adaptation: a plain value auto-refs into a by-pointer
+    # method, and a pointer auto-derefs-and-copies into a by-value method --
+    # both directions work no matter which one `self` actually declares.
+    vbv_ptr := &vbv;
+    printf(
+        "auto-adapt: value->value=%d value->pointer=%d pointer->value=%d pointer->pointer=%d\n",
+        vbv.gets_copy(), vbv.gets_pointer(), vbv_ptr.gets_copy(), vbv_ptr.gets_pointer()
+    );
+
+    # Overloading on self's mode alone is illegal (see `Ghi` below, which
+    # doesn't compile) -- but legal as soon as another parameter differs
+    # too, disambiguated purely by `abc`'s type, never by self's mode.
+    printf("self-mode overload: %d %d\n", vbv.do_thing(10), vbv.do_thing("hi"));
 
     e1 := MyBasicEnum::First;
     e2 := MyBasicEnum::Third;
@@ -975,7 +1048,7 @@ macro make_point_type($name: type) => items {
     struct $name {
         x: i32;
         y: i32;
-        magnitude_sq(self) => i32 {
+        magnitude_sq(*self) => i32 {
             self.x * self.x + self.y * self.y
         }
     }

@@ -8,5 +8,6 @@ pub mod expression;
 pub mod generics;
 pub mod identifier;
 pub mod range;
+pub mod self_mode;
 pub mod statement;
 pub mod r#type;

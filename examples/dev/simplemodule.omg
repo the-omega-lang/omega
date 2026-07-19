@@ -10,7 +10,7 @@ struct Pair {
     of(a: i32, b: i32) => Pair {
         Pair { a = a; b = b; }
     }
-    sum(self) => i32 {
+    sum(*self) => i32 {
         self.a + self.b
     }
 }
