@@ -1307,14 +1307,22 @@ impl Codegen {
     /// compilation or two separate ones, always name themselves
     /// identically, the same "stable, type/content-derived name" property
     /// `omega_mangle` gives real functions/methods -- see its own design
-    /// notes for why that matters. XXH3-64 (`twox-hash`, `oneshot`) is a
-    /// deliberately non-cryptographic choice: nothing here is
-    /// adversarial (the input is always the compiler's own already-
-    /// resolved constant data), so all that's needed is a fast hash with
-    /// a low *accidental* collision rate at realistic program sizes, not
-    /// preimage/collision resistance against a deliberate attacker.
+    /// notes for why that matters. Rapidhash V3 (`rapidhash::v3::
+    /// rapidhash_v3`, avalanche-enabled -- its default, matching the
+    /// reference C++ implementation, chosen over the crate's own `fast`
+    /// preset since that one deliberately trades away mixing quality for
+    /// hashmap-bucket-selection speed, a different need than a
+    /// standalone, collision-averse identifier) is a deliberately
+    /// non-cryptographic choice, same reasoning as the XXH3-64 it
+    /// replaces: nothing here is adversarial (the input is always the
+    /// compiler's own already-resolved constant data), so all that's
+    /// needed is a fast hash with a low *accidental* collision rate at
+    /// realistic program sizes, not preimage/collision resistance against
+    /// a deliberate attacker. Swapped in purely for speed -- rapidhash is
+    /// faster than XXH3 even with avalanche mixing enabled, so this loses
+    /// nothing quality-wise the change was meant to preserve.
     fn data_symbol(bytes: &[u8]) -> String {
-        format!("_omgdata_{:016x}", twox_hash::XxHash3_64::oneshot(bytes))
+        format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
     }
 
     /// Declares (and defines) `s`'s bytes as an anonymous module-level data

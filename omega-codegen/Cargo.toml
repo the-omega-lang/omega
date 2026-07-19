@@ -20,4 +20,4 @@ target-lexicon = "0.13.5"
 # both on via Cargo's additive feature unification, so `Target::Aarch64`
 # (see `target.rs`) is actually buildable, not just structurally present.
 cranelift-codegen = { version = "0.131.1", features = ["x86", "arm64"] }
-twox-hash = { version = "2.1.3", default-features = false, features = ["xxhash3_64"] }
+rapidhash = { version = "4.5.1", default-features = false }
