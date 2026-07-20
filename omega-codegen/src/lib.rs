@@ -3022,10 +3022,23 @@ impl Codegen {
                 // `main` is never itself generic, so `linkage_for` already
                 // gives it `Export`, same as today, with no special case
                 // needed beyond the name.
-                let mangled = match f.mangling {
-                    ManglingMode::Disabled => f.name.as_ref().to_string(),
-                    ManglingMode::Enabled if path == entry && f.name.as_ref() == "main" => "main".to_string(),
-                    ManglingMode::Enabled => {
+                // A `@ufcs` default-method instantiation (`f.ufcs_owner:
+                // Some(spec_name)`) mangles nested under its hidden spec's
+                // own name, `type_args` standing in for the bound receiver
+                // -- exactly `method_symbol`'s existing "owner type +
+                // owner_type_args" shape, just repurposed for a spec that
+                // was never a real struct/enum/union, instead of
+                // `free_function_symbol`'s bare top-level shape. Without
+                // this, a UFCS method and an unrelated same-named, same-
+                // `type_args`-shaped generic free function declared in the
+                // same module could mangle to the identical symbol.
+                let mangled = match (&f.mangling, &f.ufcs_owner) {
+                    (ManglingMode::Disabled, _) => f.name.as_ref().to_string(),
+                    (ManglingMode::Enabled, _) if path == entry && f.name.as_ref() == "main" => "main".to_string(),
+                    (ManglingMode::Enabled, Some(owner)) => {
+                        mangle::encode(&mangle::method_symbol(path, owner, &f.type_args, &f.name, &f.fn_type()))
+                    }
+                    (ManglingMode::Enabled, None) => {
                         mangle::encode(&mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()))
                     }
                 };

@@ -24,6 +24,9 @@ pub struct HirAnnotation {
 pub enum HirAnnotationArg {
     Ident(Ident),
     KeyValue(Ident, HirAnnotationValue),
+    /// `@ufcs(...)`'s argument shape only -- see `omega_parser`'s
+    /// `AnnotationArg::Type` doc comment.
+    Type(Type),
 }
 
 /// Mirror of `omega_parser`'s `AnnotationValue` -- see its doc comment.
@@ -249,6 +252,8 @@ pub struct HirEnumVariant {
 pub struct HirSpecDef {
     pub id: HirId,
     pub span: Span,
+    /// `@ufcs(...)` only -- see `omega_analyzer::annotations::ItemKind::Spec`.
+    pub annotations: Vec<HirAnnotation>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub dependencies: Vec<Type>,

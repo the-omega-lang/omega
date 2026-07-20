@@ -1,0 +1,47 @@
+# Demonstrates `@ufcs` end to end -- every method used below comes from
+# `examples/core/core_pkg/core_pkg.omg`/`collections.omg`, reached entirely
+# through `core`'s ambient visibility: this file contains no
+# `import core::...;` statement anywhere (and couldn't write one that named
+# `Number`/`StrExt`/`SliceExt` even if it tried -- see their own doc
+# comments).
+#
+# `core_pkg` is an on-disk implementation detail, not part of the language:
+# `--extern=core:<file>` always derives its search root from `<file>`'s own
+# parent directory, so a directory-*shaped* extern root (one with real
+# submodules, like `core::collections` here) needs its own file's stem to
+# differ from the declared name "core" -- otherwise `<file>`'s parent would
+# have to simultaneously contain both a `core.omg` leaf and a `core/`
+# directory, which is ambiguous. `core_pkg.omg` plays that "differently
+# named real file" role; the declared module identity is still exactly
+# `core` (and its submodule `core::collections`), which is all any Omega
+# source (including this file) ever sees.
+#
+# Compile alongside core:
+#   omgc examples/core_demo/main.omg --extern=core:examples/core/core_pkg.omg -o target/core_demo.o
+#   cc target/core_demo.o -o target/core_demo
+
+extern printf : (s: *u8, ...) => i32;
+
+main(argc: i32, argv: [*u8]) => i32 {
+    a := 3;
+    b := 4;
+    sum := a.add(b);
+    printf(<*u8>b"instance ufcs on i32: %d.add(%d) = %d\n\0", a, b, sum);
+
+    x := 10;
+    diff := x.sub(4);
+    printf(<*u8>b"instance ufcs on i32: %d.sub(4) = %d\n\0", x, diff);
+
+    bytes: *[u8] = b"hi";
+    made: *str = str::from_bytes_unchecked(bytes);
+    printf(<*u8>b"static ufcs on str: str::from_bytes_unchecked(b\"hi\").length() = %d\n\0", made.length());
+
+    greeting: *str = "hello, omega";
+    printf(<*u8>b"instance ufcs on str: greeting.length() = %d\n\0", greeting.length());
+
+    nums := [10, 20, 30];
+    slice := &nums[0...];
+    printf(<*u8>b"instance ufcs on *[T] pattern target: slice.first() = %d\n\0", slice.first());
+
+    return 0;
+}

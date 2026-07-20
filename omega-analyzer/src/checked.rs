@@ -142,6 +142,20 @@ pub struct CheckedFunctionDef {
     /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
     /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
     pub mangling: crate::annotations::ManglingMode,
+    /// `Some(spec_name)` for a `@ufcs`-instantiated default method --
+    /// `None` for every ordinary top-level function (the overwhelming
+    /// majority). Lets `omega_codegen::declare_item` mangle this symbol
+    /// nested under the spec's own name (`mangle::method_symbol`, treating
+    /// the hidden spec as if it were the "owner type" and `type_args` as
+    /// its bound receiver) instead of as a bare top-level function
+    /// (`mangle::free_function_symbol`) -- otherwise a UFCS method and an
+    /// unrelated same-named, same-`type_args`-shaped generic free function
+    /// declared in the same module could mangle to the identical symbol.
+    /// Populated by `omega_driver::Driver::check_pending_ufcs_methods`,
+    /// the only place that has both this identity and the freshly built
+    /// `CheckedFunctionDef` in scope at once -- same pattern `type_args`
+    /// itself already uses (see its own doc comment).
+    pub ufcs_owner: Option<Ident>,
 }
 
 impl CheckedFunctionDef {

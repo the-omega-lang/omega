@@ -466,6 +466,30 @@ impl Context {
             }
         };
 
+        // A `@ufcs`-flagged spec's own name is never visible outside
+        // `core` -- checked once, here, right before returning, rather
+        // than at each of the several places above a `ResolvedItem::Type`
+        // can come back as one (an unqualified name, a qualified one, an
+        // already-resolved import alias, ...): every one of those paths
+        // (plus `Pointer`/`Array`/`SpecObject`'s own recursive
+        // `resolve_type` calls on their inner types) funnels through this
+        // one return point, so catching it here catches every path a spec
+        // reference could take to get here, no matter how deeply nested
+        // (e.g. `spec *Number` fails through its own recursive pointee
+        // resolution, not a separate check). Reported as an ordinary
+        // "cannot find type" -- from a module outside `core`, `Number`
+        // might as well not exist, not a special "this exists but is
+        // hidden" message that would leak the annotation's own existence.
+        if let ResolvedType::Spec(cell) = &resolved {
+            let (name, is_ufcs) = {
+                let s = cell.borrow();
+                (s.name.clone(), !s.ufcs.is_empty())
+            };
+            if is_ufcs && module_path.first().map(Ident::as_ref) != Some("core") {
+                return Err(TypeResolutionError::UnrecognizedNamedType { name, similar: None });
+            }
+        }
+
         Ok(resolved)
     }
 

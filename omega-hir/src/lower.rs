@@ -284,6 +284,7 @@ impl Lowerer {
                         AnnotationArg::KeyValue(key, AnnotationValue::Sizeof(r#type)) => {
                             HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::Sizeof(r#type.clone()))
                         }
+                        AnnotationArg::Type(r#type) => HirAnnotationArg::Type(r#type.clone()),
                     })
                     .collect(),
                 span: a.span,
@@ -297,7 +298,15 @@ impl Lowerer {
         let dependencies = sp.dependencies.clone();
         let functions = sp.functions.iter().map(|f| self.lower_spec_function(f, span)).collect();
 
-        HirSpecDef { id, span, name: sp.ident.clone(), generics, dependencies, functions }
+        HirSpecDef {
+            id,
+            span,
+            annotations: Self::lower_annotations(&sp.annotations),
+            name: sp.ident.clone(),
+            generics,
+            dependencies,
+            functions,
+        }
     }
 
     /// `Self` is the type-name lowering hands to `self_param` here --

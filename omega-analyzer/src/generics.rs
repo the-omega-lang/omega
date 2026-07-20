@@ -2,6 +2,29 @@ use crate::resolved_type::ResolvedType;
 use omega_parser::prelude::{Ident, Type};
 use std::collections::HashMap;
 
+/// Purely syntactic: does `raw` mention any of `generics` at a `Type::Named`
+/// leaf, anywhere in its shape? Unlike `unify_generic_type` (which needs a
+/// concrete `ResolvedType` on the other side to unify against), this only
+/// asks "would this raw type even *reference* a generic parameter" -- used
+/// to classify a `@ufcs(...)` target argument as a fixed concrete type
+/// (`i32`, `str`, ...) vs. a pattern built from the spec's own generics
+/// (`*[T]`) before any receiver is known to unify against at all. Recurses
+/// through the same compound shapes `unify_generic_type` does.
+pub fn type_references_generics(generics: &[Ident], raw: &Type) -> bool {
+    match raw {
+        Type::Named(path) => path.is_unqualified() && generics.contains(&path.head),
+        Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
+            type_references_generics(generics, inner)
+        }
+        Type::Generic(_, args) => args.iter().any(|a| type_references_generics(generics, a)),
+        Type::SpecObject(inner, _) => type_references_generics(generics, inner),
+        Type::Function(f) => {
+            f.params.iter().any(|(_, p)| type_references_generics(generics, p))
+                || type_references_generics(generics, &f.return_type)
+        }
+    }
+}
+
 /// Structurally unifies `raw` (a generic function template's own declared
 /// parameter type, exactly as written in source, still referencing its
 /// generic parameter names) against `concrete` (a call's already-resolved

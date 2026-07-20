@@ -1,4 +1,5 @@
 use crate::{
+    annotations::UfcsTarget,
     checked::{
         CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
         CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
@@ -427,8 +428,13 @@ impl<'r> Analyzer<'r> {
     /// among the spec's own functions -- a genuine signature conflict
     /// between *dependencies* is a `flatten_spec`-time concern instead
     /// (only detectable once both sides are resolved with a concrete
-    /// `Self`).
-    pub fn resolve_spec_functions(&mut self, sp: &HirSpecDef) -> Vec<(Ident, RawSpecFunctionSig)> {
+    /// `Self`). `is_ufcs` relaxes/extends the ordinary rules for a
+    /// `@ufcs`-flagged spec (see `crate::annotations::ItemKind::Spec`'s doc
+    /// comment): by-value `self` is allowed (no vtable is ever built for
+    /// one of these, so there's no `Self`-erasure to survive), and every
+    /// function is required to have a default body (there's no implementor
+    /// to ever supply an override).
+    pub fn resolve_spec_functions(&mut self, sp: &HirSpecDef, is_ufcs: bool) -> Vec<(Ident, RawSpecFunctionSig)> {
         let mut functions = Vec::new();
         let mut seen: HashSet<Ident> = HashSet::new();
         for f in &sp.functions {
@@ -445,12 +451,21 @@ impl<'r> Analyzer<'r> {
             // self has no way to survive that, so it's rejected here,
             // unconditionally, rather than only where a `spec *T` coercion
             // actually happens (a spec used only for static bounds today
-            // could gain one anywhere else in the program later).
-            if matches!(f.self_mode, Some(SelfMode::Value) | Some(SelfMode::MutValue)) {
+            // could gain one anywhere else in the program later). A
+            // `@ufcs` spec never participates in dynamic dispatch at all,
+            // so this doesn't apply to it.
+            if !is_ufcs && matches!(f.self_mode, Some(SelfMode::Value) | Some(SelfMode::MutValue)) {
                 self.errors.push(AnalysisError::new(
                     f.id,
                     f.span,
                     AnalysisErrorKind::SpecSelfMustBePointer { name: f.name.clone() },
+                ));
+            }
+            if is_ufcs && f.body.is_none() {
+                self.errors.push(AnalysisError::new(
+                    f.id,
+                    f.span,
+                    AnalysisErrorKind::UfcsSpecMissingDefaultBody { name: f.name.clone() },
                 ));
             }
             functions.push((
@@ -467,6 +482,38 @@ impl<'r> Analyzer<'r> {
             ));
         }
         functions
+    }
+
+    /// Resolves a spec's own `@ufcs(...)`/`@suppress(...)` annotations, plus
+    /// the one rule `crate::annotations::resolve` itself can't check (it
+    /// has no notion of "module path" at all -- see its own doc comment):
+    /// `@ufcs` only has meaning on a spec declared inside the module tree
+    /// rooted at `core`, checked here since `self.module_path` is exactly
+    /// what's needed and already in scope. `generics` is `sp`'s own
+    /// generic-parameter names, needed so `@ufcs`'s argument resolution can
+    /// tell a pattern target (`*[T]`) from an ordinary concrete one.
+    pub fn resolve_spec_annotations(
+        &mut self,
+        sp: &HirSpecDef,
+        generics: &[Ident],
+    ) -> crate::annotations::ResolvedAnnotations {
+        let result = crate::annotations::resolve(
+            self,
+            sp.id,
+            &sp.annotations,
+            crate::annotations::ItemKind::Spec,
+            false,
+            false,
+            generics,
+        );
+        if !result.ufcs.is_empty() && self.module_path.first().map(Ident::as_ref) != Some("core") {
+            self.errors.push(AnalysisError::new(
+                sp.id,
+                sp.span,
+                AnalysisErrorKind::UfcsOutsideCore { name: sp.name.clone() },
+            ));
+        }
+        result
     }
 
     /// Resolves a spec's own declared dependency list (`spec Mammal :
@@ -704,6 +751,172 @@ impl<'r> Analyzer<'r> {
             }
         }
         (extra_methods, pending)
+    }
+
+    /// Attempts to match `receiver` against one `@ufcs` target, returning
+    /// the bound type args (in the owning spec's own declared `generics`
+    /// order -- directly usable as `flatten_spec`'s `type_args`) on a
+    /// match. `Concrete` targets match by exact equality (not `accepts`'s
+    /// subtyping/widening -- a `@ufcs` target must match precisely).
+    /// `Pattern` targets reuse `unify_generic_type` to collect candidate
+    /// bindings, then *confirm* the match by re-resolving the raw pattern
+    /// with those bindings seeded into a temporary scope (the same
+    /// technique `resolve_raw_spec_fn_type` uses to seed `Self`/generics)
+    /// and comparing the result against `receiver` -- `unify_generic_type`
+    /// alone can only ever accumulate whatever partial bindings it finds,
+    /// never signal that the overall shape genuinely matched (see its own
+    /// doc comment). A pattern that leaves any of `spec_generics` unbound
+    /// is also treated as no match -- a spec generic a pattern never
+    /// touches could never be satisfied through it anyway.
+    fn match_ufcs_target(
+        &mut self,
+        spec_generics: &[Ident],
+        target: &UfcsTarget,
+        receiver: &ResolvedType,
+    ) -> Option<Vec<ResolvedType>> {
+        match target {
+            UfcsTarget::Concrete(concrete) => (concrete == receiver).then(Vec::new),
+            UfcsTarget::Pattern(raw) => {
+                let mut subst: HashMap<Ident, ResolvedType> = HashMap::new();
+                crate::generics::unify_generic_type(spec_generics, raw, receiver, &mut subst);
+                if subst.len() != spec_generics.len() {
+                    return None;
+                }
+                self.context.enter_scope();
+                for (name, ty) in &subst {
+                    self.context.current_scope().defined_types.insert(name.clone(), ty.clone());
+                }
+                let resolved = self.context.resolve_type(raw.clone(), &mut *self.resolver, &self.module_path, true);
+                self.context.leave_scope();
+                match resolved {
+                    Ok(resolved) if &resolved == receiver => {
+                        Some(spec_generics.iter().map(|g| subst[g].clone()).collect())
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// The full set of UFCS-injected methods `receiver` gets from every
+    /// `@ufcs`-flagged spec in `specs` whose target list matches it --
+    /// `omega_driver::Driver`'s `ModuleResolver::ufcs_methods`
+    /// implementation is the only caller, once per distinct receiver
+    /// (cached there). Each matching spec's own flattening (dependencies
+    /// included) reuses `flatten_spec` as-is; merging *across* specs is
+    /// done by hand here, rather than accumulated into one shared list via
+    /// repeated `flatten_spec_into` calls the way `resolve_implements_clause`
+    /// does for one implementor's `implements` list -- unlike a struct's
+    /// body, which always lives in one module, different `@ufcs` specs can
+    /// live in different `core` submodules, and a default method's body
+    /// must be checked against the module it was actually *written* in
+    /// (see `Vec<Ident>` in the pending-method return -- there's no
+    /// "implementor module" to borrow the way a struct/enum/union has,
+    /// since a primitive/pattern-bound receiver has no module of its own
+    /// at all). Cross-spec conflicts use the same rule
+    /// `flatten_spec_into` uses within one spec: identical signature wins
+    /// silently, a genuine mismatch is `ConflictingSpecFunctions`. Unlike
+    /// `resolve_implements_clause`, there's no "own method overrides the
+    /// default" case -- a UFCS receiver is never a struct/enum/union with
+    /// its own declared methods to check against.
+    pub fn resolve_ufcs_for_receiver(
+        &mut self,
+        id: HirId,
+        span: Span,
+        specs: &[crate::annotations::UfcsSpecInfo],
+        receiver: &ResolvedType,
+    ) -> (Vec<(Ident, ResolvedMethod)>, Vec<(Vec<Ident>, Ident, PendingSpecMethod)>) {
+        let mut per_spec: Vec<(Vec<Ident>, Vec<FlattenedSpecFn>)> = Vec::new();
+        for info in specs {
+            let type_args = info.targets.iter().find_map(|t| self.match_ufcs_target(&info.generics, t, receiver));
+            let Some(type_args) = type_args else { continue };
+            // Only *now*, with the real, receiver-matched `type_args` in
+            // hand, is this spec actually resolved for real -- reusing the
+            // ordinary cross-module item-resolution path (memoized,
+            // cycle-guarded, identical to any other spec reference) rather
+            // than the discovery-time throwaway `Analyzer` `info` itself
+            // came from (see `UfcsSpecInfo`'s doc comment for why a
+            // generic spec can't be eagerly instantiated any earlier than
+            // this).
+            let absolute: Vec<Ident> = info.module_path.iter().cloned().chain(std::iter::once(info.name.clone())).collect();
+            let Ok(ResolvedItem::Type(ResolvedType::Spec(spec))) = self.resolver.resolve_item(&absolute, &type_args, false)
+            else {
+                continue;
+            };
+            if let Some(flattened) = self.flatten_spec(id, span, &spec, &type_args, receiver) {
+                per_spec.push((info.module_path.clone(), flattened));
+            }
+        }
+
+        let mut methods = Vec::new();
+        let mut pending = Vec::new();
+        // `(name, fn_type, spec_name)` of every entry already merged in --
+        // a later spec repeating a name is silently skipped if it agrees,
+        // reported if it doesn't. Simpler than `flatten_spec_into`'s
+        // "later default overrides earlier bare requirement" rule: a
+        // `@ufcs` spec's own requirements must be satisfiable from its own
+        // dependency chain alone, not from some other, unrelated `@ufcs`
+        // spec's default (see this function's own scope, matching
+        // `crate::annotations::ItemKind::Spec`'s "simple, single-spec"
+        // framing).
+        let mut merged: Vec<(Ident, ResolvedFunctionType, Ident)> = Vec::new();
+        for (module_path, flattened) in per_spec {
+            for req in flattened {
+                if let Some((_, existing_type, existing_spec)) = merged.iter().find(|(n, ..)| *n == req.name) {
+                    if existing_type != &req.fn_type {
+                        self.errors.push(AnalysisError::new(
+                            id,
+                            span,
+                            AnalysisErrorKind::ConflictingSpecFunctions {
+                                name: req.name.clone(),
+                                first_spec: existing_spec.clone(),
+                                second_spec: req.spec_name.clone(),
+                            },
+                        ));
+                    }
+                    continue;
+                }
+                merged.push((req.name.clone(), req.fn_type.clone(), req.spec_name.clone()));
+                match &req.raw.default_body {
+                    Some(_) => {
+                        let minted_id = self.resolver.fresh_synthetic_id();
+                        methods.push((
+                            req.name.clone(),
+                            ResolvedMethod {
+                                decl_id: minted_id,
+                                fn_type: req.fn_type.clone(),
+                                annotations: crate::annotations::ResolvedAnnotations::default(),
+                            },
+                        ));
+                        pending.push((
+                            module_path.clone(),
+                            req.spec_name.clone(),
+                            PendingSpecMethod {
+                                id: minted_id,
+                                fn_type: req.fn_type,
+                                raw: req.raw,
+                                substitution: req.substitution,
+                            },
+                        ));
+                    }
+                    // Only reachable via a `@ufcs` spec's own *dependency*
+                    // (`resolve_spec_functions` already rejects a bare
+                    // requirement on the spec's own functions directly) --
+                    // still handled, not `unreachable!`, since a
+                    // dependency's requirements aren't re-checked at
+                    // `@ufcs` resolution time the way the spec's own
+                    // functions are.
+                    None => {
+                        self.errors.push(AnalysisError::new(
+                            id,
+                            span,
+                            AnalysisErrorKind::UfcsSpecMissingDefaultBody { name: req.name.clone() },
+                        ));
+                    }
+                }
+            }
+        }
+        (methods, pending)
     }
 
     /// Whether `ty` (an already-concrete, resolved type) implements
@@ -1140,7 +1353,7 @@ impl<'r> Analyzer<'r> {
     /// sites route a multi-candidate result through). A field with this
     /// name always shadows every same-named method, exactly like a single
     /// method would have.
-    fn find_methods(&self, current_type: &ResolvedType, field: &Ident) -> Vec<ResolvedMethod> {
+    fn find_methods(&mut self, current_type: &ResolvedType, field: &Ident) -> Vec<ResolvedMethod> {
         let dereffed = match current_type {
             ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
             other => other,
@@ -1183,7 +1396,26 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, method)| method.clone())
                     .collect()
             }
-            _ => Vec::new(),
+            // No struct/enum/union method table at all (every primitive,
+            // `Slice`/`Str`, `Pointer` to something else, ...) -- the one
+            // path a `@ufcs` instance method (`x.method(...)`) can ever be
+            // reached through, since none of the three cases above ever
+            // falls through to it (their own field/method lookup already
+            // wins or shadows). `Ok(vec![])`/`Err` both just mean "no
+            // instance UFCS methods on this receiver" here -- a resolver-
+            // side problem discovering `core` itself surfaces separately,
+            // the moment anything actually needed one of its methods and
+            // didn't get it; an empty result at this specific call site
+            // just falls through to the ordinary "no such method/field"
+            // diagnostic, unchanged.
+            other => self
+                .resolver
+                .ufcs_methods(other)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(name, _)| name == field)
+                .map(|(_, method)| method)
+                .collect(),
         }
     }
 
@@ -1709,6 +1941,22 @@ impl<'r> Analyzer<'r> {
         span: Span,
         path: &omega_parser::prelude::Path,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        // `str::from_bytes_unchecked(...)`-style static UFCS calls -- `str`
+        // is deliberately never registered in `Context::new()`'s
+        // `defined_types` (bare `str` must stay meaningless as an ordinary
+        // type, see the `*str` feature's own design), so `find_defined_type`
+        // below can never find it; this is the same raw-name special case
+        // `Context::resolve_type`'s `*str` handling uses, just in a
+        // different position (a call-path head, not a pointee), and scoped
+        // just as narrowly -- it doesn't touch `defined_types` itself, so
+        // bare `str` still means nothing anywhere else. `path.head` is the
+        // "str", `path.tail` is what follows the `::` (the member being
+        // accessed) -- unlike `Type::Named`'s own `is_unqualified` checks
+        // elsewhere, there's no "is this itself module-qualified" question
+        // here at all, so no such check applies.
+        if path.head.as_ref() == "str" {
+            return self.resolve_type_member(node_id, span, &ResolvedType::Str { mutable: false }, &path.tail);
+        }
         if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
             return self.resolve_type_member(node_id, span, &head_type, &path.tail);
         }
@@ -1922,13 +2170,38 @@ impl<'r> Analyzer<'r> {
                 };
                 (e.name.clone(), method, missing)
             }
+            // A static/associated UFCS call (`i32::foo(...)`, `str::
+            // from_bytes_unchecked(...)`) -- the only receivers that ever
+            // reach this arm with anything to find are the ones
+            // `resolve_type_qualified_value` can route here at all: an
+            // ordinary primitive (already resolvable as a bare path head
+            // via `Context::find_defined_type`) or `Str` (via that
+            // function's own narrow `str` carve-out). A pattern-bound
+            // receiver (`*[T]`) never reaches `resolve_type_member` in the
+            // first place -- there's no bare name for it to be a path
+            // head under -- which is exactly why a self-less function
+            // inside a `@ufcs(*[T])` spec has no way to ever be called:
+            // it falls out of this architecture for free, no separate
+            // rejection needed (see `crate::annotations::ItemKind::Spec`'s
+            // doc comment).
             other => {
-                self.errors.push(AnalysisError::new(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::StaticAccessOnNonStruct { found: other.clone() },
-                ));
-                return None;
+                let methods = self.resolver.ufcs_methods(other).unwrap_or_default();
+                let method = methods.iter().find(|(name, _)| name == member).map(|(_, m)| m.clone());
+                let similar = match method {
+                    Some(_) => None,
+                    None => best_match(member, methods.iter().map(|(name, _)| name)),
+                };
+                let type_name = Ident(other.to_string());
+                let missing = if methods.is_empty() {
+                    AnalysisErrorKind::StaticAccessOnNonStruct { found: other.clone() }
+                } else {
+                    AnalysisErrorKind::NoSuchStructFunction { r#struct: type_name.clone(), function: member.clone(), similar }
+                };
+                if method.is_none() && methods.is_empty() {
+                    self.errors.push(AnalysisError::new(node_id, span, missing));
+                    return None;
+                }
+                (type_name, method, missing)
             }
         };
 
@@ -5444,6 +5717,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Function,
             f.self_mode.is_some(),
             !f.generics.is_empty(),
+            &[],
         );
         Some((
             ResolvedFunctionType {
@@ -5546,6 +5820,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Struct,
             false,
             false,
+            &[],
         );
         cell.borrow_mut().layout = resolved_attrs.layout;
         cell.borrow_mut().suppress = resolved_attrs.suppress;
@@ -5594,6 +5869,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Union,
             false,
             false,
+            &[],
         );
         cell.borrow_mut().suppress = resolved_attrs.suppress;
 
@@ -5645,6 +5921,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Enum,
             false,
             false,
+            &[],
         );
         cell.borrow_mut().layout = resolved_attrs.layout;
         cell.borrow_mut().suppress = resolved_attrs.suppress;
@@ -6267,6 +6544,7 @@ impl<'r> Analyzer<'r> {
             body,
             inline: annotations.inline,
             mangling: annotations.mangling,
+            ufcs_owner: None,
         })
     }
 

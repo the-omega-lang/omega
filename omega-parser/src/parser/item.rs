@@ -71,10 +71,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations)?),
         TokenKind::Union => Item::Union(parse_union_def(p, annotations)?),
-        TokenKind::Spec => {
-            reject_annotations(p, &annotations);
-            Item::Spec(parse_spec_def(p)?)
-        }
+        TokenKind::Spec => Item::Spec(parse_spec_def(p, annotations)?),
         TokenKind::Macro => {
             reject_annotations(p, &annotations);
             Item::MacroDefinition(parse_macro_definition(p)?)
@@ -133,11 +130,21 @@ fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
     let start = p.peek_span();
     p.expect(&TokenKind::At, "'@'");
     let name = p.expect_ident()?;
+    // `@ufcs(Type, Type, ...)`'s arguments are always bare types (a
+    // primitive name like `i32`, or a compound pattern like `*[T]`) --
+    // unlike every other annotation's ident/key-value shape, so it parses
+    // its argument list via `parse_type` directly rather than
+    // `parse_annotation_arg`, which can't handle a leading `*`/`[` at all
+    // (see `AnnotationArg::Type`'s doc comment).
     let mut args = Vec::new();
     if p.eat(&TokenKind::LParen) {
         if !p.check(&TokenKind::RParen) {
             loop {
-                args.push(parse_annotation_arg(p)?);
+                if name.as_ref() == "ufcs" {
+                    args.push(AnnotationArg::Type(crate::parser::r#type::parse_type(p)?));
+                } else {
+                    args.push(parse_annotation_arg(p)?);
+                }
                 if !p.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -399,7 +406,7 @@ pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opti
 /// is what disambiguates them; both keep parsing a `Type`-list afterward
 /// (`,`-separated for `:`, `|`-separated for `=`), just with different
 /// terminators (`{ ... }` vs `;`).
-pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
+pub fn parse_spec_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<SpecStmt> {
     p.expect(&TokenKind::Spec, "'spec'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -415,7 +422,7 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
         } else {
             p.expect_terminator(&TokenKind::Semi, "';'");
         }
-        return Some(SpecStmt { ident, generics, dependencies, functions: Vec::new() });
+        return Some(SpecStmt { annotations, ident, generics, dependencies, functions: Vec::new() });
     }
 
     let dependencies = parse_optional_implements(p)?;
@@ -428,7 +435,7 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
         }
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(SpecStmt { ident, generics, dependencies, functions })
+    Some(SpecStmt { annotations, ident, generics, dependencies, functions })
 }
 
 /// `name(params) => Ret;` (required -- every implementor must provide a

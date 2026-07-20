@@ -16,12 +16,18 @@ pub struct AnnotationNode {
 }
 
 /// One argument inside `@name(...)`: a bare identifier (`always`, `enabled`,
-/// a `@suppress` warning name, ...) or a `key = value` pair (`align = 4`,
-/// `pack = sizeof<usize>`).
+/// a `@suppress` warning name, ...), a `key = value` pair (`align = 4`,
+/// `pack = sizeof<usize>`), or a bare type (`@ufcs(i32, *[T])` -- the only
+/// annotation that produces this today, parsed via a dedicated path in
+/// `parser::item::parse_annotation` since a leading `*`/`[` can't go through
+/// the ordinary `expect_ident()`-first argument grammar; kept as a general
+/// case rather than a `ufcs`-specific field so a future annotation wanting a
+/// bare-type argument gets it for free).
 #[derive(Debug, Clone)]
 pub enum AnnotationArg {
     Ident(Ident),
     KeyValue(Ident, AnnotationValue),
+    Type(Type),
 }
 
 /// A `key = value` annotation argument's value -- either a plain integer

@@ -479,6 +479,17 @@ pub enum AnalysisErrorKind {
     /// or reconstruct a full by-value copy of the concrete type. A spec
     /// function's self must always be `*self`/`*mut self`.
     SpecSelfMustBePointer { name: Ident },
+    /// A spec function declared with no body (a bare requirement) inside a
+    /// `@ufcs`-flagged spec -- rejected unconditionally: nothing ever
+    /// supplies an override for a `@ufcs` spec (there's no concrete
+    /// implementor to provide one, only the primitives/patterns listed in
+    /// `@ufcs(...)` itself), so a requirement with no default could never
+    /// be called.
+    UfcsSpecMissingDefaultBody { name: Ident },
+    /// `@ufcs(...)` on a spec declared outside the module tree rooted at
+    /// `core` -- the annotation only has meaning there (see
+    /// `crate::annotations::ItemKind::Spec`'s doc comment).
+    UfcsOutsideCore { name: Ident },
 
     // -- annotations --
     /// `@some_unknown_name(...)` -- not a recognized annotation at all
@@ -939,6 +950,12 @@ impl AnalysisErrorKind {
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
+            Self::UfcsSpecMissingDefaultBody { name } => d
+                .with_label(span, format!("`{}` has no default implementation", name.as_ref()))
+                .with_help("every function in a '@ufcs' spec must have a body -- there's no implementor to override it"),
+            Self::UfcsOutsideCore { name } => d
+                .with_label(span, format!("`{}` is annotated '@ufcs' outside 'core'", name.as_ref()))
+                .with_help("'@ufcs' only has an effect on a spec declared inside the module tree rooted at 'core'"),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
             }
@@ -1410,6 +1427,12 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::SpecSelfMustBePointer { name } => {
                 write!(f, "spec function '{}' must receive 'self' by pointer", name.as_ref())
+            }
+            Self::UfcsSpecMissingDefaultBody { name } => {
+                write!(f, "'{}' has no default implementation, but is inside a '@ufcs' spec", name.as_ref())
+            }
+            Self::UfcsOutsideCore { name } => {
+                write!(f, "'{}' is annotated '@ufcs' outside the 'core' module tree", name.as_ref())
             }
             Self::UnknownAnnotation { name } => write!(f, "unknown annotation '@{}'", name.as_ref()),
             Self::AnnotationNotApplicable { name, found, .. } => {

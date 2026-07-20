@@ -12,9 +12,10 @@ use crate::analysis::Analyzer;
 use crate::error::AnalysisError;
 use crate::error::AnalysisErrorKind;
 use crate::error::AnalysisWarningKind;
+use crate::generics::type_references_generics;
 use crate::resolved_type::ResolvedType;
 use omega_hir::{HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirId};
-use omega_parser::prelude::{Ident, Span};
+use omega_parser::prelude::{Ident, Span, Type};
 use std::fmt;
 
 /// Which of the four item shapes an annotation is attached to -- the whole
@@ -33,6 +34,8 @@ pub enum ItemKind {
     /// all); every other annotation stays rejected on it via the ordinary
     /// `AnnotationNotApplicable` path, no new error-handling code needed.
     Import,
+    /// A `spec` declaration -- the only item kind `@ufcs` is allowed on.
+    Spec,
 }
 
 impl ItemKind {
@@ -43,6 +46,7 @@ impl ItemKind {
             Self::Union => "a union",
             Self::Function => "a function",
             Self::Import => "an import",
+            Self::Spec => "a spec",
         }
     }
 
@@ -53,6 +57,7 @@ impl ItemKind {
             Self::Union => "unions",
             Self::Function => "functions",
             Self::Import => "imports",
+            Self::Spec => "specs",
         }
     }
 }
@@ -115,6 +120,34 @@ pub enum ManglingMode {
     Disabled,
 }
 
+/// One `@ufcs(...)` target -- either a fixed, concrete primitive (`i32`,
+/// `str`, ...) or a pattern built from the enclosing spec's own generics
+/// (`*[T]`), kept raw since it can only be matched against a receiver once
+/// one is actually known (see `crate::ufcs`'s matching code). Classified at
+/// resolution time by `type_references_generics`, not by shape alone -- a
+/// spec with no generics at all can only ever produce `Concrete` targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UfcsTarget {
+    Concrete(ResolvedType),
+    Pattern(Type),
+}
+
+/// One `@ufcs`-flagged spec's discovery-time identity -- everything
+/// `Analyzer::resolve_ufcs_for_receiver` needs to (a) attempt a match
+/// against a candidate receiver and (b) re-resolve the spec for real,
+/// with the concrete type args a successful match produced, via the
+/// ordinary `ModuleResolver::resolve_item` path. Deliberately not a
+/// `ResolvedSpecType` cell itself -- see `omega_driver::Driver::
+/// discover_ufcs_specs`'s doc comment for why a generic `@ufcs` spec
+/// (like `SliceExt<T>`) can't be eagerly instantiated at discovery time.
+#[derive(Debug, Clone)]
+pub struct UfcsSpecInfo {
+    pub module_path: Vec<Ident>,
+    pub name: Ident,
+    pub generics: Vec<Ident>,
+    pub targets: Vec<UfcsTarget>,
+}
+
 /// Every annotation's resolved value, regardless of which ones actually
 /// apply to the item kind being resolved -- callers only ever read the
 /// field(s) relevant to their own item kind (a struct/enum reads `layout`,
@@ -130,6 +163,9 @@ pub struct ResolvedAnnotations {
     /// warnings may be renamed/removed, so an unrecognized name is
     /// silently harmless rather than an error.
     pub suppress: Vec<Ident>,
+    /// `@ufcs(...)`'s targets -- empty (the default) unless the item is a
+    /// spec carrying that annotation. See `UfcsTarget`.
+    pub ufcs: Vec<UfcsTarget>,
 }
 
 /// Validates `annotations` against what `kind` allows, pushing every
@@ -146,7 +182,11 @@ pub struct ResolvedAnnotations {
 /// `is_member_function`/`is_generic` only matter for `ItemKind::Function`
 /// (ignored otherwise) -- they gate `@mangling(disabled)`'s two hard
 /// restrictions (see `AnalysisErrorKind::ManglingDisabledOnMethod`/
-/// `ManglingDisabledOnGeneric`'s doc comments).
+/// `ManglingDisabledOnGeneric`'s doc comments). `spec_generics` only matters
+/// for `ItemKind::Spec` (ignored otherwise) -- it's what tells `@ufcs`'s
+/// argument resolution which names are the enclosing spec's own generic
+/// parameters (and so must stay an unresolved `UfcsTarget::Pattern`) versus
+/// an ordinary concrete type to resolve outright.
 pub fn resolve(
     analyzer: &mut Analyzer,
     node_id: HirId,
@@ -154,6 +194,7 @@ pub fn resolve(
     kind: ItemKind,
     is_member_function: bool,
     is_generic: bool,
+    spec_generics: &[Ident],
 ) -> ResolvedAnnotations {
     let mut result = ResolvedAnnotations::default();
     let mut seen: Vec<&str> = Vec::new();
@@ -258,7 +299,39 @@ pub fn resolve(
                             );
                             None
                         }
+                        HirAnnotationArg::Type(_) => {
+                            push_error(
+                                analyzer,
+                                node_id,
+                                annotation.span,
+                                AnalysisErrorKind::InvalidAnnotationArgs {
+                                    name: annotation.name.clone(),
+                                    reason: "expected a bare warning name, not a type".to_string(),
+                                },
+                            );
+                            None
+                        }
                     })
+                    .collect();
+            }
+            "ufcs" => {
+                if kind != ItemKind::Spec {
+                    push_error(
+                        analyzer,
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::AnnotationNotApplicable {
+                            name: annotation.name.clone(),
+                            found: kind,
+                            allowed: vec![ItemKind::Spec],
+                        },
+                    );
+                    continue;
+                }
+                result.ufcs = annotation
+                    .args
+                    .iter()
+                    .filter_map(|arg| resolve_ufcs_target(analyzer, node_id, annotation, arg, spec_generics))
                     .collect();
             }
             _ => push_error(analyzer, node_id, annotation.span, AnalysisErrorKind::UnknownAnnotation { name: annotation.name.clone() }),
@@ -266,6 +339,47 @@ pub fn resolve(
     }
 
     result
+}
+
+/// One `@ufcs(...)` argument -- always parsed as `HirAnnotationArg::Type`
+/// (see `AnnotationArg::Type`'s doc comment; the parser never produces any
+/// other shape for this annotation's arguments). A bare `str` is special-
+/// cased here exactly the way `Context::resolve_type`'s `*str` handling is
+/// (see its doc comment): `"str"` is deliberately never registered in
+/// `defined_types`, so an ordinary `resolve_type_or_error` call would
+/// report it as unrecognized before this function ever got a chance to
+/// treat it as a real `@ufcs` target -- the raw, unresolved AST has to be
+/// checked first, without touching the global type-name table at all.
+fn resolve_ufcs_target(
+    analyzer: &mut Analyzer,
+    node_id: HirId,
+    annotation: &HirAnnotation,
+    arg: &HirAnnotationArg,
+    spec_generics: &[Ident],
+) -> Option<UfcsTarget> {
+    let HirAnnotationArg::Type(ty) = arg else {
+        push_error(
+            analyzer,
+            node_id,
+            annotation.span,
+            AnalysisErrorKind::InvalidAnnotationArgs {
+                name: annotation.name.clone(),
+                reason: "expected a type, e.g. 'i32' or '*[T]'".to_string(),
+            },
+        );
+        return None;
+    };
+
+    if type_references_generics(spec_generics, ty) {
+        return Some(UfcsTarget::Pattern(ty.clone()));
+    }
+
+    let is_bare_str = matches!(ty, Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str");
+    if is_bare_str {
+        return Some(UfcsTarget::Concrete(ResolvedType::Str { mutable: false }));
+    }
+
+    analyzer.resolve_type_or_error(node_id, annotation.span, ty, false).map(UfcsTarget::Concrete)
 }
 
 fn push_error(analyzer: &mut Analyzer, node_id: HirId, span: Span, kind: AnalysisErrorKind) {

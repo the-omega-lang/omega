@@ -2,7 +2,7 @@ mod fs_resolve;
 
 use fs_resolve::locate_module;
 use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, PendingSpecMethod};
-use omega_analyzer::annotations::{self, ItemKind, ResolvedAnnotations};
+use omega_analyzer::annotations::{self, ItemKind, ResolvedAnnotations, UfcsSpecInfo};
 use omega_analyzer::checked::{
     CheckedFunctionDef, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage,
 };
@@ -372,6 +372,41 @@ pub struct Driver {
     /// ever actually used" by the time a module's items finish body-
     /// checking. `UnusedImport`'s sweep diffs this against `raw_imports`.
     used_imports: HashSet<(Vec<Ident>, Ident)>,
+    /// Every `@ufcs`-flagged spec discovered anywhere in the module tree
+    /// rooted at `core` -- `None` until the first `ufcs_methods` call
+    /// (discovery walks `core`'s entire on-disk tree, not just whatever's
+    /// been explicitly imported so far, since a `@ufcs` spec's effect is
+    /// ambient regardless of whether anyone ever imports the specific
+    /// submodule it lives in -- see `discover_ufcs_specs`), `Some` (built
+    /// exactly once) after. An empty `Vec` -- as opposed to `None` -- means
+    /// discovery ran and genuinely found nothing (including "`core` isn't
+    /// registered for this compilation at all").
+    ufcs_specs: Option<Vec<UfcsSpecInfo>>,
+    /// Every module path `discover_ufcs_specs` walked (whether or not it
+    /// held a `@ufcs` spec) -- kept separately from `ufcs_specs` so
+    /// `compile`'s final assembly can drain *signature-level* errors for
+    /// all of `core`'s tree (a broken `@ufcs` spec should fail a
+    /// downstream build even for a spec nobody ends up instantiating),
+    /// while deliberately leaving `core`'s own *warnings* undrained --
+    /// unlike errors, a dependency's unused-import/dead-code notices have
+    /// no business surfacing in a downstream project's own build output.
+    ufcs_module_paths: Option<Vec<Vec<Ident>>>,
+    /// One receiver type's full merged UFCS method list, memoized -- see
+    /// `ModuleResolver::ufcs_methods`.
+    ufcs_cache: HashMap<ResolvedType, Vec<(Ident, omega_analyzer::resolved_type::ResolvedMethod)>>,
+    /// One receiver type's queued UFCS default-method instantiations still
+    /// needing a body check -- the `@ufcs` counterpart of
+    /// `pending_spec_methods`, keyed by receiver type instead of an
+    /// implementor's `ItemKey` (a primitive/pattern-bound receiver has no
+    /// such key -- see the design notes on why this can't reuse
+    /// `struct_cells`-style caching). Each entry also carries the
+    /// contributing spec's own `module_path` (unlike `pending_spec_methods`,
+    /// which borrows its one implementor's module for every entry, this
+    /// can't -- different `@ufcs` specs targeting the same receiver may
+    /// live in different `core` submodules, and a default body must be
+    /// resolved against the module it was actually written in). Drained by
+    /// `check_pending_ufcs_methods`.
+    ufcs_pending: HashMap<ResolvedType, Vec<(Vec<Ident>, Ident, PendingSpecMethod)>>,
 }
 
 /// One `--extern` flag, already split into its parts -- `name` is this
@@ -432,6 +467,10 @@ impl Driver {
             module_errors: HashMap::new(),
             module_warnings: HashMap::new(),
             used_imports: HashSet::new(),
+            ufcs_specs: None,
+            ufcs_module_paths: None,
+            ufcs_cache: HashMap::new(),
+            ufcs_pending: HashMap::new(),
         }
     }
 
@@ -849,7 +888,8 @@ impl Driver {
             // import can carry (`ItemKind::Import`); anything else here
             // pushes its own `AnnotationNotApplicable` into `module_errors`.
             let mut analyzer = Analyzer::new(self, path.to_vec(), &[], (import.id, import.span));
-            let suppress = annotations::resolve(&mut analyzer, import.id, &import.annotations, ItemKind::Import, false, false).suppress;
+            let suppress =
+                annotations::resolve(&mut analyzer, import.id, &import.annotations, ItemKind::Import, false, false, &[]).suppress;
             let (errors, _warnings) = analyzer.finish();
             if !errors.is_empty() {
                 self.module_errors.entry(path.to_vec()).or_default().extend(errors);
@@ -938,6 +978,46 @@ impl Driver {
         let result = self.resolve_absolute_import_target(absolute);
         self.import_cache.insert(key, ImportCacheState::Done(result.clone()));
         result
+    }
+
+    /// `alias`'s ambient meaning as if `import core::<alias>;` had been
+    /// written -- `ModuleResolver::resolve_import_alias`'s fallback for
+    /// when `module_path` has no explicit import binding `alias` at all.
+    /// `core` is the one module implicitly, always visible without an
+    /// `import` (see `crate::annotations::ItemKind::Spec`'s doc comment for
+    /// the companion `@ufcs` feature this exists alongside). Two cases
+    /// deliberately opt out and fall straight to `Ok(None)` (the caller's
+    /// own "assume this is my own module's item" fallback, unchanged):
+    /// `module_path == ["core"]` itself (no ambient self-import -- `core`
+    /// already sees its own items directly), and `module_path` already
+    /// declaring `alias` as one of its own top-level items (an own
+    /// declaration must shadow `core`, not silently lose to it). Reuses
+    /// `resolve_import_alias_cached`'s identical per-alias cache/cycle
+    /// guard -- an ambient lookup is not a separate mechanism from an
+    /// explicit one once it gets this far, just a different way of
+    /// deciding what `absolute` is. Only "core doesn't have this either"
+    /// (`UnknownModule`/`UnknownItem`) is swallowed back to `Ok(None)`, so
+    /// the ultimate "name not found" diagnostic still blames the querying
+    /// module -- a genuine problem resolving something `core` *does*
+    /// declare (a cycle, an ambiguous module, a failed item) still
+    /// propagates as a real error.
+    fn resolve_ambient_core_alias(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<ImportTarget>, ResolveError> {
+        if module_path.len() == 1 && module_path[0].as_ref() == "core" {
+            return Ok(None);
+        }
+        if self.local_items.get(module_path).is_some_and(|items| items.contains_key(alias)) {
+            return Ok(None);
+        }
+        let absolute = vec![Ident("core".to_string()), alias.clone()];
+        match self.resolve_import_alias_cached(module_path, alias, &absolute) {
+            Ok(target) => Ok(Some(target)),
+            Err(ResolveError::UnknownModule(_) | ResolveError::UnknownItem { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// What an already-absolute path names -- a real module (a pure
@@ -1322,8 +1402,10 @@ impl Driver {
                 let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
                 let mut analyzer =
                     Analyzer::new(self, module_path.to_vec(), &substitution, (sp.id, sp.span));
+                let resolved_attrs = analyzer.resolve_spec_annotations(sp, &generics);
+                let is_ufcs = !resolved_attrs.ufcs.is_empty();
                 let dependencies = analyzer.resolve_spec_dependencies(sp);
-                let functions = analyzer.resolve_spec_functions(sp);
+                let functions = analyzer.resolve_spec_functions(sp, is_ufcs);
                 let (errors, warnings) = analyzer.finish();
                 let result = if errors.is_empty() {
                     let cell = Rc::new(RefCell::new(ResolvedSpecType {
@@ -1334,6 +1416,7 @@ impl Driver {
                         type_args: type_args.to_vec(),
                         dependencies,
                         functions,
+                        ufcs: resolved_attrs.ufcs,
                     }));
                     Some(ResolvedItem::Type(ResolvedType::Spec(cell)))
                 } else {
@@ -1512,6 +1595,209 @@ impl Driver {
             warnings.extend(item_warnings);
         }
         (functions, warnings)
+    }
+
+    /// Recursively lists every module in the tree rooted at `dir` (a
+    /// `children_dir`, per `fs_resolve::ModuleLocation`'s convention: each
+    /// `name.omg` file inside is a leaf module, each subdirectory `name/`
+    /// is a namespace module whose own content, if any, is `name/name.omg`,
+    /// with further children living inside it recursively) -- appends each
+    /// discovered module's absolute path onto `out`. `own_name` is the
+    /// enclosing module's own name, so its self-file (already accounted
+    /// for as the enclosing module itself, not a child) is skipped rather
+    /// than double-counted. The one place this crate ever needs to
+    /// enumerate a directory's contents up front rather than look up one
+    /// known name at a time (see `discover_ufcs_specs`) -- `@ufcs`'s
+    /// ambient effect can't depend on whichever submodules happen to
+    /// already be explicitly imported by someone.
+    fn discover_submodules(dir: &std::path::Path, own_name: &str, prefix: &[Ident], out: &mut Vec<Vec<Ident>>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else { continue };
+            if file_type.is_file() {
+                if path.extension().and_then(|e| e.to_str()) != Some("omg") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+                if stem == own_name {
+                    continue;
+                }
+                let mut child = prefix.to_vec();
+                child.push(Ident(stem.to_string()));
+                out.push(child);
+            } else if file_type.is_dir() {
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                let mut child = prefix.to_vec();
+                child.push(Ident(name.to_string()));
+                out.push(child.clone());
+                Self::discover_submodules(&path, name, &child, out);
+            }
+        }
+    }
+
+    /// Every `@ufcs`-flagged spec anywhere in `core`'s module tree,
+    /// discovered once and cached in `self.ufcs_specs` (see that field's
+    /// doc comment). `core` is only available at all when it's registered
+    /// as an extern (`--extern=core:<path>`) or is this compilation's own
+    /// entry -- either way `search_roots_for(["core"])` already finds the
+    /// right root with no special-casing needed here (falling back to the
+    /// ordinary project search roots exactly covers "core is the entry");
+    /// if `core` genuinely isn't registered either way, `locate_module`
+    /// simply fails to find it and this returns an empty list, not an
+    /// error -- `@ufcs`/ambient resolution are opt-in, not a hard
+    /// requirement of every compilation.
+    fn discover_ufcs_specs(&mut self) -> Vec<UfcsSpecInfo> {
+        if let Some(specs) = &self.ufcs_specs {
+            return specs.clone();
+        }
+
+        let core = vec![Ident("core".to_string())];
+        let mut module_paths = vec![core.clone()];
+        if let Ok(location) = locate_module(&self.search_roots_for(&core), &self.physical_lookup_path(&core))
+            && let Some(children_dir) = location.children_dir
+        {
+            // The name to skip while listing `children_dir`'s own entries
+            // is whatever `core`'s own content file is really *named on
+            // disk* (`location.own_file`'s stem), not the declared "core"
+            // -- those two only coincide when nothing overrode `core`'s
+            // physical identity (see `physical_lookup_path`'s doc comment).
+            // A directory-*shaped* extern root's own file is frequently
+            // named differently on purpose (see `examples/core_demo/
+            // main.omg`'s own comment on why), so hardcoding "core" here
+            // would otherwise silently re-discover `core`'s own root
+            // content a second time, under a bogus nested module path.
+            let own_stem = location
+                .own_file
+                .as_deref()
+                .and_then(|f| f.file_stem())
+                .and_then(|s| s.to_str())
+                .unwrap_or("core")
+                .to_string();
+            Self::discover_submodules(&children_dir, &own_stem, &core, &mut module_paths);
+        }
+
+        let mut specs = Vec::new();
+        for module_path in &module_paths {
+            if self.ensure_module_indexed(module_path).is_err() {
+                continue;
+            }
+            let Some(hir) = self.parsed.get(module_path).cloned() else { continue };
+            for item in &hir.items {
+                let HirItem::Spec(sp) = item else { continue };
+                let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+                // Resolved directly off the raw `HirSpecDef` via a
+                // throwaway `Analyzer` -- deliberately NOT through
+                // `ensure_item`/`compute_item`'s ordinary generic-
+                // instantiation path: that path requires `type_args.len()
+                // == generics.len()`, which no single "discover every
+                // `@ufcs` spec" sweep can satisfy up front for a *generic*
+                // spec like `SliceExt<T>` (there's no one concrete `T` to
+                // instantiate with here -- the whole point of a pattern
+                // target is that `T` is only bound later, per receiver,
+                // by `Analyzer::resolve_ufcs_for_receiver`). Only the
+                // spec's own annotations are needed at discovery time;
+                // its dependencies/functions/`Self`-substitution are
+                // resolved lazily, for real, once a receiver actually
+                // matches (via `ModuleResolver::resolve_item`, called
+                // from `resolve_ufcs_for_receiver` with the *real* bound
+                // type args at that point).
+                let mut analyzer = Analyzer::new(self, module_path.clone(), &[], (sp.id, sp.span));
+                let resolved_attrs = analyzer.resolve_spec_annotations(sp, &generics);
+                let (errors, warnings) = analyzer.finish();
+                if !errors.is_empty() {
+                    self.module_errors.entry(module_path.clone()).or_default().extend(errors);
+                }
+                if !warnings.is_empty() {
+                    self.module_warnings.entry(module_path.clone()).or_default().extend(warnings);
+                }
+                if !resolved_attrs.ufcs.is_empty() {
+                    specs.push(UfcsSpecInfo {
+                        module_path: module_path.clone(),
+                        name: sp.name.clone(),
+                        generics,
+                        targets: resolved_attrs.ufcs,
+                    });
+                }
+            }
+        }
+
+        self.ufcs_specs = Some(specs.clone());
+        self.ufcs_module_paths = Some(module_paths);
+        specs
+    }
+
+    /// Body-checks every queued `@ufcs` default-method instantiation for
+    /// one receiver type -- the `@ufcs` counterpart of
+    /// `check_pending_spec_methods`, draining `ufcs_pending` instead of
+    /// `pending_spec_methods`. Each entry's own `module_path` (the
+    /// contributing spec's, per `ufcs_pending`'s doc comment) is used for
+    /// its `Analyzer`, not a fixed `["core"]` -- a default body must
+    /// resolve unqualified references against the module it was actually
+    /// written in.
+    fn check_pending_ufcs_methods(&mut self, receiver: &ResolvedType) -> Vec<(Vec<Ident>, CheckedFunctionDef, Vec<AnalysisWarning>)> {
+        let pending = self.ufcs_pending.remove(receiver).unwrap_or_default();
+        let mut out = Vec::with_capacity(pending.len());
+        for (module_path, spec_name, p) in pending {
+            let span = p.raw.span;
+            // `check_function_body` always leaves `type_args` empty (it's
+            // patched in afterward by whichever caller actually has both
+            // the real type args and the fresh `CheckedItem` in scope --
+            // see `CheckedFunctionDef::type_args`'s doc comment; ordinary
+            // generic instantiations get this same patch in
+            // `check_item_body`). A UFCS instantiation's `type_args` is
+            // `p.substitution`'s own values, in order (`Self` = the bound
+            // receiver, then the owning spec's own generics, if any) --
+            // this is what makes `Codegen::linkage_for` see it as
+            // non-empty and pick `Linkage::Preemptible`, exactly like an
+            // ordinary generic instantiation, so two independently-
+            // compiled TUs that both instantiate e.g. `i32::add` fold at
+            // link time instead of colliding as duplicate strong symbols.
+            let type_args: Vec<ResolvedType> = p.substitution.iter().map(|(_, t)| t.clone()).collect();
+            let mut analyzer = Analyzer::new(self, module_path.clone(), &p.substitution, (p.id, span));
+            let checked = analyzer.check_pending_spec_method(&p);
+            let (errors, item_warnings) = analyzer.finish();
+            if !errors.is_empty() {
+                self.module_errors.entry(module_path.clone()).or_default().extend(errors);
+            }
+            if let Some(mut c) = checked {
+                c.type_args = type_args;
+                c.ufcs_owner = Some(spec_name);
+                out.push((module_path, c, item_warnings));
+            }
+        }
+        out
+    }
+
+    /// Drains every `@ufcs` default-method instantiation discovered over
+    /// the whole compilation (any receiver `ufcs_methods` was ever asked
+    /// about, regardless of which module's analysis triggered it) into
+    /// `modules`, creating a fresh `CheckedModule` entry for a `core`
+    /// submodule that was never otherwise `reachable` (ambient UFCS use
+    /// never goes through an `import`, so nothing guarantees the spec's
+    /// own module made it into the ordinary reachable-module walk -- see
+    /// `discover_ufcs_specs`). Loops until `ufcs_pending` is empty rather
+    /// than a single pass: body-checking one `@ufcs` method can itself
+    /// trigger UFCS resolution for a *different* receiver (nested use),
+    /// which enqueues more work mid-drain -- the same reason a plain
+    /// `while` here, not a `for` over a snapshot of the keys, is needed to
+    /// avoid silently dropping a cascaded instantiation.
+    fn drain_pending_ufcs_methods(&mut self, modules: &mut Vec<(Vec<Ident>, CheckedModule)>, warnings: &mut Vec<(Vec<Ident>, AnalysisWarning)>) {
+        while let Some(receiver) = self.ufcs_pending.keys().next().cloned() {
+            for (module_path, checked, item_warnings) in self.check_pending_ufcs_methods(&receiver) {
+                warnings.extend(item_warnings.into_iter().map(|w| (module_path.clone(), w)));
+                match modules.iter_mut().find(|(path, _)| *path == module_path) {
+                    Some((_, checked_module)) => checked_module.items.push(CheckedItem::FunctionDefinition(checked)),
+                    None => {
+                        let Some(&id) = self.module_ids.get(&module_path) else { continue };
+                        modules.push((
+                            module_path,
+                            CheckedModule { id, items: vec![CheckedItem::FunctionDefinition(checked)] },
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     /// Body-checks a *specific* generic instantiation the moment its own
@@ -2020,7 +2306,23 @@ impl Driver {
             }
         }
 
-        let errors = self.drain_errors(&local_reachable);
+        // `@ufcs` default-method instantiations, discovered lazily during
+        // either phase above from whichever receiver types actually got
+        // asked about -- unlike `generic_instantiations`, this may create
+        // a *new* `modules` entry for a `core` submodule that was never
+        // otherwise `reachable` (see `drain_pending_ufcs_methods`'s own
+        // doc comment).
+        self.drain_pending_ufcs_methods(&mut modules, &mut warnings);
+
+        // Signature-level errors anywhere in `core`'s tree fail this
+        // build too, even for a spec nobody ended up instantiating (see
+        // `ufcs_module_paths`'s doc comment for why this is deliberately
+        // errors-only -- `core`'s own warnings are never drained here).
+        let mut error_scope = local_reachable.clone();
+        if let Some(ufcs_paths) = &self.ufcs_module_paths {
+            error_scope.extend(ufcs_paths.iter().cloned());
+        }
+        let errors = self.drain_errors(&error_scope);
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -2128,7 +2430,7 @@ impl ModuleResolver for Driver {
     ) -> Result<Option<ImportTarget>, ResolveError> {
         self.ensure_module_indexed(module_path)?;
         let Some((_, _, absolute, _)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned() else {
-            return Ok(None);
+            return self.resolve_ambient_core_alias(module_path, alias);
         };
         self.used_imports.insert((module_path.to_vec(), alias.clone()));
         self.resolve_import_alias_cached(module_path, alias, &absolute).map(Some)
@@ -2242,5 +2544,34 @@ impl ModuleResolver for Driver {
             })
             .map(|(name, _)| name);
         best_match(target, candidates)
+    }
+
+    fn ufcs_methods(
+        &mut self,
+        receiver: &ResolvedType,
+    ) -> Result<Vec<(Ident, omega_analyzer::resolved_type::ResolvedMethod)>, ResolveError> {
+        if let Some(methods) = self.ufcs_cache.get(receiver) {
+            return Ok(methods.clone());
+        }
+
+        let specs = self.discover_ufcs_specs();
+        let core = vec![Ident("core".to_string())];
+        let anchor_id = self.fresh_synthetic_id();
+        let anchor_span = Span::new(0, 0);
+        let mut analyzer = Analyzer::new(self, core.clone(), &[], (anchor_id, anchor_span));
+        let (methods, pending) = analyzer.resolve_ufcs_for_receiver(anchor_id, anchor_span, &specs, receiver);
+        let (errors, warnings) = analyzer.finish();
+        if !errors.is_empty() {
+            self.module_errors.entry(core.clone()).or_default().extend(errors);
+        }
+        if !warnings.is_empty() {
+            self.module_warnings.entry(core).or_default().extend(warnings);
+        }
+
+        self.ufcs_cache.insert(receiver.clone(), methods.clone());
+        if !pending.is_empty() {
+            self.ufcs_pending.insert(receiver.clone(), pending);
+        }
+        Ok(methods)
     }
 }

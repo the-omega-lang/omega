@@ -255,6 +255,11 @@ pub struct ResolvedSpecType {
     pub type_args: Vec<ResolvedType>,
     pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
+    /// `@ufcs(...)`'s targets -- empty unless this spec carries that
+    /// annotation (only ever non-empty for a spec declared inside `core`,
+    /// enforced at resolution time). See `crate::annotations::UfcsTarget`
+    /// and `crate::annotations::ItemKind::Spec`'s doc comment.
+    pub ufcs: Vec<crate::annotations::UfcsTarget>,
 }
 
 impl PartialEq for ResolvedSpecType {

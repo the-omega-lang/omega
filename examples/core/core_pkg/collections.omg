@@ -1,0 +1,19 @@
+# A `core` submodule, proving `@ufcs` discovery walks the whole tree rooted
+# at `core`, not just its own root file -- nothing in a downstream program
+# ever needs to (nor even can, since `SliceExt` is hidden the same way
+# `Number`/`StrExt` are) import `core::collections` for this to take effect.
+
+# `@ufcs(*[T])` -- a *pattern* target, built from this spec's own generic
+# `T`, not a fixed primitive list. Matched by structurally unifying `*[T]`
+# against a concrete receiver (e.g. `*[i32]` binds `T = i32`), the same
+# `*[T]` -> `Slice` shape `unify_generic_type` already recognizes for
+# ordinary generic functions. `first` takes `self` (required for any
+# pattern target -- there's no bare name like `str::` for `*[T]` to be
+# called through as `Type::method()`, so a self-less function here would
+# simply never be reachable).
+@ufcs(*[T])
+spec SliceExt<T> {
+    first(self) => T {
+        self[0]
+    }
+}

@@ -1,5 +1,5 @@
 use crate::checked::Storage;
-use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedType};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Type};
 use std::fmt;
@@ -280,6 +280,18 @@ pub trait ModuleResolver {
         target: &Ident,
         namespace: ItemNamespace,
     ) -> Option<Ident>;
+
+    /// Every UFCS method a value of type `receiver` gets from `@ufcs`-
+    /// flagged specs declared in `core` (see `crate::annotations::
+    /// ItemKind::Spec`'s doc comment) -- called by `Analyzer::find_methods`
+    /// (instance calls) and `Analyzer::resolve_type_member` (static/
+    /// associated calls on a bare primitive), only once the ordinary
+    /// lookup already came up empty. `Ok(vec![])` covers both "`core` isn't
+    /// registered for this compilation at all" and "no `@ufcs` spec
+    /// targets `receiver`" -- a receiver simply having no UFCS methods is
+    /// never itself a resolution failure; `Err` is reserved for a genuine
+    /// problem discovering/analyzing `core`'s own declarations.
+    fn ufcs_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError>;
 }
 
 /// Which namespace a "did you mean" suggestion should draw from -- a type

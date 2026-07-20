@@ -1,3 +1,4 @@
+use crate::ast::annotation::AnnotationNode;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
@@ -33,6 +34,10 @@ use crate::ast::expression::codeblock::CodeblockExpr;
 /// user sees; see `parser::item::parse_spec_def`.
 #[derive(Debug, Clone)]
 pub struct SpecStmt {
+    /// `@ufcs(...)` only -- see `omega_analyzer::annotations::ItemKind::Spec`.
+    /// Every other annotation is rejected on a spec, same as before this
+    /// field existed.
+    pub annotations: Vec<AnnotationNode>,
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     pub dependencies: Vec<Type>,
@@ -48,11 +53,14 @@ pub struct SpecStmt {
 #[derive(Debug, Clone)]
 pub struct SpecFunctionStmt {
     pub ident: Ident,
-    /// See `FunctionDefinitionStmt::self_mode`. Always `*self`/`*mut self`
-    /// (`SelfMode::Pointer`/`MutPointer`) for a spec function -- by-value
-    /// self is rejected during spec signature resolution (see
+    /// See `FunctionDefinitionStmt::self_mode`. Normally always `*self`/
+    /// `*mut self` (`SelfMode::Pointer`/`MutPointer`) for a spec function --
+    /// by-value self is rejected during spec signature resolution (see
     /// `Analyzer::resolve_spec_functions`), since it can't survive `spec
-    /// *T` dynamic dispatch's `Self`-erasure.
+    /// *T` dynamic dispatch's `Self`-erasure. `@ufcs`-flagged specs are the
+    /// one exception: they never participate in dynamic dispatch (no vtable
+    /// is ever built for them), so by-value `self`/`mut self` is allowed
+    /// there -- see `omega_analyzer::annotations::ItemKind::Spec`.
     pub self_mode: Option<SelfMode>,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,

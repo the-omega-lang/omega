@@ -1,0 +1,40 @@
+# Omega's `core` package: a small, deliberately non-exhaustive demonstration
+# of `@ufcs`, not a standard library. `core` is the one module every other
+# compilation sees ambiently, without an `import core::...;` statement --
+# see `omega_analyzer::annotations::ItemKind::Spec`'s doc comment for the
+# full design. Every spec below is annotated `@ufcs(...)`: its own name
+# (`Number`, `StrExt`) is never visible outside `core` at all -- only the
+# methods it injects onto the listed primitives are.
+
+# `@ufcs` on a closed list of concrete primitives -- `add`/`sub` become
+# callable as `some_i32.add(other)`/`some_f64.sub(other)` on every type
+# listed, with no `implements Number` anywhere and no way to even name
+# `Number` from outside this file. By-value `self` is only legal here
+# because a `@ufcs` spec never participates in `spec *T` dynamic dispatch
+# (no vtable is ever built for it) -- an ordinary spec would reject this.
+@ufcs(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64)
+spec Number {
+    add(self, other: Self) => Self {
+        self + other
+    }
+    sub(self, other: Self) => Self {
+        self - other
+    }
+}
+
+# `@ufcs(str)` -- `str` is otherwise meaningless as a bare type (only
+# `*str`/`*mut str` mean anything ordinarily), but as a `@ufcs` target it
+# names the primitive `str::`/instance namespace directly. `from_bytes_unchecked`
+# has no `self` at all, so it's only reachable as an associated call,
+# `str::from_bytes_unchecked(...)` -- exactly the one case a primitive's
+# own bare name (unlike a pattern target such as `*[T]`) can support, since
+# `str` is a real path head.
+@ufcs(str)
+spec StrExt {
+    from_bytes_unchecked(bytes: *[u8]) => *str {
+        <*str>bytes
+    }
+    length(self) => i32 {
+        self.length
+    }
+}
