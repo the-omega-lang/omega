@@ -1,0 +1,13 @@
+# `core`'s own root file. Its only job is importing every submodule, so
+# that compiling `core` standalone (see the `justfile`'s `build-core`
+# recipe) produces one object file with everything ordinary (non-`for`)
+# declared in the whole package -- `Ordering`'s own methods, most notably,
+# since an ordinary enum method (unlike a `for`-attached one) is compiled
+# by whoever declares it, not by whoever uses it, exactly like any other
+# `--extern` dependency's own code.
+
+import cmp;
+import default;
+import numerics;
+import slices;
+import strings;
