@@ -46,17 +46,32 @@ struct Args {
 }
 
 /// A module's own *default* identity (its file's stem) and search-root
-/// directory (its parent) -- the convention every module follows unless
-/// explicitly overridden, applied here to both the entry file and every
-/// `--extern` target before any `--name=`/explicit `--extern=<name>:<file>`
-/// name is applied on top (see `parse_args`): an extern file is just an
-/// entry file for someone else's project.
+/// directory -- the convention every module follows unless explicitly
+/// overridden, applied here to both the entry file and every `--extern`
+/// target before any `--name=`/explicit `--extern=<name>:<file>` name is
+/// applied on top (see `parse_args`): an extern file is just an entry file
+/// for someone else's project.
+///
+/// Ordinarily the search root is just `file`'s own parent directory. But a
+/// *directory-shaped* module's own content always lives at `dir/dir.omg`
+/// (see `fs_resolve::resolve_segment`'s doc comment -- children live
+/// directly in `dir/`, alongside that file) -- if `file`'s immediate
+/// parent is itself named exactly `file`'s own stem, `file` isn't a plain
+/// leaf sibling of anything; it's that directory's own nested content, so
+/// the real search root is one level higher (`dir`'s own parent), where
+/// the name resolves as a genuine directory instead of colliding with the
+/// very file naming it. Without this, a directory-shaped package could
+/// only ever be pointed at through a sibling path that doesn't exist on
+/// disk (a real, if non-obvious, gotcha this closes for good).
 fn module_from_file(file: &Path) -> Option<(Ident, PathBuf)> {
     let name = file.file_stem()?.to_str()?.to_string();
-    let dir = file
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let parent = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let dir = match parent.file_name().and_then(|n| n.to_str()) {
+        Some(parent_name) if parent_name == name => {
+            parent.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+        }
+        _ => parent,
+    };
     Some((Ident(name), dir))
 }
 
