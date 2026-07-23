@@ -58,3 +58,27 @@ pub fn unify_generic_type(
         _ => {}
     }
 }
+
+/// Whether `raw` mentions any name in `generics` anywhere within its shape
+/// -- purely syntactic (no `ResolvedType` involved), used to tell a `for`
+/// clause's *concrete* targets (`for str`, `for u32`) apart from its one
+/// supported *pattern* target (`for [T]`, referencing the spec's own
+/// generic parameter -- see `HirSpecDef::target`'s doc comment). Recurses
+/// through the same compound shapes `unify_generic_type` does.
+pub fn type_references_generics(generics: &[Ident], raw: &Type) -> bool {
+    match raw {
+        Type::Named(path) => path.is_unqualified() && generics.contains(&path.head),
+        Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
+            type_references_generics(generics, inner)
+        }
+        Type::Generic(path, args) => {
+            (path.is_unqualified() && generics.contains(&path.head))
+                || args.iter().any(|a| type_references_generics(generics, a))
+        }
+        Type::SpecObject(inner, _) => type_references_generics(generics, inner),
+        Type::Function(f) => {
+            f.params.iter().any(|(_, p)| type_references_generics(generics, p))
+                || type_references_generics(generics, &f.return_type)
+        }
+    }
+}

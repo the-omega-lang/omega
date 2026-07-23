@@ -479,6 +479,26 @@ pub enum AnalysisErrorKind {
     /// or reconstruct a full by-value copy of the concrete type. A spec
     /// function's self must always be `*self`/`*mut self`.
     SpecSelfMustBePointer { name: Ident },
+    /// `spec Name : Deps for Target { ... }` declared outside the module
+    /// tree rooted at `core` -- see `HirSpecDef::target`'s doc comment.
+    ExtensionOutsideCore { name: Ident },
+    /// A `for` clause's target isn't one of `core`'s allowed primitive
+    /// scalar/`str` types, or the one supported generic pattern shape
+    /// (`[T]`, referencing the spec's own single generic parameter).
+    ExtensionTargetNotAllowed { name: Ident },
+    /// A `for [T]` spec function declared with by-value `self`/`mut self`
+    /// -- unlike an ordinary primitive scalar target, `self`'s real type
+    /// here (`Self` substituted with the bare `[T]` shape) resolves to
+    /// `ResolvedType::Array`, an unsized, lengthless thin pointer with no
+    /// way to index safely; `*self`/`*mut self` resolves to the real,
+    /// lengthed `ResolvedType::Slice` instead (see `Context::resolve_type`'s
+    /// `Pointer(Array(_)) -> Slice` case).
+    ExtensionSelfMustBePointer { name: Ident },
+    /// Two `for` blocks anywhere in `core`'s module tree target the same
+    /// type -- only one `for` block is allowed per target (see
+    /// `HirSpecDef::target`'s doc comment on why: it removes the entire
+    /// cross-spec merge/conflict question by construction).
+    DuplicateExtensionTarget { target: String, previous: Span },
 
     // -- annotations --
     /// `@some_unknown_name(...)` -- not a recognized annotation at all
@@ -939,6 +959,25 @@ impl AnalysisErrorKind {
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
+            Self::ExtensionOutsideCore { name } => d
+                .with_label(span, format!("`{}` uses a `for` clause outside `core`", name.as_ref()))
+                .with_help("`for` only has an effect on a spec declared inside the module tree rooted at `core`"),
+            Self::ExtensionTargetNotAllowed { name } => d
+                .with_label(span, format!("`{}` targets a type `for` doesn't support", name.as_ref()))
+                .with_help(
+                    "`for` may only target one of core's built-in scalar/`str` types, or `[T]` referencing this \
+                     spec's own single generic parameter",
+                ),
+            Self::ExtensionSelfMustBePointer { name } => d
+                .with_label(span, format!("`{}` receives `self` by value", name.as_ref()))
+                .with_help(
+                    "a `for [T]` function must receive `self` by pointer (`*self`/`*mut self`) -- by value, \
+                     `self` has no length and can't be indexed safely",
+                ),
+            Self::DuplicateExtensionTarget { target, previous } => d
+                .with_label(span, format!("another `for` block already targets `{target}`"))
+                .with_secondary_label(*previous, format!("`{target}` first targeted here"))
+                .with_help("only one `for` block is allowed per target type"),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
             }
@@ -1410,6 +1449,18 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::SpecSelfMustBePointer { name } => {
                 write!(f, "spec function '{}' must receive 'self' by pointer", name.as_ref())
+            }
+            Self::ExtensionOutsideCore { name } => {
+                write!(f, "'{}' is declared 'for' a type outside 'core'", name.as_ref())
+            }
+            Self::ExtensionTargetNotAllowed { name } => {
+                write!(f, "'{}' targets a type 'for' doesn't support", name.as_ref())
+            }
+            Self::ExtensionSelfMustBePointer { name } => {
+                write!(f, "'for [T]' function '{}' must receive 'self' by pointer", name.as_ref())
+            }
+            Self::DuplicateExtensionTarget { target, .. } => {
+                write!(f, "more than one 'for' block targets '{target}'")
             }
             Self::UnknownAnnotation { name } => write!(f, "unknown annotation '@{}'", name.as_ref()),
             Self::AnnotationNotApplicable { name, found, .. } => {

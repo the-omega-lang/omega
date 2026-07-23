@@ -417,6 +417,17 @@ impl Context {
                 } else {
                     match self.resolve_type(*pointee_type, resolver, module_path, true)? {
                         ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
+                        // A pointee that resolves (not through the literal
+                        // `str` syntax above, but indirectly -- e.g. through
+                        // a `for str` extension spec's `Self` substitution,
+                        // see `HirSpecDef::target`) to `Str` gets the same
+                        // treatment as the literal case: re-stamped with
+                        // *this* pointer's own mutability, never
+                        // double-wrapped. `Str` (like `Slice`) is already
+                        // its own fat-pointer value representation -- a
+                        // pointer to one is the same shape, just a
+                        // (possibly) different mutability.
+                        ResolvedType::Str { .. } => ResolvedType::Str { mutable },
                         other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
                     }
                 }

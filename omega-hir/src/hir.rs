@@ -253,6 +253,10 @@ pub struct HirSpecDef {
     pub generics: Vec<HirGenericParam>,
     pub dependencies: Vec<Type>,
     pub functions: Vec<HirSpecFunction>,
+    /// `Some` for `spec Name : Deps for Target { ... }` -- see
+    /// `SpecStmt::target`'s doc comment. `name` is never registered as a
+    /// lookup-able name anywhere once this is set (see `item_name`).
+    pub target: Option<Type>,
 }
 
 /// One function member of a spec. `body: None` for a required function --

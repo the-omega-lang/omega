@@ -3022,10 +3022,23 @@ impl Codegen {
                 // `main` is never itself generic, so `linkage_for` already
                 // gives it `Export`, same as today, with no special case
                 // needed beyond the name.
-                let mangled = match f.mangling {
-                    ManglingMode::Disabled => f.name.as_ref().to_string(),
-                    ManglingMode::Enabled if path == entry && f.name.as_ref() == "main" => "main".to_string(),
-                    ManglingMode::Enabled => {
+                // `extension_target` -- `Some` for a method attached via
+                // `spec Name : Deps for Target { ... }` (see
+                // `CheckedFunctionDef::extension_target`'s doc comment) --
+                // mangles like a struct/enum/union method (owned, via
+                // `method_symbol`) rather than an ordinary free function:
+                // the target's own `Display` stands in for the owner name a
+                // primitive doesn't otherwise have, avoiding a collision
+                // with an unrelated, same-named, same-`type_args`-shaped
+                // free function elsewhere in the same module.
+                let mangled = match (f.mangling, &f.extension_target) {
+                    (ManglingMode::Disabled, _) => f.name.as_ref().to_string(),
+                    (ManglingMode::Enabled, _) if path == entry && f.name.as_ref() == "main" => "main".to_string(),
+                    (ManglingMode::Enabled, Some(target)) => {
+                        let owner = Ident(target.to_string());
+                        mangle::encode(&mangle::method_symbol(path, &owner, &[], &f.name, &f.fn_type()))
+                    }
+                    (ManglingMode::Enabled, None) => {
                         mangle::encode(&mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()))
                     }
                 };

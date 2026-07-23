@@ -1,7 +1,7 @@
 mod fs_resolve;
 
 use fs_resolve::locate_module;
-use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, PendingSpecMethod};
+use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, ExtensionTarget, PendingSpecMethod};
 use omega_analyzer::annotations::{self, ItemKind, ResolvedAnnotations};
 use omega_analyzer::checked::{
     CheckedFunctionDef, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage,
@@ -9,7 +9,8 @@ use omega_analyzer::checked::{
 use omega_analyzer::dead_code;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind};
 use omega_analyzer::resolved_type::{
-    ResolvedEnumType, ResolvedFunctionType, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
+    ResolvedEnumType, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType,
+    ResolvedUnionType,
 };
 use omega_analyzer::resolver::{
     GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem, Visibility,
@@ -17,7 +18,8 @@ use omega_analyzer::resolver::{
 use omega_analyzer::similarity::best_match;
 use omega_diagnostics::{Diagnostic, SourceFile, Span};
 use omega_hir::{
-    HirEnumDef, HirId, HirImport, HirItem, HirModule, HirStructDef, HirUnionDef, ModuleId, SYNTHETIC_MODULE,
+    HirEnumDef, HirId, HirImport, HirItem, HirModule, HirSpecDef, HirStructDef, HirUnionDef, ModuleId,
+    SYNTHETIC_MODULE,
 };
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule};
@@ -372,6 +374,45 @@ pub struct Driver {
     /// ever actually used" by the time a module's items finish body-
     /// checking. `UnusedImport`'s sweep diffs this against `raw_imports`.
     used_imports: HashSet<(Vec<Ident>, Ident)>,
+    /// Whether `discover_extensions` has already walked `core`'s module
+    /// tree -- set once, on first use, since nothing about `core`'s own
+    /// `for`-spec declarations changes mid-compile. `false` means
+    /// `extension_cache`/`extension_pattern` may still be incomplete.
+    extensions_discovered: bool,
+    /// Every module path `discover_extensions` actually walked (including
+    /// ones `import`-reachability would never have found on its own) --
+    /// extends `drain_errors`'s scope so a genuine error inside `core`'s
+    /// own tree (e.g. a `for`-spec with a bodyless function) still surfaces
+    /// even when nothing local ever explicitly imports that submodule; see
+    /// `compile`'s use of this alongside `local_reachable`. Deliberately
+    /// *not* used to extend `drain_warnings`'s scope -- `core`'s own
+    /// internal warnings (e.g. an unused import inside `core` itself)
+    /// shouldn't leak into every downstream compilation that merely uses
+    /// one of its `for`-attached methods.
+    extension_module_paths: Vec<Vec<Ident>>,
+    /// The one `[T]`-pattern `for`-spec found in `core`'s tree, if any (see
+    /// `HirSpecDef::target`'s doc comment on why there's at most one) --
+    /// `(module_path, raw HIR)`, kept for `extension_methods` to resolve
+    /// against a concrete receiver lazily, the first time one is actually
+    /// asked about (there's no single instantiation to resolve eagerly the
+    /// way a `Concrete` target's is).
+    extension_pattern: Option<(Vec<Ident>, HirSpecDef)>,
+    /// Every receiver's already-resolved, flattened `for`-attached method
+    /// list -- `extension_methods`'s own memoization. A `Concrete` target's
+    /// entry is populated eagerly, by `discover_extensions` itself (there's
+    /// exactly one possible receiver); a `Pattern` target's entries are
+    /// populated lazily, one per distinct concrete receiver actually asked
+    /// about (`[i32]` and `[u8]` cached separately, from the one spec).
+    extension_cache: HashMap<ResolvedType, Vec<(Ident, ResolvedMethod)>>,
+    /// Every queued default-body instantiation `extension_methods` produced
+    /// for a receiver, not yet body-checked -- mirrors `pending_spec_methods`
+    /// (see its doc comment), just keyed by the concrete receiver
+    /// `ResolvedType` instead of an `ItemKey`: a primitive has no declared
+    /// item identity of its own to key one with. Each entry also carries
+    /// its owning `for`-spec's own module path (unlike a struct/enum/union's
+    /// pending methods, there's no enclosing body-check call already
+    /// supplying it) -- drained by `drain_pending_extensions`.
+    extension_pending: HashMap<ResolvedType, Vec<(Vec<Ident>, PendingSpecMethod)>>,
 }
 
 /// One `--extern` flag, already split into its parts -- `name` is this
@@ -432,6 +473,11 @@ impl Driver {
             module_errors: HashMap::new(),
             module_warnings: HashMap::new(),
             used_imports: HashSet::new(),
+            extensions_discovered: false,
+            extension_module_paths: Vec::new(),
+            extension_pattern: None,
+            extension_cache: HashMap::new(),
+            extension_pending: HashMap::new(),
         }
     }
 
@@ -708,6 +754,215 @@ impl Driver {
             }
         }
         Err(ResolveError::UnknownModule(segments))
+    }
+
+    /// Recursively collects every module path under `dir` (a directory
+    /// already known to be one module's `children_dir`) -- unlike
+    /// `discover_reachable`, which only ever follows explicit `import`
+    /// paths, this is a raw filesystem walk (`std::fs::read_dir`), since a
+    /// `for`-spec is never imported by anything (see `HirSpecDef::target`'s
+    /// doc comment) and so can only ever be found this way. Mirrors
+    /// `fs_resolve::resolve_segment`'s own file-vs-directory convention:
+    /// a `name/` directory is itself a module (namespace-only if it has no
+    /// own `name/name.omg`) that may have further children of its own
+    /// (recursed into); a bare `name.omg` file is a leaf, with no
+    /// children -- except `own_stem`, which names *this* directory's own
+    /// file (already represented by `prefix` itself, not a separate
+    /// module) and is skipped rather than double-counted. A directory that
+    /// also has a same-named sibling file (`fs_resolve`'s
+    /// `SegmentError::Ambiguous`) is intentionally not specially detected
+    /// here -- both get collected, and `parse_module`'s own
+    /// `locate_module` call surfaces the real ambiguity error once either
+    /// one is actually parsed.
+    fn discover_submodules(dir: &std::path::Path, own_stem: &str, prefix: &[Ident], out: &mut Vec<Vec<Ident>>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                let mut child = prefix.to_vec();
+                child.push(Ident(name.clone()));
+                out.push(child.clone());
+                Self::discover_submodules(&path, &name, &child, out);
+            } else if let Some(stem) = name.strip_suffix(".omg") {
+                if stem == own_stem {
+                    continue;
+                }
+                let mut child = prefix.to_vec();
+                child.push(Ident(stem.to_string()));
+                out.push(child);
+            }
+        }
+    }
+
+    /// Walks `core`'s entire module tree (see `discover_submodules`),
+    /// finding every `spec Name : Deps for Target { ... }` declared
+    /// anywhere in it -- the only way one is ever found, since nothing ever
+    /// imports it by name (see `HirSpecDef::target`'s doc comment).
+    /// Memoized (`extensions_discovered`): a `Concrete` target is fully
+    /// resolved into `extension_cache`/`extension_pending` right here
+    /// (there's exactly one possible receiver for it, ever); the one
+    /// `[T]`-pattern target found (if any) is stashed in `extension_pattern`
+    /// for `extension_methods` to resolve per-receiver, lazily, the first
+    /// time a concrete `T` is actually asked about. Enforces "only one
+    /// `for` block per target type" here, once, across the whole tree --
+    /// `DuplicateExtensionTarget` names both sites. Does nothing (not an
+    /// error) if `core` isn't registered for this compilation at all --
+    /// `for`-attached methods are simply unavailable without it, the same
+    /// way any other `--extern`-gated feature would be.
+    fn discover_extensions(&mut self) {
+        if self.extensions_discovered {
+            return;
+        }
+        self.extensions_discovered = true;
+
+        let core = vec![Ident("core".to_string())];
+        let Ok(location) = locate_module(&self.search_roots_for(&core), &self.physical_lookup_path(&core)) else {
+            return;
+        };
+
+        let mut module_paths = vec![core.clone()];
+        if let Some(children_dir) = &location.children_dir {
+            let own_stem = location
+                .own_file
+                .as_ref()
+                .and_then(|f| f.file_stem())
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "core".to_string());
+            Self::discover_submodules(children_dir, &own_stem, &core, &mut module_paths);
+        }
+        let mut seen: HashSet<Vec<Ident>> = HashSet::new();
+        module_paths.retain(|p| seen.insert(p.clone()));
+        self.extension_module_paths = module_paths.clone();
+
+        let mut concrete_sites: HashMap<ResolvedType, Span> = HashMap::new();
+        let mut pattern_site: Option<Span> = None;
+
+        for module_path in module_paths {
+            let Ok(hir) = self.parse_module(&module_path) else { continue };
+            let specs: Vec<HirSpecDef> = hir
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    HirItem::Spec(sp) if sp.target.is_some() => Some(sp.clone()),
+                    _ => None,
+                })
+                .collect();
+            for sp in specs {
+                let mut analyzer = Analyzer::new(self, module_path.clone(), &[], (sp.id, sp.span));
+                let target = analyzer.resolve_extension_target(&sp);
+                let (errors, warnings) = analyzer.finish();
+                if !errors.is_empty() {
+                    self.module_errors.entry(module_path.clone()).or_default().extend(errors);
+                }
+                self.module_warnings.entry(module_path.clone()).or_default().extend(warnings);
+
+                match target {
+                    Some(ExtensionTarget::Concrete(resolved)) => {
+                        if let Some(previous) = concrete_sites.get(&resolved) {
+                            self.module_errors.entry(module_path.clone()).or_default().push(AnalysisError::new(
+                                sp.id,
+                                sp.span,
+                                AnalysisErrorKind::DuplicateExtensionTarget {
+                                    target: resolved.to_string(),
+                                    previous: *previous,
+                                },
+                            ));
+                            continue;
+                        }
+                        concrete_sites.insert(resolved.clone(), sp.span);
+                        let mut analyzer = Analyzer::new(self, module_path.clone(), &[], (sp.id, sp.span));
+                        let result = analyzer.resolve_extension_methods(&sp, &resolved, None);
+                        let (errors, warnings) = analyzer.finish();
+                        if !errors.is_empty() {
+                            self.module_errors.entry(module_path.clone()).or_default().extend(errors);
+                        }
+                        self.module_warnings.entry(module_path.clone()).or_default().extend(warnings);
+                        if let Some((methods, pending)) = result {
+                            self.extension_cache.insert(resolved.clone(), methods);
+                            if !pending.is_empty() {
+                                let pending = pending.into_iter().map(|p| (module_path.clone(), p)).collect();
+                                self.extension_pending.insert(resolved, pending);
+                            }
+                        }
+                    }
+                    Some(ExtensionTarget::Pattern) => {
+                        if let Some(previous) = pattern_site {
+                            self.module_errors.entry(module_path.clone()).or_default().push(AnalysisError::new(
+                                sp.id,
+                                sp.span,
+                                AnalysisErrorKind::DuplicateExtensionTarget { target: "[T]".to_string(), previous },
+                            ));
+                            continue;
+                        }
+                        pattern_site = Some(sp.span);
+                        self.extension_pattern = Some((module_path.clone(), sp));
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// Checks every extension method instantiation queued for `receiver`
+    /// (see `extension_pending`) -- mirrors `check_pending_spec_methods`
+    /// (a fresh `Analyzer` per pending method, seeded with exactly its own
+    /// substitution), plus two things a struct/enum/union's pending methods
+    /// never need: reading the owning `for`-spec's module path back out of
+    /// each entry (there's no enclosing body-check call already supplying
+    /// it), and force-seeding `type_args`/`extension_target` so codegen
+    /// mangles and links this correctly (see `CheckedFunctionDef::
+    /// extension_target`'s doc comment for why this applies even to a
+    /// non-generic, `Concrete` receiver).
+    fn check_pending_extension_methods(&mut self, receiver: &ResolvedType) -> Vec<(Vec<Ident>, CheckedFunctionDef, Vec<AnalysisWarning>)> {
+        let pending = self.extension_pending.remove(receiver).unwrap_or_default();
+        let mut results = Vec::with_capacity(pending.len());
+        for (module_path, p) in pending {
+            let span = p.raw.span;
+            let mut analyzer = Analyzer::new(self, module_path.clone(), &p.substitution, (p.id, span));
+            let checked = analyzer.check_pending_spec_method(&p);
+            let (errors, warnings) = analyzer.finish();
+            if !errors.is_empty() {
+                self.module_errors.entry(module_path.clone()).or_default().extend(errors);
+            }
+            if let Some(mut c) = checked {
+                c.type_args = vec![receiver.clone()];
+                c.extension_target = Some(receiver.clone());
+                results.push((module_path, c, warnings));
+            }
+        }
+        results
+    }
+
+    /// Drains every extension method body queued anywhere, merging each
+    /// checked result into its owning module's entry in `modules` --
+    /// creating a fresh, empty one first if that module was never itself
+    /// `import`-reachable (the whole point of `for`: nothing needs to
+    /// import a for-spec's module to use what it attaches -- see
+    /// `HirSpecDef::target`'s doc comment). A `while let` (not a single
+    /// `for`) because checking one pending method's body can itself
+    /// discover (and queue) extension methods for a *different* receiver,
+    /// mid-drain -- mirrors `compile`'s own generic-instantiation handling
+    /// needing no such loop only because that discovery already completes
+    /// synchronously, recursively, within `ensure_item` itself; this
+    /// mechanism's discovery/check split (matching `pending_spec_methods`)
+    /// means it doesn't.
+    fn drain_pending_extensions(&mut self, modules: &mut Vec<(Vec<Ident>, CheckedModule)>, warnings: &mut Vec<(Vec<Ident>, AnalysisWarning)>) {
+        while let Some(receiver) = self.extension_pending.keys().next().cloned() {
+            for (module_path, checked, item_warnings) in self.check_pending_extension_methods(&receiver) {
+                warnings.extend(item_warnings.into_iter().map(|w| (module_path.clone(), w)));
+                match modules.iter_mut().find(|(p, _)| *p == module_path) {
+                    Some((_, checked_module)) => checked_module.items.push(CheckedItem::FunctionDefinition(checked)),
+                    None => {
+                        let id = *self.module_ids.get(&module_path).expect("parsed modules always get an id");
+                        modules.push((
+                            module_path,
+                            CheckedModule { id, items: vec![CheckedItem::FunctionDefinition(checked)] },
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     /// The reachable module set: a worklist over raw `import` paths starting
@@ -1955,6 +2210,29 @@ impl Driver {
                 let hir = self.parsed.get(path).expect("reachable modules are always parsed").clone();
                 let overloaded_names: std::collections::HashSet<Ident> =
                     self.function_overloads[path].keys().cloned().collect();
+                // `item_name` (and so the ordinary per-item sweep just
+                // below) skips a `for`-spec entirely -- it's never
+                // discovered by name, only by `discover_extensions`
+                // walking `core`'s own tree. That means one declared in a
+                // *local*, non-`core` module (the realistic misuse this
+                // guards against -- an extern package other than `core`
+                // gets the same "internal issues aren't surfaced" pass
+                // every other extern module's own internals already get)
+                // would otherwise be silently unreachable rather than
+                // loudly rejected -- caught here instead.
+                if path.first().map(Ident::as_ref) != Some("core") {
+                    for item in &hir.items {
+                        if let HirItem::Spec(sp) = item
+                            && sp.target.is_some()
+                        {
+                            self.module_errors.entry(path.clone()).or_default().push(AnalysisError::new(
+                                sp.id,
+                                sp.span,
+                                AnalysisErrorKind::ExtensionOutsideCore { name: sp.name.clone() },
+                            ));
+                        }
+                    }
+                }
                 for item in hir.items.iter().filter(|i| !matches!(i, HirItem::Import(_))) {
                     let Some(name) = item_name(item) else { continue };
                     // Handled below instead -- `check_item_body`'s `ItemKey`
@@ -2019,8 +2297,21 @@ impl Driver {
                 }
             }
         }
+        // Every `for`-attached extension method any of the above actually
+        // triggered (directly, or transitively through another one's own
+        // body) -- see `drain_pending_extensions`'s doc comment for why
+        // this needs its own merge rather than folding into the loop above.
+        self.drain_pending_extensions(&mut modules, &mut warnings);
 
-        let errors = self.drain_errors(&local_reachable);
+        // Extended with every module `discover_extensions` walked, on top
+        // of `local_reachable` -- a genuine error inside `core`'s own tree
+        // (e.g. a `for`-spec with a bodyless function) must still surface
+        // even when nothing local ever explicitly imports that particular
+        // submodule (see `extension_module_paths`'s doc comment). Warnings
+        // stay scoped to `local_reachable` only, deliberately.
+        let mut error_scope = local_reachable.clone();
+        error_scope.extend(self.extension_module_paths.iter().cloned());
+        let errors = self.drain_errors(&error_scope);
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -2242,5 +2533,48 @@ impl ModuleResolver for Driver {
             })
             .map(|(name, _)| name);
         best_match(target, candidates)
+    }
+
+    fn extension_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError> {
+        if let Some(methods) = self.extension_cache.get(receiver) {
+            return Ok(methods.clone());
+        }
+        self.discover_extensions();
+        // A `Concrete` target's entry was already populated by
+        // `discover_extensions` itself -- a miss here means either no
+        // `for`-spec targets `receiver` at all, or it's a job for the one
+        // `[T]`-pattern spec, matched fresh below.
+        if let Some(methods) = self.extension_cache.get(receiver) {
+            return Ok(methods.clone());
+        }
+        let Some((module_path, sp)) = self.extension_pattern.clone() else {
+            return Ok(Vec::new());
+        };
+        // Only a `Slice` has a real element type to bind the pattern's `T`
+        // to -- `find_methods`/`resolve_type_member` only ever hand this a
+        // primitive/`Slice`/`Str`, already deref'd at most once.
+        let ResolvedType::Slice { item, .. } = receiver else {
+            return Ok(Vec::new());
+        };
+        // `Self`'s substitution is the bare `[T]` shape (`Array`), not
+        // `receiver` itself (`Slice`) -- so that a `*self` function param's
+        // existing `Pointer(Array(_)) -> Slice` resolution (see
+        // `Context::resolve_type`) is what turns it back into the real,
+        // lengthed receiver, rather than double-wrapping it.
+        let self_type = ResolvedType::Array(item.clone());
+        let mut analyzer = Analyzer::new(self, module_path.clone(), &[], (sp.id, sp.span));
+        let result = analyzer.resolve_extension_methods(&sp, &self_type, Some((**item).clone()));
+        let (errors, warnings) = analyzer.finish();
+        if !errors.is_empty() {
+            self.module_errors.entry(module_path.clone()).or_default().extend(errors);
+        }
+        self.module_warnings.entry(module_path.clone()).or_default().extend(warnings);
+        let (methods, pending) = result.unwrap_or_default();
+        self.extension_cache.insert(receiver.clone(), methods.clone());
+        if !pending.is_empty() {
+            let pending = pending.into_iter().map(|p| (module_path.clone(), p)).collect();
+            self.extension_pending.insert(receiver.clone(), pending);
+        }
+        Ok(methods)
     }
 }

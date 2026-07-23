@@ -1,5 +1,5 @@
 use crate::checked::Storage;
-use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedType};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Type};
 use std::fmt;
@@ -280,6 +280,19 @@ pub trait ModuleResolver {
         target: &Ident,
         namespace: ItemNamespace,
     ) -> Option<Ident>;
+
+    /// `receiver`'s attached methods, if any -- see `spec Name : Deps for
+    /// Target { ... }` (`HirSpecDef::target`'s doc comment). At most one
+    /// `for` block may target any given type, so this is always either
+    /// empty or one spec's worth of (already flattened with its own `:
+    /// Deps`) methods. Discovers `core`'s module tree lazily, on first
+    /// call, then stays memoized -- this is the *only* way a `for`-spec's
+    /// methods are ever reached; there is no name to `import`, so this
+    /// never goes through `resolve_import_alias`. Errors surface the same
+    /// way `resolve_item` does: recorded against `core` itself and folded
+    /// into whatever this compilation already reports, never silently
+    /// dropped.
+    fn extension_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError>;
 }
 
 /// Which namespace a "did you mean" suggestion should draw from -- a type

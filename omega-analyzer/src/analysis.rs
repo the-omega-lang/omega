@@ -13,7 +13,7 @@ use crate::{
     },
     context::{Context, ScopeContext, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError},
-    generics::unify_generic_type,
+    generics::{type_references_generics, unify_generic_type},
     resolved_type::{
         CastClass, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedEnumType, ResolvedEnumVariant,
         ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
@@ -73,6 +73,19 @@ struct ResolvedCallee {
 enum CalleeResolution {
     Ordinary(ResolvedCallee),
     Dynamic(Option<CheckedExprNode>),
+}
+
+/// What a `spec Name : Deps for Target { ... }` clause's `Target` resolves
+/// to -- see `HirSpecDef::target`'s doc comment and
+/// `Analyzer::resolve_extension_target`. `Concrete` is fully resolved and
+/// ready to use immediately; `Pattern` (the one supported shape, `[T]`)
+/// defers resolution to a later, per-receiver call
+/// (`Analyzer::resolve_extension_methods`), since there's no single
+/// concrete instantiation to resolve eagerly.
+#[derive(Debug, Clone)]
+pub enum ExtensionTarget {
+    Concrete(ResolvedType),
+    Pattern,
 }
 
 /// What a `Name { ... }` literal's path resolved to -- see
@@ -190,6 +203,11 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::Struct(s) => Some(s.name.clone()),
         HirItem::Enum(e) => Some(e.name.clone()),
         HirItem::Union(u) => Some(u.name.clone()),
+        // `spec Name : Deps for Target { ... }` -- `target.is_some()` means
+        // this spec is anonymous by design (see `HirSpecDef::target`'s doc
+        // comment): it's discovered by `omega_driver`'s dedicated
+        // extension-spec walk instead, never by name.
+        HirItem::Spec(sp) if sp.target.is_some() => None,
         HirItem::Spec(sp) => Some(sp.name.clone()),
         HirItem::Import(_) => None,
     }
@@ -420,6 +438,22 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Whether `target` is the one supported pattern shape a `for` clause
+    /// may use (`[T]`, referencing the spec's own single generic parameter
+    /// exactly) -- shared between `resolve_extension_target` (which
+    /// classifies a `for` clause) and `resolve_spec_functions` (which
+    /// additionally restricts self-mode for it, see below).
+    fn is_slice_extension_target(generics: &[Ident], target: &Type) -> bool {
+        generics.len() == 1
+            && matches!(
+                target,
+                Type::Array(inner) if matches!(
+                    inner.as_ref(),
+                    Type::Named(path) if path.is_unqualified() && path.head == generics[0]
+                )
+            )
+    }
+
     /// Builds a spec's own raw (unresolved) function signature list --
     /// `RawSpecFunctionSig`'s doc comment explains why no type resolution
     /// happens here at all (deferred to `flatten_spec`, once a concrete
@@ -429,6 +463,9 @@ impl<'r> Analyzer<'r> {
     /// (only detectable once both sides are resolved with a concrete
     /// `Self`).
     pub fn resolve_spec_functions(&mut self, sp: &HirSpecDef) -> Vec<(Ident, RawSpecFunctionSig)> {
+        let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+        let is_slice_extension =
+            sp.target.as_ref().is_some_and(|t| Self::is_slice_extension_target(&generics, t));
         let mut functions = Vec::new();
         let mut seen: HashSet<Ident> = HashSet::new();
         for f in &sp.functions {
@@ -440,13 +477,28 @@ impl<'r> Analyzer<'r> {
                 ));
                 continue;
             }
-            // `spec *T` dynamic dispatch erases `Self` down to a bare data
-            // pointer (see `finish_dynamic_dispatch_call`) -- a by-value
-            // self has no way to survive that, so it's rejected here,
-            // unconditionally, rather than only where a `spec *T` coercion
-            // actually happens (a spec used only for static bounds today
-            // could gain one anywhere else in the program later).
-            if matches!(f.self_mode, Some(SelfMode::Value) | Some(SelfMode::MutValue)) {
+            let by_value = matches!(f.self_mode, Some(SelfMode::Value) | Some(SelfMode::MutValue));
+            if by_value && is_slice_extension {
+                // `for [T]`'s `self` (by value) resolves to
+                // `ResolvedType::Array` -- an unsized, lengthless thin
+                // pointer, not the lengthed `Slice` `*self` gives -- see
+                // `AnalysisErrorKind::ExtensionSelfMustBePointer`'s doc
+                // comment.
+                self.errors.push(AnalysisError::new(
+                    f.id,
+                    f.span,
+                    AnalysisErrorKind::ExtensionSelfMustBePointer { name: f.name.clone() },
+                ));
+            } else if by_value && sp.target.is_none() {
+                // `spec *T` dynamic dispatch erases `Self` down to a bare
+                // data pointer (see `finish_dynamic_dispatch_call`) -- a
+                // by-value self has no way to survive that, so it's
+                // rejected here, unconditionally, rather than only where a
+                // `spec *T` coercion actually happens (a spec used only for
+                // static bounds today could gain one anywhere else in the
+                // program later). A `for`-attached spec is exempt: it has
+                // no name, so it can never appear in `spec *T` position at
+                // all (see `HirSpecDef::target`'s doc comment).
                 self.errors.push(AnalysisError::new(
                     f.id,
                     f.span,
@@ -467,6 +519,170 @@ impl<'r> Analyzer<'r> {
             ));
         }
         functions
+    }
+
+    /// Every `ResolvedType` a `for` clause may concretely target -- the
+    /// built-in scalar/`str` set `Context::new()` seeds `defined_types`
+    /// with, plus `str` itself (via the same bare-`str` carve-out `*str`
+    /// already relies on, see `resolve_extension_target`). Deliberately
+    /// excludes anything struct/enum/union/spec-shaped -- `for` exists to
+    /// give *primitives* a method table, not as a second, out-of-line way
+    /// to implement a spec for an ordinary declared type.
+    fn is_extendable_primitive(ty: &ResolvedType) -> bool {
+        matches!(
+            ty,
+            ResolvedType::Void
+                | ResolvedType::Bool
+                | ResolvedType::Char
+                | ResolvedType::I8
+                | ResolvedType::I16
+                | ResolvedType::I32
+                | ResolvedType::I64
+                | ResolvedType::ISize
+                | ResolvedType::U8
+                | ResolvedType::U16
+                | ResolvedType::U32
+                | ResolvedType::U64
+                | ResolvedType::USize
+                | ResolvedType::F32
+                | ResolvedType::F64
+                | ResolvedType::Str { .. }
+        )
+    }
+
+    /// Resolves and validates one `for`-spec's target (see
+    /// `HirSpecDef::target`'s doc comment) -- enforces both `for`-specific
+    /// rules right here, at the spec's own declaration, rather than
+    /// deferred to first use: declared inside the module tree rooted at
+    /// `core` (`self.module_path`, already the querying spec's own module),
+    /// and targeting only an allowed primitive or the one supported pattern
+    /// shape (`is_slice_extension_target`). `None` on any failure (already
+    /// recorded as an `AnalysisError`) or when `sp.target` is itself `None`
+    /// (an ordinary spec -- not a `for`-spec at all).
+    pub fn resolve_extension_target(&mut self, sp: &HirSpecDef) -> Option<ExtensionTarget> {
+        let target = sp.target.as_ref()?;
+        if self.module_path.first().map(Ident::as_ref) != Some("core") {
+            self.errors.push(AnalysisError::new(
+                sp.id,
+                sp.span,
+                AnalysisErrorKind::ExtensionOutsideCore { name: sp.name.clone() },
+            ));
+            return None;
+        }
+        let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+        if type_references_generics(&generics, target) {
+            if Self::is_slice_extension_target(&generics, target) {
+                return Some(ExtensionTarget::Pattern);
+            }
+            self.errors.push(AnalysisError::new(
+                sp.id,
+                sp.span,
+                AnalysisErrorKind::ExtensionTargetNotAllowed { name: sp.name.clone() },
+            ));
+            return None;
+        }
+        // Same bare-`str` carve-out `Context::resolve_type`'s own `*str`
+        // handling relies on (see its doc comment): `"str"` is deliberately
+        // never registered in `defined_types`, so it has to be recognized
+        // here, from the raw syntax, before an ordinary resolve attempt.
+        let is_bare_str = matches!(
+            target,
+            Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str"
+        );
+        let resolved = if is_bare_str {
+            ResolvedType::Str { mutable: false }
+        } else {
+            self.resolve_type_or_error(sp.id, sp.span, target, false)?
+        };
+        if !Self::is_extendable_primitive(&resolved) {
+            self.errors.push(AnalysisError::new(
+                sp.id,
+                sp.span,
+                AnalysisErrorKind::ExtensionTargetNotAllowed { name: sp.name.clone() },
+            ));
+            return None;
+        }
+        Some(ExtensionTarget::Concrete(resolved))
+    }
+
+    /// Resolves a `for`-spec's own functions against a concrete `receiver`
+    /// -- reuses the exact same dependency-flattening/implements-
+    /// satisfaction machinery an ordinary struct's `implements` clause
+    /// already goes through (`flatten_spec`), rather than a second,
+    /// parallel implementation: a `for`-spec's own functions play both
+    /// roles a struct's own methods usually split across two lists (the
+    /// type's own declared functions, *and* whatever satisfies its
+    /// `implements` clause), so they're fed into a throwaway, unregistered
+    /// `ResolvedSpecType` cell built right here -- there is no existing
+    /// cell to reuse, since `for`-specs are never name-registered (see
+    /// `item_name`). `pattern_binding` is the one concrete type this
+    /// specific `receiver` bound the spec's own single generic parameter to
+    /// (see `resolve_extension_target`'s `Pattern` case) -- `None` for a
+    /// `Concrete` target, which has no generics of its own to bind.
+    ///
+    /// Every flattened requirement (the spec's own functions, plus
+    /// whatever its `: Deps` list additionally requires) must end up with a
+    /// default body -- there is no separate "implementor" here who could
+    /// supply one later, so any entry still missing one after flattening
+    /// (a bare, unsatisfiable requirement, or a genuinely unimplemented
+    /// dependency function) is reported via the same `MissingSpecFunction`
+    /// diagnostic a struct's own unsatisfied `implements` clause would get.
+    pub fn resolve_extension_methods(
+        &mut self,
+        sp: &HirSpecDef,
+        receiver: &ResolvedType,
+        pattern_binding: Option<ResolvedType>,
+    ) -> Option<(Vec<(Ident, ResolvedMethod)>, Vec<PendingSpecMethod>)> {
+        let dependencies = self.resolve_spec_dependencies(sp);
+        let functions = self.resolve_spec_functions(sp);
+        let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+        let cell = Rc::new(RefCell::new(ResolvedSpecType {
+            id: sp.id,
+            name: sp.name.clone(),
+            generics,
+            module_path: self.module_path.clone(),
+            type_args: vec![],
+            dependencies,
+            functions,
+        }));
+        let type_args: Vec<ResolvedType> = pattern_binding.into_iter().collect();
+        let flattened = self.flatten_spec(sp.id, sp.span, &cell, &type_args, receiver)?;
+
+        let mut methods = Vec::with_capacity(flattened.len());
+        let mut pending = Vec::new();
+        for f in flattened {
+            match &f.raw.default_body {
+                Some(_) => {
+                    let minted_id = self.resolver.fresh_synthetic_id();
+                    methods.push((
+                        f.name.clone(),
+                        ResolvedMethod {
+                            decl_id: minted_id,
+                            fn_type: f.fn_type.clone(),
+                            annotations: crate::annotations::ResolvedAnnotations::default(),
+                        },
+                    ));
+                    pending.push(PendingSpecMethod {
+                        id: minted_id,
+                        fn_type: f.fn_type,
+                        raw: f.raw,
+                        substitution: f.substitution,
+                    });
+                }
+                None => {
+                    self.errors.push(AnalysisError::new(
+                        sp.id,
+                        sp.span,
+                        AnalysisErrorKind::MissingSpecFunction {
+                            implementor: Ident(receiver.to_string()),
+                            spec: f.spec_name.clone(),
+                            function: f.name.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        Some((methods, pending))
     }
 
     /// Resolves a spec's own declared dependency list (`spec Mammal :
@@ -714,11 +930,14 @@ impl<'r> Analyzer<'r> {
     /// already has every required function merged into its own list (own
     /// override or spec-default instantiation -- see
     /// `resolve_implements_clause`); this never re-derives that, only
-    /// confirms it. In practice this only ever fires for a primitive type
-    /// (which has no method list at all -- spec implementation is scoped
-    /// to struct/enum/union) or a genuine caller mistake (a spec-bound
-    /// generic instantiated with a type that never declared `: Spec` at
-    /// all). Returns the missing function names on failure.
+    /// confirms it. For a struct/enum/union this is purely a caller-mistake
+    /// check (a spec-bound generic instantiated with a type that never
+    /// declared `: Spec`); for a primitive it's the one thing that makes a
+    /// `for`-attached spec's own `: Deps` list actually count as satisfying
+    /// `Deps` for generic-bound purposes too (`find_methods`'s primitive
+    /// fallback is what supplies a real answer here now -- see
+    /// `HirSpecDef::target`'s doc comment). Returns the missing function
+    /// names on failure.
     fn type_implements_spec(
         &mut self,
         id: HirId,
@@ -732,7 +951,7 @@ impl<'r> Analyzer<'r> {
         };
         let missing: Vec<Ident> = required
             .iter()
-            .filter(|req| !self.find_methods(ty, &req.name).iter().any(|m| m.fn_type == req.fn_type))
+            .filter(|req| !self.find_methods(id, span, ty, &req.name).iter().any(|m| m.fn_type == req.fn_type))
             .map(|req| req.name.clone())
             .collect();
         if missing.is_empty() { Ok(()) } else { Err(missing) }
@@ -1140,7 +1359,7 @@ impl<'r> Analyzer<'r> {
     /// sites route a multi-candidate result through). A field with this
     /// name always shadows every same-named method, exactly like a single
     /// method would have.
-    fn find_methods(&self, current_type: &ResolvedType, field: &Ident) -> Vec<ResolvedMethod> {
+    fn find_methods(&mut self, id: HirId, span: Span, current_type: &ResolvedType, field: &Ident) -> Vec<ResolvedMethod> {
         let dereffed = match current_type {
             ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
             other => other,
@@ -1183,7 +1402,17 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, method)| method.clone())
                     .collect()
             }
-            _ => Vec::new(),
+            // A primitive (or `Slice`/`Str`) has no method list of its own
+            // -- the only way it ever has one is a `for`-attached spec in
+            // `core` (see `HirSpecDef::target`'s doc comment), looked up
+            // through the resolver rather than any locally-held cell.
+            other => match self.resolver.extension_methods(other) {
+                Ok(methods) => methods.into_iter().filter(|(name, _)| name == field).map(|(_, m)| m).collect(),
+                Err(err) => {
+                    self.errors.push(AnalysisError::new(id, span, AnalysisErrorKind::ModuleResolution(err)));
+                    Vec::new()
+                }
+            },
         }
     }
 
@@ -1709,6 +1938,14 @@ impl<'r> Analyzer<'r> {
         span: Span,
         path: &omega_parser::prelude::Path,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        // `str` is deliberately absent from `defined_types` (the `*str`
+        // feature's own invariant -- see `Context::resolve_type`'s doc
+        // comment), so `str::from_bytes_unchecked(...)`-style static calls
+        // on a `for str` extension spec need this one narrow carve-out to
+        // even reach `resolve_type_member` at all.
+        if path.head.as_ref() == "str" {
+            return self.resolve_type_member(node_id, span, &ResolvedType::Str { mutable: false }, &path.tail);
+        }
         if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
             return self.resolve_type_member(node_id, span, &head_type, &path.tail);
         }
@@ -1922,13 +2159,39 @@ impl<'r> Analyzer<'r> {
                 };
                 (e.name.clone(), method, missing)
             }
+            // A primitive (or `Slice`/`Str`) has no static members of its
+            // own, unless a `for`-attached spec in `core` gave it some (see
+            // `HirSpecDef::target`'s doc comment) -- a self-less function
+            // reaches call sites this way (`str::from_bytes_unchecked(...)`);
+            // an instance one goes through `find_methods` instead.
             other => {
-                self.errors.push(AnalysisError::new(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::StaticAccessOnNonStruct { found: other.clone() },
-                ));
-                return None;
+                let methods = match self.resolver.extension_methods(other) {
+                    Ok(methods) => methods,
+                    Err(err) => {
+                        self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(err)));
+                        return None;
+                    }
+                };
+                if methods.is_empty() {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::StaticAccessOnNonStruct { found: other.clone() },
+                    ));
+                    return None;
+                }
+                let type_name = Ident(other.to_string());
+                let method = methods.iter().find(|(name, _)| name == member).map(|(_, m)| m.clone());
+                let similar = match method {
+                    Some(_) => None,
+                    None => best_match(member, methods.iter().map(|(name, _)| name)),
+                };
+                let missing = AnalysisErrorKind::NoSuchStructFunction {
+                    r#struct: type_name.clone(),
+                    function: member.clone(),
+                    similar,
+                };
+                (type_name, method, missing)
             }
         };
 
@@ -2222,7 +2485,7 @@ impl<'r> Analyzer<'r> {
                 )));
             }
 
-            let methods = self.find_methods(&base_type, field);
+            let methods = self.find_methods(callee.id, callee.span, &base_type, field);
             if !methods.is_empty() {
                 // A function declared without `self` is static -- reached
                 // through the struct's name (`MyStruct::f()`), never through
@@ -2259,11 +2522,17 @@ impl<'r> Analyzer<'r> {
                         ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
                         other => other,
                     };
+                    // Struct/union/enum have a real declared name; a
+                    // primitive extension target (reachable here only if a
+                    // `for`-attached self-less function shares a name with
+                    // an instance call, e.g. `x.from_bytes_unchecked()`) has
+                    // none, so its own `Display` (`"u32"`, `"*[i32]"`, ...)
+                    // stands in instead.
                     let r#struct = match dereffed {
                         ResolvedType::Struct(cell) => cell.borrow().name.clone(),
                         ResolvedType::Union(cell) => cell.borrow().name.clone(),
                         ResolvedType::Enum { cell, .. } => cell.borrow().name.clone(),
-                        _ => unreachable!("find_methods only ever finds methods on struct/union/enum types"),
+                        other => Ident(other.to_string()),
                     };
                     self.errors.push(AnalysisError::new(
                         callee.id,
@@ -2306,6 +2575,41 @@ impl<'r> Analyzer<'r> {
                             id: callee.id,
                             span: callee.span,
                             r#type: pointer_type,
+                            kind: CheckedExpr::Place(checked_base),
+                        }
+                    }
+                    // self wants a pointer, base is already a `Str`/`Slice`
+                    // value -- these are already their own fat-pointer
+                    // representation (see `Context::resolve_type`'s
+                    // `Pointer(Named("str")) -> Str`/`Pointer(Array(_)) ->
+                    // Slice` special cases, which a `for`-attached spec's
+                    // own `Self` substitution goes through identically), so
+                    // an actual `AddressOf`/`Pointer{pointee: Str/Slice}`
+                    // wrapper here would be a genuine extra indirection
+                    // layer the signature never asked for -- re-stamped
+                    // with `self_mode`'s own mutability instead, mirroring
+                    // that same resolution rule on the call-site side.
+                    (ResolvedType::Str { mutable: base_mutable }, true) => {
+                        if self_mode.is_mutable() && !base_mutable {
+                            self.errors.push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::NotMutablePointer));
+                            return None;
+                        }
+                        CheckedExprNode {
+                            id: callee.id,
+                            span: callee.span,
+                            r#type: ResolvedType::Str { mutable: self_mode.is_mutable() },
+                            kind: CheckedExpr::Place(checked_base),
+                        }
+                    }
+                    (ResolvedType::Slice { item, mutable: base_mutable }, true) => {
+                        if self_mode.is_mutable() && !base_mutable {
+                            self.errors.push(AnalysisError::new(callee.id, callee.span, AnalysisErrorKind::NotMutablePointer));
+                            return None;
+                        }
+                        CheckedExprNode {
+                            id: callee.id,
+                            span: callee.span,
+                            r#type: ResolvedType::Slice { item: item.clone(), mutable: self_mode.is_mutable() },
                             kind: CheckedExpr::Place(checked_base),
                         }
                     }
@@ -6267,6 +6571,7 @@ impl<'r> Analyzer<'r> {
             body,
             inline: annotations.inline,
             mangling: annotations.mangling,
+            extension_target: None,
         })
     }
 

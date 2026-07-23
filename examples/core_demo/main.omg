@@ -1,0 +1,58 @@
+# Demonstrates `spec Name : Deps for Target { ... }` (see
+# `examples/core/core_pkg/`) -- every call below reaches a `for`-attached
+# method on a primitive with **no import of anything from `core` anywhere
+# in this file**. There's nothing to import: the attaching spec's own name
+# (`Integer`, `StrImpl`, `SliceImpl`) is never registered anywhere once
+# `for` is used, so the only way any of this is ever reachable is through
+# ordinary method-call syntax on a value of the right type.
+#
+# `core`'s on-disk file is named `core_pkg.omg`, not `core.omg`, nested
+# *inside* its own `core_pkg/` directory alongside `collections.omg` -- a
+# real, pre-existing quirk of how `--extern` locates a directory-shaped
+# module, not something this feature introduces. `--extern=<name>:<file>`
+# only ever uses `<file>` to derive two things: its *parent directory* (the
+# search root) and its *stem* (the segment name to search for inside that
+# root) -- `<file>` itself is never read, so it doesn't need to exist on
+# disk at all. A directory-shaped module needs a real `<stem>/` directory
+# directly inside the search root (never a same-named sibling *file* there
+# too -- that's ambiguous); `<stem>/<stem>.omg`, nested one level inside
+# that directory, supplies the module's own content, and any further
+# sibling files/directories inside it are its submodules.
+#
+# So: `examples/core/core_pkg.omg` (below) is a pure naming anchor --
+# parent `examples/core/`, stem `core_pkg` -- pointing at the *real*
+# content in `examples/core/core_pkg/core_pkg.omg` (`core`'s own) and
+# `examples/core/core_pkg/collections.omg` (`core::collections`). Naming
+# `core`'s on-disk stem anything other than literally `core` is what makes
+# this work at all: if the stem were `core`, `--extern=core:examples/core/core.omg`
+# would need `examples/core/core.omg` to be a real, existing leaf file for
+# its own content -- but then that same leaf, sitting beside (not inside) a
+# `core/` directory, would make `core/` and `core.omg` collide as competing
+# claims to the same segment, rejected as ambiguous rather than combined.
+#
+# Build and run:
+#   omgc examples/core_demo/main.omg --extern=core:examples/core/core_pkg.omg -o target/core_demo.o
+#   cc target/core_demo.o -o target/core_demo
+#   ./target/core_demo
+
+extern printf : (s: *u8, ...) => i32;
+
+main(argc: i32, argv: [*u8]) => i32 {
+    a := 3;
+    b := 4;
+    sum := a.add(b);
+    diff := a.sub(b);
+    printf(<*u8>b"i32 for-ext: 3.add(4) = %d, 3.sub(4) = %d\n\0", sum, diff);
+
+    greeting := "hello, omega!";
+    bytes := greeting.as_bytes();
+    len := greeting.length();
+    printf(<*u8>b"str for-ext: length = %d, first byte = %d\n\0", len, <i32>bytes[0]);
+
+    arr := [10, 20, 30];
+    slice := &arr[0...];
+    first := slice.first();
+    printf(<*u8>b"[T] for-ext (pattern): first = %d\n\0", first);
+
+    return sum + diff + len + first;
+}

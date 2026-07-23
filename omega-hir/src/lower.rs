@@ -296,8 +296,9 @@ impl Lowerer {
         let generics = Self::lower_generics(&sp.generics);
         let dependencies = sp.dependencies.clone();
         let functions = sp.functions.iter().map(|f| self.lower_spec_function(f, span)).collect();
+        let target = sp.target.clone();
 
-        HirSpecDef { id, span, name: sp.ident.clone(), generics, dependencies, functions }
+        HirSpecDef { id, span, name: sp.ident.clone(), generics, dependencies, functions, target }
     }
 
     /// `Self` is the type-name lowering hands to `self_param` here --

@@ -142,6 +142,18 @@ pub struct CheckedFunctionDef {
     /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
     /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
     pub mangling: crate::annotations::ManglingMode,
+    /// `Some` for a method attached via `spec Name : Deps for Target { ... }`
+    /// (see `HirSpecDef::target`'s doc comment) -- the resolved target type,
+    /// carried purely for mangling: unlike a struct/enum/union method (which
+    /// lives in its owner's own `.functions` field and is mangled from a
+    /// dedicated `declare_item` arm), this function still travels through
+    /// the ordinary `CheckedItem::FunctionDefinition` path, so it needs its
+    /// own way to say "I have an owner" -- `omega_codegen`'s `declare_item`
+    /// mangles via `mangle::method_symbol` (using this as the owner) instead
+    /// of `mangle::free_function_symbol` when this is `Some`, avoiding a
+    /// mangled-symbol collision with an unrelated, same-named ordinary
+    /// function.
+    pub extension_target: Option<ResolvedType>,
 }
 
 impl CheckedFunctionDef {

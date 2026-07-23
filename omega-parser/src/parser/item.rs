@@ -393,12 +393,13 @@ pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opti
     Some(UnionStmt { annotations, ident, generics, implements, fields, functions })
 }
 
-/// `spec Name<T, ...> : Dep, Dep { functions }` (declaration form) or
-/// `spec Name<T, ...> = Dep | Dep | Dep;` (alias form) -- see `SpecStmt`'s
-/// doc comment for the two forms' shared meaning. The leading `:`/`=` token
-/// is what disambiguates them; both keep parsing a `Type`-list afterward
-/// (`,`-separated for `:`, `|`-separated for `=`), just with different
-/// terminators (`{ ... }` vs `;`).
+/// `spec Name<T, ...> : Dep, Dep for Target { functions }` (declaration
+/// form) or `spec Name<T, ...> = Dep | Dep | Dep;` (alias form) -- see
+/// `SpecStmt`'s doc comment for the two forms' shared meaning, and for what
+/// the optional `for Target` clause (decl form only) does. The leading
+/// `:`/`=` token is what disambiguates the two forms; both keep parsing a
+/// `Type`-list afterward (`,`-separated for `:`, `|`-separated for `=`),
+/// just with different terminators (`{ ... }` vs `;`).
 pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
     p.expect(&TokenKind::Spec, "'spec'");
     let ident = p.expect_ident()?;
@@ -415,10 +416,15 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
         } else {
             p.expect_terminator(&TokenKind::Semi, "';'");
         }
-        return Some(SpecStmt { ident, generics, dependencies, functions: Vec::new() });
+        return Some(SpecStmt { ident, generics, dependencies, functions: Vec::new(), target: None });
     }
 
     let dependencies = parse_optional_implements(p)?;
+    let target = if p.eat(&TokenKind::For) {
+        Some(crate::parser::r#type::parse_type(p)?)
+    } else {
+        None
+    };
     p.expect(&TokenKind::LBrace, "'{'");
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
@@ -428,7 +434,7 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
         }
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(SpecStmt { ident, generics, dependencies, functions })
+    Some(SpecStmt { ident, generics, dependencies, functions, target })
 }
 
 /// `name(params) => Ret;` (required -- every implementor must provide a

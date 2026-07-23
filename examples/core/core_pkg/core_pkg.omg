@@ -1,0 +1,48 @@
+# The `core` package's root module. On disk this file is named `core_pkg.omg`
+# (not `core.omg`), nested *inside* its own `core_pkg/` directory alongside
+# its submodules (`collections.omg`) -- see `examples/core_demo/main.omg`'s
+# own comment for exactly why, and the `--extern=core:examples/core/core_pkg.omg`
+# flag it's compiled with, which gives it the declared name `core` regardless
+# of its on-disk stem (`examples/core/core_pkg.omg` itself doesn't need to
+# exist -- only its parent directory and file stem are ever used).
+
+# An ordinary, nameable spec -- no `for` clause, so it follows completely
+# normal spec rules (importable, usable as a generic bound, dynamically
+# dispatchable via `spec *Number`). Only useful as something a `for` block
+# elsewhere can additionally satisfy (see `Integer` below).
+spec Number {
+    add(*self, other: Self) => Self;
+}
+
+# `spec Name : Deps for Target { ... }` -- defines an anonymous spec (the
+# name `Integer` is never referenceable anywhere, not even from other code
+# in this same package) and immediately implements it for `i32`, in one
+# statement. Because it lists `: Number`, its own `add` also has to satisfy
+# `Number`'s required signature -- which is why `add` keeps `*self`,
+# matching `Number`'s own pointer-only self (an ordinary spec's self is
+# always `*self`/`*mut self`; a `for`-attached spec is normally exempt from
+# that restriction, but only for functions that don't also need to satisfy
+# a pointer-self dependency). `sub` has no such tie, so it's free to use
+# by-value `self` instead -- primitives are cheap to copy, and this is
+# exactly the shape the feature's original design sketch showed.
+spec Integer : Number for i32 {
+    add(*self, other: Self) => Self {
+        *self + other
+    }
+    sub(self, other: Self) => Self {
+        self - other
+    }
+}
+
+# `for str` -- str's methods have to use `*self`/`*mut self`, matching how
+# `str` itself always behaves as a fat pointer value (see `Context::
+# resolve_type`'s `*str` handling): there's no other, non-pointer "bare"
+# representation to receive by value.
+spec StrImpl for str {
+    as_bytes(*self) => *[u8] {
+        <*[u8]>self
+    }
+    length(*self) => i32 {
+        self.length
+    }
+}

@@ -31,12 +31,21 @@ use crate::ast::expression::codeblock::CodeblockExpr;
 /// `dependencies` transitively, then this spec's own `functions`. Kept as
 /// two parser-level entry points purely for the clearer `=`/`:` syntax the
 /// user sees; see `parser::item::parse_spec_def`.
+///
+/// The declaration form may also carry a trailing `for TargetType` clause
+/// (`target`, `None` unless written) -- this both defines the spec *and*
+/// immediately, anonymously implements it for `TargetType`: the spec's own
+/// `ident` is never registered as a name anywhere once `target` is set (see
+/// `omega_driver`'s `item_name`), so two unrelated `for` blocks may reuse
+/// the same `ident` with no conflict. Only legal on the declaration form --
+/// the alias form has no body to attach and never sets this field.
 #[derive(Debug, Clone)]
 pub struct SpecStmt {
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,
+    pub target: Option<Type>,
 }
 
 /// One function member of a spec -- `body: None` for a required function
@@ -49,10 +58,12 @@ pub struct SpecStmt {
 pub struct SpecFunctionStmt {
     pub ident: Ident,
     /// See `FunctionDefinitionStmt::self_mode`. Always `*self`/`*mut self`
-    /// (`SelfMode::Pointer`/`MutPointer`) for a spec function -- by-value
-    /// self is rejected during spec signature resolution (see
+    /// (`SelfMode::Pointer`/`MutPointer`) for an ordinary spec function --
+    /// by-value self is rejected during spec signature resolution (see
     /// `Analyzer::resolve_spec_functions`), since it can't survive `spec
-    /// *T` dynamic dispatch's `Self`-erasure.
+    /// *T` dynamic dispatch's `Self`-erasure. A `SpecStmt` with a `target`
+    /// is exempt (it can never be named for `spec *T`, so this can't apply)
+    /// -- see the same function's `is_extension` bypass.
     pub self_mode: Option<SelfMode>,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,
