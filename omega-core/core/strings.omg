@@ -1,0 +1,100 @@
+# `core::strings` -- `str`'s own methods. `str` is already a lengthed
+# fat pointer (`Context::resolve_type`'s `*str`), never null-terminated, so
+# everything here works off `.length` and byte comparisons rather than any
+# terminator scan.
+
+import cmp::Eq;
+
+spec StrOps : Eq for str {
+    equals(*self, other: Self) => bool {
+        if self.length != other.length {
+            return false;
+        }
+        a := <*[u8]>self;
+        b := <*[u8]>other;
+        mut i : i32 = 0;
+        while i < self.length {
+            if a[i] != b[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+
+    is_empty(*self) => bool {
+        self.length == 0
+    }
+
+    # A plain reinterpretation, not a copy -- `*str` and `*[u8]` share the
+    # exact same fat-pointer leaf layout (data pointer + length).
+    as_bytes(*self) => *[u8] {
+        <*[u8]>self
+    }
+
+    starts_with(*self, prefix: Self) => bool {
+        if prefix.length > self.length {
+            return false;
+        }
+        a := <*[u8]>self;
+        b := <*[u8]>prefix;
+        mut i : i32 = 0;
+        while i < prefix.length {
+            if a[i] != b[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+
+    ends_with(*self, suffix: Self) => bool {
+        if suffix.length > self.length {
+            return false;
+        }
+        offset := self.length - suffix.length;
+        a := <*[u8]>self;
+        b := <*[u8]>suffix;
+        mut i : i32 = 0;
+        while i < suffix.length {
+            if a[offset + i] != b[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+
+    # Naive (no Boyer-Moore/KMP skip table) substring search -- `O(n*m)`,
+    # deliberately: a skip table needs working memory proportional to the
+    # needle, which is exactly the kind of hidden allocation this layer
+    # never does. Fine for the short, mostly-literal needles this is
+    # actually used with; a caller with real throughput needs is expected
+    # to bring their own algorithm, not lean on this one.
+    contains(*self, needle: Self) => bool {
+        if needle.length == 0 {
+            return true;
+        }
+        if needle.length > self.length {
+            return false;
+        }
+        a := <*[u8]>self;
+        b := <*[u8]>needle;
+        mut start : i32 = 0;
+        while start <= self.length - needle.length {
+            mut matched := true;
+            mut i : i32 = 0;
+            while i < needle.length {
+                if a[start + i] != b[i] {
+                    matched = false;
+                }
+                i = i + 1;
+            }
+            if matched {
+                return true;
+            }
+            start = start + 1;
+        }
+        false
+    }
+}

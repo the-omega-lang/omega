@@ -379,11 +379,20 @@ pub struct Driver {
     /// `for`-spec declarations changes mid-compile. `false` means
     /// `extension_cache`/`extension_pattern` may still be incomplete.
     extensions_discovered: bool,
-    /// Every module path `discover_extensions` actually walked (including
-    /// ones `import`-reachability would never have found on its own) --
-    /// extends `drain_errors`'s scope so a genuine error inside `core`'s
-    /// own tree (e.g. a `for`-spec with a bodyless function) still surfaces
-    /// even when nothing local ever explicitly imports that submodule; see
+    /// `Some` when `discover_extensions`'s own walk of `core`'s import
+    /// graph (`discover_module_tree`) failed -- `core` was registered
+    /// (unlike the ordinary "not registered at all" case, silently
+    /// tolerated) but something in its own tree is genuinely broken (a
+    /// syntax error, an unresolvable import, ...). Surfaced through
+    /// `extension_methods`'s own `Result` the next time anything asks for
+    /// a primitive's extension methods, rather than swallowed.
+    extension_discovery_error: Option<ResolveError>,
+    /// Every module path `discover_extensions` actually walked -- every
+    /// module transitively reachable from `core`'s own root via its own
+    /// `import` statements (see `discover_module_tree`). Extends
+    /// `drain_errors`'s scope so a genuine error inside `core`'s own tree
+    /// (e.g. a `for`-spec with a bodyless function) still surfaces even
+    /// when nothing local ever explicitly imports that submodule; see
     /// `compile`'s use of this alongside `local_reachable`. Deliberately
     /// *not* used to extend `drain_warnings`'s scope -- `core`'s own
     /// internal warnings (e.g. an unused import inside `core` itself)
@@ -474,6 +483,7 @@ impl Driver {
             module_warnings: HashMap::new(),
             used_imports: HashSet::new(),
             extensions_discovered: false,
+            extension_discovery_error: None,
             extension_module_paths: Vec::new(),
             extension_pattern: None,
             extension_cache: HashMap::new(),
@@ -756,60 +766,67 @@ impl Driver {
         Err(ResolveError::UnknownModule(segments))
     }
 
-    /// Recursively collects every module path under `dir` (a directory
-    /// already known to be one module's `children_dir`) -- unlike
-    /// `discover_reachable`, which only ever follows explicit `import`
-    /// paths, this is a raw filesystem walk (`std::fs::read_dir`), since a
-    /// `for`-spec is never imported by anything (see `HirSpecDef::target`'s
-    /// doc comment) and so can only ever be found this way. Mirrors
-    /// `fs_resolve::resolve_segment`'s own file-vs-directory convention:
-    /// a `name/` directory is itself a module (namespace-only if it has no
-    /// own `name/name.omg`) that may have further children of its own
-    /// (recursed into); a bare `name.omg` file is a leaf, with no
-    /// children -- except `own_stem`, which names *this* directory's own
-    /// file (already represented by `prefix` itself, not a separate
-    /// module) and is skipped rather than double-counted. A directory that
-    /// also has a same-named sibling file (`fs_resolve`'s
-    /// `SegmentError::Ambiguous`) is intentionally not specially detected
-    /// here -- both get collected, and `parse_module`'s own
-    /// `locate_module` call surfaces the real ambiguity error once either
-    /// one is actually parsed.
-    fn discover_submodules(dir: &std::path::Path, own_stem: &str, prefix: &[Ident], out: &mut Vec<Vec<Ident>>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if path.is_dir() {
-                let mut child = prefix.to_vec();
-                child.push(Ident(name.clone()));
-                out.push(child.clone());
-                Self::discover_submodules(&path, &name, &child, out);
-            } else if let Some(stem) = name.strip_suffix(".omg") {
-                if stem == own_stem {
-                    continue;
+    /// Every module transitively reachable from `entry` via its own
+    /// `import` statements -- the same worklist `discover_reachable` walks
+    /// for the program's own entry point, built from the exact same two
+    /// primitives (`parse_module`/`reachable_target`), reused here for
+    /// `core`'s own root instead (see `discover_extensions`): a `for`-spec
+    /// itself is never imported by anything, but the *module* declaring it
+    /// always is reachable this way, by construction -- `core`'s own root
+    /// file exists specifically to `import` every one of its submodules
+    /// (see `omega-core/core/core.omg`'s own doc comment), so following
+    /// that import graph finds everything a raw filesystem walk would
+    /// have, without ever needing to touch the filesystem beyond what
+    /// `parse_module` already does for an ordinary import.
+    ///
+    /// Kept separate from `discover_reachable` itself (not a literal call
+    /// to it) rather than generalized into one shared function: that one's
+    /// `CompileError`-flavored, richly importer-attributed failure mode is
+    /// tailored to the *main* entry's own failure being fatal to the whole
+    /// compile; a broken `core`, discovered lazily mid-body-check, only
+    /// ever needs to fail this one `extension_methods` lookup cleanly (see
+    /// `extension_discovery_error`), so the plain `ResolveError` each of
+    /// the two reused primitives already produces is propagated as-is.
+    fn discover_module_tree(&mut self, entry: &[Ident]) -> Result<Vec<Vec<Ident>>, ResolveError> {
+        let mut reachable = vec![entry.to_vec()];
+        let mut worklist = vec![entry.to_vec()];
+        let mut seen: HashSet<Vec<Ident>> = HashSet::from([entry.to_vec()]);
+
+        while let Some(path) = worklist.pop() {
+            let hir = self.parse_module(&path)?;
+            for item in &hir.items {
+                let HirItem::Import(import) = item else { continue };
+                let target = self.reachable_target(&path, import)?;
+                if seen.insert(target.clone()) {
+                    reachable.push(target.clone());
+                    worklist.push(target);
                 }
-                let mut child = prefix.to_vec();
-                child.push(Ident(stem.to_string()));
-                out.push(child);
             }
         }
+
+        Ok(reachable)
     }
 
-    /// Walks `core`'s entire module tree (see `discover_submodules`),
+    /// Walks `core`'s entire module tree (see `discover_module_tree`),
     /// finding every `spec Name : Deps for Target { ... }` declared
     /// anywhere in it -- the only way one is ever found, since nothing ever
-    /// imports it by name (see `HirSpecDef::target`'s doc comment).
-    /// Memoized (`extensions_discovered`): a `Concrete` target is fully
-    /// resolved into `extension_cache`/`extension_pending` right here
-    /// (there's exactly one possible receiver for it, ever); the one
-    /// `[T]`-pattern target found (if any) is stashed in `extension_pattern`
-    /// for `extension_methods` to resolve per-receiver, lazily, the first
-    /// time a concrete `T` is actually asked about. Enforces "only one
-    /// `for` block per target type" here, once, across the whole tree --
-    /// `DuplicateExtensionTarget` names both sites. Does nothing (not an
-    /// error) if `core` isn't registered for this compilation at all --
-    /// `for`-attached methods are simply unavailable without it, the same
-    /// way any other `--extern`-gated feature would be.
+    /// imports it by name (see `HirSpecDef::target`'s doc comment) *itself*
+    /// -- the *modules* it lives in are what get discovered, transitively,
+    /// from `core`'s own root. Memoized (`extensions_discovered`): a
+    /// `Concrete` target is fully resolved into `extension_cache`/
+    /// `extension_pending` right here (there's exactly one possible
+    /// receiver for it, ever); the one `[T]`-pattern target found (if any)
+    /// is stashed in `extension_pattern` for `extension_methods` to
+    /// resolve per-receiver, lazily, the first time a concrete `T` is
+    /// actually asked about. Enforces "only one `for` block per target
+    /// type" here, once, across the whole tree -- `DuplicateExtensionTarget`
+    /// names both sites. Does nothing (not an error) if `core` isn't
+    /// registered for this compilation at all -- `for`-attached methods
+    /// are simply unavailable without it, the same way any other
+    /// `--extern`-gated feature would be; a `core` that *is* registered but
+    /// whose own tree fails to parse/resolve is a genuine error instead,
+    /// stashed in `extension_discovery_error` for `extension_methods` to
+    /// report.
     fn discover_extensions(&mut self) {
         if self.extensions_discovered {
             return;
@@ -817,29 +834,24 @@ impl Driver {
         self.extensions_discovered = true;
 
         let core = vec![Ident("core".to_string())];
-        let Ok(location) = locate_module(&self.search_roots_for(&core), &self.physical_lookup_path(&core)) else {
+        if locate_module(&self.search_roots_for(&core), &self.physical_lookup_path(&core)).is_err() {
             return;
-        };
-
-        let mut module_paths = vec![core.clone()];
-        if let Some(children_dir) = &location.children_dir {
-            let own_stem = location
-                .own_file
-                .as_ref()
-                .and_then(|f| f.file_stem())
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "core".to_string());
-            Self::discover_submodules(children_dir, &own_stem, &core, &mut module_paths);
         }
-        let mut seen: HashSet<Vec<Ident>> = HashSet::new();
-        module_paths.retain(|p| seen.insert(p.clone()));
+
+        let module_paths = match self.discover_module_tree(&core) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.extension_discovery_error = Some(error);
+                return;
+            }
+        };
         self.extension_module_paths = module_paths.clone();
 
         let mut concrete_sites: HashMap<ResolvedType, Span> = HashMap::new();
         let mut pattern_site: Option<Span> = None;
 
         for module_path in module_paths {
-            let Ok(hir) = self.parse_module(&module_path) else { continue };
+            let hir = self.parse_module(&module_path).expect("discover_module_tree already parsed this");
             let specs: Vec<HirSpecDef> = hir
                 .items
                 .iter()
@@ -2540,6 +2552,9 @@ impl ModuleResolver for Driver {
             return Ok(methods.clone());
         }
         self.discover_extensions();
+        if let Some(error) = &self.extension_discovery_error {
+            return Err(error.clone());
+        }
         // A `Concrete` target's entry was already populated by
         // `discover_extensions` itself -- a miss here means either no
         // `for`-spec targets `receiver` at all, or it's a job for the one

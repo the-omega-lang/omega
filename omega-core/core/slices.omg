@@ -1,0 +1,36 @@
+# `core::slices` -- `*[T]`'s own methods, for *any* element type `T` (see
+# `SliceImpl`'s `for [T]` target -- one instantiation gets generated per
+# concrete `T` a program actually uses, deduplicated across translation
+# units the same way any other generic instantiation is).
+#
+# Every potentially-out-of-bounds read reports success through a returned
+# `bool` and writes the found value through an `out` pointer, rather than
+# trusting the caller or aborting -- there is no panic mechanism in this
+# layer at all (nothing to call on a target with no libc), so "fails
+# cleanly, inspectable by the caller" is the only available shape for a
+# partial operation. `false` leaves `*out` untouched.
+
+spec SliceImpl<T> for [T] {
+    is_empty(*self) => bool {
+        self.length == 0
+    }
+
+    get(*self, index: i32, out: *mut T) => bool {
+        if index < 0 {
+            false
+        } else if index >= self.length {
+            false
+        } else {
+            *out = self[index];
+            true
+        }
+    }
+
+    first(*self, out: *mut T) => bool {
+        self.get(0, out)
+    }
+
+    last(*self, out: *mut T) => bool {
+        self.get(self.length - 1, out)
+    }
+}

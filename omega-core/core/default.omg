@@ -1,0 +1,9 @@
+# `core::default` -- the canonical "zero value" for a type, reached
+# through a name rather than a literal (`T::default()` instead of
+# knowing/spelling out `0`, `0.0`, `false`, `'\0'` per type) -- the same
+# role Rust's `Default` trait plays, useful anywhere generic code needs
+# *some* starting value without caring which type it's working with.
+
+spec Default {
+    default() => Self;
+}

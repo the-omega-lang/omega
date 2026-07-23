@@ -1,0 +1,103 @@
+# `core::cmp` -- the two interfaces (`Eq`, `Ord`) most of the rest of
+# `core` is written against, plus the three-way result `Ord::compare`
+# reports through. Deliberately split from `Ord` (Rust's own split of
+# `PartialEq`/`Eq` from `PartialOrd`/`Ord` collapsed into one pair here,
+# since this language has no partial/total distinction to encode): a type
+# can be comparable for equality alone (most usefully, `f32`/`f64`, where a
+# total order doesn't exist because of `NaN`) without claiming a total
+# order it can't actually provide.
+
+enum Ordering {
+    Less,
+    Equal,
+    Greater;
+
+    is_lt(*self) => bool {
+        match self {
+            Ordering::Less => {
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    is_eq(*self) => bool {
+        match self {
+            Ordering::Equal => {
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    is_gt(*self) => bool {
+        match self {
+            Ordering::Greater => {
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    reverse(*self) => Ordering {
+        match self {
+            Ordering::Less => {
+                Ordering::Greater
+            }
+        } else {
+            match self {
+                Ordering::Greater => {
+                    Ordering::Less
+                }
+            } else {
+                Ordering::Equal
+            }
+        }
+    }
+}
+
+spec Eq {
+    equals(*self, other: Self) => bool;
+
+    not_equals(*self, other: Self) => bool {
+        if self.equals(other) { false } else { true }
+    }
+}
+
+# `: Eq` -- anything with a total order can also be checked for equality
+# (`compare(a, b).is_eq()`), so every `Ord` implementor is required to
+# provide `Eq` too; `less_than`/`greater_than`/`min`/`max` all come free
+# from `compare` alone, though an implementor is free to override any of
+# them with a more direct definition (see `core::numerics`, which does,
+# purely for speed -- the defaults here are what make the interface usable
+# on their own).
+spec Ord : Eq {
+    compare(*self, other: Self) => Ordering;
+
+    less_than(*self, other: Self) => bool {
+        self.compare(other).is_lt()
+    }
+
+    greater_than(*self, other: Self) => bool {
+        self.compare(other).is_gt()
+    }
+
+    less_or_equal(*self, other: Self) => bool {
+        if self.greater_than(other) { false } else { true }
+    }
+
+    greater_or_equal(*self, other: Self) => bool {
+        if self.less_than(other) { false } else { true }
+    }
+
+    min(*self, other: Self) => Self {
+        if self.less_or_equal(other) { *self } else { other }
+    }
+
+    max(*self, other: Self) => Self {
+        if self.greater_or_equal(other) { *self } else { other }
+    }
+}
