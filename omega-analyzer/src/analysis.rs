@@ -195,6 +195,18 @@ pub struct Analyzer<'r> {
     /// `hidden hidden x.y` still warns on the outer wrapper even though the
     /// inner one saved the access.
     hidden_stack: Vec<bool>,
+    /// The struct/union/enum whose own method bodies this `Analyzer`
+    /// instance is currently checking -- `Some(cell.borrow().id)` for the
+    /// whole duration of `check_struct_body`/`check_union_body`/
+    /// `check_enum_body` (one fresh `Analyzer` per type, never shared
+    /// across two different types -- see those functions' own callers in
+    /// `omega_driver::Driver`), `None` for a plain top-level function/
+    /// global. This is what a **private field**'s own visibility rule is
+    /// actually scoped to -- "cannot be accessed outside of the struct
+    /// definition," a narrower scope than a private *item*'s (module-wide)
+    /// rule, since it's compared against a single type's identity, not a
+    /// module path. See `Analyzer::check_field_visibility`.
+    current_owner: Option<HirId>,
 }
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
@@ -353,6 +365,7 @@ impl<'r> Analyzer<'r> {
             in_defer_body: false,
             suppressed: vec![],
             hidden_stack: vec![],
+            current_owner: None,
         }
     }
 
@@ -425,6 +438,44 @@ impl<'r> Analyzer<'r> {
             Visibility::Internal => declaring_module.first() == accessor_module.first(),
             Visibility::Private => declaring_module == accessor_module,
         }
+    }
+
+    /// The choke point every *field* (struct/union/enum-header/enum-
+    /// dynamic/enum-variant field, and a struct/enum-variant/union
+    /// literal's own field initializers) visibility check goes through --
+    /// deliberately separate from `check_visibility`, since a private
+    /// *field*'s scope is narrower than a private *item*'s: "a private
+    /// field cannot be accessed outside of the struct definition," not
+    /// merely outside its declaring module. `owner_id` is the declaring
+    /// struct/union/enum's own stable identity (`ResolvedStructType::id`
+    /// and friends); `Private` is allowed only when `self.current_owner`
+    /// (the type whose own method bodies -- or, for a spec-satisfying
+    /// default method, whose own *identity* -- are currently being
+    /// checked) is that exact same type. A top-level function has no
+    /// `current_owner` at all (`None`), so it can never touch a private
+    /// field of any type, including one declared in its own module,
+    /// without `hidden` -- unlike `Exposed`/`Internal`, which behave
+    /// identically to an ordinary item (module-path-based, via the same
+    /// `visibility_allows`) regardless of whether the accessor happens to
+    /// be a method of the same type or not.
+    pub(crate) fn check_field_visibility(
+        &mut self,
+        visibility: Visibility,
+        declaring_module: &[Ident],
+        owner_id: HirId,
+    ) -> bool {
+        let allowed = match visibility {
+            Visibility::Private => self.current_owner == Some(owner_id),
+            _ => Self::visibility_allows(visibility, declaring_module, &self.module_path),
+        };
+        if allowed {
+            return true;
+        }
+        if let Some(top) = self.hidden_stack.last_mut() {
+            *top = true;
+            return true;
+        }
+        false
     }
 
     /// Peels `HirExpr::Hidden` wrappers off `expr`, returning whether at
@@ -1415,8 +1466,9 @@ impl<'r> Analyzer<'r> {
             if let Some((index, (_, r#type, visibility))) = e.header.iter().enumerate().find(|(_, (name, _, _))| name == field) {
                 let (r#type, visibility) = (r#type.clone(), *visibility);
                 let module_path = e.module_path.clone();
+                let owner_id = e.id;
                 drop(e);
-                if !self.check_visibility(visibility, &module_path) {
+                if !self.check_field_visibility(visibility, &module_path, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1432,8 +1484,9 @@ impl<'r> Analyzer<'r> {
             {
                 let (r#type, visibility) = (r#type.clone(), *visibility);
                 let module_path = e.module_path.clone();
+                let owner_id = e.id;
                 drop(e);
-                if !self.check_visibility(visibility, &module_path) {
+                if !self.check_field_visibility(visibility, &module_path, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1454,8 +1507,9 @@ impl<'r> Analyzer<'r> {
             {
                 let (r#type, visibility) = (r#type.clone(), *visibility);
                 let module_path = e.module_path.clone();
+                let owner_id = e.id;
                 drop(e);
-                if !self.check_visibility(visibility, &module_path) {
+                if !self.check_field_visibility(visibility, &module_path, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1524,8 +1578,9 @@ impl<'r> Analyzer<'r> {
                 return None;
             };
             let module_path = union_type.module_path.clone();
+            let owner_id = union_type.id;
             drop(union_type);
-            if !self.check_visibility(visibility, &module_path) {
+            if !self.check_field_visibility(visibility, &module_path, owner_id) {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     span,
@@ -1563,8 +1618,9 @@ impl<'r> Analyzer<'r> {
             return None;
         };
         let module_path = struct_type.module_path.clone();
+        let owner_id = struct_type.id;
         drop(struct_type);
-        if !self.check_visibility(visibility, &module_path) {
+        if !self.check_field_visibility(visibility, &module_path, owner_id) {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -5523,12 +5579,14 @@ impl<'r> Analyzer<'r> {
                 let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
                 let struct_name = cell.borrow().name.clone();
                 let declaring_module = cell.borrow().module_path.clone();
+                let owner_id = cell.borrow().id;
                 let base = resolved.clone();
                 let fields = self.check_field_initializers(
                     node_id,
                     span,
                     &struct_name,
                     &declaring_module,
+                    owner_id,
                     &base,
                     &declared,
                     &lit.fields,
@@ -5542,7 +5600,7 @@ impl<'r> Analyzer<'r> {
                 })
             }
             LiteralTarget::EnumVariant(cell, variant_index) => {
-                let (enum_name, variant_name, declared, header_names, declaring_module) = {
+                let (enum_name, variant_name, declared, header_names, declaring_module, owner_id) = {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
                     let header_names: Vec<Ident> = e.header.iter().map(|(name, _, _)| name.clone()).collect();
@@ -5551,7 +5609,7 @@ impl<'r> Analyzer<'r> {
                     // site must supply both, in one combined literal.
                     let declared: Vec<(Ident, ResolvedType, Visibility)> =
                         e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
-                    (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone())
+                    (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone(), e.id)
                 };
                 if declared.is_empty() {
                     self.errors.push(AnalysisError::new(
@@ -5569,6 +5627,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     &variant_name,
                     &declaring_module,
+                    owner_id,
                     &base,
                     &declared,
                     &lit.fields,
@@ -5598,6 +5657,7 @@ impl<'r> Analyzer<'r> {
                 let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
                 let union_name = cell.borrow().name.clone();
                 let declaring_module = cell.borrow().module_path.clone();
+                let owner_id = cell.borrow().id;
 
                 if lit.fields.is_empty() {
                     self.errors.push(AnalysisError::new(
@@ -5633,7 +5693,7 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
-                if !self.check_visibility(visibility, &declaring_module) {
+                if !self.check_field_visibility(visibility, &declaring_module, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         field.name_span,
@@ -5677,6 +5737,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         owner: &Ident,
         declaring_module: &[Ident],
+        owner_id: HirId,
         base: &ResolvedType,
         declared: &[(Ident, ResolvedType, Visibility)],
         fields: &[omega_hir::HirStructLiteralField],
@@ -5705,7 +5766,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if !self.check_visibility(visibility, declaring_module) {
+            if !self.check_field_visibility(visibility, declaring_module, owner_id) {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     field.name_span,
@@ -7017,6 +7078,7 @@ impl<'r> Analyzer<'r> {
         e: &HirEnumDef,
         cell: &Rc<RefCell<ResolvedEnumType>>,
     ) -> Option<CheckedEnumDef> {
+        self.current_owner = Some(cell.borrow().id);
         let methods: Vec<(ResolvedFunctionType, HirId, crate::annotations::ResolvedAnnotations)> = cell
             .borrow()
             .functions
@@ -7128,6 +7190,24 @@ impl<'r> Analyzer<'r> {
     /// generics are never relevant here, since the spec's HIR can't
     /// reference a name it doesn't know about.
     pub fn check_pending_spec_method(&mut self, pending: &PendingSpecMethod) -> Option<CheckedFunctionDef> {
+        // A spec-satisfying default method effectively becomes part of its
+        // implementor's own definition -- same field-access rights as any
+        // of that type's own hand-written methods (see `Analyzer::
+        // current_owner`'s doc comment). `Self` was already seeded into
+        // this `Analyzer`'s own scope by `Analyzer::new` (from `pending`'s
+        // own substitution, via `omega_driver::Driver::
+        // check_pending_spec_methods`) -- looked back up here rather than
+        // threaded as a separate parameter, since it's already the single
+        // source of truth for what `Self` resolves to in this pending
+        // method's own body. `None` (no case matched) for a primitive
+        // `Self` (a `for`-attached spec target) -- primitives have no
+        // fields to protect this way at all.
+        self.current_owner = match self.context.find_defined_type(&Ident("Self".to_string())) {
+            Some(ResolvedType::Struct(cell)) => Some(cell.borrow().id),
+            Some(ResolvedType::Union(cell)) => Some(cell.borrow().id),
+            Some(ResolvedType::Enum { cell, .. }) => Some(cell.borrow().id),
+            _ => None,
+        };
         let body = pending
             .raw
             .default_body
@@ -7172,6 +7252,7 @@ impl<'r> Analyzer<'r> {
     /// reads back the exact same live data `analyze_place`'s field
     /// projections will later see.
     pub fn check_struct_body(&mut self, s: &HirStructDef, cell: &Rc<RefCell<ResolvedStructType>>) -> Option<CheckedStructDef> {
+        self.current_owner = Some(cell.borrow().id);
         let fields = s
             .fields
             .iter()
@@ -7216,6 +7297,7 @@ impl<'r> Analyzer<'r> {
     /// Checks a union's methods' *bodies* only -- identical contract to
     /// `check_struct_body` (see its doc comment).
     pub fn check_union_body(&mut self, u: &HirUnionDef, cell: &Rc<RefCell<ResolvedUnionType>>) -> Option<CheckedUnionDef> {
+        self.current_owner = Some(cell.borrow().id);
         let fields = u
             .fields
             .iter()

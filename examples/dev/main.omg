@@ -14,7 +14,7 @@ import extern::mathlib;
 import cycle_a::cycle_a_value;
 import cycle_b::unrelated_b;
 
-enum CryptographicAlgorithm(name: *str, variants: *[*str]) {
+enum CryptographicAlgorithm(exposed name: *str, exposed variants: *[*str]) {
     AES("AES", &["128", "192", "256"]),
     RSA("RSA", &["2048", "3092", "4096"])
 }
@@ -25,7 +25,7 @@ enum CryptographicAlgorithm(name: *str, variants: *[*str]) {
 # enum's own header region, written as a bare `[...]` (no `&`, since there's
 # no address being taken). Every variant supplies exactly 3 elements; the
 # length is part of the field's declared type, not a per-variant choice.
-enum MovieCategory(description: *str, top_movies: [*str; 3]) {
+enum MovieCategory(exposed description: *str, exposed top_movies: [*str; 3]) {
     Action("Action-packed movies", ["Some Action Movie 1", "Some Action Movie 2", "Super Action Movie"]),
     Horror("Scary movies", ["Horror Movie 1", "Horror Movie 2", "Super Scary Movie"]),
 }
@@ -75,7 +75,7 @@ sum_skip_multiples_of_3(n : i32) => i32 {
 }
 
 struct Interface {
-    do_thing: (s : *u8) => i32;
+    exposed do_thing: (s : *u8) => i32;
     member_function(*self) => void {
         self.do_thing(<*u8>b"You called the member function\0");
     }
@@ -90,8 +90,8 @@ fibo(n: i32) => i32 {
 }
 
 struct MyNode<T> {
-    value: T;
-    next: *MyNode<T>;
+    exposed value: T;
+    exposed next: *MyNode<T>;
 }
 
 defer_test() => void {
@@ -109,8 +109,8 @@ defer_test() => void {
 # a struct literal (see `Vec2 { x = ...; y = ...; }` below), which must set
 # every field exactly once.
 struct Vec2 {
-    x: i32;
-    y: i32;
+    exposed x: i32;
+    exposed y: i32;
     origin() => Vec2 {
         Vec2 {
             x = 0;
@@ -156,8 +156,8 @@ struct Vec2 {
 # value or through a pointer -- both auto-adapt, see `main`); only
 # `gets_mutable_pointer` does.
 struct Vec2ByValue {
-    x: i32;
-    y: i32;
+    exposed x: i32;
+    exposed y: i32;
     gets_copy(self) => i32 {
         self.x + self.y
     }
@@ -186,8 +186,8 @@ struct Vec2ByValue {
 # A struct-typed field, initialized below both by a nested literal and by an
 # already-built value -- literals nest like any other expression.
 struct Segment {
-    a: Vec2;
-    b: Vec2;
+    exposed a: Vec2;
+    exposed b: Vec2;
 }
 
 # A whole struct passed *by value* (not through a pointer like `self`) --
@@ -209,7 +209,7 @@ enum MyBasicEnum {
 # constants supplied Java-style in each variant's `(...)` -- baked in at the
 # definition, constant forever (`value.description` works on any variant,
 # and can never be assigned).
-enum MyEnumWithHeader(description: *str, some_number: u32) {
+enum MyEnumWithHeader(exposed description: *str, exposed some_number: u32) {
     First("This is the first variant", 10),
     Second("This is the second variant", 25),
     Third("This is the third variant", 30);
@@ -224,8 +224,8 @@ enum MyEnumWithHeader(description: *str, some_number: u32) {
 # the tag and header remain accessible.
 enum MyEnumWithBodies {
     First,
-    Second { some_text: *u8; }
-    Third { some_number: u16; pointer_to_another_instance: *MyEnumWithBodies; }
+    Second { exposed some_text: *u8; }
+    Third { exposed some_number: u16; exposed pointer_to_another_instance: *MyEnumWithBodies; }
 }
 
 # Shared *dynamic* fields (declared right after `{`, before the first
@@ -236,13 +236,13 @@ enum MyEnumWithBodies {
 # supplies them, and they're freely assignable afterward, exactly like a
 # variant's own body field (contrast with `description`, a real header
 # field -- fixed forever once a variant is built).
-enum MyEnumWithSharedDynamicFields(description: *str) {
-    favorite_number: i32;
-    favorite_color: *u8;
+enum MyEnumWithSharedDynamicFields(exposed description: *str) {
+    exposed favorite_number: i32;
+    exposed favorite_color: *u8;
 
     First("This is the first variant"),
     Second("This is the second variant") {
-        specific_field: i32;
+        exposed specific_field: i32;
     },
     Third("This is the third variant");
 
@@ -257,7 +257,7 @@ enum MyEnumWithSharedDynamicFields(description: *str) {
 # An explicit tag: `tag` leads the header with the integer type of your
 # choice, and each variant supplies its own (unique, compile-time-constant)
 # value first.
-enum MyEnumWithExplicitTagAndHeader(tag: u32, description: *str) {
+enum MyEnumWithExplicitTagAndHeader(tag: u32, exposed description: *str) {
     First(10, "This is the first entry"),
     Second(20, "This is the second entry"),
     Third(30, "This is the third entry");
@@ -267,19 +267,19 @@ enum MyEnumWithExplicitTagAndHeader(tag: u32, description: *str) {
 # take explicit arguments here (`Optional<u32>::Some { ... }`).
 enum Optional<T> {
     None,
-    Some { value: T; };
+    Some { exposed value: T; };
 }
 
 # Everything at once, plus functions after the `;` ending the variant list
 # (Java-style): with `self` = member function, without = static.
-enum MyCoolEnum(tag: i16, description: *str) {
+enum MyCoolEnum(tag: i16, exposed description: *str) {
     Bad(-1, "Something went wrong :("),
     First(0, "This is the first value") {
         message: *u8;
     },
     Second(1, "This is the second value") {
-        number: u64;
-        decimal: f64;
+        exposed number: u64;
+        exposed decimal: f64;
     },
     Third(2, "This is the third value");
 
@@ -334,8 +334,8 @@ describe_if_second(b: *MyEnumWithBodies) => void {
 # field (`Value { as_i32 = ...; }`); any field is then readable at any time,
 # freely reinterpreting whatever bytes are actually there.
 union Value {
-    as_i32: i32;
-    as_f32: f32;
+    exposed as_i32: i32;
+    exposed as_f32: f32;
 }
 
 # --- Specs: interfaces/traits, with both static and dynamic dispatch ---
@@ -369,13 +369,13 @@ spec Animal {
 }
 
 struct Dog : Animal {
-    id: i32;
+    exposed id: i32;
     kind(*self) => AnimalKind { AnimalKind::Dog }
     make_sound(*self) => *u8 { <*u8>b"woof woof\0" }
 }
 
 struct Cat : Animal {
-    id: i32;
+    exposed id: i32;
     kind(*self) => AnimalKind { AnimalKind::Cat }
     make_sound(*self) => *u8 { <*u8>b"meow\0" }
     # Overrides the default: a cat is never a dog, no matter what its own
@@ -415,7 +415,7 @@ spec Mammal : Animal, Dummy {
 spec MySpec = Dummy | Mammal;
 
 struct Wolf : Mammal {
-    id: i32;
+    exposed id: i32;
     kind(*self) => AnimalKind { AnimalKind::Wolf }
     make_sound(*self) => *u8 { <*u8>b"howl\0" }
 }
@@ -475,19 +475,19 @@ print_number2(n: u32) => void {
 @layout(pack = sizeof<usize>, align = sizeof<usize>)
 struct CLikePacking {
     thing: u8;
-    longthing: usize;
+    exposed longthing: usize;
     another_thing: u8;
 }
 
 # omega structs are packed by default
 struct Packed {
     thing: u8;
-    longthing: usize;
+    exposed longthing: usize;
     another_thing: u8;
 }
 
 @layout(pack = sizeof<usize>, align = sizeof<usize>)
-enum EnumWithCLikePacking(tag: u8, longthing: usize, another_thing: u8) {
+enum EnumWithCLikePacking(tag: u8, exposed longthing: usize, another_thing: u8) {
     First(1, 123, 4),
     Second(2, 456, 7),
     Third(3, 789, 10)
@@ -495,8 +495,12 @@ enum EnumWithCLikePacking(tag: u8, longthing: usize, another_thing: u8) {
 
 struct MyVisibilityTest {
     exposed number : i32;
-    internal text : *str;
+    internal text : *[u8];
     hidden_number: u32;
+
+    new() => Self {
+        Self { number = 10; text = b"this is the internal text field\0"; hidden_number = 42; }
+    }
 
     print_hidden_number(*self) => void {
         printf(<*u8>b"hidden number: %u\0", self.hidden_number);
@@ -1068,12 +1072,16 @@ main(argc : i32, argv : [*u8]) => i32 {
     offset = <usize>&packed_enum.longthing - <usize>&packed_enum;
     printf(<*u8>b"type = EnumWithCLikePacking, size = %lu, offset of longthing: %lu\n\0", sizeof<EnumWithCLikePacking>, offset);
 
+    ###
     my_vis_test := MyVisibilityTest {
         number = 123;
         text = "hello";
         hidden_number = 10; # should NOT WORK!!! this field is hidden!
     };
     printf(<*u8>b"accessing hidden field: %u\n\0", my_vis_test.hidden_number);
+    ###
+    my_vis_test := MyVisibilityTest::new();
+    printf(<*u8>b"accessing internal field: %s\n\0", <*u8>my_vis_test.text);
 
     return 69;
 }
@@ -1083,8 +1091,8 @@ main(argc : i32, argv : [*u8]) => i32 {
 # type-checked, exactly as if `GenericPair` had been written by hand for
 # that one concrete type.
 struct GenericPair<T> {
-    a: T;
-    b: T;
+    exposed a: T;
+    exposed b: T;
 }
 
 # A duck-typed generic function: `T` is never written at the call site --
@@ -1101,8 +1109,8 @@ sum_generic<T>(a: T, b: T) => T {
 # above already relies on, just keyed by the substituted instantiation
 # rather than the raw template.
 struct GenericNode<T> {
-    value: T;
-    next: *GenericNode<T>;
+    exposed value: T;
+    exposed next: *GenericNode<T>;
 }
 
 # Called by `main` above despite being declared after it -- proves a
@@ -1141,8 +1149,8 @@ macro sum_macro($a: expr, $b: expr) => expr {
 # sees it -- no different from `Node`/`Interface` elsewhere in this file.
 macro make_point_type($name: type) => items {
     struct $name {
-        x: i32;
-        y: i32;
+        exposed x: i32;
+        exposed y: i32;
         magnitude_sq(*self) => i32 {
             self.x * self.x + self.y * self.y
         }
@@ -1155,6 +1163,6 @@ make_point_type!(Point);
 # only resolvable because the struct's own placeholder is registered before
 # its fields are analyzed.
 struct Node {
-    value: i32;
-    next: *Node;
+    exposed value: i32;
+    exposed next: *Node;
 }
