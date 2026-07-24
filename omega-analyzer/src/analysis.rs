@@ -106,6 +106,18 @@ struct FlattenedSpecFn {
     fn_type: ResolvedFunctionType,
     raw: RawSpecFunctionSig,
     spec_name: Ident,
+    /// The visibility of whichever spec directly declares this function
+    /// (`spec_name`'s own `ResolvedSpecType::visibility`) -- a spec
+    /// function has no per-function modifier of its own (see
+    /// `SpecFunctionStmt`), it always inherits its declaring spec's. This
+    /// is the *minimum* visibility an implementor's own satisfying method
+    /// must have -- see `Analyzer::resolve_implements_clause`. Tracked per
+    /// function rather than read once off the top-level `implements`
+    /// target, because a dependency spec (`spec Mammal : Animal`) can have
+    /// a different visibility than the spec that depends on it -- each
+    /// function keeps the visibility of the spec that actually declared
+    /// it, exactly the same way `spec_name` already does.
+    visibility: Visibility,
     /// `Self` + the owning spec's own generics, bound to concrete types --
     /// exactly what resolved `fn_type` above, kept around so a queued
     /// default instantiation's *body* can be checked later (phase 2, see
@@ -861,6 +873,7 @@ impl<'r> Analyzer<'r> {
         let cell = Rc::new(RefCell::new(ResolvedSpecType {
             id: sp.id,
             name: sp.name.clone(),
+            visibility: sp.visibility,
             generics,
             module_path: self.module_path.clone(),
             type_args: vec![],
@@ -881,13 +894,16 @@ impl<'r> Analyzer<'r> {
                         ResolvedMethod {
                             decl_id: minted_id,
                             fn_type: f.fn_type.clone(),
-                            // A `for`-spec's own function has no visibility
-                            // modifier of its own (specs aren't in scope for
-                            // per-function visibility, see `SpecFunctionStmt`)
-                            // -- these exist specifically to give primitives
-                            // universally-usable methods, so `Exposed` is the
-                            // only sensible default.
-                            visibility: Visibility::Exposed,
+                            // A spec function has no visibility modifier of
+                            // its own -- it inherits the visibility of
+                            // whichever spec directly declares it (see
+                            // `FlattenedSpecFn::visibility`). There's no
+                            // separate implementor here to have made its own,
+                            // possibly more permissive, choice (the "method"
+                            // *is* the spec's own default body), so this is
+                            // exactly that inherited visibility, not a
+                            // hardcoded default.
+                            visibility: f.visibility,
                             annotations: crate::annotations::ResolvedAnnotations::default(),
                         },
                     ));
@@ -1003,9 +1019,9 @@ impl<'r> Analyzer<'r> {
         self_type: &ResolvedType,
         out: &mut Vec<FlattenedSpecFn>,
     ) -> Option<()> {
-        let (spec_name, generics, dependencies, functions) = {
+        let (spec_name, spec_visibility, generics, dependencies, functions) = {
             let s = spec.borrow();
-            (s.name.clone(), s.generics.clone(), s.dependencies.clone(), s.functions.clone())
+            (s.name.clone(), s.visibility, s.generics.clone(), s.dependencies.clone(), s.functions.clone())
         };
         for (dep_spec, dep_args) in &dependencies {
             self.flatten_spec_into(id, span, dep_spec, dep_args, self_type, out)?;
@@ -1050,6 +1066,7 @@ impl<'r> Analyzer<'r> {
                         fn_type,
                         raw: raw.clone(),
                         spec_name: spec_name.clone(),
+                        visibility: spec_visibility,
                         substitution: substitution.clone(),
                     };
                 }
@@ -1060,6 +1077,7 @@ impl<'r> Analyzer<'r> {
                 fn_type,
                 raw: raw.clone(),
                 spec_name: spec_name.clone(),
+                visibility: spec_visibility,
                 substitution: substitution.clone(),
             });
         }
@@ -1074,10 +1092,16 @@ impl<'r> Analyzer<'r> {
     /// either queues a default-method instantiation (spec supplied a body)
     /// or reports `MissingSpecFunction`. An own method whose *name*
     /// matches but whose signature doesn't is treated the same as missing
-    /// -- it doesn't actually satisfy the contract. Returns the additional
-    /// `(name, ResolvedMethod)` entries to merge into the implementor's own
-    /// `functions` list (already carrying freshly minted `decl_id`s) plus
-    /// every queued default body still needing to be checked in phase 2.
+    /// -- it doesn't actually satisfy the contract; one whose signature
+    /// matches but whose own visibility is *less* permissive than the spec
+    /// function it's satisfying (`FlattenedSpecFn::visibility`) reports
+    /// `SpecMethodTooPrivate` instead -- an implementor can never narrow a
+    /// spec's own contract, only match or widen it (see
+    /// `omega_parser::ast::visibility::Visibility`'s ordering). Returns the
+    /// additional `(name, ResolvedMethod)` entries to merge into the
+    /// implementor's own `functions` list (already carrying freshly minted
+    /// `decl_id`s) plus every queued default body still needing to be
+    /// checked in phase 2.
     fn resolve_implements_clause(
         &mut self,
         id: HirId,
@@ -1110,6 +1134,18 @@ impl<'r> Analyzer<'r> {
                             function: req.name.clone(),
                         },
                     ));
+                } else if own.visibility < req.visibility {
+                    self.errors.push(AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::SpecMethodTooPrivate {
+                            implementor: implementor_name.clone(),
+                            spec: req.spec_name.clone(),
+                            function: req.name.clone(),
+                            required: req.visibility,
+                            found: own.visibility,
+                        },
+                    ));
                 }
                 continue;
             }
@@ -1126,11 +1162,13 @@ impl<'r> Analyzer<'r> {
                             decl_id: minted_id,
                             fn_type: req.fn_type.clone(),
                             // Same reasoning as `resolve_extension_methods`'s
-                            // identical default -- a spec-default method has
-                            // no visibility modifier of its own; `Exposed`
-                            // means the implementor's own visibility (already
-                            // checked separately) is the only gate.
-                            visibility: Visibility::Exposed,
+                            // identical case -- a spec-default method has no
+                            // visibility modifier of its own, so it inherits
+                            // its declaring spec's (`req.visibility`, see
+                            // `FlattenedSpecFn::visibility`). There's no
+                            // implementor override here to have chosen
+                            // something more permissive.
+                            visibility: req.visibility,
                             annotations: crate::annotations::ResolvedAnnotations::default(),
                         },
                     ));

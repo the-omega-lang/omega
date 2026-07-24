@@ -1633,6 +1633,7 @@ impl Driver {
                     let cell = Rc::new(RefCell::new(ResolvedSpecType {
                         id,
                         name: sp.name.clone(),
+                        visibility: sp.visibility,
                         generics,
                         module_path: module_path.to_vec(),
                         type_args: type_args.to_vec(),

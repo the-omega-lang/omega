@@ -2,7 +2,7 @@ use crate::resolved_type::{NumericKind, ResolvedFunctionType, ResolvedType};
 use crate::resolver::ResolveError;
 use omega_diagnostics::Diagnostic;
 use omega_hir::HirId;
-use omega_parser::prelude::{BinaryOp, Ident, Span};
+use omega_parser::prelude::{BinaryOp, Ident, Span, Visibility};
 use std::fmt;
 
 fn join(path: &[Ident]) -> String {
@@ -479,6 +479,17 @@ pub enum AnalysisErrorKind {
     /// name and signature -> one implementation" rule), a genuine mismatch
     /// is ambiguous: no single method could satisfy both.
     ConflictingSpecFunctions { name: Ident, first_spec: Ident, second_spec: Ident },
+    /// `implementor`'s own `function` satisfies `spec`'s requirement by
+    /// name and signature, but its own declared visibility (`found`) is
+    /// less permissive than the spec function it's satisfying (`required`)
+    /// -- every spec function inherits its declaring spec's own
+    /// visibility (see `omega_parser::ast::visibility::Visibility`'s
+    /// ordering), and an implementation can only match or widen that, never
+    /// narrow it. Otherwise a caller who can see the spec (and so, per
+    /// dynamic dispatch, can call every one of its functions on any `spec
+    /// *Spec` value) could reach a method its own author declared more
+    /// private than that.
+    SpecMethodTooPrivate { implementor: Ident, spec: Ident, function: Ident, required: Visibility, found: Visibility },
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction { spec: Ident, function: Ident },
@@ -963,6 +974,24 @@ impl AnalysisErrorKind {
                 .with_help(format!(
                     "give the implementing type its own `{}` method matching both",
                     name.as_ref()
+                )),
+            Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => d
+                .with_label(
+                    span,
+                    format!(
+                        "`{}` on `{}` is `{}`, but spec `{}` requires at least `{}`",
+                        function.as_ref(),
+                        implementor.as_ref(),
+                        found,
+                        spec.as_ref(),
+                        required,
+                    ),
+                )
+                .with_help(format!(
+                    "mark `{}` on `{}` as `{}` (or more permissive)",
+                    function.as_ref(),
+                    implementor.as_ref(),
+                    required
                 )),
             Self::NoSuchSpecFunction { spec, function } => d.with_label(
                 span,
@@ -1465,6 +1494,13 @@ impl fmt::Display for AnalysisErrorKind {
                 name.as_ref(),
                 first_spec.as_ref(),
                 second_spec.as_ref()
+            ),
+            Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => write!(
+                f,
+                "'{}' on '{}' is '{found}', but spec '{}' requires at least '{required}'",
+                function.as_ref(),
+                implementor.as_ref(),
+                spec.as_ref(),
             ),
             Self::NoSuchSpecFunction { spec, function } => {
                 write!(f, "no function '{}' on spec '{}'", function.as_ref(), spec.as_ref())

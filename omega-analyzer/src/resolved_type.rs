@@ -257,6 +257,15 @@ impl Hash for ResolvedEnumType {
 pub struct ResolvedSpecType {
     pub id: HirId,
     pub name: Ident,
+    /// `exposed`/`internal`/(default `Private`) -- the spec's own
+    /// visibility, already checked wherever this spec is *named* (an
+    /// ordinary item-visibility check, same as any other top-level item).
+    /// Kept here too because every one of this spec's own functions
+    /// *inherits* this same visibility (see `FlattenedSpecFn::visibility`'s
+    /// doc comment) -- an implementor's own method satisfying one of them
+    /// must be at least this permissive, checked in
+    /// `Analyzer::resolve_implements_clause`.
+    pub visibility: Visibility,
     pub generics: Vec<Ident>,
     /// See `ResolvedStructType::module_path`'s doc comment.
     pub module_path: Vec<Ident>,
