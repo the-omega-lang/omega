@@ -402,12 +402,7 @@ impl<'r> Analyzer<'r> {
     /// active, this allows it anyway and marks the innermost frame as
     /// load-bearing.
     pub(crate) fn check_visibility(&mut self, visibility: Visibility, declaring_module: &[Ident]) -> bool {
-        let allowed = match visibility {
-            Visibility::Exposed => true,
-            Visibility::Internal => declaring_module.first() == self.module_path.first(),
-            Visibility::Private => declaring_module == self.module_path.as_slice(),
-        };
-        if allowed {
+        if Self::visibility_allows(visibility, declaring_module, &self.module_path) {
             return true;
         }
         if let Some(top) = self.hidden_stack.last_mut() {
@@ -415,6 +410,21 @@ impl<'r> Analyzer<'r> {
             return true;
         }
         false
+    }
+
+    /// The raw, `hidden`-blind visibility decision -- `check_visibility`'s
+    /// own "allowed" computation, factored out so a caller that must *not*
+    /// consult the ambient `hidden_stack` at all (currently only
+    /// `resolve_bare_overload_candidates`'s candidate-set filtering, where
+    /// membership in the set has to be a fixed, resolution-time fact, not
+    /// something a call-site `hidden` can expand) can reuse the exact same
+    /// rule without its bypass fallback.
+    fn visibility_allows(visibility: Visibility, declaring_module: &[Ident], accessor_module: &[Ident]) -> bool {
+        match visibility {
+            Visibility::Exposed => true,
+            Visibility::Internal => declaring_module.first() == accessor_module.first(),
+            Visibility::Private => declaring_module == accessor_module,
+        }
     }
 
     /// Peels `HirExpr::Hidden` wrappers off `expr`, returning whether at
@@ -2588,6 +2598,47 @@ impl<'r> Analyzer<'r> {
                         r#type: binding.r#type.clone(),
                     };
                     (root, binding.r#type.clone(), binding.mutable)
+                } else if let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(ident) {
+                    // A bare, *uncalled* reference to a genuinely overloaded
+                    // name (declared here or through an import alias) --
+                    // handled before `resolve_alias_or_error` below ever
+                    // gets a chance to eagerly commit to one arbitrary
+                    // candidate via `ensure_item` (the same "picks whichever
+                    // overload happens to be indexed first" problem
+                    // `resolve_bare_overload_candidates` exists to avoid for
+                    // a *call*, see its own doc comment -- a bare reference
+                    // has no argument types to disambiguate with either, so
+                    // the only thing that can pick a winner here is an
+                    // explicit function-typed `expected`, exactly like
+                    // `resolve_qualified_value`'s own identical situation
+                    // for the module-qualified shape).
+                    let name = absolute.last().expect("non-empty: split_last succeeded inside the helper");
+                    let signatures: Vec<(HirId, ResolvedFunctionType)> =
+                        candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
+                    let winner = match expected {
+                        Some(ResolvedType::Function(expected_fn)) => {
+                            Self::unique_overload_signature_match(expected_fn, &signatures)
+                        }
+                        _ => None,
+                    };
+                    let Some((decl_id, fn_type)) = winner else {
+                        self.errors.push(AnalysisError::new(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::AmbiguousOverload {
+                                name: name.clone(),
+                                candidates: candidates.into_iter().map(|(_, t, _)| t).collect(),
+                            },
+                        ));
+                        return None;
+                    };
+                    // No post-winner visibility check needed here -- see
+                    // `resolve_overloaded_call`'s identical reasoning:
+                    // `candidates` is already the final, decided set
+                    // (filtered, or fully admitted by `import hidden`).
+                    let r#type = ResolvedType::Function(fn_type);
+                    let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
+                    (root, r#type, false)
                 } else {
                     // An import alias, lazily resolved (see `resolve_alias`)
                     // -- a plain item *value* alias resolves outright
@@ -2605,7 +2656,10 @@ impl<'r> Analyzer<'r> {
                     // A *type* alias or a bare module alias referenced this
                     // way, like no alias at all, falls through to the
                     // implicit own-module assumption -- `resolve_qualified_value`
-                    // reports whichever precise error fits.
+                    // reports whichever precise error fits. (An overloaded
+                    // name -- aliased or own-module -- never reaches this
+                    // far: the `resolve_bare_overload_candidates` branch
+                    // above already claimed it.)
                     let alias = self.resolve_alias_or_error(node_id, span, ident)?;
                     if let Some(ImportTarget::Item(ResolvedItem::Value { r#type, storage, decl_id })) = alias {
                         let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
@@ -3221,6 +3275,62 @@ impl<'r> Analyzer<'r> {
         }))
     }
 
+    /// If `ident` -- used unqualified, whether it's declared in this module
+    /// or reached through a named import alias -- names an *overloaded*
+    /// free function (2+ candidates), returns its real absolute path and
+    /// its candidate list. For an aliased name, the list is filtered down
+    /// to only the overloads this module can actually see, *unless* the
+    /// import itself was written `hidden` (which brings every overload --
+    /// visible or not -- into context; see `ModuleResolver::
+    /// raw_import_absolute_path`'s doc comment). Own-module names are
+    /// never filtered (a module always sees its own declarations, `hidden`
+    /// or not -- filtering would be a no-op there anyway, since `Private`
+    /// visibility already trivially allows same-module access).
+    ///
+    /// **`hidden` at the *use site* can no longer expand this set on its
+    /// own** -- only `import hidden` can. Which overloads are even
+    /// candidates has to be a fixed, resolution-time fact (the same way an
+    /// ordinary, non-overloaded import's own target already is), not
+    /// something a call-site `hidden` reaches into after the fact -- see
+    /// `Analyzer::check_visibility`'s doc comment for the *different* rule
+    /// that still applies to a module-*qualified* reference
+    /// (`mymodule::thing::foo`, no alias involved at all), which keeps
+    /// working with a use-site `hidden` exactly as before.
+    ///
+    /// `None` means "not an overloaded name at all" (0 or 1 real
+    /// candidates) -- the caller falls through to the ordinary single-item
+    /// path unchanged, exactly like `ModuleResolver::
+    /// function_overload_signatures`'s own `Ok(None)` convention.
+    fn resolve_bare_overload_candidates(
+        &mut self,
+        ident: &Ident,
+    ) -> Option<(Vec<Ident>, Vec<(HirId, ResolvedFunctionType, Visibility)>)> {
+        let (absolute, is_alias, import_hidden) = match self.resolver.raw_import_absolute_path(&self.module_path, ident)
+        {
+            Ok(Some((absolute, hidden))) => (absolute, true, hidden),
+            Ok(None) => (
+                self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect(),
+                false,
+                false,
+            ),
+            // A raw lookup failure here isn't this helper's to report --
+            // the ordinary path the caller falls back to re-derives (and
+            // reports) the identical failure for real.
+            Err(_) => return None,
+        };
+        let (name, module_path) = absolute.split_last()?;
+        let raw_candidates = self.resolver.function_overload_signatures(module_path, name).ok().flatten()?;
+        let candidates = if is_alias && !import_hidden {
+            raw_candidates
+                .into_iter()
+                .filter(|(_, _, visibility)| Self::visibility_allows(*visibility, module_path, &self.module_path))
+                .collect()
+        } else {
+            raw_candidates
+        };
+        Some((absolute, candidates))
+    }
+
     /// If `call`'s callee is a bare (optionally module-qualified) reference
     /// to an *overloaded* name (2+ non-generic top-level functions sharing
     /// it -- see `ModuleResolver::function_overload_signatures`), resolves
@@ -3249,80 +3359,62 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // A bare name is tried as an import alias *first* -- deliberately
-        // via `raw_import_absolute_path` (structural, resolution-free)
-        // rather than `resolve_alias`/`resolve_import_alias`, which would
-        // eagerly resolve to one concrete item via `ensure_item` before
-        // this call's own argument types ever get a say. That matters
-        // specifically for an alias to an *overloaded* name: eagerly
-        // resolving would silently commit to whichever overload happened
-        // to be indexed first (see `ModuleResolver::raw_import_absolute_path`'s
-        // doc comment) -- including making a `hidden`-only-visible overload
-        // completely unreachable through the alias, no matter what the call
-        // site writes, since it would never even be considered as a
-        // candidate. `import_hidden` is the import statement's own
-        // `hidden` (if any) -- it bypasses visibility for every reference
-        // through this alias, independent of whether the call site here
-        // *also* writes `hidden`.
-        let mut import_hidden = false;
-        let absolute: Vec<Ident> = if path.is_unqualified() {
-            match self.resolver.raw_import_absolute_path(&self.module_path, &path.head) {
-                Ok(Some((absolute, hidden))) => {
-                    import_hidden = hidden;
-                    absolute
-                }
-                Ok(None) => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
-                Err(e) => {
-                    self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
-                    return Some(None);
-                }
-            }
-        } else {
-            match self.resolve_alias(&path.head).ok().flatten() {
-                Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
-                _ => return None,
-            }
-        };
-        let (name, module_path) = absolute.split_last()?;
+        // Unqualified (possibly aliased) and module-qualified names take
+        // genuinely different paths from here: an alias's candidate set is
+        // fixed (and visibility-filtered) at resolution time -- see
+        // `resolve_bare_overload_candidates`'s doc comment -- while a
+        // module-qualified reference has no alias to fix anything through,
+        // so it keeps working exactly as before (every candidate considered,
+        // `hidden` at this call site free to bypass the winner's own
+        // visibility).
+        let (name, module_path, candidates, needs_visibility_check): (Ident, Vec<Ident>, _, bool) =
+            if path.is_unqualified() {
+                let (absolute, candidates) = self.resolve_bare_overload_candidates(&path.head)?;
+                let Some((name, module_path)) = absolute.split_last().map(|(n, m)| (n.clone(), m.to_vec())) else {
+                    return None;
+                };
+                (name, module_path, candidates, false)
+            } else {
+                let absolute: Vec<Ident> = match self.resolve_alias(&path.head).ok().flatten() {
+                    Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
+                    _ => return None,
+                };
+                let Some((name, module_path)) = absolute.split_last().map(|(n, m)| (n.clone(), m.to_vec())) else {
+                    return None;
+                };
+                let candidates = match self.resolver.function_overload_signatures(&module_path, &name) {
+                    Ok(Some(candidates)) => candidates,
+                    Ok(None) => return None,
+                    Err(e) => {
+                        self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                        return Some(None);
+                    }
+                };
+                (name, module_path, candidates, true)
+            };
 
-        let candidates = match self.resolver.function_overload_signatures(module_path, name) {
-            Ok(Some(candidates)) => candidates,
-            Ok(None) => return None,
-            Err(e) => {
-                self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
-                return Some(None);
-            }
-        };
         let signatures: Vec<(HirId, ResolvedFunctionType)> =
             candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
 
-        let Some((winner, args)) = self.resolve_overload(node_id, span, name, &signatures, &call.args) else {
+        let Some((winner, args)) = self.resolve_overload(node_id, span, &name, &signatures, &call.args) else {
             return Some(None);
         };
         let (decl_id, fn_type, visibility) = candidates[winner].clone();
 
-        // Same reasoning as `resolve_overloaded_static_call`'s identical
-        // post-winner check -- `resolve_overload` itself has no notion of
-        // visibility, only signature fit. `import_hidden` layers in as its
-        // own bypass frame (no `UnnecessaryHidden` tracking for it -- it
-        // isn't a `hidden` expression at this node at all, so warning here
-        // would misattribute it; the ordinary single-candidate import path
-        // doesn't track this either, for the same reason) alongside
-        // whatever ambient frame a `hidden`-wrapped call site itself
-        // already pushed.
-        if import_hidden {
-            self.hidden_stack.push(false);
-        }
-        let visible = self.check_visibility(visibility, module_path);
-        if import_hidden {
-            self.hidden_stack.pop();
-        }
-        if !visible {
+        // Only the module-qualified branch needs this: the unqualified/
+        // aliased branch already committed to its final candidate set
+        // up front (filtered, or fully admitted by `import hidden`), so
+        // every possible winner from it is already known-allowed -- a
+        // second check here would either be a redundant no-op or, worse,
+        // could wrongly *deny* an `import hidden`-admitted private winner
+        // when the call site itself doesn't also write `hidden` (no
+        // ambient `hidden_stack` frame would be active to fall back on).
+        if needs_visibility_check && !self.check_visibility(visibility, &module_path) {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
                 AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
-                    module: module_path.to_vec(),
+                    module: module_path.clone(),
                     item: name.clone(),
                 }),
             ));

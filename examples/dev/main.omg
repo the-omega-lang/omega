@@ -493,6 +493,16 @@ enum EnumWithCLikePacking(tag: u8, longthing: usize, another_thing: u8) {
     Third(3, 789, 10)
 }
 
+struct MyVisibilityTest {
+    exposed number : i32;
+    internal text : *str;
+    hidden_number: u32;
+
+    print_hidden_number(*self) => void {
+        printf(<*u8>b"hidden number: %u\0", self.hidden_number);
+    }
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mut mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -1057,6 +1067,13 @@ main(argc : i32, argv : [*u8]) => i32 {
     printf(<*u8>b"type = Packed, size = %lu, offset of longthing: %lu\n\0", sizeof<Packed>, offset);
     offset = <usize>&packed_enum.longthing - <usize>&packed_enum;
     printf(<*u8>b"type = EnumWithCLikePacking, size = %lu, offset of longthing: %lu\n\0", sizeof<EnumWithCLikePacking>, offset);
+
+    my_vis_test := MyVisibilityTest {
+        number = 123;
+        text = "hello";
+        hidden_number = 10; # should NOT WORK!!! this field is hidden!
+    };
+    printf(<*u8>b"accessing hidden field: %u\n\0", my_vis_test.hidden_number);
 
     return 69;
 }
