@@ -213,11 +213,11 @@ pub struct Analyzer<'r> {
     /// `check_enum_body` (one fresh `Analyzer` per type, never shared
     /// across two different types -- see those functions' own callers in
     /// `omega_driver::Driver`), `None` for a plain top-level function/
-    /// global. This is what a **private field**'s own visibility rule is
-    /// actually scoped to -- "cannot be accessed outside of the struct
-    /// definition," a narrower scope than a private *item*'s (module-wide)
-    /// rule, since it's compared against a single type's identity, not a
-    /// module path. See `Analyzer::check_field_visibility`.
+    /// global. This is what a **private field or method**'s own visibility
+    /// rule is actually scoped to -- "cannot be accessed outside of the
+    /// struct definition," a narrower scope than a private *item*'s
+    /// (module-wide) rule, since it's compared against a single type's
+    /// identity, not a module path. See `Analyzer::check_member_visibility`.
     current_owner: Option<HirId>,
 }
 
@@ -452,25 +452,27 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The choke point every *field* (struct/union/enum-header/enum-
-    /// dynamic/enum-variant field, and a struct/enum-variant/union
-    /// literal's own field initializers) visibility check goes through --
-    /// deliberately separate from `check_visibility`, since a private
-    /// *field*'s scope is narrower than a private *item*'s: "a private
-    /// field cannot be accessed outside of the struct definition," not
-    /// merely outside its declaring module. `owner_id` is the declaring
-    /// struct/union/enum's own stable identity (`ResolvedStructType::id`
-    /// and friends); `Private` is allowed only when `self.current_owner`
-    /// (the type whose own method bodies -- or, for a spec-satisfying
-    /// default method, whose own *identity* -- are currently being
-    /// checked) is that exact same type. A top-level function has no
-    /// `current_owner` at all (`None`), so it can never touch a private
-    /// field of any type, including one declared in its own module,
-    /// without `hidden` -- unlike `Exposed`/`Internal`, which behave
-    /// identically to an ordinary item (module-path-based, via the same
-    /// `visibility_allows`) regardless of whether the accessor happens to
-    /// be a method of the same type or not.
-    pub(crate) fn check_field_visibility(
+    /// The choke point every *member* (struct/union/enum-header/enum-
+    /// dynamic/enum-variant field; a struct/enum-variant/union literal's
+    /// own field initializers; and a struct/union/enum's own instance/
+    /// static methods, both plain and overloaded) visibility check goes
+    /// through -- deliberately separate from `check_visibility`, since a
+    /// private *member*'s scope is narrower than a private *item*'s: "a
+    /// private field/method cannot be accessed outside of the struct
+    /// definition," not merely outside its declaring module. `owner_id` is
+    /// the declaring struct/union/enum's own stable identity
+    /// (`ResolvedStructType::id` and friends); `Private` is allowed only
+    /// when `self.current_owner` (the type whose own method bodies -- or,
+    /// for a spec-satisfying default method, whose own *identity* -- are
+    /// currently being checked) is that exact same type. A top-level
+    /// function has no `current_owner` at all (`None`), so it can never
+    /// touch a private field or call a private method of any type,
+    /// including one declared in its own module, without `hidden` --
+    /// unlike `Exposed`/`Internal`, which behave identically to an
+    /// ordinary item (module-path-based, via the same `visibility_allows`)
+    /// regardless of whether the accessor happens to be a method of the
+    /// same type or not.
+    pub(crate) fn check_member_visibility(
         &mut self,
         visibility: Visibility,
         declaring_module: &[Ident],
@@ -1210,7 +1212,28 @@ impl<'r> Analyzer<'r> {
     /// `Deps` for generic-bound purposes too (`find_methods`'s primitive
     /// fallback is what supplies a real answer here now -- see
     /// `HirSpecDef::target`'s doc comment). Returns the missing function
-    /// names on failure.
+    /// names on failure -- an insufficiently-*visible* satisfying method
+    /// (only possible when `check_method_visibility` is set) is folded into
+    /// the same "missing" list, not a separate error shape: from this
+    /// caller's own perspective the two are equivalent ("you can't treat
+    /// `ty` as implementing `spec` from here"), matching `coerce_to_expected`'s
+    /// own accepted "no bespoke diagnostic per coercion site" simplification.
+    ///
+    /// `check_method_visibility` exists because this function serves two
+    /// genuinely different callers: `check_generic_bound` (a `T: Animal`
+    /// bound is a structural fact about `T`, independent of who's asking --
+    /// a generic body's own `self.speak()`-style calls are separately,
+    /// correctly visibility-checked at each real call site) passes `false`;
+    /// `coerce_to_expected` passes `true`, because *that* call site is the
+    /// one place a concrete type's own method identity is erased into an
+    /// opaque `spec *T` handle -- once erased, `finish_dynamic_dispatch_call`
+    /// never re-checks visibility at all (by design: erasure means there's
+    /// no concrete method left to check). A `Private` method satisfying a
+    /// `Private` spec would otherwise leak: an implementor's own `Private`
+    /// method is scoped to its *owning type's* method bodies (narrower --
+    /// see `check_member_visibility`), while a `Private` spec is scoped to
+    /// its whole *declaring module* (wider) -- so "the spec is visible
+    /// here" no longer implies "this satisfying method would be too."
     fn type_implements_spec(
         &mut self,
         id: HirId,
@@ -1218,13 +1241,27 @@ impl<'r> Analyzer<'r> {
         ty: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_type_args: &[ResolvedType],
+        check_method_visibility: bool,
     ) -> Result<(), Vec<Ident>> {
         let Some(required) = self.flatten_spec(id, span, spec, spec_type_args, ty) else {
             return Err(vec![]);
         };
+        let (owner_module_path, owner_id) = match ty {
+            ResolvedType::Struct(cell) => (cell.borrow().module_path.clone(), cell.borrow().id),
+            ResolvedType::Union(cell) => (cell.borrow().module_path.clone(), cell.borrow().id),
+            ResolvedType::Enum { cell, .. } => (cell.borrow().module_path.clone(), cell.borrow().id),
+            _ => (Vec::new(), id),
+        };
         let missing: Vec<Ident> = required
             .iter()
-            .filter(|req| !self.find_methods(id, span, ty, &req.name).iter().any(|m| m.fn_type == req.fn_type))
+            .filter(|req| {
+                let Some(method) =
+                    self.find_methods(id, span, ty, &req.name).into_iter().find(|m| m.fn_type == req.fn_type)
+                else {
+                    return true;
+                };
+                check_method_visibility && !self.check_member_visibility(method.visibility, &owner_module_path, owner_id)
+            })
             .map(|req| req.name.clone())
             .collect();
         if missing.is_empty() { Ok(()) } else { Err(missing) }
@@ -1249,7 +1286,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<Result<(), (Ident, Vec<Ident>)>> {
         let (spec, spec_args) = self.resolve_spec_reference(id, span, bound)?;
         let spec_name = spec.borrow().name.clone();
-        match self.type_implements_spec(id, span, concrete, &spec, &spec_args) {
+        match self.type_implements_spec(id, span, concrete, &spec, &spec_args, false) {
             Ok(()) => Some(Ok(())),
             Err(missing) => Some(Err((spec_name, missing))),
         }
@@ -1266,7 +1303,9 @@ impl<'r> Analyzer<'r> {
     /// which case the caller's own ordinary `accepts` check reports the
     /// mismatch exactly as before, just without this specific "why" -- an
     /// accepted simplification, not every coercion site needs its own
-    /// bespoke diagnostic).
+    /// bespoke diagnostic) -- the latter also covers a satisfying method
+    /// that exists but isn't visible enough from here, see
+    /// `type_implements_spec`'s `check_method_visibility` doc.
     fn coerce_to_expected(&mut self, expected: Option<&ResolvedType>, value: CheckedExprNode) -> CheckedExprNode {
         let Some(target @ ResolvedType::SpecObject { spec, type_args, mutable: expected_mutable }) = expected else {
             return value;
@@ -1278,7 +1317,7 @@ impl<'r> Analyzer<'r> {
         if !*value_mutable && *expected_mutable {
             return value;
         }
-        if self.type_implements_spec(value.id, value.span, pointee, spec, type_args).is_err() {
+        if self.type_implements_spec(value.id, value.span, pointee, spec, type_args, true).is_err() {
             return value;
         }
         CheckedExprNode {
@@ -1506,7 +1545,7 @@ impl<'r> Analyzer<'r> {
                 let module_path = e.module_path.clone();
                 let owner_id = e.id;
                 drop(e);
-                if !self.check_field_visibility(visibility, &module_path, owner_id) {
+                if !self.check_member_visibility(visibility, &module_path, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1524,7 +1563,7 @@ impl<'r> Analyzer<'r> {
                 let module_path = e.module_path.clone();
                 let owner_id = e.id;
                 drop(e);
-                if !self.check_field_visibility(visibility, &module_path, owner_id) {
+                if !self.check_member_visibility(visibility, &module_path, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1547,7 +1586,7 @@ impl<'r> Analyzer<'r> {
                 let module_path = e.module_path.clone();
                 let owner_id = e.id;
                 drop(e);
-                if !self.check_field_visibility(visibility, &module_path, owner_id) {
+                if !self.check_member_visibility(visibility, &module_path, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -1618,7 +1657,7 @@ impl<'r> Analyzer<'r> {
             let module_path = union_type.module_path.clone();
             let owner_id = union_type.id;
             drop(union_type);
-            if !self.check_field_visibility(visibility, &module_path, owner_id) {
+            if !self.check_member_visibility(visibility, &module_path, owner_id) {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     span,
@@ -1658,7 +1697,7 @@ impl<'r> Analyzer<'r> {
         let module_path = struct_type.module_path.clone();
         let owner_id = struct_type.id;
         drop(struct_type);
-        if !self.check_field_visibility(visibility, &module_path, owner_id) {
+        if !self.check_member_visibility(visibility, &module_path, owner_id) {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -2448,7 +2487,7 @@ impl<'r> Analyzer<'r> {
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         let member = &rest[0];
-        let (type_name, method, missing_member_error, owner_module_path) = match r#type {
+        let (type_name, method, missing_member_error, owner_module_path, owner_id) = match r#type {
             ResolvedType::Struct(cell) => {
                 let struct_type = cell.borrow();
                 let method = struct_type
@@ -2465,7 +2504,7 @@ impl<'r> Analyzer<'r> {
                     function: member.clone(),
                     similar,
                 };
-                (struct_type.name.clone(), method, missing, struct_type.module_path.clone())
+                (struct_type.name.clone(), method, missing, struct_type.module_path.clone(), struct_type.id)
             }
             ResolvedType::Union(cell) => {
                 let union_type = cell.borrow();
@@ -2483,7 +2522,7 @@ impl<'r> Analyzer<'r> {
                     function: member.clone(),
                     similar,
                 };
-                (union_type.name.clone(), method, missing, union_type.module_path.clone())
+                (union_type.name.clone(), method, missing, union_type.module_path.clone(), union_type.id)
             }
             ResolvedType::Enum { cell, .. } => {
                 // A variant wins over a same-named function -- analysis of
@@ -2507,7 +2546,7 @@ impl<'r> Analyzer<'r> {
                     similar_variant: best_match(member, e.variants.iter().map(|v| &v.name)),
                     similar_function: best_match(member, e.functions.iter().map(|(name, _)| name)),
                 };
-                (e.name.clone(), method, missing, e.module_path.clone())
+                (e.name.clone(), method, missing, e.module_path.clone(), e.id)
             }
             // A primitive (or `Slice`/`Str`) has no static members of its
             // own, unless a `for`-attached spec in `core` gave it some (see
@@ -2542,9 +2581,10 @@ impl<'r> Analyzer<'r> {
                     similar,
                 };
                 // A primitive extension method is always `Exposed` (see
-                // `resolve_extension_methods`) -- the empty path here is
-                // never actually consulted by `check_visibility`.
-                (type_name, method, missing, Vec::new())
+                // `resolve_extension_methods`) -- the empty path/`node_id`
+                // placeholder here are never actually consulted by
+                // `check_member_visibility` (only reached for `Private`).
+                (type_name, method, missing, Vec::new(), node_id)
             }
         };
 
@@ -2560,7 +2600,7 @@ impl<'r> Analyzer<'r> {
             ));
             return None;
         }
-        if !self.check_visibility(method.visibility, &owner_module_path) {
+        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id) {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -2960,19 +3000,19 @@ impl<'r> Analyzer<'r> {
                     ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
                     other => other,
                 };
-                let owner_module_path = match owner_dereffed {
-                    ResolvedType::Struct(cell) => cell.borrow().module_path.clone(),
-                    ResolvedType::Union(cell) => cell.borrow().module_path.clone(),
-                    ResolvedType::Enum { cell, .. } => cell.borrow().module_path.clone(),
+                let (owner_module_path, owner_id) = match owner_dereffed {
+                    ResolvedType::Struct(cell) => (cell.borrow().module_path.clone(), cell.borrow().id),
+                    ResolvedType::Union(cell) => (cell.borrow().module_path.clone(), cell.borrow().id),
+                    ResolvedType::Enum { cell, .. } => (cell.borrow().module_path.clone(), cell.borrow().id),
                     // A primitive extension method (`for`-attached spec) is
                     // always `Visibility::Exposed` (see `resolve_extension_
-                    // methods`), so `check_visibility` below is trivially
-                    // `true` regardless of what's passed here.
-                    _ => Vec::new(),
+                    // methods`), so `check_member_visibility` below is
+                    // trivially `true` regardless of what's passed here.
+                    _ => (Vec::new(), callee.id),
                 };
                 let visible = self
                     .with_hidden_bypass(was_hidden, callee.id, callee.span, |this| {
-                        Some(this.check_visibility(method.visibility, &owner_module_path))
+                        Some(this.check_member_visibility(method.visibility, &owner_module_path, owner_id))
                     })
                     .expect("the closure above always returns Some");
                 if !visible {
@@ -3336,13 +3376,13 @@ impl<'r> Analyzer<'r> {
         // resolution picks it -- exactly like the single-candidate path
         // (`resolve_type_member`) already does; `resolve_overload` itself
         // has no notion of visibility, only signature fit.
-        let owner_module_path = match &r#type {
-            ResolvedType::Struct(cell) => cell.borrow().module_path.clone(),
-            ResolvedType::Union(cell) => cell.borrow().module_path.clone(),
-            ResolvedType::Enum { cell, .. } => cell.borrow().module_path.clone(),
-            _ => Vec::new(),
+        let (owner_module_path, owner_id) = match &r#type {
+            ResolvedType::Struct(cell) => (cell.borrow().module_path.clone(), cell.borrow().id),
+            ResolvedType::Union(cell) => (cell.borrow().module_path.clone(), cell.borrow().id),
+            ResolvedType::Enum { cell, .. } => (cell.borrow().module_path.clone(), cell.borrow().id),
+            _ => (Vec::new(), node_id),
         };
-        if !self.check_visibility(statics[winner].visibility, &owner_module_path) {
+        if !self.check_member_visibility(statics[winner].visibility, &owner_module_path, owner_id) {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -5731,7 +5771,7 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
-                if !self.check_field_visibility(visibility, &declaring_module, owner_id) {
+                if !self.check_member_visibility(visibility, &declaring_module, owner_id) {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         field.name_span,
@@ -5804,7 +5844,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if !self.check_field_visibility(visibility, declaring_module, owner_id) {
+            if !self.check_member_visibility(visibility, declaring_module, owner_id) {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     field.name_span,

@@ -76,7 +76,7 @@ sum_skip_multiples_of_3(n : i32) => i32 {
 
 struct Interface {
     exposed do_thing: (s : *u8) => i32;
-    member_function(*self) => void {
+    exposed member_function(*self) => void {
         self.do_thing(<*u8>b"You called the member function\0");
     }
 }
@@ -111,19 +111,19 @@ defer_test() => void {
 struct Vec2 {
     exposed x: i32;
     exposed y: i32;
-    origin() => Vec2 {
+    exposed origin() => Vec2 {
         Vec2 {
             x = 0;
             y = 0;
         }
     }
-    new(x: i32, y: i32) => Vec2 {
+    exposed new(x: i32, y: i32) => Vec2 {
         Vec2 { x = x; y = y; }
     }
     # Plain `self` -- a by-value copy, cheap here (two `i32`s) and never
     # observable to the caller even if this body reassigned it; only ever
     # reads, so a copy vs. a pointer makes no difference either way.
-    manhattan(self) => i32 {
+    exposed manhattan(self) => i32 {
         abs_val(self.x) + abs_val(self.y)
     }
     # `*mut self` -- a pointer to the caller's own `Vec2`, mutable pointee,
@@ -133,7 +133,7 @@ struct Vec2 {
     # (by value): that would only mutate a local copy, invisible to the
     # caller once the call returns -- see `Vec2ByValue` below for exactly
     # that comparison.
-    translate(*mut self, dx: i32, dy: i32) => void {
+    exposed translate(*mut self, dx: i32, dy: i32) => void {
         self.x = self.x + dx;
         self.y = self.y + dy;
     }
@@ -141,11 +141,11 @@ struct Vec2 {
     # free function's (see `print_any`/`print_number2` below) -- an
     # unsuffixed literal argument (`v.scale(3)`) picks whichever candidate
     # it fits, preferring its own default type when more than one would fit.
-    scale(*mut self, factor: i32) => void {
+    exposed scale(*mut self, factor: i32) => void {
         self.x = self.x * factor;
         self.y = self.y * factor;
     }
-    scale(*mut self, factor: f64) => void {
+    exposed scale(*mut self, factor: f64) => void {
         puts(<*u8>b"scale: f64 overload called\0");
     }
 }
@@ -158,27 +158,27 @@ struct Vec2 {
 struct Vec2ByValue {
     exposed x: i32;
     exposed y: i32;
-    gets_copy(self) => i32 {
+    exposed gets_copy(self) => i32 {
         self.x + self.y
     }
-    gets_mutable_copy(mut self) => void {
+    exposed gets_mutable_copy(mut self) => void {
         self.x = 999;
         self.y = 999;
     }
-    gets_pointer(*self) => i32 {
+    exposed gets_pointer(*self) => i32 {
         self.x + self.y
     }
-    gets_mutable_pointer(*mut self) => void {
+    exposed gets_mutable_pointer(*mut self) => void {
         self.x = 999;
         self.y = 999;
     }
     # Overloading on `self`'s mode is legal as long as the *other*
     # parameters differ too -- a call site disambiguates on `abc` alone,
     # never on how `self` happens to be received.
-    do_thing(self, abc: i32) => i32 {
+    exposed do_thing(self, abc: i32) => i32 {
         self.x + abc
     }
-    do_thing(*self, abc: *u8) => i32 {
+    exposed do_thing(*self, abc: *u8) => i32 {
         self.x + puts(abc)
     }
 }
@@ -246,7 +246,7 @@ enum MyEnumWithSharedDynamicFields(exposed description: *str) {
     },
     Third("This is the third variant");
 
-    print_favorite_number_and_color(*self) => void {
+    exposed print_favorite_number_and_color(*self) => void {
         printf(
             <*u8>b"my favorite number is %d and my favorite color is %s\n\0",
             self.favorite_number, self.favorite_color
@@ -283,7 +283,7 @@ enum MyCoolEnum(tag: i16, exposed description: *str) {
     },
     Third(2, "This is the third value");
 
-    print_description(*self) => void {
+    exposed print_description(*self) => void {
         # `self.description` is `*str` -- no null terminator, so `puts`
         # (which scans for one) can't take it directly. `%.*s` is C's own
         # sound answer to this: an explicit length (consumed first) plus
@@ -293,7 +293,7 @@ enum MyCoolEnum(tag: i16, exposed description: *str) {
         # result is itself null-terminated.
         printf(<*u8>b"%.*s\n\0", self.description.length, <*u8>self.description);
     }
-    default() => MyCoolEnum {
+    exposed default() => MyCoolEnum {
         MyCoolEnum::Third
     }
 }
@@ -357,7 +357,7 @@ enum AnimalKind {
 # *T` dynamic dispatch (see `make_sound_with_dynamic_dispatch` below) erases
 # the concrete type down to a bare data pointer with no way to carry a
 # by-value copy.
-spec Animal {
+exposed spec Animal {
     kind(*self) => AnimalKind;
     make_sound(*self) => *u8;
     is_dog(*self) => bool {
@@ -370,22 +370,22 @@ spec Animal {
 
 struct Dog : Animal {
     exposed id: i32;
-    kind(*self) => AnimalKind { AnimalKind::Dog }
-    make_sound(*self) => *u8 { <*u8>b"woof woof\0" }
+    exposed kind(*self) => AnimalKind { AnimalKind::Dog }
+    exposed make_sound(*self) => *u8 { <*u8>b"woof woof\0" }
 }
 
 struct Cat : Animal {
     exposed id: i32;
-    kind(*self) => AnimalKind { AnimalKind::Cat }
-    make_sound(*self) => *u8 { <*u8>b"meow\0" }
+    exposed kind(*self) => AnimalKind { AnimalKind::Cat }
+    exposed make_sound(*self) => *u8 { <*u8>b"meow\0" }
     # Overrides the default: a cat is never a dog, no matter what its own
     # (never actually called through this override) `kind()` says.
-    is_dog(*self) => bool { false }
+    exposed is_dog(*self) => bool { false }
 }
 
 # A spec with no dependencies of its own, purely to demonstrate one:
 # `Mammal` below requires both `Animal` and `Dummy`.
-spec Dummy {
+exposed spec Dummy {
     dummy(*self) => void;
     something_else(*self) => void {
         self.dummy();
@@ -401,7 +401,7 @@ spec Dummy {
 # own dependencies' requirements (`Dummy`'s bare `dummy`) with a default
 # of its own -- an implementor of `Mammal` never has to provide `dummy`
 # itself.
-spec Mammal : Animal, Dummy {
+exposed spec Mammal : Animal, Dummy {
     dummy(*self) => void {
         puts(<*u8>b"i satisfied the dummy function\0");
     }
@@ -416,8 +416,8 @@ spec MySpec = Dummy | Mammal;
 
 struct Wolf : Mammal {
     exposed id: i32;
-    kind(*self) => AnimalKind { AnimalKind::Wolf }
-    make_sound(*self) => *u8 { <*u8>b"howl\0" }
+    exposed kind(*self) => AnimalKind { AnimalKind::Wolf }
+    exposed make_sound(*self) => *u8 { <*u8>b"howl\0" }
 }
 
 # Static dispatch: `T: Animal` is monomorphized once per concrete `T`
@@ -498,7 +498,7 @@ struct MyVisibilityTest {
     internal text : *[u8];
     hidden_number: u32;
 
-    new() => Self {
+    exposed new() => Self {
         Self { number = 10; text = b"this is the internal text field\0"; hidden_number = 42; }
     }
 
@@ -1151,7 +1151,7 @@ macro make_point_type($name: type) => items {
     struct $name {
         exposed x: i32;
         exposed y: i32;
-        magnitude_sq(*self) => i32 {
+        exposed magnitude_sq(*self) => i32 {
             self.x * self.x + self.y * self.y
         }
     }
