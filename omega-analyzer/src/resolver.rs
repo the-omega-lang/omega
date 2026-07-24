@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedType};
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, Type};
+use omega_parser::prelude::{Ident, Type, Visibility};
 use std::fmt;
 
 /// A concrete cross-module lookup result -- either a type (a struct, found
@@ -268,12 +268,17 @@ pub trait ModuleResolver {
     /// "not an overloaded name" (zero or exactly one candidate) -- callers
     /// fall through to the ordinary `resolve_item` path unchanged in that
     /// case, so this never affects behavior for the overwhelmingly common
-    /// non-overloaded name.
+    /// non-overloaded name. Each candidate's own declared `Visibility` rides
+    /// alongside its signature -- `resolve_overload` itself picks a winner
+    /// purely by argument-type fit, with no notion of visibility at all;
+    /// `resolve_overloaded_call` checks the *winner's* own `Visibility`
+    /// after the fact, exactly like the single-candidate path
+    /// (`resolve_type_member`) already does.
     fn function_overload_signatures(
         &mut self,
         module_path: &[Ident],
         name: &Ident,
-    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType)>>, ResolveError>;
+    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType, Visibility)>>, ResolveError>;
 
 
     /// Mints a fresh `HirId` with no corresponding HIR node of its own --

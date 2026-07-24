@@ -2551,7 +2551,7 @@ impl ModuleResolver for Driver {
         &mut self,
         module_path: &[Ident],
         name: &Ident,
-    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType)>>, ResolveError> {
+    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType, Visibility)>>, ResolveError> {
         // A module-resolution failure here doesn't mean this call is
         // broken -- it means `module_path` (the caller's naive "everything
         // but the last segment" split of an absolute path) isn't a real
@@ -2573,7 +2573,7 @@ impl ModuleResolver for Driver {
             let HirItem::FunctionDefinition(f) = &hir.items[index] else {
                 unreachable!("function_overloads only ever records function item indices");
             };
-            candidates.push((f.id, self.ensure_overload_signature(module_path, index)?));
+            candidates.push((f.id, self.ensure_overload_signature(module_path, index)?, f.visibility));
         }
         Ok(Some(candidates))
     }

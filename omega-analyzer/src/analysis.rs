@@ -2050,9 +2050,31 @@ impl<'r> Analyzer<'r> {
         if let Some((name, module_path)) = absolute.split_last()
             && let Ok(Some(candidates)) = self.resolver.function_overload_signatures(module_path, name)
         {
+            let signatures: Vec<(HirId, ResolvedFunctionType)> =
+                candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
             if let Some(ResolvedType::Function(expected_fn)) = expected
-                && let Some((decl_id, fn_type)) = Self::unique_overload_signature_match(expected_fn, &candidates)
+                && let Some((decl_id, fn_type)) = Self::unique_overload_signature_match(expected_fn, &signatures)
             {
+                // Same post-winner visibility check as `resolve_overloaded_
+                // call`'s identical situation -- structural signature
+                // matching (here, against `expected`) has no notion of
+                // visibility either.
+                let visibility = candidates
+                    .iter()
+                    .find(|(id, ..)| *id == decl_id)
+                    .map(|(_, _, v)| *v)
+                    .expect("decl_id came from this same candidates list");
+                if !self.check_visibility(visibility, module_path) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
+                            module: module_path.to_vec(),
+                            item: name.clone(),
+                        }),
+                    ));
+                    return None;
+                }
                 let r#type = ResolvedType::Function(fn_type);
                 let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
                 return Some((root, r#type));
@@ -2062,7 +2084,7 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::AmbiguousOverload {
                     name: name.clone(),
-                    candidates: candidates.into_iter().map(|(_, t)| t).collect(),
+                    candidates: candidates.into_iter().map(|(_, t, _)| t).collect(),
                 },
             ));
             return None;
@@ -3162,6 +3184,25 @@ impl<'r> Analyzer<'r> {
         };
         let (decl_id, fn_type) = candidates[winner].clone();
 
+        // The winner's own visibility, checked *after* argument-driven
+        // resolution picks it -- exactly like the single-candidate path
+        // (`resolve_type_member`) already does; `resolve_overload` itself
+        // has no notion of visibility, only signature fit.
+        let owner_module_path = match &r#type {
+            ResolvedType::Struct(cell) => cell.borrow().module_path.clone(),
+            ResolvedType::Union(cell) => cell.borrow().module_path.clone(),
+            ResolvedType::Enum { cell, .. } => cell.borrow().module_path.clone(),
+            _ => Vec::new(),
+        };
+        if !self.check_visibility(statics[winner].visibility, &owner_module_path) {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::MethodNotVisible { method: member.clone(), base: r#type.clone() },
+            ));
+            return Some(None);
+        }
+
         let callee = CheckedExprNode {
             id: call.callee.id,
             span: call.callee.span,
@@ -3226,11 +3267,28 @@ impl<'r> Analyzer<'r> {
                 return Some(None);
             }
         };
+        let signatures: Vec<(HirId, ResolvedFunctionType)> =
+            candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
 
-        let Some((winner, args)) = self.resolve_overload(node_id, span, name, &candidates, &call.args) else {
+        let Some((winner, args)) = self.resolve_overload(node_id, span, name, &signatures, &call.args) else {
             return Some(None);
         };
-        let (decl_id, fn_type) = candidates[winner].clone();
+        let (decl_id, fn_type, visibility) = candidates[winner].clone();
+
+        // Same reasoning as `resolve_overloaded_static_call`'s identical
+        // post-winner check -- `resolve_overload` itself has no notion of
+        // visibility, only signature fit.
+        if !self.check_visibility(visibility, module_path) {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
+                    module: module_path.to_vec(),
+                    item: name.clone(),
+                }),
+            ));
+            return Some(None);
+        }
 
         let callee = CheckedExprNode {
             id: call.callee.id,
