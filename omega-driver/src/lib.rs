@@ -2481,6 +2481,24 @@ impl ModuleResolver for Driver {
         self.raw_imports.get(module_path).map(|m| m.keys().cloned().collect()).unwrap_or_default()
     }
 
+    fn raw_import_absolute_path(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<(Vec<Ident>, bool)>, ResolveError> {
+        self.ensure_module_indexed(module_path)?;
+        let Some((_, _, absolute, _, hidden)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned()
+        else {
+            return Ok(None);
+        };
+        // Same bookkeeping `resolve_import_alias` does -- querying this
+        // alias's target *is* using it, for `UnusedImport`'s purposes,
+        // regardless of which of the two paths a reference to it goes
+        // through.
+        self.used_imports.insert((module_path.to_vec(), alias.clone()));
+        Ok(Some((absolute, hidden)))
+    }
+
     fn resolve_item(
         &mut self,
         accessor_module_path: &[Ident],

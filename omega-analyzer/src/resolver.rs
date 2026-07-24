@@ -189,6 +189,29 @@ pub trait ModuleResolver {
     /// module is indexed, long before any of them are actually resolved).
     fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident>;
 
+    /// `alias`'s own already-computed absolute target path in `module_path`
+    /// (`import lib::pick;` -> `["lib", "pick"]`), plus whether that import
+    /// was written `hidden` -- purely structural and resolution-free, like
+    /// `import_alias_names`, deliberately **not** going through
+    /// `resolve_import_alias`/`ensure_item` at all. `resolve_import_alias`
+    /// eagerly resolves to *one* concrete item, which is exactly wrong for
+    /// an alias to an *overloaded* name (`ModuleResolver::
+    /// function_overload_signatures`'s whole reason to exist): picking a
+    /// single winner before the call's own argument types are known would
+    /// silently commit to whichever overload happened to be indexed first,
+    /// regardless of arity/types -- and regardless of `hidden`, since a
+    /// `hidden`-only-visible overload could never even be considered.
+    /// `Analyzer::resolve_overloaded_call`'s unqualified-alias case uses
+    /// this instead, mirroring how its own unqualified-*own-module* case
+    /// already builds an absolute path directly rather than resolving
+    /// through an item query first. `Ok(None)` means "not an alias at all"
+    /// (same convention as `resolve_import_alias`).
+    fn raw_import_absolute_path(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<(Vec<Ident>, bool)>, ResolveError>;
+
     /// Called for *any* named-type or place reference that isn't satisfied
     /// by a local (function-body-level) scope -- including a same-module
     /// top-level reference, with `absolute_path`'s module prefix supplied

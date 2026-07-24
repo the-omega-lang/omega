@@ -3249,8 +3249,34 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        // A bare name is tried as an import alias *first* -- deliberately
+        // via `raw_import_absolute_path` (structural, resolution-free)
+        // rather than `resolve_alias`/`resolve_import_alias`, which would
+        // eagerly resolve to one concrete item via `ensure_item` before
+        // this call's own argument types ever get a say. That matters
+        // specifically for an alias to an *overloaded* name: eagerly
+        // resolving would silently commit to whichever overload happened
+        // to be indexed first (see `ModuleResolver::raw_import_absolute_path`'s
+        // doc comment) -- including making a `hidden`-only-visible overload
+        // completely unreachable through the alias, no matter what the call
+        // site writes, since it would never even be considered as a
+        // candidate. `import_hidden` is the import statement's own
+        // `hidden` (if any) -- it bypasses visibility for every reference
+        // through this alias, independent of whether the call site here
+        // *also* writes `hidden`.
+        let mut import_hidden = false;
         let absolute: Vec<Ident> = if path.is_unqualified() {
-            self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect()
+            match self.resolver.raw_import_absolute_path(&self.module_path, &path.head) {
+                Ok(Some((absolute, hidden))) => {
+                    import_hidden = hidden;
+                    absolute
+                }
+                Ok(None) => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+                Err(e) => {
+                    self.errors.push(AnalysisError::new(node_id, span, AnalysisErrorKind::ModuleResolution(e)));
+                    return Some(None);
+                }
+            }
         } else {
             match self.resolve_alias(&path.head).ok().flatten() {
                 Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
@@ -3277,8 +3303,21 @@ impl<'r> Analyzer<'r> {
 
         // Same reasoning as `resolve_overloaded_static_call`'s identical
         // post-winner check -- `resolve_overload` itself has no notion of
-        // visibility, only signature fit.
-        if !self.check_visibility(visibility, module_path) {
+        // visibility, only signature fit. `import_hidden` layers in as its
+        // own bypass frame (no `UnnecessaryHidden` tracking for it -- it
+        // isn't a `hidden` expression at this node at all, so warning here
+        // would misattribute it; the ordinary single-candidate import path
+        // doesn't track this either, for the same reason) alongside
+        // whatever ambient frame a `hidden`-wrapped call site itself
+        // already pushed.
+        if import_hidden {
+            self.hidden_stack.push(false);
+        }
+        let visible = self.check_visibility(visibility, module_path);
+        if import_hidden {
+            self.hidden_stack.pop();
+        }
+        if !visible {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
