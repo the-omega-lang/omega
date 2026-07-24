@@ -8,6 +8,6 @@
 # compiles cleanly.
 import cycle_b::unrelated_b;
 
-cycle_a_value() => i32 {
+exposed cycle_a_value() => i32 {
     10
 }

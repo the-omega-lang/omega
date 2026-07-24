@@ -4,6 +4,7 @@ use crate::ast::statement::{
     extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt, r#return::ReturnStmt,
     walrus::WalrusStmt, while_stmt::WhileStmt,
 };
+use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::expression::{parse_codeblock, parse_expression};
@@ -166,13 +167,13 @@ pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::Colon, "':'");
     let r#type = crate::parser::r#type::parse_type(p)?;
-    Some(DeclarationStmt { ident, r#type, mutable: false })
+    Some(DeclarationStmt { ident, r#type, mutable: false, visibility: Visibility::default() })
 }
 
 pub fn parse_extern_declaration(p: &mut Parser) -> Option<ExternDeclarationStmt> {
     p.expect(&TokenKind::Extern, "'extern'");
     let decl = parse_declaration(p)?;
-    Some(ExternDeclarationStmt { ident: decl.ident, r#type: decl.r#type })
+    Some(ExternDeclarationStmt { ident: decl.ident, r#type: decl.r#type, visibility: Visibility::default() })
 }
 
 fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {

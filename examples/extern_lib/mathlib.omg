@@ -5,14 +5,14 @@
 # `--extern=mathlib:examples/extern_lib`). Nothing here is aware it's
 # being used this way -- it's an entirely ordinary module.
 
-add_numbers(a: i32, b: i32) => i32 {
+exposed add_numbers(a: i32, b: i32) => i32 {
     a + b
 }
 
-struct Point {
-    x: i32;
-    y: i32;
-    magnitude_sq(*self) => i32 {
+exposed struct Point {
+    exposed x: i32;
+    exposed y: i32;
+    exposed magnitude_sq(*self) => i32 {
         self.x * self.x + self.y * self.y
     }
 }

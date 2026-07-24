@@ -14,7 +14,7 @@ use omega_parser::prelude::{
     ExpressionNode,
     ExternDeclarationStmt,
     FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Path, Pattern, RangeExpr, SelfMode, Span,
-    SourceModule, SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt,
+    SourceModule, SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt, Visibility,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -53,6 +53,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span: node.span,
                 annotations: Self::lower_annotations(&import.annotations),
+                hidden: import.hidden,
                 root: import.root,
                 path: import.path.clone(),
             }),
@@ -140,6 +141,7 @@ impl Lowerer {
             ident: decl.ident.clone(),
             r#type: decl.r#type.clone(),
             mutable: decl.mutable,
+            visibility: decl.visibility,
         }
     }
 
@@ -153,6 +155,7 @@ impl Lowerer {
             span,
             ident: decl.ident.clone(),
             r#type: decl.r#type.clone(),
+            visibility: decl.visibility,
         }
     }
 
@@ -199,6 +202,7 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             annotations: Self::lower_annotations(&f.annotations),
+            visibility: f.visibility,
             name: f.ident.clone(),
             generics: Self::lower_generics(&f.generics),
             self_mode: f.self_mode,
@@ -227,7 +231,7 @@ impl Lowerer {
         } else {
             Type::Named(type_name.clone().into())
         };
-        Some(HirParam { id: self.ids.next(), span, ident: Ident("self".to_string()), r#type })
+        Some(HirParam { id: self.ids.next(), span, ident: Ident("self".to_string()), r#type, visibility: Visibility::default() })
     }
 
     /// Desugars `mut self` (by value) into an implicit `mut self := self;`
@@ -298,7 +302,7 @@ impl Lowerer {
         let functions = sp.functions.iter().map(|f| self.lower_spec_function(f, span)).collect();
         let target = sp.target.clone();
 
-        HirSpecDef { id, span, name: sp.ident.clone(), generics, dependencies, functions, target }
+        HirSpecDef { id, span, visibility: sp.visibility, name: sp.ident.clone(), generics, dependencies, functions, target }
     }
 
     /// `Self` is the type-name lowering hands to `self_param` here --
@@ -337,6 +341,7 @@ impl Lowerer {
             span,
             ident: param.ident.clone(),
             r#type: param.r#type.clone(),
+            visibility: param.visibility,
         }
     }
 
@@ -353,6 +358,7 @@ impl Lowerer {
             id,
             span,
             annotations: Self::lower_annotations(&s.annotations),
+            visibility: s.visibility,
             name: s.ident.clone(),
             generics: Self::lower_generics(&s.generics),
             implements: s.implements.clone(),
@@ -376,6 +382,7 @@ impl Lowerer {
             id,
             span,
             annotations: Self::lower_annotations(&u.annotations),
+            visibility: u.visibility,
             name: u.ident.clone(),
             generics: Self::lower_generics(&u.generics),
             implements: u.implements.clone(),
@@ -402,6 +409,7 @@ impl Lowerer {
                 span: h.span,
                 ident: h.ident.clone(),
                 r#type: h.r#type.clone(),
+                visibility: h.visibility,
             })
             .collect();
         let dynamic_fields = e.dynamic_fields.iter().map(|f| self.lower_param(f, span)).collect();
@@ -426,6 +434,7 @@ impl Lowerer {
             id,
             span,
             annotations: Self::lower_annotations(&e.annotations),
+            visibility: e.visibility,
             name: e.ident.clone(),
             generics: Self::lower_generics(&e.generics),
             implements: e.implements.clone(),
@@ -525,6 +534,10 @@ impl Lowerer {
                     span: node.span,
                     expr: HirExpr::AddressOf(HirAddressOf { base, mutable: addr.mutable }),
                 }
+            }
+            Expression::Hidden(hidden) => {
+                let base = Box::new(self.lower_expr(&hidden.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Hidden(base) }
             }
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));

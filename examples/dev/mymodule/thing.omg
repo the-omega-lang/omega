@@ -9,6 +9,6 @@ import helper;
 # written in `main.omg` itself.
 import root::simplemodule;
 
-something2() => i32 {
+exposed something2() => i32 {
     helper::helper_value() + simplemodule::something3(1)
 }

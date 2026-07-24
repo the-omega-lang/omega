@@ -5,6 +5,7 @@ use crate::ast::identifier::Ident;
 use crate::ast::r#type::{FunctionType, Type};
 use crate::ast::self_mode::SelfMode;
 use crate::ast::statement::declaration::DeclarationStmt;
+use crate::ast::visibility::Visibility;
 
 #[derive(Debug, Clone)]
 pub struct FunctionDefinitionStmt {
@@ -13,6 +14,10 @@ pub struct FunctionDefinitionStmt {
     /// top-level function or a struct/enum/union method, since both are
     /// this same node (see `self_mode`). See `omega_analyzer::annotations`.
     pub annotations: Vec<AnnotationNode>,
+    /// `exposed`/`internal`/(default `Private`) -- applies identically
+    /// whether this is a top-level function or a struct/enum/union method,
+    /// same dual-purpose treatment as `self_mode`.
+    pub visibility: Visibility,
     pub ident: Ident,
     /// `<T, U, ...>` immediately after `ident` -- empty for an
     /// ordinary, non-generic function. Unlike a struct's, these are never

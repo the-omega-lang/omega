@@ -279,7 +279,7 @@ impl IntoIRType for ResolvedType {
             // keep agreeing with each other.
             ResolvedType::Struct(struct_type) => {
                 let struct_type = struct_type.borrow();
-                let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
+                let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t, _)| t.clone()).collect();
                 let layout = layout_fields(&field_types, struct_type.layout.pack, codegen);
                 let mut leaves = layout.leaves;
                 let final_size = round_up(layout.packed_end, struct_type.layout.align);
@@ -376,7 +376,7 @@ fn project_field_access<T: Clone>(
     struct_type: &ResolvedStructType,
     field_index: usize,
 ) -> Vec<T> {
-    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
+    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t, _)| t.clone()).collect();
     let start = layout_fields(&field_types, struct_type.layout.pack, codegen).leaf_starts[field_index];
     let len = struct_type.fields[field_index].1.clone().into_ir_type(codegen).len();
 
@@ -516,7 +516,7 @@ fn layout_fields(types: &[ResolvedType], pack: u32, codegen: &Codegen) -> FieldL
 /// `place_field`) -- the memory-backed (`Slot`/`Address`) counterpart to
 /// `project_field_access`'s positional (`Values`) slicing.
 fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, codegen: &Codegen) -> u32 {
-    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t)| t.clone()).collect();
+    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t, _)| t.clone()).collect();
     layout_fields(&field_types, struct_type.layout.pack, codegen).byte_offsets[field_index]
 }
 
@@ -529,7 +529,7 @@ fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, codegen: &Codegen
         .variants
         .iter()
         .map(|v| {
-            let field_types: Vec<ResolvedType> = v.fields.iter().map(|(_, t)| t.clone()).collect();
+            let field_types: Vec<ResolvedType> = v.fields.iter().map(|(_, t, _)| t.clone()).collect();
             layout_fields(&field_types, pack, codegen).packed_end
         })
         .max()
@@ -542,7 +542,7 @@ fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, codegen: &Codegen
 /// `enum_payload_offset`) has to satisfy whichever variant needs the most.
 /// `1` (no alignment) when no variant has any field demanding one.
 fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
-    enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|(_, t)| type_alignment(t))).max().unwrap_or(1)
+    enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|(_, t, _)| type_alignment(t))).max().unwrap_or(1)
 }
 
 /// The enum's own `[tag, header..., dynamic...]` run, laid out (with the
@@ -554,8 +554,8 @@ fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
 /// from.
 fn enum_prefix_layout(enum_type: &ResolvedEnumType, codegen: &Codegen) -> FieldLayout {
     let mut types = vec![enum_type.tag_type.clone()];
-    types.extend(enum_type.header.iter().map(|(_, t)| t.clone()));
-    types.extend(enum_type.dynamic_fields.iter().map(|(_, t)| t.clone()));
+    types.extend(enum_type.header.iter().map(|(_, t, _)| t.clone()));
+    types.extend(enum_type.dynamic_fields.iter().map(|(_, t, _)| t.clone()));
     layout_fields(&types, enum_type.layout.pack, codegen)
 }
 
@@ -564,7 +564,7 @@ fn enum_prefix_layout(enum_type: &ResolvedEnumType, codegen: &Codegen) -> FieldL
 /// this mirrors exactly (a union's whole body plays the same role a single
 /// enum variant's body does).
 fn union_bytes(union_type: &ResolvedUnionType, codegen: &Codegen) -> u32 {
-    union_type.fields.iter().map(|(_, r#type)| total_bytes(r#type.clone(), codegen)).max().unwrap_or(0)
+    union_type.fields.iter().map(|(_, r#type, _)| total_bytes(r#type.clone(), codegen)).max().unwrap_or(0)
 }
 
 /// Decomposes an enum's payload region into opaque integer leaves covering
@@ -632,7 +632,7 @@ fn enum_body_field_offset(
     codegen: &Codegen,
 ) -> u32 {
     let field_types: Vec<ResolvedType> =
-        enum_type.variants[variant_index].fields.iter().map(|(_, t)| t.clone()).collect();
+        enum_type.variants[variant_index].fields.iter().map(|(_, t, _)| t.clone()).collect();
     enum_payload_offset(enum_type, codegen)
         + layout_fields(&field_types, enum_type.layout.pack, codegen).byte_offsets[field_index]
 }
@@ -2405,7 +2405,7 @@ impl Codegen {
                         .header
                         .iter()
                         .zip(&variant.header_values)
-                        .map(|((_, r#type), value)| (r#type.clone(), value.clone()))
+                        .map(|((_, r#type, _), value)| (r#type.clone(), value.clone()))
                         .collect();
                     // `field.field_index` (from `CheckedEnumConstruct::fields`)
                     // spans the *combined* declared list analysis built --

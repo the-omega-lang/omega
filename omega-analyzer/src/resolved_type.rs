@@ -1,5 +1,5 @@
 use omega_hir::{HirBlock, HirId, HirParam};
-use omega_parser::prelude::{Ident, SelfMode, Span, Type};
+use omega_parser::prelude::{Ident, SelfMode, Span, Type, Visibility};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -26,6 +26,11 @@ pub struct ResolvedFunctionType {
 pub struct ResolvedMethod {
     pub decl_id: HirId,
     pub fn_type: ResolvedFunctionType,
+    /// `exposed`/`internal`/(default `Private`), resolved once here
+    /// (alongside `annotations`) at signature time -- see
+    /// `Analyzer::check_visibility`'s method-call hook (`resolve_callee`)
+    /// for where this is actually enforced.
+    pub visibility: Visibility,
     /// This method's own resolved `@inline`/`@mangling`/`@suppress` --
     /// resolved once, here, at signature time (never re-resolved at body-
     /// check time) so it's already known even for a method whose body this
@@ -65,7 +70,10 @@ pub struct ResolvedStructType {
     /// generic arguments intact; see `omega_driver::Driver::struct_cell`,
     /// this field's only writer.
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<(Ident, ResolvedType)>,
+    /// `(name, type, visibility)` per field, in declaration order -- see
+    /// `Analyzer::check_visibility`'s field-access hook
+    /// (`resolve_field_projection`) for where the third element is enforced.
+    pub fields: Vec<(Ident, ResolvedType, Visibility)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     /// `@layout(...)`'s resolved `pack`/`align` -- `{1, 1}` (today's
     /// implicit, zero-padding layout) unless overridden. See
@@ -117,7 +125,8 @@ pub struct ResolvedUnionType {
     pub module_path: Vec<Ident>,
     /// See `ResolvedStructType::type_args`'s doc comment.
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<(Ident, ResolvedType)>,
+    /// See `ResolvedStructType::fields`'s doc comment.
+    pub fields: Vec<(Ident, ResolvedType, Visibility)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     /// See `ResolvedStructType::suppress`'s doc comment. Unions don't
     /// support `@layout` yet -- only `@suppress` applies here.
@@ -162,8 +171,9 @@ pub struct ResolvedEnumType {
     pub tag_type: ResolvedType,
     /// The shared header fields, in declaration order -- *excluding* the
     /// tag, which is layout-wise field -1 (always first) and accessed via
-    /// the dedicated `.tag` projection instead.
-    pub header: Vec<(Ident, ResolvedType)>,
+    /// the dedicated `.tag` projection instead. See
+    /// `ResolvedStructType::fields`'s doc comment for the 3-tuple shape.
+    pub header: Vec<(Ident, ResolvedType, Visibility)>,
     /// The shared *dynamic* fields, in declaration order -- present on
     /// every variant like `header`, laid out right after it, but
     /// runtime-valued: every construction site supplies them (see
@@ -171,7 +181,7 @@ pub struct ResolvedEnumType {
     /// freely assignable afterward, exactly like a variant's own body
     /// field. Unlike `header`, there is no per-variant constant list here
     /// at all -- there's nothing to bake in.
-    pub dynamic_fields: Vec<(Ident, ResolvedType)>,
+    pub dynamic_fields: Vec<(Ident, ResolvedType, Visibility)>,
     pub variants: Vec<ResolvedEnumVariant>,
     /// Same shape and semantics as `ResolvedStructType::functions`.
     pub functions: Vec<(Ident, ResolvedMethod)>,
@@ -197,8 +207,9 @@ pub struct ResolvedEnumVariant {
     /// The variant-specific body fields -- empty for a body-less variant.
     /// At runtime the enum's body region is a union of all variants'
     /// bodies; analysis only ever lets the statically-known variant's own
-    /// fields be touched.
-    pub fields: Vec<(Ident, ResolvedType)>,
+    /// fields be touched. See `ResolvedStructType::fields`'s doc comment
+    /// for the 3-tuple shape.
+    pub fields: Vec<(Ident, ResolvedType, Visibility)>,
 }
 
 impl ResolvedEnumType {

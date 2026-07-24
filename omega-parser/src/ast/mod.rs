@@ -11,3 +11,4 @@ pub mod range;
 pub mod self_mode;
 pub mod statement;
 pub mod r#type;
+pub mod visibility;

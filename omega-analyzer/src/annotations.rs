@@ -429,19 +429,19 @@ pub fn estimate_type_size(r#type: &ResolvedType) -> u32 {
         return n;
     }
     match r#type {
-        ResolvedType::Struct(cell) => cell.borrow().fields.iter().map(|(_, t)| estimate_type_size(t)).sum(),
+        ResolvedType::Struct(cell) => cell.borrow().fields.iter().map(|(_, t, _)| estimate_type_size(t)).sum(),
         ResolvedType::Union(cell) => {
-            cell.borrow().fields.iter().map(|(_, t)| estimate_type_size(t)).max().unwrap_or(0)
+            cell.borrow().fields.iter().map(|(_, t, _)| estimate_type_size(t)).max().unwrap_or(0)
         }
         ResolvedType::Enum { cell, .. } => {
             let cell = cell.borrow();
             let tag = estimate_type_size(&cell.tag_type);
-            let header: u32 = cell.header.iter().map(|(_, t)| estimate_type_size(t)).sum();
-            let dynamic: u32 = cell.dynamic_fields.iter().map(|(_, t)| estimate_type_size(t)).sum();
+            let header: u32 = cell.header.iter().map(|(_, t, _)| estimate_type_size(t)).sum();
+            let dynamic: u32 = cell.dynamic_fields.iter().map(|(_, t, _)| estimate_type_size(t)).sum();
             let body = cell
                 .variants
                 .iter()
-                .map(|v| v.fields.iter().map(|(_, t)| estimate_type_size(t)).sum::<u32>())
+                .map(|v| v.fields.iter().map(|(_, t, _)| estimate_type_size(t)).sum::<u32>())
                 .max()
                 .unwrap_or(0);
             tag + header + dynamic + body

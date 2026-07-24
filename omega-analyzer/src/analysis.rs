@@ -28,7 +28,7 @@ use omega_hir::{
     HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirUnionDef, HirWalrusDeclaration,
 };
-use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, SelfMode, Span, Type};
+use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, SelfMode, Span, Type, Visibility};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -186,6 +186,15 @@ pub struct Analyzer<'r> {
     /// (see `Analyzer::warn`), the same lexical-nesting behavior Rust's
     /// `#[allow]` has.
     suppressed: Vec<Vec<Ident>>,
+    /// One frame per currently-active `hidden` expression (innermost last),
+    /// each tracking whether *its* bypass has proven load-bearing yet (i.e.
+    /// whether some check nested inside it would actually have failed
+    /// without it) -- see `HirExpr::Hidden`'s analysis arm and
+    /// `AnalysisWarningKind::UnnecessaryHidden`. `check_visibility` marks
+    /// only the *innermost* frame (`.last_mut()`), so a redundant outer
+    /// `hidden hidden x.y` still warns on the outer wrapper even though the
+    /// inner one saved the access.
+    hidden_stack: Vec<bool>,
 }
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
@@ -210,6 +219,26 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::Spec(sp) if sp.target.is_some() => None,
         HirItem::Spec(sp) => Some(sp.name.clone()),
         HirItem::Import(_) => None,
+    }
+}
+
+/// A top-level item's own declared `exposed`/`internal`/(default `Private`)
+/// -- what `omega_driver::Driver::ensure_item` reads instead of hardcoding
+/// `Visibility::Public`. `Import` has no visibility of its own (only
+/// `hidden`, a different, use-site concept -- see `HirImport::hidden`) and
+/// is never looked up through this path anyway (`item_name` already returns
+/// `None` for it), so it's `unreachable!()` here rather than an arbitrary
+/// default.
+pub fn item_visibility(item: &HirItem) -> Visibility {
+    match item {
+        HirItem::Declaration(d) => d.visibility,
+        HirItem::ExternDeclaration(d) => d.visibility,
+        HirItem::FunctionDefinition(f) => f.visibility,
+        HirItem::Struct(s) => s.visibility,
+        HirItem::Enum(e) => e.visibility,
+        HirItem::Union(u) => u.visibility,
+        HirItem::Spec(sp) => sp.visibility,
+        HirItem::Import(_) => unreachable!("imports have no item-level visibility and are never looked up by name"),
     }
 }
 
@@ -323,6 +352,7 @@ impl<'r> Analyzer<'r> {
             loop_stack: vec![],
             in_defer_body: false,
             suppressed: vec![],
+            hidden_stack: vec![],
         }
     }
 
@@ -348,6 +378,136 @@ impl<'r> Analyzer<'r> {
         if !self.is_suppressed(&kind) {
             self.warnings.push(AnalysisWarning::new(node_id, span, kind));
         }
+    }
+
+    /// The single choke point every *in-analyzer* visibility check goes
+    /// through -- field access (`resolve_field_projection`), struct/enum-
+    /// variant/union literal field initializers (`check_field_initializers`
+    /// and the union-literal inline check), and method resolution
+    /// (`resolve_callee`, static member access). Cross-module *item*
+    /// lookups go through `ModuleResolver::resolve_item`'s own
+    /// `accessor_module_path`/`bypass` parameters instead (see
+    /// `omega_driver::Driver::ensure_item`) -- that check happens inside the
+    /// resolver, across a trait boundary this `hidden_stack` can't reach
+    /// directly, so it threads the same bypass decision (`!self.hidden_stack.
+    /// is_empty()`) down as an explicit argument and separately reports back
+    /// via `ModuleResolver::is_item_visible` whether the bypass was load-
+    /// bearing, for the identical `UnnecessaryHidden` warning.
+    ///
+    /// `declaring_module` is `visibility`'s own declaring module; `self.
+    /// module_path` is always the *accessing* site's module, stable for
+    /// this whole `Analyzer` instance's lifetime (one throwaway `Analyzer`
+    /// checks exactly one top-level item). Returns whether the access is
+    /// allowed -- if the ordinary rule would deny it but a `hidden` frame is
+    /// active, this allows it anyway and marks the innermost frame as
+    /// load-bearing.
+    pub(crate) fn check_visibility(&mut self, visibility: Visibility, declaring_module: &[Ident]) -> bool {
+        let allowed = match visibility {
+            Visibility::Exposed => true,
+            Visibility::Internal => declaring_module.first() == self.module_path.first(),
+            Visibility::Private => declaring_module == self.module_path.as_slice(),
+        };
+        if allowed {
+            return true;
+        }
+        if let Some(top) = self.hidden_stack.last_mut() {
+            *top = true;
+            return true;
+        }
+        false
+    }
+
+    /// Peels `HirExpr::Hidden` wrappers off `expr`, returning whether at
+    /// least one was present and the first non-`Hidden` node reached -- a
+    /// no-op (`(false, expr)`) when there's no `Hidden` wrapper at all, the
+    /// overwhelmingly common case. Every raw-HIR "is this syntactically a
+    /// place" check (an assignment/compound-assign target, `++`/`--`'s
+    /// operand, `&`'s operand, a call callee, ...) needs this before
+    /// pattern-matching `HirExpr::Place`, since `hidden` is a real, generic
+    /// wrapper node -- never folded into `HirPlace` itself (see
+    /// `HirExpr::Hidden`'s doc comment) -- so a `hidden`-wrapped place would
+    /// otherwise look like "not a place at all" to these checks.
+    ///
+    /// Critically, `hidden` here wraps only the *sub-position*
+    /// (`assignment.target`, `addr.base`, ...), not the enclosing expression
+    /// (`hidden a.b = c;` parses as `Assignment { target: Hidden(FieldAccess(a,
+    /// b)), value: c }` -- `parse_assignment`'s own target is parsed via the
+    /// same precedence descent that bottoms out at `parse_unary`, where
+    /// `hidden` is recognized, so it binds to `a.b` alone, never spanning
+    /// the `=` and beyond). That means `analyze_expr`'s own `HirExpr::Hidden`
+    /// arm -- which only ever sees a `Hidden` node when it's the *outermost*
+    /// shape of whatever's being analyzed -- never runs for this position at
+    /// all, so it never pushes a bypass frame here. Every caller of this
+    /// function that goes on to perform a visibility-gated lookup (as
+    /// opposed to a purely structural probe like `narrowable_scrutinee`/
+    /// `resolve_variant_pattern`, which call this only to recognize a place
+    /// shape, never to gate anything) must wrap that lookup in
+    /// `with_hidden_bypass(was_hidden, ...)` using the `bool` returned here,
+    /// or the bypass silently never activates.
+    fn strip_hidden(expr: &HirExprNode) -> (bool, &HirExprNode) {
+        match &expr.expr {
+            HirExpr::Hidden(inner) => (true, Self::strip_hidden(inner).1),
+            _ => (false, expr),
+        }
+    }
+
+    /// Runs `f` with a `hidden_stack` frame active iff `was_hidden` (the
+    /// bool `strip_hidden` returned) -- the sub-position counterpart to
+    /// `analyze_expr`'s own `HirExpr::Hidden` arm (see `strip_hidden`'s doc
+    /// comment for why that arm doesn't fire on its own here). Pops the
+    /// frame and emits `UnnecessaryHidden` (anchored at `node_id`/`span`,
+    /// the *enclosing* expression's own -- there is no narrower span to
+    /// anchor at, since the `Hidden` node itself was never assigned one of
+    /// its own by this call path) if the bypass never proved necessary,
+    /// regardless of how `f` returns (including every `?`-early-return
+    /// inside it) -- a plain closure boundary, not a `Drop` guard, precisely
+    /// so early returns inside `f` still run this function's own
+    /// after-`f` cleanup correctly.
+    fn with_hidden_bypass<T>(
+        &mut self,
+        was_hidden: bool,
+        node_id: HirId,
+        span: Span,
+        f: impl FnOnce(&mut Self) -> Option<T>,
+    ) -> Option<T> {
+        if was_hidden {
+            self.hidden_stack.push(false);
+        }
+        let result = f(self);
+        if was_hidden {
+            let load_bearing = self.hidden_stack.pop().expect("just pushed above");
+            if !load_bearing {
+                self.warn(node_id, span, AnalysisWarningKind::UnnecessaryHidden);
+            }
+        }
+        result
+    }
+
+    /// The one choke point every ordinary `ModuleResolver::resolve_item`
+    /// call goes through -- computes `bypass` from `hidden_stack`, calls
+    /// through with `self.module_path` as the accessor, and on a bypassed
+    /// success, consults `is_item_visible` to mark the innermost `hidden`
+    /// frame load-bearing (the same "was this bypass actually necessary"
+    /// tracking `check_visibility` does for in-analyzer checks, just across
+    /// the `ModuleResolver` trait boundary -- see `AnalysisWarningKind::
+    /// UnnecessaryHidden`). Every other argument passes straight through
+    /// unchanged; this exists purely to avoid repeating the bypass/mark
+    /// dance at each of this crate's ~10 call sites.
+    fn resolve_item_checked(
+        &mut self,
+        absolute: &[Ident],
+        type_args: &[ResolvedType],
+        indirect: bool,
+    ) -> Result<ResolvedItem, ResolveError> {
+        let bypass = !self.hidden_stack.is_empty();
+        let result = self.resolver.resolve_item(&self.module_path, absolute, type_args, indirect, bypass);
+        if bypass
+            && result.is_ok()
+            && !self.resolver.is_item_visible(&self.module_path, absolute)
+        {
+            *self.hidden_stack.last_mut().expect("bypass true implies a non-empty hidden_stack") = true;
+        }
+        result
     }
 
     // Small generic fold used everywhere a list of HIR nodes is analyzed
@@ -383,7 +543,8 @@ impl<'r> Analyzer<'r> {
     /// calls the resolver directly on an unqualified miss), so this is just
     /// a thin error-reporting wrapper around it.
     pub(crate) fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
-        match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect) {
+        let bypass = !self.hidden_stack.is_empty();
+        match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect, bypass) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
                 self.errors
@@ -659,6 +820,13 @@ impl<'r> Analyzer<'r> {
                         ResolvedMethod {
                             decl_id: minted_id,
                             fn_type: f.fn_type.clone(),
+                            // A `for`-spec's own function has no visibility
+                            // modifier of its own (specs aren't in scope for
+                            // per-function visibility, see `SpecFunctionStmt`)
+                            // -- these exist specifically to give primitives
+                            // universally-usable methods, so `Exposed` is the
+                            // only sensible default.
+                            visibility: Visibility::Exposed,
                             annotations: crate::annotations::ResolvedAnnotations::default(),
                         },
                     ));
@@ -896,6 +1064,12 @@ impl<'r> Analyzer<'r> {
                         ResolvedMethod {
                             decl_id: minted_id,
                             fn_type: req.fn_type.clone(),
+                            // Same reasoning as `resolve_extension_methods`'s
+                            // identical default -- a spec-default method has
+                            // no visibility modifier of its own; `Exposed`
+                            // means the implementor's own visibility (already
+                            // checked separately) is the only gate.
+                            visibility: Visibility::Exposed,
                             annotations: crate::annotations::ResolvedAnnotations::default(),
                         },
                     ));
@@ -1228,15 +1402,35 @@ impl<'r> Analyzer<'r> {
                 projections.push(CheckedProjection::EnumTag { r#type: r#type.clone() });
                 return Some(r#type);
             }
-            if let Some((index, (_, r#type))) = e.header.iter().enumerate().find(|(_, (name, _))| name == field) {
-                let r#type = r#type.clone();
+            if let Some((index, (_, r#type, visibility))) = e.header.iter().enumerate().find(|(_, (name, _, _))| name == field) {
+                let (r#type, visibility) = (r#type.clone(), *visibility);
+                let module_path = e.module_path.clone();
+                drop(e);
+                if !self.check_visibility(visibility, &module_path) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::FieldNotVisible { field: field.clone(), base: dereffed.clone() },
+                    ));
+                    return None;
+                }
                 projections.push(CheckedProjection::EnumHeader { field: field.clone(), index, r#type: r#type.clone() });
                 return Some(r#type);
             }
-            if let Some((index, (_, r#type))) =
-                e.dynamic_fields.iter().enumerate().find(|(_, (name, _))| name == field)
+            if let Some((index, (_, r#type, visibility))) =
+                e.dynamic_fields.iter().enumerate().find(|(_, (name, _, _))| name == field)
             {
-                let r#type = r#type.clone();
+                let (r#type, visibility) = (r#type.clone(), *visibility);
+                let module_path = e.module_path.clone();
+                drop(e);
+                if !self.check_visibility(visibility, &module_path) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::FieldNotVisible { field: field.clone(), base: dereffed.clone() },
+                    ));
+                    return None;
+                }
                 projections.push(CheckedProjection::EnumDynamicField {
                     field: field.clone(),
                     index,
@@ -1245,10 +1439,20 @@ impl<'r> Analyzer<'r> {
                 return Some(r#type);
             }
             if let Some(current) = variant
-                && let Some((field_index, (_, r#type))) =
-                    e.variants[*current].fields.iter().enumerate().find(|(_, (name, _))| name == field)
+                && let Some((field_index, (_, r#type, visibility))) =
+                    e.variants[*current].fields.iter().enumerate().find(|(_, (name, _, _))| name == field)
             {
-                let r#type = r#type.clone();
+                let (r#type, visibility) = (r#type.clone(), *visibility);
+                let module_path = e.module_path.clone();
+                drop(e);
+                if !self.check_visibility(visibility, &module_path) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::FieldNotVisible { field: field.clone(), base: dereffed.clone() },
+                    ));
+                    return None;
+                }
                 projections.push(CheckedProjection::EnumBody {
                     variant_index: *current,
                     field_index,
@@ -1256,7 +1460,7 @@ impl<'r> Analyzer<'r> {
                 });
                 return Some(r#type);
             }
-            let owner = e.variants.iter().find(|v| v.fields.iter().any(|(name, _)| name == field));
+            let owner = e.variants.iter().find(|v| v.fields.iter().any(|(name, _, _)| name == field));
             let kind = match (owner, variant) {
                 (Some(owner), Some(current)) => AnalysisErrorKind::EnumFieldWrongVariant {
                     field: field.clone(),
@@ -1274,12 +1478,12 @@ impl<'r> Analyzer<'r> {
                     // when the variant is known -- its own body fields.
                     let tag = Ident("tag".into());
                     let candidates = std::iter::once(&tag)
-                        .chain(e.header.iter().map(|(name, _)| name))
-                        .chain(e.dynamic_fields.iter().map(|(name, _)| name))
+                        .chain(e.header.iter().map(|(name, _, _)| name))
+                        .chain(e.dynamic_fields.iter().map(|(name, _, _)| name))
                         .chain(
                             variant
                                 .iter()
-                                .flat_map(|&i| e.variants[i].fields.iter().map(|(name, _)| name)),
+                                .flat_map(|&i| e.variants[i].fields.iter().map(|(name, _, _)| name)),
                         );
                     AnalysisErrorKind::NoSuchEnumField {
                         field: field.clone(),
@@ -1299,9 +1503,9 @@ impl<'r> Analyzer<'r> {
                 .fields
                 .iter()
                 .enumerate()
-                .find(|(_, (name, _))| name == field)
-                .map(|(index, (_, r#type))| (index, r#type.clone()));
-            let Some((index, field_type)) = found else {
+                .find(|(_, (name, _, _))| name == field)
+                .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+            let Some((index, field_type, visibility)) = found else {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     span,
@@ -1309,6 +1513,16 @@ impl<'r> Analyzer<'r> {
                 ));
                 return None;
             };
+            let module_path = union_type.module_path.clone();
+            drop(union_type);
+            if !self.check_visibility(visibility, &module_path) {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::FieldNotVisible { field: field.clone(), base: dereffed.clone() },
+                ));
+                return None;
+            }
             projections.push(CheckedProjection::UnionField {
                 field: field.clone(),
                 index,
@@ -1328,9 +1542,9 @@ impl<'r> Analyzer<'r> {
             .fields
             .iter()
             .enumerate()
-            .find(|(_, (name, _))| name == field)
-            .map(|(index, (_, r#type))| (index, r#type.clone()));
-        let Some((index, field_type)) = found else {
+            .find(|(_, (name, _, _))| name == field)
+            .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+        let Some((index, field_type, visibility)) = found else {
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -1338,6 +1552,16 @@ impl<'r> Analyzer<'r> {
             ));
             return None;
         };
+        let module_path = struct_type.module_path.clone();
+        drop(struct_type);
+        if !self.check_visibility(visibility, &module_path) {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::FieldNotVisible { field: field.clone(), base: dereffed.clone() },
+            ));
+            return None;
+        }
 
         projections.push(CheckedProjection::FieldAccess {
             field: field.clone(),
@@ -1367,7 +1591,7 @@ impl<'r> Analyzer<'r> {
         match dereffed {
             ResolvedType::Struct(struct_type) => {
                 let struct_type = struct_type.borrow();
-                if struct_type.fields.iter().any(|(name, _)| name == field) {
+                if struct_type.fields.iter().any(|(name, _, _)| name == field) {
                     return Vec::new();
                 }
                 struct_type
@@ -1383,8 +1607,8 @@ impl<'r> Analyzer<'r> {
                 // same-named function, matching the struct rule above.
                 let e = cell.borrow();
                 let shadowed = field.as_ref() == "tag"
-                    || e.header.iter().any(|(name, _)| name == field)
-                    || variant.is_some_and(|i| e.variants[i].fields.iter().any(|(name, _)| name == field));
+                    || e.header.iter().any(|(name, _, _)| name == field)
+                    || variant.is_some_and(|i| e.variants[i].fields.iter().any(|(name, _, _)| name == field));
                 if shadowed {
                     return Vec::new();
                 }
@@ -1392,7 +1616,7 @@ impl<'r> Analyzer<'r> {
             }
             ResolvedType::Union(union_type) => {
                 let union_type = union_type.borrow();
-                if union_type.fields.iter().any(|(name, _)| name == field) {
+                if union_type.fields.iter().any(|(name, _, _)| name == field) {
                     return Vec::new();
                 }
                 union_type
@@ -1843,7 +2067,7 @@ impl<'r> Analyzer<'r> {
             ));
             return None;
         }
-        match self.resolver.resolve_item(&absolute, &[], true) {
+        match self.resolve_item_checked(&absolute, &[], true) {
             Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
                 let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
                 Some((root, r#type))
@@ -1873,7 +2097,7 @@ impl<'r> Analyzer<'r> {
             Err(ResolveError::UnknownModule(missing))
                 if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
             {
-                match self.resolver.resolve_item(&missing, &[], true) {
+                match self.resolve_item_checked(&missing, &[], true) {
                     Ok(ResolvedItem::Type(t)) => {
                         self.resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
                     }
@@ -1962,7 +2186,7 @@ impl<'r> Analyzer<'r> {
             Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => absolute,
             _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
         };
-        let kind = match self.resolver.resolve_item(&absolute, &[], true) {
+        let kind = match self.resolve_item_checked(&absolute, &[], true) {
             Ok(ResolvedItem::Type(t)) => {
                 return self.resolve_type_member(node_id, span, &t, &path.tail);
             }
@@ -2012,7 +2236,7 @@ impl<'r> Analyzer<'r> {
 
         let type_args = self.resolve_generic_arg_list(node_id, span, expr_path)?;
         let absolute = self.generic_prefix_absolute(node_id, span, &segments[..=expr_path.args_at])?;
-        match self.resolver.resolve_item(&absolute, &type_args, true) {
+        match self.resolve_item_checked(&absolute, &type_args, true) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.errors
                     .push(AnalysisError::new(node_id, span, AnalysisErrorKind::NotAValue(absolute)));
@@ -2098,7 +2322,7 @@ impl<'r> Analyzer<'r> {
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         let member = &rest[0];
-        let (type_name, method, missing_member_error) = match r#type {
+        let (type_name, method, missing_member_error, owner_module_path) = match r#type {
             ResolvedType::Struct(cell) => {
                 let struct_type = cell.borrow();
                 let method = struct_type
@@ -2115,7 +2339,7 @@ impl<'r> Analyzer<'r> {
                     function: member.clone(),
                     similar,
                 };
-                (struct_type.name.clone(), method, missing)
+                (struct_type.name.clone(), method, missing, struct_type.module_path.clone())
             }
             ResolvedType::Union(cell) => {
                 let union_type = cell.borrow();
@@ -2133,7 +2357,7 @@ impl<'r> Analyzer<'r> {
                     function: member.clone(),
                     similar,
                 };
-                (union_type.name.clone(), method, missing)
+                (union_type.name.clone(), method, missing, union_type.module_path.clone())
             }
             ResolvedType::Enum { cell, .. } => {
                 // A variant wins over a same-named function -- analysis of
@@ -2157,7 +2381,7 @@ impl<'r> Analyzer<'r> {
                     similar_variant: best_match(member, e.variants.iter().map(|v| &v.name)),
                     similar_function: best_match(member, e.functions.iter().map(|(name, _)| name)),
                 };
-                (e.name.clone(), method, missing)
+                (e.name.clone(), method, missing, e.module_path.clone())
             }
             // A primitive (or `Slice`/`Str`) has no static members of its
             // own, unless a `for`-attached spec in `core` gave it some (see
@@ -2191,7 +2415,10 @@ impl<'r> Analyzer<'r> {
                     function: member.clone(),
                     similar,
                 };
-                (type_name, method, missing)
+                // A primitive extension method is always `Exposed` (see
+                // `resolve_extension_methods`) -- the empty path here is
+                // never actually consulted by `check_visibility`.
+                (type_name, method, missing, Vec::new())
             }
         };
 
@@ -2204,6 +2431,14 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::StructPathTooDeep { r#struct: type_name, function: member.clone() },
+            ));
+            return None;
+        }
+        if !self.check_visibility(method.visibility, &owner_module_path) {
+            self.errors.push(AnalysisError::new(
+                node_id,
+                span,
+                AnalysisErrorKind::MethodNotVisible { method: member.clone(), base: r#type.clone() },
             ));
             return None;
         }
@@ -2250,10 +2485,12 @@ impl<'r> Analyzer<'r> {
             ));
             return None;
         }
-        let dynamic_field_names: Vec<Ident> = cell.borrow().dynamic_fields.iter().map(|(n, _)| n.clone()).collect();
+        let dynamic_field_names: Vec<Ident> = cell.borrow().dynamic_fields.iter().map(|(n, _, _)| n.clone()).collect();
         if !dynamic_field_names.is_empty() || !variant.fields.is_empty() {
-            let fields =
-                dynamic_field_names.into_iter().chain(variant.fields.iter().map(|(name, _)| name.clone())).collect();
+            let fields = dynamic_field_names
+                .into_iter()
+                .chain(variant.fields.iter().map(|(name, _, _)| name.clone()))
+                .collect();
             self.errors.push(AnalysisError::new(
                 node_id,
                 span,
@@ -2463,6 +2700,13 @@ impl<'r> Analyzer<'r> {
     }
 
     fn resolve_callee(&mut self, callee: &HirExprNode, args: &[HirExprNode]) -> Option<CalleeResolution> {
+        // See `Analyzer::strip_hidden`'s doc comment -- `hidden` is fully
+        // transparent, so every use of `callee` below (including its own
+        // `id`/`span`) should see through it. `was_hidden` feeds
+        // `with_hidden_bypass` at each of this function's own visibility
+        // checks below (there's no outer `analyze_expr` `Hidden` arm to rely
+        // on here -- see `strip_hidden`'s doc comment for why).
+        let (was_hidden, callee) = Self::strip_hidden(callee);
         if let HirExpr::Place(place) = &callee.expr
             && let Some(HirProjection::FieldAccess(field)) = place.projections.last()
         {
@@ -2541,6 +2785,34 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
+
+                let owner_dereffed = match &base_type {
+                    ResolvedType::Pointer { pointee, .. } => pointee.as_ref(),
+                    other => other,
+                };
+                let owner_module_path = match owner_dereffed {
+                    ResolvedType::Struct(cell) => cell.borrow().module_path.clone(),
+                    ResolvedType::Union(cell) => cell.borrow().module_path.clone(),
+                    ResolvedType::Enum { cell, .. } => cell.borrow().module_path.clone(),
+                    // A primitive extension method (`for`-attached spec) is
+                    // always `Visibility::Exposed` (see `resolve_extension_
+                    // methods`), so `check_visibility` below is trivially
+                    // `true` regardless of what's passed here.
+                    _ => Vec::new(),
+                };
+                let visible = self
+                    .with_hidden_bypass(was_hidden, callee.id, callee.span, |this| {
+                        Some(this.check_visibility(method.visibility, &owner_module_path))
+                    })
+                    .expect("the closure above always returns Some");
+                if !visible {
+                    self.errors.push(AnalysisError::new(
+                        callee.id,
+                        callee.span,
+                        AnalysisErrorKind::MethodNotVisible { method: field.clone(), base: base_type.clone() },
+                    ));
+                    return None;
+                }
 
                 // `self`'s own declared mode (`self`/`mut self`/`*self`/
                 // `*mut self` -- see `SelfMode`) is read directly off the
@@ -2689,14 +2961,9 @@ impl<'r> Analyzer<'r> {
             // the whole place from scratch (which would risk reporting the
             // base's errors, e.g. an undefined variable, twice).
             let CheckedPlace { root, mut projections } = checked_base;
-            let field_type = self.resolve_field_projection(
-                callee.id,
-                callee.span,
-                &mut projections,
-                &base_type,
-                field,
-                &mut false,
-            )?;
+            let field_type = self.with_hidden_bypass(was_hidden, callee.id, callee.span, |this| {
+                this.resolve_field_projection(callee.id, callee.span, &mut projections, &base_type, field, &mut false)
+            })?;
             let checked_callee = CheckedExprNode {
                 id: callee.id,
                 span: callee.span,
@@ -2839,7 +3106,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Option<Option<CheckedExprNode>> {
-        let HirExpr::Place(place) = &call.callee.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_hidden(&call.callee).1.expr else { return None };
         if !place.projections.is_empty() {
             return None;
         }
@@ -2867,7 +3134,7 @@ impl<'r> Analyzer<'r> {
         } else {
             let absolute: Vec<Ident> =
                 self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
-            match self.resolver.resolve_item(&absolute, &[], true) {
+            match self.resolve_item_checked(&absolute, &[], true) {
                 Ok(ResolvedItem::Type(t)) => t,
                 _ => return None,
             }
@@ -2930,7 +3197,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Option<Option<CheckedExprNode>> {
-        let HirExpr::Place(place) = &call.callee.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_hidden(&call.callee).1.expr else { return None };
         if !place.projections.is_empty() {
             return None;
         }
@@ -3149,7 +3416,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Option<Option<CheckedExprNode>> {
-        let HirExpr::Place(place) = &call.callee.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_hidden(&call.callee).1.expr else { return None };
         if !place.projections.is_empty() {
             return None;
         }
@@ -3225,7 +3492,7 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        let (fn_type, storage, decl_id) = match self.resolver.resolve_item(absolute, &type_args, true) {
+        let (fn_type, storage, decl_id) = match self.resolve_item_checked(absolute, &type_args, true) {
             Ok(ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage, decl_id }) => {
                 (fn_type, storage, decl_id)
             }
@@ -3324,6 +3591,7 @@ impl<'r> Analyzer<'r> {
                 &mut *self.resolver,
                 &self.module_path,
                 true,
+                !self.hidden_stack.is_empty(),
             ) {
                 Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
                 _ => {
@@ -3567,12 +3835,16 @@ impl<'r> Analyzer<'r> {
     /// every other numeric type) -- analysis already knows `base`'s exact
     /// type here, so it can build a same-typed constant directly.
     fn analyze_incr_decr(&mut self, node_id: HirId, span: Span, base: &HirExprNode, op: BinaryOp) -> Option<CheckedExprNode> {
+        let (was_hidden, base) = Self::strip_hidden(base);
         let HirExpr::Place(place) = &base.expr else {
             self.errors
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace));
             return None;
         };
-        let (checked_place, place_type, mutable) = self.analyze_place(base.id, base.span, place, None)?;
+        // See `Analyzer::strip_hidden`'s doc comment -- same reasoning as
+        // `HirExpr::Assignment`'s arm.
+        let (checked_place, place_type, mutable) =
+            self.with_hidden_bypass(was_hidden, node_id, span, |this| this.analyze_place(base.id, base.span, place, None))?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let Some(kind) = place_type.numeric_kind() else {
@@ -3773,12 +4045,20 @@ impl<'r> Analyzer<'r> {
         op: BinaryOp,
         value: &HirExprNode,
     ) -> Option<CheckedExprNode> {
+        let (was_hidden, target) = Self::strip_hidden(target);
         let HirExpr::Place(place) = &target.expr else {
             self.errors
                 .push(AnalysisError::new(node_id, span, AnalysisErrorKind::CompoundAssignTargetNotAPlace));
             return None;
         };
-        let (checked_place, place_type, mutable) = self.analyze_place(target.id, target.span, place, None)?;
+        // See `Analyzer::strip_hidden`'s doc comment -- same reasoning as
+        // `HirExpr::Assignment`'s arm.
+        let (checked_place, place_type, mutable) = self.with_hidden_bypass(
+            was_hidden,
+            node_id,
+            span,
+            |this| this.analyze_place(target.id, target.span, place, None),
+        )?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let checked_value = self.analyze_expr(value, Some(&place_type))?;
@@ -3829,6 +4109,21 @@ impl<'r> Analyzer<'r> {
                     self.context.mark_used(decl_id);
                 }
                 Some(CheckedExprNode { id: node_id, span, r#type, kind: CheckedExpr::Place(checked_place) })
+            }
+
+            // `hidden base` -- fully transparent: analyzing this produces
+            // exactly whatever analyzing `base` alone would (this node's own
+            // `id`/`span` are discarded in favor of `base`'s), after
+            // pushing/popping a `hidden_stack` frame around it. See
+            // `Analyzer::check_visibility`/`hidden_stack`'s doc comments.
+            HirExpr::Hidden(inner) => {
+                self.hidden_stack.push(false);
+                let result = self.analyze_expr(inner, expected);
+                let load_bearing = self.hidden_stack.pop().expect("just pushed above");
+                if !load_bearing {
+                    self.warn(node_id, span, AnalysisWarningKind::UnnecessaryHidden);
+                }
+                result
             }
 
             HirExpr::Number(number_expr) => self.analyze_number(node_id, span, number_expr, expected),
@@ -4055,7 +4350,8 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::Assignment(assignment) => {
-                let HirExpr::Place(place) = &assignment.target.expr else {
+                let (was_hidden, target) = Self::strip_hidden(&assignment.target);
+                let HirExpr::Place(place) = &target.expr else {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         span,
@@ -4063,8 +4359,18 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
-                let (checked_target, target_type, target_mutable) =
-                    self.analyze_place(assignment.target.id, assignment.target.span, place, None)?;
+                // `was_hidden` activates the bypass for `analyze_place`'s own
+                // field-visibility checks -- see `strip_hidden`'s doc
+                // comment for why `hidden` on an assignment's target (`hidden
+                // a.b = c;`) never reaches `analyze_expr`'s own `HirExpr::
+                // Hidden` arm at all (it wraps only `target`, never the whole
+                // `Assignment`).
+                let (checked_target, target_type, target_mutable) = self.with_hidden_bypass(
+                    was_hidden,
+                    node_id,
+                    span,
+                    |this| this.analyze_place(target.id, target.span, place, None),
+                )?;
                 self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
                 // Resolved *before* the value, unlike almost everywhere else
@@ -4119,6 +4425,7 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
+                let (was_hidden, base) = Self::strip_hidden(base);
                 // `&base[range]`/`&mut base[range]` -- a slice, not an
                 // ordinary pointer; see `analyze_slice`'s own doc comment
                 // for why this is the *only* way to produce one.
@@ -4136,7 +4443,14 @@ impl<'r> Analyzer<'r> {
                         .push(AnalysisError::new(node_id, span, AnalysisErrorKind::AddressOfNotAPlace));
                     return None;
                 };
-                let (checked_place, place_type, place_mutable) = self.analyze_place(base.id, base.span, place, None)?;
+                // See `Analyzer::strip_hidden`'s doc comment -- same
+                // reasoning as `HirExpr::Assignment`'s arm.
+                let (checked_place, place_type, place_mutable) = self.with_hidden_bypass(
+                    was_hidden,
+                    node_id,
+                    span,
+                    |this| this.analyze_place(base.id, base.span, place, None),
+                )?;
 
                 let pointee_type = if *mutable {
                     // `&mut` requires write access, and -- unlike plain `&`
@@ -4564,7 +4878,7 @@ impl<'r> Analyzer<'r> {
     /// `analyze_match`'s doc comment), so this just unwraps the one shape
     /// that's ever narrowable before delegating.
     fn narrowable_scrutinee(&self, scrutinee: &HirExprNode) -> Option<(Ident, HirId, Storage, bool)> {
-        let HirExpr::Place(place) = &scrutinee.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_hidden(scrutinee).1.expr else { return None };
         self.narrowable_place(place)
     }
 
@@ -4718,6 +5032,7 @@ impl<'r> Analyzer<'r> {
     /// ever tests the tag, so a variant with a body is just as matchable as
     /// one without.
     fn resolve_variant_pattern(&mut self, cell: &Rc<RefCell<ResolvedEnumType>>, expr: &HirExprNode) -> Option<usize> {
+        let expr = Self::strip_hidden(expr).1;
         let shaped_as_variant_path = matches!(
             &expr.expr,
             HirExpr::Place(HirPlace { root: HirPlaceRoot::Path(p), projections })
@@ -5016,13 +5331,16 @@ impl<'r> Analyzer<'r> {
                 // Snapshot the declared fields so `cell` isn't borrowed
                 // across the value analysis below -- a nested literal of
                 // this same struct type needs to borrow it again.
-                let declared: Vec<(Ident, ResolvedType)> = cell.borrow().fields.clone();
+                let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
                 let struct_name = cell.borrow().name.clone();
+                let declaring_module = cell.borrow().module_path.clone();
                 let base = resolved.clone();
                 let fields = self.check_field_initializers(
                     node_id,
                     span,
                     &struct_name,
+                    &declaring_module,
+                    &base,
                     &declared,
                     &lit.fields,
                     |field| AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: base.clone() },
@@ -5035,16 +5353,16 @@ impl<'r> Analyzer<'r> {
                 })
             }
             LiteralTarget::EnumVariant(cell, variant_index) => {
-                let (enum_name, variant_name, declared, header_names) = {
+                let (enum_name, variant_name, declared, header_names, declaring_module) = {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
-                    let header_names: Vec<Ident> = e.header.iter().map(|(name, _)| name.clone()).collect();
+                    let header_names: Vec<Ident> = e.header.iter().map(|(name, _, _)| name.clone()).collect();
                     // Shared dynamic fields first (declaration order), then
                     // this variant's own body fields -- every construction
                     // site must supply both, in one combined literal.
-                    let declared: Vec<(Ident, ResolvedType)> =
+                    let declared: Vec<(Ident, ResolvedType, Visibility)> =
                         e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
-                    (e.name.clone(), v.name.clone(), declared, header_names)
+                    (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone())
                 };
                 if declared.is_empty() {
                     self.errors.push(AnalysisError::new(
@@ -5054,12 +5372,15 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 }
-                let declared_names: Vec<Ident> = declared.iter().map(|(name, _)| name.clone()).collect();
+                let declared_names: Vec<Ident> = declared.iter().map(|(name, _, _)| name.clone()).collect();
                 let unknown_enum = enum_name.clone();
+                let base = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
                 let fields = self.check_field_initializers(
                     node_id,
                     span,
                     &variant_name,
+                    &declaring_module,
+                    &base,
                     &declared,
                     &lit.fields,
                     move |field| {
@@ -5085,8 +5406,9 @@ impl<'r> Analyzer<'r> {
                 let ResolvedType::Union(cell) = &resolved else {
                     unreachable!("LiteralTarget::Union always wraps ResolvedType::Union");
                 };
-                let declared: Vec<(Ident, ResolvedType)> = cell.borrow().fields.clone();
+                let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
                 let union_name = cell.borrow().name.clone();
+                let declaring_module = cell.borrow().module_path.clone();
 
                 if lit.fields.is_empty() {
                     self.errors.push(AnalysisError::new(
@@ -5112,9 +5434,9 @@ impl<'r> Analyzer<'r> {
                 let found = declared
                     .iter()
                     .enumerate()
-                    .find(|(_, (name, _))| name == &field.name)
-                    .map(|(index, (_, r#type))| (index, r#type.clone()));
-                let Some((field_index, expected)) = found else {
+                    .find(|(_, (name, _, _))| name == &field.name)
+                    .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+                let Some((field_index, expected, visibility)) = found else {
                     self.errors.push(AnalysisError::new(
                         node_id,
                         field.name_span,
@@ -5122,6 +5444,14 @@ impl<'r> Analyzer<'r> {
                     ));
                     return None;
                 };
+                if !self.check_visibility(visibility, &declaring_module) {
+                    self.errors.push(AnalysisError::new(
+                        node_id,
+                        field.name_span,
+                        AnalysisErrorKind::FieldNotVisible { field: field.name.clone(), base: resolved.clone() },
+                    ));
+                    return None;
+                }
                 let value = self.analyze_expr(&field.value, Some(&expected))?;
                 if !expected.accepts(&value.r#type) {
                     self.errors.push(AnalysisError::new(
@@ -5157,7 +5487,9 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         owner: &Ident,
-        declared: &[(Ident, ResolvedType)],
+        declaring_module: &[Ident],
+        base: &ResolvedType,
+        declared: &[(Ident, ResolvedType, Visibility)],
         fields: &[omega_hir::HirStructLiteralField],
         unknown_field: impl Fn(&omega_hir::HirStructLiteralField) -> AnalysisErrorKind,
     ) -> Option<Vec<CheckedStructLiteralField>> {
@@ -5177,13 +5509,22 @@ impl<'r> Analyzer<'r> {
             let found = declared
                 .iter()
                 .enumerate()
-                .find(|(_, (name, _))| name == &field.name)
-                .map(|(index, (_, r#type))| (index, r#type.clone()));
-            let Some((field_index, expected)) = found else {
+                .find(|(_, (name, _, _))| name == &field.name)
+                .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+            let Some((field_index, expected, visibility)) = found else {
                 self.errors.push(AnalysisError::new(node_id, field.name_span, unknown_field(field)));
                 ok = false;
                 continue;
             };
+            if !self.check_visibility(visibility, declaring_module) {
+                self.errors.push(AnalysisError::new(
+                    node_id,
+                    field.name_span,
+                    AnalysisErrorKind::FieldNotVisible { field: field.name.clone(), base: base.clone() },
+                ));
+                ok = false;
+                continue;
+            }
             let Some(value) = self.analyze_expr(&field.value, Some(&expected)) else {
                 ok = false;
                 continue;
@@ -5205,7 +5546,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let missing: Vec<Ident> =
-            declared.iter().map(|(name, _)| name).filter(|name| !seen.contains_key(name)).cloned().collect();
+            declared.iter().map(|(name, _, _)| name).filter(|name| !seen.contains_key(name)).cloned().collect();
         if !missing.is_empty() {
             self.errors.push(AnalysisError::new(
                 node_id,
@@ -5245,7 +5586,7 @@ impl<'r> Analyzer<'r> {
             }
             let type_args = self.resolve_generic_arg_list(node_id, span, path)?;
             let absolute = self.generic_prefix_absolute(node_id, span, &segments[..=path.args_at])?;
-            let resolved = match self.resolver.resolve_item(&absolute, &type_args, true) {
+            let resolved = match self.resolve_item_checked(&absolute, &type_args, true) {
                 Ok(ResolvedItem::Type(t)) => t,
                 Ok(ResolvedItem::Value { .. }) => {
                     self.errors.push(AnalysisError::new(
@@ -5279,7 +5620,7 @@ impl<'r> Analyzer<'r> {
         let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
         if let Some(ImportTarget::Module(target)) = &alias {
             let absolute: Vec<Ident> = target.iter().cloned().chain(plain.tail.iter().cloned()).collect();
-            let first_error = match self.resolver.resolve_item(&absolute, &[], true) {
+            let first_error = match self.resolve_item_checked(&absolute, &[], true) {
                 Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
                 Ok(ResolvedItem::Value { .. }) => {
                     self.errors.push(AnalysisError::new(
@@ -5293,7 +5634,7 @@ impl<'r> Analyzer<'r> {
             };
             if absolute.len() >= 3 {
                 let (variant, prefix) = absolute.split_last().expect("length checked above");
-                if let Ok(ResolvedItem::Type(t)) = self.resolver.resolve_item(prefix, &[], true) {
+                if let Ok(ResolvedItem::Type(t)) = self.resolve_item_checked(prefix, &[], true) {
                     return self.literal_target_from_type(node_id, span, t, std::slice::from_ref(variant));
                 }
             }
@@ -5315,7 +5656,7 @@ impl<'r> Analyzer<'r> {
             Some(ImportTarget::GenericItem(absolute)) => absolute,
             _ => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
         };
-        let kind = match self.resolver.resolve_item(&absolute, &[], true) {
+        let kind = match self.resolve_item_checked(&absolute, &[], true) {
             Ok(ResolvedItem::Type(t)) => {
                 return self.literal_target_from_type(node_id, span, t, &plain.tail);
             }
@@ -5855,7 +6196,12 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().suppress = resolved_attrs.suppress;
 
         let Some(fields) = self.analyze_struct_fields(&s.fields) else { return (None, vec![]) };
-        cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
+        cell.borrow_mut().fields = s
+            .fields
+            .iter()
+            .zip(fields.iter())
+            .map(|(hir_f, f)| (f.ident.clone(), f.r#type.clone(), hir_f.visibility))
+            .collect();
 
         self.context.enter_scope();
         let functions = self.analyze_all(&s.functions, Self::collect_function_signature);
@@ -5868,7 +6214,7 @@ impl<'r> Analyzer<'r> {
             .zip(functions)
             .zip(method_ids)
             .map(|((f, (fn_type, annotations)), &decl_id)| {
-                (f.name.clone(), ResolvedMethod { decl_id, fn_type, annotations })
+                (f.name.clone(), ResolvedMethod { decl_id, fn_type, visibility: f.visibility, annotations })
             })
             .collect();
 
@@ -5902,7 +6248,12 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().suppress = resolved_attrs.suppress;
 
         let Some(fields) = self.analyze_struct_fields(&u.fields) else { return (None, vec![]) };
-        cell.borrow_mut().fields = fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect();
+        cell.borrow_mut().fields = u
+            .fields
+            .iter()
+            .zip(fields.iter())
+            .map(|(hir_f, f)| (f.ident.clone(), f.r#type.clone(), hir_f.visibility))
+            .collect();
 
         self.context.enter_scope();
         let functions = self.analyze_all(&u.functions, Self::collect_function_signature);
@@ -5915,7 +6266,7 @@ impl<'r> Analyzer<'r> {
             .zip(functions)
             .zip(method_ids)
             .map(|((f, (fn_type, annotations)), &decl_id)| {
-                (f.name.clone(), ResolvedMethod { decl_id, fn_type, annotations })
+                (f.name.clone(), ResolvedMethod { decl_id, fn_type, visibility: f.visibility, annotations })
             })
             .collect();
 
@@ -5957,7 +6308,7 @@ impl<'r> Analyzer<'r> {
 
         // --- header: optional leading explicit tag, then shared fields ---
         let mut explicit_tag: Option<ResolvedType> = None;
-        let mut header: Vec<(Ident, ResolvedType)> = Vec::new();
+        let mut header: Vec<(Ident, ResolvedType, Visibility)> = Vec::new();
         let mut seen_header: HashMap<Ident, Span> = HashMap::new();
         for (position, field) in e.header.iter().enumerate() {
             if field.ident.as_ref() == "tag" {
@@ -6014,7 +6365,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             }
-            header.push((field.ident.clone(), resolved));
+            header.push((field.ident.clone(), resolved, field.visibility));
         }
         let has_tag = explicit_tag.is_some();
         let tag_type = explicit_tag.unwrap_or(ResolvedType::U16);
@@ -6032,11 +6383,11 @@ impl<'r> Analyzer<'r> {
         // header, but runtime-valued -- no per-variant constant to parse,
         // so this is header validation's `const_representable`-free,
         // tag-free sibling. ---
-        let mut dynamic_fields: Vec<(Ident, ResolvedType)> = Vec::new();
+        let mut dynamic_fields: Vec<(Ident, ResolvedType, Visibility)> = Vec::new();
         let mut seen_dynamic: HashMap<Ident, Span> = HashMap::new();
         for field in &e.dynamic_fields {
             let collides = field.ident.as_ref() == "tag"
-                || header.iter().any(|(name, _)| *name == field.ident)
+                || header.iter().any(|(name, _, _)| *name == field.ident)
                 || seen_dynamic.contains_key(&field.ident);
             if collides {
                 self.errors.push(AnalysisError::new(
@@ -6054,7 +6405,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            dynamic_fields.push((field.ident.clone(), resolved));
+            dynamic_fields.push((field.ident.clone(), resolved, field.visibility));
         }
 
         // Same reasoning as the header's own early bail just above: a
@@ -6137,7 +6488,7 @@ impl<'r> Analyzer<'r> {
             // Header values -- one constant per header field, positionally.
             let mut header_values = Vec::with_capacity(header.len());
             let mut variant_ok = true;
-            for ((_, field_type), arg) in header.iter().zip(&variant.args[has_tag as usize..]) {
+            for ((_, field_type, _), arg) in header.iter().zip(&variant.args[has_tag as usize..]) {
                 match self.const_eval(arg, field_type) {
                     Some(value) => header_values.push(value),
                     None => variant_ok = false,
@@ -6147,12 +6498,12 @@ impl<'r> Analyzer<'r> {
             // Body fields -- must not collide with the header, the shared
             // dynamic fields (all three are reached as `value.name`), or
             // the reserved `tag`.
-            let mut fields: Vec<(Ident, ResolvedType)> = Vec::new();
+            let mut fields: Vec<(Ident, ResolvedType, Visibility)> = Vec::new();
             let mut seen_fields: HashMap<Ident, Span> = HashMap::new();
             for field in &variant.fields {
                 let shadows_header = field.ident.as_ref() == "tag"
-                    || header.iter().any(|(name, _)| *name == field.ident)
-                    || dynamic_fields.iter().any(|(name, _)| *name == field.ident);
+                    || header.iter().any(|(name, _, _)| *name == field.ident)
+                    || dynamic_fields.iter().any(|(name, _, _)| *name == field.ident);
                 if shadows_header {
                     self.errors.push(AnalysisError::new(
                         field.id,
@@ -6180,7 +6531,7 @@ impl<'r> Analyzer<'r> {
                     variant_ok = false;
                     continue;
                 };
-                fields.push((field.ident.clone(), resolved));
+                fields.push((field.ident.clone(), resolved, field.visibility));
             }
 
             if !variant_ok {
@@ -6226,7 +6577,7 @@ impl<'r> Analyzer<'r> {
             .zip(functions)
             .zip(method_ids)
             .map(|((f, (fn_type, annotations)), &decl_id)| {
-                (f.name.clone(), ResolvedMethod { decl_id, fn_type, annotations })
+                (f.name.clone(), ResolvedMethod { decl_id, fn_type, visibility: f.visibility, annotations })
             })
             .collect();
 
@@ -6392,6 +6743,7 @@ impl<'r> Analyzer<'r> {
                 &mut *self.resolver,
                 &self.module_path,
                 true,
+                !self.hidden_stack.is_empty(),
             );
             match suffixed {
                 Ok(t) if t == *expected => {}
@@ -6599,6 +6951,13 @@ impl<'r> Analyzer<'r> {
             // yet part of the language's spec-function grammar (see
             // `omega_analyzer::annotations`'s doc comment).
             annotations: Vec::new(),
+            // Same reasoning as `annotations` above -- a spec function has
+            // no visibility modifier of its own (see `ResolvedMethod`'s
+            // `Visibility::Exposed` default at the two spec-flattening call
+            // sites); this synthetic body-check `HirFunctionDef` is never
+            // read through `item_visibility` (it's not a real top-level
+            // item), so the value here is never actually consulted.
+            visibility: Visibility::default(),
             name: pending.raw.name.clone(),
             generics: vec![],
             self_mode: pending.raw.self_mode,
@@ -6628,7 +6987,7 @@ impl<'r> Analyzer<'r> {
             .fields
             .iter()
             .zip(cell.borrow().fields.iter())
-            .map(|(hir_field, (_, r#type))| CheckedParam {
+            .map(|(hir_field, (_, r#type, _))| CheckedParam {
                 id: hir_field.id,
                 span: hir_field.span,
                 ident: hir_field.ident.clone(),
@@ -6672,7 +7031,7 @@ impl<'r> Analyzer<'r> {
             .fields
             .iter()
             .zip(cell.borrow().fields.iter())
-            .map(|(hir_field, (_, r#type))| CheckedParam {
+            .map(|(hir_field, (_, r#type, _))| CheckedParam {
                 id: hir_field.id,
                 span: hir_field.span,
                 ident: hir_field.ident.clone(),

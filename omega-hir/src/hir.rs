@@ -7,6 +7,7 @@ use crate::ids::HirId;
 pub use omega_parser::prelude::{BinaryOp, ImportRoot};
 use omega_parser::prelude::{
     ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, SelfMode, Span, StringExpr, Type,
+    Visibility,
 };
 
 /// A lowered `@name(args)` annotation -- mechanical clone of `omega_parser`'s
@@ -76,6 +77,8 @@ pub struct HirImport {
     /// `@suppress(...)` only -- see `omega_analyzer::annotations::
     /// ItemKind::Import`.
     pub annotations: Vec<HirAnnotation>,
+    /// See `omega_parser::ast::statement::import::ImportStmt::hidden`.
+    pub hidden: bool,
     pub root: ImportRoot,
     pub path: Path,
 }
@@ -88,6 +91,11 @@ pub struct HirDeclaration {
     pub r#type: Type,
     /// See `omega_parser::ast::statement::declaration::DeclarationStmt::mutable`.
     pub mutable: bool,
+    /// See `DeclarationStmt::visibility` -- meaningful for a top-level
+    /// global (`HirItem::Declaration`), left at its default (`Private`) for
+    /// a local statement declaration (`HirStmt::Declaration`), which never
+    /// has one.
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +104,7 @@ pub struct HirExternDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: Type,
+    pub visibility: Visibility,
 }
 
 /// A function parameter or struct field -- structurally identical (a named,
@@ -108,6 +117,11 @@ pub struct HirParam {
     pub span: Span,
     pub ident: Ident,
     pub r#type: Type,
+    /// See `DeclarationStmt::visibility`'s doc comment -- meaningful for a
+    /// struct/union/enum-header/enum-dynamic/enum-variant field, left at
+    /// its default (`Private`) for a function/spec parameter, which never
+    /// has one.
+    pub visibility: Visibility,
 }
 
 /// A function definition, used identically whether it's a top-level item or
@@ -121,6 +135,10 @@ pub struct HirFunctionDef {
     /// `@inline(...)`/`@mangling(...)`/`@suppress(...)` -- see
     /// `omega_analyzer::annotations::resolve`.
     pub annotations: Vec<HirAnnotation>,
+    /// See `omega_parser::ast::statement::function_definition::
+    /// FunctionDefinitionStmt::visibility` -- applies identically whether
+    /// this is a top-level function or a struct/enum/union method.
+    pub visibility: Visibility,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
     /// `omega_parser::ast::statement::function_definition::
@@ -161,6 +179,8 @@ pub struct HirStructDef {
     /// `@packing(...)`/`@suppress(...)` -- see
     /// `omega_analyzer::annotations::resolve`.
     pub annotations: Vec<HirAnnotation>,
+    /// See `omega_parser::ast::statement::r#struct::StructStmt::visibility`.
+    pub visibility: Visibility,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
     /// `omega_parser::ast::statement::r#struct::StructStmt::generics`'s
@@ -184,6 +204,8 @@ pub struct HirUnionDef {
     /// `@suppress(...)` -- `@packing` isn't recognized on a union yet. See
     /// `omega_analyzer::annotations::resolve`.
     pub annotations: Vec<HirAnnotation>,
+    /// See `HirStructDef::visibility`'s doc comment.
+    pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     /// See `HirStructDef::implements`'s doc comment.
@@ -204,6 +226,9 @@ pub struct HirEnumDef {
     /// `@packing(...)`/`@suppress(...)` -- see
     /// `omega_analyzer::annotations::resolve`.
     pub annotations: Vec<HirAnnotation>,
+    /// See `HirStructDef::visibility`'s doc comment -- every variant always
+    /// inherits this exact value; there is no per-variant modifier.
+    pub visibility: Visibility,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum.
     pub generics: Vec<HirGenericParam>,
@@ -249,6 +274,9 @@ pub struct HirEnumVariant {
 pub struct HirSpecDef {
     pub id: HirId,
     pub span: Span,
+    /// See `omega_parser::ast::statement::spec::SpecStmt::visibility` --
+    /// meaningless when `target.is_some()`, same caveat as there.
+    pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub dependencies: Vec<Type>,
@@ -418,6 +446,18 @@ pub enum HirExpr {
     /// `target op= value` -- see `HirCompoundAssign`'s doc comment.
     CompoundAssign(HirCompoundAssign),
     AddressOf(HirAddressOf),
+    /// `hidden base` -- a visibility-bypass wrapper, deliberately kept as a
+    /// generic node (not folded into `HirPlace` the way `FieldAccess`/
+    /// `Index`/`Deref` are) since `base` isn't restricted to place-shaped
+    /// expressions (`hidden Struct { f = v }`, `hidden foo()` are both
+    /// legal). Fully transparent to analysis otherwise: `Analyzer::
+    /// analyze_expr`'s `Hidden` arm produces exactly whatever analyzing
+    /// `base` alone would, after pushing/popping a `hidden_stack` frame --
+    /// no `CheckedExpr` variant of its own, no codegen representation. Every
+    /// "is this raw node a place" match elsewhere in the analyzer (`assign`/
+    /// `compound-assign` targets, call callees, match scrutinees) must peel
+    /// this off first -- see `Analyzer::strip_hidden`.
+    Hidden(Box<HirExprNode>),
     Negate(Box<HirExprNode>),
     /// `~base` -- see `Expression::BitNot`'s doc comment.
     BitNot(Box<HirExprNode>),

@@ -543,6 +543,10 @@ fn expand_expr(
             let not = *not;
             Expression::BitNot(Box::new(BitNotExpr { base: expand_expr(not.base, defs, budget)? }))
         }
+        Expression::Hidden(hidden) => {
+            let hidden = *hidden;
+            Expression::Hidden(Box::new(HiddenExpr { base: expand_expr(hidden.base, defs, budget)? }))
+        }
         Expression::Cast(cast) => {
             let cast = *cast;
             Expression::Cast(Box::new(CastExpr { target: cast.target, base: expand_expr(cast.base, defs, budget)? }))

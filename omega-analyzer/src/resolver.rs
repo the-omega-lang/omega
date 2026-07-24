@@ -217,12 +217,32 @@ pub trait ModuleResolver {
     /// (including a non-empty declared list against an empty `type_args`,
     /// i.e. a bare reference to a generic item with no arguments at all) is
     /// `ResolveError::GenericArgCountMismatch`.
+    ///
+    /// `accessor_module_path` is the *querying* module -- the one piece of
+    /// context this query didn't used to need, back when every item was
+    /// implicitly public; now the target's own declared `exposed`/
+    /// `internal`/(default private) visibility is checked against it on
+    /// every call (see `omega_driver::Driver::ensure_item`), returning
+    /// `ResolveError::NotVisible` on denial -- unless `bypass` is set
+    /// (`hidden`, see `omega_analyzer::analysis::Analyzer::hidden_stack`),
+    /// which allows the access through regardless. `bypass` never affects
+    /// what's cached; it only ever suppresses this one call's own
+    /// `NotVisible` result.
     fn resolve_item(
         &mut self,
+        accessor_module_path: &[Ident],
         absolute_path: &[Ident],
         type_args: &[ResolvedType],
         indirect: bool,
+        bypass: bool,
     ) -> Result<ResolvedItem, ResolveError>;
+
+    /// Whether `absolute_path` (already successfully resolved, at least
+    /// once, via `resolve_item`) is visible from `accessor_module_path`
+    /// *ignoring* any `hidden` bypass -- the one query `Analyzer` uses,
+    /// after a bypassed `resolve_item` call succeeds, to decide whether that
+    /// bypass actually mattered (see `AnalysisWarningKind::UnnecessaryHidden`).
+    fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool;
 
     /// A *raw*, unresolved view of a generic function's own declared
     /// signature -- just enough for duck-typed argument-driven type
@@ -313,22 +333,4 @@ pub struct GenericSignature {
     pub params: Vec<Type>,
 }
 
-/// The only variant the parser can produce today (no `pub`/`priv` keyword
-/// exists yet) -- see `SignatureEntry`'s doc comment for why this field
-/// exists at all despite always holding this one value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Visibility {
-    Public,
-}
-
-/// One resolved top-level item, as `omega_driver::Driver` records it in its
-/// global `resolved_items` table. Carries a `Visibility` even though every
-/// entry produced today is `Public` -- enforcing real privacy later is "stop
-/// hardcoding `Public` here and stop skipping the check in `resolve_item`,"
-/// not a data-model change.
-#[derive(Debug, Clone)]
-pub struct SignatureEntry {
-    pub visibility: Visibility,
-    pub item: ResolvedItem,
-}
 

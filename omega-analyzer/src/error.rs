@@ -114,6 +114,16 @@ pub enum AnalysisErrorKind {
     NotAStruct { found: ResolvedType },
     /// A field access naming a field `base` doesn't have.
     NoSuchField { field: Ident, base: ResolvedType },
+    /// A field access (or struct/union/enum-variant literal initializer)
+    /// naming a field that exists on `base` but isn't visible from this
+    /// module -- `field` is private (or `internal` to a different package)
+    /// relative to the accessing site. Bypassed by `hidden` (see
+    /// `Analyzer::check_visibility`).
+    FieldNotVisible { field: Ident, base: ResolvedType },
+    /// A method call resolving to a method that exists on `base` but isn't
+    /// visible from this module -- same rule as `FieldNotVisible`, for
+    /// methods instead of data fields.
+    MethodNotVisible { method: Ident, base: ResolvedType },
     /// An index projection on something that isn't an array/slice.
     NotAnArray { found: ResolvedType },
     /// A call supplying the wrong number of arguments (too many *or* too
@@ -568,6 +578,12 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("this has type `{found}`, which has no fields"))
                 .with_note("only struct values (and pointers to them) support field access"),
             Self::NoSuchField { base, .. } => d.with_label(span, format!("`{base}` has no field by that name")),
+            Self::FieldNotVisible { field, base } => d
+                .with_label(span, format!("`{field}` is not visible from this module"))
+                .with_help(format!("mark the field `exposed`/`internal` on `{base}`, or bypass with `hidden`")),
+            Self::MethodNotVisible { method, base } => d
+                .with_label(span, format!("`{method}` is not visible from this module"))
+                .with_help(format!("mark the method `exposed`/`internal` on `{base}`, or bypass with `hidden`")),
             Self::NotAnArray { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be indexed"))
                 .with_note("only arrays (`[T; N]`, `[T]`) and slices (`*[T]`) support indexing"),
@@ -1149,6 +1165,12 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NoSuchField { field, base } => {
                 write!(f, "no field '{}' on '{base}'", field.as_ref())
             }
+            Self::FieldNotVisible { field, base } => {
+                write!(f, "'{}' on '{base}' is not visible here", field.as_ref())
+            }
+            Self::MethodNotVisible { method, base } => {
+                write!(f, "'{}' on '{base}' is not visible here", method.as_ref())
+            }
             Self::NotAnArray { found } => write!(f, "cannot index a value of type '{found}'"),
             Self::WrongArgumentCount { expected, found } => {
                 write!(f, "this function takes {expected} {} but {found} {} supplied",
@@ -1509,6 +1531,9 @@ impl AnalysisWarning {
             AnalysisWarningKind::UnnecessaryMut { name } => d
                 .with_label(self.span, format!("`{}` is declared `mut` but never reassigned", name.as_ref()))
                 .with_help("remove `mut` -- it isn't just a hint, dropping it changes nothing about how this compiles"),
+            AnalysisWarningKind::UnnecessaryHidden => d
+                .with_label(self.span, "this 'hidden' never suppresses anything")
+                .with_help("remove 'hidden' -- every check inside it would already pass without it"),
             AnalysisWarningKind::UnusedImport { alias } => {
                 d.with_label(self.span, format!("`{}` is never referenced in this module", alias.as_ref()))
             }
@@ -1589,6 +1614,11 @@ pub enum AnalysisWarningKind {
     /// a completely dead `mut` local only produces `UnusedVariable`, not
     /// both.
     UnnecessaryMut { name: Ident },
+    /// A `hidden` expression where every visibility check reached while
+    /// analyzing its wrapped expression would have passed anyway -- the
+    /// bypass was never load-bearing. See `Analyzer::hidden_stack`'s doc
+    /// comment and `HirExpr::Hidden`'s analysis arm.
+    UnnecessaryHidden,
     /// A module-level `import` whose alias is never referenced anywhere in
     /// that module -- tracked across the whole module by `Driver`, not by
     /// any one `Analyzer` (imports aren't per-item). See
@@ -1660,6 +1690,7 @@ impl AnalysisWarningKind {
             Self::UnusedVariable { .. } => "unused_variable",
             Self::UnusedParameter { .. } => "unused_parameter",
             Self::UnnecessaryMut { .. } => "unnecessary_mut",
+            Self::UnnecessaryHidden => "unnecessary_hidden",
             Self::UnusedImport { .. } => "unused_import",
             Self::UnusedField { .. } => "unused_field",
             Self::NeverConstructedVariant { .. } => "never_constructed_variant",
@@ -1681,6 +1712,7 @@ impl fmt::Display for AnalysisWarningKind {
             Self::UnusedVariable { name } => write!(f, "unused variable '{}'", name.as_ref()),
             Self::UnusedParameter { name } => write!(f, "unused parameter '{}'", name.as_ref()),
             Self::UnnecessaryMut { name } => write!(f, "unnecessary 'mut' on '{}'", name.as_ref()),
+            Self::UnnecessaryHidden => write!(f, "unnecessary 'hidden'"),
             Self::UnusedImport { alias } => write!(f, "unused import '{}'", alias.as_ref()),
             Self::UnusedField { owner, field } => {
                 write!(f, "field '{}' of '{}' is never read", field.as_ref(), owner.as_ref())

@@ -218,18 +218,19 @@ impl Context {
         fntype: FunctionType,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
+        bypass: bool,
     ) -> Result<ResolvedFunctionType, TypeResolutionError> {
         let params = fntype
             .params
             .into_iter()
             .map(|(ident, typ)| {
-                self.resolve_type(typ, resolver, module_path, true)
+                self.resolve_type(typ, resolver, module_path, true, bypass)
                     .map(|resolved| (ident, resolved))
             })
             .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
         Ok(ResolvedFunctionType {
             params,
-            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, true)?),
+            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, true, bypass)?),
             is_variadic: fntype.is_variadic,
             self_mode: fntype.self_mode,
         })
@@ -290,6 +291,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         indirect: bool,
+        bypass: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolved = match typ {
             // `Entity::Person` (bare or `mymodule`-qualified) is tried first
@@ -299,7 +301,7 @@ impl Context {
             // imported module alias). See `try_resolve_enum_variant_type`'s
             // own doc comment.
             Type::Named(path) => {
-                if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect)? {
+                if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect, bypass)? {
                     resolved
                 } else if path.is_unqualified() {
                     if let Some(local) = self.find_defined_type(&path.head) {
@@ -332,7 +334,7 @@ impl Context {
                                 }
                                 _ => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
                             };
-                            match resolver.resolve_item(&absolute, &[], indirect) {
+                            match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
                                 Ok(ResolvedItem::Type(t)) => t,
                                 Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
                                 // The implicit own-module fallback missing isn't
@@ -365,7 +367,7 @@ impl Context {
                     // is resolved across modules by `resolver`, never locally.
                     let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                     match resolver
-                        .resolve_item(&absolute, &[], indirect)
+                        .resolve_item(module_path, &absolute, &[], indirect, bypass)
                         .map_err(TypeResolutionError::ModuleResolution)?
                     {
                         ResolvedItem::Type(t) => t,
@@ -384,11 +386,11 @@ impl Context {
             Type::Generic(path, args) => {
                 let resolved_args = args
                     .into_iter()
-                    .map(|arg| self.resolve_type(arg, resolver, module_path, true))
+                    .map(|arg| self.resolve_type(arg, resolver, module_path, true, bypass))
                     .collect::<Result<Vec<_>, _>>()?;
                 let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
-                    .resolve_item(&absolute, &resolved_args, indirect)
+                    .resolve_item(module_path, &absolute, &resolved_args, indirect, bypass)
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
@@ -415,7 +417,7 @@ impl Context {
                 if is_bare_str {
                     ResolvedType::Str { mutable }
                 } else {
-                    match self.resolve_type(*pointee_type, resolver, module_path, true)? {
+                    match self.resolve_type(*pointee_type, resolver, module_path, true, bypass)? {
                         ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
                         // A pointee that resolves (not through the literal
                         // `str` syntax above, but indirectly -- e.g. through
@@ -432,16 +434,18 @@ impl Context {
                     }
                 }
             }
-            Type::Function(fntyp) => ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path)?),
+            Type::Function(fntyp) => {
+                ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?)
+            }
             Type::Array(item_type) => {
-                ResolvedType::Array(Box::new(self.resolve_type(*item_type, resolver, module_path, true)?))
+                ResolvedType::Array(Box::new(self.resolve_type(*item_type, resolver, module_path, true, bypass)?))
             }
             Type::SizedArray(item_type, size) => {
                 let size = size
                     .parse::<u32>()
                     .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
                 ResolvedType::SizedArray(
-                    Box::new(self.resolve_type(*item_type, resolver, module_path, indirect)?),
+                    Box::new(self.resolve_type(*item_type, resolver, module_path, indirect, bypass)?),
                     size,
                 )
             }
@@ -462,13 +466,13 @@ impl Context {
                 };
                 let resolved_args = type_args
                     .into_iter()
-                    .map(|a| self.resolve_type(a, resolver, module_path, true))
+                    .map(|a| self.resolve_type(a, resolver, module_path, true, bypass))
                     .collect::<Result<Vec<_>, _>>()?;
                 let pointee_name = match pointee.as_ref() {
                     Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
                     _ => Ident("<spec>".to_string()),
                 };
-                match self.resolve_type(*pointee, resolver, module_path, true)? {
+                match self.resolve_type(*pointee, resolver, module_path, true, bypass)? {
                     ResolvedType::Spec(spec) => {
                         ResolvedType::SpecObject { spec, type_args: resolved_args, mutable }
                     }
@@ -498,10 +502,11 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         indirect: bool,
+        bypass: bool,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {
         let Some((variant_name, prefix_tail)) = path.tail.split_last() else { return Ok(None) };
         let prefix = Type::Named(Path { head: path.head.clone(), tail: prefix_tail.to_vec() });
-        let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, indirect) else {
+        let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, indirect, bypass) else {
             return Ok(None);
         };
         let found = cell.borrow().variant(variant_name).map(|(idx, _)| idx);

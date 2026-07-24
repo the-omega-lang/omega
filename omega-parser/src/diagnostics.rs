@@ -93,6 +93,9 @@ impl ParseError {
             ParseErrorKind::AnnotationNotAllowedHere => d
                 .with_label(self.span, "this item can't carry annotations")
                 .with_help("annotations are only allowed on structs, enums, unions, and functions"),
+            ParseErrorKind::VisibilityNotAllowedHere => d
+                .with_label(self.span, "this item can't carry a visibility modifier")
+                .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, functions, globals, and externs"),
         }
     }
 }
@@ -174,6 +177,11 @@ pub enum ParseErrorKind {
     /// an `extern`/`import`/plain declaration/macro is rejected here rather
     /// than silently dropped.
     AnnotationNotAllowedHere,
+    /// A leading `exposed`/`internal` directly above an item that has
+    /// nowhere to store a visibility (`import`/macro definition/macro
+    /// invocation) -- rejected here rather than silently dropped, same
+    /// precedent as `AnnotationNotAllowedHere`.
+    VisibilityNotAllowedHere,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -217,6 +225,9 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::AnnotationNotAllowedHere => {
                 write!(f, "annotations are only allowed on structs, enums, unions, and functions")
+            }
+            Self::VisibilityNotAllowedHere => {
+                write!(f, "a visibility modifier is not allowed here")
             }
         }
     }

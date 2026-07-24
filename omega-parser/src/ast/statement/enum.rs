@@ -4,6 +4,7 @@ use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{declaration::DeclarationStmt, function_definition::FunctionDefinitionStmt};
 use crate::ast::r#type::Type;
+use crate::ast::visibility::Visibility;
 use crate::diagnostics::Span;
 
 /// An omega-style enum:
@@ -43,6 +44,11 @@ use crate::diagnostics::Span;
 pub struct EnumStmt {
     /// See `StructStmt::annotations`'s doc comment.
     pub annotations: Vec<AnnotationNode>,
+    /// `exposed`/`internal`/(default `Private`) on the enum itself -- every
+    /// variant always inherits this exact value (there is no per-variant
+    /// modifier, enforced structurally: `parse_enum_variant` never offers a
+    /// visibility-prefix parse position for a variant name).
+    pub visibility: Visibility,
     pub ident: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum; same
     /// use-site rules as `StructStmt::generics`.
@@ -67,6 +73,7 @@ pub struct EnumStmt {
 pub struct EnumHeaderField {
     pub ident: Ident,
     pub r#type: Type,
+    pub visibility: Visibility,
     pub span: Span,
 }
 

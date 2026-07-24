@@ -15,6 +15,14 @@ pub struct ImportStmt {
     /// ItemKind::Import`); anything else is rejected the ordinary
     /// `AnnotationNotApplicable` way.
     pub annotations: Vec<AnnotationNode>,
+    /// `import hidden path;` -- bypasses the visibility check on whatever
+    /// `path` resolves to, for *this importing module's own* later
+    /// references through the resulting alias (does not make the alias
+    /// itself visible to any third module -- there is no re-export concept
+    /// in this language). See `omega_analyzer::analysis::Analyzer::
+    /// hidden_stack`'s doc comment for the general `hidden` mechanism this
+    /// plugs into.
+    pub hidden: bool,
     pub root: ImportRoot,
     pub path: Path,
 }

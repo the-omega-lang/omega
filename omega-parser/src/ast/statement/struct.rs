@@ -3,12 +3,16 @@ use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
 use crate::ast::statement::{declaration::DeclarationStmt, function_definition::FunctionDefinitionStmt};
+use crate::ast::visibility::Visibility;
 
 #[derive(Debug, Clone)]
 pub struct StructStmt {
     /// `@packing(...)`/`@suppress(...)` written directly above the `struct`
     /// keyword -- see `omega_analyzer::annotations`.
     pub annotations: Vec<AnnotationNode>,
+    /// `exposed`/`internal`/(default `Private`), written directly before
+    /// the `struct` keyword -- see `visibility::Visibility`.
+    pub visibility: Visibility,
     pub ident: Ident,
     /// `<T, U, ...>` immediately after `ident` -- empty for an ordinary,
     /// non-generic struct. See `Type::Generic`'s doc comment for how these

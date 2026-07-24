@@ -3,6 +3,7 @@ use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
 use crate::ast::statement::{declaration::DeclarationStmt, function_definition::FunctionDefinitionStmt};
+use crate::ast::visibility::Visibility;
 
 /// A C/Rust-style union: every field overlaps the same storage (no tag, no
 /// proof) -- see `StructStmt`'s doc comment for why the shape mirrors it
@@ -14,6 +15,8 @@ pub struct UnionStmt {
     /// recognized on a union yet (only asked for on structs/enums) --
     /// `@suppress` is.
     pub annotations: Vec<AnnotationNode>,
+    /// See `StructStmt::visibility`'s doc comment.
+    pub visibility: Visibility,
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     /// See `StructStmt::implements`'s doc comment -- same rules.

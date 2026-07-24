@@ -1,5 +1,6 @@
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
+use crate::ast::visibility::Visibility;
 
 #[derive(Debug, Clone)]
 pub struct DeclarationStmt {
@@ -15,4 +16,12 @@ pub struct DeclarationStmt {
     /// `omega_hir::lower::Lowerer::self_param`. See
     /// `omega_analyzer::context::VarBinding::mutable`.
     pub mutable: bool,
+    /// `exposed`/`internal`/(default `Private`) -- same "meaningless in
+    /// most of this shared type's positions" treatment as `mutable`:
+    /// genuinely meaningful for a struct/union/enum-dynamic/enum-variant
+    /// field or a top-level global declaration (`Item::Declaration`), left
+    /// at its default everywhere else (function/spec parameters, local
+    /// statement declarations), since none of those positions ever check
+    /// for a leading `exposed`/`internal` at all.
+    pub visibility: Visibility,
 }

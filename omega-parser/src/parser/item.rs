@@ -9,7 +9,8 @@ use crate::ast::statement::{
     spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,
     union::UnionStmt,
 };
-use crate::diagnostics::ParseErrorKind;
+use crate::ast::visibility::Visibility;
+use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::expression::parse_codeblock;
 use crate::parser::macro_syntax::{parse_macro_definition, parse_macro_invocation};
@@ -33,16 +34,28 @@ pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
 
 pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     let annotations = parse_annotations(p);
+    let (visibility, visibility_span) = parse_optional_visibility(p);
     let start = p.peek_span();
     let item = match p.peek() {
         TokenKind::Extern => {
             reject_annotations(p, &annotations);
-            let decl = parse_extern_declaration(p)?;
+            let mut decl = parse_extern_declaration(p)?;
+            decl.visibility = visibility;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::ExternDeclaration(decl)
         }
         TokenKind::Import => {
+            reject_visibility(p, visibility, visibility_span);
             p.advance();
+            // `hidden` is a contextual keyword here too (same text-
+            // comparison pattern as `root`/`mut` below) -- see
+            // `ImportStmt::hidden`'s doc comment.
+            let hidden = if matches!(p.peek(), TokenKind::Ident(name) if name == "hidden") {
+                p.advance();
+                true
+            } else {
+                false
+            };
             // `root::`/`extern::` are contextual keywords here (matching
             // `mut`'s own text-comparison pattern above, and `lexer::
             // TokenKind`'s general "stay a plain token, recognized by
@@ -66,21 +79,23 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             };
             let path = parse_path(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
-            Item::Import(ImportStmt { annotations, root, path })
+            Item::Import(ImportStmt { annotations, hidden, root, path })
         }
-        TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations)?),
-        TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations)?),
-        TokenKind::Union => Item::Union(parse_union_def(p, annotations)?),
+        TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations, visibility)?),
+        TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations, visibility)?),
+        TokenKind::Union => Item::Union(parse_union_def(p, annotations, visibility)?),
         TokenKind::Spec => {
             reject_annotations(p, &annotations);
-            Item::Spec(parse_spec_def(p)?)
+            Item::Spec(parse_spec_def(p, visibility)?)
         }
         TokenKind::Macro => {
             reject_annotations(p, &annotations);
+            reject_visibility(p, visibility, visibility_span);
             Item::MacroDefinition(parse_macro_definition(p)?)
         }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
             reject_annotations(p, &annotations);
+            reject_visibility(p, visibility, visibility_span);
             let inv = parse_macro_invocation(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
@@ -96,17 +111,49 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             p.advance(); // 'mut'
             let mut decl = parse_declaration(p)?;
             decl.mutable = true;
+            decl.visibility = visibility;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::Declaration(decl)
         }
-        TokenKind::Ident(_) => parse_declaration_or_function_definition(p, annotations)?,
+        TokenKind::Ident(_) => parse_declaration_or_function_definition(p, annotations, visibility)?,
         _ => {
+            reject_visibility(p, visibility, visibility_span);
             p.error(ParseErrorKind::Expected { expected: "a top-level item", found: p.peek().describe() });
             return None;
         }
     };
     let span = start.to(p.last_span());
     Some(ItemNode { item, span })
+}
+
+/// An optional leading `exposed`/`internal` -- contextual keywords, same
+/// text-comparison recognition as `mut` (see `lexer::TokenKind`'s doc
+/// comment). Returns the visibility (defaulting to `Private` when neither
+/// is written) and, when one was, its own span -- for `reject_visibility`
+/// to anchor an error at, for item kinds with nowhere to store one.
+fn parse_optional_visibility(p: &mut Parser) -> (Visibility, Option<Span>) {
+    let span = p.peek_span();
+    match p.peek() {
+        TokenKind::Ident(name) if name == "exposed" => {
+            p.advance();
+            (Visibility::Exposed, Some(span))
+        }
+        TokenKind::Ident(name) if name == "internal" => {
+            p.advance();
+            (Visibility::Internal, Some(span))
+        }
+        _ => (Visibility::Private, None),
+    }
+}
+
+/// Errors (without aborting the surrounding item) if `visibility` isn't the
+/// default -- for item kinds that have nowhere to store one at all
+/// (`import`/macro definition/macro invocation). Same precedent as
+/// `reject_annotations`.
+fn reject_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>) {
+    if visibility != Visibility::Private {
+        p.error_at(span.expect("non-Private visibility always has a span"), ParseErrorKind::VisibilityNotAllowedHere);
+    }
 }
 
 /// Zero or more `@name(args)` annotations, one per line, immediately above
@@ -203,14 +250,19 @@ fn reject_annotations(p: &mut Parser, annotations: &[AnnotationNode]) {
 /// `(params)` at all in this position, so seeing `<` or `(` immediately
 /// after the name is already conclusive on its own, without needing to look
 /// *past* the (possibly absent, possibly multi-token) generics list first.
-fn parse_declaration_or_function_definition(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<Item> {
+fn parse_declaration_or_function_definition(
+    p: &mut Parser,
+    annotations: Vec<AnnotationNode>,
+    visibility: Visibility,
+) -> Option<Item> {
     match p.peek_at(1) {
         TokenKind::Lt | TokenKind::LParen => {
-            Some(Item::FunctionDefinition(parse_function_definition(p, annotations)?))
+            Some(Item::FunctionDefinition(parse_function_definition(p, annotations, visibility)?))
         }
         _ => {
             reject_annotations(p, &annotations);
-            let decl = parse_declaration(p)?;
+            let mut decl = parse_declaration(p)?;
+            decl.visibility = visibility;
             p.expect_terminator(&TokenKind::Semi, "';'");
             Some(Item::Declaration(decl))
         }
@@ -225,7 +277,11 @@ fn parse_declaration_or_function_definition(p: &mut Parser, annotations: Vec<Ann
 /// passed in rather than parsed here, since the caller (a member-function
 /// loop, or `parse_declaration_or_function_definition`) needs to see them
 /// *before* deciding this is a function at all.
-pub fn parse_function_definition(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<FunctionDefinitionStmt> {
+pub fn parse_function_definition(
+    p: &mut Parser,
+    annotations: Vec<AnnotationNode>,
+    visibility: Visibility,
+) -> Option<FunctionDefinitionStmt> {
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
@@ -236,6 +292,7 @@ pub fn parse_function_definition(p: &mut Parser, annotations: Vec<AnnotationNode
     let codeblock = parse_codeblock(p)?;
     Some(FunctionDefinitionStmt {
         annotations,
+        visibility,
         ident,
         generics,
         self_mode,
@@ -327,7 +384,7 @@ fn parse_declaration_list(p: &mut Parser) -> Vec<DeclarationStmt> {
 /// root-item position (`Item::Struct`) and nested statement
 /// position (`Statement::Struct`, see `parser::statement`) exactly like the
 /// old grammar's single `StructStmt::parser` was.
-pub fn parse_struct_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<StructStmt> {
+pub fn parse_struct_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibility: Visibility) -> Option<StructStmt> {
     p.expect(&TokenKind::Struct, "'struct'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -335,9 +392,11 @@ pub fn parse_struct_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opt
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
-    while matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
+    while field_follows(p) {
+        let (field_visibility, _) = parse_optional_visibility(p);
         match parse_declaration(p) {
-            Some(decl) => {
+            Some(mut decl) => {
+                decl.visibility = field_visibility;
                 fields.push(decl);
                 p.expect_terminator(&TokenKind::Semi, "';'");
             }
@@ -348,21 +407,36 @@ pub fn parse_struct_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opt
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
         let fn_annotations = parse_annotations(p);
-        match parse_function_definition(p, fn_annotations) {
+        let (fn_visibility, _) = parse_optional_visibility(p);
+        match parse_function_definition(p, fn_annotations, fn_visibility) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(StructStmt { annotations, ident, generics, implements, fields, functions })
+    Some(StructStmt { annotations, visibility, ident, generics, implements, fields, functions })
+}
+
+/// Whether a field declaration (as opposed to the start of the methods
+/// section) follows at the current position -- an `Ident` + `:` lookahead,
+/// same as before, extended to see past an optional leading
+/// `exposed`/`internal` (which would otherwise break the lookahead: `exposed
+/// name: Type;` has `peek() = Ident("exposed")`, `peek_at(1) =
+/// Ident("name")`, not `Colon`).
+fn field_follows(p: &Parser) -> bool {
+    let offset = match p.peek() {
+        TokenKind::Ident(name) if name == "exposed" || name == "internal" => 1,
+        _ => 0,
+    };
+    matches!(p.peek_at(offset), TokenKind::Ident(_)) && matches!(p.peek_at(offset + 1), TokenKind::Colon)
 }
 
 /// `union Name<T, ...> { field: Type; ... method(...) => T { ... } ... }`
 /// -- identical shape and parsing strategy to `parse_struct_def`; the only
 /// difference is semantic (fields overlap in storage instead of being laid
 /// out sequentially), which is entirely an analyzer/codegen concern.
-pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<UnionStmt> {
+pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibility: Visibility) -> Option<UnionStmt> {
     p.expect(&TokenKind::Union, "'union'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -370,9 +444,11 @@ pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opti
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
-    while matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
+    while field_follows(p) {
+        let (field_visibility, _) = parse_optional_visibility(p);
         match parse_declaration(p) {
-            Some(decl) => {
+            Some(mut decl) => {
+                decl.visibility = field_visibility;
                 fields.push(decl);
                 p.expect_terminator(&TokenKind::Semi, "';'");
             }
@@ -383,14 +459,15 @@ pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opti
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
         let fn_annotations = parse_annotations(p);
-        match parse_function_definition(p, fn_annotations) {
+        let (fn_visibility, _) = parse_optional_visibility(p);
+        match parse_function_definition(p, fn_annotations, fn_visibility) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(UnionStmt { annotations, ident, generics, implements, fields, functions })
+    Some(UnionStmt { annotations, visibility, ident, generics, implements, fields, functions })
 }
 
 /// `spec Name<T, ...> : Dep, Dep for Target { functions }` (declaration
@@ -400,7 +477,7 @@ pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Opti
 /// `:`/`=` token is what disambiguates the two forms; both keep parsing a
 /// `Type`-list afterward (`,`-separated for `:`, `|`-separated for `=`),
 /// just with different terminators (`{ ... }` vs `;`).
-pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
+pub fn parse_spec_def(p: &mut Parser, visibility: Visibility) -> Option<SpecStmt> {
     p.expect(&TokenKind::Spec, "'spec'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -416,7 +493,7 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
         } else {
             p.expect_terminator(&TokenKind::Semi, "';'");
         }
-        return Some(SpecStmt { ident, generics, dependencies, functions: Vec::new(), target: None });
+        return Some(SpecStmt { ident, visibility, generics, dependencies, functions: Vec::new(), target: None });
     }
 
     let dependencies = parse_optional_implements(p)?;
@@ -434,7 +511,7 @@ pub fn parse_spec_def(p: &mut Parser) -> Option<SpecStmt> {
         }
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(SpecStmt { ident, generics, dependencies, functions, target })
+    Some(SpecStmt { ident, visibility, generics, dependencies, functions, target })
 }
 
 /// `name(params) => Ret;` (required -- every implementor must provide a
@@ -466,7 +543,7 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
 /// followed directly by the next variant); the variant list ends at `}`
 /// (no functions) or at a `;`, after which only function definitions may
 /// follow -- Java's "constants first, then a `;`, then members" rule.
-pub fn parse_enum_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<EnumStmt> {
+pub fn parse_enum_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibility: Visibility) -> Option<EnumStmt> {
     p.expect(&TokenKind::Enum, "'enum'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -474,13 +551,15 @@ pub fn parse_enum_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Optio
     let header = parse_enum_header(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
-    // The optional shared-dynamic-fields section -- same `Ident` + `:`
-    // lookahead and loop body `parse_struct_def`'s field loop uses, just
-    // spliced here, before the variant list, instead of a struct's `{...}`.
+    // The optional shared-dynamic-fields section -- same lookahead and loop
+    // body `parse_struct_def`'s field loop uses, just spliced here, before
+    // the variant list, instead of a struct's `{...}`.
     let mut dynamic_fields = Vec::new();
-    while matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
+    while field_follows(p) {
+        let (field_visibility, _) = parse_optional_visibility(p);
         match parse_declaration(p) {
-            Some(decl) => {
+            Some(mut decl) => {
+                decl.visibility = field_visibility;
                 dynamic_fields.push(decl);
                 p.expect_terminator(&TokenKind::Semi, "';'");
             }
@@ -540,7 +619,8 @@ pub fn parse_enum_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Optio
     if functions_follow {
         while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
             let fn_annotations = parse_annotations(p);
-            match parse_function_definition(p, fn_annotations) {
+            let (fn_visibility, _) = parse_optional_visibility(p);
+            match parse_function_definition(p, fn_annotations, fn_visibility) {
                 Some(f) => functions.push(f),
                 None => recovery::synchronize_to_statement_boundary(p),
             }
@@ -548,7 +628,7 @@ pub fn parse_enum_def(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Optio
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(EnumStmt { annotations, ident, generics, implements, header, dynamic_fields, variants, functions })
+    Some(EnumStmt { annotations, visibility, ident, generics, implements, header, dynamic_fields, variants, functions })
 }
 
 /// The optional `(name: Type, ...)` header after the enum's name -- each
@@ -563,9 +643,10 @@ fn parse_enum_header(p: &mut Parser) -> Option<Vec<EnumHeaderField>> {
     if !p.check(&TokenKind::RParen) {
         loop {
             let start = p.peek_span();
+            let (visibility, _) = parse_optional_visibility(p);
             let decl = parse_declaration(p)?;
             let span = start.to(p.last_span());
-            header.push(EnumHeaderField { ident: decl.ident, r#type: decl.r#type, span });
+            header.push(EnumHeaderField { ident: decl.ident, r#type: decl.r#type, visibility, span });
             if !p.eat(&TokenKind::Comma) {
                 break;
             }
@@ -595,9 +676,11 @@ fn parse_enum_variant(p: &mut Parser) -> Option<EnumVariantStmt> {
 
     let mut fields = Vec::new();
     if p.eat(&TokenKind::LBrace) {
-        while matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
+        while field_follows(p) {
+            let (field_visibility, _) = parse_optional_visibility(p);
             match parse_declaration(p) {
-                Some(decl) => {
+                Some(mut decl) => {
+                    decl.visibility = field_visibility;
                     fields.push(decl);
                     p.expect_terminator(&TokenKind::Semi, "';'");
                 }

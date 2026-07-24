@@ -4,6 +4,7 @@ use crate::ast::r#type::Type;
 use crate::ast::self_mode::SelfMode;
 use crate::ast::statement::declaration::DeclarationStmt;
 use crate::ast::expression::codeblock::CodeblockExpr;
+use crate::ast::visibility::Visibility;
 
 /// A `spec` -- a function-only interface/trait, in one of two surface
 /// forms:
@@ -42,6 +43,11 @@ use crate::ast::expression::codeblock::CodeblockExpr;
 #[derive(Debug, Clone)]
 pub struct SpecStmt {
     pub ident: Ident,
+    /// `exposed`/`internal`/(default `Private`) -- meaningless when
+    /// `target.is_some()` (a `for`-attached spec is never registered under
+    /// its own name at all, see `target`'s own doc comment), but parsed
+    /// uniformly regardless, for grammar consistency.
+    pub visibility: Visibility,
     pub generics: Vec<GenericParam>,
     pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,

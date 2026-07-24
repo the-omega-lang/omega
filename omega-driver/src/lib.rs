@@ -1,7 +1,7 @@
 mod fs_resolve;
 
 use fs_resolve::locate_module;
-use omega_analyzer::analysis::{item_id_span, item_name, Analyzer, ExtensionTarget, PendingSpecMethod};
+use omega_analyzer::analysis::{item_id_span, item_name, item_visibility, Analyzer, ExtensionTarget, PendingSpecMethod};
 use omega_analyzer::annotations::{self, ItemKind, ResolvedAnnotations};
 use omega_analyzer::checked::{
     CheckedFunctionDef, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage,
@@ -13,7 +13,7 @@ use omega_analyzer::resolved_type::{
     ResolvedUnionType,
 };
 use omega_analyzer::resolver::{
-    GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem, Visibility,
+    GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem,
 };
 use omega_analyzer::similarity::best_match;
 use omega_diagnostics::{Diagnostic, SourceFile, Span};
@@ -22,7 +22,7 @@ use omega_hir::{
     SYNTHETIC_MODULE,
 };
 use omega_parser::macros::MacroError;
-use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule};
+use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule, Visibility};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -308,8 +308,11 @@ pub struct Driver {
     /// here, via a throwaway `Analyzer` (same precedent as
     /// `check_generic_bounds`'s one-off call), since an import has no
     /// per-item analysis pass of its own for `UnusedImport` to hook into
-    /// otherwise.
-    raw_imports: HashMap<Vec<Ident>, HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>)>>,
+    /// otherwise. The trailing `bool` is `ImportStmt::hidden` -- carried
+    /// alongside for exactly the same reason `suppress` is (a purely
+    /// syntactic property of the import statement itself, needed by
+    /// `resolve_absolute_import_target`'s eventual `ensure_item` call).
+    raw_imports: HashMap<Vec<Ident>, HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>, bool)>>,
     /// One `(module_path, alias)` import alias's resolved target, memoized
     /// and cycle-guarded (see `ImportCacheState`'s doc comment) at that same
     /// fine granularity -- replaces the old whole-module-granular version of
@@ -1094,7 +1097,7 @@ impl Driver {
         // it runs eagerly for every module the moment it's indexed --
         // there's no cycle risk here, only in actually *resolving* what
         // each alias's absolute path names (`resolve_import_alias`).
-        let mut aliases: HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>)> = HashMap::new();
+        let mut aliases: HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>, bool)> = HashMap::new();
         for item in &hir.items {
             let HirItem::Import(import) = item else { continue };
             let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
@@ -1123,7 +1126,7 @@ impl Driver {
             }
             match aliases.entry(alias) {
                 Entry::Occupied(existing) => {
-                    let (_, previous_span, _, _) = *existing.get();
+                    let (_, previous_span, _, _, _) = *existing.get();
                     self.module_errors.entry(path.to_vec()).or_default().push(AnalysisError::new(
                         import.id,
                         import.span,
@@ -1131,7 +1134,7 @@ impl Driver {
                     ));
                 }
                 Entry::Vacant(entry) => {
-                    entry.insert((import.id, import.span, absolute, suppress));
+                    entry.insert((import.id, import.span, absolute, suppress, import.hidden));
                 }
             }
         }
@@ -1193,7 +1196,7 @@ impl Driver {
     /// ModuleResolver for Driver`, below) is a thin wrapper around this that
     /// also handles "not an alias at all" (`Ok(None)`, no `raw_imports`
     /// entry -- never enters the cache, since there's nothing to resolve).
-    fn resolve_import_alias_cached(&mut self, module_path: &[Ident], alias: &Ident, absolute: &[Ident]) -> Result<ImportTarget, ResolveError> {
+    fn resolve_import_alias_cached(&mut self, module_path: &[Ident], alias: &Ident, absolute: &[Ident], hidden: bool) -> Result<ImportTarget, ResolveError> {
         let key = (module_path.to_vec(), alias.clone());
         match self.import_cache.get(&key) {
             Some(ImportCacheState::Done(result)) => return result.clone(),
@@ -1202,7 +1205,7 @@ impl Driver {
         }
 
         self.import_cache.insert(key.clone(), ImportCacheState::InProgress);
-        let result = self.resolve_absolute_import_target(absolute);
+        let result = self.resolve_absolute_import_target(module_path, absolute, hidden);
         self.import_cache.insert(key, ImportCacheState::Done(result.clone()));
         result
     }
@@ -1210,10 +1213,13 @@ impl Driver {
     /// What an already-absolute path names -- a real module (a pure
     /// filesystem check, no recursion at all), a generic item (deferred,
     /// see `ImportTarget::GenericItem`'s doc comment), or an ordinary item
-    /// (eagerly resolved via `ensure_item`). Exactly `resolve_import`'s old
-    /// body, just taking an already-computed absolute path instead of
-    /// re-deriving `segments` from a raw `Path` itself.
-    fn resolve_absolute_import_target(&mut self, segments: &[Ident]) -> Result<ImportTarget, ResolveError> {
+    /// (eagerly resolved via `ensure_item`, with `accessor_module_path` =
+    /// `module_path` -- the importing module is the one whose reference
+    /// this is -- and `bypass` = the import's own `hidden`). Exactly
+    /// `resolve_import`'s old body, just taking an already-computed
+    /// absolute path instead of re-deriving `segments` from a raw `Path`
+    /// itself.
+    fn resolve_absolute_import_target(&mut self, accessor_module_path: &[Ident], segments: &[Ident], hidden: bool) -> Result<ImportTarget, ResolveError> {
         match locate_module(&self.search_roots_for(segments), &self.physical_lookup_path(segments)) {
             Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
             // Real regardless of whether this turns out to be a
@@ -1239,7 +1245,7 @@ impl Driver {
 
         // Capturing "what does this alias refer to" never embeds anything
         // inline the way a struct field does -- always indirect.
-        Ok(ImportTarget::Item(self.ensure_item(module_path, item_name, &[], true)?))
+        Ok(ImportTarget::Item(self.ensure_item(accessor_module_path, module_path, item_name, &[], true, hidden)?))
     }
 
     /// Gets (or creates) `key`'s shared identity cell -- see `struct_cells`'s
@@ -1310,6 +1316,21 @@ impl Driver {
             .clone()
     }
 
+    /// `exposed`/`internal`/(default private)'s actual access decision --
+    /// `declaring`/`accessor` are absolute module paths (the item's own
+    /// declaring module, and the querying module). `Internal`'s check is
+    /// crate/package-wide (same root segment), not restricted to
+    /// descendants of `declaring` -- confirmed as the intended semantic
+    /// (Rust `pub(crate)`-style) rather than the narrower "declaring module
+    /// and its own submodules only" reading.
+    fn visibility_allows(visibility: Visibility, declaring: &[Ident], accessor: &[Ident]) -> bool {
+        match visibility {
+            Visibility::Exposed => true,
+            Visibility::Internal => declaring.first() == accessor.first(),
+            Visibility::Private => declaring == accessor,
+        }
+    }
+
     /// The one global query behind same-module resolution, cross-module
     /// resolution, and generic instantiation alike -- see
     /// `ModuleResolver::resolve_item`'s doc comment. A name already `Done`
@@ -1322,10 +1343,12 @@ impl Driver {
     /// (see the trigger at the end of this method).
     pub fn ensure_item(
         &mut self,
+        accessor_module_path: &[Ident],
         module_path: &[Ident],
         name: &Ident,
         type_args: &[ResolvedType],
         indirect: bool,
+        bypass: bool,
     ) -> Result<ResolvedItem, ResolveError> {
         let key: ItemKey = (module_path.to_vec(), name.clone(), type_args.to_vec());
 
@@ -1334,9 +1357,10 @@ impl Driver {
                 let Some((visibility, item)) = self.resolved_items.get(&key) else {
                     return Err(ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() });
                 };
-                return match visibility {
-                    Visibility::Public => Ok(item.clone()),
-                };
+                if bypass || Self::visibility_allows(*visibility, module_path, accessor_module_path) {
+                    return Ok(item.clone());
+                }
+                return Err(ResolveError::NotVisible { module: module_path.to_vec(), item: name.clone() });
             }
             Some(QueryState::InProgress) => {
                 if indirect {
@@ -1385,11 +1409,20 @@ impl Driver {
         }
         let generics: Vec<Ident> = generic_params.iter().map(|g| g.ident.clone()).collect();
 
+        let visibility = self
+            .parsed
+            .get(module_path)
+            .expect("local_item_index just indexed this module")
+            .items
+            .get(index)
+            .map(item_visibility)
+            .expect("index just returned by local_item_index");
+
         self.query_state.insert(key.clone(), QueryState::InProgress);
         let result = self.compute_item(module_path, name, index, type_args, &generics);
         self.query_state.insert(key.clone(), QueryState::Done);
         if let Ok(item) = &result {
-            self.resolved_items.insert(key.clone(), (Visibility::Public, item.clone()));
+            self.resolved_items.insert(key.clone(), (visibility, item.clone()));
         }
 
         // A genuine instantiation's body is checked on demand, right here,
@@ -1406,7 +1439,11 @@ impl Driver {
             self.check_generic_instantiation_body(module_path, name, type_args, index);
         }
 
-        result
+        match result {
+            Ok(item) if bypass || Self::visibility_allows(visibility, module_path, accessor_module_path) => Ok(item),
+            Ok(_) => Err(ResolveError::NotVisible { module: module_path.to_vec(), item: name.clone() }),
+            Err(e) => Err(e),
+        }
     }
 
     /// Checks every bound generic parameter (`T: Animal`) among
@@ -2002,7 +2039,7 @@ impl Driver {
                 continue;
             }
             let Some(hir_fields) = self.hir_struct_def(module_path, name).map(|s| &s.fields) else { continue };
-            for (index, (field_name, _)) in cell.fields.iter().enumerate() {
+            for (index, (field_name, _, _)) in cell.fields.iter().enumerate() {
                 if usage.struct_fields.contains(&(cell.id, index)) {
                     continue;
                 }
@@ -2028,7 +2065,7 @@ impl Driver {
                 continue;
             }
             let Some(hir_fields) = self.hir_union_def(module_path, name).map(|u| &u.fields) else { continue };
-            for (index, (field_name, _)) in cell.fields.iter().enumerate() {
+            for (index, (field_name, _, _)) in cell.fields.iter().enumerate() {
                 if usage.union_fields.contains(&(cell.id, index)) {
                     continue;
                 }
@@ -2053,7 +2090,7 @@ impl Driver {
             let Some(hir_enum) = self.hir_enum_def(module_path, name) else { continue };
 
             if !cell.suppress.iter().any(|s| s.as_ref() == "unused_field") {
-                for (index, (field_name, _)) in cell.dynamic_fields.iter().enumerate() {
+                for (index, (field_name, _, _)) in cell.dynamic_fields.iter().enumerate() {
                     if usage.enum_dynamic_fields.contains(&(cell.id, index)) {
                         continue;
                     }
@@ -2070,7 +2107,7 @@ impl Driver {
                 }
                 for (variant_index, variant) in cell.variants.iter().enumerate() {
                     let Some(hir_variant) = hir_enum.variants.get(variant_index) else { continue };
-                    for (field_index, (field_name, _)) in variant.fields.iter().enumerate() {
+                    for (field_index, (field_name, _, _)) in variant.fields.iter().enumerate() {
                         if usage.enum_body_fields.contains(&(cell.id, variant_index, field_index)) {
                             continue;
                         }
@@ -2183,7 +2220,7 @@ impl Driver {
                 // "in progress" yet at this point in the sweep, so
                 // `indirect`'s distinction can't matter here; `true` just
                 // means "no spurious cycle risk from the sweep itself."
-                let _ = self.ensure_item(path, name, &[], true);
+                let _ = self.ensure_item(path, path, name, &[], true, false);
             }
             // Every overloaded name's every candidate signature -- resolved
             // eagerly here (unlike a generic instantiation, an overload set
@@ -2278,7 +2315,7 @@ impl Driver {
                 // body reached through `check_item_body`/`ensure_overload_body`
                 // just above is exactly why this can't run any earlier).
                 if let Some(aliases) = self.raw_imports.get(path) {
-                    for (alias, (id, span, _, suppress)) in aliases {
+                    for (alias, (id, span, _, suppress, _)) in aliases {
                         if self.used_imports.contains(&(path.clone(), alias.clone())) {
                             continue;
                         }
@@ -2430,11 +2467,11 @@ impl ModuleResolver for Driver {
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
         self.ensure_module_indexed(module_path)?;
-        let Some((_, _, absolute, _)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned() else {
+        let Some((_, _, absolute, _, hidden)) = self.raw_imports.get(module_path).and_then(|m| m.get(alias)).cloned() else {
             return Ok(None);
         };
         self.used_imports.insert((module_path.to_vec(), alias.clone()));
-        self.resolve_import_alias_cached(module_path, alias, &absolute).map(Some)
+        self.resolve_import_alias_cached(module_path, alias, &absolute, hidden).map(Some)
     }
 
     fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident> {
@@ -2446,14 +2483,36 @@ impl ModuleResolver for Driver {
 
     fn resolve_item(
         &mut self,
+        accessor_module_path: &[Ident],
         absolute_path: &[Ident],
         type_args: &[ResolvedType],
         indirect: bool,
+        bypass: bool,
     ) -> Result<ResolvedItem, ResolveError> {
         let Some((item_name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
-        self.ensure_item(module_path, item_name, type_args, indirect)
+        self.ensure_item(accessor_module_path, module_path, item_name, type_args, indirect, bypass)
+    }
+
+    /// Best-effort: scans `resolved_items` for *any* cached entry matching
+    /// `(module_path, item_name)`, regardless of its own `type_args` (this
+    /// query's signature carries none) -- correct for the overwhelmingly
+    /// common non-generic case; for a generic item, this may pick a
+    /// different instantiation's cache entry, but every instantiation of
+    /// the same declared item shares the identical declared `Visibility`
+    /// (it's a property of the *declaration*, not the instantiation), so
+    /// the answer is still correct regardless of which one is found. `false`
+    /// (not visible without a bypass) if nothing matches at all -- errs
+    /// toward not claiming a bypass was unnecessary rather than risking a
+    /// wrong `UnnecessaryHidden` warning.
+    fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
+        let Some((item_name, module_path)) = absolute_path.split_last() else { return false };
+        self.resolved_items
+            .iter()
+            .find(|((m, n, _), _)| m == module_path && n == item_name)
+            .map(|(_, (visibility, _))| Self::visibility_allows(*visibility, module_path, accessor_module_path))
+            .unwrap_or(false)
     }
 
     fn fresh_synthetic_id(&mut self) -> HirId {
