@@ -314,57 +314,63 @@ impl Context {
                         local.to_owned()
                     } else {
                         // An import alias, lazily resolved -- an ordinary,
-                        // non-generic *type* alias resolves outright
-                        // (`bind_imported_item` used to pre-materialize this
-                        // into `find_defined_type` above; now it's just
-                        // resolved on the spot, the first time this miss
-                        // actually happens); a *generic* item or *module*
-                        // alias falls through to `resolve_item` with no
-                        // type arguments, reproducing the exact
-                        // `GenericArgCountMismatch`/`NotAType` a bare
-                        // reference to either should get; no alias at all
-                        // falls through to the implicit own-module
-                        // assumption, exactly as before.
+                        // non-generic *type* alias, a generic item, or a
+                        // module alias all end up resolved the same way
+                        // here: find the absolute path the alias names, then
+                        // resolve *that* through `resolve_item` with *this*
+                        // reference's own `indirect`; no alias at all falls
+                        // through to the implicit own-module assumption,
+                        // exactly as before.
+                        //
+                        // Deliberately never short-circuits on
+                        // `ImportTarget::Item`'s own eagerly-resolved
+                        // snapshot -- that snapshot was always produced with
+                        // `indirect = true` (see its doc comment), so
+                        // trusting it directly here would silently drop this
+                        // reference's real `indirect` whenever it's `false`
+                        // (a struct/enum/union field's own type, embedded
+                        // inline) -- exactly the gap that let a mutual
+                        // by-value struct cycle reached through a bare
+                        // import alias slip past the cycle check a
+                        // module-qualified reference already got. Re-running
+                        // `resolve_item` costs nothing extra once the item
+                        // is already `Done` (a couple of hashmap lookups,
+                        // the same cost `ImportTarget::Item` itself would
+                        // have paid to read back its own snapshot); it only
+                        // matters when the item is still genuinely
+                        // `InProgress`, which is exactly the case this
+                        // exists to catch.
                         let alias = resolver
                             .resolve_import_alias(module_path, &path.head)
                             .map_err(TypeResolutionError::ModuleResolution)?;
-                        if let Some(ImportTarget::Item(ResolvedItem::Value { .. })) = alias {
+                        if let Some(ImportTarget::Item(_, ResolvedItem::Value { .. })) = alias {
                             return Err(TypeResolutionError::NotAType(vec![path.head.clone()]));
                         }
-                        if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
-                            t
-                        } else {
-                            let absolute = match alias {
-                                Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => {
-                                    absolute
-                                }
-                                _ => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
-                            };
-                            match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
-                                Ok(ResolvedItem::Type(t)) => t,
-                                Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
-                                // The implicit own-module fallback missing isn't
-                                // a module problem from the user's point of
-                                // view -- they wrote a bare type name that
-                                // doesn't exist. Report it as exactly that, with
-                                // a typo suggestion where one is close enough --
-                                // from the visible scopes, this module's own
-                                // import aliases, then its top-level structs
-                                // (which only the resolver can enumerate).
-                                Err(ResolveError::UnknownItem { .. }) => {
-                                    let similar = self
-                                        .similar_type_name(&path.head)
-                                        .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
-                                        .or_else(|| {
-                                            resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type)
-                                        });
-                                    return Err(TypeResolutionError::UnrecognizedNamedType {
-                                        name: path.head.clone(),
-                                        similar,
-                                    });
-                                }
-                                Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
+                        let absolute = match alias {
+                            Some(ImportTarget::Item(absolute, _))
+                            | Some(ImportTarget::GenericItem(absolute))
+                            | Some(ImportTarget::Module(absolute)) => absolute,
+                            None => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+                        };
+                        match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
+                            Ok(ResolvedItem::Type(t)) => t,
+                            Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
+                            // The implicit own-module fallback missing isn't
+                            // a module problem from the user's point of
+                            // view -- they wrote a bare type name that
+                            // doesn't exist. Report it as exactly that, with
+                            // a typo suggestion where one is close enough --
+                            // from the visible scopes, this module's own
+                            // import aliases, then its top-level structs
+                            // (which only the resolver can enumerate).
+                            Err(ResolveError::UnknownItem { .. }) => {
+                                let similar = self
+                                    .similar_type_name(&path.head)
+                                    .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
+                                    .or_else(|| resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type));
+                                return Err(TypeResolutionError::UnrecognizedNamedType { name: path.head.clone(), similar });
                             }
+                            Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                         }
                     }
                 } else {

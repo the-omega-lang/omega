@@ -2435,7 +2435,7 @@ impl<'r> Analyzer<'r> {
         // gives an unqualified `Type::Named` -- see its own comment for why
         // this can no longer be caught by `find_defined_type` above.
         let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
-        if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+        if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.resolve_type_member(node_id, span, &t, &path.tail);
         }
         let absolute: Vec<Ident> = match alias {
@@ -2886,7 +2886,7 @@ impl<'r> Analyzer<'r> {
                     // far: the `resolve_bare_overload_candidates` branch
                     // above already claimed it.)
                     let alias = self.resolve_alias_or_error(node_id, span, ident)?;
-                    if let Some(ImportTarget::Item(ResolvedItem::Value { r#type, storage, decl_id })) = alias {
+                    if let Some(ImportTarget::Item(_, ResolvedItem::Value { r#type, storage, decl_id })) = alias {
                         let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
                         (root, r#type, false)
                     } else {
@@ -3430,7 +3430,7 @@ impl<'r> Analyzer<'r> {
 
         let r#type = if let Some(t) = self.context.find_defined_type(&path.head) {
             t.clone()
-        } else if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+        } else if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             t
         } else {
             let absolute: Vec<Ident> =
@@ -4185,7 +4185,21 @@ impl<'r> Analyzer<'r> {
     /// shadows (not user-declared) and, in a parameter scope, the implicit
     /// `self` (unused `self` is idiomatic in plenty of methods).
     fn warn_unused_bindings(&mut self, scope: ScopeContext, is_params: bool) {
-        for (name, binding) in &scope.declared_variables {
+        // Sorted by `decl_id` (assigned sequentially during lowering, in
+        // source order -- see `HirIdGen`) rather than iterated straight off
+        // `declared_variables` -- a `HashMap`'s own order is per-process-
+        // random, which would otherwise make the *order* these warnings are
+        // pushed onto `self.warnings` (and so their order in a compilation's
+        // final diagnostic output) vary build-to-build for byte-identical
+        // source. `span` alone isn't a safe sort key here: a parameter's
+        // `UnusedParameter` diagnostic deliberately anchors on the whole
+        // function's own span for display (see its rendering), not the
+        // individual parameter token's, so two parameters of one function
+        // would otherwise tie and fall back to the `HashMap`'s own random
+        // order anyway.
+        let mut bindings: Vec<(&Ident, &VarBinding)> = scope.declared_variables.iter().collect();
+        bindings.sort_by_key(|(_, binding)| binding.decl_id.local);
+        for (name, binding) in bindings {
             if binding.narrowed || (is_params && name.as_ref() == "self") {
                 continue;
             }
@@ -6129,7 +6143,7 @@ impl<'r> Analyzer<'r> {
         if let Some(head_type) = self.context.find_defined_type(&plain.head).cloned() {
             return self.literal_target_from_type(node_id, span, head_type, &plain.tail);
         }
-        if let Some(ImportTarget::Item(ResolvedItem::Type(t))) = alias {
+        if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.literal_target_from_type(node_id, span, t, &plain.tail);
         }
         let absolute: Vec<Ident> = match alias {

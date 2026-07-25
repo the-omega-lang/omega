@@ -145,12 +145,8 @@ correctly, checked individually at their own real call sites.
   every overload is always a candidate there, and call-site `hidden` still
   works normally, since there's no per-symbol "import hidden" granularity
   that could even apply to a whole-module import.
-- **Symbol table ordering is not reproducible across process runs** for
-  spec-default-instantiated methods specifically (their internal `$$N`
-  disambiguation suffix depends on `HashMap` iteration order somewhere in
-  spec dependency resolution, not a fully deterministic walk) — harmless
-  within one compilation (the suffix has no observable effect on program
-  behavior) but means object files for byte-identical source aren't
-  reproducible build-to-build. Unrelated to visibility itself; noted here
-  because it was discovered incidentally while verifying a visibility
-  change. See [modules & linkage](10-modules-and-linkage.md).
+- Build reproducibility (several `HashMap` iteration sites making object
+  files differ build-to-build for identical source) was discovered
+  incidentally while verifying a visibility change, but is unrelated to
+  visibility itself and has since been fixed — see
+  [modules & linkage](10-modules-and-linkage.md).

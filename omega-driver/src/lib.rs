@@ -1260,9 +1260,13 @@ impl Driver {
             return Ok(ImportTarget::GenericItem(segments.to_vec()));
         }
 
-        // Capturing "what does this alias refer to" never embeds anything
-        // inline the way a struct field does -- always indirect.
-        Ok(ImportTarget::Item(self.ensure_item(accessor_module_path, module_path, item_name, &[], true, hidden)?))
+        // Capturing "what does this alias refer to" never itself embeds
+        // anything inline the way a struct field does -- always indirect
+        // here. The absolute path travels along with the resolved snapshot
+        // (see `ImportTarget::Item`'s doc comment) so a type-position
+        // consumer whose own `indirect` differs can re-resolve with its own
+        // real value instead of trusting this one.
+        Ok(ImportTarget::Item(segments.to_vec(), self.ensure_item(accessor_module_path, module_path, item_name, &[], true, hidden)?))
     }
 
     /// Gets (or creates) `key`'s shared identity cell -- see `struct_cells`'s
@@ -2158,6 +2162,19 @@ impl Driver {
             }
         }
 
+        // `struct_cells`/`union_cells`/`enum_cells` are all `HashMap`s, so
+        // the three loops above each visit their own cells in a
+        // per-process-random order -- sorted here, once, by each warning's
+        // own source position (module, then byte offset) rather than left
+        // in whatever order they were pushed, so this sweep's contribution
+        // to the compilation's diagnostic output (and so, transitively, to
+        // anything downstream that's sensitive to build-to-build byte
+        // stability) is deterministic regardless of iteration order.
+        warnings.sort_by(|(a_path, a), (b_path, b)| {
+            let a_path: Vec<&str> = a_path.iter().map(Ident::as_ref).collect();
+            let b_path: Vec<&str> = b_path.iter().map(Ident::as_ref).collect();
+            a_path.cmp(&b_path).then(a.span.start.cmp(&b.span.start))
+        });
         warnings
     }
 
@@ -2212,7 +2229,24 @@ impl Driver {
             self.ensure_module_indexed(path).map_err(resolve)?;
             let overloaded_names: std::collections::HashSet<Ident> =
                 self.function_overloads[path].keys().cloned().collect();
-            let names: Vec<Ident> = self.local_items[path].keys().cloned().collect();
+            // Sorted by each item's own declaration index (`local_items`'s
+            // value, not just its key) -- iterating the `HashMap` directly
+            // would process this module's items in an arbitrary,
+            // per-process-random order, which this sweep's own side effects
+            // (minting a fresh, globally-sequential synthetic `HirId` per
+            // spec-default-method instantiation, see `fresh_synthetic_id`)
+            // would then bake into which numeric id lands on which
+            // instantiation -- harmless for correctness (nothing reads that
+            // number back except this same compilation), but it's what made
+            // the compiled object file's own internal layout differ,
+            // byte-for-byte, across repeated builds of identical source.
+            // Sorting by declaration index instead recovers the one order
+            // that's actually deterministic build-to-build: the source
+            // file's own, top-to-bottom.
+            let mut indexed_names: Vec<(usize, Ident)> =
+                self.local_items[path].iter().map(|(name, &index)| (index, name.clone())).collect();
+            indexed_names.sort_by_key(|(index, _)| *index);
+            let names: Vec<Ident> = indexed_names.into_iter().map(|(_, name)| name).collect();
             for name in &names {
                 // Handled below instead -- `ensure_item`'s `ItemKey` can
                 // only ever address one item per name, so it would silently
@@ -2234,8 +2268,16 @@ impl Driver {
             // eagerly here (unlike a generic instantiation, an overload set
             // is fully enumerable up front, so there's no need for
             // `check_generic_instantiation_body`'s on-demand trigger/
-            // deferred-merge dance).
-            for (name, indices) in &self.function_overloads[path].clone() {
+            // deferred-merge dance). Sorted by each group's own first
+            // declaration index -- same determinism reasoning as `names`
+            // above; an overloaded name's own `indices` are already in
+            // ascending declaration order (see `ensure_module_indexed`), so
+            // this recovers the same "source, top-to-bottom" order across
+            // *groups* too, instead of `HashMap`'s per-process-random one.
+            let mut overload_groups: Vec<(Ident, Vec<usize>)> =
+                self.function_overloads[path].clone().into_iter().collect();
+            overload_groups.sort_by_key(|(_, indices)| indices[0]);
+            for (name, indices) in &overload_groups {
                 let signatures: Vec<ResolvedFunctionType> = indices
                     .iter()
                     .map(|&i| self.ensure_overload_signature(path, i))
@@ -2308,7 +2350,15 @@ impl Driver {
                         warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
                     }
                 }
-                for indices in self.function_overloads[path].clone().into_values() {
+                // Sorted by each group's own first declaration index -- see
+                // the identical sort a few dozen lines up, in this same
+                // function's first sweep, for why: this order becomes the
+                // order these functions' bodies are pushed onto `items`,
+                // which is the order codegen declares/defines them in the
+                // final object file.
+                let mut overload_groups: Vec<Vec<usize>> = self.function_overloads[path].clone().into_values().collect();
+                overload_groups.sort_by_key(|indices| indices[0]);
+                for indices in overload_groups {
                     for index in indices {
                         if let Some((checked, item_warnings)) = self.ensure_overload_body(path, index) {
                             items.push(checked);
@@ -2323,6 +2373,11 @@ impl Driver {
                 // body reached through `check_item_body`/`ensure_overload_body`
                 // just above is exactly why this can't run any earlier).
                 if let Some(aliases) = self.raw_imports.get(path) {
+                    // Sorted by declaration position, not iterated straight
+                    // off the `HashMap` -- same determinism reasoning as
+                    // `warn_unused_bindings`.
+                    let mut aliases: Vec<_> = aliases.iter().collect();
+                    aliases.sort_by_key(|(_, (_, span, _, _, _))| span.start);
                     for (alias, (id, span, _, suppress, _)) in aliases {
                         if self.used_imports.contains(&(path.clone(), alias.clone())) {
                             continue;
@@ -2346,8 +2401,26 @@ impl Driver {
         // here, only now that both phases have fully finished -- see
         // `compile`'s own doc comment for why this can't be folded into the
         // per-module loop above.
+        // Sorted by each instantiation's own key -- `generic_instantiations`
+        // is a `HashMap`, so iterating it directly would merge instantiations
+        // into their module in a per-process-random order (and so, for two
+        // instantiations discovered from the same originating call site
+        // pattern, push their warnings in a random relative order too).
+        // `ResolvedType` has no `Ord` of its own, but its `Display` already
+        // gives a stable, human-readable total order that's good enough
+        // here -- this is purely about determinism, not about the order
+        // being meaningful.
+        let mut instantiations: Vec<(&ItemKey, &(CheckedItem, Vec<AnalysisWarning>))> =
+            self.generic_instantiations.iter().collect();
+        instantiations.sort_by_key(|((module_path, name, type_args), _)| {
+            (
+                module_path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+                name.as_ref().to_string(),
+                type_args.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            )
+        });
         for (path, checked_module) in modules.iter_mut() {
-            for ((inst_path, _, _), (item, item_warnings)) in &self.generic_instantiations {
+            for ((inst_path, _, _), (item, item_warnings)) in &instantiations {
                 if inst_path == path {
                     checked_module.items.push(item.clone());
                     warnings.extend(item_warnings.iter().map(|w| (path.clone(), w.clone())));

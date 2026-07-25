@@ -29,8 +29,22 @@ pub enum ImportTarget {
     Module(Vec<Ident>),
     /// `path`'s last segment names an item inside the module formed by the
     /// rest of the path -- the imported name binds directly to that item
-    /// (`import mymodule::foo;` then bare `foo()`).
-    Item(ResolvedItem),
+    /// (`import mymodule::foo;` then bare `foo()`). Carries its own absolute
+    /// path alongside the eagerly-resolved `ResolvedItem` snapshot: that
+    /// snapshot was always produced with `indirect = true` (see
+    /// `Driver::resolve_absolute_import_target` -- classifying "what does
+    /// this alias mean" never itself embeds anything inline), which is fine
+    /// for every value-position consumer (a call, a literal construction --
+    /// never inline-embedded either way) but wrong to trust as-is for a
+    /// *type-annotation* position, where the real `indirect` varies by
+    /// where the annotation sits (a struct field vs. a pointer's pointee).
+    /// The absolute path lets that one consumer (`Context::resolve_type`'s
+    /// `Type::Named` unqualified-alias branch) re-resolve through
+    /// `ModuleResolver::resolve_item` with its own real `indirect` instead,
+    /// so a mutual by-value struct cycle reached through a bare import
+    /// alias still gets caught exactly like one reached through a qualified
+    /// path already was.
+    Item(Vec<Ident>, ResolvedItem),
     /// `path`'s last segment names a *generic* item (struct or function) --
     /// unlike `Item`, this is never eagerly resolved to a `ResolvedItem`:
     /// importing supplies no type arguments (those only ever appear at a use

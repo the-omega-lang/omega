@@ -16,10 +16,6 @@ new one is found.
   flattened positional scalars, fine Omega-to-Omega, not safely callable
   from hand-written C expecting real struct-passing rules.
   [primitives.md](01-primitives.md)
-- **Object files for byte-identical source aren't reproducible
-  build-to-build** — spec-default-method `$$N` suffixes depend on
-  `HashMap` iteration order. Harmless within one compilation.
-  [modules-and-linkage.md](10-modules-and-linkage.md)
 
 ## Enums
 
@@ -35,12 +31,6 @@ new one is found.
   third, unfixed occurrence of the same "position-dependent activation"
   bug class already described in [visibility.md](07-visibility.md).
   [design-review.md](15-design-review.md)
-
-## Modules & imports
-
-- **A cross-module, mutually-by-value struct cycle through a bare import
-  alias silently compiles** instead of being rejected as infinite-size.
-  Confirmed pre-existing. [modules-and-linkage.md](10-modules-and-linkage.md)
 
 ## Types
 

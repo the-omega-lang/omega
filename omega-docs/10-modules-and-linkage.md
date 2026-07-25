@@ -142,28 +142,56 @@ a genuine duplicate-definition user error (e.g. two `@mangling(disabled)`
 functions sharing a name) still hard-fails at link time exactly as before;
 this was explicitly verified as a negative control.
 
+## Fixed: struct cycle through a bare import alias, and build reproducibility
+
+**A cross-module, mutually-by-value struct cycle reached through a bare
+(unqualified) import alias used to silently compile instead of erroring.**
+Root cause: `Context::resolve_type`'s `Type::Named` unqualified-alias
+branch trusted `ImportTarget::Item`'s eagerly-resolved snapshot directly —
+that snapshot was always produced with `indirect: true` (classifying "what
+does this alias mean" never itself embeds anything inline), so a by-value
+struct field's real `indirect: false` never reached the cycle check, no
+matter which of the two mutually-referencing structs happened to still be
+`InProgress` at the time. Fixed by giving `ImportTarget::Item` its absolute
+path alongside the snapshot, so this one consumer re-resolves through
+`ModuleResolver::resolve_item` with its own real `indirect` instead of
+trusting the cached value — exactly mirroring how a module-qualified
+reference (`mymodule::Foo`) already worked. Every other consumer of
+`ImportTarget::Item` (calls, literal construction — never inline-embedded
+either way) is unaffected. Verified via `git stash`-diffed before/after: the
+identical mutual-cycle input silently compiled before, now correctly
+rejects with `RecursiveTypeWithoutIndirection`; mutual cross-module
+*function* recursion (the false-cycle bug this whole lazy-per-alias design
+exists to avoid) and a legitimate pointer-indirected struct cycle both still
+compile clean.
+
+**Object files for byte-identical source used to differ, build-to-build.**
+Root cause: several whole-program sweeps in `omega-driver` iterated a
+`HashMap` directly to decide processing/emission order — a module's own
+item sweep, the overloaded-function sweep (twice), the generic-instantiation
+merge, the unused-import sweep, and the dead-code sweep (`sweep_dead_code`,
+over `struct_cells`/`union_cells`/`enum_cells`) — plus one spot in
+`omega-analyzer`'s own `warn_unused_bindings`, iterating a scope's
+`declared_variables`. `HashMap`'s iteration order is per-process-random
+(SipHash-seeded), so which order these produced their side effects (minting
+a globally-sequential synthetic `HirId` per spec-default-method
+instantiation, or simply the order items/warnings get pushed onto a `Vec`)
+varied build-to-build for identical source — harmless within any one
+compilation, but real object files (and diagnostic output order) differed
+across repeated builds. Fixed by sorting each of these before iterating: by
+declaration index for items, by each `decl_id`/span for warnings/imports,
+and by a `Display`-derived key for generic instantiations (`ResolvedType`
+has no `Ord` of its own, but a stable string key is enough here — this is
+about determinism, not meaningful ordering). Verified empirically, not just
+reasoned about: `just clean && just run-exec`, run repeatedly against
+unmodified source, produced byte-different diagnostic output (confirming
+the bug was real and reproducible) before this fix and byte-identical
+output (diagnostics, order, and program output alike, module compile
+timings/`cargo`'s own parallel build log excepted) across 7 consecutive
+fresh runs after it.
+
 ## Caveats
 
-- **A cross-module, mutually-by-value struct cycle reached through a bare
-  (unqualified) import alias silently compiles instead of erroring**
-  (confirmed pre-existing, not introduced by the lazy-per-alias rewrite —
-  it predates it, in a different, wronger form: the old eager scheme hit
-  the *false*-cycle bug instead on the identical input, so it was at least
-  a safe-but-wrong rejection before; now it's a silent, unsound accept).
-  Root cause: resolving *what an import alias means* always calls the
-  item resolver with `indirect: true` hardcoded, regardless of the
-  caller's real intended use — a by-value struct field needs `indirect:
-  false` for the mutual-reference check to fire, and that distinction is
-  lost by the time an alias hands back an already-resolved type. Needs a
-  dedicated pass (likely splitting the resolution cache by indirectness);
-  out of scope so far.
-- **Object files for byte-identical source aren't reproducible
-  build-to-build.** Spec-default-instantiated methods' internal `$$N`
-  disambiguation suffix depends on `HashMap` iteration order somewhere in
-  spec dependency/implements-clause resolution rather than a fully
-  deterministic walk — harmless within any *one* compilation (the suffix
-  has no observable effect on program behavior, confirmed by its own doc
-  comment), but real object files differ across repeated identical builds.
 - **Cross-compilation code *generation* is not shared, only the final
   *link*.** Every `omgc` invocation that references a generic
   instantiation still fully regenerates it locally; weak linkage only lets
