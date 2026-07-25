@@ -2265,13 +2265,21 @@ impl Codegen {
 
             CheckedExpr::BinaryOp(CheckedBinaryOp { op, left, right }) => {
                 // Checked module guarantees both operands share the same
-                // numeric resolved type (see `Analyzer`'s `HirExpr::BinaryOp`
-                // arm), so either one's `numeric_kind` picks the right
-                // instruction for the whole operation.
-                let kind = left
-                    .r#type
-                    .numeric_kind()
-                    .expect("checked module guarantees BinaryOp operands are numeric");
+                // resolved type (see `Analyzer`'s `HirExpr::BinaryOp` arm),
+                // so either one's `numeric_kind` picks the right
+                // instruction for the whole operation. `Char` is the one
+                // exception: it has no `numeric_kind` of its own (see its
+                // doc comment -- arithmetic/bitwise on it is meaningless,
+                // possibly UTF-8-breaking), but `Analyzer::analyze_binary_op`
+                // only ever lets it reach here for a *comparison* op, where
+                // it behaves exactly like its underlying representation: an
+                // unsigned 4-byte scalar, ordered by codepoint.
+                let kind = match &left.r#type {
+                    ResolvedType::Char => NumericKind::Unsigned(32),
+                    r#type => r#type
+                        .numeric_kind()
+                        .expect("checked module guarantees BinaryOp operands are numeric or char"),
+                };
                 let left = self.process_expr(builder, *left)[0];
                 let right = self.process_expr(builder, *right)[0];
                 // Division/modulo by zero traps at the instruction level --

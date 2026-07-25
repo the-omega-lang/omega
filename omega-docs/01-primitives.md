@@ -72,6 +72,45 @@ all in this backend), and static data blobs with pointer relocations were
 already one API call away once slices existed — so `spec *T` needed no new
 low-level machinery, only a new 2-leaf type and a vtable-building pass.
 
+## `char`: comparable, but not arithmetic
+
+```
+if c >= 'A' { if c <= 'Z' { true } else { false } } else { false }
+
+classify(c: char) => *u8 {
+    match c {
+        'A'...'Z' => <*u8>b"upper\0",
+        'a'...'z' => <*u8>b"lower\0",
+        '0'...'9' => <*u8>b"digit\0",
+    } else { <*u8>b"other\0" }
+}
+```
+
+`char` supports the full comparison family (`== != < <= > >=`), ordered by
+raw codepoint, and can be used as a `match` scrutinee — including range
+patterns (`'A'...'Z'`), the same shared range grammar
+[ranges elsewhere](05-enums-and-pattern-matching.md) use. `char`'s
+`integer_domain()` (what `match` exhaustiveness treats as "the whole
+domain") is `0..=0x10FFFF` (`char::MAX`) — the same real range Rust's
+`char` occupies. This doesn't carve out the surrogate hole
+(`0xD800..=0xDFFF`), which is sound rather than an oversight: a `char`
+literal is always validated through `char::from_u32` at parse time, so no
+real `char` value can ever land in that hole in the first place — the
+interval-exhaustiveness checker just doesn't need to know it exists.
+
+**`char` still has *no* arithmetic, bitwise, or cast support** — this is
+deliberate, not the same gap as before. Comparison only reads a `char`'s
+underlying scalar value; arithmetic would let you *construct* one
+(`'a' + 1`), and there's no validation step anywhere in this language yet
+that would stop the result from being an unassigned codepoint or landing
+inside the surrogate hole — a `char` that isn't a valid Unicode scalar
+value at all, silently violating the type's own invariant. Whether/how to
+support this safely (e.g. a fallible `char::from_u32`-style constructor
+instead of raw arithmetic) is intentionally left as **future work** rather
+than solved narrowly here — noted so it doesn't get silently
+"fixed" by just widening `numeric_kind` later without thinking through the
+validity question again.
+
 ## Layout, packing, and `sizeof`
 
 Struct/enum fields are **packed by default** (no implicit alignment padding

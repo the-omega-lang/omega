@@ -64,8 +64,11 @@ mechanism; there is no `try`/`catch`/exceptions in the language at all.
 `bool` supports **none** of `== != & | ^`, and there is **no `!` prefix
 operator in the grammar at all** (`!` only ever appears as part of `!=` or
 macro-invocation syntax `name!(...)`). `bool` is excluded from
-`numeric_kind` entirely, the same exclusion `char` gets — comparison and
-bitwise operators only ever accept numeric operands in this compiler.
+`numeric_kind` entirely — bitwise operators only ever accept numeric
+operands in this compiler, and `bool` is not numeric (see
+[primitives](01-primitives.md) for the identical, but narrower,
+`char` restriction — `char` supports comparison, just not bitwise or
+arithmetic).
 
 The only way to negate or combine booleans is nested `if`-expressions:
 
@@ -106,10 +109,12 @@ prefix and infix operators.
 
 ## Caveats
 
-- `char` has no comparison, no bitwise, and no cast support at all
-  currently (see [generics & known gaps](06-generics.md)) — it can be
-  constructed and passed through (e.g. as a `printf` vararg) but not
-  compared or matched at the language level.
+- `char` has comparison (`== != < <= > >=`) and can be used as a `match`
+  scrutinee, including ranges (`'A'...'Z'`) — see
+  [primitives](01-primitives.md) and
+  [enums & pattern matching](05-enums-and-pattern-matching.md). It still
+  has no arithmetic, bitwise, or cast support — deliberately, not a gap;
+  see [primitives](01-primitives.md) for why.
 - Untyped integer literals don't reliably narrow across widths outside of
   a function's own tail-return position — see
   [primitives](01-primitives.md) and [generics](06-generics.md) for the

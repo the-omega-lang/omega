@@ -108,8 +108,10 @@ exhaustive coverage.
 exhaustiveness.rs`): a sort-by-lo sweep over intervals detects every
 overlap (hard error, no first-match-wins semantics like a plain `if`-chain
 would have) and every gap (error unless `else` covers it). Scoped today to
-**enums, integers, and `bool`** — a `char` or float scrutinee is a clear
-`UnsupportedMatchScrutinee` diagnostic, not a silent gap.
+**enums, integers, `bool`, and `char`** (see
+[primitives](01-primitives.md) for `char`'s own domain) — a float
+scrutinee is a clear `UnsupportedMatchScrutinee` diagnostic, not a silent
+gap.
 
 `match` keeps its own `CheckedExpr::Match`/`emit_match` rather than fully
 desugaring into `if`: an exhaustive match with no user `else` must *trap*
@@ -136,6 +138,21 @@ is unambiguously `...` (inclusive) or `..<` (exclusive-end). `..<` always
 requires an explicit end (`a..<` and bare `..<` alone are parse errors) —
 an open-ended exclusive range has nothing to exclude.
 
+Range bounds work for any type with an `integer_domain()` (see
+[primitives](01-primitives.md)) — including `char`:
+
+```
+match c {
+    'A'...'Z' => 1,
+    'a'...'z' => 2,
+    '0'...'9' => 3,
+} else { 0 }
+```
+
+A `char` range is only ever meaningful as a `match` pattern — `char` has
+no arithmetic, so unlike an integer range there's no sensible notion of
+"step" or iteration over one.
+
 ## Caveats
 
 - **Generic enums with methods are fundamentally broken** — even a method
@@ -150,5 +167,6 @@ an open-ended exclusive range has nothing to exclude.
   `if`-branches are; this was deliberately excluded from the literal-
   inference feature (judged too entangled with exhaustiveness/refinement to
   fold in safely at the time).
-- `char` and float scrutinees are explicitly unsupported in `match`
-  (`UnsupportedMatchScrutinee`), not silently mishandled.
+- A float scrutinee is explicitly unsupported in `match`
+  (`UnsupportedMatchScrutinee`), not silently mishandled — `char` is
+  supported (see above).

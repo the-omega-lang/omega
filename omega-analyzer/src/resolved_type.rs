@@ -705,14 +705,26 @@ impl ResolvedType {
     /// this type, as `i128` (comfortably spans every integer type from
     /// `i8` to `u64`/`usize`, plus `bool`'s `{0,1}`) -- what a `match`'s
     /// interval-exhaustiveness check (`crate::exhaustiveness`) treats as
-    /// "the whole domain" a numeric/`bool` match must cover. `None` for
-    /// every other type: `match` support is deliberately scoped to enums,
-    /// integers, and `bool` for now (see
-    /// `AnalysisErrorKind::UnsupportedMatchScrutinee`) -- lifting that
-    /// scope later (e.g. to `char`) only needs a new arm here.
+    /// "the whole domain" a numeric/`bool`/`char` match must cover. `None`
+    /// for every other type: `match` support is deliberately scoped to
+    /// enums, integers, `bool`, and `char` for now (see
+    /// `AnalysisErrorKind::UnsupportedMatchScrutinee`).
+    ///
+    /// `Char`'s domain is `0..=0x10FFFF` (`char::MAX`), the full range of a
+    /// Unicode scalar value -- it does *not* carve out the surrogate hole
+    /// (`0xD800..=0xDFFF`), which is fine, not unsound: a real `char` value
+    /// can never actually land in that hole in the first place (char
+    /// literals are validated through `char::from_u32` at parse time), so
+    /// this interval abstraction just doesn't know about a gap nothing can
+    /// ever fall into. A match covering the full `0..=0x10FFFF` range is
+    /// correctly recognized as exhaustive; it just can't (today) recognize
+    /// a match that covers the domain *around* the hole without touching
+    /// it as exhaustive without an `else` -- a minor conservatism, not a
+    /// correctness gap.
     pub fn integer_domain(&self) -> Option<(i128, i128)> {
         Some(match self {
             Self::Bool => (0, 1),
+            Self::Char => (0, char::MAX as i128),
             Self::I8 => (i8::MIN as i128, i8::MAX as i128),
             Self::I16 => (i16::MIN as i128, i16::MAX as i128),
             Self::I32 => (i32::MIN as i128, i32::MAX as i128),

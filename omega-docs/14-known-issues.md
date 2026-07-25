@@ -50,9 +50,14 @@ new one is found.
   `*str` and `*[u8]`/`*[i8]` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
   [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
-- **`char` has no comparison, bitwise, or cast support at all.**
-  [control-flow.md](03-control-flow.md),
-  [core-library.md](13-core-library.md)
+- **`char` still has no arithmetic, bitwise, or cast support** —
+  deliberately: nothing validates that a computed codepoint is still a
+  legal Unicode scalar value, so allowing e.g. `'a' + 1` could silently
+  produce an invalid `char`. Comparison and `match`/range support were
+  added (fixed — see [primitives.md](01-primitives.md)); a real,
+  validating path for arithmetic (e.g. a fallible `char::from_u32`-style
+  constructor) is left as deliberate future work, not solved narrowly
+  here. [primitives.md](01-primitives.md), [core-library.md](13-core-library.md)
 - **`bool` has no `== != & | ^`, and there is no `!` operator** — by
   design, not a gap, but worth knowing before reaching for it.
   [control-flow.md](03-control-flow.md)

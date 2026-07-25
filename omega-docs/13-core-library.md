@@ -74,9 +74,14 @@ Both cuts are direct consequences of confirmed language gaps, not missing
 effort — see [generics](06-generics.md) and
 [control flow](03-control-flow.md):
 
-- **No `core::chars`** — `char` has no comparison or cast support at all
-  in the language today, so ASCII classification/case-conversion is
-  unimplementable against it as it stands.
+- **No `core::chars`** — `char` gained comparison and `match`/range
+  support (see [primitives](01-primitives.md)), so ASCII
+  *classification* (`is_upper`, `is_digit`, and similar range-based
+  predicates) is implementable now. It still has no cast or arithmetic
+  support at all, so *case conversion* (`to_upper`/`to_lower`, which needs
+  to compute a different codepoint) remains blocked — a `core::chars`
+  module scoped to classification-only would be straightforward to add
+  when wanted, but hasn't been, to avoid shipping a half-finished module.
 - **No `Option<T>`/`Result<T>`** — a generic enum with methods fails to
   even pass signature collection (two distinct confirmed bugs). The
   natural implementation (an enum with `is_some()`/`unwrap_or()`) hits this

@@ -4220,8 +4220,18 @@ impl<'r> Analyzer<'r> {
         checked_left: CheckedExprNode,
         checked_right: CheckedExprNode,
     ) -> Option<CheckedExprNode> {
+        // `char` is comparable (it's `numeric_kind`-shaped underneath --
+        // one unsigned 4-byte scalar value, ordered by codepoint), but
+        // never arithmetic/bitwise: combining two `char`s that way can
+        // produce a codepoint that isn't a valid Unicode scalar value at
+        // all, and this language has no fallible/validating path for that
+        // yet (see `ResolvedType::Char`'s doc comment). So `char` is
+        // accepted here *only* for a comparison op -- everything else
+        // still requires genuine `numeric_kind`.
         for operand in [&checked_left, &checked_right] {
-            if operand.r#type.numeric_kind().is_none() {
+            let is_valid =
+                operand.r#type.numeric_kind().is_some() || (op.is_comparison() && operand.r#type == ResolvedType::Char);
+            if !is_valid {
                 self.errors.push(AnalysisError::new(
                     node_id,
                     span,
@@ -4291,6 +4301,7 @@ impl<'r> Analyzer<'r> {
             CheckedExpr::Number(NumberValue::Signed(n)) => Some(*n as i128),
             CheckedExpr::Number(NumberValue::Unsigned(n)) => Some(*n as i128),
             CheckedExpr::Bool(b) => Some(*b as i128),
+            CheckedExpr::Char(c) => Some(*c as i128),
             _ => None,
         }
     }
@@ -5509,7 +5520,7 @@ impl<'r> Analyzer<'r> {
     }
 
     /// The pattern-position sibling of `const_eval`: a literal constant
-    /// (a number, optionally negated, or a bool), checked against
+    /// (a number, optionally negated, a bool, or a char), checked against
     /// `expected` -- the scrutinee's own exact type drives interpretation,
     /// same reasoning as `const_eval`. Deliberately its own function rather
     /// than reusing `const_eval` outright: that function's fallback error
@@ -5524,6 +5535,17 @@ impl<'r> Analyzer<'r> {
                 HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number),
                 _ => {
                     self.errors.push(AnalysisError::new(expr.id, expr.span, AnalysisErrorKind::PatternValueNotConstant));
+                    None
+                }
+            },
+            HirExpr::Char(c) => match expected {
+                ResolvedType::Char => Some(ConstValue::Char(*c)),
+                _ => {
+                    self.errors.push(AnalysisError::new(
+                        expr.id,
+                        expr.span,
+                        AnalysisErrorKind::PatternTypeMismatch { expected: expected.clone(), found: ResolvedType::Char },
+                    ));
                     None
                 }
             },
@@ -5553,8 +5575,9 @@ impl<'r> Analyzer<'r> {
                 unreachable!("match patterns are never float-typed -- integer_domain excludes floats")
             }
             ConstValue::Bool(b) => *b as i128,
-            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
-                unreachable!("analyze_value_match only ever runs for an integer/bool scrutinee type")
+            ConstValue::Char(c) => *c as i128,
+            ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
+                unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
             }
         }
     }
@@ -5570,8 +5593,9 @@ impl<'r> Analyzer<'r> {
         let kind = match value {
             ConstValue::Number(n) => CheckedExpr::Number(n),
             ConstValue::Bool(b) => CheckedExpr::Bool(b),
-            ConstValue::Char(_) | ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
-                unreachable!("analyze_value_match only ever runs for an integer/bool scrutinee type")
+            ConstValue::Char(c) => CheckedExpr::Char(c),
+            ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
+                unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
             }
         };
         let constant = CheckedExprNode { id, span, r#type: scrutinee_type.clone(), kind };
@@ -5585,11 +5609,22 @@ impl<'r> Analyzer<'r> {
 
     /// A gap's inclusive `[lo, hi]` bounds, formatted for
     /// `NonExhaustiveMatchValue`'s diagnostic -- `bool`'s domain renders as
-    /// `true`/`false` rather than `0`/`1`, since that's how a `bool`
-    /// pattern is actually written.
+    /// `true`/`false` rather than `0`/`1`; `char`'s renders as an actual
+    /// quoted character for the ordinary printable ASCII range (covering
+    /// the common case -- letter/digit ranges like `'A'...'Z'`, exactly
+    /// how such a pattern is actually written), and falls back to a
+    /// `U+XXXX` codepoint label for everything else, rather than risk
+    /// printing an invisible, misleading, or malformed glyph into a
+    /// terminal (whitespace/control codes, non-ASCII, and the small
+    /// unassigned surrogate hole `integer_domain`'s doc comment mentions).
     fn describe_gap(scrutinee_type: &ResolvedType, lo: i128, hi: i128) -> String {
-        let render = |n: i128| {
-            if *scrutinee_type == ResolvedType::Bool { if n == 0 { "false".to_string() } else { "true".to_string() } } else { n.to_string() }
+        let render = |n: i128| match scrutinee_type {
+            ResolvedType::Bool => if n == 0 { "false".to_string() } else { "true".to_string() },
+            ResolvedType::Char => match char::from_u32(n as u32) {
+                Some(c) if c.is_ascii_graphic() || c == ' ' => format!("'{c}'"),
+                _ => format!("U+{n:04X}"),
+            },
+            _ => n.to_string(),
         };
         if lo == hi { render(lo) } else { format!("{}..={}", render(lo), render(hi)) }
     }
