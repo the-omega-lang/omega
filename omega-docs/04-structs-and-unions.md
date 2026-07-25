@@ -69,14 +69,7 @@ and the `sizeof<Type>` expression.
 
 ## Caveats
 
-- **A generic struct with a `self`-using method fails at its own
-  declaration** with a confusing `'Pair' expects 1 type argument(s), found
-  0` error, both locally and across `--extern`. No pre-existing example in
-  the repo exercised this shape before it was found (existing generic
-  structs had fields only). Likely a `Self`/self-type substitution bug in
-  generic-owner method-signature resolution. See
-  [generics](06-generics.md) for the full list of generic-related gaps.
-- **Generic type inference can't deduce `T` from a generic-struct-typed
-  argument** (`sum_pair<T>(p: Pair<T>)` called with a `Pair<i32>` fails to
-  infer `T`) — `unify_generic_type` has no case for a generic struct/enum
-  argument at all, only plain named/pointer/array/function shapes.
+None specific to structs/unions themselves — see
+[generics](06-generics.md) for the remaining generic-instantiation gaps
+(spec-to-spec generic forwarding, literal narrowing), neither of which is
+struct/union-specific.

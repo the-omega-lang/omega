@@ -153,7 +153,20 @@ what's imported.
 
 - **A spec's own generics can't be forwarded into a dependency's type
   args** (`spec Foo<T> : Bar<T>` — `T` reports unresolved; `spec Foo<T> :
-  Bar<i32>` is fine). Documented boundary, not an oversight.
+  Bar<i32>`, a concrete argument, is fine). Traced precisely: a
+  dependency's type args are resolved eagerly, at the depending spec's
+  own one-time, argument-free declaration pass — before `T` is ever bound
+  anywhere (unlike the spec's own *functions*, which correctly stay raw
+  until a concrete implementor's `Self` + generics are known via
+  `flatten_spec_into`). Making dependencies lazy the same way needs specs
+  to get their own args-independent cell identity (cached by `(module,
+  name)` alone, not `(module, name, type_args)`) — real, buildable
+  (mirrors the existing `generic_function_signature` precedent for "this
+  item kind doesn't fit the ordinary args-bound lookup"), but it touches
+  the shared module-resolver trait and every existing spec-reference call
+  site, so it's left as a scoped, understood, deferred gap rather than a
+  rushed change to resolution infrastructure every generic item kind
+  relies on. See [generics](06-generics.md) for the equivalent write-up.
 - **Spec implementation is struct/enum/union only** for ordinary specs — no
   primitives outside the dedicated `for`-attachment mechanism above.
 - **No `is_variadic` support** on spec functions.

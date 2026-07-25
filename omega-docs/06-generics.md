@@ -54,38 +54,60 @@ shows up). Bound-checking happens once, at instantiation, via
 type or a genuine caller mistake, since anything that already passed
 implements-clause resolution has a complete method list by construction.
 
+## Fixed: generic struct/enum methods, and `T`-deduction from them
+
+Two bugs that used to make "a generic struct/enum with methods" almost
+unusable are fixed:
+
+- A generic struct/enum/union method's synthetic `self` parameter is now
+  always typed `Self` (mirroring how spec functions already worked),
+  instead of the owner's own literal name. Previously, resolving that raw
+  name re-triggered an independent, zero-argument lookup of the owner
+  itself — which, for any *generic* owner, immediately failed arg-count
+  validation (`'Pair' expects 1 type argument(s), found 0`, reported at
+  the struct/enum's own declaration) for **any** method with a self
+  parameter, regardless of whether the body actually used `self`. A
+  generic struct/enum can have ordinary methods now, exactly like a
+  non-generic one.
+- `unify_generic_type` (the mechanism that deduces `T` from a call's
+  argument types with no explicit `<T>`) gained a case for a
+  generic-struct/enum/union-typed parameter (`p: Pair<T>`) — it unifies
+  positionally against the concrete argument's own `type_args`, the same
+  way a plain `*T`/`[T]` parameter's `T` already was. `sum_pair<T>(p:
+  Pair<T>)` called with a `Pair<i32>` now infers `T = i32` correctly.
+
+Net effect: a generic enum is no longer restricted to plain data (bare
+variants only) — see [core library](13-core-library.md), whose
+`Option<T>`-avoidance rationale predates this fix.
+
 ## Caveats — confirmed, unfixed gaps
 
-These were all discovered empirically (isolated minimal repros through a
-real `omgc` compile), not inferred from reading the source:
-
-- **A generic struct with a `self`-using method fails at its own
-  declaration**, both locally and cross-`--extern`, with a confusing
-  `'Pair' expects 1 type argument(s), found 0` pointed at the struct's own
-  declaration — not the caller. A non-generic struct with an identical
-  method works fine.
-- **Generic type inference can't deduce `T` from a generic-struct- or
-  generic-enum-typed argument.** `sum_pair<T>(p: Pair<T>)` called with a
-  `Pair<i32>` fails `cannot infer type parameter 'T'` —
-  `unify_generic_type` has no case for `ResolvedType::Struct`/`Enum` at
-  all, only `Named`/`Pointer(Array)`/`Pointer`/`Array`/`SizedArray`/
-  `Function`. Workaround: pass the field(s) directly instead of the whole
-  generic value.
-- **Any method at all on a generic enum fails signature collection**
-  (`enum MyOpt<T> { None, Some { value: T; }; tag_value(*self) => i32 {
-  ... } }` errors at the enum's own declaration, before the body is even
-  reached) — worse than the struct case, since it doesn't even require
-  using `T`/`Self`/matching in the method body. Net effect: **a generic
-  enum can only ever be plain data** in this compiler today (bare
-  variants, no methods, and it can't be deduced as a still-unresolved-`T`
-  function argument either). This is the direct reason `omega-core` has no
-  `Option<T>`/`Result<T>` — see [core library](13-core-library.md) for the
-  `(bool, out: *mut T)` pattern used in its place.
 - **A generic spec's own generics can't be forwarded into a dependency's
   type args** — `spec Foo<T> : Bar<T>` is out of scope (`T` reports as an
   unrecognized name inside the dependency list); `spec Foo<T> : Bar<i32>`
-  (a concrete argument) works fine. A documented boundary, not an
-  oversight — see [specs](08-specs.md).
+  (a concrete argument) works fine. Traced precisely: a dependency's own
+  type args are resolved *eagerly*, at the depending spec's own one-time,
+  argument-free declaration pass, where `T` was never bound in the first
+  place — unlike a spec's own *functions*, which correctly stay raw/
+  unresolved until a concrete implementor's `Self` + generics are known.
+  The reason it can't simply be made lazy the same way: resolving *which
+  spec* a dependency even refers to currently goes through the same
+  shared machinery that resolves its args (`Context::resolve_type`'s
+  `Type::Generic` handling always resolves a generic reference's args as
+  a precondition of resolving the item at all, for every item kind
+  alike), and codegen's vtable-slot-ordering pass needs that dependency
+  spec identified *eagerly* (it has no resolver of its own to defer to).
+  A sound fix exists — give specs their own args-independent cell lookup,
+  cached by `(module, name)` alone rather than `(module, name, type_args)`,
+  mirroring the existing precedent `ModuleResolver::
+  generic_function_signature` already sets for "this item kind doesn't
+  fit the ordinary args-bound lookup contract" — but it touches the
+  shared `ModuleResolver` trait and every existing spec-reference call
+  site (bounds, implements clauses, `spec *T` object types), a
+  meaningfully larger and riskier change than the two fixes above for a
+  narrower, already-documented-as-deliberate limitation. Left as a
+  precisely scoped, deferred gap rather than rushed — see
+  [specs](08-specs.md).
 - **Untyped literals don't reliably narrow across integer widths** outside
   a function's own tail-return position against its declared return type.
   `omega-core/core/numerics.omg`'s twelve macro-generated type
@@ -95,8 +117,18 @@ real `omgc` compile), not inferred from reading the source:
   since the literal `0` defaults to `i32` regardless of the comparison's
   other operand. Declaration-site initializers (`mut i : u32 = 0;`) narrow
   correctly; it's *later*, separate uses of the same bare literal against a
-  non-`i32` context that don't.
+  non-`i32` context that don't. **This is a separate subsystem from the
+  generics fixes above, not a generics bug itself** — it reproduces with
+  zero generics involved (`mut i: u32 = 0; i = i + 1;` fails identically);
+  it only reads as a generics problem because `Self`-typed generic code is
+  where it's most visible. The fix direction is understood (thread an
+  `expected` type between `analyze_binary_op`'s two operands based on
+  whichever side resolves first, mirroring how assignment/`if`-branches
+  already do this) but wasn't bundled into this pass, since it's a
+  materially different piece of work touching the analyzer's single
+  highest-traffic expression path.
 - **Spec implementation is struct/enum/union only** — no primitives, matching
   the existing per-type `functions` list precedent (though see
   [specs](08-specs.md)'s `spec ... for Target` mechanism, which sidesteps
-  this restriction entirely for a different, narrower purpose).
+  this restriction entirely for a different, narrower purpose). This is a
+  deliberate design boundary, not a bug.

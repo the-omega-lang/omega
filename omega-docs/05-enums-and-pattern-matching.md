@@ -155,13 +155,6 @@ no arithmetic, so unlike an integer range there's no sensible notion of
 
 ## Caveats
 
-- **Generic enums with methods are fundamentally broken** — even a method
-  with no generics or matching involved at all fails signature collection
-  with a confusing `'MyOpt' expects 1 type argument(s), found 0` pointed at
-  the enum's own declaration. A non-generic enum with an identical method
-  works fine. This is why `omega-core` has no `Option<T>`/`Result<T>` —
-  see [generics](06-generics.md) and [core library](13-core-library.md) for
-  the `(bool, out: *mut T)` pattern used instead.
 - **`match` scrutinee unification is not part of literal-inference** — an
   arm-body's own type isn't coerced against a match's other arms the way
   `if`-branches are; this was deliberately excluded from the literal-

@@ -18,11 +18,11 @@ use std::collections::HashMap;
 /// argument-type-matching loop, once the concrete instantiated signature
 /// actually exists.
 ///
-/// Recurses through `Pointer`/`Array`/`SizedArray`/`Function` to find a
-/// generic parameter nested inside a compound shape (e.g. a parameter
-/// declared `item: *T`), including the same `*[T]` -> `Slice` special case
-/// `Context::resolve_type` applies when *resolving* (rather than unifying)
-/// a type.
+/// Recurses through `Pointer`/`Array`/`SizedArray`/`Function`/`Generic` to
+/// find a generic parameter nested inside a compound shape (e.g. a
+/// parameter declared `item: *T`, or `item: Pair<T>`), including the same
+/// `*[T]` -> `Slice` special case `Context::resolve_type` applies when
+/// *resolving* (rather than unifying) a type.
 pub fn unify_generic_type(
     generics: &[Ident],
     raw: &Type,
@@ -55,7 +55,43 @@ pub fn unify_generic_type(
             }
             unify_generic_type(generics, &f.return_type, &c.return_type, subst);
         }
+        // `Pair<T>` (a parameter typed as a still-generic struct/enum/union)
+        // against `Pair<i32>` (the call's own already-resolved argument) --
+        // zips `raw`'s own written arguments positionally against the
+        // concrete owner's own `type_args` (populated positionally against
+        // the declaration's generic parameter list when that cell was
+        // built, see `ResolvedStructType`/`ResolvedEnumType`/
+        // `ResolvedUnionType::type_args`) and recurses into each pair, the
+        // same way a nested `Pointer`/`Array` shape already does. No check
+        // that `raw`'s own path name actually names the same owner as
+        // `concrete` -- matches this function's own "duck typed, best-effort,
+        // any real mismatch is caught afterward by the ordinary argument
+        // check" contract (see this function's doc comment): a wrong guess
+        // here can never be silently accepted, only ever left unbound or
+        // corrected by that later check.
+        (Type::Generic(_, raw_args), _) => {
+            if let Some(concrete_args) = owner_type_args(concrete) {
+                for (r, c) in raw_args.iter().zip(&concrete_args) {
+                    unify_generic_type(generics, r, c, subst);
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+/// `concrete`'s own generic type arguments, if it's a struct/enum/union
+/// instantiation -- `None` for anything else (including a non-generic
+/// struct/enum/union, whose `type_args` is simply empty, and every other
+/// `ResolvedType` shape, which has no such field at all). The one piece of
+/// data `unify_generic_type`'s `Type::Generic` arm needs to recurse into a
+/// generic owner's own arguments.
+fn owner_type_args(concrete: &ResolvedType) -> Option<Vec<ResolvedType>> {
+    match concrete {
+        ResolvedType::Struct(cell) => Some(cell.borrow().type_args.clone()),
+        ResolvedType::Enum { cell, .. } => Some(cell.borrow().type_args.clone()),
+        ResolvedType::Union(cell) => Some(cell.borrow().type_args.clone()),
+        _ => None,
     }
 }
 

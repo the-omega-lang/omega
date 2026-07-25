@@ -43,7 +43,7 @@ impl Lowerer {
                 HirItem::ExternDeclaration(self.lower_extern_declaration(decl, node.span))
             }
             Item::FunctionDefinition(f) => {
-                HirItem::FunctionDefinition(self.lower_function_def(f, node.span, None))
+                HirItem::FunctionDefinition(self.lower_function_def(f, node.span, false))
             }
             Item::Struct(s) => HirItem::Struct(self.lower_struct_def(s, node.span)),
             Item::Enum(e) => HirItem::Enum(self.lower_enum_def(e, node.span)),
@@ -168,11 +168,11 @@ impl Lowerer {
         HirBlock { stmts, tail }
     }
 
-    /// `enclosing_struct` is `Some` when lowering a struct method, in which
-    /// case a member function's synthetic `self: *StructName` parameter is
-    /// inserted here -- this needs no type information (just the flag and the
-    /// struct's name), so it belongs in lowering rather than semantic
-    /// analysis, which used to do this ad hoc.
+    /// `is_member` is `true` when lowering a struct/union/enum method, in
+    /// which case a member function's synthetic `self: *Self` parameter is
+    /// inserted here -- this needs no type information beyond the flag, so
+    /// it belongs in lowering rather than semantic analysis, which used to
+    /// do this ad hoc.
     ///
     /// Note: struct methods have no per-function span in the parser's AST
     /// (only the enclosing `ItemNode`/`StatementNode` did, and
@@ -183,12 +183,10 @@ impl Lowerer {
         &mut self,
         f: &FunctionDefinitionStmt,
         span: Span,
-        enclosing_struct: Option<&Ident>,
+        is_member: bool,
     ) -> HirFunctionDef {
         let mut params = Vec::with_capacity(f.params.len() + 1);
-        if let Some(struct_ident) = enclosing_struct
-            && let Some(p) = self.self_param(f.self_mode, struct_ident, span)
-        {
+        if is_member && let Some(p) = self.self_param(f.self_mode, span) {
             params.push(p);
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
@@ -212,24 +210,36 @@ impl Lowerer {
         }
     }
 
-    /// The synthetic `self` parameter every member function gets, shared
-    /// between ordinary struct/enum/union methods (`type_name` = the owning
-    /// type's own name) and spec functions (`type_name` = the literal
-    /// identifier `Self`, resolved later like any other in-scope type name
-    /// -- see `omega_analyzer::analysis::Analyzer`'s `Self` seeding). `None`
-    /// for a non-member function, so callers can push the result
+    /// The synthetic `self` parameter every member function gets -- struct/
+    /// union/enum methods and spec functions alike, always typed
+    /// `Type::Named("Self")` (never the owning type's own literal name).
+    /// `None` for a non-member function, so callers can push the result
     /// unconditionally via `if let Some(p) = ...`. The built type depends on
-    /// `self_mode`: `Type::Pointer(Named(type_name), mutable)` for
-    /// `Pointer`/`MutPointer`, or plain `Type::Named(type_name)` for
+    /// `self_mode`: `Type::Pointer(Named("Self"), mutable)` for
+    /// `Pointer`/`MutPointer`, or plain `Type::Named("Self")` for
     /// `Value`/`MutValue` -- `MutValue`'s local mutability is *not*
     /// represented here at all, since parameters can never be mutable
     /// bindings; see `self_shadow_stmt`.
-    fn self_param(&mut self, self_mode: Option<SelfMode>, type_name: &Ident, span: Span) -> Option<HirParam> {
+    ///
+    /// This is deliberately never the owner's own bare name: `Self` is what
+    /// every struct/union/enum/spec method's own analysis substitution
+    /// already binds to the concrete owner type (see
+    /// `omega_analyzer::analysis::Analyzer`'s `Self` seeding, mirrored at
+    /// both `Driver::compute_item` and `Driver::check_item_body`), so
+    /// resolving through it needs no further lookup and, critically, never
+    /// re-triggers an independent by-name lookup of the owner -- which,
+    /// for a *generic* owner, would need its own type arguments supplied
+    /// and previously produced a bogus `'Pair' expects 1 type argument(s),
+    /// found 0` error for any generic struct/enum with a self-taking
+    /// method (a signature-time bug, independent of whether the body
+    /// itself references `self`).
+    fn self_param(&mut self, self_mode: Option<SelfMode>, span: Span) -> Option<HirParam> {
         let mode = self_mode?;
+        let self_type = Ident("Self".to_string());
         let r#type = if mode.is_pointer() {
-            Type::Pointer(Box::new(Type::Named(type_name.clone().into())), mode.is_mutable())
+            Type::Pointer(Box::new(Type::Named(self_type.into())), mode.is_mutable())
         } else {
-            Type::Named(type_name.clone().into())
+            Type::Named(self_type.into())
         };
         Some(HirParam { id: self.ids.next(), span, ident: Ident("self".to_string()), r#type, visibility: Visibility::default() })
     }
@@ -305,14 +315,9 @@ impl Lowerer {
         HirSpecDef { id, span, visibility: sp.visibility, name: sp.ident.clone(), generics, dependencies, functions, target }
     }
 
-    /// `Self` is the type-name lowering hands to `self_param` here --
-    /// meaningless until a concrete implementor is known, resolved the same
-    /// way as any other in-scope type name (see `HirSpecDef`'s doc
-    /// comment).
     fn lower_spec_function(&mut self, f: &SpecFunctionStmt, span: Span) -> HirSpecFunction {
-        let self_type_name = Ident("Self".to_string());
         let mut params = Vec::with_capacity(f.params.len() + 1);
-        if let Some(p) = self.self_param(f.self_mode, &self_type_name, span) {
+        if let Some(p) = self.self_param(f.self_mode, span) {
             params.push(p);
         }
         params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
@@ -351,7 +356,7 @@ impl Lowerer {
         let functions = s
             .functions
             .iter()
-            .map(|f| self.lower_function_def(f, span, Some(&s.ident)))
+            .map(|f| self.lower_function_def(f, span, true))
             .collect();
 
         HirStructDef {
@@ -368,14 +373,14 @@ impl Lowerer {
     }
 
     /// Same treatment as `lower_struct_def` -- member functions get their
-    /// synthetic `self: *UnionName` inserted by `lower_function_def`.
+    /// synthetic `self: *Self` inserted by `lower_function_def`.
     fn lower_union_def(&mut self, u: &UnionStmt, span: Span) -> HirUnionDef {
         let id = self.ids.next();
         let fields = u.fields.iter().map(|f| self.lower_param(f, span)).collect();
         let functions = u
             .functions
             .iter()
-            .map(|f| self.lower_function_def(f, span, Some(&u.ident)))
+            .map(|f| self.lower_function_def(f, span, true))
             .collect();
 
         HirUnionDef {
@@ -392,7 +397,7 @@ impl Lowerer {
     }
 
     /// Same treatment as `lower_struct_def` -- member functions get their
-    /// synthetic `self: *EnumName` inserted by `lower_function_def`, exactly
+    /// synthetic `self: *Self` inserted by `lower_function_def`, exactly
     /// like a struct's. Header entries keep their own real spans (the parser
     /// records them -- position-sensitive `tag` rules deserve precise
     /// errors); variant body fields and the shared dynamic fields (no
@@ -427,7 +432,7 @@ impl Lowerer {
         let functions = e
             .functions
             .iter()
-            .map(|f| self.lower_function_def(f, span, Some(&e.ident)))
+            .map(|f| self.lower_function_def(f, span, true))
             .collect();
 
         HirEnumDef {

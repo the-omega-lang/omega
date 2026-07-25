@@ -68,11 +68,12 @@ side's TU" model (see [specs](08-specs.md) and
   deliberately no skip table, which would need working memory proportional
   to the needle — this layer never does hidden allocation).
 
-## Why no `char` module, no `Option<T>`/`Result<T>`
+## Why no `char` module, no `Option<T>`/`Result<T>` (yet)
 
-Both cuts are direct consequences of confirmed language gaps, not missing
-effort — see [generics](06-generics.md) and
-[control flow](03-control-flow.md):
+Both cuts trace back to confirmed language gaps, not missing effort — see
+[generics](06-generics.md) and [control flow](03-control-flow.md). The
+`Option<T>` blockers are now fixed; it's absent by scope choice, not by
+compiler limitation, as of this writing:
 
 - **No `core::chars`** — `char` gained comparison and `match`/range
   support (see [primitives](01-primitives.md)), so ASCII
@@ -82,14 +83,16 @@ effort — see [generics](06-generics.md) and
   to compute a different codepoint) remains blocked — a `core::chars`
   module scoped to classification-only would be straightforward to add
   when wanted, but hasn't been, to avoid shipping a half-finished module.
-- **No `Option<T>`/`Result<T>`** — a generic enum with methods fails to
-  even pass signature collection (two distinct confirmed bugs). The
-  natural implementation (an enum with `is_some()`/`unwrap_or()`) hits this
-  immediately, so `core::slices`' `(bool, out: *mut T)` pattern is used
-  everywhere a "might not have a value" API is needed instead — arguably
-  more embedded-idiomatic anyway (no hidden tag-copy, closer to a C/Zig
-  fallible-call convention than a coincidence). Revisit `Option<T>` once
-  the generic-enum-methods bug is fixed.
+- **No `Option<T>`/`Result<T>`** — historically because a generic enum
+  with methods failed to even pass signature collection, and `T` couldn't
+  be deduced from a generic-enum-typed argument either (two distinct
+  confirmed bugs). **Both are now fixed** (see [generics](06-generics.md))
+  — a generic enum with `is_some()`/`unwrap_or()`-style methods is viable
+  today. `core::slices`' `(bool, out: *mut T)` pattern is still used here
+  (arguably more embedded-idiomatic anyway — no hidden tag-copy, closer to
+  a C/Zig fallible-call convention than a coincidence), and `core` itself
+  hasn't been changed to add `Option<T>` — that's a separate scope
+  decision, not implied by fixing the underlying compiler bugs.
 - **No `contains`/generic-bound methods on `core::slices`** — a spec's own
   generics don't support *per-function* bounds (`SliceImpl<T: Eq>` would
   gate the whole spec, including `is_empty`/`get`, behind `Eq` too, wrongly).

@@ -265,9 +265,23 @@ enum MyEnumWithExplicitTagAndHeader(tag: u32, exposed description: *str) {
 
 # Generic enums instantiate exactly like generic structs; expression paths
 # take explicit arguments here (`Optional<u32>::Some { ... }`).
+#
+# `is_some` demonstrates a method on a generic enum -- `match self { ... }`
+# works exactly like it does for a non-generic enum, since `T` is already a
+# concrete, fully resolved type by the time this method's own body is
+# checked (one independent instantiation per concrete `T` actually used,
+# same as everywhere else in this language's generics).
 enum Optional<T> {
     None,
     Some { exposed value: T; };
+
+    exposed is_some(*self) => bool {
+        match self {
+            Optional::None => { false }
+        } else {
+            true
+        }
+    }
 }
 
 # Everything at once, plus functions after the `;` ending the variant list
@@ -661,6 +675,8 @@ main(argc : i32, argv : [*u8]) => i32 {
     gp.b = 4;
     printf(<*u8>b"generic pair sum: %d\n\0", sum_generic(gp.a, gp.b));
     printf(<*u8>b"generic sum (f64): %f\n\0", sum_generic(1.5, 2.5));
+    printf(<*u8>b"generic pair method sum: %d\n\0", gp.sum());
+    printf(<*u8>b"generic pair T-deduced sum: %d\n\0", sum_pair(gp));
 
     mut gn : GenericNode<i32>;
     gn.value = 7;
@@ -804,6 +820,11 @@ main(argc : i32, argv : [*u8]) => i32 {
     opt := Optional<u32>::Some { value = 42u32; };
     none := Optional<u32>::None;
     printf(<*u8>b"enum generic: some(tag=%d value=%u) none(tag=%d)\n\0", opt.tag, opt.value, none.tag);
+    printf(<*u8>b"enum generic method: opt.is_some()=%d none.is_some()=%d\n\0", opt.is_some(), none.is_some());
+    printf(
+        <*u8>b"enum generic T-deduced: describe_some(&opt)=%d describe_some(&none)=%d\n\0",
+        describe_some(&opt), describe_some(&none)
+    );
 
     cool := MyCoolEnum::Second { number = 123u64; decimal = 2.5; };
     printf(<*u8>b"enum cool: tag=%d number=%llu decimal=%f\n\0", cool.tag, cool.number, cool.decimal);
@@ -1090,9 +1111,16 @@ main(argc : i32, argv : [*u8]) => i32 {
 # each instantiation site (`GenericPair<i32>` above), and only then
 # type-checked, exactly as if `GenericPair` had been written by hand for
 # that one concrete type.
+#
+# `sum` demonstrates a method on a generic struct: `*self` resolves to
+# `Self`, which every method's own analysis substitution already binds to
+# the concrete owner (`GenericPair<i32>` here) -- no independent lookup of
+# `GenericPair` itself is ever needed to type `self`.
 struct GenericPair<T> {
     exposed a: T;
     exposed b: T;
+
+    exposed sum(*self) => T { self.a + self.b }
 }
 
 # A duck-typed generic function: `T` is never written at the call site --
@@ -1102,6 +1130,16 @@ struct GenericPair<T> {
 sum_generic<T>(a: T, b: T) => T {
     a + b
 }
+
+# `T` deduced from a *generic-struct-typed* argument (`gp: GenericPair<i32>`
+# below) -- unifies `p`'s declared `GenericPair<T>` against the call's own
+# already-resolved `GenericPair<i32>`, positionally against the owner's own
+# `type_args`, the same way a plain `*T`/`[T]` parameter's `T` already was.
+sum_pair<T>(p: GenericPair<T>) => T { p.a + p.b }
+
+# Same deduction, from a generic-*enum*-typed argument this time
+# (`*Optional<T>`, called with `&opt`/`&none` below).
+describe_some<T>(o: *Optional<T>) => bool { o.is_some() }
 
 # A self-referential generic struct: `next` points back to `GenericNode<T>`
 # itself (for whatever `T` this instantiation was substituted with), the
