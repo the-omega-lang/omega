@@ -1,0 +1,126 @@
+# Strings, casting & slices
+
+## `*str` vs. `*[u8]` vs. `*u8`
+
+```
+s : *str = "hello, world!";
+bytes : *[u8] = &[1, 2, 3];
+c_string : *u8 = <*u8>b"hello\0";
+```
+
+Three genuinely different types that overlap in purpose:
+
+- **`*str`** — a real, nominal, no-null-terminator UTF-8 string type. At
+  runtime it's the identical fat-pointer shape `*[u8]` has (`[data ptr, i32
+  length]`), but there is **zero implicit coercion** to or from
+  `Slice`/`Pointer` in either direction — confirmed deliberately, with no
+  hidden exception even for literal storage. String literals (`"..."`)
+  resolve to `*str`, not `*u8` — a real change from the language's earlier
+  design, where they resolved to `Pointer{U8}`.
+- **`*[u8]`** — an ordinary byte slice, fat pointer, same runtime shape.
+- **`*u8`** — a single thin pointer, no length at all. What C string
+  functions (`puts`, `printf`'s format string) actually expect.
+
+`str` alone (unwrapped) is never a resolvable type by itself — `*str`/`*mut
+str` are resolved via a **raw-syntax peek** (`Type::Named("str")` checked
+*before* recursing into ordinary pointee resolution), not the
+resolved-*shape*-driven pattern `*[T]`→`Slice` uses. This asymmetry is a
+real, load-bearing implementation detail: a `Self`-substituted `str` target
+(inside a `for str` spec extension) needed its own explicit fix once this
+distinction mattered for something other than a literal syntactic pointer.
+
+## Casting: `<Type>expr`
+
+```
+<i64>some_i32
+<*u8>some_str            # DropLength: keep the data pointer, drop the length
+<*str>some_byte_slice     # Reinterpret: both sides already [ptr, len]
+```
+
+Prefix-position, unambiguous (a bare `<` never starts a primary expression
+otherwise). Scoped to **numeric types and pointers**. A pointer counts as
+an unsigned 64-bit integer for casting purposes — literally true at the
+Cranelift IR level (same-width pointers and integers are one Cranelift
+type), which is what makes pointer↔pointer and pointer↔integer casts fall
+out of the same width/signedness rules with zero special-casing.
+
+- Extend/int-to-float signedness comes from the **source**'s signedness
+  (matches Rust's `as`: `-1i8 as u32 == u32::MAX`).
+- Float-to-int signedness comes from the **target**'s, and is the
+  **saturating** variant (not trapping).
+- A pointer cast to a `mut` target requires a `mut` source — the same
+  directional rule ordinary pointer coercion already enforces.
+
+Fat-pointer casting (`*str`/`*[u8]`) is genuinely separate machinery from
+the scalar cast-kind resolution above (`Slice`/`Str` always return `None`
+from the scalar path): fat→fat is `Reinterpret` (leaves already agree),
+fat→thin (`*u8`/`*i8`) is `DropLength` (keep the data leaf, drop the length
+leaf). There is no reverse (thin→fat) cast — fabricating a length from a
+bare pointer isn't something a cast can do.
+
+**Printing a `*str` through C's `printf` soundly** needs `%.*s`, not a bare
+`%s` + cast: `printf("%.*s\n", s.length, <*u8>s)` — length consumed first,
+matching C's own `%.*s` convention. A bare `%s` on a non-null-terminated
+`*str` would read until a stray zero byte.
+
+## Byte strings
+
+```
+b"raw bytes, not null-terminated"
+```
+
+`b"..."` is `*[u8]` (a slice with a compile-time-known length), never
+`*u8`, and never null-terminated — most C-interop call sites need an
+explicit trailing `\0` plus a `<*u8>` cast (`<*u8>b"hello\0"`), which is
+the overwhelmingly common idiom throughout example code interfacing with
+`puts`/`printf`.
+
+## Compile-time slices and fixed arrays
+
+```
+&["a", "b", "c"]              # ConstValue::Slice — pointer indirection, rodata blob
+[1, 2, 3]                       # (against a SizedArray-typed position) — inline, no indirection
+```
+
+`&[...]` is the **only** recognized spelling for a compile-time slice,
+everywhere, including inside an enum header field — a bare `[...]` there is
+never treated as one (an earlier draft allowed a bare `[...]` specifically
+in header position, mirroring how a bare string literal is accepted there;
+the user explicitly rejected that as confusable with an ordinary array and
+asked for uniform `&[...]`). A bare `[...]` in *ordinary* expression
+position still means a stack-allocated `[T; N]` — a different, pre-existing
+meaning; `const_eval` tells the two apart by the position's own *expected*
+type shape, not by the literal's own syntax.
+
+The difference is real, not just notational: `&[...]` builds a separate,
+recursively-constructed static data blob with a pointer relocation into it
+(the same relocation mechanism weak-linked data symbols use — see
+[modules & linkage](10-modules-and-linkage.md)); a bare `[...; N]` array's
+elements live **inline**, with zero indirection, directly in whatever
+struct/enum storage contains them.
+
+## Caveats
+
+- **`*str` is not actually guaranteed valid UTF-8.** The cast family
+  treats `Str` and `Slice{U8|I8}` as fully interchangeable in *both*
+  directions with no validation — `<*str>some_arbitrary_byte_slice`
+  compiles today and freely relabels arbitrary bytes as `*str`, including
+  invalid UTF-8. This is a known, explicitly deferred inconsistency (the
+  original design intent was an *asymmetric* rule — `*str → *[u8]` free,
+  `*[u8] → *str` fallible, mirroring Rust's `str::from_utf8` — but the
+  shipped implementation is symmetric). Deliberately deferred by the user
+  ("after I implement core, we'll handle that") pending a real
+  UTF-8-validating conversion function in `core`; string *literals*
+  themselves are still always valid UTF-8 by construction (parsed from a
+  UTF-8 source file).
+- `const_eval` (compile-time constant evaluation, used for enum header
+  fields) does not support casts at all — any header field that would have
+  needed a cast (e.g. `*u8` text with a `\0`) had to migrate to `*str`
+  instead, since there was no alternative. Body/dynamic fields, struct
+  fields, and ordinary expressions have no such restriction.
+- `&[...]`/bare-array compile-time construction is deliberately **not
+  deduplicated** across occurrences the way string/byte-string data is —
+  `ConstValue` isn't cheaply hashable (nests, and floats have no total
+  order), and each occurrence is a one-shot construction site, not
+  plausibly repeated the way string literals are. A documented
+  simplification, not an oversight.
