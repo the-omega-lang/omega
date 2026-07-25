@@ -541,6 +541,14 @@ struct MyVisibilityTest {
     }
 }
 
+receives_any_optional<T>(abc: Optional<T>) => void {
+    match abc {
+        Optional::None => { puts(<*u8>b"IS None!!!\0"); }
+    } else {
+        puts(<*u8>b"IS Some(T)!!!\0");
+    }
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mut mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -1141,6 +1149,9 @@ main(argc : i32, argv : [*u8]) => i32 {
     ###
     my_vis_test := MyVisibilityTest::new();
     printf(<*u8>b"accessing internal field: %s\n\0", <*u8>my_vis_test.text);
+
+    mut my_optional := Optional<i32>::Some{ value = 10; };
+    receives_any_optional(my_optional);
 
     return 69;
 }
