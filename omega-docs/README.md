@@ -40,26 +40,28 @@ flat, cross-referenced index of every one of them for a quick scan.
 
 New to the codebase — read roughly in this order:
 
-1. [Primitives & representation](01-primitives.md) — the type set, IR
+1. [Functions](00-functions.md) — declaration grammar, overloading,
+   generics, why variadics are C-interop-only.
+2. [Primitives & representation](01-primitives.md) — the type set, IR
    leaves, fat pointers.
-2. [Variables & mutability](02-variables-and-mutability.md)
-3. [Control flow](03-control-flow.md) — `if`/`while`/`for`, no `&&`/`||`.
-4. [Structs & unions](04-structs-and-unions.md)
-5. [Enums & pattern matching](05-enums-and-pattern-matching.md) — header/
+3. [Variables & mutability](02-variables-and-mutability.md)
+4. [Control flow](03-control-flow.md) — `if`/`while`/`for`, no `&&`/`||`.
+5. [Structs & unions](04-structs-and-unions.md)
+6. [Enums & pattern matching](05-enums-and-pattern-matching.md) — header/
    dynamic/body fields, `match`, ranges, refinement.
-6. [Generics](06-generics.md) — the monomorphization model and its
+7. [Generics](06-generics.md) — the monomorphization model and its
    confirmed gaps.
-7. [Visibility](07-visibility.md) — `exposed`/`internal`/private/`hidden`.
-8. [Specs](08-specs.md) — interfaces, static + dynamic dispatch,
+8. [Visibility](07-visibility.md) — `exposed`/`internal`/private/`hidden`.
+9. [Specs](08-specs.md) — interfaces, static + dynamic dispatch,
    primitive extension.
-9. [Annotations](09-annotations.md) — `@layout`, `@inline`, `@mangling`,
-   `@suppress`, `sizeof<Type>`.
-10. [Modules, resolution & linkage](10-modules-and-linkage.md) — imports,
+10. [Annotations](09-annotations.md) — `@layout`, `@inline`, `@mangling`,
+    `@suppress`, `sizeof<Type>`.
+11. [Modules, resolution & linkage](10-modules-and-linkage.md) — imports,
     `--extern`, mangling, weak-linkage symbol sharing.
-11. [Strings, casting & slices](11-strings-casting-and-slices.md)
-12. [Macros](12-macros.md)
-13. [The core library](13-core-library.md)
-14. [Known issues tracker](14-known-issues.md)
+12. [Strings, casting & slices](11-strings-casting-and-slices.md)
+13. [Macros](12-macros.md)
+14. [The core library](13-core-library.md)
+15. [Known issues tracker](14-known-issues.md)
 
 ## What this is not
 
