@@ -80,55 +80,43 @@ Net effect: a generic enum is no longer restricted to plain data (bare
 variants only) — see [core library](13-core-library.md), whose
 `Option<T>`-avoidance rationale predates this fix.
 
+## Fixed: a generic spec forwarding its own generics into a dependency
+
+```
+exposed spec Container<T> { get(*self) => T; }
+exposed spec Labeled<T> : Container<T> { describe(*self) => T { self.get() } }
+```
+
+`spec Foo<T> : Bar<T>` (a generic spec's own still-abstract `T` forwarded
+into a dependency's type arguments) now works — previously `T` reported as
+an unrecognized name inside the dependency list, while `spec Foo<T> :
+Bar<i32>` (a concrete argument) already worked. Root cause: a dependency's
+type args used to be resolved *eagerly*, during the depending spec's own
+one-time, argument-free declaration pass, before `T` was ever bound
+anywhere — unlike a spec's own *functions*, which always correctly stayed
+raw/unresolved until a concrete implementor's `Self` + generics are known.
+
+The fix gives specs their own args-independent identity
+(`ModuleResolver::spec_declaration`, cached by `(module, name)` alone,
+mirroring the existing `generic_function_signature` precedent for "this
+item kind doesn't fit the ordinary args-bound lookup contract") — a
+spec's dependency *cell* is now resolved through this args-independent
+path, while its *type args* stay raw and are resolved lazily, alongside
+`Self`, once a concrete implementor is actually being checked. Ordinary
+spec references (bounds, implements clauses, `spec *T` object types) are
+completely unaffected — this only changes how a spec's own declared
+dependency list resolves.
+
 ## Caveats — confirmed, unfixed gaps
 
-- **A generic spec's own generics can't be forwarded into a dependency's
-  type args** — `spec Foo<T> : Bar<T>` is out of scope (`T` reports as an
-  unrecognized name inside the dependency list); `spec Foo<T> : Bar<i32>`
-  (a concrete argument) works fine. Traced precisely: a dependency's own
-  type args are resolved *eagerly*, at the depending spec's own one-time,
-  argument-free declaration pass, where `T` was never bound in the first
-  place — unlike a spec's own *functions*, which correctly stay raw/
-  unresolved until a concrete implementor's `Self` + generics are known.
-  The reason it can't simply be made lazy the same way: resolving *which
-  spec* a dependency even refers to currently goes through the same
-  shared machinery that resolves its args (`Context::resolve_type`'s
-  `Type::Generic` handling always resolves a generic reference's args as
-  a precondition of resolving the item at all, for every item kind
-  alike), and codegen's vtable-slot-ordering pass needs that dependency
-  spec identified *eagerly* (it has no resolver of its own to defer to).
-  A sound fix exists — give specs their own args-independent cell lookup,
-  cached by `(module, name)` alone rather than `(module, name, type_args)`,
-  mirroring the existing precedent `ModuleResolver::
-  generic_function_signature` already sets for "this item kind doesn't
-  fit the ordinary args-bound lookup contract" — but it touches the
-  shared `ModuleResolver` trait and every existing spec-reference call
-  site (bounds, implements clauses, `spec *T` object types), a
-  meaningfully larger and riskier change than the two fixes above for a
-  narrower, already-documented-as-deliberate limitation. Left as a
-  precisely scoped, deferred gap rather than rushed — see
-  [specs](08-specs.md).
-- **Untyped literals don't reliably narrow across integer widths** outside
-  a function's own tail-return position against its declared return type.
-  `omega-core/core/numerics.omg`'s twelve macro-generated type
-  instantiations all explicitly cast every bare literal compared or
-  combined with `*self` (`<Self>0`, not `0`) for exactly this reason —
-  `*self < 0` genuinely fails to type-check for `Self = i64` otherwise,
-  since the literal `0` defaults to `i32` regardless of the comparison's
-  other operand. Declaration-site initializers (`mut i : u32 = 0;`) narrow
-  correctly; it's *later*, separate uses of the same bare literal against a
-  non-`i32` context that don't. **This is a separate subsystem from the
-  generics fixes above, not a generics bug itself** — it reproduces with
-  zero generics involved (`mut i: u32 = 0; i = i + 1;` fails identically);
-  it only reads as a generics problem because `Self`-typed generic code is
-  where it's most visible. The fix direction is understood (thread an
-  `expected` type between `analyze_binary_op`'s two operands based on
-  whichever side resolves first, mirroring how assignment/`if`-branches
-  already do this) but wasn't bundled into this pass, since it's a
-  materially different piece of work touching the analyzer's single
-  highest-traffic expression path.
 - **Spec implementation is struct/enum/union only** — no primitives, matching
   the existing per-type `functions` list precedent (though see
   [specs](08-specs.md)'s `spec ... for Target` mechanism, which sidesteps
   this restriction entirely for a different, narrower purpose). This is a
   deliberate design boundary, not a bug.
+
+See also [control flow](03-control-flow.md) for untyped-literal narrowing
+across integer widths, now fixed for binary-op operands — that gap was
+never actually generics-specific (it reproduces with no generics involved
+at all), it just read that way because `Self`-typed generic code was where
+it was most visible.

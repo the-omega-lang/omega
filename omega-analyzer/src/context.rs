@@ -245,7 +245,13 @@ impl Context {
     /// entry, so callers still check that first, separately, for ordinary
     /// local shadowing. For a qualified `path`, `path`'s head must resolve
     /// to a *module* alias; the rest is appended onto its absolute path.
-    fn resolve_absolute_item_path(
+    ///
+    /// `pub(crate)` (not just used internally by `resolve_type`) so
+    /// `Analyzer::resolve_spec_dependencies` can resolve *which* spec a raw
+    /// dependency reference names without resolving its type arguments too
+    /// -- see that function's own doc comment for why the two need to be
+    /// separable there specifically.
+    pub(crate) fn resolve_absolute_item_path(
         &self,
         resolver: &mut dyn ModuleResolver,
         path: &Path,

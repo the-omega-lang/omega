@@ -933,26 +933,110 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Resolves a spec's own declared dependency list (`spec Mammal :
-    /// Animal, Dummy`) to their cells + resolved type args -- see
-    /// `ResolvedSpecType::dependencies`'s doc comment for why these are
-    /// eagerly, fully resolved (unlike function signatures): a dependency
-    /// can't forward the *depending* spec's own still-abstract generics
-    /// into its own type arguments in this design (a documented scope
-    /// boundary, not an oversight) -- `spec Foo<T> : Bar<i32>` resolves
-    /// fine, `spec Foo<T> : Bar<T>` reports `T` as an unrecognized type,
-    /// same as if it were written outside any generic context at all.
-    pub fn resolve_spec_dependencies(
+    /// Animal, Dummy`) to their cells, keeping each dependency's own type
+    /// arguments **raw** (unresolved `Type`, not `ResolvedType`). Unlike
+    /// `resolve_spec_reference` (used wherever a concrete reference's args
+    /// are already resolvable -- a generic bound, an implements clause),
+    /// this runs at the *depending* spec's own declaration, before its own
+    /// generics are ever bound to anything concrete -- resolving a
+    /// dependency's args here would fail for exactly the case that matters
+    /// (`spec Foo<T> : Bar<T>`), the same way `resolve_spec_functions`
+    /// already stays raw for the identical reason. Only *which* spec each
+    /// dependency names is resolved eagerly here, via `ModuleResolver::
+    /// spec_declaration` (an args-independent lookup); the args themselves
+    /// are resolved later, in `flatten_spec_into`, once `Self` + this
+    /// spec's own generics are already bound in a pushed scope there.
+    pub fn resolve_spec_dependencies(&mut self, sp: &HirSpecDef) -> Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
+        sp.dependencies.iter().filter_map(|dep| self.resolve_spec_dependency_cell(sp.id, sp.span, dep)).collect()
+    }
+
+    /// The cell-only half of resolving one raw dependency `Type` -- see
+    /// `resolve_spec_dependencies`'s doc comment for why the args stay
+    /// unresolved here. `spec_declaration`'s own cache is deliberately
+    /// accessor-blind (one canonical cell shared by every caller, see its
+    /// doc comment) -- unlike the ordinary `resolve_item` path, it performs
+    /// no visibility check of its own, so the accessor-aware check has to
+    /// be re-run here by hand, through the same `check_visibility` choke
+    /// point every other in-analyzer visibility check already goes through.
+    fn resolve_spec_dependency_cell(
         &mut self,
-        sp: &HirSpecDef,
-    ) -> Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
-        sp.dependencies.iter().filter_map(|dep| self.resolve_spec_reference(sp.id, sp.span, dep)).collect()
+        id: HirId,
+        span: Span,
+        ty: &Type,
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
+        let (path, raw_args) = match ty {
+            Type::Generic(path, args) => (path, args.clone()),
+            Type::Named(path) => (path, vec![]),
+            _ => {
+                self.errors.push(AnalysisError::new(
+                    id,
+                    span,
+                    AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(Ident("<spec>".to_string()))),
+                ));
+                return None;
+            }
+        };
+        let absolute = match self.context.resolve_absolute_item_path(&mut *self.resolver, path, &self.module_path) {
+            Ok(a) => a,
+            Err(e) => {
+                self.errors.push(AnalysisError::new(id, span, AnalysisErrorKind::UnresolvedType(e)));
+                return None;
+            }
+        };
+        let cell = match self.resolver.spec_declaration(&absolute) {
+            Ok(Some(cell)) => cell,
+            Ok(None) => {
+                self.errors.push(AnalysisError::new(
+                    id,
+                    span,
+                    AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(path.head.clone())),
+                ));
+                return None;
+            }
+            Err(e) => {
+                self.errors.push(AnalysisError::new(id, span, AnalysisErrorKind::ModuleResolution(e)));
+                return None;
+            }
+        };
+        let (visibility, declaring_module) = {
+            let c = cell.borrow();
+            (c.visibility, c.module_path.clone())
+        };
+        if !self.check_visibility(visibility, &declaring_module) {
+            self.errors.push(AnalysisError::new(
+                id,
+                span,
+                AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
+                    module: declaring_module,
+                    item: cell.borrow().name.clone(),
+                }),
+            ));
+            return None;
+        }
+        Some((cell, raw_args))
+    }
+
+    /// Runs `f` with `substitution` (`Self`, a spec's own generics, ... ->
+    /// concrete types) pushed as a temporary scope, popped again afterward
+    /// regardless of how `f` returns -- the shared "resolve a raw,
+    /// unelaborated shape against a concrete substitution, without
+    /// disturbing whatever's already bound in the calling implementor's own
+    /// ambient `Context` (its own generics, already seeded when this
+    /// `Analyzer` was constructed)" pattern every spec-flattening step
+    /// needs: a function's own raw signature (`resolve_raw_spec_fn_type`)
+    /// and a dependency's own raw type-argument list (`flatten_spec_into`).
+    fn with_substitution<T>(&mut self, substitution: &[(Ident, ResolvedType)], f: impl FnOnce(&mut Self) -> T) -> T {
+        self.context.enter_scope();
+        for (name, ty) in substitution {
+            self.context.current_scope().defined_types.insert(name.clone(), ty.clone());
+        }
+        let result = f(self);
+        self.context.leave_scope();
+        result
     }
 
     /// Resolves one spec function's raw signature against `substitution`
-    /// (`Self` plus the spec's own generics, bound to concrete types) --
-    /// pushed as a temporary scope so this never disturbs whatever's
-    /// already bound in the calling implementor's own `Context` (its own
-    /// generics, already seeded when this `Analyzer` was constructed).
+    /// (`Self` plus the spec's own generics, bound to concrete types).
     fn resolve_raw_spec_fn_type(
         &mut self,
         id: HirId,
@@ -960,28 +1044,25 @@ impl<'r> Analyzer<'r> {
         raw: &RawSpecFunctionSig,
         substitution: &[(Ident, ResolvedType)],
     ) -> Option<ResolvedFunctionType> {
-        self.context.enter_scope();
-        for (name, ty) in substitution {
-            self.context.current_scope().defined_types.insert(name.clone(), ty.clone());
-        }
-        let mut params = Vec::with_capacity(raw.params.len());
-        let mut ok = true;
-        for p in &raw.params {
-            match self.resolve_type_or_error(id, span, &p.r#type, true) {
-                Some(r) => params.push((p.ident.clone(), r)),
-                None => ok = false,
+        self.with_substitution(substitution, |this| {
+            let mut params = Vec::with_capacity(raw.params.len());
+            let mut ok = true;
+            for p in &raw.params {
+                match this.resolve_type_or_error(id, span, &p.r#type, true) {
+                    Some(r) => params.push((p.ident.clone(), r)),
+                    None => ok = false,
+                }
             }
-        }
-        let return_type = self.resolve_type_or_error(id, span, &raw.return_type, true);
-        self.context.leave_scope();
-        if !ok {
-            return None;
-        }
-        Some(ResolvedFunctionType {
-            params,
-            return_type: Box::new(return_type?),
-            is_variadic: false,
-            self_mode: raw.self_mode,
+            let return_type = this.resolve_type_or_error(id, span, &raw.return_type, true);
+            if !ok {
+                return None;
+            }
+            Some(ResolvedFunctionType {
+                params,
+                return_type: Box::new(return_type?),
+                is_variadic: false,
+                self_mode: raw.self_mode,
+            })
         })
     }
 
@@ -1025,14 +1106,24 @@ impl<'r> Analyzer<'r> {
             let s = spec.borrow();
             (s.name.clone(), s.visibility, s.generics.clone(), s.dependencies.clone(), s.functions.clone())
         };
-        for (dep_spec, dep_args) in &dependencies {
-            self.flatten_spec_into(id, span, dep_spec, dep_args, self_type, out)?;
-        }
 
         let self_ident = Ident("Self".to_string());
         let substitution: Vec<(Ident, ResolvedType)> = std::iter::once((self_ident, self_type.clone()))
             .chain(generics.iter().cloned().zip(type_args.iter().cloned()))
             .collect();
+
+        // Each dependency's own type args are still raw at this point (see
+        // `ResolvedSpecType::dependencies`'s doc comment) -- resolved here,
+        // now that `substitution` (this spec's own generics, now concrete)
+        // is available, exactly the same `with_substitution` treatment
+        // `resolve_raw_spec_fn_type` gives a raw function signature just
+        // below.
+        for (dep_spec, dep_raw_args) in &dependencies {
+            let dep_args: Vec<ResolvedType> = self.with_substitution(&substitution, |this| {
+                dep_raw_args.iter().map(|a| this.resolve_type_or_error(id, span, a, true)).collect::<Option<Vec<_>>>()
+            })?;
+            self.flatten_spec_into(id, span, dep_spec, &dep_args, self_type, out)?;
+        }
 
         for (name, raw) in &functions {
             let fn_type = self.resolve_raw_spec_fn_type(id, span, raw, &substitution)?;
@@ -4868,8 +4959,34 @@ impl<'r> Analyzer<'r> {
             HirExpr::Decrement(base) => self.analyze_incr_decr(node_id, span, base, BinaryOp::Sub),
 
             HirExpr::BinaryOp(bin) => {
-                let checked_left = self.analyze_expr(&bin.left, None)?;
-                let checked_right = self.analyze_expr(&bin.right, None)?;
+                // Two composed inference rules, mirroring precedent that
+                // already exists elsewhere rather than inventing a new
+                // philosophy: (1) the outer `expected` this node itself
+                // received (e.g. from an enclosing assignment, whose target
+                // is already resolved by the time its value is analyzed)
+                // flows to both operands, but only for a non-comparison op
+                // -- an arithmetic/bitwise result *is* its operand type, so
+                // this is sound, but a comparison's result is always `bool`
+                // regardless of its (numeric) operands, so threading a
+                // `bool` expectation into them would be nonsensical.
+                // (2) Left is always analyzed first and, absent an outer
+                // `expected`, its own resolved (and `.widened()`, matching
+                // `HirExpr::If`'s identical anchor treatment) type becomes
+                // `expected` for the right operand -- the same "earliest
+                // operand is the anchor" rule `if`-expression branches
+                // already commit to, applied here instead of a fuller
+                // "peek every position" search. Safe either way `expected`
+                // ends up wrong for a given operand: it's consulted only by
+                // genuinely adaptable things (a bare literal); anything
+                // already concretely typed ignores it, and `analyze_binary_op`
+                // below still independently enforces exact operand-type
+                // equality on the results, so this can only turn a
+                // previously-failing narrowing case into a working one, never
+                // weaken a real mismatch.
+                let operand_expected = if bin.op.is_comparison() { None } else { expected };
+                let checked_left = self.analyze_expr(&bin.left, operand_expected)?;
+                let left_type = checked_left.r#type.widened();
+                let checked_right = self.analyze_expr(&bin.right, operand_expected.or(Some(&left_type)))?;
                 self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
             }
 

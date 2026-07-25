@@ -39,6 +39,15 @@ paths (e.g. two dependencies both requiring it) → silently deduplicated
 into one requirement. Same name + a genuinely different signature →
 `ConflictingSpecFunctions`.
 
+A *generic* spec may forward its own still-abstract generics into a
+dependency's type arguments (`spec Labeled<T> : Container<T>`) — resolved
+lazily, alongside `Self`, once a concrete implementor is actually being
+checked, mirroring exactly how the spec's own functions are resolved.
+Identifying *which* spec a dependency names is still eager (needed for
+dynamic-dispatch vtable slot ordering, which has no resolver of its own to
+defer to) via a dedicated, args-independent spec lookup — see
+[generics](06-generics.md) for the full mechanism.
+
 **Spec functions always receive `self` by pointer** (`*self`/`*mut self`)
 — by-value self is rejected at the spec's own definition
 (`SpecSelfMustBePointer`), since dynamic dispatch erases the concrete type
@@ -151,22 +160,6 @@ what's imported.
 
 ## Caveats
 
-- **A spec's own generics can't be forwarded into a dependency's type
-  args** (`spec Foo<T> : Bar<T>` — `T` reports unresolved; `spec Foo<T> :
-  Bar<i32>`, a concrete argument, is fine). Traced precisely: a
-  dependency's type args are resolved eagerly, at the depending spec's
-  own one-time, argument-free declaration pass — before `T` is ever bound
-  anywhere (unlike the spec's own *functions*, which correctly stay raw
-  until a concrete implementor's `Self` + generics are known via
-  `flatten_spec_into`). Making dependencies lazy the same way needs specs
-  to get their own args-independent cell identity (cached by `(module,
-  name)` alone, not `(module, name, type_args)`) — real, buildable
-  (mirrors the existing `generic_function_signature` precedent for "this
-  item kind doesn't fit the ordinary args-bound lookup"), but it touches
-  the shared module-resolver trait and every existing spec-reference call
-  site, so it's left as a scoped, understood, deferred gap rather than a
-  rushed change to resolution infrastructure every generic item kind
-  relies on. See [generics](06-generics.md) for the equivalent write-up.
 - **Spec implementation is struct/enum/union only** for ordinary specs — no
   primitives outside the dedicated `for`-attachment mechanism above.
 - **No `is_variadic` support** on spec functions.

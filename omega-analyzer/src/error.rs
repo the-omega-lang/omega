@@ -1135,6 +1135,10 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         ResolveError::GenericArgCountMismatch { expected, .. } => {
             with_label(d, format!("expected {expected} type {}", plural(*expected, "argument")))
         }
+        ResolveError::SpecDependencyCycle { spec, .. } => {
+            with_label(d, format!("`{}` depends on itself, directly or through another spec's own dependency list", spec.as_ref()))
+                .with_help("break the cycle by removing one of the dependencies, or depending on a common base spec instead")
+        }
         ResolveError::SpecNotImplemented { missing, .. } => {
             with_label(d, "does not implement this spec".to_string()).with_note(format!(
                 "missing: {}",

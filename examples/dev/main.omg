@@ -428,6 +428,26 @@ exposed spec Mammal : Animal, Dummy {
 # `Mammal`" -- nothing declared here of its own.
 spec MySpec = Dummy | Mammal;
 
+# A generic spec forwarding its own still-abstract generic parameter into a
+# dependency's type arguments (`Labeled<T> : Container<T>`) -- `Container`'s
+# `get` requirement is only resolved once a concrete implementor's `T` is
+# known (here, `Score`'s own `i32`), exactly like a spec's own functions
+# already were. `Score` never overrides `describe` itself, so the compiler
+# must synthesize it from `Labeled`'s own default body, which calls
+# `self.get()` -- a requirement `Score` only actually satisfies through the
+# forwarded `Container<i32>` dependency.
+exposed spec Container<T> {
+    get(*self) => T;
+}
+exposed spec Labeled<T> : Container<T> {
+    describe(*self) => T { self.get() }
+}
+
+struct Score : Labeled<i32> {
+    exposed value: i32;
+    exposed get(*self) => i32 { self.value }
+}
+
 struct Wolf : Mammal {
     exposed id: i32;
     exposed kind(*self) => AnimalKind { AnimalKind::Wolf }
@@ -877,6 +897,18 @@ main(argc : i32, argv : [*u8]) => i32 {
         coerced_u64, coerced_f64, coerced_f32, coerced_neg, coerced_arr[2], coerced_branch
     );
 
+    # The identical adaptation, now inside a binary-op operand rather than a
+    # declaration's own initializer: an outer `expected` (here, `mut narrow_u:
+    # u32`'s own type, threaded through the assignment) reaches both of `+`'s
+    # operands, and a comparison's left operand (already concretely `i64`)
+    # becomes the anchor its own right operand's bare `0` adapts to -- neither
+    # bare literal defaults to `i32` and then mismatches, the way it used to.
+    mut narrow_u : u32 = 0;
+    narrow_u = narrow_u + 1;
+    narrow_i : i64 = -7;
+    narrow_abs := if narrow_i < 0 { -narrow_i } else { narrow_i };
+    printf(<*u8>b"binary-op literal narrowing: narrow_u=%u narrow_abs=%lld\n\0", narrow_u, narrow_abs);
+
     print_any(<*u8>b"hello\0");
     print_any(10);
     print_any(10.0);
@@ -1080,6 +1112,12 @@ main(argc : i32, argv : [*u8]) => i32 {
     puts(animal_var.make_sound());
 
     accepts_myspec(&wolf);
+
+    score := Score { value = 88; };
+    printf(
+        <*u8>b"generic spec forwarding: score.get()=%d score.describe()=%d\n\0",
+        score.get(), score.describe()
+    );
 
     c_like_packing : CLikePacking;
     regular_packing : Packed;

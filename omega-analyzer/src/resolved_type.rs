@@ -273,7 +273,17 @@ pub struct ResolvedSpecType {
     /// arguments `generics` was substituted with, empty for a
     /// non-generic spec.
     pub type_args: Vec<ResolvedType>,
-    pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    /// Each dependency's own cell, resolved eagerly (see `ModuleResolver::
+    /// spec_declaration`), paired with its **raw**, unresolved type
+    /// arguments -- deliberately not `Vec<ResolvedType>`: resolving them
+    /// here, at this spec's own declaration, would need this spec's own
+    /// generics already bound to something concrete, which they never are
+    /// at this point (`spec Foo<T> : Bar<T>` -- `T` isn't concrete until a
+    /// real implementor is known). Resolved lazily instead, in
+    /// `Analyzer::flatten_spec_into`, once `Self` + this spec's own
+    /// generics *are* bound -- the exact same deferral `functions` (below)
+    /// already uses, for the identical reason.
+    pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
 }
 

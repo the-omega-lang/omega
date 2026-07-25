@@ -1,8 +1,10 @@
 use crate::checked::Storage;
-use crate::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedType};
+use crate::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Type, Visibility};
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 /// A concrete cross-module lookup result -- either a type (a struct, found
 /// via a qualified type reference) or a value (a function/extern/global,
@@ -91,6 +93,14 @@ pub enum ResolveError {
     /// for a `spec *Animal` coercion from a concrete pointer whose pointee
     /// doesn't implement the spec.
     SpecNotImplemented { type_name: String, spec: Ident, missing: Vec<Ident> },
+    /// `spec` (in `module`) transitively depends on itself through one or
+    /// more other specs' own dependency lists (`spec A : B; spec B : A;`)
+    /// -- the spec-declaration analog of `RecursiveTypeWithoutIndirection`
+    /// above, needed because `ModuleResolver::spec_declaration` bypasses
+    /// `ensure_item` entirely (see its own doc comment) and so has no
+    /// module-level `Cycle` guard to fall back on; it keeps its own,
+    /// narrower cycle guard instead.
+    SpecDependencyCycle { module: Vec<Ident>, spec: Ident },
 }
 
 fn join(path: &[Ident]) -> String {
@@ -150,6 +160,9 @@ impl fmt::Display for ResolveError {
                 spec.as_ref(),
                 missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ),
+            Self::SpecDependencyCycle { module, spec } => {
+                write!(f, "spec '{}::{}' depends on itself", join(module), spec.as_ref())
+            }
         }
     }
 }
@@ -328,6 +341,31 @@ pub trait ModuleResolver {
         target: &Ident,
         namespace: ItemNamespace,
     ) -> Option<Ident>;
+
+    /// A spec's own canonical, args-independent declaration -- its
+    /// `dependencies`/`functions` list, structurally, with no concrete
+    /// `Self` or generic-argument substitution attempted (both stay raw,
+    /// exactly like `generic_function_signature`'s own contract). An escape
+    /// hatch alongside `resolve_item` for the identical reason that method
+    /// exists: a *generic* spec's own dependency list (`spec Foo<T> : Bar
+    /// <T>`) needs to know *which* spec `Bar` is before `T` is bound to
+    /// anything concrete, and a spec's cell content never actually varies
+    /// by type arguments in the first place -- `flatten_spec` always
+    /// receives its concrete args explicitly from whichever call site is
+    /// doing the flattening (a bound's own `<i32>`, an implements clause's
+    /// own args), never derived from the cell's own stored state. `Ok(None)`
+    /// for anything that isn't a spec -- including a name that doesn't
+    /// resolve at all -- deferring that diagnosis to the ordinary
+    /// `resolve_item` path, which re-derives it identically for a caller's
+    /// own concrete reference. **Deliberately visibility-blind** (like
+    /// `resolve_item`'s own cache, per its doc comment) -- the one canonical
+    /// cell is shared by every caller regardless of who's asking, so an
+    /// accessor-aware visibility check must be re-run by the caller on every
+    /// use (see `Analyzer::resolve_spec_dependencies`), never baked in here.
+    fn spec_declaration(
+        &mut self,
+        absolute_path: &[Ident],
+    ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError>;
 
     /// `receiver`'s attached methods, if any -- see `spec Name : Deps for
     /// Target { ... }` (`HirSpecDef::target`'s doc comment). At most one

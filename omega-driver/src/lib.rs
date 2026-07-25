@@ -333,6 +333,21 @@ pub struct Driver {
     enum_cells: HashMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
     /// The union counterpart of `struct_cells` -- same lifecycle, same role.
     union_cells: HashMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
+    /// A spec's own canonical cell, keyed by `(module_path, name)` alone --
+    /// deliberately **not** `ItemKey` (no `type_args`): unlike struct/enum/
+    /// union, a spec's cell content never varies by type arguments (its
+    /// `functions`/`dependencies` stay raw/unresolved until a concrete
+    /// implementor is known, see `ResolvedSpecType::dependencies`'s doc
+    /// comment), so there is exactly one canonical cell per spec regardless
+    /// of how many different concrete args any given reference happens to
+    /// mention. See `spec_declaration`.
+    spec_cells: HashMap<(Vec<Ident>, Ident), Rc<RefCell<ResolvedSpecType>>>,
+    /// `spec_cells`'s own `QueryState` guard, at the same `(module_path,
+    /// name)` granularity -- needed because `spec_declaration` bypasses
+    /// `ensure_item` entirely (see its own doc comment), so it no longer
+    /// gets `ensure_item`'s `InProgress` cycle guard for free: a genuine
+    /// `spec A : B; spec B : A;` cycle would otherwise recurse forever.
+    spec_query_state: HashMap<(Vec<Ident>, Ident), QueryState>,
     /// Every queued spec-default-method instantiation an implementor's
     /// `implements` clause needed (no own override -- see
     /// `Analyzer::resolve_implements_clause`), keyed by the implementor's
@@ -478,6 +493,8 @@ impl Driver {
             struct_cells: HashMap::new(),
             enum_cells: HashMap::new(),
             union_cells: HashMap::new(),
+            spec_cells: HashMap::new(),
+            spec_query_state: HashMap::new(),
             pending_spec_methods: HashMap::new(),
             query_state: HashMap::new(),
             resolved_items: HashMap::new(),
@@ -1621,30 +1638,20 @@ impl Driver {
                 let result = ok.map(|()| ResolvedItem::Type(ResolvedType::Union(cell)));
                 (result, errors, warnings)
             }
-            HirItem::Spec(sp) => {
-                let id = if type_args.is_empty() { sp.id } else { self.fresh_synthetic_id() };
-                let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
-                let mut analyzer =
-                    Analyzer::new(self, module_path.to_vec(), &substitution, (sp.id, sp.span));
-                let dependencies = analyzer.resolve_spec_dependencies(sp);
-                let functions = analyzer.resolve_spec_functions(sp);
-                let (errors, warnings) = analyzer.finish();
-                let result = if errors.is_empty() {
-                    let cell = Rc::new(RefCell::new(ResolvedSpecType {
-                        id,
-                        name: sp.name.clone(),
-                        visibility: sp.visibility,
-                        generics,
-                        module_path: module_path.to_vec(),
-                        type_args: type_args.to_vec(),
-                        dependencies,
-                        functions,
-                    }));
-                    Some(ResolvedItem::Type(ResolvedType::Spec(cell)))
-                } else {
-                    None
-                };
-                (result, errors, warnings)
+            // A spec's own cell is genuinely args-independent (see
+            // `spec_declaration`'s doc comment) -- this arm exists only to
+            // satisfy `compute_item`'s per-`(module, name, type_args)`
+            // dispatch contract for the *ordinary*, already-arg-count-
+            // validated call path (a concrete bound/implements-clause
+            // reference); the cell's own construction is fully delegated,
+            // never duplicated here. `errors`/`warnings` are already folded
+            // into `module_errors`/`module_warnings` inside
+            // `spec_declaration` itself, so this arm contributes none of its
+            // own to the tuple below.
+            HirItem::Spec(_) => {
+                let absolute: Vec<Ident> = module_path.iter().cloned().chain(std::iter::once(name.clone())).collect();
+                let cell = self.spec_declaration(&absolute)?;
+                (cell.map(|c| ResolvedItem::Type(ResolvedType::Spec(c))), vec![], vec![])
             }
             HirItem::Import(_) => unreachable!("imports are never indexed into local_items"),
         };
@@ -2564,6 +2571,97 @@ impl ModuleResolver for Driver {
             generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))
+    }
+
+    /// See `ModuleResolver::spec_declaration`'s own doc comment for why this
+    /// is genuinely args-independent, not just conveniently so -- cached at
+    /// `(module_path, name)` granularity, never `ItemKey`. Uses its own
+    /// `spec_query_state` guard (mirroring `ensure_item`'s `QueryState`
+    /// exactly) since this bypasses `ensure_item` entirely and would
+    /// otherwise lose cycle protection for a genuine `spec A : B; spec B :
+    /// A;` cycle.
+    fn spec_declaration(
+        &mut self,
+        absolute_path: &[Ident],
+    ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
+        let Some((name, module_path)) = absolute_path.split_last() else {
+            return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
+        };
+        let key = (module_path.to_vec(), name.clone());
+        match self.spec_query_state.get(&key) {
+            // `Done` but absent from `spec_cells` means this spec's own
+            // construction already failed (its real diagnostics were
+            // already recorded then) -- `ItemFailed`, mirroring exactly how
+            // `ensure_item`'s own `Done` cache-hit branch tells "succeeded"
+            // and "already failed" apart, so a second reference doesn't
+            // report a misleading "not a spec" instead.
+            Some(QueryState::Done) => {
+                return match self.spec_cells.get(&key) {
+                    Some(cell) => Ok(Some(cell.clone())),
+                    None => Err(ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() }),
+                };
+            }
+            Some(QueryState::InProgress) => {
+                return Err(ResolveError::SpecDependencyCycle { module: module_path.to_vec(), spec: name.clone() });
+            }
+            None => {}
+        }
+
+        // "Doesn't exist"/"not a spec" is deferred to the ordinary call
+        // path, which re-derives and reports it identically for a caller's
+        // own concrete reference -- this query only ever needs to say
+        // "not a (resolvable) spec" either way.
+        let Ok(index) = self.local_item_index(module_path, name) else {
+            return Ok(None);
+        };
+        let hir = self.parsed.get(module_path).expect("parsed by local_item_index");
+        let HirItem::Spec(sp) = &hir.items[index] else {
+            return Ok(None);
+        };
+        let sp = sp.clone();
+
+        self.spec_query_state.insert(key.clone(), QueryState::InProgress);
+
+        // Empty substitution -- nothing needs resolving at this stage.
+        // `resolve_spec_dependencies` now only identifies *which* spec each
+        // dependency names (its own args stay raw), and `resolve_spec_
+        // functions` was always fully raw/deferred; neither one needs `Self`
+        // or this spec's own generics bound to anything concrete yet.
+        let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+        let mut analyzer = Analyzer::new(self, module_path.to_vec(), &[], (sp.id, sp.span));
+        let dependencies = analyzer.resolve_spec_dependencies(&sp);
+        let functions = analyzer.resolve_spec_functions(&sp);
+        let (errors, warnings) = analyzer.finish();
+        let ok = errors.is_empty();
+        if !errors.is_empty() {
+            self.module_errors.entry(module_path.to_vec()).or_default().extend(errors);
+        }
+        if !warnings.is_empty() {
+            self.module_warnings.entry(module_path.to_vec()).or_default().extend(warnings);
+        }
+
+        self.spec_query_state.insert(key.clone(), QueryState::Done);
+
+        if !ok {
+            // Mirrors `compute_item`'s own tail exactly (`result
+            // .ok_or_else(|| ResolveError::ItemFailed { .. })`) -- a first-
+            // time failure is reported as `ItemFailed` immediately, not
+            // just on some later cache-hit, so a caller can't tell "failed"
+            // and "not a spec at all" apart either way.
+            return Err(ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() });
+        }
+        let cell = Rc::new(RefCell::new(ResolvedSpecType {
+            id: sp.id,
+            name: sp.name.clone(),
+            visibility: sp.visibility,
+            generics,
+            module_path: module_path.to_vec(),
+            type_args: vec![],
+            dependencies,
+            functions,
+        }));
+        self.spec_cells.insert(key.clone(), cell.clone());
+        Ok(Some(cell))
     }
 
     fn function_overload_signatures(

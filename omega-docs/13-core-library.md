@@ -56,7 +56,12 @@ side's TU" model (see [specs](08-specs.md) and
   signature). No `min_value`/`max_value` anywhere — `isize`/`usize`'s
   width is target-dependent, so a baked-in bound would silently be wrong
   on some target; cut uniformly across all twelve types rather than
-  provided inconsistently.
+  provided inconsistently. Its macro bodies still explicitly cast every
+  bare literal compared or combined with `*self` (`<Self>0`, not `0`) —
+  written before [binary-op literal narrowing](03-control-flow.md) was
+  fixed, when this was strictly required rather than just harmless/
+  explicit; left as-is (still correct, just no longer the only way to
+  write it) rather than churned for its own sake.
 - **`core::slices`** — `SliceImpl<T> for [T]`: `is_empty`, and `get`/
   `first`/`last` via an `(index, out: *mut T) => bool` pattern (see below
   for why, not `Option<T>`).

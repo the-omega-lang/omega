@@ -21,18 +21,6 @@ new one is found.
   `HashMap` iteration order. Harmless within one compilation.
   [modules-and-linkage.md](10-modules-and-linkage.md)
 
-## Generics
-
-- **A spec's own generics can't forward into a dependency's type args**
-  (`spec Foo<T> : Bar<T>`). A narrower, cleanly-scoped, understood gap
-  (fix direction documented) — not a bug in the sense the two items below
-  were. [generics.md](06-generics.md), [specs.md](08-specs.md)
-- **Untyped literals don't reliably narrow across integer widths** outside
-  a function's own tail-return position. A separate subsystem from
-  generics (reproduces with no generics involved at all) — only reads as
-  a generics issue because `Self`-typed code is where it's most visible.
-  [generics.md](06-generics.md)
-
 ## Modules & imports
 
 - **A cross-module, mutually-by-value struct cycle through a bare import

@@ -107,6 +107,41 @@ dual-purpose (prefix = address-of, infix = bitwise-and), disambiguated
 purely by parser position, the same precedent `*`/`-` already set as both
 prefix and infix operators.
 
+## Untyped-literal inference in binary-op operands
+
+```
+mut i: u32 = 0;
+i = i + 1;                    # `1` adapts to `u32`, not `i32`
+
+x: i64 = -7;
+abs := if x < 0 { -x } else { x };    # `0` adapts to `i64`
+```
+
+A binary operator's two operands are inferred with two composed rules,
+neither of them new — both mirror precedent this language already
+committed to elsewhere:
+
+1. **The outer `expected` type this whole expression itself received
+   flows to both operands, but only for a non-comparison op.** An
+   arithmetic/bitwise result *is* its operand type, so an outer numeric
+   `expected` (e.g. `i = i + 1`'s assignment target, `u32`, already
+   resolved before the value is analyzed) legitimately flows through. A
+   comparison's result is always `bool` regardless of its (numeric)
+   operands, so this deliberately does **not** apply there — threading a
+   `bool` expectation into two numeric operands would be nonsensical.
+2. **Left is always analyzed first; absent an outer `expected`, its own
+   resolved type becomes `expected` for the right operand** — the exact
+   same "earliest position is the anchor" rule `if`-expression branches
+   already use (see below), not a new inference philosophy.
+
+Both rules are safe unconditionally: `expected` is never a coercion
+mechanism anywhere in this language, only a hint consulted by genuinely
+adaptable things (a bare literal, mainly) — an already-concretely-typed
+operand ignores it outright, and the ordinary exact-type-equality check
+between operands still runs afterward, unchanged. So this can only turn a
+previously-failing narrowing case into a working one; it can never accept
+a genuine mismatch it wouldn't have accepted before.
+
 ## Caveats
 
 - `char` has comparison (`== != < <= > >=`) and can be used as a `match`
@@ -115,8 +150,10 @@ prefix and infix operators.
   [enums & pattern matching](05-enums-and-pattern-matching.md). It still
   has no arithmetic, bitwise, or cast support — deliberately, not a gap;
   see [primitives](01-primitives.md) for why.
-- Untyped integer literals don't reliably narrow across widths outside of
-  a function's own tail-return position — see
-  [primitives](01-primitives.md) and [generics](06-generics.md) for the
-  full story; loop counters and comparison operands against a non-`i32`
-  variable typically need an explicit cast or suffix (`<Self>0`, `1u32`).
+- Binary-op literal narrowing is **earliest-wins, not most-specific-wins**
+  — matching the identical, already-accepted trade-off `if`-expression
+  branches make (`if true { 8 } else { 7u16 }` doesn't retroactively
+  narrow branch 0 either). `0 < some_i64_var` (the literal written first,
+  the concretely-typed operand second) still won't narrow — write
+  `some_i64_var > 0` or cast explicitly instead. Not a gap left over from
+  the fix above; a deliberate scope match with existing precedent.
