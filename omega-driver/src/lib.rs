@@ -1,6 +1,8 @@
 mod fs_resolve;
 
 use fs_resolve::locate_module;
+use indexmap::map::Entry;
+use indexmap::IndexMap;
 use omega_analyzer::analysis::{item_id_span, item_name, item_visibility, Analyzer, ExtensionTarget, PendingSpecMethod};
 use omega_analyzer::annotations::{self, ItemKind, ResolvedAnnotations};
 use omega_analyzer::checked::{
@@ -24,7 +26,6 @@ use omega_hir::{
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule, Visibility};
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -253,14 +254,21 @@ pub struct Driver {
     /// first time a module is touched (alongside duplicate-name detection,
     /// folded into `module_errors`); this is what `ensure_item` looks a name
     /// up in to find *what* to analyze the first time it's asked for.
-    local_items: HashMap<Vec<Ident>, HashMap<Ident, usize>>,
+    /// `IndexMap`, not `HashMap` -- `compile`'s own whole-module sweep
+    /// iterates this map's keys to decide processing order, and needs that
+    /// order to be deterministic build-to-build; `IndexMap` gives that for
+    /// free (insertion order, which is `ensure_module_indexed`'s own
+    /// declaration-order build) with the same O(1) lookup `HashMap` has,
+    /// rather than needing every iteration site to remember to sort.
+    local_items: HashMap<Vec<Ident>, IndexMap<Ident, usize>>,
     /// Every name in a module that names *more than one* function
     /// (`local_items` above still points only at the first-declared one,
     /// unused by the overload path) -- built alongside `local_items` in
     /// `ensure_module_indexed`. A name absent here is never overloaded:
     /// it's either not a function at all, or a plain, ordinary one-item
     /// name, both served by the unchanged `local_items`/`ensure_item` path.
-    function_overloads: HashMap<Vec<Ident>, HashMap<Ident, Vec<usize>>>,
+    /// `IndexMap` for the same reason as `local_items` above.
+    function_overloads: HashMap<Vec<Ident>, IndexMap<Ident, Vec<usize>>>,
     /// One overload candidate's resolved signature, memoized by item index
     /// rather than by name (see `ensure_overload_signature`) -- unlike
     /// `struct_cells`/`enum_cells`/`ItemKey`'s `query_state`, a function
@@ -312,7 +320,9 @@ pub struct Driver {
     /// alongside for exactly the same reason `suppress` is (a purely
     /// syntactic property of the import statement itself, needed by
     /// `resolve_absolute_import_target`'s eventual `ensure_item` call).
-    raw_imports: HashMap<Vec<Ident>, HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>, bool)>>,
+    /// `IndexMap` so `compile`'s `UnusedImport` sweep visits aliases in
+    /// declaration order -- same reasoning as `local_items` above.
+    raw_imports: HashMap<Vec<Ident>, IndexMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>, bool)>>,
     /// One `(module_path, alias)` import alias's resolved target, memoized
     /// and cycle-guarded (see `ImportCacheState`'s doc comment) at that same
     /// fine granularity -- replaces the old whole-module-granular version of
@@ -325,14 +335,18 @@ pub struct Driver {
     /// lets an indirect (pointer) reference to a struct that's mid-collection
     /// -- anywhere, same module or a different one, same instantiation or
     /// not -- be served immediately, without needing exclusive access to
-    /// whatever is currently building it.
-    struct_cells: HashMap<ItemKey, Rc<RefCell<ResolvedStructType>>>,
+    /// whatever is currently building it. `IndexMap` so `sweep_dead_code`'s
+    /// whole-cache walk visits cells in the (deterministic) order they were
+    /// first created, instead of `HashMap`'s per-process-random order.
+    struct_cells: IndexMap<ItemKey, Rc<RefCell<ResolvedStructType>>>,
     /// The enum counterpart of `struct_cells` -- same lifecycle, same
     /// serve-while-`InProgress` role (a variant body's `*MyEnum` pointer
-    /// back at the enum still being collected resolves through this).
-    enum_cells: HashMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
-    /// The union counterpart of `struct_cells` -- same lifecycle, same role.
-    union_cells: HashMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
+    /// back at the enum still being collected resolves through this), same
+    /// `IndexMap` reasoning.
+    enum_cells: IndexMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
+    /// The union counterpart of `struct_cells` -- same lifecycle, same role,
+    /// same `IndexMap` reasoning.
+    union_cells: IndexMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
     /// A spec's own canonical cell, keyed by `(module_path, name)` alone --
     /// deliberately **not** `ItemKey` (no `type_args`): unlike struct/enum/
     /// union, a spec's cell content never varies by type arguments (its
@@ -371,7 +385,9 @@ pub struct Driver {
     /// can be discovered at any point during either phase, including after
     /// its originating module's own ordinary items have already been
     /// collected, so nothing may assume this map is complete any earlier.
-    generic_instantiations: HashMap<ItemKey, (CheckedItem, Vec<AnalysisWarning>)>,
+    /// `IndexMap` so the final merge visits instantiations in (deterministic)
+    /// discovery order instead of `HashMap`'s per-process-random one.
+    generic_instantiations: IndexMap<ItemKey, (CheckedItem, Vec<AnalysisWarning>)>,
     /// Every `AnalysisError` produced so far, keyed by the module it belongs
     /// to -- accumulated across both the signature phase (`ensure_item`) and
     /// the body phase (`compile`'s second pass), since neither one is a
@@ -490,15 +506,15 @@ impl Driver {
             overload_bodies: HashMap::new(),
             raw_imports: HashMap::new(),
             import_cache: HashMap::new(),
-            struct_cells: HashMap::new(),
-            enum_cells: HashMap::new(),
-            union_cells: HashMap::new(),
+            struct_cells: IndexMap::new(),
+            enum_cells: IndexMap::new(),
+            union_cells: IndexMap::new(),
             spec_cells: HashMap::new(),
             spec_query_state: HashMap::new(),
             pending_spec_methods: HashMap::new(),
             query_state: HashMap::new(),
             resolved_items: HashMap::new(),
-            generic_instantiations: HashMap::new(),
+            generic_instantiations: IndexMap::new(),
             module_errors: HashMap::new(),
             module_warnings: HashMap::new(),
             used_imports: HashSet::new(),
@@ -1073,8 +1089,8 @@ impl Driver {
             return Ok(());
         }
         let hir = self.parse_module(path)?;
-        let mut index = HashMap::new();
-        let mut overloads: HashMap<Ident, Vec<usize>> = HashMap::new();
+        let mut index = IndexMap::new();
+        let mut overloads: IndexMap<Ident, Vec<usize>> = IndexMap::new();
         for (i, item) in hir.items.iter().enumerate() {
             let Some(name) = item_name(item) else { continue };
             let is_function = matches!(item, HirItem::FunctionDefinition(_));
@@ -1114,7 +1130,7 @@ impl Driver {
         // it runs eagerly for every module the moment it's indexed --
         // there's no cycle risk here, only in actually *resolving* what
         // each alias's absolute path names (`resolve_import_alias`).
-        let mut aliases: HashMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>, bool)> = HashMap::new();
+        let mut aliases: IndexMap<Ident, (HirId, Span, Vec<Ident>, Vec<Ident>, bool)> = IndexMap::new();
         for item in &hir.items {
             let HirItem::Import(import) = item else { continue };
             let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
@@ -2162,14 +2178,14 @@ impl Driver {
             }
         }
 
-        // `struct_cells`/`union_cells`/`enum_cells` are all `HashMap`s, so
-        // the three loops above each visit their own cells in a
-        // per-process-random order -- sorted here, once, by each warning's
-        // own source position (module, then byte offset) rather than left
-        // in whatever order they were pushed, so this sweep's contribution
-        // to the compilation's diagnostic output (and so, transitively, to
-        // anything downstream that's sensitive to build-to-build byte
-        // stability) is deterministic regardless of iteration order.
+        // `struct_cells`/`union_cells`/`enum_cells` are all `IndexMap`s (see
+        // their own doc comments), so each of the three loops above already
+        // visits its own cells deterministically (creation order) -- this
+        // sort isn't working around randomness, it's for something the three
+        // separate loops can't give on their own: one chronological ordering
+        // (by module, then source position) across *all three* kinds
+        // together, instead of "every struct warning, then every union
+        // warning, then every enum warning" grouped by kind.
         warnings.sort_by(|(a_path, a), (b_path, b)| {
             let a_path: Vec<&str> = a_path.iter().map(Ident::as_ref).collect();
             let b_path: Vec<&str> = b_path.iter().map(Ident::as_ref).collect();
@@ -2229,24 +2245,17 @@ impl Driver {
             self.ensure_module_indexed(path).map_err(resolve)?;
             let overloaded_names: std::collections::HashSet<Ident> =
                 self.function_overloads[path].keys().cloned().collect();
-            // Sorted by each item's own declaration index (`local_items`'s
-            // value, not just its key) -- iterating the `HashMap` directly
-            // would process this module's items in an arbitrary,
-            // per-process-random order, which this sweep's own side effects
+            // `local_items` is an `IndexMap` (see its own doc comment)
+            // specifically so this sweep processes a module's items in
+            // declaration order for free -- this sweep's own side effects
             // (minting a fresh, globally-sequential synthetic `HirId` per
             // spec-default-method instantiation, see `fresh_synthetic_id`)
-            // would then bake into which numeric id lands on which
-            // instantiation -- harmless for correctness (nothing reads that
-            // number back except this same compilation), but it's what made
-            // the compiled object file's own internal layout differ,
-            // byte-for-byte, across repeated builds of identical source.
-            // Sorting by declaration index instead recovers the one order
-            // that's actually deterministic build-to-build: the source
-            // file's own, top-to-bottom.
-            let mut indexed_names: Vec<(usize, Ident)> =
-                self.local_items[path].iter().map(|(name, &index)| (index, name.clone())).collect();
-            indexed_names.sort_by_key(|(index, _)| *index);
-            let names: Vec<Ident> = indexed_names.into_iter().map(|(_, name)| name).collect();
+            // would otherwise bake a `HashMap`'s per-process-random order
+            // into which numeric id lands on which instantiation -- harmless
+            // for correctness, but it's what used to make the compiled
+            // object file's own internal layout differ, byte-for-byte,
+            // across repeated builds of identical source.
+            let names: Vec<Ident> = self.local_items[path].keys().cloned().collect();
             for name in &names {
                 // Handled below instead -- `ensure_item`'s `ItemKey` can
                 // only ever address one item per name, so it would silently
@@ -2268,16 +2277,10 @@ impl Driver {
             // eagerly here (unlike a generic instantiation, an overload set
             // is fully enumerable up front, so there's no need for
             // `check_generic_instantiation_body`'s on-demand trigger/
-            // deferred-merge dance). Sorted by each group's own first
-            // declaration index -- same determinism reasoning as `names`
-            // above; an overloaded name's own `indices` are already in
-            // ascending declaration order (see `ensure_module_indexed`), so
-            // this recovers the same "source, top-to-bottom" order across
-            // *groups* too, instead of `HashMap`'s per-process-random one.
-            let mut overload_groups: Vec<(Ident, Vec<usize>)> =
-                self.function_overloads[path].clone().into_iter().collect();
-            overload_groups.sort_by_key(|(_, indices)| indices[0]);
-            for (name, indices) in &overload_groups {
+            // deferred-merge dance). `function_overloads`'s inner map is an
+            // `IndexMap` (see its own doc comment), so this already visits
+            // groups in declaration order, same reasoning as `names` above.
+            for (name, indices) in &self.function_overloads[path].clone() {
                 let signatures: Vec<ResolvedFunctionType> = indices
                     .iter()
                     .map(|&i| self.ensure_overload_signature(path, i))
@@ -2350,15 +2353,12 @@ impl Driver {
                         warnings.extend(item_warnings.into_iter().map(|w| (path.clone(), w)));
                     }
                 }
-                // Sorted by each group's own first declaration index -- see
-                // the identical sort a few dozen lines up, in this same
-                // function's first sweep, for why: this order becomes the
-                // order these functions' bodies are pushed onto `items`,
-                // which is the order codegen declares/defines them in the
-                // final object file.
-                let mut overload_groups: Vec<Vec<usize>> = self.function_overloads[path].clone().into_values().collect();
-                overload_groups.sort_by_key(|indices| indices[0]);
-                for indices in overload_groups {
+                // `function_overloads`'s inner map is an `IndexMap` (see its
+                // own doc comment), so this already visits groups in
+                // declaration order -- the order these functions' bodies get
+                // pushed onto `items`, which is the order codegen declares/
+                // defines them in the final object file.
+                for indices in self.function_overloads[path].clone().into_values() {
                     for index in indices {
                         if let Some((checked, item_warnings)) = self.ensure_overload_body(path, index) {
                             items.push(checked);
@@ -2373,11 +2373,9 @@ impl Driver {
                 // body reached through `check_item_body`/`ensure_overload_body`
                 // just above is exactly why this can't run any earlier).
                 if let Some(aliases) = self.raw_imports.get(path) {
-                    // Sorted by declaration position, not iterated straight
-                    // off the `HashMap` -- same determinism reasoning as
-                    // `warn_unused_bindings`.
-                    let mut aliases: Vec<_> = aliases.iter().collect();
-                    aliases.sort_by_key(|(_, (_, span, _, _, _))| span.start);
+                    // `raw_imports`'s inner map is an `IndexMap` (see its own
+                    // doc comment), so this already visits aliases in
+                    // declaration order.
                     for (alias, (id, span, _, suppress, _)) in aliases {
                         if self.used_imports.contains(&(path.clone(), alias.clone())) {
                             continue;
@@ -2401,26 +2399,11 @@ impl Driver {
         // here, only now that both phases have fully finished -- see
         // `compile`'s own doc comment for why this can't be folded into the
         // per-module loop above.
-        // Sorted by each instantiation's own key -- `generic_instantiations`
-        // is a `HashMap`, so iterating it directly would merge instantiations
-        // into their module in a per-process-random order (and so, for two
-        // instantiations discovered from the same originating call site
-        // pattern, push their warnings in a random relative order too).
-        // `ResolvedType` has no `Ord` of its own, but its `Display` already
-        // gives a stable, human-readable total order that's good enough
-        // here -- this is purely about determinism, not about the order
-        // being meaningful.
-        let mut instantiations: Vec<(&ItemKey, &(CheckedItem, Vec<AnalysisWarning>))> =
-            self.generic_instantiations.iter().collect();
-        instantiations.sort_by_key(|((module_path, name, type_args), _)| {
-            (
-                module_path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
-                name.as_ref().to_string(),
-                type_args.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            )
-        });
+        // `generic_instantiations` is an `IndexMap` (see its own doc
+        // comment), so this already merges instantiations into their module
+        // in (deterministic) discovery order.
         for (path, checked_module) in modules.iter_mut() {
-            for ((inst_path, _, _), (item, item_warnings)) in &instantiations {
+            for ((inst_path, _, _), (item, item_warnings)) in &self.generic_instantiations {
                 if inst_path == path {
                     checked_module.items.push(item.clone());
                     warnings.extend(item_warnings.iter().map(|w| (path.clone(), w.clone())));

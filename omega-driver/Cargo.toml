@@ -8,3 +8,4 @@ omega-parser = { path = "../omega-parser" }
 omega-hir = { path = "../omega-hir" }
 omega-analyzer = { path = "../omega-analyzer" }
 omega-diagnostics = { path = "../omega-diagnostics" }
+indexmap = "2"

@@ -3,6 +3,7 @@ use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
 use crate::resolver::{ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem};
 use crate::similarity::best_match;
+use indexmap::IndexMap;
 use omega_hir::HirId;
 use omega_parser::prelude::*;
 use std::collections::HashMap;
@@ -67,14 +68,20 @@ pub struct VarBinding {
 
 #[derive(Debug, Clone)]
 pub struct ScopeContext {
-    pub declared_variables: HashMap<Ident, VarBinding>,
+    /// `IndexMap`, not `HashMap` -- `Analyzer::warn_unused_bindings` walks
+    /// every declared binding at scope-exit to report `UnusedVariable`/
+    /// `UnusedParameter`/`UnnecessaryMut`, and needs that walk to visit
+    /// bindings in a deterministic (declaration) order rather than
+    /// `HashMap`'s per-process-random one -- insertion order already *is*
+    /// declaration order here, so this gets that for free.
+    pub declared_variables: IndexMap<Ident, VarBinding>,
     pub defined_types: HashMap<Ident, ResolvedType>,
 }
 
 impl ScopeContext {
     fn new() -> Self {
         Self {
-            declared_variables: HashMap::new(),
+            declared_variables: IndexMap::new(),
             defined_types: HashMap::new(),
         }
     }

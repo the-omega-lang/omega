@@ -4185,21 +4185,10 @@ impl<'r> Analyzer<'r> {
     /// shadows (not user-declared) and, in a parameter scope, the implicit
     /// `self` (unused `self` is idiomatic in plenty of methods).
     fn warn_unused_bindings(&mut self, scope: ScopeContext, is_params: bool) {
-        // Sorted by `decl_id` (assigned sequentially during lowering, in
-        // source order -- see `HirIdGen`) rather than iterated straight off
-        // `declared_variables` -- a `HashMap`'s own order is per-process-
-        // random, which would otherwise make the *order* these warnings are
-        // pushed onto `self.warnings` (and so their order in a compilation's
-        // final diagnostic output) vary build-to-build for byte-identical
-        // source. `span` alone isn't a safe sort key here: a parameter's
-        // `UnusedParameter` diagnostic deliberately anchors on the whole
-        // function's own span for display (see its rendering), not the
-        // individual parameter token's, so two parameters of one function
-        // would otherwise tie and fall back to the `HashMap`'s own random
-        // order anyway.
-        let mut bindings: Vec<(&Ident, &VarBinding)> = scope.declared_variables.iter().collect();
-        bindings.sort_by_key(|(_, binding)| binding.decl_id.local);
-        for (name, binding) in bindings {
+        // `declared_variables` is an `IndexMap` (see `ScopeContext`'s doc
+        // comment) specifically so this walk visits bindings in declaration
+        // order for free -- no sort needed here.
+        for (name, binding) in &scope.declared_variables {
             if binding.narrowed || (is_params && name.as_ref() == "self") {
                 continue;
             }
