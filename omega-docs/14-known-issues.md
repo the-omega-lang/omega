@@ -21,6 +21,21 @@ new one is found.
   `HashMap` iteration order. Harmless within one compilation.
   [modules-and-linkage.md](10-modules-and-linkage.md)
 
+## Enums
+
+- **`e.tag`/header fields are write-protected only against plain `=`** — a
+  compound assignment (`e.tag += 1`) or a write through `&mut e.tag` both
+  silently bypass the check that correctly rejects `e.tag = 5`, corrupting
+  a live enum's tag with no cast needed. [design-review.md](15-design-review.md)
+
+## Visibility
+
+- **`&hidden base[range]`/`&hidden [array literal]` silently drop the
+  `hidden` bypass** — the plain, non-sliced form (`&hidden base`) works; a
+  third, unfixed occurrence of the same "position-dependent activation"
+  bug class already described in [visibility.md](07-visibility.md).
+  [design-review.md](15-design-review.md)
+
 ## Modules & imports
 
 - **A cross-module, mutually-by-value struct cycle through a bare import
