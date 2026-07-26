@@ -9,7 +9,6 @@
 //! downstream.
 
 use crate::analysis::Analyzer;
-use crate::error::AnalysisError;
 use crate::error::AnalysisErrorKind;
 use crate::error::AnalysisWarningKind;
 use crate::resolved_type::ResolvedType;
@@ -161,7 +160,7 @@ pub fn resolve(
     for annotation in annotations {
         let name = annotation.name.as_ref();
         if seen.contains(&name) {
-            push_error(analyzer, node_id, annotation.span, AnalysisErrorKind::DuplicateAnnotation { name: annotation.name.clone() });
+            analyzer.error(node_id, annotation.span, AnalysisErrorKind::DuplicateAnnotation { name: annotation.name.clone() });
         } else {
             seen.push(name);
         }
@@ -169,8 +168,7 @@ pub fn resolve(
         match name {
             "layout" => {
                 if !matches!(kind, ItemKind::Struct | ItemKind::Enum) {
-                    push_error(
-                        analyzer,
+                    analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
@@ -185,8 +183,7 @@ pub fn resolve(
             }
             "inline" => {
                 if kind != ItemKind::Function {
-                    push_error(
-                        analyzer,
+                    analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
@@ -199,8 +196,7 @@ pub fn resolve(
                 }
                 match resolve_inline(annotation) {
                     Ok(mode) => result.inline = Some(mode),
-                    Err(reason) => push_error(
-                        analyzer,
+                    Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
@@ -209,8 +205,7 @@ pub fn resolve(
             }
             "mangling" => {
                 if kind != ItemKind::Function {
-                    push_error(
-                        analyzer,
+                    analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
@@ -223,14 +218,13 @@ pub fn resolve(
                 }
                 match resolve_mangling(annotation) {
                     Ok(ManglingMode::Disabled) if is_member_function => {
-                        push_error(analyzer, node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnMethod)
+                        analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnMethod)
                     }
                     Ok(ManglingMode::Disabled) if is_generic => {
-                        push_error(analyzer, node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnGeneric)
+                        analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnGeneric)
                     }
                     Ok(mode) => result.mangling = mode,
-                    Err(reason) => push_error(
-                        analyzer,
+                    Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
@@ -244,8 +238,7 @@ pub fn resolve(
                     .filter_map(|arg| match arg {
                         HirAnnotationArg::Ident(warning) => Some(warning.clone()),
                         HirAnnotationArg::KeyValue(key, _) => {
-                            push_error(
-                                analyzer,
+                            analyzer.error(
                                 node_id,
                                 annotation.span,
                                 AnalysisErrorKind::InvalidAnnotationArgs {
@@ -261,15 +254,11 @@ pub fn resolve(
                     })
                     .collect();
             }
-            _ => push_error(analyzer, node_id, annotation.span, AnalysisErrorKind::UnknownAnnotation { name: annotation.name.clone() }),
+            _ => analyzer.error(node_id, annotation.span, AnalysisErrorKind::UnknownAnnotation { name: annotation.name.clone() }),
         }
     }
 
     result
-}
-
-fn push_error(analyzer: &mut Analyzer, node_id: HirId, span: Span, kind: AnalysisErrorKind) {
-    analyzer.errors.push(AnalysisError::new(node_id, span, kind));
 }
 
 /// `@layout(pack = <value>, align = <value>)` -- either key, in any order,
@@ -284,8 +273,7 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
 
     for arg in &annotation.args {
         let HirAnnotationArg::KeyValue(key, value) = arg else {
-            push_error(
-                analyzer,
+            analyzer.error(
                 node_id,
                 annotation.span,
                 AnalysisErrorKind::InvalidAnnotationArgs {
@@ -296,8 +284,7 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
             continue;
         };
         if !matches!(key.as_ref(), "pack" | "align") {
-            push_error(
-                analyzer,
+            analyzer.error(
                 node_id,
                 annotation.span,
                 AnalysisErrorKind::InvalidAnnotationArgs {
@@ -308,8 +295,7 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
             continue;
         }
         if seen_keys.contains(&key.as_ref()) {
-            push_error(
-                analyzer,
+            analyzer.error(
                 node_id,
                 annotation.span,
                 AnalysisErrorKind::InvalidAnnotationArgs {
@@ -324,8 +310,7 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
         let Some(resolved) = resolve_size_value(analyzer, node_id, annotation.span, value) else { continue };
         let value = match resolved {
             Ok(n) if n == 0 || !n.is_power_of_two() => {
-                push_error(
-                    analyzer,
+                analyzer.error(
                     node_id,
                     annotation.span,
                     AnalysisErrorKind::InvalidAnnotationArgs {
@@ -337,8 +322,7 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
             }
             Ok(n) => n,
             Err(reason) => {
-                push_error(
-                    analyzer,
+                analyzer.error(
                     node_id,
                     annotation.span,
                     AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },

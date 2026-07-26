@@ -622,14 +622,13 @@ impl Driver {
         substitution: &[(Ident, ResolvedType)],
         self_type: ResolvedType,
         method_ids: Vec<HirId>,
-        signature: impl FnOnce(&mut Analyzer, &[HirId]) -> (Option<()>, Vec<PendingSpecMethod>),
+        signature: impl FnOnce(&mut Analyzer, &[HirId]) -> Option<Vec<PendingSpecMethod>>,
     ) -> Option<ResolvedItem> {
         let mut substitution = substitution.to_vec();
         substitution.push((Ident("Self".to_string()), self_type.clone()));
 
-        let (ok, pending) =
-            self.analyze(&key.module, &substitution, owner, |analyzer| signature(analyzer, &method_ids));
-        ok?;
+        let pending =
+            self.analyze(&key.module, &substitution, owner, |analyzer| signature(analyzer, &method_ids))?;
         self.items.pending_spec_methods.insert(key.clone(), pending);
         Some(ResolvedItem::Type(self_type))
     }

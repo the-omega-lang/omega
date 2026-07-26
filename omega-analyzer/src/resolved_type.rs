@@ -826,6 +826,31 @@ impl ResolvedType {
     /// cast can't turn an immutable pointer-shaped value into a mutable
     /// one") apply uniformly across all three instead of being duplicated
     /// per shape.
+    /// The module and declaration this type's own members belong to -- what
+    /// a member-visibility check needs. `None` for anything with no
+    /// declaration of its own (a primitive, a slice, a pointer): the only
+    /// members those ever have come from a `for`-attached spec, which are
+    /// always `Exposed` and so never need one.
+    pub fn declaring_owner(&self) -> Option<(Vec<Ident>, HirId)> {
+        match self {
+            Self::Struct(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
+            Self::Union(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
+            Self::Enum { cell, .. } => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
+            _ => None,
+        }
+    }
+
+    /// This type with at most one pointer hop removed -- the seamless
+    /// autoderef every member lookup applies (`ptr.field`, `ptr.method()`),
+    /// and never more than one level: `**Struct` still needs an explicit
+    /// deref of its own.
+    pub fn autoderef(&self) -> &ResolvedType {
+        match self {
+            Self::Pointer { pointee, .. } => pointee,
+            other => other,
+        }
+    }
+
     pub fn pointer_like_mutable(&self) -> Option<bool> {
         match self {
             Self::Pointer { mutable, .. } | Self::Slice { mutable, .. } | Self::Str { mutable } => Some(*mutable),

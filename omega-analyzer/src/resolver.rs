@@ -322,7 +322,7 @@ pub trait ModuleResolver {
         &mut self,
         module_path: &[Ident],
         name: &Ident,
-    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType, Visibility)>>, ResolveError>;
+    ) -> Result<Option<OverloadCandidates>, ResolveError>;
 
 
     /// Mints a fresh `HirId` with no corresponding HIR node of its own --
@@ -399,6 +399,11 @@ pub enum ItemNamespace {
     /// Structs (generic templates included).
     Type,
 }
+
+/// One overloaded name's candidates: each declaration's own id, resolved
+/// signature, and declared visibility. Nothing about the *name* picks a
+/// winner -- only a call's own argument types can, at the call site.
+pub type OverloadCandidates = Vec<(HirId, ResolvedFunctionType, Visibility)>;
 
 /// See `ModuleResolver::generic_function_signature`.
 #[derive(Debug, Clone)]

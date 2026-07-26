@@ -40,7 +40,26 @@ compile-time value for it first.
 
 Accessing a header or shared-dynamic field never requires knowing which
 variant you're holding; accessing a body field does (see refinement,
-below). A bodyless variant with no shared dynamic fields either needs no
+below).
+
+The tag and the header fields are **never writable** — they are per-variant
+constants, and a write through any of them would desynchronize a live value's
+tag from its actual layout. That is enforced at the one place every write
+funnels through (`require_mutable_place`), so all five write forms are
+rejected identically:
+
+```
+e.tag = 5;          # error: cannot assign to 'tag' of an enum value
+e.tag += 1;         # same error
+++e.tag;            # same error
+p := &mut e.tag;    # same error
+e.tag.some_mut_self_method();      # same error
+```
+
+(Fixed: the check used to live only in the plain-`=` path, so the other four
+forms silently compiled.) Shared dynamic fields and a variant's own body
+fields are ordinary runtime storage and stay freely assignable through all of
+them. A bodyless variant with no shared dynamic fields either needs no
 braces at all (`First(10, "...")`); once the enum has *any* shared dynamic
 field, every variant needs a body listing at least those.
 
@@ -112,6 +131,29 @@ would have) and every gap (error unless `else` covers it). Scoped today to
 [primitives](01-primitives.md) for `char`'s own domain) — a float
 scrutinee is a clear `UnsupportedMatchScrutinee` diagnostic, not a silent
 gap.
+
+Because overlap is an error, a value `match`'s arms must **partition** the
+domain: there is no trailing catch-all arm (`... => x` overlaps everything
+above it). Use `else` for the "anything else" case — that's exactly what it
+is for. The overlap diagnostic reports the pair in *source* order and says
+so explicitly:
+
+```
+error: overlapping match arms
+  |
+4 |         0..<10 => 1,
+  |         ------ first covered here
+5 |         5..<20 => 2,
+  |         ^^^^^^ this pattern covers values an earlier arm already covers
+  |
+  = note: `match` has no first-match-wins rule -- every value must be
+          covered by exactly one arm
+```
+
+(Fixed: the sweep finds an overlapping pair in *interval* order, which is not
+the order the arms were written — a catch-all written last still sorts first,
+so the old diagnostic blamed the arms *above* it and called them
+"unreachable", which was also untrue for a merely partial overlap.)
 
 `match` keeps its own `CheckedExpr::Match`/`emit_match` rather than fully
 desugaring into `if`: an exhaustive match with no user `else` must *trap*

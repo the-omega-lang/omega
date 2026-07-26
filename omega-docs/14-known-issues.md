@@ -17,21 +17,6 @@ new one is found.
   from hand-written C expecting real struct-passing rules.
   [primitives.md](01-primitives.md)
 
-## Enums
-
-- **`e.tag`/header fields are write-protected only against plain `=`** — a
-  compound assignment (`e.tag += 1`) or a write through `&mut e.tag` both
-  silently bypass the check that correctly rejects `e.tag = 5`, corrupting
-  a live enum's tag with no cast needed. [design-review.md](15-design-review.md)
-
-## Visibility
-
-- **`&hidden base[range]`/`&hidden [array literal]` silently drop the
-  `hidden` bypass** — the plain, non-sliced form (`&hidden base`) works; a
-  third, unfixed occurrence of the same "position-dependent activation"
-  bug class already described in [visibility.md](07-visibility.md).
-  [design-review.md](15-design-review.md)
-
 ## Types
 
 - **`*str` is not actually guaranteed valid UTF-8** — casting between
@@ -64,9 +49,9 @@ new one is found.
 
 ## Compiler internals
 
-Shape problems in `omega-driver` that work today but each need a breaking
-change to fix — full writeups in
-[design-review.md](15-design-review.md#compiler-architecture-omega-driver).
+Shape problems in `omega-driver` and `omega-analyzer` that work today but each
+need a breaking change to fix — full writeups in
+[design-review.md](15-design-review.md#compiler-architecture).
 
 - **Overloading needs a whole parallel item pipeline** (two extra caches,
   two extra sweeps, two extra resolver methods) purely because the item
@@ -83,6 +68,17 @@ change to fix — full writeups in
   nothing prevents confusing the two.
 - **Diagnostic scoping for scanned (extern/`core`) modules is three ad-hoc
   lists** with four different outcomes and no stated policy.
+- **A node's identity is threaded as a bare `(HirId, Span)` pair** through
+  ~60 analyzer signatures, with nothing tying the two together.
+- **`hidden`'s bypass must be re-activated by every operand position
+  individually**, with no backstop — three positions have now been fixed
+  one at a time.
+
+Language-level, not internal:
+
+- **A value `match`'s arms must partition the domain exactly** — arms may
+  not overlap, so a trailing `... => x` catch-all is never legal.
+  [design-review.md](15-design-review.md#compiler-architecture)
 
 ## Design debt worth watching
 

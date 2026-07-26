@@ -1,0 +1,661 @@
+use super::*;
+
+/// The declaration a `Name { ... }` literal initializes, reduced to what
+/// checking its field initializers needs -- identical whether it came from a
+/// struct, a union, or one enum variant.
+struct LiteralTargetFields {
+    /// The name a "missing field" error shows: a struct's or union's own
+    /// name, or the variant's.
+    owner: Ident,
+    declaring_module: Vec<Ident>,
+    owner_id: HirId,
+    /// The literal's own resolved type, for a field-visibility error.
+    base: ResolvedType,
+    declared: Vec<(Ident, ResolvedType, Visibility)>,
+}
+
+/// What a `Name { ... }` literal's path resolved to -- see
+/// `Analyzer::resolve_literal_target`.
+enum LiteralTarget {
+    /// Always wraps `ResolvedType::Struct`.
+    Struct(ResolvedType),
+    EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
+    /// Always wraps `ResolvedType::Union`.
+    Union(ResolvedType),
+}
+
+/// The pure parse-and-range-check core behind a number literal's concrete
+/// value -- no `Span`/error-pushing, just `Err(())` on failure, so this is
+/// equally usable from `Analyzer::analyze_number`'s real (error-reporting)
+/// path and from overload-viability scoring's *silent* "would this literal
+/// fit this candidate" check (a rejected candidate must never push a
+/// speculative error). `kind` is whatever concrete numeric type the caller
+/// already decided on (explicit suffix, inferred from context, or the
+/// plain i32/f64 default) -- this never picks the type itself, only
+/// validates the literal's digits against it.
+pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue, ()> {
+    match kind {
+        NumericKind::Float(width) => {
+            let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
+            let parsed = text.parse::<f64>().map_err(|_| ())?;
+            if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
+                return Err(());
+            }
+            Ok(NumberValue::Float(parsed))
+        }
+        NumericKind::Signed(width) => {
+            let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
+            let max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
+            if parsed > max {
+                return Err(());
+            }
+            Ok(NumberValue::Signed(parsed as i64))
+        }
+        NumericKind::Unsigned(width) => {
+            let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
+            let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+            if parsed > max {
+                return Err(());
+            }
+            Ok(NumberValue::Unsigned(parsed))
+        }
+    }
+}
+
+impl<'r> Analyzer<'r> {
+    /// `Name { field = value; ... }` -- builds a whole struct value, or --
+    /// when the path names an enum variant (`Enum::Variant { ... }`) -- a
+    /// whole enum value, in one expression. The literal's name resolves
+    /// with the same diagnostics (typo suggestions included) type positions
+    /// already give (see `resolve_literal_target`), and every declared
+    /// field must be set exactly once with a value of its exact type. All
+    /// field problems in one literal are reported in one pass (same
+    /// keep-going discipline as `analyze_all`), not just the first.
+    pub(super) fn analyze_struct_literal(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        lit: &HirStructLiteral,
+    ) -> Option<CheckedExprNode> {
+        match self.resolve_literal_target(node_id, span, &lit.path)? {
+            LiteralTarget::Struct(resolved) => {
+                let ResolvedType::Struct(cell) = &resolved else {
+                    unreachable!("LiteralTarget::Struct always wraps ResolvedType::Struct");
+                };
+                // Snapshot the declared fields so `cell` isn't borrowed
+                // across the value analysis below -- a nested literal of
+                // this same struct type needs to borrow it again.
+                let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
+                let struct_name = cell.borrow().name.clone();
+                let declaring_module = cell.borrow().module_path.clone();
+                let owner_id = cell.borrow().id;
+                let base = resolved.clone();
+                let target = LiteralTargetFields {
+                    owner: struct_name,
+                    declaring_module,
+                    owner_id,
+                    base: base.clone(),
+                    declared,
+                };
+                let fields = self.check_field_initializers(node_id, span, &target, &lit.fields, |field| {
+                    AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: base.clone() }
+                })?;
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: resolved,
+                    kind: CheckedExpr::StructLiteral(CheckedStructLiteral { fields }),
+                })
+            }
+            LiteralTarget::EnumVariant(cell, variant_index) => {
+                let (enum_name, variant_name, declared, header_names, declaring_module, owner_id) = {
+                    let e = cell.borrow();
+                    let v = &e.variants[variant_index];
+                    let header_names: Vec<Ident> = e.header.iter().map(|(name, _, _)| name.clone()).collect();
+                    // Shared dynamic fields first (declaration order), then
+                    // this variant's own body fields -- every construction
+                    // site must supply both, in one combined literal.
+                    let declared: Vec<(Ident, ResolvedType, Visibility)> =
+                        e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
+                    (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone(), e.id)
+                };
+                if declared.is_empty() {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::EnumVariantHasNoBody { r#enum: enum_name, variant: variant_name },
+                    );
+                    return None;
+                }
+                let declared_names: Vec<Ident> = declared.iter().map(|(name, _, _)| name.clone()).collect();
+                let unknown_enum = enum_name.clone();
+                let base = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
+                let target = LiteralTargetFields {
+                    owner: variant_name,
+                    declaring_module,
+                    owner_id,
+                    base,
+                    declared,
+                };
+                let fields = self.check_field_initializers(
+                    node_id,
+                    span,
+                    &target,
+                    &lit.fields,
+                    move |field| {
+                        if field.name.as_ref() == "tag" || header_names.contains(&field.name) {
+                            AnalysisErrorKind::EnumHeaderFieldInLiteral { field: field.name.clone() }
+                        } else {
+                            AnalysisErrorKind::NoSuchEnumField {
+                                field: field.name.clone(),
+                                r#enum: unknown_enum.clone(),
+                                similar: best_match(&field.name, declared_names.iter()),
+                            }
+                        }
+                    },
+                )?;
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::Enum { cell, variant: Some(variant_index) },
+                    kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }),
+                })
+            }
+            LiteralTarget::Union(resolved) => {
+                let ResolvedType::Union(cell) = &resolved else {
+                    unreachable!("LiteralTarget::Union always wraps ResolvedType::Union");
+                };
+                let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
+                let union_name = cell.borrow().name.clone();
+                let declaring_module = cell.borrow().module_path.clone();
+                let owner_id = cell.borrow().id;
+
+                if lit.fields.is_empty() {
+                    self.error(node_id, span, AnalysisErrorKind::UnionLiteralMissingField { r#union: union_name });
+                    return None;
+                }
+                if lit.fields.len() > 1 {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnionLiteralTooManyFields {
+                            r#union: union_name,
+                            fields: lit.fields.iter().map(|f| f.name.clone()).collect(),
+                        },
+                    );
+                    return None;
+                }
+
+                let field = &lit.fields[0];
+                let found = declared
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (name, _, _))| name == &field.name)
+                    .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+                let Some((field_index, expected, visibility)) = found else {
+                    self.error(
+                        node_id,
+                        field.name_span,
+                        AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: resolved.clone() },
+                    );
+                    return None;
+                };
+                if !self.check_member_visibility(visibility, &declaring_module, owner_id) {
+                    self.error(
+                        node_id,
+                        field.name_span,
+                        AnalysisErrorKind::FieldNotVisible { field: field.name.clone(), base: resolved.clone() },
+                    );
+                    return None;
+                }
+                let value = self.analyze_expr(&field.value, Some(&expected))?;
+                if !expected.accepts(&value.r#type) {
+                    self.error(
+                        node_id,
+                        value.span,
+                        AnalysisErrorKind::FieldTypeMismatch {
+                            field: field.name.clone(),
+                            expected,
+                            found: value.r#type.clone(),
+                        },
+                    );
+                    return None;
+                }
+
+                Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: resolved,
+                    kind: CheckedExpr::UnionConstruct(CheckedUnionConstruct { field_index, value: Box::new(value) }),
+                })
+            }
+        }
+    }
+
+    /// The shared per-field discipline behind both literal forms: each
+    /// initializer must name a declared field, exactly once, with a value
+    /// of its field's type; every declared field must be covered (there is
+    /// no implicit zeroing). `unknown_field` supplies the form-specific
+    /// "no such field" diagnostic. `owner` is the name shown by the
+    /// missing-fields error (the struct, or the enum variant).
+    fn check_field_initializers(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: &LiteralTargetFields,
+        fields: &[omega_hir::HirStructLiteralField],
+        unknown_field: impl Fn(&omega_hir::HirStructLiteralField) -> AnalysisErrorKind,
+    ) -> Option<Vec<CheckedStructLiteralField>> {
+        let LiteralTargetFields { owner, declaring_module, owner_id, base, declared } = target;
+        let owner_id = *owner_id;
+        let mut seen: HashMap<Ident, Span> = HashMap::new();
+        let mut checked_fields = Vec::with_capacity(fields.len());
+        let mut ok = true;
+        for field in fields {
+            if let Some(previous) = seen.insert(field.name.clone(), field.name_span) {
+                self.error(
+                    node_id,
+                    field.name_span,
+                    AnalysisErrorKind::DuplicateFieldInitializer { field: field.name.clone(), previous },
+                );
+                ok = false;
+                continue;
+            }
+            let found = declared
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _, _))| name == &field.name)
+                .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+            let Some((field_index, expected, visibility)) = found else {
+                self.error(node_id, field.name_span, unknown_field(field));
+                ok = false;
+                continue;
+            };
+            if !self.check_member_visibility(visibility, declaring_module, owner_id) {
+                self.error(
+                    node_id,
+                    field.name_span,
+                    AnalysisErrorKind::FieldNotVisible { field: field.name.clone(), base: base.clone() },
+                );
+                ok = false;
+                continue;
+            }
+            let Some(value) = self.analyze_expr(&field.value, Some(&expected)) else {
+                ok = false;
+                continue;
+            };
+            if !expected.accepts(&value.r#type) {
+                self.error(
+                    node_id,
+                    value.span,
+                    AnalysisErrorKind::FieldTypeMismatch {
+                        field: field.name.clone(),
+                        expected,
+                        found: value.r#type.clone(),
+                    },
+                );
+                ok = false;
+                continue;
+            }
+            checked_fields.push(CheckedStructLiteralField { field_index, value });
+        }
+
+        let missing: Vec<Ident> =
+            declared.iter().map(|(name, _, _)| name).filter(|name| !seen.contains_key(name)).cloned().collect();
+        if !missing.is_empty() {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::MissingFieldInitializers { r#struct: owner.clone(), missing },
+            );
+            ok = false;
+        }
+
+        ok.then_some(checked_fields)
+    }
+
+    /// What a `Name { ... }` literal's path actually names -- a struct, or
+    /// one specific variant of an enum -- with the most precise error this
+    /// can determine otherwise. Resolution order mirrors place-root
+    /// resolution: explicit generic arguments pin the type prefix
+    /// exactly; otherwise an imported-module alias reading of the head wins
+    /// (trying the whole path as the type first, then all-but-last as an
+    /// enum with the last segment its variant), and a non-alias multi-
+    /// segment head must itself be a type in scope or this module's own.
+    fn resolve_literal_target(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &ExprPath,
+    ) -> Option<LiteralTarget> {
+        if path.plain().is_none() {
+            let segments = path.path.segments();
+            let rest = segments[path.args_at + 1..].to_vec();
+            if rest.len() > 1 {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::GenericPathTooDeep { r#type: segments[path.args_at].clone() },
+                );
+                return None;
+            }
+            let type_args = self.resolve_generic_arg_list(node_id, span, path)?;
+            let absolute = self.generic_prefix_absolute(node_id, span, &segments[..=path.args_at])?;
+            let resolved = match self.resolve_item_checked(&absolute, &type_args, true) {
+                Ok(ResolvedItem::Type(t)) => t,
+                Ok(ResolvedItem::Value { .. }) => {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(crate::error::TypeResolutionError::NotAType(absolute)),
+                    );
+                    return None;
+                }
+                Err(e) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
+                    return None;
+                }
+            };
+            return self.literal_target_from_type(node_id, span, resolved, &rest);
+        }
+
+        let plain = &path.path;
+
+        // A bare name: exactly a written type annotation, same diagnostics
+        // (typo suggestions included) and all.
+        if plain.is_unqualified() {
+            let resolved = self.resolve_type_or_error(node_id, span, &Type::Named(plain.clone()), true)?;
+            return self.literal_target_from_type(node_id, span, resolved, &[]);
+        }
+
+        // Module-qualified head: the whole path as the type first
+        // (`mymodule::Vec2 { ... }`), then all-but-last as an enum whose
+        // last segment names the variant (`mymodule::Shape::Circle`).
+        let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
+        if let Some(ImportTarget::Module(target)) = &alias {
+            let absolute: Vec<Ident> = target.iter().cloned().chain(plain.tail.iter().cloned()).collect();
+            let first_error = match self.resolve_item_checked(&absolute, &[], true) {
+                Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
+                Ok(ResolvedItem::Value { .. }) => {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(crate::error::TypeResolutionError::NotAType(absolute)),
+                    );
+                    return None;
+                }
+                Err(e) => e,
+            };
+            if absolute.len() >= 3 {
+                let (variant, prefix) = absolute.split_last().expect("length checked above");
+                if let Ok(ResolvedItem::Type(t)) = self.resolve_item_checked(prefix, &[], true) {
+                    return self.literal_target_from_type(node_id, span, t, std::slice::from_ref(variant));
+                }
+            }
+            self.error(node_id, span, AnalysisErrorKind::ModuleResolution(first_error));
+            return None;
+        }
+
+        // Head isn't a module alias -- it must be a type (`Enum::Variant`):
+        // local/imported first, then this module's own item, mirroring
+        // `resolve_type_qualified_value`'s priority and error precision.
+        if let Some(head_type) = self.context.find_defined_type(&plain.head).cloned() {
+            return self.literal_target_from_type(node_id, span, head_type, &plain.tail);
+        }
+        if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
+            return self.literal_target_from_type(node_id, span, t, &plain.tail);
+        }
+        let absolute: Vec<Ident> = match alias {
+            Some(ImportTarget::GenericItem(absolute)) => absolute,
+            _ => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
+        };
+        let kind = match self.resolve_item_checked(&absolute, &[], true) {
+            Ok(ResolvedItem::Type(t)) => {
+                return self.literal_target_from_type(node_id, span, t, &plain.tail);
+            }
+            Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: plain.head.clone() },
+            Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
+                name: plain.head.clone(),
+                similar_module: self.similar_import_alias(&plain.head),
+                similar_type: self.context.similar_type_name(&plain.head).or_else(|| {
+                    self.resolver.similar_item_name(&self.module_path, &plain.head, ItemNamespace::Type)
+                }),
+            },
+            Err(e) => AnalysisErrorKind::ModuleResolution(e),
+        };
+        self.error(node_id, span, kind);
+        None
+    }
+
+    /// Interprets an already-resolved type (plus at most one trailing path
+    /// segment) as a literal's target -- see `resolve_literal_target`.
+    fn literal_target_from_type(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+        rest: &[Ident],
+    ) -> Option<LiteralTarget> {
+        let kind = match &r#type {
+            ResolvedType::Struct(cell) => match rest.first() {
+                None => return Some(LiteralTarget::Struct(r#type.clone())),
+                Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
+                    r#struct: cell.borrow().name.clone(),
+                    name: name.clone(),
+                },
+            },
+            ResolvedType::Union(cell) => match rest.first() {
+                None => return Some(LiteralTarget::Union(r#type.clone())),
+                Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
+                    r#struct: cell.borrow().name.clone(),
+                    name: name.clone(),
+                },
+            },
+            ResolvedType::Enum { cell, .. } => match rest {
+                [] => {
+                    let e = cell.borrow();
+                    AnalysisErrorKind::EnumLiteralWithoutVariant {
+                        r#enum: e.name.clone(),
+                        example: e
+                            .variants
+                            .first()
+                            .map(|v| v.name.clone())
+                            .unwrap_or_else(|| Ident("Variant".into())),
+                    }
+                }
+                [variant_name] => {
+                    let found = cell.borrow().variant(variant_name).map(|(index, _)| index);
+                    match found {
+                        Some(index) => return Some(LiteralTarget::EnumVariant(cell.clone(), index)),
+                        None => {
+                            let e = cell.borrow();
+                            AnalysisErrorKind::NoSuchEnumMember {
+                                r#enum: e.name.clone(),
+                                name: variant_name.clone(),
+                                similar_variant: best_match(variant_name, e.variants.iter().map(|v| &v.name)),
+                                similar_function: best_match(variant_name, e.functions.iter().map(|(name, _)| name)),
+                            }
+                        }
+                    }
+                }
+                _ => AnalysisErrorKind::GenericPathTooDeep { r#type: cell.borrow().name.clone() },
+            },
+            _ if rest.is_empty() => AnalysisErrorKind::StructLiteralNotAStruct { found: r#type.clone() },
+            _ => AnalysisErrorKind::StaticAccessOnNonStruct { found: r#type.clone() },
+        };
+        self.error(node_id, span, kind);
+        None
+    }
+
+    /// Resolves a number literal's target type (see
+    /// `default_or_expected_number_type`) and parses/range-checks its text
+    /// against that type (see `parse_number_literal`). `NumberExpr` keeps
+    /// its digits as plain text (see its doc comment) precisely so this is
+    /// the *only* place that ever has to interpret them -- codegen just
+    /// emits whatever `NumberValue` this produces.
+    pub(super) fn analyze_number(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        n: &NumberExpr,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
+        let invalid_suffix = |this: &mut Self, ident: &Ident| {
+            this.error(node_id, span, AnalysisErrorKind::InvalidNumberType(ident.clone()));
+        };
+
+        let resolved_type = match &n.explicit_type {
+            Some(explicit_type) => match self.context.resolve_type(
+                Type::Named(explicit_type.clone().into()),
+                &mut *self.resolver,
+                &self.module_path,
+                true,
+                !self.hidden_stack.is_empty(),
+            ) {
+                Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
+                _ => {
+                    invalid_suffix(self, explicit_type);
+                    return None;
+                }
+            },
+            None => Self::default_or_expected_number_type(n, expected),
+        };
+        let kind = resolved_type
+            .numeric_kind()
+            .expect("just resolved above, or a hardcoded numeric default");
+
+        // A literal written with a decimal point must resolve to a float
+        // type; a based (hex/octal/binary) literal never carries one (the
+        // grammar has no notation for it), so a float suffix on one (e.g.
+        // `0xFFf32`) is rejected here too rather than silently misparsed.
+        let is_float = matches!(kind, NumericKind::Float(_));
+        if n.fractional_part.is_some() && !is_float {
+            let Some(explicit_type) = &n.explicit_type else {
+                unreachable!("the default type for a fractional literal is always F64");
+            };
+            invalid_suffix(self, explicit_type);
+            return None;
+        }
+        if is_float && n.base != NumberBase::Decimal {
+            let Some(explicit_type) = &n.explicit_type else {
+                unreachable!("the default type is only Float when a fraction was written, which implies Decimal");
+            };
+            invalid_suffix(self, explicit_type);
+            return None;
+        }
+
+        let Ok(value) = parse_number_literal(n, kind) else {
+            let literal_text = match &n.fractional_part {
+                Some(frac) => format!("{}.{}", n.integer_part, frac),
+                None => n.integer_part.clone(),
+            };
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text, r#type: resolved_type },
+            );
+            return None;
+        };
+
+        Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
+    }
+
+    /// Picks the concrete type an *unsuffixed* literal resolves to: `expected`
+    /// (untyped-constant inference -- see `Self::adaptable_literal`'s doc
+    /// comment) if it's given and its numeric family agrees with the
+    /// literal's own -- `Float` iff the literal was written with a
+    /// fractional part, never the other way around (an int-kind literal
+    /// never silently becomes a float, only a same-family width/signedness
+    /// adapts) -- else today's plain i32/f64 default (mirroring Rust's own
+    /// literal defaults). An explicit suffix always wins outright and never
+    /// reaches this at all (see `analyze_number`).
+    fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>) -> ResolvedType {
+        let default = if n.fractional_part.is_some() { ResolvedType::F64 } else { ResolvedType::I32 };
+        let Some(expected) = expected else { return default };
+        let Some(kind) = expected.numeric_kind() else { return default };
+        if matches!(kind, NumericKind::Float(_)) == n.fractional_part.is_some() {
+            expected.clone()
+        } else {
+            default
+        }
+    }
+
+    /// Whether `expr` is a bare (or singly-negated) *unsuffixed* number
+    /// literal -- the one expression shape whose concrete type isn't
+    /// already pinned by anything written down, so it's the one shape
+    /// worth peeking at *before* fully analyzing it: overload resolution's
+    /// viability scoring needs to know "is this argument still open to
+    /// adapt" without the side effects (errors bound to a specific resolved
+    /// type) a real `analyze_expr` call would commit to. `Negate` is peeked
+    /// through because it's transparent to a literal's own type (`-100` is
+    /// exactly as adaptable as `100`) -- see `HirExpr::Negate`'s arm in
+    /// `analyze_expr`, which threads `expected` straight through for the
+    /// identical reason.
+    pub(super) fn adaptable_literal(expr: &HirExprNode) -> bool {
+        match &expr.expr {
+            HirExpr::Number(n) => n.explicit_type.is_none(),
+            HirExpr::Negate(inner) => matches!(&inner.expr, HirExpr::Number(n) if n.explicit_type.is_none()),
+            _ => false,
+        }
+    }
+
+    /// `[a, b, c]` -- a fixed-size array value.
+    pub(super) fn analyze_array_literal(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        elements: &[HirExprNode],
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
+        let Some((first, rest)) = elements.split_first() else {
+            self.error(node_id, span, AnalysisErrorKind::EmptyArrayLiteral);
+            return None;
+        };
+
+        // A declared/expected element type (from `[T; N]` context)
+        // is used as *every* element's own expected type, including
+        // the first -- unlike the plain bottom-up fallback below,
+        // where only later elements are checked against the
+        // first's own inferred type, never the other way around.
+        let declared_item_type = match expected {
+            Some(ResolvedType::SizedArray(item_type, _)) => Some(item_type.as_ref()),
+            _ => None,
+        };
+
+        let checked_first = self.analyze_expr(first, declared_item_type)?;
+        // Widened for the same reason an `if`'s branches are -- an
+        // array of mixed variants of one enum is an array of that
+        // enum.
+        let item_type = declared_item_type.cloned().unwrap_or_else(|| checked_first.r#type.widened());
+
+        let mut checked_elements = Vec::with_capacity(elements.len());
+        let check_element = |this: &mut Self, id: HirId, elem_span: Span, checked: CheckedExprNode| {
+            if !item_type.accepts(&checked.r#type) {
+                this.error(
+                    id,
+                    elem_span,
+                    AnalysisErrorKind::ArrayElementTypeMismatch {
+                        expected: item_type.clone(),
+                        found: checked.r#type.clone(),
+                    },
+                );
+                return None;
+            }
+            Some(checked)
+        };
+        checked_elements.push(check_element(self, first.id, first.span, checked_first)?);
+
+        for element in rest {
+            let checked_element = self.analyze_expr(element, Some(&item_type))?;
+            checked_elements.push(check_element(self, element.id, element.span, checked_element)?);
+        }
+
+        let size = checked_elements.len() as u32;
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::SizedArray(Box::new(item_type.clone()), size),
+            kind: CheckedExpr::ArrayLiteral(CheckedArrayLiteral { item_type, elements: checked_elements }),
+        })
+    }
+}

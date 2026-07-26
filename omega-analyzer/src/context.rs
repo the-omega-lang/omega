@@ -304,6 +304,13 @@ impl Context {
     /// `SizedArray` carries its element inline, so it just passes the
     /// current value through unchanged. See `ModuleResolver::resolve_item`
     /// for what this distinction ultimately protects.
+    /// Resolves one written type to its concrete form.
+    ///
+    /// `indirect` says whether this reference sits somewhere that never
+    /// embeds its referent inline (behind a pointer, or in a function
+    /// signature) -- the distinction that lets a self-referential pointer
+    /// field resolve while its own type is still being collected, and that
+    /// rejects a by-value cycle. `bypass` is the `hidden` modifier.
     pub fn resolve_type(
         &self,
         typ: Type,
@@ -312,200 +319,226 @@ impl Context {
         indirect: bool,
         bypass: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
-        let resolved = match typ {
-            // `Entity::Person` (bare or `mymodule`-qualified) is tried first
-            // -- cheap to rule out (`Ok(None)` whenever the prefix doesn't
-            // resolve to a plain enum) and must win over the ordinary
-            // qualified-path reading below (`Entity` is never itself an
-            // imported module alias). See `try_resolve_enum_variant_type`'s
-            // own doc comment.
-            Type::Named(path) => {
-                if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect, bypass)? {
-                    resolved
-                } else if path.is_unqualified() {
-                    if let Some(local) = self.find_defined_type(&path.head) {
-                        local.to_owned()
-                    } else {
-                        // An import alias, lazily resolved -- an ordinary,
-                        // non-generic *type* alias, a generic item, or a
-                        // module alias all end up resolved the same way
-                        // here: find the absolute path the alias names, then
-                        // resolve *that* through `resolve_item` with *this*
-                        // reference's own `indirect`; no alias at all falls
-                        // through to the implicit own-module assumption,
-                        // exactly as before.
-                        //
-                        // Deliberately never short-circuits on
-                        // `ImportTarget::Item`'s own eagerly-resolved
-                        // snapshot -- that snapshot was always produced with
-                        // `indirect = true` (see its doc comment), so
-                        // trusting it directly here would silently drop this
-                        // reference's real `indirect` whenever it's `false`
-                        // (a struct/enum/union field's own type, embedded
-                        // inline) -- exactly the gap that let a mutual
-                        // by-value struct cycle reached through a bare
-                        // import alias slip past the cycle check a
-                        // module-qualified reference already got. Re-running
-                        // `resolve_item` costs nothing extra once the item
-                        // is already `Done` (a couple of hashmap lookups,
-                        // the same cost `ImportTarget::Item` itself would
-                        // have paid to read back its own snapshot); it only
-                        // matters when the item is still genuinely
-                        // `InProgress`, which is exactly the case this
-                        // exists to catch.
-                        let alias = resolver
-                            .resolve_import_alias(module_path, &path.head)
-                            .map_err(TypeResolutionError::ModuleResolution)?;
-                        if let Some(ImportTarget::Item(_, ResolvedItem::Value { .. })) = alias {
-                            return Err(TypeResolutionError::NotAType(vec![path.head.clone()]));
-                        }
-                        let absolute = match alias {
-                            Some(ImportTarget::Item(absolute, _))
-                            | Some(ImportTarget::GenericItem(absolute))
-                            | Some(ImportTarget::Module(absolute)) => absolute,
-                            None => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
-                        };
-                        match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
-                            Ok(ResolvedItem::Type(t)) => t,
-                            Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
-                            // The implicit own-module fallback missing isn't
-                            // a module problem from the user's point of
-                            // view -- they wrote a bare type name that
-                            // doesn't exist. Report it as exactly that, with
-                            // a typo suggestion where one is close enough --
-                            // from the visible scopes, this module's own
-                            // import aliases, then its top-level structs
-                            // (which only the resolver can enumerate).
-                            Err(ResolveError::UnknownItem { .. }) => {
-                                let similar = self
-                                    .similar_type_name(&path.head)
-                                    .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
-                                    .or_else(|| resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type));
-                                return Err(TypeResolutionError::UnrecognizedNamedType { name: path.head.clone(), similar });
-                            }
-                            Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
-                        }
-                    }
+        match typ {
+            Type::Named(path) => self.resolve_named_type(path, resolver, module_path, indirect, bypass),
+            Type::Generic(path, args) => self.resolve_generic_type(path, args, resolver, module_path, indirect, bypass),
+            Type::Pointer(pointee, mutable) => {
+                self.resolve_pointer_type(*pointee, mutable, resolver, module_path, bypass)
+            }
+            Type::SpecObject(pointee, mutable) => {
+                self.resolve_spec_object_type(*pointee, mutable, resolver, module_path, bypass)
+            }
+            Type::Function(fntyp) => {
+                Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?))
+            }
+            Type::Array(item) => {
+                Ok(ResolvedType::Array(Box::new(self.resolve_type(*item, resolver, module_path, true, bypass)?)))
+            }
+            Type::SizedArray(item, size) => {
+                let size = size.parse::<u32>().map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
+                let item = self.resolve_type(*item, resolver, module_path, indirect, bypass)?;
+                Ok(ResolvedType::SizedArray(Box::new(item), size))
+            }
+        }
+    }
+
+    /// A plain named type: an enum variant, a locally defined type (a
+    /// generic parameter or a builtin), an import alias, or -- failing all
+    /// of those -- an item in this module.
+    fn resolve_named_type(
+        &self,
+        path: Path,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        indirect: bool,
+        bypass: bool,
+    ) -> Result<ResolvedType, TypeResolutionError> {
+        let resolved = {
+            if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect, bypass)? {
+                resolved
+            } else if path.is_unqualified() {
+                if let Some(local) = self.find_defined_type(&path.head) {
+                    local.to_owned()
                 } else {
-                    // A qualified type reference (`mymodule::Foo`) -- `path`'s
-                    // head must already be an imported module alias; the rest
-                    // is resolved across modules by `resolver`, never locally.
-                    let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
-                    match resolver
-                        .resolve_item(module_path, &absolute, &[], indirect, bypass)
-                        .map_err(TypeResolutionError::ModuleResolution)?
-                    {
-                        ResolvedItem::Type(t) => t,
-                        ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                    // An import alias, lazily resolved -- an ordinary,
+                    // non-generic *type* alias, a generic item, or a
+                    // module alias all end up resolved the same way
+                    // here: find the absolute path the alias names, then
+                    // resolve *that* through `resolve_item` with *this*
+                    // reference's own `indirect`; no alias at all falls
+                    // through to the implicit own-module assumption,
+                    // exactly as before.
+                    //
+                    // Deliberately never short-circuits on
+                    // `ImportTarget::Item`'s own eagerly-resolved
+                    // snapshot -- that snapshot was always produced with
+                    // `indirect = true` (see its doc comment), so
+                    // trusting it directly here would silently drop this
+                    // reference's real `indirect` whenever it's `false`
+                    // (a struct/enum/union field's own type, embedded
+                    // inline) -- exactly the gap that let a mutual
+                    // by-value struct cycle reached through a bare
+                    // import alias slip past the cycle check a
+                    // module-qualified reference already got. Re-running
+                    // `resolve_item` costs nothing extra once the item
+                    // is already `Done` (a couple of hashmap lookups,
+                    // the same cost `ImportTarget::Item` itself would
+                    // have paid to read back its own snapshot); it only
+                    // matters when the item is still genuinely
+                    // `InProgress`, which is exactly the case this
+                    // exists to catch.
+                    let alias = resolver
+                        .resolve_import_alias(module_path, &path.head)
+                        .map_err(TypeResolutionError::ModuleResolution)?;
+                    if let Some(ImportTarget::Item(_, ResolvedItem::Value { .. })) = alias {
+                        return Err(TypeResolutionError::NotAType(vec![path.head.clone()]));
+                    }
+                    let absolute = match alias {
+                        Some(ImportTarget::Item(absolute, _))
+                        | Some(ImportTarget::GenericItem(absolute))
+                        | Some(ImportTarget::Module(absolute)) => absolute,
+                        None => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+                    };
+                    match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
+                        Ok(ResolvedItem::Type(t)) => t,
+                        Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
+                        // The implicit own-module fallback missing isn't
+                        // a module problem from the user's point of
+                        // view -- they wrote a bare type name that
+                        // doesn't exist. Report it as exactly that, with
+                        // a typo suggestion where one is close enough --
+                        // from the visible scopes, this module's own
+                        // import aliases, then its top-level structs
+                        // (which only the resolver can enumerate).
+                        Err(ResolveError::UnknownItem { .. }) => {
+                            let similar = self
+                                .similar_type_name(&path.head)
+                                .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
+                                .or_else(|| resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type));
+                            return Err(TypeResolutionError::UnrecognizedNamedType { name: path.head.clone(), similar });
+                        }
+                        Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                     }
                 }
-            }
-            // `Path<Type, ...>` -- a generic item referenced with explicit
-            // type arguments (e.g. `List<u32>`). Args are resolved first
-            // (always `indirect = true`: naming a type as a generic argument
-            // never itself embeds it inline -- the *usage* inside the
-            // template body decides that, at instantiation time), then the
-            // whole reference is resolved exactly like `Type::Named`'s
-            // (minus the local-shadowing check -- a generic item is never a
-            // `find_defined_type` entry).
-            Type::Generic(path, args) => {
-                let resolved_args = args
-                    .into_iter()
-                    .map(|arg| self.resolve_type(arg, resolver, module_path, true, bypass))
-                    .collect::<Result<Vec<_>, _>>()?;
+            } else {
+                // A qualified type reference (`mymodule::Foo`) -- `path`'s
+                // head must already be an imported module alias; the rest
+                // is resolved across modules by `resolver`, never locally.
                 let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
-                    .resolve_item(module_path, &absolute, &resolved_args, indirect, bypass)
+                    .resolve_item(module_path, &absolute, &[], indirect, bypass)
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
                     ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
                 }
             }
-            // `*[T]` is a slice (a fat pointer), not a thin `Pointer` to an
-            // `Array` -- `[T]` alone is unsized, so a pointer to it is
-            // necessarily a different, wider representation (data pointer +
-            // length), the same reasoning Rust's `&[T]` follows. `*str` is
-            // handled *before* recursing into the pointee at all, unlike
-            // `*[T]` above: `"str"` is deliberately never registered in
-            // `Context::new()`'s `defined_types`, so resolving it as an
-            // ordinary pointee would fail with "unrecognized type" before
-            // ever reaching a match on the resolved result -- the raw,
-            // unresolved AST has to be checked first. Any other pointee
-            // resolves via the unchanged logic below (ordinary thin
-            // `Pointer`, or `*[T]`'s `Slice` special case).
-            Type::Pointer(pointee_type, mutable) => {
-                let is_bare_str = matches!(
-                    pointee_type.as_ref(),
-                    Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str"
-                );
-                if is_bare_str {
-                    ResolvedType::Str { mutable }
-                } else {
-                    match self.resolve_type(*pointee_type, resolver, module_path, true, bypass)? {
-                        ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
-                        // A pointee that resolves (not through the literal
-                        // `str` syntax above, but indirectly -- e.g. through
-                        // a `for str` extension spec's `Self` substitution,
-                        // see `HirSpecDef::target`) to `Str` gets the same
-                        // treatment as the literal case: re-stamped with
-                        // *this* pointer's own mutability, never
-                        // double-wrapped. `Str` (like `Slice`) is already
-                        // its own fat-pointer value representation -- a
-                        // pointer to one is the same shape, just a
-                        // (possibly) different mutability.
-                        ResolvedType::Str { .. } => ResolvedType::Str { mutable },
-                        other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
-                    }
-                }
-            }
-            Type::Function(fntyp) => {
-                ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?)
-            }
-            Type::Array(item_type) => {
-                ResolvedType::Array(Box::new(self.resolve_type(*item_type, resolver, module_path, true, bypass)?))
-            }
-            Type::SizedArray(item_type, size) => {
-                let size = size
-                    .parse::<u32>()
-                    .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
-                ResolvedType::SizedArray(
-                    Box::new(self.resolve_type(*item_type, resolver, module_path, indirect, bypass)?),
-                    size,
-                )
-            }
-            // `spec *Animal`/`spec *mut Animal` -- a dynamic-dispatch
-            // trait-object pointer. The pointee is always a spec reference
-            // (`Named`/`Generic`), resolved via the ordinary path above
-            // (producing `ResolvedType::Spec`); its own generic args (if
-            // any, e.g. `Iterator<i32>`) are re-extracted from the raw
-            // `Type` here and resolved separately, since `resolve_type`'s
-            // own `Generic` arm consumes them internally without handing
-            // them back on its `ResolvedType::Spec` result. Never
-            // `indirect`-sensitive itself -- a spec object is always a fat
-            // pointer, never embedded inline.
-            Type::SpecObject(pointee, mutable) => {
-                let type_args = match pointee.as_ref() {
-                    Type::Generic(_, args) => args.clone(),
-                    _ => vec![],
-                };
-                let resolved_args = type_args
-                    .into_iter()
-                    .map(|a| self.resolve_type(a, resolver, module_path, true, bypass))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let pointee_name = match pointee.as_ref() {
-                    Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
-                    _ => Ident("<spec>".to_string()),
-                };
-                match self.resolve_type(*pointee, resolver, module_path, true, bypass)? {
-                    ResolvedType::Spec(spec) => {
-                        ResolvedType::SpecObject { spec, type_args: resolved_args, mutable }
-                    }
-                    _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
-                }
-            }
+        
         };
+        Ok(resolved)
+    }
 
+    /// `Path<Type, ...>` -- a generic item referenced with explicit type
+    /// arguments (e.g. `List<u32>`).
+    fn resolve_generic_type(
+        &self,
+        path: Path,
+        args: Vec<Type>,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        indirect: bool,
+        bypass: bool,
+    ) -> Result<ResolvedType, TypeResolutionError> {
+        let resolved = {
+            let resolved_args = args
+                .into_iter()
+                .map(|arg| self.resolve_type(arg, resolver, module_path, true, bypass))
+                .collect::<Result<Vec<_>, _>>()?;
+            let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
+            match resolver
+                .resolve_item(module_path, &absolute, &resolved_args, indirect, bypass)
+                .map_err(TypeResolutionError::ModuleResolution)?
+            {
+                ResolvedItem::Type(t) => t,
+                ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+            }
+        
+        };
+        Ok(resolved)
+    }
+
+    /// `*T`, which is not always a thin pointer.
+    fn resolve_pointer_type(
+        &self,
+        pointee_type: Type,
+        mutable: bool,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        bypass: bool,
+    ) -> Result<ResolvedType, TypeResolutionError> {
+        let pointee_type = Box::new(pointee_type);
+        let resolved = {
+            let is_bare_str = matches!(
+                pointee_type.as_ref(),
+                Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str"
+            );
+            if is_bare_str {
+                ResolvedType::Str { mutable }
+            } else {
+                match self.resolve_type(*pointee_type, resolver, module_path, true, bypass)? {
+                    ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
+                    // A pointee that resolves (not through the literal
+                    // `str` syntax above, but indirectly -- e.g. through
+                    // a `for str` extension spec's `Self` substitution,
+                    // see `HirSpecDef::target`) to `Str` gets the same
+                    // treatment as the literal case: re-stamped with
+                    // *this* pointer's own mutability, never
+                    // double-wrapped. `Str` (like `Slice`) is already
+                    // its own fat-pointer value representation -- a
+                    // pointer to one is the same shape, just a
+                    // (possibly) different mutability.
+                    ResolvedType::Str { .. } => ResolvedType::Str { mutable },
+                    other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
+                }
+            }
+        
+        };
+        Ok(resolved)
+    }
+
+    /// `spec *Animal`/`spec *mut Animal` -- a dynamic-dispatch spec-object
+    /// pointer. Never `indirect`-sensitive itself: a spec object is always a
+    /// fat pointer, never embedded inline.
+    fn resolve_spec_object_type(
+        &self,
+        pointee: Type,
+        mutable: bool,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        bypass: bool,
+    ) -> Result<ResolvedType, TypeResolutionError> {
+        let pointee = Box::new(pointee);
+        let resolved = {
+            let type_args = match pointee.as_ref() {
+                Type::Generic(_, args) => args.clone(),
+                _ => vec![],
+            };
+            let resolved_args = type_args
+                .into_iter()
+                .map(|a| self.resolve_type(a, resolver, module_path, true, bypass))
+                .collect::<Result<Vec<_>, _>>()?;
+            let pointee_name = match pointee.as_ref() {
+                Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
+                _ => Ident("<spec>".to_string()),
+            };
+            match self.resolve_type(*pointee, resolver, module_path, true, bypass)? {
+                ResolvedType::Spec(spec) => {
+                    ResolvedType::SpecObject { spec, type_args: resolved_args, mutable }
+                }
+                _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
+            }
+        
+        };
         Ok(resolved)
     }
 

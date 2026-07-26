@@ -77,6 +77,17 @@ activating its bypass) at every genuine target/operand position that isn't
 itself call/postfix syntax: plain assignment, compound assignment,
 `++`/`--`, and `&`/`&mut`.
 
+That list has since grown twice more, both times for the same reason: `&`'s
+own two non-place operand shapes, `&hidden base[range]` (a slice) and
+`&hidden [...]` (a compile-time slice), each returned early *before* the
+bypass was activated, so `hidden` silently did nothing there. Both now run
+under the same bypass as the plain-place form.
+
+The invariant itself is still "every position must remember", with no
+compiler-enforced backstop — see
+[design-review.md](15-design-review.md#compiler-architecture) for why the
+structural fix is to make place resolution own the bypass instead.
+
 ## Specs: inherited visibility + minimum-permissiveness
 
 A spec function has **no visibility modifier of its own** — it inherits

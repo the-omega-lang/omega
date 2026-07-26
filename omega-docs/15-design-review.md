@@ -14,13 +14,16 @@ spots worth deeper thought before they calcify further.
 Nothing in this file was fixed as part of writing it — this is a mapping
 exercise, not a fix pass.
 
-## Confirmed soundness bugs
+## Fixed: two confirmed soundness bugs
 
-These compile and run today; both were verified against the real compiler, not
-just read from source. Both are also listed in 
-[known issues](14-known-issues.md).
+**Both of these are now fixed**, during the `omega-analyzer` restructure that
+split its 7 500-line `analysis.rs` into eleven per-concern modules. The
+writeups are kept because the *shape* of each is what matters, not the
+individual repro; both were verified fixed against the same repros that first
+demonstrated them, and every object file this project builds is byte-identical
+across the restructure itself.
 
-### Enum tag/header write-protection only guards plain `=`
+### Fixed: enum tag/header write-protection only guarded plain `=`
 
 ```
 enum MyEnum(tag: u16) { A(1), B(2) }
@@ -57,7 +60,14 @@ enforced at exactly one of several structurally-equivalent call sites instead
 of at the single choke point (`analyze_place` itself, or `require_mutable_place`
 ) every write-position already funnels through.
 
-### `\&hidden` silently drops the bypass through a slice/array-literal position
+**Fix**: exactly that — the check moved into `require_mutable_place`, which
+every real write already funnels through (`=`, compound assignment, `++`/`--`,
+`&mut`, and a `mut self` method call's auto-ref). All five now reject a tag or
+header write; the `=`\-only check that used to sit in the assignment arm is
+gone, so there is no longer a second place that could drift. Reads, and writes
+to a variant's own body fields or the shared dynamic fields, are unaffected.
+
+### Fixed: `\&hidden` silently dropped the bypass through a slice/array-literal position
 
 ```
 struct Box { data: [i32; 4]; }
@@ -87,6 +97,12 @@ depends on every current and future write/borrow position individually
 remembering to re-check for a stripped wrapper. That's a "remember to do this
 everywhere" invariant with no compiler-enforced backstop — precisely the shape
 of bug this project's own commit history shows it already hit twice.
+
+**Fix**: both early-return branches now run under `with_hidden_bypass`, so all
+three `&`\-operand shapes (plain place, slice, compile-time slice) activate the
+bypass identically. The underlying "every position must remember" invariant is
+unchanged and still has no backstop — see the note on it in the compiler
+architecture section below.
 
 ## Contradictions between documented intent and actual behavior
 
@@ -321,15 +337,17 @@ confirmed-sound tag- uniqueness check elsewhere in this same code) isn't
 actually backed by a check, just by an assumption in a code comment about
 what's "far past any real declaration."
 
-## Compiler architecture (`omega-driver`)
+## Compiler architecture
 
-Added while restructuring `omega-driver` (see
-[modules-and-linkage.md](10-modules-and-linkage.md)'s own note on that
-pass). Everything below **works today** — these are shape problems, and each
-one is a breaking change to either the `ModuleResolver` trait or the driver's
-own cache keys, which is why none of them were done as part of a refactor.
+Added while restructuring `omega-driver` and `omega-analyzer` (see
+[modules-and-linkage.md](10-modules-and-linkage.md)'s own note on those
+passes). Everything below **works today** — these are shape problems, and each
+one is a breaking change to a cross-crate interface or a core key/identity
+type, which is why none of them were done as part of a refactor.
 
-### Overloading is a second, parallel item pipeline that exists only because the query key can't name a candidate
+### `omega-driver`
+
+#### Overloading is a second, parallel item pipeline that exists only because the query key can't name a candidate
 
 The driver's whole design is "one memoized query per item", keyed by
 `ItemKey { module, name, type_args }`. An overloaded name breaks that key:
@@ -358,7 +376,7 @@ at least one trait method collapse into the ordinary path — and generic
 overloads become possible rather than structurally excluded. Breaking:
 changes the resolver trait's surface and every cache key shape.
 
-### Two independent "pending body" queues that differ only in whether the owner has a declared item
+#### Two independent "pending body" queues that differ only in whether the owner has a declared item
 
 A spec default method with no override is checked *after* its implementor's
 signature, in a second pass. There are two entirely separate machines for
@@ -375,7 +393,7 @@ carry its own module path. One queue keyed by an owner enum
 (`Item(ItemKey) | Receiver(ResolvedType)`) would delete the duplicate
 machine; the `while let` drain shape is the correct one for both.
 
-### `core` is hardcoded as the one and only extension root
+#### `core` is hardcoded as the one and only extension root
 
 `for`-attached methods are found by walking the import graph of the module
 literally named `core`, and declaring a `for` block anywhere else is a hard
@@ -392,7 +410,7 @@ A declared capability (`--extension-root=<name>`, repeatable, or a per-package
 manifest bit) would replace the literal, with the one-block-per-target rule
 enforced across all registered roots at once.
 
-### `ResolveError::Cycle` carries a chain it never populates
+#### `ResolveError::Cycle` carries a chain it never populates
 
 The variant is `Cycle(Vec<Vec<Ident>>)` — a list of module paths, rendered as
 `a -> b -> a`, and the diagnostic's own label says "this import completes the
@@ -409,7 +427,7 @@ by-value type cycle is caught earlier and more precisely by
 `RecursiveTypeWithoutIndirection` — which is exactly why the gap has gone
 unnoticed.
 
-### Module paths and item paths are the same untyped `Vec<Ident>`
+#### Module paths and item paths are the same untyped `Vec<Ident>`
 
 Everything module-shaped is `Vec<Ident>`: cloned per lookup, hashed per query,
 carried in every cache key and every diagnostic. It is also structurally
@@ -424,7 +442,7 @@ An interned `ModulePathId` plus a distinct `ItemPath` type would make the
 confusion unrepresentable and cut the cloning. Breaking across crates: the
 `ModuleResolver` trait speaks `&[Ident]` in every method.
 
-### Diagnostic scoping for borrowed modules is three ad-hoc lists
+#### Diagnostic scoping for borrowed modules is three ad-hoc lists
 
 Which findings surface depends on which of three lists a module lands in, with
 four different outcomes: errors from a local module surface; errors from an
@@ -441,13 +459,65 @@ by this invocation or merely *scanned* for it, and a scanned module should
 report exactly the findings that are about something this invocation asked for.
 Stating that once, and deriving the scopes from it, replaces all three lists.
 
+### `omega-analyzer`
+
+#### A node's identity is two parameters everywhere, threaded by hand
+
+`(HirId, Span)` is passed as a pair through roughly sixty signatures, most of
+which do nothing with it but forward it to the next call and eventually to
+`AnalysisError::new`. It is the single biggest reason functions here look
+wider than they are, and the reason `clippy::too_many_arguments` is allowed
+crate-wide.
+
+Collapsing the pair into one small `Copy` type (a `NodeRef`/`Site`) would cut
+two parameters to one across the crate and make "which id goes with which
+span" unrepresentable rather than a convention. It is a breaking change to
+`omega-hir` (every node would want to hand one out) and touches every call
+site in analysis, which is why it wasn't folded into a refactor pass.
+
+#### `match` value arms must *partition* the domain — there is no catch-all
+
+Arms may not overlap at all (by design: no first-match-wins), and this
+interacts badly with the natural way to write a total match:
+
+```
+match ch {
+    'a'...'z' => 1,
+    '0'...'9' => 2,
+    ...       => 3,        # rejected: overlaps both arms above
+}
+```
+
+The only legal totals are exact partitions (`0..<100`, `100`, `101...`), so a
+"everything else" arm can never be written, and adding a new specific arm to
+an existing match means editing a neighbouring arm's bounds to make room. An
+`else` block covers the same need for a *non*-exhaustive match, so the gap is
+narrow -- but the asymmetry (`else` exists, `...` doesn't) is worth a
+decision rather than an accident. The diagnostic now explains the rule
+explicitly (see the fix note below); the rule itself is unchanged.
+
+#### `hidden` still has no backstop for the "every position must remember" invariant
+
+The `&hidden base[range]` bug fixed above was the *third* occurrence of one
+pattern: `hidden` is a wrapper the parser can leave in several different
+places, and each write/borrow position has to individually remember to strip
+it and re-activate the bypass. Three positions have now been fixed one at a
+time (`=`, `&`/`&mut` on a plain place, and now the slice/array-literal
+operand forms).
+
+The invariant itself is unenforced -- a fourth position added later will
+silently drop the bypass again, with no diagnostic pointing at the cause
+(since no frame is pushed, `UnnecessaryHidden` cannot fire either). Making
+the *place resolver itself* own the bypass, rather than every syntactic
+operand position, is the structural fix.
+
 ## Summary table
 
 
 |Finding|Kind|Verified how|
 |-|-|-|
-|Enum tag write bypass via `\+=`/`\&mut`|soundness bug|real compile|
-|`\&hidden base\[range]` drops the bypass|soundness bug|real compile|
+|Enum tag write bypass via `\+=`/`\&mut`|soundness bug (**fixed**)|real compile, before and after|
+|`\&hidden base\[range]` drops the bypass|soundness bug (**fixed**)|real compile, before and after|
 |`(a >= x) & (a <= y)` doesn't compile|doc/code contradiction|real compile|
 |"Nominal, not structural" is false for all-required specs|doc/code contradiction|source read, cross-referenced against 07-visibility.md's own contradicting line|
 |`bool` has zero operators, including `!`|design asymmetry|source read|
@@ -464,4 +534,7 @@ Stating that once, and deriving the scopes from it, replaces all three lists.
 |`ResolveError::Cycle` never populates its chain|diagnostic gap|source read, both construction sites|
 |module paths and item paths share one untyped shape|architecture|source read|
 |borrowed-module diagnostic scoping has no stated policy|design gap|source read|
+|`(HirId, Span)` threaded as two parameters everywhere|architecture|source read, whole-crate restructure|
+|value-`match` arms must partition the domain, no catch-all|design gap|real compile|
+|`hidden`'s "every position must remember" invariant has no backstop|latent bug class|real compile (third occurrence fixed)|
 
