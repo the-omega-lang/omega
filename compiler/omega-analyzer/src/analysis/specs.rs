@@ -46,6 +46,20 @@ pub(super) struct FlattenedSpecFn {
     pub(super) substitution: Vec<(Ident, ResolvedType)>,
 }
 
+impl FlattenedSpecFn {
+    /// `spec_name`'s own concrete type arguments -- `substitution` always
+    /// starts with `("Self", self_type)` followed by the declaring spec's
+    /// generics in declaration order (see where `substitution` is built in
+    /// `Analyzer::flatten_spec_into`), so this is just that leading `Self`
+    /// entry dropped. Lets a diagnostic naming `spec_name` (e.g.
+    /// `MissingSpecFunction`) show *which* instantiation it's about --
+    /// `"Consumer<*u8>"`, not just `"Consumer"` -- when the same spec is
+    /// implemented more than once at different type arguments.
+    pub(super) fn type_args(&self) -> Vec<ResolvedType> {
+        self.substitution[1..].iter().map(|(_, ty)| ty.clone()).collect()
+    }
+}
+
 /// A spec-default method an implementor needs (no override, spec supplied
 /// a body) -- signature already resolved and merged into the implementor's
 /// `functions` list in phase 1 (`Analyzer::resolve_implements_clause`);
@@ -327,6 +341,7 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::MissingSpecFunction {
                             implementor: Ident(receiver.to_string()),
                             spec: f.spec_name.clone(),
+                            spec_type_args: f.type_args(),
                             function: f.name.clone(),
                         },
                     );
@@ -684,6 +699,7 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::MissingSpecFunction {
                             implementor: implementor_name.clone(),
                             spec: req.spec_name.clone(),
+                            spec_type_args: req.type_args(),
                             function: req.name.clone(),
                         },
                     );

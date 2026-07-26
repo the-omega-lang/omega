@@ -409,8 +409,11 @@ impl AnalysisErrorKind {
                     "a call site has no syntax to choose between receiving `self` by value and by pointer -- \
                      give these methods different names, or make another parameter differ too",
                 ),
-            Self::MissingSpecFunction { implementor, spec, function } => d
-                .with_label(span, format!("`{}` does not implement `{}`", implementor.as_ref(), spec.as_ref()))
+            Self::MissingSpecFunction { implementor, spec, spec_type_args, function } => d
+                .with_label(
+                    span,
+                    format!("`{}` does not implement `{}`", implementor.as_ref(), generic_name(spec, spec_type_args)),
+                )
                 .with_help(format!(
                     "add a `{}` method to `{}`, or give `{}` a default implementation",
                     function.as_ref(),

@@ -101,6 +101,14 @@ own doc comment for how each vtable slot's concrete method is now
 precomputed once, during analysis, instead of re-derived from a bare name
 in codegen.
 
+`MissingSpecFunction` also names *which* instantiation is missing
+(`Consumer<*u8>`, not just `Consumer`) once more than one is in play —
+`FlattenedSpecFn::type_args` (derived from the same `substitution` a
+queued default body's own phase-2 check already relies on) feeds a small
+shared `generic_name` diagnostic helper (`error/mod.rs`), since
+`ResolvedType::Spec`'s own `Display` deliberately stays bare (its
+`type_args` exist for mangling, not diagnostics).
+
 This is still bounded by ordinary overload rules, not a new exception to
 them: **overloading here is parameter-type-only** — a spec function
 shaped like `get(*self) => T`, varying *only* in return type across

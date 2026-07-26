@@ -374,10 +374,16 @@ pub enum AnalysisErrorKind {
 
     // -- specs --
     /// A struct/enum/union's `implements` list requires `function` (from
-    /// `spec`, possibly by way of one of its dependencies), but the type
-    /// provides neither its own matching method nor does `spec` supply a
-    /// default -- `implementor` is the concrete type's own name.
-    MissingSpecFunction { implementor: Ident, spec: Ident, function: Ident },
+    /// `spec<spec_type_args>`, possibly by way of one of its dependencies),
+    /// but the type provides neither its own matching method nor does
+    /// `spec` supply a default -- `implementor` is the concrete type's own
+    /// name. `spec_type_args` matters now that the same spec can be
+    /// implemented more than once at different type arguments (see
+    /// `Analyzer::resolve_implements_clause`) -- without it, two missing
+    /// requirements from two different instantiations of the same generic
+    /// spec would render identically, with nothing to tell a reader which
+    /// one is actually missing.
+    MissingSpecFunction { implementor: Ident, spec: Ident, spec_type_args: Vec<ResolvedType>, function: Ident },
     /// Two specs (`first_spec`/`second_spec`, reached via one implements
     /// clause's transitive dependency flattening) both require a function
     /// named `name`, but with different signatures -- unlike two identical
@@ -752,11 +758,11 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AmbiguousSelfOverload { name, .. } => {
                 write!(f, "'{}' is declared twice, differing only in how it receives 'self'", name.as_ref())
             }
-            Self::MissingSpecFunction { implementor, spec, function } => write!(
+            Self::MissingSpecFunction { implementor, spec, spec_type_args, function } => write!(
                 f,
                 "'{}' does not implement spec '{}': missing '{}'",
                 implementor.as_ref(),
-                spec.as_ref(),
+                generic_name(spec, spec_type_args),
                 function.as_ref()
             ),
             Self::ConflictingSpecFunctions { name, first_spec, second_spec } => write!(

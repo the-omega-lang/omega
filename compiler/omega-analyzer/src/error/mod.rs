@@ -29,6 +29,23 @@ fn join(path: &[Ident]) -> String {
     path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
 }
 
+/// Renders a possibly-generic name for a diagnostic -- `"Name"` when
+/// `type_args` is empty, `"Name<Arg1, Arg2>"` otherwise. Exists because
+/// `ResolvedType::Struct`/`Spec`'s own `Display` deliberately stays bare
+/// (their `type_args` field exists for mangling a reference back to the
+/// right instantiation, not for diagnostics -- see `ResolvedStructType::
+/// type_args`'s doc comment) -- a diagnostic that specifically needs to
+/// show *which* instantiation it's about (e.g. `MissingSpecFunction`, once
+/// the same generic spec can be implemented more than once) builds its own
+/// string with this instead of leaning on that `Display` impl.
+fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
+    if type_args.is_empty() {
+        return name.as_ref().to_string();
+    }
+    let args = type_args.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    format!("{}<{}>", name.as_ref(), args)
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeResolutionError {
     /// A bare type name that doesn't exist in scope. `similar` is a
