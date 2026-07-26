@@ -321,6 +321,126 @@ confirmed-sound tag- uniqueness check elsewhere in this same code) isn't
 actually backed by a check, just by an assumption in a code comment about
 what's "far past any real declaration."
 
+## Compiler architecture (`omega-driver`)
+
+Added while restructuring `omega-driver` (see
+[modules-and-linkage.md](10-modules-and-linkage.md)'s own note on that
+pass). Everything below **works today** — these are shape problems, and each
+one is a breaking change to either the `ModuleResolver` trait or the driver's
+own cache keys, which is why none of them were done as part of a refactor.
+
+### Overloading is a second, parallel item pipeline that exists only because the query key can't name a candidate
+
+The driver's whole design is "one memoized query per item", keyed by
+`ItemKey { module, name, type_args }`. An overloaded name breaks that key:
+two candidates share a module and a name, so the key can only ever address
+the first-declared one. Everything overloading needs today exists to route
+around that single fact:
+
+- its own signature cache and its own body cache, both keyed by
+  `(module, declaration index)` instead of by `ItemKey`;
+- its own duplicate-declaration check (`check_overload_duplicates`), separate
+  from the one the module index already does for every other name;
+- its own `ModuleResolver` method (`function_overload_signatures`), plus a
+  second one (`raw_import_absolute_path`) that exists *only* so an import
+  alias to an overloaded name isn't eagerly collapsed to one winner;
+- an explicit skip in **both** whole-program sweeps, and a separate sweep
+  right after each of them.
+
+Every candidate is also forced to be non-generic, so `f<T>(x: T)` and
+`f(x: i32)` cannot coexist — not a decision anyone made, just what falls out
+of the parallel path not having a `type_args` dimension.
+
+The fix is to make the key able to name a candidate (a disambiguator
+alongside `name`, its declaration position, `0` for the overwhelmingly common
+unambiguous case), after which both parallel caches, both extra sweeps, and
+at least one trait method collapse into the ordinary path — and generic
+overloads become possible rather than structurally excluded. Breaking:
+changes the resolver trait's surface and every cache key shape.
+
+### Two independent "pending body" queues that differ only in whether the owner has a declared item
+
+A spec default method with no override is checked *after* its implementor's
+signature, in a second pass. There are two entirely separate machines for
+this: one keyed by the implementor's `ItemKey`, drained inside that
+implementor's own body check; and one keyed by the receiver's `ResolvedType`,
+drained by its own `while let` loop after both phases finish (because
+checking one queued body can queue another for a different receiver).
+
+Both queue the same `PendingSpecMethod`, both check it with a fresh analyzer
+seeded with the same shape of substitution, and both merge the result into a
+module's item list. The only real difference is that a `for`-attached
+receiver (`i32`, `[T]`) has no declared item to key on, so it also has to
+carry its own module path. One queue keyed by an owner enum
+(`Item(ItemKey) | Receiver(ResolvedType)`) would delete the duplicate
+machine; the `while let` drain shape is the correct one for both.
+
+### `core` is hardcoded as the one and only extension root
+
+`for`-attached methods are found by walking the import graph of the module
+literally named `core`, and declaring a `for` block anywhere else is a hard
+error (`ExtensionOutsideCore`). Consequences worth deciding on deliberately
+rather than inheriting:
+
+- no third-party package can ship extension methods, ever;
+- a local module legitimately named `core` (or any package built with
+  `--name=core`) silently *becomes* the extension root;
+- the "at most one `for` block per target type" rule is enforced across one
+  tree, so it would not survive a second root without being re-thought.
+
+A declared capability (`--extension-root=<name>`, repeatable, or a per-package
+manifest bit) would replace the literal, with the one-block-per-target rule
+enforced across all registered roots at once.
+
+### `ResolveError::Cycle` carries a chain it never populates
+
+The variant is `Cycle(Vec<Vec<Ident>>)` — a list of module paths, rendered as
+`a -> b -> a`, and the diagnostic's own label says "this import completes the
+cycle". Both construction sites pass exactly one module, because the query
+state is a *map* of `InProgress` markers with no ordering, so neither site can
+reconstruct the chain. What actually prints is `cyclic module dependency: a`.
+
+Either populate it for real (keep an in-progress *stack* alongside the state
+map; the cycle is then the suffix from wherever the offending key first
+appears, and the diagnostic becomes genuinely Rust-quality: `a::X -> b::Y ->
+a::X`) or collapse the variant to a single module and reword the message so it
+stops implying a chain. The variant is also close to unreachable today — a
+by-value type cycle is caught earlier and more precisely by
+`RecursiveTypeWithoutIndirection` — which is exactly why the gap has gone
+unnoticed.
+
+### Module paths and item paths are the same untyped `Vec<Ident>`
+
+Everything module-shaped is `Vec<Ident>`: cloned per lookup, hashed per query,
+carried in every cache key and every diagnostic. It is also structurally
+identical to an *item* path — several functions take an "absolute path" that is
+really module + item and immediately `split_last()` it, and nothing in the type
+system stops the two from being confused (the one place they genuinely differ,
+a root's declared name vs. its real on-disk stem, needed a dedicated
+translation step and a doc comment warning every other cache to key off the
+declared one).
+
+An interned `ModulePathId` plus a distinct `ItemPath` type would make the
+confusion unrepresentable and cut the cloning. Breaking across crates: the
+`ModuleResolver` trait speaks `&[Ident]` in every method.
+
+### Diagnostic scoping for borrowed modules is three ad-hoc lists
+
+Which findings surface depends on which of three lists a module lands in, with
+four different outcomes: errors from a local module surface; errors from an
+extern module are dropped; errors from `core`'s tree surface (it's added to
+the error scope explicitly, so a broken `for` block still reports); warnings
+from `core` are dropped (deliberately — its unused imports shouldn't leak into
+every downstream build); warnings from other externs never exist because their
+bodies are never checked.
+
+Each individual choice is defensible and documented at its site, but there is
+no single stated policy, so the next kind of borrowed module has no rule to
+follow. The underlying distinction is ownership: a module is either *compiled*
+by this invocation or merely *scanned* for it, and a scanned module should
+report exactly the findings that are about something this invocation asked for.
+Stating that once, and deriving the scopes from it, replaces all three lists.
+
 ## Summary table
 
 
@@ -338,4 +458,10 @@ what's "far past any real declaration."
 |`Array` has no coercion or cast to/from `Pointer`|narrow gap|source read|
 |`hidden hidden x` always warns spuriously|minor|source read|
 |implicit enum tag has no width bound-check|minor, theoretical|source read|
+|overloading needs a whole parallel item pipeline|architecture|source read, whole-crate restructure|
+|two separate pending-spec-method queues|architecture|source read, whole-crate restructure|
+|`core` hardcoded as the only extension root|design gap|source read|
+|`ResolveError::Cycle` never populates its chain|diagnostic gap|source read, both construction sites|
+|module paths and item paths share one untyped shape|architecture|source read|
+|borrowed-module diagnostic scoping has no stated policy|design gap|source read|
 

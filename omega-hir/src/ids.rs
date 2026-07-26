@@ -20,7 +20,7 @@ pub struct HirId {
 /// Reserved for synthetic `HirId`s minted for monomorphized generic
 /// struct/function instantiations -- never produced by the lowerer, whose
 /// module ids are always allocated sequentially from 0 for real parsed
-/// modules (see `omega_driver::Driver::fresh_module_id`), so this sentinel
+/// modules (see `omega_driver`'s module store), so this sentinel
 /// can never collide with one.
 pub const SYNTHETIC_MODULE: ModuleId = ModuleId(u32::MAX);
 

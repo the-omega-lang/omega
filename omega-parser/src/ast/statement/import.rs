@@ -31,7 +31,7 @@ pub struct ImportStmt {
 /// the parser peeked for before parsing `path` itself (see
 /// `parser::item::parse_item`'s `TokenKind::Import` arm). Purely syntactic;
 /// turning this into an actual absolute module path is
-/// `omega_driver::Driver::import_absolute_path`'s job, once the module tree
+/// `omega_driver`'s module-path arithmetic's job, once the module tree
 /// is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportRoot {

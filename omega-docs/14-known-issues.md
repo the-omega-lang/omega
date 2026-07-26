@@ -62,6 +62,28 @@ new one is found.
 - **No re-export / `pub use`-equivalent.** Matches the language having no
   re-export concept at all today. [visibility.md](07-visibility.md)
 
+## Compiler internals
+
+Shape problems in `omega-driver` that work today but each need a breaking
+change to fix — full writeups in
+[design-review.md](15-design-review.md#compiler-architecture-omega-driver).
+
+- **Overloading needs a whole parallel item pipeline** (two extra caches,
+  two extra sweeps, two extra resolver methods) purely because the item
+  query key can't name one candidate of an overload group — which also
+  makes generic overloads structurally impossible.
+- **Two independent pending-spec-method queues** that differ only in
+  whether the owner has a declared item to key on.
+- **`core` is hardcoded as the only place a `for` block may be declared**,
+  so no third-party package can ship extension methods.
+- **`ResolveError::Cycle` carries a chain it never populates** — it always
+  prints one module, so the rendered message implies a cycle it never
+  shows.
+- **Module paths and item paths are the same untyped `Vec<Ident>`**, so
+  nothing prevents confusing the two.
+- **Diagnostic scoping for scanned (extern/`core`) modules is three ad-hoc
+  lists** with four different outcomes and no stated policy.
+
 ## Design debt worth watching
 
 - Every new `Expression`/`HirExpr`/`CheckedExpr` variant needs updates

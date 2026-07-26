@@ -1122,7 +1122,6 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 .with_help(format!("keep either the `{name}.omg` file or the `{name}/` directory, not both"))
         }
         ResolveError::LoadFailed { .. } => with_label(d, "imported from here".to_string()),
-        ResolveError::MacroExpansionFailed { .. } => with_label(d, "imported from here".to_string()),
         ResolveError::RecursiveTypeWithoutIndirection { item, .. } => {
             with_label(d, format!("`{}` includes itself by value, giving it infinite size", item.as_ref())).with_help(
                 format!("insert indirection (e.g. a pointer: `*{}`) somewhere in the cycle", item.as_ref()),

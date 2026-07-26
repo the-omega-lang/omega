@@ -61,11 +61,11 @@ fn locate_from(root: &Path, path: &[Ident]) -> Result<ModuleLocation, SegmentErr
     result
 }
 
-/// Resolves an absolute module path (e.g. `["mymodule", "thing"]`) against
-/// every search root, first match wins -- the one place this crate's
-/// "multiple include paths for future package support" requirement is
-/// implemented; today `roots` always has exactly one entry, but nothing
-/// above this function needs to change to add more.
+/// Resolves an absolute *on-disk* module path (e.g. `["mymodule", "thing"]`)
+/// against every search root, first match wins. Callers reach this through
+/// [`crate::roots::ModuleRoots`], which decides which roots apply and
+/// translates a declared name into its real on-disk stem first -- nothing
+/// here knows anything about declared identity, externs, or overrides.
 pub fn locate_module(roots: &[PathBuf], path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
     let mut ambiguous = false;
     for root in roots {

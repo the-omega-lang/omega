@@ -67,7 +67,7 @@ pub struct ResolvedStructType {
     /// this type from somewhere else (a field, a parameter, a return
     /// type -- anywhere that only ever sees this `Rc<RefCell<_>>` cell,
     /// never the original declaration site) still be mangled with its
-    /// generic arguments intact; see `omega_driver::Driver::struct_cell`,
+    /// generic arguments intact; see `omega_driver`'s type cells,
     /// this field's only writer.
     pub type_args: Vec<ResolvedType>,
     /// `(name, type, visibility)` per field, in declaration order -- see

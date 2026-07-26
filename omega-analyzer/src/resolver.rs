@@ -32,7 +32,7 @@ pub enum ImportTarget {
     /// (`import mymodule::foo;` then bare `foo()`). Carries its own absolute
     /// path alongside the eagerly-resolved `ResolvedItem` snapshot: that
     /// snapshot was always produced with `indirect = true` (see
-    /// `Driver::resolve_absolute_import_target` -- classifying "what does
+    /// `omega_driver`'s import resolution -- classifying "what does
     /// this alias mean" never itself embeds anything inline), which is fine
     /// for every value-position consumer (a call, a literal construction --
     /// never inline-embedded either way) but wrong to trust as-is for a
@@ -74,11 +74,6 @@ pub enum ResolveError {
     /// `path` resolved to a real file, but reading or parsing it failed --
     /// an I/O error, or a syntax error in the imported file itself.
     LoadFailed { path: Vec<Ident>, message: String },
-    /// `path` parsed successfully, but macro expansion (`omega_parser::
-    /// macros::expand`, run right after parsing and before HIR lowering)
-    /// failed -- an undefined/misused macro, or one that expanded into
-    /// invalid syntax.
-    MacroExpansionFailed { path: Vec<Ident>, message: String },
     /// `item` (in `module`) is a struct that includes itself, directly or
     /// through one or more other structs -- possibly in other modules --
     /// entirely by value, with no pointer anywhere along the cycle. Such a
@@ -91,7 +86,7 @@ pub enum ResolveError {
     RecursiveTypeWithoutIndirection { module: Vec<Ident>, item: Ident },
     /// `item` (in `module`) failed its own signature/body analysis -- the
     /// real diagnostics were already recorded against that module elsewhere
-    /// (see `omega_driver::Driver::module_errors`); this is just a
+    /// (see `omega_driver`'s per-module diagnostic sink); this is just a
     /// lightweight marker so a *reference* to the failed item can itself
     /// fail cleanly, without duplicating or re-deriving the underlying
     /// error here.
@@ -149,9 +144,6 @@ impl fmt::Display for ResolveError {
             ),
             Self::LoadFailed { path, message } => {
                 write!(f, "failed to load module '{}': {message}", join(path))
-            }
-            Self::MacroExpansionFailed { path, message } => {
-                write!(f, "macro expansion failed in module '{}': {message}", join(path))
             }
             Self::RecursiveTypeWithoutIndirection { module, item } => write!(
                 f,
@@ -287,11 +279,13 @@ pub trait ModuleResolver {
         bypass: bool,
     ) -> Result<ResolvedItem, ResolveError>;
 
-    /// Whether `absolute_path` (already successfully resolved, at least
-    /// once, via `resolve_item`) is visible from `accessor_module_path`
-    /// *ignoring* any `hidden` bypass -- the one query `Analyzer` uses,
-    /// after a bypassed `resolve_item` call succeeds, to decide whether that
-    /// bypass actually mattered (see `AnalysisWarningKind::UnnecessaryHidden`).
+    /// Whether `absolute_path` is visible from `accessor_module_path`
+    /// *ignoring* any `hidden` bypass -- the one query `Analyzer` uses, after
+    /// a bypassed `resolve_item` call succeeds, to decide whether that bypass
+    /// actually mattered (see `AnalysisWarningKind::UnnecessaryHidden`).
+    /// Answered from the item's own *declaration*, so it needs no prior
+    /// resolution and is identical for every instantiation of a generic
+    /// template. `false` for a name that doesn't resolve at all.
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool;
 
     /// A *raw*, unresolved view of a generic function's own declared

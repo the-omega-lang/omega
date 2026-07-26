@@ -43,7 +43,7 @@ pub struct ExternFunctionRef {
     pub kind: ExternFunctionKind,
     pub fn_type: ResolvedFunctionType,
     /// The extern declaration's *own* resolved `@mangling(...)` -- read
-    /// straight off `Driver::function_annotations`/`ResolvedMethod::
+    /// straight off the driver's own per-declaration annotation cache/`ResolvedMethod::
     /// annotations` (see either's doc comment), the same signature-time-
     /// resolved value a same-compilation reference to this function would
     /// see. Without this, a consuming compilation would always assume

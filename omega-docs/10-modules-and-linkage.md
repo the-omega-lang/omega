@@ -168,15 +168,13 @@ compile clean.
 **Object files for byte-identical source used to differ, build-to-build.**
 Root cause: several caches across `omega-driver`/`omega-analyzer` are
 `HashMap`s that also get *iterated as a whole* somewhere -- a module's own
-item sweep (`local_items`), the overloaded-function sweep
-(`function_overloads`), the generic-instantiation merge
-(`generic_instantiations`), the unused-import sweep (`raw_imports`), the
-dead-code sweep (`sweep_dead_code`, over `struct_cells`/`union_cells`/
-`enum_cells`), a scope's own declared-binding walk
-(`Analyzer::warn_unused_bindings`, over `declared_variables`), the
-`for`-attached-extension drain (`drain_pending_extensions`, over
-`extension_pending`), and a scope's own type-name typo-suggestion lookup
-(`Context::similar_type_name`, over `defined_types`). `HashMap`'s iteration
+item sweep and the overloaded-function sweep (both over a module's index),
+the generic-instantiation merge, the unused-import sweep, the dead-code
+sweep (over the struct/union/enum cells), a scope's own declared-binding
+walk (`Analyzer::warn_unused_bindings`, over `declared_variables`), the
+`for`-attached-extension drain, and a scope's own type-name
+typo-suggestion lookup (`Context::similar_type_name`, over
+`defined_types`). `HashMap`'s iteration
 order is per-process-random (SipHash-seeded), so whichever of these ran
 first produced side effects (minting a globally-sequential synthetic
 `HirId` per spec-default-method instantiation, picking a "did you mean"
@@ -197,12 +195,52 @@ reasoned about: `just clean && just run-exec`, run repeatedly against
 unmodified source, produced byte-different diagnostic output and
 byte-different object files (`cmp`/`nm -p`-confirmed differing function
 declaration order) before each fix, and byte-identical output across
-15+ consecutive fresh runs after -- including for two sites
-(`extension_pending`, `defined_types`) whose nondeterminism doesn't
+15+ consecutive fresh runs after -- including for two sites (the pending
+extension queue and `defined_types`) whose nondeterminism doesn't
 manifest in this project's own current source at all (nothing here
 currently leaves a `for`-attached spec default pending across multiple
 receivers, or ties two declared names at the same edit-distance from a
 typo) and needed a dedicated repro to prove real, not just theorized.
+
+## Fixed: driver restructure, and two bugs it exposed
+
+`omega-driver` was a single 2 800-line file whose `Driver` held 30 flat
+fields, eleven of them separate maps keyed by module path (parsed HIR, module
+ids, directory-shape flags, sources, parse failures, macro failures, item
+indices, overload indices, import aliases, errors, warnings). It is now eight
+focused modules, and the state is grouped by concern: where modules come from
+on disk, what has been parsed and indexed, what has been resolved, what each
+import means, what `for` blocks were found, and where findings accumulate.
+The item query itself is unchanged in behavior — same two phases, same
+per-item granularity, same cycle guard — and every object file this project
+builds is byte-for-byte identical before and after.
+
+Two real bugs fell out of the restructure:
+
+**Dead-code warnings were reported once per generic instantiation, not once
+per declaration.** The sweep walked the struct/union/enum *cells*, and a
+generic type has one cell per instantiation. A field of `Holder<T>` unused by
+both `Holder<i32>` and `Holder<u8>` produced the same warning twice, at the
+same span; worse, a field used by `Holder<i32>` but not `Holder<u8>` was
+reported as unused even though the warning's own text claims it "is never read
+anywhere `Holder` is used". Instantiations of one declaration are now judged
+together: a field is unused only when *no* instantiation touched it, and it is
+reported once. This is why `examples/dev/main.omg` no longer warns about
+`Optional`'s `None` variant and `value` field — `Optional<u32>::None` is
+constructed on line 849, so the old warning was simply false.
+
+**`is_item_visible` searched a cache instead of reading the declaration.** The
+query behind `UnnecessaryHidden` did a linear scan over every resolved item
+looking for any entry that happened to share a module and name, taking
+whichever one the hash order surfaced first, and answered `false` (not
+visible) whenever nothing had been resolved yet. Visibility is a property of
+the *declaration* — identical for every instantiation, and knowable without
+resolving anything — so it now reads the declaration directly. Same answers,
+no scan, no dependence on what happened to be cached.
+
+Also removed: `ResolveError::MacroExpansionFailed`, a variant nothing had
+constructed since macro failures started being reported structurally as
+`CompileError::MacroExpansion`.
 
 ## Caveats
 
