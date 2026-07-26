@@ -1,13 +1,13 @@
 # The core library
 
-`omega-core/` — Omega's real, permanent standard-library package (replaces
+`runtime/core/` — Omega's real, permanent standard-library package (replaces
 an earlier `examples/core` throwaway used only to prove the underlying
 `for`-spec mechanism worked at all).
 
 ## Layout
 
 ```
-omega-core/
+runtime/core/
   core/
     core.omg          # real root: imports every submodule, nothing else
     cmp.omg              # core::cmp — Ordering, Eq, Ord
@@ -19,7 +19,7 @@ omega-core/
 
 `core.omg` exists solely to `import` every sibling submodule. This isn't
 cosmetic: it's what makes the whole package **reachable-sweepable** as one
-unit when compiled standalone (`omgc omega-core/core/core.omg --name=core
+unit when compiled standalone (`omgc runtime/core/core/core.omg --name=core
 -o core.o`), and it's separately what [specs](08-specs.md)'s lazy
 `for`-attachment discovery walks to find every extension method in the
 package, since that discovery is a transitive import-graph walk, not a
@@ -105,7 +105,7 @@ compiler limitation, as of this writing:
 ## Building it
 
 ```
-just build-core     # omgc omega-core/core/core.omg --name=core -o target/core.o
+just build-core     # omgc runtime/core/core/core.omg --name=core -o target/core.o
 just build-exe       # links against target/core.o, alongside mathlib.o
 just run-exec           # cc ... -o example && ./example
 ```

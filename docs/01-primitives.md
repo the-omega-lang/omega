@@ -145,6 +145,6 @@ own leaf sizes.
   local), not confirmed to be identical. Neither is fixed; both are worked
   around in example code by not exercising the shape.
 - **`isize`/`usize` width is target-dependent by design** — nothing in
-  `omega-core` bakes in a `min_value`/`max_value` bound for them, since any
+  `core` bakes in a `min_value`/`max_value` bound for them, since any
   literal bound would silently be wrong on a target this toolchain wasn't
   built assuming.

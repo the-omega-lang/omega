@@ -73,7 +73,7 @@ per-invocation hygiene scope to disambiguate in the first place.
 
 ## Where it's actually used
 
-`omega-core/core/numerics.omg` is the canonical real-world use: three
+`runtime/core/core/numerics.omg` is the canonical real-world use: three
 macros (`signed_integer`/`unsigned_integer`/`float_ops`), each invoked once
 per concrete numeric type (twelve invocations total) rather than
 hand-writing twelve near-identical `spec ... for $T` blocks — see

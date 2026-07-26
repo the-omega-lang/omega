@@ -79,7 +79,7 @@ if x { true } else { y }                # x OR y (short-circuits)
 ```
 
 `core::cmp`'s `Eq`/`Ord` default methods and every predicate in
-`omega-core` are written this way. Comparison is also **non-associative**
+`core` are written this way. Comparison is also **non-associative**
 (`a == b == c` doesn't parse as chained comparison) and **binds looser than
 the bitwise operators** (Rust-style, not C-style) — so combining two
 comparisons with `&`/`|` needs full parenthesization: `(a >= x) & (a <= y)`,

@@ -13,11 +13,11 @@ directory), e.g. `--extern=mathlib:examples/extern_lib/mathlib.omg`. A real
 build, from this repo's own `justfile`:
 
 ```
-omgc omega-core/core/core.omg --name=core -o target/core.o
+omgc runtime/core/core/core.omg --name=core -o target/core.o
 omgc examples/extern_lib/mathlib.omg -o target/mathlib.o
 omgc examples/dev/main.omg \
      --extern=mathlib:examples/extern_lib/mathlib.omg \
-     --extern=core:omega-core/core/core.omg \
+     --extern=core:runtime/core/core/core.omg \
      -o target/main.o
 cc target/main.o target/mathlib.o target/core.o -o example
 ```
@@ -43,8 +43,8 @@ parsing happens) — this used to silently misroute imports via a plain
 waiting to blow up," not a nice-to-have.
 
 A directory-shaped package's own content lives **nested one level inside**
-its own directory (`omega-core/core/core.omg`, not
-`omega-core/core.omg`) — `fs_resolve` treats `dir/name.omg` and `dir/name/`
+its own directory (`runtime/core/core/core.omg`, not
+`runtime/core/core.omg`) — `fs_resolve` treats `dir/name.omg` and `dir/name/`
 as competing siblings, so a package's real content can't sit beside its own
 directory. `--extern`/`--name` point directly at that real, nested file;
 `omgc` auto-detects the `dir/dir.omg` nesting convention (parent directory
