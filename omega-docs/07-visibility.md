@@ -85,7 +85,7 @@ under the same bypass as the plain-place form.
 
 The invariant itself is still "every position must remember", with no
 compiler-enforced backstop — see
-[design-review.md](15-design-review.md#compiler-architecture) for why the
+[design-review.md](17-design-review.md#compiler-architecture) for why the
 structural fix is to make place resolution own the bypass instead.
 
 ## Specs: inherited visibility + minimum-permissiveness

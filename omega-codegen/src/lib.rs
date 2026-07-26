@@ -1,7 +1,7 @@
 use cranelift::{
     codegen::{
         self,
-        ir::{ArgumentPurpose, BlockArg, FuncRef, StackSlot},
+        ir::{ArgumentPurpose, FuncRef, StackSlot},
     },
     prelude::{
         AbiParam, Block, Configurable, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder,
@@ -13,22 +13,18 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use omega_analyzer::{
     annotations::ManglingMode,
-    checked::{
-        CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp, CheckedBlock,
-        CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedDynamicCall,
-        CheckedEnumConstruct,
-        CheckedExpr,
-        CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
-        CheckedIf, CheckedItem, CheckedMatch, CheckedMatchArm, CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructLiteral, CheckedUnionConstruct, CheckedWhile, CastKind, NumberValue, Storage,
-        ExternFunctionKind, ExternFunctionRef,
-    },
+    checked::{CastKind, ExternFunctionKind, ExternFunctionRef, NumberValue},
     resolved_type::{
         ConstValue, NumericKind, ResolvedEnumType, ResolvedFunctionType, ResolvedSpecType, ResolvedStructType,
         ResolvedType, ResolvedUnionType,
     },
 };
 use omega_hir::{BinaryOp, HirId};
+use omega_mir::{
+    MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall, MirEnumConstruct, MirExpr,
+    MirExprNode, MirExternDeclaration, MirFunctionCall, MirFunctionDef, MirItem, MirModule, MirPlace, MirPlaceRoot,
+    MirProjection, MirSlice, MirSpecCoerce, MirStructLiteral, MirTerminator, MirUnionConstruct,
+};
 use omega_parser::prelude::Ident;
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
@@ -91,15 +87,15 @@ pub enum EmitOutput {
 
 /// Codegen never fails on the *program* itself: everything it would
 /// otherwise need to reject was already enforced while building the
-/// `CheckedModule` (place validity, type compatibility, field/index
-/// existence, redeclaration). What remains here are cases the language
-/// genuinely hasn't decided yet (array memory layout, global data storage,
-/// ...) -- those `panic!`/`todo!()` rather than returning an error, since
-/// there is no rejectable *program* input left by the time codegen runs,
-/// only unimplemented compiler features. The one exception is `generate`
-/// itself: a `--target`/ISA construction failure is genuinely rejectable
-/// *CLI* input (unlike anything about the program being compiled), so it
-/// alone returns a `Result`.
+/// `CheckedModule` these `MirModule`s were lowered from (place validity,
+/// type compatibility, field/index existence, redeclaration). What remains
+/// here are cases the language genuinely hasn't decided yet (array memory
+/// layout, global data storage, ...) -- those `panic!`/`todo!()` rather than
+/// returning an error, since there is no rejectable *program* input left by
+/// the time codegen runs, only unimplemented compiler features. The one
+/// exception is `generate` itself: a `--target`/ISA construction failure is
+/// genuinely rejectable *CLI* input (unlike anything about the program
+/// being compiled), so it alone returns a `Result`.
 pub struct Codegen {
     // Backend
     isa: Arc<dyn isa::TargetIsa>,
@@ -123,7 +119,7 @@ pub struct Codegen {
     bytes: HashMap<String, DataId>,
     /// One vtable per `(concrete type, spec)` pair actually coerced to a
     /// `spec *Spec` value somewhere in this compilation -- built lazily,
-    /// the first time a `CheckedExpr::SpecCoerce` for that exact pair is
+    /// the first time a `MirExpr::SpecCoerce` for that exact pair is
     /// codegen'd (see `vtable_for`), and shared by every later coercion of
     /// the same pair. Keyed by each side's own `HirId` rather than the
     /// full `ResolvedType`/`Rc<RefCell<_>>` -- cheap, `Eq`/`Hash`, and
@@ -136,44 +132,32 @@ pub struct Codegen {
     /// (the length, when needed, is a cheap `iconst` recomputed each call,
     /// same as any other compile-time-constant length).
     local_bytes: HashMap<String, Value>,
-    local_args: HashMap<HirId, Vec<Value>>,
-    /// One stack slot per local, sized to its type's total byte size (not
-    /// one slot per scalar leaf) -- a prerequisite for `&`/`*`: a local
-    /// needs a single address, and three independent per-leaf slots have
-    /// three unrelated addresses. Field access within it is a byte offset
-    /// (see `total_bytes`/`field_byte_offset`), not a leaf-count slice.
-    stack_slots: HashMap<HirId, StackSlot>,
-    /// The current function's single shared exit point: every `return`,
-    /// wherever it's nested (inside an `if`/`while`/`for`), jumps here
-    /// instead of emitting its own `return_` directly -- this block is the
-    /// only place that actually does. Set once at the start of
-    /// `update_function_def`, read by `process_statement`'s `Return` arm.
-    /// See `BlockOutcome`'s doc comment for why a single shared exit point
-    /// is what makes early returns inside nested control flow tractable.
-    return_block: Option<Block>,
-    /// One entry per loop currently being emitted (innermost last), pushed
-    /// by `emit_while`/`emit_for` around their body and popped once it's
-    /// done. `break`/`continue` (see `process_statement`) look their target
-    /// up by the `HirId` the checked module already resolved (see
-    /// `CheckedBreak`/`CheckedContinue.loop_id`) rather than always reading
-    /// `.last()` -- today those always coincide (analysis only ever
-    /// resolves to the innermost enclosing loop), but keying by id here
-    /// means a future labeled `break 'outer;` needs no codegen changes at
-    /// all, only a different resolution rule in analysis.
-    loop_stack: Vec<(HirId, LoopTargets)>,
-    /// One 1-byte stack slot per `defer` in the function currently being
-    /// built, `false` until that `defer`'s own statement executes -- see
-    /// `collect_defer_ids`. Allocated and zero-initialized in the entry
-    /// block, all at once, before the body is walked (a flag must start
-    /// `false` regardless of which path through the function actually
-    /// runs, which a lazy per-branch initialization couldn't guarantee).
-    defer_flags: HashMap<HirId, StackSlot>,
-    /// A `defer`'s deferred body, stashed here by `process_statement`'s
-    /// `Defer` arm (moved out of the `CheckedStmt` at its own position in
-    /// the walk) for the shared epilogue to actually generate code for,
-    /// once, after the whole function body has been walked and every flag
-    /// is known.
-    defer_bodies: HashMap<HirId, CheckedBlock>,
+    /// One entry per `MirBody::locals` index -- `local_args[i]` is
+    /// non-empty exactly when local `i` is a parameter (`i < arg_count`),
+    /// caching its already-materialized SSA leaves straight from the entry
+    /// block's own Cranelift params (never a stack slot, unless something
+    /// later takes its address -- see `place_storage_address`'s own
+    /// `todo!()`).
+    local_args: Vec<Vec<Value>>,
+    /// `MirBody::locals`-indexed, one stack slot per *non-parameter* local
+    /// (`i >= arg_count`), sized to its type's total byte size (not one
+    /// slot per scalar leaf) -- a prerequisite for `&`/`*`: a local needs a
+    /// single address, and three independent per-leaf slots have three
+    /// unrelated addresses. Field access within it is a byte offset (see
+    /// `total_bytes`/`field_byte_offset`), not a leaf-count slice. Sized to
+    /// `MirBody::locals.len()` up front (all `None`) but each entry is only
+    /// actually allocated lazily, the first time `resolve_place_storage`
+    /// resolves that local -- a branch that never runs never pays for a
+    /// slot it never touches, and (unlike allocating every slot up front
+    /// regardless of reachability) this is what `process_decl` already did
+    /// before the mir existed, just now triggered by first-use instead of
+    /// by walking a `Declaration` statement's own lexical position.
+    stack_slots: Vec<Option<StackSlot>>,
+    /// The current function's own `MirBody::arg_count` -- the boundary
+    /// `local_args`/`stack_slots` use to tell a parameter local apart from
+    /// a declared/synthetic one (see `MirBody::locals`'s own doc comment
+    /// for why both share one index space).
+    arg_count: usize,
 
     /// Every locally-defined function/method's final (post-mangling-or-not)
     /// linker symbol, keyed by the demangled string actually handed to
@@ -191,53 +175,21 @@ pub struct Codegen {
     symbol_error: Option<String>,
 }
 
-/// Where `break`/`continue` jump to for one loop. `continue_blk` is *not*
-/// always the loop's condition-check block: for a `for` loop it's a
-/// dedicated block that runs the post-clause before jumping to the
-/// condition check (`continue` must still run `i++` in `for (...; ...;
-/// i++)`), whereas for a `while` it's the condition check directly. Callers
-/// (`process_statement`) don't need to know which -- they just jump here.
-#[derive(Clone, Copy)]
-struct LoopTargets {
-    break_blk: Block,
-    continue_blk: Block,
-}
-
 /// Where a resolved place's underlying storage lives, for both the read
 /// (producing values) and write (storing values) case:
 enum PlaceStorage {
-    /// Already-materialized SSA values (a `Storage::Parameter` that hasn't
-    /// been dereferenced through) -- readable, but has no address: there is
-    /// no memory location backing a bare SSA value.
+    /// Already-materialized SSA values (a parameter local that hasn't been
+    /// dereferenced through) -- readable, but has no address: there is no
+    /// memory location backing a bare SSA value.
     Values(Vec<Value>),
-    /// A byte offset into one compile-time-known stack slot (`Storage::Local`,
-    /// before any `Deref`).
+    /// A byte offset into one compile-time-known stack slot (a non-
+    /// parameter local, before any `Deref`).
     Slot { slot: StackSlot, offset: u32 },
     /// A byte offset from a runtime pointer value -- the state from the
     /// first `Deref` projection onward (explicit `*`, or a seamless
     /// pointer-to-struct field access), since the pointee isn't known until
     /// runtime.
     Address { base: Value, offset: u32 },
-}
-
-/// The result of emitting a `{ ... }` block, or anything shaped like one
-/// (an `if`'s branch, a `while`/`for` body): either it fell off the end
-/// normally (`Value`, the block's tail-expression leaves -- empty for
-/// `Void`/no tail), or it unconditionally `return`ed (`Diverged`) -- in
-/// which case the cranelift block it was building is *already* terminated
-/// (by a jump to the function's shared `return_block`, see `Codegen::
-/// return_block`), and the caller must not emit anything else into it
-/// (another terminator in the same block is invalid IR).
-///
-/// This is what makes an early `return` nested inside an `if`/`while`/`for`
-/// tractable without full reachability analysis: every exit funnels through
-/// one `jump` to one shared block, so "did this branch already leave" is
-/// just "did processing it report `Diverged`," checked locally at each
-/// merge point (`emit_if`'s `then`/`else`, `emit_block`'s per-statement
-/// loop) rather than needing a whole-function control-flow graph.
-enum BlockOutcome {
-    Value(Vec<Value>),
-    Diverged,
 }
 
 trait IntoIRType {
@@ -272,9 +224,9 @@ impl IntoIRType for ResolvedType {
             // `place_field`) and any trailing padding this struct's own
             // `@layout(align = n)` demands are real filler `I8` leaves here,
             // not just a byte-offset bookkeeping detail: this leaf list is
-            // also what a `Storage::Parameter` struct value *is* (flattened
-            // positional scalars, see this file's module doc), so the gaps
-            // have to actually exist as leaves for `field_byte_offset`'s
+            // also what a parameter struct value *is* (flattened positional
+            // scalars, see this file's module doc), so the gaps have to
+            // actually exist as leaves for `field_byte_offset`'s
             // memory-side byte offsets and this leaf-list's own positions to
             // keep agreeing with each other.
             ResolvedType::Struct(struct_type) => {
@@ -366,10 +318,10 @@ impl IntoIRType for ResolvedType {
 
 /// Slices a `FieldAccess` projection's already-resolved `field_index` out of
 /// an already-materialized value list (a `PlaceStorage::Values`, i.e. a
-/// `Storage::Parameter` that hasn't been dereferenced through -- positional,
-/// by leaf count, since there's no memory/byte offset for a bare SSA value).
-/// No name search, no failure path: the checked module already picked this
-/// exact index out of `struct_type`.
+/// parameter local that hasn't been dereferenced through -- positional, by
+/// leaf count, since there's no memory/byte offset for a bare SSA value).
+/// No name search, no failure path: the mir already picked this exact index
+/// out of `struct_type`.
 fn project_field_access<T: Clone>(
     codegen: &Codegen,
     values: &[T],
@@ -381,13 +333,6 @@ fn project_field_access<T: Clone>(
     let len = struct_type.fields[field_index].1.clone().into_ir_type(codegen).len();
 
     values[start..start + len].to_vec()
-}
-
-/// `jump`'s block arguments are `BlockArg`, not bare `Value` -- this just
-/// wraps each one, for the handful of `jump` call sites that pass along a
-/// block's already-materialized leaf values.
-fn block_args(values: &[Value]) -> Vec<BlockArg> {
-    values.iter().map(|v| BlockArg::from(*v)).collect()
 }
 
 /// A resolved type's total in-memory size, in bytes: the sum of its scalar
@@ -456,10 +401,10 @@ fn place_field(offset: u32, field_align: u32, field_size: u32, pack: u32) -> u32
 /// stack slot holding a value whose own required alignment (`type_alignment`)
 /// is `align` bytes (always a power of two, or `1` -- see
 /// `annotations::resolve_layout`'s validation). Never lower than `4` (16
-/// bytes) -- every stack slot's existing baseline (see `process_decl`'s doc
-/// comment) -- so this is a pure no-op for the overwhelming common case (no
-/// `@layout(align = ...)` anywhere, where `align` is `1`); only a
-/// `@layout(align = n)` type with `n > 16` raises it further.
+/// bytes) -- every stack slot's existing baseline -- so this is a pure
+/// no-op for the overwhelming common case (no `@layout(align = ...)`
+/// anywhere, where `align` is `1`); only a `@layout(align = n)` type with
+/// `n > 16` raises it further.
 fn stack_align_shift(align: u32) -> u8 {
     align.max(1).ilog2().max(4) as u8
 }
@@ -637,158 +582,6 @@ fn enum_body_field_offset(
         + layout_fields(&field_types, enum_type.layout.pack, codegen).byte_offsets[field_index]
 }
 
-/// Every `defer`'s `HirId` reachable inside `block`, in declaration (program)
-/// order -- the full set a function's flags need to be allocated and
-/// zero-initialized for, computed once up front (see `define_function_def`)
-/// so that initialization can happen unconditionally in the entry block,
-/// before the body itself is walked for real.
-///
-/// This has to be a genuine full recursive walk of every
-/// `CheckedStmt`/`CheckedExpr`/`CheckedPlace` shape that can embed a nested
-/// `CheckedBlock` or `CheckedExprNode` -- not just the statement-position
-/// `If`/`Codeblock` cases `emit_expr_stmt` itself dispatches on. Analysis
-/// places no restriction against a `defer` nested inside a compound
-/// expression (e.g. `x := if cond { defer cleanup(); 1 } else { 2 };`), and
-/// codegen's own `process_expr` does reach and run such a defer's flag-set
-/// from any expression position -- so a narrower walk here would silently
-/// miss allocating (and zero-initializing) that defer's flag, which the
-/// epilogue would then either panic looking up or -- undetected -- skip
-/// running entirely.
-fn collect_defer_ids(block: &CheckedBlock, out: &mut Vec<HirId>) {
-    for stmt in &block.stmts {
-        collect_defer_ids_stmt(stmt, out);
-    }
-    if let Some(tail) = &block.tail {
-        collect_defer_ids_expr(tail, out);
-    }
-}
-
-fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<HirId>) {
-    match stmt {
-        CheckedStmt::Declaration(_) | CheckedStmt::ExternDeclaration(_) | CheckedStmt::Break(_)
-        | CheckedStmt::Continue(_) => {}
-        CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_defer_ids_expr(e, out),
-        CheckedStmt::While(w) => {
-            collect_defer_ids_expr(&w.condition, out);
-            collect_defer_ids(&w.body, out);
-        }
-        CheckedStmt::For(f) => {
-            for s in &f.init {
-                collect_defer_ids_stmt(s, out);
-            }
-            collect_defer_ids_expr(&f.condition, out);
-            if let Some(post) = &f.post {
-                collect_defer_ids_expr(post, out);
-            }
-            collect_defer_ids(&f.body, out);
-        }
-        CheckedStmt::Defer(d) => {
-            out.push(d.id);
-            // Always empty in practice -- analysis rejects a `defer` nested
-            // inside another `defer`'s body outright -- but walked anyway
-            // for uniformity rather than relying on that invariant here too.
-            collect_defer_ids(&d.body, out);
-        }
-    }
-}
-
-fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<HirId>) {
-    match &expr.kind {
-        CheckedExpr::Number(_)
-        | CheckedExpr::Bool(_)
-        | CheckedExpr::Char(_)
-        | CheckedExpr::String(_)
-        | CheckedExpr::ByteString(_)
-        // A compile-time slice's contents are constants, never a `defer`.
-        | CheckedExpr::ConstSlice(_)
-        // A bare resolved type, no sub-expression at all.
-        | CheckedExpr::Sizeof(_) => {}
-        CheckedExpr::Place(p) => collect_defer_ids_place(p, out),
-        CheckedExpr::FunctionCall(call) => {
-            collect_defer_ids_expr(&call.callee, out);
-            for arg in &call.args {
-                collect_defer_ids_expr(arg, out);
-            }
-        }
-        CheckedExpr::Assignment(a) => {
-            collect_defer_ids_place(&a.target, out);
-            collect_defer_ids_expr(&a.value, out);
-        }
-        CheckedExpr::AddressOf(a) => collect_defer_ids_place(&a.place, out),
-        CheckedExpr::Negate(e) => collect_defer_ids_expr(e, out),
-        CheckedExpr::BitNot(e) => collect_defer_ids_expr(e, out),
-        CheckedExpr::BinaryOp(b) => {
-            collect_defer_ids_expr(&b.left, out);
-            collect_defer_ids_expr(&b.right, out);
-        }
-        CheckedExpr::Codeblock(block) => collect_defer_ids(block, out),
-        CheckedExpr::If(if_expr) => {
-            for (cond, block) in &if_expr.branches {
-                collect_defer_ids_expr(cond, out);
-                collect_defer_ids(block, out);
-            }
-            if let Some(else_branch) = &if_expr.else_branch {
-                collect_defer_ids(else_branch, out);
-            }
-        }
-        CheckedExpr::ArrayLiteral(lit) => {
-            for e in &lit.elements {
-                collect_defer_ids_expr(e, out);
-            }
-        }
-        CheckedExpr::StructLiteral(lit) => {
-            for f in &lit.fields {
-                collect_defer_ids_expr(&f.value, out);
-            }
-        }
-        CheckedExpr::EnumConstruct(construct) => {
-            for f in &construct.fields {
-                collect_defer_ids_expr(&f.value, out);
-            }
-        }
-        CheckedExpr::Slice(s) => {
-            collect_defer_ids_place(&s.base, out);
-            if let Some(start) = &s.start {
-                collect_defer_ids_expr(start, out);
-            }
-            if let Some(end) = &s.end {
-                collect_defer_ids_expr(end, out);
-            }
-        }
-        CheckedExpr::Match(m) => {
-            for arm in &m.arms {
-                for cond in &arm.conditions {
-                    collect_defer_ids_expr(cond, out);
-                }
-                collect_defer_ids(&arm.body, out);
-            }
-            if let Some(else_branch) = &m.else_branch {
-                collect_defer_ids(else_branch, out);
-            }
-        }
-        CheckedExpr::Cast(cast) => collect_defer_ids_expr(&cast.base, out),
-        CheckedExpr::UnionConstruct(construct) => collect_defer_ids_expr(&construct.value, out),
-        CheckedExpr::SpecCoerce(coerce) => collect_defer_ids_expr(&coerce.base, out),
-        CheckedExpr::DynamicCall(call) => {
-            collect_defer_ids_place(&call.base, out);
-            for arg in &call.args {
-                collect_defer_ids_expr(arg, out);
-            }
-        }
-    }
-}
-
-fn collect_defer_ids_place(place: &CheckedPlace, out: &mut Vec<HirId>) {
-    if let CheckedPlaceRoot::Expr(e) = &place.root {
-        collect_defer_ids_expr(e, out);
-    }
-    for proj in &place.projections {
-        if let CheckedProjection::Index { index_expr, .. } = proj {
-            collect_defer_ids_expr(index_expr, out);
-        }
-    }
-}
-
 impl Codegen {
     /// Builds a `TargetIsa` from `target`/`opt_level` and runs the whole
     /// declare-then-define pipeline. The only fallible step is ISA
@@ -803,7 +596,7 @@ impl Codegen {
         target: Target,
         opt_level: OptLevel,
         emit: EmitKind,
-        modules: Vec<(Vec<Ident>, CheckedModule)>,
+        modules: Vec<(Vec<Ident>, MirModule)>,
         entry: &[Ident],
         extern_functions: Vec<ExternFunctionRef>,
     ) -> Result<Self, String> {
@@ -841,12 +634,9 @@ impl Codegen {
             vtables: HashMap::new(),
 
             local_bytes: HashMap::new(),
-            stack_slots: HashMap::new(),
-            local_args: HashMap::new(),
-            return_block: None,
-            loop_stack: Vec::new(),
-            defer_flags: HashMap::new(),
-            defer_bodies: HashMap::new(),
+            local_args: Vec::new(),
+            stack_slots: Vec::new(),
+            arg_count: 0,
             declared_symbols: HashMap::new(),
             symbol_error: None,
         };
@@ -865,10 +655,7 @@ impl Codegen {
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();
-        self.return_block = None;
-        self.loop_stack.clear();
-        self.defer_flags.clear();
-        self.defer_bodies.clear();
+        self.arg_count = 0;
     }
 
     /// Walks a place's root and projections once, tracking where its
@@ -880,32 +667,37 @@ impl Codegen {
     /// derefs/field accesses/indices got it there.
     fn resolve_place_storage(
         &mut self,
-        place: &CheckedPlace,
+        place: &MirPlace,
         builder: &mut FunctionBuilder,
     ) -> (PlaceStorage, ResolvedType) {
         let (mut current, mut current_type) = match &place.root {
-            CheckedPlaceRoot::Variable { decl_id, storage, r#type } => {
-                let current = match storage {
-                    Storage::Local => {
-                        let slot = *self.stack_slots.get(decl_id).unwrap_or_else(|| {
-                            panic!("checked module guarantees {decl_id:?} was declared before this use")
-                        });
-                        PlaceStorage::Slot { slot, offset: 0 }
-                    }
-                    Storage::Parameter => {
-                        let values = self.local_args.get(decl_id).cloned().unwrap_or_else(|| {
-                            panic!("checked module guarantees {decl_id:?} was bound as a parameter before this use")
-                        });
-                        PlaceStorage::Values(values)
-                    }
-                    Storage::Function => {
-                        unreachable!(
-                            "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
-                        );
-                    }
-                    Storage::Global => todo!("global/extern data storage is not yet implemented"),
+            MirPlaceRoot::Local { id, r#type } => {
+                let current = if (id.0 as usize) < self.arg_count {
+                    PlaceStorage::Values(self.local_args[id.0 as usize].clone())
+                } else {
+                    let slot = match self.stack_slots[id.0 as usize] {
+                        Some(slot) => slot,
+                        None => {
+                            let shift = stack_align_shift(type_alignment(r#type));
+                            let size = total_bytes(r#type.clone(), self);
+                            let slot = builder
+                                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
+                            self.stack_slots[id.0 as usize] = Some(slot);
+                            slot
+                        }
+                    };
+                    PlaceStorage::Slot { slot, offset: 0 }
                 };
                 (current, r#type.clone())
+            }
+            MirPlaceRoot::Function(_) => {
+                unreachable!(
+                    "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
+                );
+            }
+            MirPlaceRoot::Global { r#type, .. } => {
+                let _ = r#type;
+                todo!("global/extern data storage is not yet implemented")
             }
             // A temporary as the root of a projection chain -- `foo().bar`,
             // `Vec2 { ... }.x`, or a method call's implicit `&self` on
@@ -913,8 +705,8 @@ impl Codegen {
             // of the projection walk (including taking its address) has
             // ordinary memory to work against, exactly like a local's slot
             // -- the temporary just has no name and no declaration to key
-            // `stack_slots` by.
-            CheckedPlaceRoot::Expr(expr) => {
+            // a stack slot by.
+            MirPlaceRoot::Expr(expr) => {
                 let r#type = expr.r#type.clone();
                 let values = self.process_expr(builder, (**expr).clone());
                 let shift = stack_align_shift(type_alignment(&r#type));
@@ -929,9 +721,9 @@ impl Codegen {
 
         for projection in &place.projections {
             match projection {
-                CheckedProjection::FieldAccess { index, r#type, .. } => {
+                MirProjection::FieldAccess { index, r#type, .. } => {
                     let ResolvedType::Struct(struct_type) = &current_type else {
-                        unreachable!("checked module guarantees field projections are only built against a struct type");
+                        unreachable!("mir body guarantees field projections are only built against a struct type");
                     };
                     let struct_type = struct_type.clone();
                     let struct_type = struct_type.borrow();
@@ -952,13 +744,13 @@ impl Codegen {
                 }
 
                 // Every field lives at offset 0 (see
-                // `CheckedProjection::UnionField`'s doc comment) -- the only
+                // `MirProjection::UnionField`'s doc comment) -- the only
                 // real work here is spilling an SSA-value-backed union to
                 // memory first (mirrors `EnumBody`'s identical spill, for the
                 // identical reason: no leaf slice can reinterpret one field's
                 // real shape out of the union's own opaque payload chunks),
                 // then letting `current_type` advance to the field's type.
-                CheckedProjection::UnionField { r#type, .. } => {
+                MirProjection::UnionField { r#type, .. } => {
                     if let PlaceStorage::Values(values) = &current {
                         let shift = stack_align_shift(type_alignment(&current_type));
                         let size = total_bytes(current_type.clone(), self);
@@ -971,13 +763,13 @@ impl Codegen {
                     current_type = r#type.clone();
                 }
 
-                CheckedProjection::Deref { r#type } => {
+                MirProjection::Deref { r#type } => {
                     let ptr_value = self.load_scalars(builder, &current, &current_type)[0];
                     current = PlaceStorage::Address { base: ptr_value, offset: 0 };
                     current_type = r#type.clone();
                 }
 
-                CheckedProjection::Index { index_expr, item_type } => {
+                MirProjection::Index { index_expr, item_type } => {
                     // The element size comes from `item_type` (the resolved
                     // element type analysis already picked out), not from
                     // flattening `current_type` itself -- the container's own
@@ -1002,7 +794,7 @@ impl Codegen {
                             self.load_scalars(builder, &current, &current_type)[0]
                         }
                         _ => unreachable!(
-                            "checked module guarantees Index projections only apply to Array/SizedArray/Slice/Str"
+                            "mir body guarantees Index projections only apply to Array/SizedArray/Slice/Str"
                         ),
                     };
                     let mut index = self.process_expr(builder, (**index_expr).clone())[0];
@@ -1023,11 +815,11 @@ impl Codegen {
                     current_type = item_type.clone();
                 }
 
-                CheckedProjection::EnumTag { r#type } => {
+                MirProjection::EnumTag { r#type } => {
                     // The tag is the leading leaf/bytes of every enum value
                     // -- offset 0, first leaf.
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("checked module guarantees EnumTag projections are only built against an enum type");
+                        unreachable!("mir body guarantees EnumTag projections are only built against an enum type");
                     };
                     let tag_leaves = cell.borrow().tag_type.clone().into_ir_type(self).len();
                     current = match current {
@@ -1037,9 +829,9 @@ impl Codegen {
                     current_type = r#type.clone();
                 }
 
-                CheckedProjection::EnumHeader { index, r#type, .. } => {
+                MirProjection::EnumHeader { index, r#type, .. } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("checked module guarantees EnumHeader projections are only built against an enum type");
+                        unreachable!("mir body guarantees EnumHeader projections are only built against an enum type");
                     };
                     let cell = cell.clone();
                     let enum_type = cell.borrow();
@@ -1070,10 +862,10 @@ impl Codegen {
                 // difference between the two is which offset helper and
                 // field list to read from (dynamic fields sit right after
                 // the header); mutability is handled generically wherever a
-                // place is written to, not here (see `immutable_enum_member`).
-                CheckedProjection::EnumDynamicField { index, r#type, .. } => {
+                // place is written to, not here.
+                MirProjection::EnumDynamicField { index, r#type, .. } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("checked module guarantees EnumDynamicField projections are only built against an enum type");
+                        unreachable!("mir body guarantees EnumDynamicField projections are only built against an enum type");
                     };
                     let cell = cell.clone();
                     let enum_type = cell.borrow();
@@ -1097,9 +889,9 @@ impl Codegen {
                     current_type = r#type.clone();
                 }
 
-                CheckedProjection::EnumBody { variant_index, field_index, r#type } => {
+                MirProjection::EnumBody { variant_index, field_index, r#type } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("checked module guarantees EnumBody projections are only built against an enum type");
+                        unreachable!("mir body guarantees EnumBody projections are only built against an enum type");
                     };
                     let cell = cell.clone();
                     // A body field lives inside the opaque payload chunks,
@@ -1130,7 +922,7 @@ impl Codegen {
                     current_type = r#type.clone();
                 }
 
-                CheckedProjection::SliceLength => {
+                MirProjection::SliceLength => {
                     // A slice is flattened as [data pointer, i32 length] (see
                     // `ResolvedType::Slice`'s `into_ir_type`) -- `.length` is
                     // just the second leaf, at a byte offset of one pointer's
@@ -1221,14 +1013,14 @@ impl Codegen {
         }
     }
 
-    fn get_place_value(&mut self, place: &CheckedPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
+    fn get_place_value(&mut self, place: &MirPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
         // A function reference has no memory backing at all -- just a
         // symbol address -- so it's handled before the general
-        // storage-resolution path (checked module guarantees this root
-        // never carries further projections, see `resolve_place_storage`).
-        if let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, .. } = &place.root {
+        // storage-resolution path (mir guarantees this root never carries
+        // further projections, see `resolve_place_storage`).
+        if let MirPlaceRoot::Function(decl_id) = &place.root {
             let function = *self.functions.get(decl_id).unwrap_or_else(|| {
-                panic!("checked module guarantees {decl_id:?} was declared as a function before this use")
+                panic!("mir body guarantees {decl_id:?} was declared as a function before this use")
             });
             let func = self.get_func_ref_from_id(builder, function);
             return vec![builder.ins().func_addr(self.pointer_type(), func)];
@@ -1284,7 +1076,7 @@ impl Codegen {
         sig
     }
 
-    fn update_extern_decl(&mut self, extern_decl: CheckedExternDeclaration) {
+    fn update_extern_decl(&mut self, extern_decl: MirExternDeclaration) {
         match extern_decl.r#type {
             ResolvedType::Function(resolved_fntype) => {
                 let sig = self.make_function_sig(resolved_fntype);
@@ -1302,25 +1094,21 @@ impl Codegen {
     }
 
     /// An anonymous data object's symbol -- a pure function of its own
-    /// bytes, not an arbitrary per-process counter (today's `__sym_<N>`,
-    /// which this replaces): two identical constants, in the same
-    /// compilation or two separate ones, always name themselves
-    /// identically, the same "stable, type/content-derived name" property
-    /// `omega_mangle` gives real functions/methods -- see its own design
-    /// notes for why that matters. Rapidhash V3 (`rapidhash::v3::
-    /// rapidhash_v3`, avalanche-enabled -- its default, matching the
-    /// reference C++ implementation, chosen over the crate's own `fast`
-    /// preset since that one deliberately trades away mixing quality for
-    /// hashmap-bucket-selection speed, a different need than a
+    /// bytes, not an arbitrary per-process counter: two identical
+    /// constants, in the same compilation or two separate ones, always
+    /// name themselves identically, the same "stable, type/content-derived
+    /// name" property `omega_mangle` gives real functions/methods -- see
+    /// its own design notes for why that matters. Rapidhash V3
+    /// (`rapidhash::v3::rapidhash_v3`, avalanche-enabled -- its default,
+    /// matching the reference C++ implementation, chosen over the crate's
+    /// own `fast` preset since that one deliberately trades away mixing
+    /// quality for hashmap-bucket-selection speed, a different need than a
     /// standalone, collision-averse identifier) is a deliberately
-    /// non-cryptographic choice, same reasoning as the XXH3-64 it
-    /// replaces: nothing here is adversarial (the input is always the
-    /// compiler's own already-resolved constant data), so all that's
-    /// needed is a fast hash with a low *accidental* collision rate at
-    /// realistic program sizes, not preimage/collision resistance against
-    /// a deliberate attacker. Swapped in purely for speed -- rapidhash is
-    /// faster than XXH3 even with avalanche mixing enabled, so this loses
-    /// nothing quality-wise the change was meant to preserve.
+    /// non-cryptographic choice: nothing here is adversarial (the input is
+    /// always the compiler's own already-resolved constant data), so all
+    /// that's needed is a fast hash with a low *accidental* collision rate
+    /// at realistic program sizes, not preimage/collision resistance
+    /// against a deliberate attacker.
     fn data_symbol(bytes: &[u8]) -> String {
         format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
     }
@@ -1382,14 +1170,13 @@ impl Codegen {
     }
 
     /// Emits one `ConstValue` (an enum tag/header constant, or a
-    /// `CheckedExpr::ConstSlice`) as its leaves, in leaf order -- every
-    /// variant but `Slice`/`Array` is exactly one IR leaf (see `Analyzer::
-    /// const_representable`); `Slice` is the two-leaf `[ptr, len]` fat
-    /// pointer every other `ResolvedType::Slice` value already is (see
-    /// `emit_const_slice`); `Array` is every element's own leaves
-    /// concatenated in order, with no indirection at all -- the same
-    /// packed, no-padding layout `into_ir_type`'s `SizedArray` case already
-    /// flattens to.
+    /// `MirExpr::ConstSlice`) as its leaves, in leaf order -- every
+    /// variant but `Slice`/`Array` is exactly one IR leaf; `Slice` is the
+    /// two-leaf `[ptr, len]` fat pointer every other `ResolvedType::Slice`
+    /// value already is (see `emit_const_slice`); `Array` is every
+    /// element's own leaves concatenated in order, with no indirection at
+    /// all -- the same packed, no-padding layout `into_ir_type`'s
+    /// `SizedArray` case already flattens to.
     fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Vec<Value> {
         match value {
             ConstValue::Number(number) => {
@@ -1406,13 +1193,13 @@ impl Codegen {
             ConstValue::Str(s) => self.emit_bytes(builder, s.clone()),
             ConstValue::Slice(elements) => {
                 let ResolvedType::Slice { item, .. } = r#type else {
-                    unreachable!("checked module guarantees a Slice constant's own type is Slice");
+                    unreachable!("mir body guarantees a Slice constant's own type is Slice");
                 };
                 self.emit_const_slice(builder, elements, item)
             }
             ConstValue::Array(elements) => {
                 let ResolvedType::SizedArray(item, _) = r#type else {
-                    unreachable!("checked module guarantees an Array constant's own type is SizedArray");
+                    unreachable!("mir body guarantees an Array constant's own type is SizedArray");
                 };
                 let mut values = Vec::with_capacity(elements.len());
                 for element in elements {
@@ -1505,7 +1292,7 @@ impl Codegen {
             }
             ConstValue::Slice(nested) => {
                 let ResolvedType::Slice { item, .. } = r#type else {
-                    unreachable!("checked module guarantees a nested Slice constant's own type is Slice");
+                    unreachable!("mir body guarantees a nested Slice constant's own type is Slice");
                 };
                 out.extend_from_slice(&(nested.len() as u32).to_le_bytes());
                 for element in nested {
@@ -1514,7 +1301,7 @@ impl Codegen {
             }
             ConstValue::Array(elements) => {
                 let ResolvedType::SizedArray(item, _) = r#type else {
-                    unreachable!("checked module guarantees a nested Array constant's own type is SizedArray");
+                    unreachable!("mir body guarantees a nested Array constant's own type is SizedArray");
                 };
                 for element in elements {
                     self.hash_const_element(out, element, item);
@@ -1573,7 +1360,7 @@ impl Codegen {
             }
             ConstValue::Slice(nested) => {
                 let ResolvedType::Slice { item, .. } = r#type else {
-                    unreachable!("checked module guarantees a nested Slice constant's own type is Slice");
+                    unreachable!("mir body guarantees a nested Slice constant's own type is Slice");
                 };
                 let nested_id = self.build_const_slice_data(nested, item);
                 let global_value = self.module.declare_data_in_data(nested_id, desc);
@@ -1589,7 +1376,7 @@ impl Codegen {
             // for the function-local (non-static-data) form.
             ConstValue::Array(elements) => {
                 let ResolvedType::SizedArray(item, _) = r#type else {
-                    unreachable!("checked module guarantees a nested Array constant's own type is SizedArray");
+                    unreachable!("mir body guarantees a nested Array constant's own type is SizedArray");
                 };
                 let stride = total_bytes(item.as_ref().clone(), self);
                 for (i, element) in elements.iter().enumerate() {
@@ -1644,7 +1431,7 @@ impl Codegen {
     /// (in declaration order) before `spec`'s own functions, first-seen
     /// name wins -- structurally identical to (and must stay in lockstep
     /// with) `Analyzer::flatten_spec`'s own walk, which is what decided
-    /// `CheckedDynamicCall::slot_index` for every call through this same
+    /// `MirDynamicCall::slot_index` for every call through this same
     /// spec. Unlike `flatten_spec`, this never needs to resolve a raw
     /// signature or detect a conflict: by the time codegen runs, the
     /// program already passed analysis, so every name collision here is
@@ -1698,7 +1485,7 @@ impl Codegen {
                 .find(|(n, _)| n == name)
                 .map(|(_, id)| *id)
                 .unwrap_or_else(|| {
-                    panic!("checked module guarantees '{concrete_name}' provides '{name}' (required by spec '{}')", spec.borrow().name.as_ref())
+                    panic!("mir body guarantees '{concrete_name}' provides '{name}' (required by spec '{}')", spec.borrow().name.as_ref())
                 });
             let func_id = *self.functions.get(&decl_id).expect("every method is declared before any vtable needs it");
             let fref = self.module.declare_func_in_data(func_id, &mut desc);
@@ -1746,311 +1533,17 @@ impl Codegen {
         }
     }
 
-    /// Runs every statement in `block`, stopping early (without touching the
-    /// now-terminated current cranelift block again) the moment one of them
-    /// diverges, then evaluates the tail expression (if any and if still
-    /// reachable). See `BlockOutcome`'s doc comment.
-    fn emit_block(&mut self, builder: &mut FunctionBuilder, block: CheckedBlock) -> BlockOutcome {
-        for stmt in block.stmts {
-            if self.process_statement(builder, stmt) {
-                return BlockOutcome::Diverged;
-            }
-        }
-        match block.tail {
-            Some(tail) => self.emit_expr_stmt(builder, *tail),
-            None => BlockOutcome::Value(vec![]),
-        }
-    }
-
-    /// Evaluates an expression in a position where divergence matters (a
-    /// statement, or a block's tail): `If`/bare `Codeblock` are the only
-    /// expression kinds that can possibly diverge (by ending in an
-    /// unconditional `return`), so they're routed through the
-    /// `BlockOutcome`-aware path; everything else can never diverge and
-    /// goes through the ordinary `process_expr`.
-    fn emit_expr_stmt(&mut self, builder: &mut FunctionBuilder, expr: CheckedExprNode) -> BlockOutcome {
-        if matches!(&expr.kind, CheckedExpr::If(_) | CheckedExpr::Codeblock(_) | CheckedExpr::Match(_)) {
-            let result_leaves = expr.r#type.clone().into_ir_type(self);
-            match expr.kind {
-                CheckedExpr::If(CheckedIf { branches, else_branch }) => {
-                    self.emit_if(builder, branches.into_iter(), else_branch, &result_leaves)
-                }
-                CheckedExpr::Codeblock(block) => self.emit_block(builder, block),
-                CheckedExpr::Match(CheckedMatch { arms, else_branch }) => {
-                    self.emit_match(builder, arms.into_iter(), else_branch, &result_leaves)
-                }
-                _ => unreachable!("checked by the matches! above"),
-            }
-        } else {
-            BlockOutcome::Value(self.process_expr(builder, expr))
-        }
-    }
-
-    /// Builds one `if`/`else if` branch's `brif` and recurses on the rest of
-    /// the chain for its `else` -- so `if a {..} else if b {..} else {..}`
-    /// becomes, structurally, `if a {..} else { if b {..} else {..} } `.
-    /// `branches` is an iterator (rather than a slice) precisely so the
-    /// recursive call can hand off "everything after the one I just
-    /// consumed" by simply passing the same, now-advanced iterator along.
-    ///
-    /// `result_leaves` (computed once by the caller, from the whole `if`
-    /// expression's resolved type) is used for the merge block's params at
-    /// every recursion depth, since analysis already guarantees every
-    /// branch/else agrees on that type.
-    fn emit_if(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        mut branches: std::vec::IntoIter<(CheckedExprNode, CheckedBlock)>,
-        else_branch: Option<CheckedBlock>,
-        result_leaves: &[IRType],
-    ) -> BlockOutcome {
-        let Some((cond, then_body)) = branches.next() else {
-            return match else_branch {
-                Some(b) => self.emit_block(builder, b),
-                None => BlockOutcome::Value(vec![]),
-            };
-        };
-
-        let cond_value = self.process_expr(builder, cond)[0];
-
-        let then_blk = builder.create_block();
-        let else_blk = builder.create_block();
-        let merge_blk = builder.create_block();
-        for ty in result_leaves {
-            builder.append_block_param(merge_blk, *ty);
-        }
-
-        builder.ins().brif(cond_value, then_blk, &[], else_blk, &[]);
-
-        builder.switch_to_block(then_blk);
-        builder.seal_block(then_blk);
-        let then_outcome = self.emit_block(builder, then_body);
-        if let BlockOutcome::Value(values) = &then_outcome {
-            builder.ins().jump(merge_blk, &block_args(values));
-        }
-
-        builder.switch_to_block(else_blk);
-        builder.seal_block(else_blk);
-        let else_outcome = self.emit_if(builder, branches, else_branch, result_leaves);
-        if let BlockOutcome::Value(values) = &else_outcome {
-            builder.ins().jump(merge_blk, &block_args(values));
-        }
-
-        builder.switch_to_block(merge_blk);
-        if matches!(then_outcome, BlockOutcome::Diverged) && matches!(else_outcome, BlockOutcome::Diverged) {
-            // Both paths already jumped to the function's shared return
-            // block -- this merge point is provably unreachable, but
-            // cranelift still requires every block to end in a terminator.
-            // A trap satisfies that without pretending the block is live.
-            builder.ins().trap(TrapCode::unwrap_user(1));
-            builder.seal_block(merge_blk);
-            BlockOutcome::Diverged
-        } else {
-            builder.seal_block(merge_blk);
-            BlockOutcome::Value(builder.block_params(merge_blk).to_vec())
-        }
-    }
-
-    /// `match`'s analogue of `emit_if`: recurses through `arms` exactly the
-    /// way `emit_if` recurses through `branches` (an arm's "no match, try
-    /// the next one" path plays the same role `else` does there), with one
-    /// difference at the very base case -- `else_branch: None` here means
-    /// analysis already *proved* every value is covered
-    /// (`Analyzer::analyze_enum_match`/`analyze_value_match`), not "default
-    /// to an implicit empty block" the way `if` treats a missing `else` --
-    /// so falling off the end traps instead of producing an empty `Value`,
-    /// which would otherwise try to jump into `merge_blk` with zero values
-    /// against however many params a non-`Void` match result type declared.
-    fn emit_match(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        mut arms: std::vec::IntoIter<CheckedMatchArm>,
-        else_branch: Option<CheckedBlock>,
-        result_leaves: &[IRType],
-    ) -> BlockOutcome {
-        let Some(arm) = arms.next() else {
-            return match else_branch {
-                Some(b) => self.emit_block(builder, b),
-                None => {
-                    builder.ins().trap(TrapCode::unwrap_user(1));
-                    BlockOutcome::Diverged
-                }
-            };
-        };
-
-        // A pattern with no present bounds (bare `...`) always matches --
-        // nothing after it in the chain is ever reachable, so there's no
-        // "fail" edge to build at all.
-        if arm.conditions.is_empty() {
-            return self.emit_block(builder, arm.body);
-        }
-
-        let body_blk = builder.create_block();
-        let fail_blk = builder.create_block();
-        let merge_blk = builder.create_block();
-        for ty in result_leaves {
-            builder.append_block_param(merge_blk, *ty);
-        }
-
-        // Every condition must hold to reach `body_blk`; any single one
-        // failing jumps straight to `fail_blk` (the rest of the arm chain)
-        // -- there is no boolean AND operator in this language, so a
-        // multi-bound pattern (a range's low and high bound) is this
-        // nested-brif chain rather than one merged boolean value. Each
-        // condition but the first needs its own intermediate block to test
-        // in (the previous condition's true edge).
-        let condition_count = arm.conditions.len();
-        let mut next_test_blk = None;
-        for (i, cond) in arm.conditions.into_iter().enumerate() {
-            if let Some(blk) = next_test_blk {
-                builder.switch_to_block(blk);
-                builder.seal_block(blk);
-            }
-            let cond_value = self.process_expr(builder, cond)[0];
-            let true_target = if i + 1 == condition_count { body_blk } else { builder.create_block() };
-            builder.ins().brif(cond_value, true_target, &[], fail_blk, &[]);
-            next_test_blk = Some(true_target);
-        }
-
-        builder.switch_to_block(body_blk);
-        builder.seal_block(body_blk);
-        let body_outcome = self.emit_block(builder, arm.body);
-        if let BlockOutcome::Value(values) = &body_outcome {
-            builder.ins().jump(merge_blk, &block_args(values));
-        }
-
-        builder.switch_to_block(fail_blk);
-        builder.seal_block(fail_blk);
-        let fail_outcome = self.emit_match(builder, arms, else_branch, result_leaves);
-        if let BlockOutcome::Value(values) = &fail_outcome {
-            builder.ins().jump(merge_blk, &block_args(values));
-        }
-
-        builder.switch_to_block(merge_blk);
-        if matches!(body_outcome, BlockOutcome::Diverged) && matches!(fail_outcome, BlockOutcome::Diverged) {
-            // Same reasoning as `emit_if`'s identical check: both paths
-            // already diverged, so this merge point is provably
-            // unreachable, but cranelift still requires a terminator.
-            builder.ins().trap(TrapCode::unwrap_user(1));
-            builder.seal_block(merge_blk);
-            BlockOutcome::Diverged
-        } else {
-            builder.seal_block(merge_blk);
-            BlockOutcome::Value(builder.block_params(merge_blk).to_vec())
-        }
-    }
-
-    /// `header_blk` holds the condition check and is re-entered on every
-    /// iteration (the back-edge `jump` below), so it can't be sealed until
-    /// that back-edge (its second predecessor, after the initial jump into
-    /// it) either exists or is known not to (`body`'s outcome).
-    ///
-    /// `loop_id` is this loop's own `HirId` (from `CheckedWhile.id`) -- the
-    /// same identity `break`/`continue` inside `body` resolved against in
-    /// analysis (`CheckedBreak`/`CheckedContinue.loop_id`), so pushing
-    /// `(loop_id, targets)` here and popping it once `body` is fully
-    /// processed is what lets `process_statement` find the right target
-    /// for a `break`/`continue` at any nesting depth inside `body`,
-    /// including through further nested loops (each pushes its own entry;
-    /// an inner loop's `break` finds *its own* `.last()` first).
-    fn emit_while(&mut self, builder: &mut FunctionBuilder, loop_id: HirId, condition: CheckedExprNode, body: CheckedBlock) {
-        let header_blk = builder.create_block();
-        let body_blk = builder.create_block();
-        let exit_blk = builder.create_block();
-
-        builder.ins().jump(header_blk, &[]);
-
-        builder.switch_to_block(header_blk);
-        let cond_value = self.process_expr(builder, condition)[0];
-        builder.ins().brif(cond_value, body_blk, &[], exit_blk, &[]);
-
-        builder.switch_to_block(body_blk);
-        builder.seal_block(body_blk);
-        self.loop_stack.push((loop_id, LoopTargets { break_blk: exit_blk, continue_blk: header_blk }));
-        let body_outcome = self.emit_block(builder, body);
-        self.loop_stack.pop();
-        if let BlockOutcome::Value(_) = body_outcome {
-            builder.ins().jump(header_blk, &[]);
-        }
-        builder.seal_block(header_blk);
-
-        builder.switch_to_block(exit_blk);
-        builder.seal_block(exit_blk);
-    }
-
-    /// Same shape as `emit_while`, plus a one-time `init` before the loop.
-    /// `condition` is mandatory here (unlike the parser's/HIR's, see
-    /// `CheckedFor`'s doc comment for why analysis enforces that) -- so,
-    /// unlike a hypothetical always-true loop, `exit_blk` is always
-    /// statically guaranteed a real predecessor (the condition's
-    /// false-branch), never needing the same "trap an unreachable block"
-    /// treatment `emit_if` does.
-    ///
-    /// Unlike `while`, `continue`'s target here is a dedicated
-    /// `continue_blk` rather than `header_blk` directly: C-style `continue`
-    /// still has to run the post-clause (`i++` in `for (...; ...; i++)`)
-    /// before re-checking the condition, so both the body's normal
-    /// fallthrough *and* any `continue` inside it jump to `continue_blk`,
-    /// which runs `post` once and then jumps to `header_blk` itself.
-    fn emit_for(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        loop_id: HirId,
-        init: Vec<CheckedStmt>,
-        condition: CheckedExprNode,
-        post: Option<CheckedExprNode>,
-        body: CheckedBlock,
-    ) {
-        for stmt in init {
-            self.process_statement(builder, stmt);
-        }
-
-        let header_blk = builder.create_block();
-        let continue_blk = builder.create_block();
-        let body_blk = builder.create_block();
-        let exit_blk = builder.create_block();
-
-        builder.ins().jump(header_blk, &[]);
-
-        builder.switch_to_block(header_blk);
-        let cond_value = self.process_expr(builder, condition)[0];
-        builder.ins().brif(cond_value, body_blk, &[], exit_blk, &[]);
-
-        builder.switch_to_block(body_blk);
-        builder.seal_block(body_blk);
-        self.loop_stack.push((loop_id, LoopTargets { break_blk: exit_blk, continue_blk }));
-        let body_outcome = self.emit_block(builder, body);
-        self.loop_stack.pop();
-        if let BlockOutcome::Value(_) = body_outcome {
-            builder.ins().jump(continue_blk, &[]);
-        }
-
-        // Predecessors: the body's normal fallthrough (just above, if it
-        // didn't diverge) and any `continue` inside it (already emitted,
-        // during `emit_block` above) -- both always precede this point.
-        builder.switch_to_block(continue_blk);
-        builder.seal_block(continue_blk);
-        if let Some(post) = post {
-            self.process_expr(builder, post);
-        }
-        builder.ins().jump(header_blk, &[]);
-        builder.seal_block(header_blk);
-
-        builder.switch_to_block(exit_blk);
-        builder.seal_block(exit_blk);
-    }
-
-    fn process_expr(&mut self, builder: &mut FunctionBuilder, node: CheckedExprNode) -> Vec<Value> {
+    fn process_expr(&mut self, builder: &mut FunctionBuilder, node: MirExprNode) -> Vec<Value> {
         match node.kind {
-            CheckedExpr::String(s) => self.emit_bytes(builder, s),
-            CheckedExpr::ByteString(s) => self.emit_bytes(builder, s),
-            CheckedExpr::ConstSlice(value) => self.emit_const_value(builder, &value, &node.r#type),
+            MirExpr::String(s) => self.emit_bytes(builder, s),
+            MirExpr::ByteString(s) => self.emit_bytes(builder, s),
+            MirExpr::ConstSlice(value) => self.emit_const_value(builder, &value, &node.r#type),
 
-            CheckedExpr::FunctionCall(CheckedFunctionCall { callee, fn_type, args }) => {
-                // Checked module guarantees the callee resolves to exactly
-                // one Function-typed value -- there is no way to construct a
-                // Function-typed expression other than a `Storage::Function`
-                // place root, which always yields a single address.
+            MirExpr::FunctionCall(MirFunctionCall { callee, fn_type, args }) => {
+                // The mir guarantees the callee resolves to exactly one
+                // Function-typed value -- there is no way to construct a
+                // Function-typed expression other than a function place
+                // root, which always yields a single address.
                 let fnaddr = self.process_expr(builder, *callee)[0];
 
                 let fixed_count = fn_type.params.len();
@@ -2123,13 +1616,13 @@ impl Codegen {
             // (`Analyzer::coerce_to_expected` guarantees it); `base`'s own
             // type is always a plain `Pointer` to the concrete struct/enum/
             // union that vtable is built for.
-            CheckedExpr::SpecCoerce(CheckedSpecCoerce { base }) => {
+            MirExpr::SpecCoerce(MirSpecCoerce { base }) => {
                 let ResolvedType::SpecObject { spec, .. } = &node.r#type else {
-                    unreachable!("checked module guarantees a SpecCoerce's own type is SpecObject");
+                    unreachable!("mir body guarantees a SpecCoerce's own type is SpecObject");
                 };
                 let spec = spec.clone();
                 let ResolvedType::Pointer { pointee, .. } = &base.r#type else {
-                    unreachable!("checked module guarantees a SpecCoerce's base is a plain pointer");
+                    unreachable!("mir body guarantees a SpecCoerce's base is a plain pointer");
                 };
                 let concrete = (**pointee).clone();
                 let data_ptr = self.process_expr(builder, *base)[0];
@@ -2148,10 +1641,10 @@ impl Codegen {
             // here, `func_addr`/`get_place_value` for an ordinary call).
             // `self` is `base`'s own data-pointer leaf, prepended exactly
             // like an ordinary method call's own implicit self.
-            CheckedExpr::DynamicCall(CheckedDynamicCall { base, slot_index, fn_type, args }) => {
+            MirExpr::DynamicCall(MirDynamicCall { base, slot_index, fn_type, args }) => {
                 let base_leaves = self.get_place_value(&base, builder);
                 let [data_ptr, vtable_ptr] = base_leaves.as_slice() else {
-                    panic!("checked module guarantees a SpecObject place has exactly 2 leaves");
+                    panic!("mir body guarantees a SpecObject place has exactly 2 leaves");
                 };
                 let (data_ptr, vtable_ptr) = (*data_ptr, *vtable_ptr);
 
@@ -2190,13 +1683,13 @@ impl Codegen {
                 }
             }
 
-            CheckedExpr::Number(value) => {
+            MirExpr::Number(value) => {
                 // The one and only leaf of `node.r#type`'s own flattening --
-                // every resolved numeric type is exactly one IR leaf -- picks
-                // the concrete width/kind to narrow `value` into. `value`
-                // itself is already range-checked against this same type by
-                // analysis (see `Analyzer::analyze_number`), so this never
-                // has to reject anything, only narrow losslessly.
+                // every resolved numeric type is exactly one IR leaf --
+                // picks the concrete width/kind to narrow `value` into.
+                // `value` itself is already range-checked against this same
+                // type by analysis, so this never has to reject anything,
+                // only narrow losslessly.
                 let ir_type = node.r#type.clone().into_ir_type(self)[0];
                 let result = match value {
                     NumberValue::Signed(v) => builder.ins().iconst(ir_type, v),
@@ -2207,7 +1700,7 @@ impl Codegen {
                 vec![result]
             }
 
-            CheckedExpr::Bool(b) => vec![builder.ins().iconst(types::I8, b as i64)],
+            MirExpr::Bool(b) => vec![builder.ins().iconst(types::I8, b as i64)],
 
             // `sizeof<Type>` -- a compile-time-known `usize` constant.
             // Fully general (unlike `sizeof<Type>` used *inside* an
@@ -2215,7 +1708,7 @@ impl Codegen {
             // `ResolvedType::primitive_byte_size`'s doc comment): `Type`
             // may be any struct/enum/primitive, since `total_bytes` already
             // handles all of them uniformly.
-            CheckedExpr::Sizeof(target_type) => {
+            MirExpr::Sizeof(target_type) => {
                 let size = total_bytes(target_type, self);
                 vec![builder.ins().iconst(self.pointer_type(), size as i64)]
             }
@@ -2223,62 +1716,60 @@ impl Codegen {
             // Cranelift has no dedicated char/codepoint type -- a `char`'s
             // one IR leaf is just its `u32` codepoint stored in an `I32`
             // (see `Char`'s `into_ir_type` arm).
-            CheckedExpr::Char(c) => vec![builder.ins().iconst(types::I32, c as i64)],
+            MirExpr::Char(c) => vec![builder.ins().iconst(types::I32, c as i64)],
 
-            CheckedExpr::Place(place) => self.get_place_value(&place, builder),
+            MirExpr::Place(place) => self.get_place_value(&place, builder),
 
-            CheckedExpr::Assignment(CheckedAssignment { target, value }) => {
+            MirExpr::Assignment(MirAssignment { target, value }) => {
                 let values = self.process_expr(builder, *value);
                 // Uniformly covers assignment to a local, through any depth
                 // of explicit/seamless deref (`*ptr = 5;`, `ptr.field = 5;`),
                 // and through array indexing -- whatever `target` resolved
                 // to, `store_scalars` only cares whether it has an address
-                // (`todo!()`s itself for the one case that doesn't yet,
-                // `Storage::Parameter` with no deref in between).
+                // (`todo!()`s itself for the one case that doesn't yet, a
+                // parameter with no deref in between).
                 let (storage, _) = self.resolve_place_storage(&target, builder);
                 self.store_scalars(builder, &storage, &values);
                 values
             }
 
-            CheckedExpr::AddressOf(CheckedAddressOf { place }) => {
+            MirExpr::AddressOf(MirAddressOf { place }) => {
                 let (storage, _) = self.resolve_place_storage(&place, builder);
                 vec![self.place_storage_address(builder, &storage)]
             }
 
-            CheckedExpr::Negate(base) => {
-                // Checked module guarantees only signed ints or floats reach
-                // here (see `Analyzer`'s `HirExpr::Negate` arm) -- `fneg` for
-                // the latter, `ineg` (two's-complement negation) for the
-                // former.
+            MirExpr::Negate(base) => {
+                // The mir guarantees only signed ints or floats reach here
+                // -- `fneg` for the latter, `ineg` (two's-complement
+                // negation) for the former.
                 let is_float = matches!(base.r#type.numeric_kind(), Some(NumericKind::Float(_)));
                 let value = self.process_expr(builder, *base)[0];
                 let result = if is_float { builder.ins().fneg(value) } else { builder.ins().ineg(value) };
                 vec![result]
             }
 
-            CheckedExpr::BitNot(base) => {
-                // Checked module guarantees only signed/unsigned integers
-                // reach here (see `Analyzer`'s `HirExpr::BitNot` arm).
+            MirExpr::BitNot(base) => {
+                // The mir guarantees only signed/unsigned integers reach
+                // here.
                 let value = self.process_expr(builder, *base)[0];
                 vec![builder.ins().bnot(value)]
             }
 
-            CheckedExpr::BinaryOp(CheckedBinaryOp { op, left, right }) => {
-                // Checked module guarantees both operands share the same
-                // resolved type (see `Analyzer`'s `HirExpr::BinaryOp` arm),
-                // so either one's `numeric_kind` picks the right
+            MirExpr::BinaryOp(MirBinaryOp { op, left, right }) => {
+                // The mir guarantees both operands share the same resolved
+                // type, so either one's `numeric_kind` picks the right
                 // instruction for the whole operation. `Char` is the one
                 // exception: it has no `numeric_kind` of its own (see its
                 // doc comment -- arithmetic/bitwise on it is meaningless,
-                // possibly UTF-8-breaking), but `Analyzer::analyze_binary_op`
-                // only ever lets it reach here for a *comparison* op, where
-                // it behaves exactly like its underlying representation: an
-                // unsigned 4-byte scalar, ordered by codepoint.
+                // possibly UTF-8-breaking), but analysis only ever lets it
+                // reach here for a *comparison* op, where it behaves
+                // exactly like its underlying representation: an unsigned
+                // 4-byte scalar, ordered by codepoint.
                 let kind = match &left.r#type {
                     ResolvedType::Char => NumericKind::Unsigned(32),
                     r#type => r#type
                         .numeric_kind()
-                        .expect("checked module guarantees BinaryOp operands are numeric or char"),
+                        .expect("mir body guarantees BinaryOp operands are numeric or char"),
                 };
                 let left = self.process_expr(builder, *left)[0];
                 let right = self.process_expr(builder, *right)[0];
@@ -2299,13 +1790,12 @@ impl Codegen {
                     (BinaryOp::Rem, NumericKind::Signed(_)) => builder.ins().srem(left, right),
                     (BinaryOp::Rem, NumericKind::Unsigned(_)) => builder.ins().urem(left, right),
                     (BinaryOp::Rem, NumericKind::Float(_)) => {
-                        unreachable!("checked module rejects '%' on float operands")
+                        unreachable!("mir body rejects '%' on float operands")
                     }
-                    // Checked module guarantees neither operand is a float
-                    // for any of these (see `Analyzer::analyze_binary_op`'s
-                    // `FloatBitwiseOperand` check) -- signedness never
-                    // matters except for `>>`, which needs to pick
-                    // arithmetic (sign-extending) vs. logical shift.
+                    // The mir guarantees neither operand is a float for any
+                    // of these -- signedness never matters except for
+                    // `>>`, which needs to pick arithmetic (sign-extending)
+                    // vs. logical shift.
                     (BinaryOp::BitAnd, _) => builder.ins().band(left, right),
                     (BinaryOp::BitOr, _) => builder.ins().bor(left, right),
                     (BinaryOp::BitXor, _) => builder.ins().bxor(left, right),
@@ -2313,7 +1803,7 @@ impl Codegen {
                     (BinaryOp::Shr, NumericKind::Signed(_)) => builder.ins().sshr(left, right),
                     (BinaryOp::Shr, NumericKind::Unsigned(_)) => builder.ins().ushr(left, right),
                     (BinaryOp::Shr, NumericKind::Float(_)) => {
-                        unreachable!("checked module rejects '>>' on float operands")
+                        unreachable!("mir body rejects '>>' on float operands")
                     }
                     (cmp, NumericKind::Float(_)) => {
                         let cc = match cmp {
@@ -2355,34 +1845,7 @@ impl Codegen {
                 vec![result]
             }
 
-            CheckedExpr::Codeblock(block) => match self.emit_block(builder, block) {
-                BlockOutcome::Value(values) => values,
-                // Only reachable if a bare `{}` used as a sub-expression
-                // (not a statement/tail, where `emit_expr_stmt` would have
-                // handled it) ends in an unconditional `return` -- a
-                // pathological, unlikely-to-occur case (there's no
-                // meaningful value to produce here regardless) that this
-                // simply treats as `Void`.
-                BlockOutcome::Diverged => vec![],
-            },
-
-            CheckedExpr::If(CheckedIf { branches, else_branch }) => {
-                let result_leaves = node.r#type.clone().into_ir_type(self);
-                match self.emit_if(builder, branches.into_iter(), else_branch, &result_leaves) {
-                    BlockOutcome::Value(values) => values,
-                    BlockOutcome::Diverged => vec![],
-                }
-            }
-
-            CheckedExpr::Match(CheckedMatch { arms, else_branch }) => {
-                let result_leaves = node.r#type.clone().into_ir_type(self);
-                match self.emit_match(builder, arms.into_iter(), else_branch, &result_leaves) {
-                    BlockOutcome::Value(values) => values,
-                    BlockOutcome::Diverged => vec![],
-                }
-            }
-
-            CheckedExpr::ArrayLiteral(CheckedArrayLiteral { elements, .. }) => {
+            MirExpr::ArrayLiteral(MirArrayLiteral { elements, .. }) => {
                 // Each element contributes its own leaves, in order -- the
                 // exact flattening `ResolvedType::SizedArray`'s `into_ir_type`
                 // expects, so the result is usable anywhere a `SizedArray`
@@ -2390,7 +1853,7 @@ impl Codegen {
                 elements.into_iter().flat_map(|e| self.process_expr(builder, e)).collect()
             }
 
-            CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }) => {
+            MirExpr::EnumConstruct(MirEnumConstruct { variant_index, fields }) => {
                 // Built in an anonymous scratch slot -- constants (tag,
                 // header), the shared dynamic fields, and typed body fields
                 // all land at their byte offsets, the rest of the payload
@@ -2401,7 +1864,7 @@ impl Codegen {
                 // slack) -- then the whole value is read back out as
                 // ordinary leaves.
                 let ResolvedType::Enum { cell, .. } = &node.r#type else {
-                    unreachable!("checked module guarantees a construction's own type is its enum");
+                    unreachable!("mir body guarantees a construction's own type is its enum");
                 };
                 let cell = cell.clone();
                 // Snapshot everything needed so the cell isn't borrowed
@@ -2415,12 +1878,11 @@ impl Codegen {
                         .zip(&variant.header_values)
                         .map(|((_, r#type, _), value)| (r#type.clone(), value.clone()))
                         .collect();
-                    // `field.field_index` (from `CheckedEnumConstruct::fields`)
+                    // `field.field_index` (from `MirEnumConstruct::fields`)
                     // spans the *combined* declared list analysis built --
                     // shared dynamic fields first, then this variant's own
-                    // body fields (see `Analyzer::analyze_struct_literal`'s
-                    // `EnumVariant` arm) -- so this offset table is built in
-                    // that exact same order.
+                    // body fields -- so this offset table is built in that
+                    // exact same order.
                     let field_offsets: Vec<u32> = (0..enum_type.dynamic_fields.len())
                         .map(|i| enum_dynamic_field_offset(&enum_type, i, self))
                         .chain(
@@ -2472,16 +1934,16 @@ impl Codegen {
                 self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &node.r#type)
             }
 
-            CheckedExpr::StructLiteral(CheckedStructLiteral { fields }) => {
+            MirExpr::StructLiteral(MirStructLiteral { fields }) => {
                 // Values are evaluated in the order the user wrote them
                 // (their side effects must run in source order), but the
                 // result's leaves are concatenated in *declared field*
                 // order -- the exact flattening `ResolvedType::Struct`'s
                 // `into_ir_type` expects, so the result is usable anywhere
-                // a struct value already is. The checked module guarantees
-                // every declared field appears exactly once.
+                // a struct value already is. The mir guarantees every
+                // declared field appears exactly once.
                 let ResolvedType::Struct(struct_type) = &node.r#type else {
-                    unreachable!("checked module guarantees a struct literal's own type is a struct");
+                    unreachable!("mir body guarantees a struct literal's own type is a struct");
                 };
                 let field_count = struct_type.borrow().fields.len();
                 let mut per_field: Vec<Option<Vec<Value>>> = vec![None; field_count];
@@ -2490,12 +1952,12 @@ impl Codegen {
                 }
                 per_field
                     .into_iter()
-                    .map(|leaves| leaves.expect("checked module guarantees every field is initialized"))
+                    .map(|leaves| leaves.expect("mir body guarantees every field is initialized"))
                     .flatten()
                     .collect()
             }
 
-            CheckedExpr::Slice(CheckedSlice { base, item_type, start, end, inclusive }) => {
+            MirExpr::Slice(MirSlice { base, item_type, start, end, inclusive }) => {
                 let (storage, base_type) = self.resolve_place_storage(&base, builder);
                 let ptr_type = self.pointer_type();
 
@@ -2517,7 +1979,7 @@ impl Codegen {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], leaves[1])
                     }
-                    _ => unreachable!("checked module guarantees a slice's base is SizedArray/Slice/Str"),
+                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str"),
                 };
 
                 let elem_size = total_bytes(item_type, self) as i64;
@@ -2552,7 +2014,7 @@ impl Codegen {
                 vec![new_ptr, new_len]
             }
 
-            CheckedExpr::Cast(CheckedCast { kind, target_type, base }) => {
+            MirExpr::Cast(MirCast { kind, target_type, base }) => {
                 // Captures every leaf, not just the first -- `Reinterpret`
                 // needs all of them (a fat pointer's `[ptr, len]` passed
                 // through unchanged, same as a numeric cast's own single
@@ -2579,7 +2041,7 @@ impl Codegen {
                 }
             }
 
-            CheckedExpr::UnionConstruct(CheckedUnionConstruct { field_index: _, value }) => {
+            MirExpr::UnionConstruct(MirUnionConstruct { field_index: _, value }) => {
                 // Mirrors `EnumConstruct`'s shape (anonymous slot, zero the
                 // whole region deterministically, store the one field's
                 // scalars, read the whole thing back as flattened leaves) --
@@ -2603,95 +2065,13 @@ impl Codegen {
         }
     }
 
-    fn process_decl(&mut self, builder: &mut FunctionBuilder, decl: CheckedDeclaration) {
-        let shift = stack_align_shift(type_alignment(&decl.r#type));
-        let size = total_bytes(decl.r#type, self);
-        // `StackSlotData::new`'s third parameter is an alignment *shift*
-        // (alignment = 2^align_shift), not a byte count -- `4` means
-        // 16-byte-aligned, which is what was actually intended here. This
-        // was previously (harmlessly, by luck) passing `16` directly,
-        // requesting a 65536-byte alignment per slot; with few enough
-        // locals the resulting bloated stack frame still happened to work,
-        // but it's a real bug that surfaces once a function has enough
-        // locals (see the regression this fixes: a large function's
-        // earlier float locals started reading back as zero once later
-        // additions pushed the slot count high enough). `shift` only ever
-        // raises this baseline further, for a local whose own type demands
-        // more than 16-byte alignment (see `stack_align_shift`).
-        let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
-        self.stack_slots.insert(decl.id, slot);
-    }
-
-    /// Returns `true` if this statement unconditionally diverged (jumped to
-    /// the shared `return_block`) -- the current cranelift block is then
-    /// already terminated, and the caller (`emit_block`'s loop) must not
-    /// process any further statements against it.
-    fn process_statement(&mut self, builder: &mut FunctionBuilder, stmt: CheckedStmt) -> bool {
-        match stmt {
-            CheckedStmt::Expression(expr) => matches!(self.emit_expr_stmt(builder, expr), BlockOutcome::Diverged),
-            CheckedStmt::Return(expr) => {
-                let retval = self.process_expr(builder, expr);
-                let return_block = self.return_block.expect("set at the start of every function body");
-                builder.ins().jump(return_block, &block_args(&retval));
-                true
-            }
-            CheckedStmt::Declaration(decl) => {
-                self.process_decl(builder, decl);
-                false
-            }
-            CheckedStmt::ExternDeclaration(_) => {
-                todo!("extern declarations inside a function body are not yet implemented");
-            }
-            CheckedStmt::While(CheckedWhile { id, condition, body, .. }) => {
-                self.emit_while(builder, id, condition, body);
-                false
-            }
-            CheckedStmt::For(for_loop) => {
-                let CheckedFor { id, init, condition, post, body, .. } = *for_loop;
-                self.emit_for(builder, id, init, condition, post, body);
-                false
-            }
-            CheckedStmt::Break(CheckedBreak { loop_id, .. }) => {
-                let target = self.loop_target(loop_id).break_blk;
-                builder.ins().jump(target, &[]);
-                true
-            }
-            CheckedStmt::Continue(CheckedContinue { loop_id, .. }) => {
-                let target = self.loop_target(loop_id).continue_blk;
-                builder.ins().jump(target, &[]);
-                true
-            }
-            CheckedStmt::Defer(CheckedDefer { id, body, .. }) => {
-                let slot = *self
-                    .defer_flags
-                    .get(&id)
-                    .expect("every defer's flag is allocated by collect_defer_ids before the body is walked");
-                let true_val = builder.ins().iconst(types::I8, 1);
-                builder.ins().stack_store(true_val, slot, 0);
-                self.defer_bodies.insert(id, body);
-                false
-            }
-        }
-    }
-
-    /// Looks up `loop_id`'s targets by identity rather than assuming
-    /// `.last()` -- see `Codegen::loop_stack`'s doc comment for why.
-    fn loop_target(&self, loop_id: HirId) -> LoopTargets {
-        self.loop_stack
-            .iter()
-            .rev()
-            .find(|(id, _)| *id == loop_id)
-            .map(|(_, targets)| *targets)
-            .expect("checked module guarantees a break/continue's loop_id is a currently-enclosing loop")
-    }
-
     /// A function/method's cranelift `Signature`, built the same way
     /// regardless of whether it's being declared (pass 1) or defined (pass
     /// 2) -- and, crucially, the same way *call sites* build it: one
     /// delegation to `make_function_sig`, so the definition and every call
     /// can never disagree about parameter flattening or the hidden
     /// struct-return pointer.
-    fn function_signature(&self, function_def: &CheckedFunctionDef) -> Signature {
+    fn function_signature(&self, function_def: &MirFunctionDef) -> Signature {
         self.make_function_sig(function_def.fn_type())
     }
 
@@ -2702,8 +2082,7 @@ impl Codegen {
     /// `FuncId` any other module's body can already look up) before *any*
     /// body starts being built. Without this split, a cross-module call in
     /// either import direction would panic the first time one module's body
-    /// needed another module's not-yet-declared `FuncId` (see the plan's
-    /// "codegen declare/define split" note).
+    /// needed another module's not-yet-declared `FuncId`.
     ///
     /// `linkage` is `Linkage::Export` (strong) for an ordinary item and
     /// `Linkage::Preemptible` (weak) for a generic instantiation -- see
@@ -2712,11 +2091,11 @@ impl Codegen {
     /// symbols is still exactly the `@mangling(disabled)` user error this
     /// check has always caught; it's untouched by generics, since the
     /// driver's own `ItemKey` cache already guarantees at most one
-    /// `CheckedFunctionDef` per instantiation reaches this function at all
+    /// `MirFunctionDef` per instantiation reaches this function at all
     /// within a single compilation -- weak linkage is what lets two
     /// *separate* compilations' independently-generated copies fold into
     /// one at link time, a scenario this in-process map never sees.
-    fn declare_function_def(&mut self, function_def: &CheckedFunctionDef, symbol: String, linkage: Linkage) -> FuncId {
+    fn declare_function_def(&mut self, function_def: &MirFunctionDef, symbol: String, linkage: Linkage) -> FuncId {
         let sig = self.function_signature(function_def);
 
         if let Some(&existing_id) = self.declared_symbols.get(&symbol)
@@ -2755,9 +2134,9 @@ impl Codegen {
     /// `declare_function_def`'s extern-module counterpart: declares a link
     /// against an extern-owned function/method, but `Linkage::Import` only
     /// -- no paired `Export` declare, and `define_item`'s pass 2 never sees
-    /// this `HirId` at all (it isn't in any `CheckedModule.items`), so no
-    /// body is ever generated for it here. `extern_fn.mangling` (resolved
-    /// by the *declaring* compilation, at signature time -- see
+    /// this `HirId` at all (it isn't in any `MirModule.items`), so no body
+    /// is ever generated for it here. `extern_fn.mangling` (resolved by the
+    /// *declaring* compilation, at signature time -- see
     /// `omega_analyzer::annotations`' doc comment and `ExternFunctionRef::
     /// mangling`'s own) decides which symbol-shape branch below applies,
     /// mirroring `declare_item`'s identical branch for a local function:
@@ -2771,9 +2150,8 @@ impl Codegen {
         let mangled = match (extern_fn.mangling, &extern_fn.kind) {
             (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
             // `@mangling(disabled)` is rejected on methods at analysis time
-            // (see `AnalysisErrorKind::ManglingDisabledOnMethod`) -- an
-            // extern method's own declaration went through the exact same
-            // check, so this combination can't actually occur.
+            // -- an extern method's own declaration went through the exact
+            // same check, so this combination can't actually occur.
             (ManglingMode::Disabled, ExternFunctionKind::Method { .. }) => {
                 unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
             }
@@ -2798,7 +2176,16 @@ impl Codegen {
     /// used to do after declaring, now looking up the `FuncId` every item
     /// across every module already got in the declare pass, rather than
     /// declaring (and re-registering) it itself.
-    fn define_function_def(&mut self, function_def: CheckedFunctionDef) {
+    ///
+    /// Unlike the pre-mir version of this function, there is no
+    /// `BlockOutcome`/`return_block`/`loop_stack`/`defer_flags` bookkeeping
+    /// here at all -- the mir body already *is* the control-flow graph
+    /// (every `if`/`match`/`while`/`for`/`break`/`continue`/`return`/
+    /// `defer` was flattened into it during lowering, see
+    /// `omega-docs/16-mir-and-codegen.md`), so this is just: one Cranelift
+    /// `Block` per `MirBlockData`, then translate each one's statements and
+    /// its single terminator.
+    fn define_function_def(&mut self, function_def: MirFunctionDef) {
         // A symbol collision (see `declare_function_def`) is always found
         // during the declare pass, which fully finishes before any define
         // pass starts (see `update_all`'s doc comment) -- so once one's
@@ -2817,11 +2204,11 @@ impl Codegen {
             .get(&function_def.id)
             .expect("declared for every item, across every module, before any body is defined");
         let sig = self.function_signature(&function_def);
-        let fntype = function_def.fn_type();
+        let MirFunctionDef { return_type, body, .. } = function_def;
 
         // Move `ctx` out of `self` for the duration of the build so the rest of
         // this function can still freely borrow `self` (e.g. `into_ir_type(&self)`,
-        // `self.process_statement(...)`) while `builder` holds onto it.
+        // `self.process_expr(...)`) while `builder` holds onto it.
         let mut ctx = std::mem::replace(&mut self.ctx, codegen::Context::new());
         // `ctx.clear()` (called for every function via `clear_local`, below)
         // resets `want_disasm` back to `false` each time, so this has to be
@@ -2831,7 +2218,16 @@ impl Codegen {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         builder.func.signature = sig;
 
-        let entry_block = builder.create_block();
+        self.arg_count = body.arg_count;
+        self.stack_slots = vec![None; body.locals.len()];
+        self.local_args = vec![Vec::new(); body.locals.len()];
+
+        // One cranelift block per mir block, minted up front so a forward
+        // reference (or a loop's own back-edge) always resolves regardless
+        // of which order the blocks below get filled in.
+        let cranelift_blocks: Vec<Block> = body.blocks.iter().map(|_| builder.create_block()).collect();
+        let entry_block = cranelift_blocks[0];
+
         builder.append_block_params_for_function_params(entry_block);
         let block_params = builder.block_params(entry_block).to_vec();
 
@@ -2839,117 +2235,82 @@ impl Codegen {
         // pointer, always the signature's first parameter (see
         // `make_function_sig`) -- peel it off before mapping the *declared*
         // parameters below.
-        let sret = self
-            .needs_sret(&function_def.return_type)
-            .then(|| block_params[0]);
+        let sret = self.needs_sret(&return_type).then(|| block_params[0]);
         let declared_params = &block_params[sret.is_some() as usize..];
 
         // Some identifiers (e.g structs) have more than one value per identifier.
-        // For that reason, lets make a helper array that repeats the param's own
-        // id N times, where N is the amount of values it has.
-        let argmap = function_def
-            .params
+        // For that reason, lets make a helper array that repeats the local's own
+        // index N times, where N is the amount of values it has.
+        let argmap: Vec<usize> = body.locals[..body.arg_count]
             .iter()
-            .flat_map(|param| {
-                let value_count = param.r#type.clone().into_ir_type(self).len();
-                vec![param.id; value_count]
+            .enumerate()
+            .flat_map(|(i, local)| {
+                let value_count = local.r#type.clone().into_ir_type(self).len();
+                vec![i; value_count]
             })
-            .collect::<Vec<_>>();
+            .collect();
         for (i, arg) in declared_params.iter().enumerate() {
-            self.local_args.entry(argmap[i]).or_default().push(*arg);
-        }
-        builder.switch_to_block(entry_block);
-
-        // One 1-byte flag per `defer` in this function, allocated and
-        // zero-initialized here -- unconditionally, before the body is
-        // walked for real -- so a path that never reaches a given `defer`
-        // reads back `false` in the epilogue rather than uninitialized
-        // stack memory. See `collect_defer_ids`'s doc comment for why this
-        // has to be a full up-front pre-pass rather than lazy allocation at
-        // each defer's own position.
-        let mut defer_order = Vec::new();
-        collect_defer_ids(&function_def.body, &mut defer_order);
-        for &id in &defer_order {
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 1, 0));
-            let false_val = builder.ins().iconst(types::I8, 0);
-            builder.ins().stack_store(false_val, slot, 0);
-            self.defer_flags.insert(id, slot);
+            self.local_args[argmap[i]].push(*arg);
         }
 
-        // Every `return` in this function body, however deeply nested
-        // inside `if`/`while`/`for`, jumps here instead of emitting its own
-        // `return_` -- this is the only block that actually does, once
-        // every path through the body has either jumped here or (falling
-        // off the end normally) is about to, right below. See
-        // `Codegen::return_block`/`BlockOutcome`'s doc comments.
-        let return_leaves = fntype.return_type.clone().into_ir_type(self);
-        let return_block = builder.create_block();
-        for ty in &return_leaves {
-            builder.append_block_param(return_block, *ty);
-        }
-        self.return_block = Some(return_block);
-
-        if let BlockOutcome::Value(values) = self.emit_block(&mut builder, function_def.body) {
-            builder.ins().jump(return_block, &block_args(&values));
-        }
-
-        builder.switch_to_block(return_block);
-        builder.seal_block(return_block);
-        let final_values = builder.block_params(return_block).to_vec();
-
-        // Deferred cleanup, in reverse declaration order (FILO -- a
-        // later-declared resource may depend on an earlier one, so it's
-        // torn down first), checked once here rather than duplicated at
-        // every `return`/fallthrough site: every exit already funnels
-        // through this one shared `return_block` above, so this is the one
-        // place that needs to run regardless of which path got here. Each
-        // defer's flag (`false` unless its own statement actually executed
-        // -- see `process_statement`'s `Defer` arm) makes this correct with
-        // no reachability analysis: a defer whose statement never ran along
-        // the path that reached this exit is simply a no-op check here.
-        for id in defer_order.iter().rev() {
-            let slot = self.defer_flags[id];
-            let body = self
-                .defer_bodies
-                .remove(id)
-                .expect("every collected defer is visited unconditionally during the compile-time walk above");
-            let flag = builder.ins().stack_load(types::I8, slot, 0);
-            let run_blk = builder.create_block();
-            let after_blk = builder.create_block();
-            builder.ins().brif(flag, run_blk, &[], after_blk, &[]);
-
-            builder.switch_to_block(run_blk);
-            builder.seal_block(run_blk);
-            let outcome = self.emit_block(&mut builder, body);
-            assert!(
-                matches!(outcome, BlockOutcome::Value(_)),
-                "a defer body can never diverge -- analysis rejects return/break/continue inside one"
-            );
-            builder.ins().jump(after_blk, &[]);
-
-            builder.switch_to_block(after_blk);
-            builder.seal_block(after_blk);
-        }
-
-        // With a StructReturn pointer, the value leaves are stored through
-        // it and the signature declares no return values (cranelift itself
-        // returns the pointer in rax per the SysV rule); otherwise the
-        // leaves return in registers as before.
-        match sret {
-            Some(pointer) => {
-                self.store_scalars(&mut builder, &PlaceStorage::Address { base: pointer, offset: 0 }, &final_values);
-                builder.ins().return_(&[]);
+        for (mir_block, &cranelift_block) in body.blocks.into_iter().zip(&cranelift_blocks) {
+            builder.switch_to_block(cranelift_block);
+            for stmt in mir_block.statements {
+                self.process_expr(&mut builder, stmt);
             }
-            None => {
-                builder.ins().return_(&final_values);
+            match mir_block.terminator {
+                MirTerminator::Goto(target) => {
+                    builder.ins().jump(cranelift_blocks[target.0 as usize], &[]);
+                }
+                MirTerminator::Branch { condition, then_block, else_block } => {
+                    let cond_value = self.process_expr(&mut builder, condition)[0];
+                    builder.ins().brif(
+                        cond_value,
+                        cranelift_blocks[then_block.0 as usize],
+                        &[],
+                        cranelift_blocks[else_block.0 as usize],
+                        &[],
+                    );
+                }
+                MirTerminator::Return(value) => {
+                    let leaves = value.map(|v| self.process_expr(&mut builder, v)).unwrap_or_default();
+                    // With a StructReturn pointer, the value leaves are
+                    // stored through it and the signature declares no
+                    // return values (cranelift itself returns the pointer
+                    // in rax per the SysV rule); otherwise the leaves
+                    // return in registers as before.
+                    match sret {
+                        Some(pointer) => {
+                            self.store_scalars(
+                                &mut builder,
+                                &PlaceStorage::Address { base: pointer, offset: 0 },
+                                &leaves,
+                            );
+                            builder.ins().return_(&[]);
+                        }
+                        None => {
+                            builder.ins().return_(&leaves);
+                        }
+                    }
+                }
+                MirTerminator::Unreachable => {
+                    builder.ins().trap(TrapCode::unwrap_user(1));
+                }
             }
+        }
+
+        // Every cranelift block was created up front and every terminator
+        // above has now been emitted, so every block's predecessor set is
+        // already final -- safe to seal all of them in one pass here,
+        // rather than interleaved with the loop above.
+        for block in cranelift_blocks {
+            builder.seal_block(block);
         }
 
         if let Err(err) = codegen::verify_function(builder.func, self.isa.as_ref()) {
             panic!("cranelift verifier rejected generated IR for a function (internal codegen bug): {err:?}");
         }
 
-        builder.seal_block(entry_block);
         builder.finalize();
 
         self.module.define_function(function_id, &mut ctx).unwrap();
@@ -2981,44 +2342,42 @@ impl Codegen {
     /// Preemptible` (weak) for a generic instantiation -- `Preemptible`
     /// maps to a genuine weak ELF/Mach-O/COFF symbol (`cranelift-object`'s
     /// `translate_linkage`, `let weak = linkage == Linkage::Preemptible`),
-    /// empirically confirmed (see the data-symbol-hashing work) to let a
-    /// linker silently fold multiple independently-compiled definitions
-    /// of the *same* symbol name into one, rather than erroring on
-    /// "multiple definition" the way two strong symbols with the same
-    /// name always would. Every separate `omgc` invocation that
-    /// instantiates e.g. `CustomStruct<i32>` still fully regenerates its
-    /// own copy locally (nothing here skips that -- there is no
-    /// cross-process build cache), exactly like Rust/C++ generics: the
-    /// deduplication happens once, at final link time, not at compile
-    /// time. This is only sound because a generic instantiation's mangled
-    /// symbol is now a pure function of `(module_path, name, type_args)`
-    /// (see the mangling work) -- two independent compilations of the
-    /// exact same instantiation are therefore guaranteed to produce
-    /// byte-identical bodies under the identical name, which is the
-    /// actual precondition weak-symbol folding relies on (the linker
-    /// trusts the name, it doesn't diff the bytes). An ordinary,
-    /// non-generic symbol keeps strong linkage unconditionally -- two
-    /// *different* object files defining the same non-generic symbol is
-    /// always a genuine user error, and should still be a hard link
-    /// error, not silently tolerated.
+    /// empirically confirmed to let a linker silently fold multiple
+    /// independently-compiled definitions of the *same* symbol name into
+    /// one, rather than erroring on "multiple definition" the way two
+    /// strong symbols with the same name always would. Every separate
+    /// `omgc` invocation that instantiates e.g. `CustomStruct<i32>` still
+    /// fully regenerates its own copy locally (nothing here skips that --
+    /// there is no cross-process build cache), exactly like Rust/C++
+    /// generics: the deduplication happens once, at final link time, not
+    /// at compile time. This is only sound because a generic
+    /// instantiation's mangled symbol is a pure function of `(module_path,
+    /// name, type_args)` -- two independent compilations of the exact same
+    /// instantiation are therefore guaranteed to produce byte-identical
+    /// bodies under the identical name, which is the actual precondition
+    /// weak-symbol folding relies on (the linker trusts the name, it
+    /// doesn't diff the bytes). An ordinary, non-generic symbol keeps
+    /// strong linkage unconditionally -- two *different* object files
+    /// defining the same non-generic symbol is always a genuine user
+    /// error, and should still be a hard link error, not silently
+    /// tolerated.
     fn linkage_for(type_args: &[ResolvedType]) -> Linkage {
         if type_args.is_empty() { Linkage::Export } else { Linkage::Preemptible }
     }
 
     /// Declares every function/method/extern in one item -- pass 1 of 2 (see
     /// `update_all`).
-    fn declare_item(&mut self, item: &CheckedItem, path: &[Ident], entry: &[Ident]) {
+    fn declare_item(&mut self, item: &MirItem, path: &[Ident], entry: &[Ident]) {
         match item {
             // Externs have no body to split across two passes -- fully
             // handled here, in one shot.
-            CheckedItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
-            CheckedItem::FunctionDefinition(f) => {
+            MirItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
+            MirItem::FunctionDefinition(f) => {
                 // A member function can never reach `Disabled` here --
                 // `omega_analyzer::annotations::resolve` hard-rejects
                 // `@mangling(disabled)` on a method (and on a generic
-                // function) before a `CheckedModule` can exist at all (see
-                // its own doc comment: every enforcement point has already
-                // settled by the time codegen sees one), so only a
+                // function) before a `CheckedModule` (and therefore the
+                // `MirModule` lowered from it) can exist at all, so only a
                 // top-level, non-generic function ever gets here with
                 // `Disabled`.
                 //
@@ -3032,7 +2391,7 @@ impl Codegen {
                 // needed beyond the name.
                 // `extension_target` -- `Some` for a method attached via
                 // `spec Name : Deps for Target { ... }` (see
-                // `CheckedFunctionDef::extension_target`'s doc comment) --
+                // `MirFunctionDef::extension_target`'s doc comment) --
                 // mangles like a struct/enum/union method (owned, via
                 // `method_symbol`) rather than an ordinary free function:
                 // the target's own `Display` stands in for the owner name a
@@ -3052,28 +2411,28 @@ impl Codegen {
                 };
                 self.declare_function_def(f, mangled, Self::linkage_for(&f.type_args));
             }
-            CheckedItem::Struct(s) => {
+            MirItem::Struct(s) => {
                 for f in &s.functions {
                     let mangled =
                         mangle::encode(&mangle::method_symbol(path, &s.name, &s.type_args, &f.name, &f.fn_type()));
                     self.declare_function_def(f, mangled, Self::linkage_for(&s.type_args));
                 }
             }
-            CheckedItem::Enum(e) => {
+            MirItem::Enum(e) => {
                 for f in &e.functions {
                     let mangled =
                         mangle::encode(&mangle::method_symbol(path, &e.name, &e.type_args, &f.name, &f.fn_type()));
                     self.declare_function_def(f, mangled, Self::linkage_for(&e.type_args));
                 }
             }
-            CheckedItem::Union(u) => {
+            MirItem::Union(u) => {
                 for f in &u.functions {
                     let mangled =
                         mangle::encode(&mangle::method_symbol(path, &u.name, &u.type_args, &f.name, &f.fn_type()));
                     self.declare_function_def(f, mangled, Self::linkage_for(&u.type_args));
                 }
             }
-            CheckedItem::Declaration(_) => {
+            MirItem::Declaration(_) => {
                 todo!("global data declarations are not yet implemented");
             }
         }
@@ -3081,28 +2440,28 @@ impl Codegen {
 
     /// Defines every function/method body in one item -- pass 2 of 2, run
     /// only after every item across every module has already been declared.
-    fn define_item(&mut self, item: CheckedItem) {
+    fn define_item(&mut self, item: MirItem) {
         match item {
             // Already fully handled by `declare_item` -- an extern has no
             // body to define.
-            CheckedItem::ExternDeclaration(_) => {}
-            CheckedItem::FunctionDefinition(f) => self.define_function_def(f),
-            CheckedItem::Struct(s) => {
+            MirItem::ExternDeclaration(_) => {}
+            MirItem::FunctionDefinition(f) => self.define_function_def(f),
+            MirItem::Struct(s) => {
                 for f in s.functions {
                     self.define_function_def(f);
                 }
             }
-            CheckedItem::Enum(e) => {
+            MirItem::Enum(e) => {
                 for f in e.functions {
                     self.define_function_def(f);
                 }
             }
-            CheckedItem::Union(u) => {
+            MirItem::Union(u) => {
                 for f in u.functions {
                     self.define_function_def(f);
                 }
             }
-            CheckedItem::Declaration(_) => {
+            MirItem::Declaration(_) => {
                 todo!("global data declarations are not yet implemented");
             }
         }
@@ -3114,22 +2473,17 @@ impl Codegen {
     /// doc comment), then define every body. Mirrors the identical
     /// signature/body split `omega_analyzer::Analyzer` does for the same
     /// underlying reason.
-    fn update_all(
-        &mut self,
-        modules: Vec<(Vec<Ident>, CheckedModule)>,
-        entry: &[Ident],
-        extern_functions: Vec<ExternFunctionRef>,
-    ) {
-        for (path, checked) in &modules {
-            for item in &checked.items {
+    fn update_all(&mut self, modules: Vec<(Vec<Ident>, MirModule)>, entry: &[Ident], extern_functions: Vec<ExternFunctionRef>) {
+        for (path, module) in &modules {
+            for item in &module.items {
                 self.declare_item(item, path, entry);
             }
         }
         for extern_fn in &extern_functions {
             self.declare_extern_function(extern_fn);
         }
-        for (_, checked) in modules {
-            for item in checked.items {
+        for (_, module) in modules {
+            for item in module.items {
                 self.define_item(item);
             }
         }

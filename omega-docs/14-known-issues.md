@@ -51,7 +51,7 @@ new one is found.
 
 Shape problems in `omega-driver` and `omega-analyzer` that work today but each
 need a breaking change to fix — full writeups in
-[design-review.md](15-design-review.md#compiler-architecture).
+[design-review.md](17-design-review.md#compiler-architecture).
 
 - **Overloading needs a whole parallel item pipeline** (two extra caches,
   two extra sweeps, two extra resolver methods) purely because the item
@@ -78,7 +78,7 @@ Language-level, not internal:
 
 - **A value `match`'s arms must partition the domain exactly** — arms may
   not overlap, so a trailing `... => x` catch-all is never legal.
-  [design-review.md](15-design-review.md#compiler-architecture)
+  [design-review.md](17-design-review.md#compiler-architecture)
 
 ## Design debt worth watching
 

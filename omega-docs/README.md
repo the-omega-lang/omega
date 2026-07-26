@@ -62,7 +62,11 @@ New to the codebase — read roughly in this order:
 13. [Macros](12-macros.md)
 14. [The core library](13-core-library.md)
 15. [Known issues tracker](14-known-issues.md)
-16. [Design review](15-design-review.md) — unsoundness, inconsistencies, and
+16. [The MIR, and how it reaches Cranelift](16-mir-and-codegen.md) — the
+    control-flow graph `omega-mir` builds between semantic analysis and
+    codegen, why it exists (multi-backend support), and what's deliberately
+    still a tree.
+17. [Design review](17-design-review.md) — unsoundness, inconsistencies, and
     rough edges found on a deeper audit pass; distinct from the known-issues
     tracker in that most entries here aren't bugs at all, just weak spots.
 

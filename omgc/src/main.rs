@@ -285,11 +285,17 @@ fn run() {
             "Compiled",
             &format!("{} module(s), {} warning(s) in {:.2?}", program.modules.len(), program.warnings.len(), start.elapsed()),
         );
+        verbose_step(colors, "Lowering", "checked tree to mir");
+    }
+
+    let mir_modules = omega_mir::lower_program(program.modules);
+
+    if verbose {
         verbose_step(colors, "Generating", &format!("target {target}, opt level {opt_level:?}, emit {emit:?}"));
     }
 
     let modname = entry_name.as_ref();
-    let codegen = match Codegen::generate(modname, target, opt_level, emit, program.modules, &program.entry, program.extern_functions) {
+    let codegen = match Codegen::generate(modname, target, opt_level, emit, mir_modules, &program.entry, program.extern_functions) {
         Ok(codegen) => codegen,
         Err(message) => {
             eprintln!("error: {message}");

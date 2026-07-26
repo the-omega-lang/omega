@@ -334,6 +334,7 @@ dependencies = [
  "omega-analyzer",
  "omega-hir",
  "omega-mangle",
+ "omega-mir",
  "omega-parser",
  "rapidhash",
  "target-lexicon",
@@ -366,6 +367,15 @@ name = "omega-mangle"
 version = "0.1.0"
 
 [[package]]
+name = "omega-mir"
+version = "0.1.0"
+dependencies = [
+ "omega-analyzer",
+ "omega-hir",
+ "omega-parser",
+]
+
+[[package]]
 name = "omega-parser"
 version = "0.1.0"
 dependencies = [
@@ -381,6 +391,7 @@ dependencies = [
  "omega-diagnostics",
  "omega-driver",
  "omega-hir",
+ "omega-mir",
  "omega-parser",
 ]
 
