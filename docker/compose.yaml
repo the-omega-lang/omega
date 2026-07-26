@@ -1,0 +1,69 @@
+# Development environment for Omega. Drive it with `./dev.sh` in the repo root
+# rather than calling compose directly -- that script fills in the uid/gid and
+# git identity that this file expects from the environment.
+
+name: omega-dev
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ALPINE_VERSION: ${ALPINE_VERSION:-3.23}
+        RUST_VERSION: ${RUST_VERSION:-1.94.1}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-stable}
+        USER_UID: ${HOST_UID:-1000}
+        USER_GID: ${HOST_GID:-1000}
+    image: omega-dev:rust${RUST_VERSION:-1.94.1}-alpine${ALPINE_VERSION:-3.23}
+    # Reap zombie processes -- Claude Code spawns plenty of short-lived ones.
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+
+    # Passed through from the host only when set. Anything not listed here
+    # simply does not exist inside the container.
+    environment:
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_AUTH_TOKEN
+      - ANTHROPIC_BASE_URL
+      - ANTHROPIC_MODEL
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - AWS_REGION
+      - AWS_PROFILE
+      - GIT_USER_NAME
+      - GIT_USER_EMAIL
+      - TERM
+      - COLORTERM
+
+    volumes:
+      # The repo itself. Edits are shared both ways, live.
+      - ..:/workspace
+
+      # Claude Code's entire state: login/credentials, settings, session
+      # history, todos. This is what makes `claude` remember you across runs.
+      - claude-config:/home/dev/.claude
+
+      # Cargo's download caches, so a rebuilt container does not re-fetch the
+      # dependency graph from crates.io.
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+
+      # Build artifacts live in a volume rather than in the bind-mounted
+      # target/ directory: the container is musl and the host is (probably)
+      # glibc, so sharing one target/ would mean both toolchains constantly
+      # invalidating each other's artifacts -- and object files produced by
+      # `just build-exe` would be linked against the wrong libc.
+      - target:/workspace/target
+
+      # Shell history, persisted the same way.
+      - history:/commandhistory
+
+volumes:
+  claude-config:
+  cargo-registry:
+  cargo-git:
+  target:
+  history:
