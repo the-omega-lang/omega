@@ -50,7 +50,7 @@ impl<'r> Analyzer<'r> {
         };
 
         match &base {
-            // `slice.length` / `str.length` -- not a real field (neither is a
+            // `slice.length` / `str.size` -- not a real field (neither is a
             // struct), so this is answered before the aggregate paths below
             // reject it.
             ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
@@ -74,10 +74,16 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `.length` on a slice or a `*str`. `Str` shares `Slice`'s exact
-    /// fat-pointer leaf layout (`[ptr, len]`), so one projection kind means
-    /// the same thing (byte count) for both. Any other name is `NoSuchField`,
-    /// the same message a struct without that field gives.
+    /// `.length` on a `*[T]`, or `.size` on a `*str` -- both project to the
+    /// exact same `CheckedProjection::SliceLength` marker (`Str` shares
+    /// `Slice`'s exact fat-pointer leaf layout, `[ptr, len]`, so it's the
+    /// same byte-count read either way), but the *name* a user spells it
+    /// with deliberately differs: a slice's second leaf really is an
+    /// element count, so "length" fits, but `*str`'s is a UTF-8 *byte*
+    /// count -- "length" there would nudge a reader toward "character
+    /// count", which it isn't. Using the *other* type's name (`.size` on a
+    /// slice, `.length` on a `*str`) is `NoSuchField`, same as any other
+    /// unrecognized name.
     fn project_slice_field(
         &mut self,
         node_id: HirId,
@@ -86,7 +92,12 @@ impl<'r> Analyzer<'r> {
         base: &ResolvedType,
         field: &Ident,
     ) -> Option<ResolvedType> {
-        if field.as_ref() != "length" {
+        let expected_name = match base {
+            ResolvedType::Str { .. } => "size",
+            ResolvedType::Slice { .. } => "length",
+            _ => unreachable!("resolve_field_projection only routes Slice/Str here"),
+        };
+        if field.as_ref() != expected_name {
             self.no_such_field(node_id, span, field, base);
             return None;
         }

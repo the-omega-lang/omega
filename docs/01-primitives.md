@@ -50,18 +50,26 @@ Three distinct types share the identical two-leaf runtime shape
 `[data_ptr, len_or_vtable_ptr]`, but are never interchangeable at the type
 level (no implicit coercion between them):
 
-- **`*[T]` (`Slice { item, mutable }`)** — `[data pointer, i32 length]`.
+- **`*[T]` (`Slice { item, mutable }`)** — `[data pointer, i32 length]`,
+  read via `.length` (a genuine element count).
   This is *not* the same as `*T` to an array — `Context::resolve_type`
   special-cases `*[T]` specifically so it never becomes `Pointer(Array(T))`.
   A **bare** `[T]` (no leading `*`) is a different, older, unsized shape:
   a single thin pointer with no length at all, used only for C-style decayed
   array parameters (`argv: [*u8]`) — a deliberate, narrower legacy case, not
   a slice.
-- **`*str` (`Str { mutable }`)** — the exact same `[data ptr, i32 length]`
-  shape as `*[u8]`, but a fully separate nominal type: no implicit coercion
-  to/from `Slice`/`Pointer` in either direction, and never null-terminated.
-  See [strings, casting & slices](11-strings-casting-and-slices.md) for why
-  it exists and how the two families interconvert explicitly.
+- **`*str` (`Str { mutable }`)** — the exact same `[data ptr, i32 byte
+  count]` shape as `*[u8]`, but a fully separate nominal type: no implicit
+  coercion to/from `Slice`/`Pointer` in either direction, and never
+  null-terminated. Read via `.size`, deliberately *not* `.length` — a
+  `*str`'s second leaf is a UTF-8 *byte* count, not a character count, and
+  "length" would nudge a reader toward the latter. Both `.length` and
+  `.size` compile to the identical projection (`CheckedProjection::
+  SliceLength`) and codegen (reads the same second leaf) — only the
+  surface name a user spells it with differs by type (see
+  `Analyzer::project_slice_field`). See [strings, casting &
+  slices](11-strings-casting-and-slices.md) for why `*str` exists and how
+  the two families interconvert explicitly.
 - **`spec *T` (`SpecObject { spec, type_args, mutable }`)** — `[data
   pointer, vtable pointer]`, Omega's dynamic-dispatch trait-object pointer.
   See [specs](08-specs.md).

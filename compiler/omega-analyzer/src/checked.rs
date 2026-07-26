@@ -616,10 +616,13 @@ pub enum CheckedProjection {
     Deref {
         r#type: ResolvedType,
     },
-    /// `slice.length` -- reads a `Slice`'s length component. A dedicated
-    /// projection rather than a `FieldAccess` variant, since a slice isn't a
-    /// `Struct` and `length` isn't a real field looked up by name/index; see
-    /// `Analyzer::resolve_field_projection`'s special case.
+    /// `slice.length` or `str.size` -- reads the second leaf of a `Slice`'s
+    /// or `Str`'s shared fat-pointer layout. A dedicated projection rather
+    /// than a `FieldAccess` variant, since neither is a `Struct` and neither
+    /// name is a real field looked up by name/index; see
+    /// `Analyzer::project_slice_field`'s special case (including why the
+    /// two types spell this differently despite sharing one projection
+    /// kind).
     SliceLength,
     /// `value.tag` on an enum -- reads the tag, which every enum value has
     /// (implicit-tag enums included). `r#type` is the enum's tag type.

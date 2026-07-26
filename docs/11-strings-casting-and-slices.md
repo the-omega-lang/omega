@@ -12,11 +12,15 @@ Three genuinely different types that overlap in purpose:
 
 - **`*str`** — a real, nominal, no-null-terminator UTF-8 string type. At
   runtime it's the identical fat-pointer shape `*[u8]` has (`[data ptr, i32
-  length]`), but there is **zero implicit coercion** to or from
+  byte count]`), but there is **zero implicit coercion** to or from
   `Slice`/`Pointer` in either direction — confirmed deliberately, with no
   hidden exception even for literal storage. String literals (`"..."`)
   resolve to `*str`, not `*u8` — a real change from the language's earlier
-  design, where they resolved to `Pointer{U8}`.
+  design, where they resolved to `Pointer{U8}`. Despite sharing the exact
+  same leaf, the two types deliberately spell that second leaf
+  differently: `*str`'s is `.size` (a UTF-8 *byte* count — "length" would
+  wrongly suggest a character count), `*[T]`'s stays `.length` (a genuine
+  element count).
 - **`*[u8]`** — an ordinary byte slice, fat pointer, same runtime shape.
 - **`*u8`** — a single thin pointer, no length at all. What C string
   functions (`puts`, `printf`'s format string) actually expect.
@@ -59,9 +63,9 @@ leaf). There is no reverse (thin→fat) cast — fabricating a length from a
 bare pointer isn't something a cast can do.
 
 **Printing a `*str` through C's `printf` soundly** needs `%.*s`, not a bare
-`%s` + cast: `printf("%.*s\n", s.length, <*u8>s)` — length consumed first,
-matching C's own `%.*s` convention. A bare `%s` on a non-null-terminated
-`*str` would read until a stray zero byte.
+`%s` + cast: `printf("%.*s\n", s.size, <*u8>s)` — the byte count consumed
+first, matching C's own `%.*s` convention. A bare `%s` on a
+non-null-terminated `*str` would read until a stray zero byte.
 
 ## Byte strings
 
