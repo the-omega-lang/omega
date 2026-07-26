@@ -35,17 +35,20 @@ new one is found.
   `*str` and `*[u8]`/`*[i8]` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
   [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
-- **`char` still has no arithmetic, bitwise, or cast support** —
-  deliberately: nothing validates that a computed codepoint is still a
-  legal Unicode scalar value, so allowing e.g. `'a' + 1` could silently
-  produce an invalid `char`. Comparison and `match`/range support were
-  added (fixed — see [primitives.md](01-primitives.md)); a real,
-  validating path for arithmetic (e.g. a fallible `char::from_u32`-style
-  constructor) is left as deliberate future work, not solved narrowly
-  here. [primitives.md](01-primitives.md), [core-library.md](13-core-library.md)
-- **`bool` has no `== != & | ^`, and there is no `!` operator** — by
-  design, not a gap, but worth knowing before reaching for it.
-  [control-flow.md](03-control-flow.md)
+- **`char`/pointer arithmetic and `bool` logical-not are fixed; casting an
+  arbitrary integer into `char`/`bool` and the `!` operator are still not
+  implemented.** `char`/pointers now get arithmetic/bitwise ops (and
+  casting out to any numeric type) by coercing to `u32`/`usize` first,
+  never back implicitly; `bool` now gets native `== != & | ^`. What's
+  still missing: casting an arbitrary integer *into* `char` (only `u8` is
+  guaranteed to produce a valid codepoint, so only that direction is
+  allowed — a real validating path, e.g. a fallible `char::from_u32`-style
+  constructor, is deliberate future work, not solved narrowly here), and
+  a `!` (logical-not) operator for `bool` (a real, if small, language
+  feature — a new parser token plus a new `Expression`/`HirExpr`/
+  `CheckedExpr`/`MirExpr` variant — left for a dedicated follow-up rather
+  than folded into an otherwise analyzer-only change).
+  [primitives.md](01-primitives.md), [control-flow.md](03-control-flow.md)
 
 ## Specs
 

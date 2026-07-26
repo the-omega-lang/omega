@@ -83,11 +83,18 @@ compiler limitation, as of this writing:
 - **No `core::chars`** — `char` gained comparison and `match`/range
   support (see [primitives](01-primitives.md)), so ASCII
   *classification* (`is_upper`, `is_digit`, and similar range-based
-  predicates) is implementable now. It still has no cast or arithmetic
-  support at all, so *case conversion* (`to_upper`/`to_lower`, which needs
-  to compute a different codepoint) remains blocked — a `core::chars`
-  module scoped to classification-only would be straightforward to add
-  when wanted, but hasn't been, to avoid shipping a half-finished module.
+  predicates) is implementable now. `char` also now has arithmetic (see
+  [primitives](01-primitives.md)'s "`char`, `bool`, and pointer
+  arithmetic"), which unblocks ASCII *case conversion* too: `to_upper`/
+  `to_lower` can compute the shifted codepoint as a `u32`, truncate to
+  `u8` (every ASCII letter fits), then cast the `u8` back to `char` (the
+  one direction guaranteed valid). Full Unicode case conversion is still
+  blocked — a shifted codepoint outside ASCII doesn't fit in a `u8`, and
+  there is still no general integer-to-`char` cast (see
+  [known-issues.md](14-known-issues.md)). A `core::chars` module scoped to
+  ASCII (classification and case conversion both) would be straightforward
+  to add when wanted, but hasn't been, to avoid shipping a half-finished
+  module.
 - **No `Option<T>`/`Result<T>`** — historically because a generic enum
   with methods failed to even pass signature collection, and `T` couldn't
   be deduced from a generic-enum-typed argument either (two distinct

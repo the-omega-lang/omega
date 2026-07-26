@@ -564,18 +564,22 @@ impl Codegen {
             MirExpr::BinaryOp(MirBinaryOp { op, left, right }) => {
                 // The mir guarantees both operands share the same resolved
                 // type, so either one's `numeric_kind` picks the right
-                // instruction for the whole operation. `Char` is the one
-                // exception: it has no `numeric_kind` of its own (see its
-                // doc comment -- arithmetic/bitwise on it is meaningless,
-                // possibly UTF-8-breaking), but analysis only ever lets it
-                // reach here for a *comparison* op, where it behaves
-                // exactly like its underlying representation: an unsigned
-                // 4-byte scalar, ordered by codepoint.
+                // instruction for the whole operation. `Char`/`Bool` are the
+                // two exceptions: neither has a `numeric_kind` of its own
+                // (see `ResolvedType::arithmetic_repr`'s doc comment for why
+                // arithmetic on either coerces away instead of operating on
+                // them directly), but analysis lets each reach here
+                // uncoerced for a handful of ops where they behave exactly
+                // like their underlying representation: `Char` for a
+                // comparison (an unsigned 4-byte scalar, ordered by
+                // codepoint), `Bool` for `== != & | ^` (an unsigned byte,
+                // always `0`/`1`).
                 let kind = match &left.r#type {
                     ResolvedType::Char => NumericKind::Unsigned(32),
+                    ResolvedType::Bool => NumericKind::Unsigned(8),
                     r#type => r#type
                         .numeric_kind()
-                        .expect("mir body guarantees BinaryOp operands are numeric or char"),
+                        .expect("mir body guarantees BinaryOp operands are numeric, char, or bool"),
                 };
                 let left = self.process_expr(builder, *left)[0];
                 let right = self.process_expr(builder, *right)[0];

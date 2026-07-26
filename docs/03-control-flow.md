@@ -59,18 +59,23 @@ first, never attempting to parse an expression there.
 exits (not the enclosing block) — Omega's only structured cleanup
 mechanism; there is no `try`/`catch`/exceptions in the language at all.
 
-## No boolean operators — this is deliberate, not missing
+## Boolean operators — native `bool`, but still no `!`
 
-`bool` supports **none** of `== != & | ^`, and there is **no `!` prefix
-operator in the grammar at all** (`!` only ever appears as part of `!=` or
-macro-invocation syntax `name!(...)`). `bool` is excluded from
-`numeric_kind` entirely — bitwise operators only ever accept numeric
-operands in this compiler, and `bool` is not numeric (see
-[primitives](01-primitives.md) for the identical, but narrower,
-`char` restriction — `char` supports comparison, just not bitwise or
-arithmetic).
+`bool` supports `== != & | ^` directly, staying `bool` (no `numeric_kind`
+of its own is needed for these — see [primitives](01-primitives.md)'s
+"`char`, `bool`, and pointer arithmetic" section for the full story,
+including why `char` and pointers work differently, coercing to a numeric
+type instead of staying native). This is sound specifically because
+`bool` is *closed* under all five: combining two valid `bool`s (`0`/`1`)
+any of those ways is still a valid `bool`.
 
-The only way to negate or combine booleans is nested `if`-expressions:
+There is still **no `!` prefix operator in the grammar at all** (`!` only
+ever appears as part of `!=` or macro-invocation syntax `name!(...)`), and
+still no arithmetic/shifts on `bool` (`true + true` has no meaning to fall
+back on) — see [primitives](01-primitives.md)'s caveats for why `!`
+specifically is a bigger addition than it looks (a new grammar token, not
+just an analyzer change) and is left as deliberate future work. Until then,
+negation is nested `if`-expressions:
 
 ```
 if x { false } else { true }          # NOT x
@@ -132,7 +137,12 @@ committed to elsewhere:
 2. **Left is always analyzed first; absent an outer `expected`, its own
    resolved type becomes `expected` for the right operand** — the exact
    same "earliest position is the anchor" rule `if`-expression branches
-   already use (see below), not a new inference philosophy.
+   already use (see below), not a new inference philosophy. For a
+   non-comparison op, the anchor is left's type *after* the `char`/pointer
+   coercion described in [primitives](01-primitives.md), not before —
+   `some_char + 1` needs the bare `1` to adapt to `u32` (what `some_char`
+   is about to become), not to `char` (which isn't numeric, so it would
+   just fall back to `1`'s own default of `i32` and then mismatch).
 
 Both rules are safe unconditionally: `expected` is never a coercion
 mechanism anywhere in this language, only a hint consulted by genuinely
@@ -147,9 +157,10 @@ a genuine mismatch it wouldn't have accepted before.
 - `char` has comparison (`== != < <= > >=`) and can be used as a `match`
   scrutinee, including ranges (`'A'...'Z'`) — see
   [primitives](01-primitives.md) and
-  [enums & pattern matching](05-enums-and-pattern-matching.md). It still
-  has no arithmetic, bitwise, or cast support — deliberately, not a gap;
-  see [primitives](01-primitives.md) for why.
+  [enums & pattern matching](05-enums-and-pattern-matching.md). Arithmetic/
+  bitwise ops and casts are supported too, but by coercing to `u32` first
+  (never back to `char` implicitly) — see [primitives](01-primitives.md)'s
+  "`char`, `bool`, and pointer arithmetic" section.
 - Binary-op literal narrowing is **earliest-wins, not most-specific-wins**
   — matching the identical, already-accepted trade-off `if`-expression
   branches make (`if true { 8 } else { 7u16 }` doesn't retroactively

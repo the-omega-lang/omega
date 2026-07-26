@@ -633,10 +633,12 @@ impl std::fmt::Display for ResolvedType {
 }
 
 impl ResolvedType {
-    /// `Some` for exactly the types a number literal can resolve to and
-    /// `BinaryOp`/`Negate` can operate on -- notably excluding `Bool` and
-    /// `Char`, neither of which supports arithmetic (matching e.g. Rust,
-    /// where `char + char` and `bool + bool` are both errors).
+    /// `Some` for exactly the types a number literal can resolve to, and the
+    /// only types `BinaryOp`/`Negate`/`BitNot` operate on *directly*, with no
+    /// conversion involved -- `Bool`/`Char`/pointers still get arithmetic and
+    /// bitwise ops, just by first coercing to one of these (see
+    /// `arithmetic_repr` below); `Bool` alone additionally gets a handful of
+    /// ops natively, with no coercion at all (see `Analyzer::analyze_binary_op`).
     pub fn numeric_kind(&self) -> Option<NumericKind> {
         Some(match self {
             Self::I8 => NumericKind::Signed(8),
@@ -654,6 +656,35 @@ impl ResolvedType {
             Self::F64 => NumericKind::Float(64),
             _ => return None,
         })
+    }
+
+    /// The numeric type a non-numeric operand implicitly *coerces* to for an
+    /// arithmetic or bitwise op (`+ - * / % & | ^ << >>` binary, `~` unary) --
+    /// `None` for anything with no such stand-in, including `Bool` (see
+    /// `Analyzer::analyze_binary_op`'s doc comment for why `Bool` is handled
+    /// natively instead of through this) and everything else that simply
+    /// isn't arithmetic-eligible at all (structs, functions, ...).
+    ///
+    /// The coerced value is always this returned type, *never* cast back to
+    /// `self` implicitly -- `some_char + 1` is a `u32`, not a `char`, and
+    /// `some_char += 1` still doesn't type-check (the result would need an
+    /// explicit cast back to assign into a `char` place). This is what keeps
+    /// `Char`'s coercion sound despite `Char` having no validating
+    /// constructor yet (see its own doc comment): there is no path back into
+    /// `Char` from arbitrary arithmetic, only ever further arithmetic on a
+    /// plain, unconstrained `u32`.
+    ///
+    /// The chosen representative always matches the exact scalar
+    /// `layout::Leaf` codegen already stores the type as (`Char` as
+    /// `Leaf::I32`, a pointer as `Leaf::Ptr`, both target-pointer-width) --
+    /// so the coercion is always a same-width `CastKind::Reinterpret`, free
+    /// at runtime, purely a compile-time relabeling.
+    pub fn arithmetic_repr(&self) -> Option<ResolvedType> {
+        match self {
+            Self::Char => Some(ResolvedType::U32),
+            Self::Pointer { .. } => Some(ResolvedType::USize),
+            _ => None,
+        }
     }
 
     /// This type's byte size, for a `sizeof<...>` used *inside* an
@@ -685,18 +716,25 @@ impl ResolvedType {
 
     /// This type's shape for `<Target>expr` casting purposes -- `None` for
     /// anything a cast can't touch at all (structs/enums/unions/slices/
-    /// `bool`/`char`/`void`/functions; see `AnalysisErrorKind::InvalidCast`).
-    /// A pointer counts as an unsigned 64-bit int -- this compiler's
-    /// existing single-target assumption (exactly matching `numeric_kind`'s
-    /// own hardcoded 64-bit `isize`/`usize` above), and literally true at
-    /// the IR level: `Codegen::pointer_type()` already returns the same
-    /// Cranelift type an ordinary 64-bit integer would. This one case is
-    /// what makes pointer<->pointer, pointer<->integer, and integer<->pointer
-    /// casts all fall out of the *same* int-to-int width rules
-    /// `Analyzer::resolve_cast_kind` applies, with no special-casing beyond
-    /// it -- `bool`/`char` are deliberately left out (matching their
-    /// existing exclusion from `numeric_kind`/arithmetic) rather than grown
-    /// into a second special case here.
+    /// `void`/functions; see `AnalysisErrorKind::InvalidCast`). A pointer
+    /// counts as an unsigned 64-bit int -- this compiler's existing
+    /// single-target assumption (exactly matching `numeric_kind`'s own
+    /// hardcoded 64-bit `isize`/`usize` above), and literally true at the IR
+    /// level: `Codegen::pointer_type()` already returns the same Cranelift
+    /// type an ordinary 64-bit integer would. This one case is what makes
+    /// pointer<->pointer, pointer<->integer, and integer<->pointer casts all
+    /// fall out of the *same* int-to-int width rules `Analyzer::
+    /// resolve_cast_kind` applies, with no special-casing beyond it.
+    ///
+    /// `Char`/`Bool` get a class the same way (their own scalar
+    /// representation's width -- 32 and 8 bits respectively, both
+    /// unsigned), but **only ever as the source** of a cast: `resolve_
+    /// cast_kind` has no notion of direction, so on its own this would
+    /// symmetrically allow casting arbitrary integers *into* `Char`/`Bool`
+    /// too, which isn't sound (not every `u32` is a valid codepoint, and
+    /// there's no implicit "nonzero is true"). `Analyzer::analyze_cast`
+    /// gates that asymmetry explicitly (see `allows_cast_into`) rather than
+    /// this method trying to encode a direction it has no way to express.
     pub fn cast_class(&self) -> Option<CastClass> {
         if let Some(kind) = self.numeric_kind() {
             return Some(match kind {
@@ -707,6 +745,8 @@ impl ResolvedType {
         }
         match self {
             Self::Pointer { .. } => Some(CastClass::Int { width: 64, signed: false }),
+            Self::Char => Some(CastClass::Int { width: 32, signed: false }),
+            Self::Bool => Some(CastClass::Int { width: 8, signed: false }),
             _ => None,
         }
     }

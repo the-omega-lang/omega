@@ -496,12 +496,19 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Unary `~`, transparent to its own result type exactly like
-    /// `analyze_negate`.
+    /// `analyze_negate` -- except, unlike `analyze_negate`, `char`/pointer
+    /// operands first coerce to their `arithmetic_repr` (see
+    /// `Self::coerce_for_unary_op`), so `~some_char` is legal and produces a
+    /// `u32`. `bool` is deliberately not given the same treatment: unlike
+    /// `& | ^` (native on `bool`, see `analyze_binary_op`), bitwise-NOT of
+    /// `bool`'s `0`/`1` representation doesn't stay within `{0,1}` (`~0u8 ==
+    /// 255`), so there is no sound native meaning for it to have.
     fn analyze_bit_not(&mut self, node_id: HirId, span: Span, base: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
         // `expected` passes straight through, same reasoning as
         // `Negate`'s arm just above -- `~` is transparent to its own
         // result type.
         let checked_base = self.analyze_expr(base, expected)?;
+        let checked_base = Self::coerce_for_unary_op(checked_base);
         let bitnotable =
             matches!(checked_base.r#type.numeric_kind(), Some(NumericKind::Signed(_) | NumericKind::Unsigned(_)));
         if !bitnotable {
@@ -548,7 +555,20 @@ impl<'r> Analyzer<'r> {
         // weaken a real mismatch.
         let operand_expected = if bin.op.is_comparison() { None } else { expected };
         let checked_left = self.analyze_expr(&bin.left, operand_expected)?;
-        let left_type = checked_left.r#type.widened();
+        // For a non-comparison op, anchor to what `left` will *become*
+        // (`arithmetic_repr`), not what it currently is -- otherwise
+        // `some_char + 1` fails to compile, since the bare `1` would anchor
+        // to `char` (not itself numeric, so it falls back to its own
+        // default `i32`) while `left` coerces to `u32` in
+        // `analyze_binary_op` below, and the two would then mismatch. A
+        // comparison never anchors this way: `char` doesn't coerce for a
+        // comparison at all (see `Self::coerce_for_binary_op`), and a
+        // pointer has no adaptable bare-literal form to anchor in the first
+        // place, so there's nothing to gain there.
+        let mut left_type = checked_left.r#type.widened();
+        if !bin.op.is_comparison() {
+            left_type = left_type.arithmetic_repr().unwrap_or(left_type);
+        }
         let checked_right = self.analyze_expr(&bin.right, operand_expected.or(Some(&left_type)))?;
         self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
     
@@ -605,6 +625,17 @@ impl<'r> Analyzer<'r> {
                 );
                 return None;
             };
+            if !Self::allows_cast_into(&checked_base.r#type, &target_type) {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::InvalidCast {
+                        from: checked_base.r#type.clone(),
+                        to: target_type.clone(),
+                    },
+                );
+                return None;
+            }
             Self::resolve_cast_kind(source_class, target_class)
         };
         if cast_kind == CastKind::Reinterpret && checked_base.r#type == target_type {
@@ -692,17 +723,39 @@ impl<'r> Analyzer<'r> {
         checked_left: CheckedExprNode,
         checked_right: CheckedExprNode,
     ) -> Option<CheckedExprNode> {
+        // Coerce a `char`/pointer operand to its `arithmetic_repr` first --
+        // see `Self::coerce_for_binary_op`'s doc comment for exactly which
+        // op/type combinations coerce. Everything below this line only ever
+        // sees the coerced types, so it needs no further special-casing for
+        // either: a coerced `char`'s `u32`/a coerced pointer's `usize`
+        // already has a real `numeric_kind`, same as any other operand.
+        let checked_left = self.coerce_for_binary_op(op, checked_left);
+        let checked_right = self.coerce_for_binary_op(op, checked_right);
+
         // `char` is comparable (it's `numeric_kind`-shaped underneath --
         // one unsigned 4-byte scalar value, ordered by codepoint), but
         // never arithmetic/bitwise: combining two `char`s that way can
         // produce a codepoint that isn't a valid Unicode scalar value at
         // all, and this language has no fallible/validating path for that
         // yet (see `ResolvedType::Char`'s doc comment). So `char` is
-        // accepted here *only* for a comparison op -- everything else
+        // accepted here *only* for a comparison op (and, at this point,
+        // never coerced -- see `coerce_for_binary_op`) -- everything else
         // still requires genuine `numeric_kind`.
+        //
+        // `bool` is closed under `== != & | ^` (any combination of valid
+        // `bool`s -- `0`/`1` -- stays a valid `bool`), so those five get to
+        // stay natively `bool`, no coercion at all: unlike `char`, there's
+        // no soundness reason to leave `bool` for them. Arithmetic/shifts
+        // still aren't offered (`true + true` has no meaning to fall back
+        // on), and neither is `~` (see `analyze_bit_not`'s doc comment).
         for operand in [&checked_left, &checked_right] {
-            let is_valid =
-                operand.r#type.numeric_kind().is_some() || (op.is_comparison() && operand.r#type == ResolvedType::Char);
+            let is_valid = operand.r#type.numeric_kind().is_some()
+                || (op.is_comparison() && operand.r#type == ResolvedType::Char)
+                || (operand.r#type == ResolvedType::Bool
+                    && matches!(
+                        op,
+                        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor
+                    ));
             if !is_valid {
                 self.error(
                     node_id,
@@ -762,6 +815,58 @@ impl<'r> Analyzer<'r> {
             r#type,
             kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(checked_left), right: Box::new(checked_right) }),
         })
+    }
+
+    /// Wraps `operand` in the implicit `Cast` its `arithmetic_repr` (see
+    /// `ResolvedType::arithmetic_repr`) calls for, if it has one -- the same
+    /// `Cast` a user would have to write by hand, built via the exact same
+    /// `cast_class`/`resolve_cast_kind` pair `analyze_cast` itself uses, so
+    /// this needs no codegen support of its own. A no-op (returns `operand`
+    /// unchanged) for anything with no `arithmetic_repr` at all (every
+    /// genuinely numeric type, `bool`, structs, ...).
+    ///
+    /// `char` only coerces for a non-comparison op: comparing two `char`s
+    /// directly, uncoerced, is what lets codegen's `MirExpr::BinaryOp` arm
+    /// keep special-casing `Char` as its own 4-byte unsigned scalar (see its
+    /// existing comment there) instead of ever seeing a coerced `u32` pair
+    /// that used to be `char`s. A pointer coerces unconditionally, including
+    /// for a comparison -- which is what makes `*mut T == *T` type-check for
+    /// free: both sides become a plain `usize`, so pointee type and
+    /// mutability never enter the equality check at all.
+    fn coerce_for_binary_op(&self, op: BinaryOp, operand: CheckedExprNode) -> CheckedExprNode {
+        if op.is_comparison() && operand.r#type == ResolvedType::Char {
+            return operand;
+        }
+        match operand.r#type.arithmetic_repr() {
+            Some(repr) => Self::coerce_to(operand, repr),
+            None => operand,
+        }
+    }
+
+    /// `coerce_for_binary_op`'s unary counterpart, for `~` (see
+    /// `analyze_bit_not`) -- unconditional, since there's no comparison/
+    /// arithmetic distinction to make for a unary op.
+    fn coerce_for_unary_op(operand: CheckedExprNode) -> CheckedExprNode {
+        match operand.r#type.arithmetic_repr() {
+            Some(repr) => Self::coerce_to(operand, repr),
+            None => operand,
+        }
+    }
+
+    /// The shared mechanics behind both `coerce_for_*_op` above: builds the
+    /// same `CheckedExpr::Cast` an explicit `<repr>operand` would produce.
+    /// `repr` is always itself numeric (every `arithmetic_repr` value is),
+    /// so both `cast_class` calls below are infallible.
+    fn coerce_to(operand: CheckedExprNode, repr: ResolvedType) -> CheckedExprNode {
+        let source_class = operand.r#type.cast_class().expect("arithmetic_repr's source always has a cast_class");
+        let target_class = repr.cast_class().expect("an arithmetic_repr target is always numeric");
+        let kind = Self::resolve_cast_kind(source_class, target_class);
+        CheckedExprNode {
+            id: operand.id,
+            span: operand.span,
+            r#type: repr.clone(),
+            kind: CheckedExpr::Cast(CheckedCast { kind, target_type: repr, base: Box::new(operand) }),
+        }
     }
 
     /// The operand's value as an `i128`, if it's a bare literal (`Number`
@@ -881,6 +986,25 @@ impl<'r> Analyzer<'r> {
             r#type: place_type,
             kind: CheckedExpr::Assignment(CheckedAssignment { target: checked_place, value: Box::new(combined) }),
         })
+    }
+
+    /// Whether `target` may be cast into at all, given `source` -- `
+    /// cast_class` gives `char`/`bool` a class so they can be cast *out* to
+    /// any numeric type via the ordinary width/signedness rules below, but
+    /// `resolve_cast_kind` has no notion of direction, so left alone that
+    /// would symmetrically allow casting arbitrary integers *in* too, which
+    /// isn't sound: not every `u32` is a valid Unicode scalar value, and
+    /// there's no implicit "nonzero is true" here. Mirrors Rust's own `as`
+    /// rules exactly: `u8 as char` is the one direction into `char` that's
+    /// always valid (every byte is a valid codepoint); nothing else is,
+    /// pending a real validating constructor (`char::from_u32`-equivalent)
+    /// this compiler doesn't have yet. Nothing casts into `bool` at all.
+    fn allows_cast_into(source: &ResolvedType, target: &ResolvedType) -> bool {
+        match target {
+            ResolvedType::Char => matches!(source, ResolvedType::Char | ResolvedType::U8),
+            ResolvedType::Bool => *source == ResolvedType::Bool,
+            _ => true,
+        }
     }
 
     /// Picks the one `CastKind` a `(source, target)` `CastClass` pair needs,

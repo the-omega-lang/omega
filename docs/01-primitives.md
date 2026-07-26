@@ -72,7 +72,7 @@ all in this backend), and static data blobs with pointer relocations were
 already one API call away once slices existed — so `spec *T` needed no new
 low-level machinery, only a new 2-leaf type and a vtable-building pass.
 
-## `char`: comparable, but not arithmetic
+## `char`, `bool`, and pointer arithmetic
 
 ```
 if c >= 'A' { if c <= 'Z' { true } else { false } } else { false }
@@ -98,18 +98,44 @@ literal is always validated through `char::from_u32` at parse time, so no
 real `char` value can ever land in that hole in the first place — the
 interval-exhaustiveness checker just doesn't need to know it exists.
 
-**`char` still has *no* arithmetic, bitwise, or cast support** — this is
-deliberate, not the same gap as before. Comparison only reads a `char`'s
-underlying scalar value; arithmetic would let you *construct* one
-(`'a' + 1`), and there's no validation step anywhere in this language yet
-that would stop the result from being an unassigned codepoint or landing
-inside the surrogate hole — a `char` that isn't a valid Unicode scalar
-value at all, silently violating the type's own invariant. Whether/how to
-support this safely (e.g. a fallible `char::from_u32`-style constructor
-instead of raw arithmetic) is intentionally left as **future work** rather
-than solved narrowly here — noted so it doesn't get silently
-"fixed" by just widening `numeric_kind` later without thinking through the
-validity question again.
+`char`, `bool`, and every pointer type (`*T`/`*mut T`) also support
+arithmetic/bitwise ops (`+ - * / % & | ^ << >>`, and unary `~`) — each
+non-numeric operand implicitly **coerces** to a real numeric type first
+(`ResolvedType::arithmetic_repr`): `char` to `u32`, a pointer to `usize`.
+The **result is that numeric type, never cast back implicitly** —
+`some_char + 1` is a `u32`, not a `char`, and `some_char += 1` still
+doesn't type-check (there's no implicit path back into `char`). This is
+what keeps arithmetic sound despite `char` having no validating
+constructor yet (see below): there is no way for it to ever produce an
+invalid codepoint *as a `char`* — only ever more arithmetic on a plain,
+unconstrained `u32`. `char + char` and `pointer + pointer` are both
+allowed (not unsound, just unusual) — the result's different type from
+either operand is itself already a strong signal that something numeric,
+not "`char`-shaped", happened. A pointer coerces even for `==`/`!=`, which
+is what makes comparing a `*mut T` against a `*T` type-check for free:
+both sides become a plain `usize`, so pointee type and mutability never
+enter the comparison at all.
+
+`bool` is the one exception that stays **native**, uncoerced: `== != & |
+^` all work directly on `bool`, producing `bool`, since `bool` is *closed*
+under all five (any combination of `0`/`1` is still `0`/`1`). Arithmetic
+and shifts are still not offered on `bool` (`true + true` has no meaning
+to fall back on), and neither is unary `~` (bitwise-NOT of `bool`'s `0`/`1`
+representation does *not* stay within `{0,1}` the way `& | ^` do). A
+logical-not (`!`) operator to complete this story doesn't exist in the
+language at all yet — see the caveat below.
+
+Casting follows the same asymmetry Rust's own `as` does: `char`/`bool`
+both cast *out* to any numeric type freely, but only one direction casts
+back *in* — `u8 -> char` (every byte is a valid codepoint) — and nothing
+at all casts into `bool` (no implicit "nonzero is true"). Any other
+integer into `char` (an arbitrary `u32`, say) is still rejected: this
+compiler has no fallible/validating constructor yet
+(`char::from_u32`-equivalent) to catch a codepoint that isn't a valid
+Unicode scalar value, and a plain cast allowing it would silently violate
+`char`'s own invariant. That's **future work**, not solved narrowly here —
+noted so it doesn't get silently "fixed" by just widening the cast rules
+later without thinking through the validity question again.
 
 ## Layout, packing, and `sizeof`
 
@@ -144,6 +170,13 @@ own leaf sizes.
   ABI setup mishandling a float sourced from something other than a plain
   local), not confirmed to be identical. Neither is fixed; both are worked
   around in example code by not exercising the shape.
+- **There is no `!` (logical-not) operator at all.** `bool` gets native
+  `== != & | ^` (see above), which covers *combining* two `bool`s, but
+  negating one still has no spelling — adding `!` is a real, if small,
+  language feature (a new parser token plus a new `Expression`/`HirExpr`/
+  `CheckedExpr`/`MirExpr` variant, each needing its own codegen arm), not
+  an analyzer-only change like the rest of this section, so it's left as
+  deliberate future work rather than folded in here.
 - **`isize`/`usize` width is target-dependent by design** — nothing in
   `core` bakes in a `min_value`/`max_value` bound for them, since any
   literal bound would silently be wrong on a target this toolchain wasn't
