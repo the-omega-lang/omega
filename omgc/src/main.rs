@@ -1,4 +1,4 @@
-use omega_codegen::{Codegen, EmitKind, EmitOutput, OptLevel, Target};
+use omega_codegen::{BackendKind, CodegenRequest, EmitKind, EmitOutput, OptLevel, Target};
 use omega_diagnostics::{BOLD, CYAN, GREEN, Renderer, paint};
 use omega_driver::{Driver, ExternRoot};
 use omega_parser::highlight::OmegaHighlighter;
@@ -42,6 +42,11 @@ struct Args {
     opt_level: OptLevel,
     target: Target,
     emit: EmitKind,
+    /// `--backend=<name>` -- which `omega_codegen::BackendKind` actually
+    /// turns the compiled program into output; defaults to whichever
+    /// backend `BackendKind::default()` picks (today, and for the
+    /// foreseeable future, the only one compiled in: Cranelift).
+    backend: BackendKind,
     verbose: bool,
 }
 
@@ -88,6 +93,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut opt_level = OptLevel::default();
     let mut target = Target::DEFAULT;
     let mut emit = EmitKind::default();
+    let mut backend = BackendKind::default();
     let mut verbose = false;
 
     let mut iter = args.iter();
@@ -152,6 +158,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 "asm" => EmitKind::Asm,
                 other => return Err(format!("invalid --emit value '{other}': expected obj, ir, or asm")),
             };
+        } else if let Some(rest) = arg.strip_prefix("--backend=") {
+            backend = BackendKind::parse(rest)?;
         } else if arg == "-v" || arg == "--verbose" {
             verbose = true;
         } else if arg.starts_with('-') {
@@ -168,7 +176,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let entry_file = entry_file
         .ok_or_else(|| "usage: omgc <entry-file> -o <output-file> [OPTIONS] (see --help)".to_string())?;
     let output_file = output_file.ok_or_else(|| "the -o <file> flag is required".to_string())?;
-    Ok(Args { entry_file, output_file, externs, name, opt_level, target, emit, verbose })
+    Ok(Args { entry_file, output_file, externs, name, opt_level, target, emit, backend, verbose })
 }
 
 /// One `-h`/`--help` line: `flag` padded to a fixed column *before* being
@@ -198,7 +206,16 @@ fn print_help() {
         "--target=<triplet>",
         &format!("Target triplet, e.g. x86_64-unknown-linux (default: {})", Target::DEFAULT),
     );
-    help_option(colors, "--emit=<obj|ir|asm>", "What to emit: object file (default), Cranelift IR, or assembly");
+    help_option(colors, "--emit=<obj|ir|asm>", "What to emit: object file (default), backend IR, or assembly");
+    help_option(
+        colors,
+        "--backend=<name>",
+        &format!(
+            "Codegen backend to use (default: {}; available: {})",
+            BackendKind::default(),
+            BackendKind::ALL.iter().map(BackendKind::to_string).collect::<Vec<_>>().join(", "),
+        ),
+    );
     help_option(
         colors,
         "--extern=[<name>:]<file>",
@@ -224,7 +241,7 @@ fn run() {
     }
 
     let start = Instant::now();
-    let Args { entry_file, output_file, externs, name, opt_level, target, emit, verbose } = match parse_args(&args) {
+    let Args { entry_file, output_file, externs, name, opt_level, target, emit, backend, verbose } = match parse_args(&args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("error: {message}");
@@ -291,12 +308,24 @@ fn run() {
     let mir_modules = omega_mir::lower_program(program.modules);
 
     if verbose {
-        verbose_step(colors, "Generating", &format!("target {target}, opt level {opt_level:?}, emit {emit:?}"));
+        verbose_step(
+            colors,
+            "Generating",
+            &format!("target {target}, backend {backend}, opt level {opt_level:?}, emit {emit:?}"),
+        );
     }
 
-    let modname = entry_name.as_ref();
-    let codegen = match Codegen::generate(modname, target, opt_level, emit, mir_modules, &program.entry, program.extern_functions) {
-        Ok(codegen) => codegen,
+    let request = CodegenRequest {
+        module_name: entry_name.to_string(),
+        target,
+        opt_level,
+        emit,
+        modules: mir_modules,
+        entry: program.entry.clone(),
+        extern_functions: program.extern_functions,
+    };
+    let output = match omega_codegen::generate(backend, request) {
+        Ok(output) => output,
         Err(message) => {
             eprintln!("error: {message}");
             std::process::exit(1);
@@ -307,7 +336,7 @@ fn run() {
         verbose_step(colors, "Emitting", &format!("{} to {}", if emit == EmitKind::Obj { "object" } else { "text" }, output_file.display()));
     }
 
-    let write_result = match codegen.finish() {
+    let write_result = match output {
         EmitOutput::Object(bytes) => std::fs::write(&output_file, bytes),
         EmitOutput::Text(text) => std::fs::write(&output_file, text),
     };

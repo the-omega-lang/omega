@@ -16,6 +16,18 @@ new one is found.
   flattened positional scalars, fine Omega-to-Omega, not safely callable
   from hand-written C expecting real struct-passing rules.
   [primitives.md](01-primitives.md)
+- **Global/extern *data* declarations have no storage story** — a
+  top-level `ident: type;`, or a non-function `extern`, is fully resolved
+  and type-checked like everything else, but codegen still has nothing
+  sound to do with it (`todo!()` in three places: `MirItem::Declaration`,
+  `MirPlaceRoot::Global`, and non-function externs). Needs a real decision
+  (a data section, a linkage, TLS-or-not) before anything can depend on
+  it. [mir-and-codegen.md](16-mir-and-codegen.md)
+- **Taking the address of, or assigning into, a function parameter
+  directly (no deref in between) is `todo!()`** — a parameter is
+  SSA-value-backed with no stack slot of its own unless something forces
+  one (an explicit local copy works around it today).
+  [mir-and-codegen.md](16-mir-and-codegen.md)
 
 ## Types
 

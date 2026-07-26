@@ -34,6 +34,19 @@ impl Target {
     /// the default when `--target` isn't given.
     pub const DEFAULT: Target = Target { arch: Arch::X86_64, os: Os::Linux };
 
+    /// The width of a pointer/`usize`/`isize` on this target, in bytes --
+    /// the one piece of target-specific information the shared layout
+    /// math (`crate::layout`) needs, so it never has to ask a backend
+    /// (which might not even exist yet, or might use a completely
+    /// different native type system) what a pointer "is". Both
+    /// architectures this compiler supports today are 64-bit; a future
+    /// 32-bit target has exactly this one place to teach.
+    pub fn pointer_bytes(self) -> u32 {
+        match self.arch {
+            Arch::X86_64 | Arch::Aarch64 => 8,
+        }
+    }
+
     /// Parses `<arch>-<vendor>-<os>` or `<arch>-<os>` -- the vendor segment
     /// (when present) is accepted but ignored: Omega doesn't need it for
     /// anything the OS alone doesn't already decide (see `to_triple`'s

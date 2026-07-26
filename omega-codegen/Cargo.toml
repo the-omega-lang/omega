@@ -9,16 +9,29 @@ omega-analyzer = { path = "../omega-analyzer" }
 omega-mir = { path = "../omega-mir" }
 omega-parser = { path = "../omega-parser" }
 omega-mangle = { path = "../omega-mangle" }
-cranelift = "0.131.1"
-cranelift-reader = "0.131.1"
-cranelift-module = "0.131.1"
-cranelift-object = "0.131.1"
+# `Target`/`Arch`/`Os` (see `src/target.rs`) are shared across every
+# backend and need `target_lexicon::Triple` regardless of which backend
+# (if any) is actually compiled in, so this stays a plain, non-optional
+# dependency -- only its *use* (feeding an ISA lookup) is Cranelift-side.
 target-lexicon = "0.13.5"
+
+# Everything below is Cranelift-specific and only pulled in by the
+# `cranelift` feature (see `[features]`) -- a future second backend adds
+# its own equally self-contained block here, gated by its own feature.
+cranelift = { version = "0.131.1", optional = true }
+cranelift-module = { version = "0.131.1", optional = true }
+cranelift-object = { version = "0.131.1", optional = true }
 # The `cranelift` facade crate's own Cargo.toml requests neither `x86` nor
 # `arm64` from `cranelift-codegen` explicitly (it happens to work for
 # x86_64 today only because some other dependency in the graph already
 # requests it) -- depend on `cranelift-codegen` directly, purely to turn
 # both on via Cargo's additive feature unification, so `Target::Aarch64`
 # (see `target.rs`) is actually buildable, not just structurally present.
-cranelift-codegen = { version = "0.131.1", features = ["x86", "arm64"] }
-rapidhash = { version = "4.5.1", default-features = false }
+cranelift-codegen = { version = "0.131.1", features = ["x86", "arm64"], optional = true }
+# Only used by the Cranelift backend's anonymous-data-object naming
+# (`cranelift::expr::data_symbol`).
+rapidhash = { version = "4.5.1", default-features = false, optional = true }
+
+[features]
+default = ["cranelift"]
+cranelift = ["dep:cranelift", "dep:cranelift-module", "dep:cranelift-object", "dep:cranelift-codegen", "dep:rapidhash"]

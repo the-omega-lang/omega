@@ -189,6 +189,46 @@ slot it never touches, matching what a per-statement-position allocation
 already achieved, just triggered by first use instead of by walking a
 `Declaration` statement's own lexical position.
 
+## Multiple backends
+
+`omega-codegen` doesn't hand `MirModule`s straight to Cranelift-specific
+code anymore -- it dispatches through `BackendKind`, an enum with one
+variant per Cargo feature the crate enables (`cranelift` today; `default =
+["cranelift"]`), each variant gated by its own feature so a backend nobody
+compiled in isn't even a choice the type system offers:
+
+```rust
+pub fn generate(backend: BackendKind, request: CodegenRequest) -> Result<EmitOutput, String>;
+```
+
+`CodegenRequest` bundles everything any backend needs (target, opt level,
+emit kind, the mir modules themselves, the entry path, extern functions)
+into one named-field struct, replacing what used to be a seven-positional-
+argument call. `omgc`'s own `--backend=<name>` flag (`BackendKind::parse`)
+is the only place a user ever picks one; today `cranelift` is the only
+valid name, and also the default.
+
+The Cranelift backend itself lives in `omega-codegen::cranelift` (module-
+private -- nothing outside the crate ever sees a Cranelift type), split by
+concern rather than kept as one file: `mod.rs` (the `Codegen` state struct
+itself, `generate`/`finish`), `place.rs` (resolving a `MirPlace` to its
+storage), `expr.rs` (evaluating a `MirExprNode`), `function.rs` (building
+signatures, declaring/defining a function's body), `item.rs` (the
+declare-then-define sweep over every module), `vtable.rs` (spec dynamic-
+dispatch vtables), and `leaf.rs` (the one Cranelift-specific seam, below).
+
+**The actual multi-backend enabler** is `crate::layout`, not the
+`BackendKind` dispatch itself: struct/enum/union byte-offset/padding/leaf-
+count math (`FieldLayout`, `layout_fields`, `type_alignment`,
+`enum_*_offset`, ...) used to compute `cranelift::Type`s directly and take
+`&Codegen`. It's now backend-agnostic, expressed over a small `Leaf` enum
+(`I8`/`I16`/`I32`/`I64`/`F32`/`F64`/`Ptr`) and a plain `pointer_bytes: u32`
+instead of a Cranelift handle -- `Target::pointer_bytes` is the one place
+that width comes from. `cranelift::leaf::cranelift_type` is the *only*
+place a `Leaf` becomes a `cranelift::Type`; a second backend adds an
+equally small mapping of its own instead of reimplementing ~250 lines of
+layout math.
+
 ## Caveats
 
 - **No three-address form yet.** `MirExpr` stays tree-shaped on purpose
@@ -211,3 +251,9 @@ already achieved, just triggered by first use instead of by walking a
   `MirPlaceRoot::Global`) is still `todo!()` in codegen — unchanged from
   before this crate existed; the mir already carries the shape, codegen
   just has nothing sound to do with it yet.
+- **Taking the address of, or assigning into, a function parameter
+  directly (no deref in between) is `todo!()`** — also unchanged from
+  before this crate existed. A parameter's leaves are seeded straight from
+  the entry block's own values (see `MirBody::locals`'s doc comment) with
+  no backing stack slot, unlike every other local, so there's no address
+  to hand back yet.
