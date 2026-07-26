@@ -196,7 +196,7 @@ impl Codegen {
     /// bookkeeping here at all -- the mir body already *is* the
     /// control-flow graph (every `if`/`match`/`while`/`for`/`break`/
     /// `continue`/`return`/`defer` was flattened into it during lowering,
-    /// see `omega-docs/16-mir-and-codegen.md`), so this is just: one
+    /// see `docs/16-mir-and-codegen.md`), so this is just: one
     /// Cranelift `Block` per `MirBlockData`, then translate each one's
     /// statements and its single terminator.
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {

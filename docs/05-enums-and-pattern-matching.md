@@ -123,7 +123,7 @@ path (optionally binding fields), a literal/range value, or a range (see
 below). `else` is only required when the compiler can't already prove
 exhaustive coverage.
 
-**Exhaustiveness is real and enforced** (`omega-analyzer/src/
+**Exhaustiveness is real and enforced** (`compiler/omega-analyzer/src/
 exhaustiveness.rs`): a sort-by-lo sweep over intervals detects every
 overlap (hard error, no first-match-wins semantics like a plain `if`-chain
 would have) and every gap (error unless `else` covers it). Scoped today to

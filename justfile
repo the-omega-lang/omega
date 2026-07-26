@@ -7,10 +7,10 @@ build-exe: build-core
     rm target/example || true
     RUST_BACKTRACE=1 cargo build
     ./target/debug/omgc -v examples/extern_lib/mathlib.omg -o target/mathlib.o
-    ./target/debug/omgc -v examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg --extern=core:omega-core/core/core.omg -o target/main.o
+    ./target/debug/omgc -v examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg --extern=core:core/core/core.omg -o target/main.o
 
 # Points straight at `core`'s real root file -- `omgc` recognizes the
-# `dir/dir.omg` nested-root convention automatically (`omega-core/core/core.omg`'s
+# `dir/dir.omg` nested-root convention automatically (`core/core/core.omg`'s
 # parent directory is itself named `core`, matching the file's own stem),
 # so no sentinel/placeholder path is needed here. Built the same way any
 # other `--extern` dependency is: its own standalone `omgc` invocation,
@@ -18,7 +18,7 @@ build-exe: build-core
 build-core:
     mkdir -p target
     RUST_BACKTRACE=1 cargo build
-    ./target/debug/omgc -v omega-core/core/core.omg --name=core -o target/core.o
+    ./target/debug/omgc -v core/core/core.omg --name=core -o target/core.o
 
 run-asm: build-asm
     ld target/shims.o -o target/shims
@@ -27,7 +27,7 @@ run-asm: build-asm
 build-asm:
     mkdir -p target
     rm target/shims target/shims.o || true
-    as omega-shims/x86_64-unknown-linux.S -o target/shims.o
+    as shims/x86_64-unknown-linux.S -o target/shims.o
 
 clean:
     rm -rf target

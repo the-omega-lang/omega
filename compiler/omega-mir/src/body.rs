@@ -4,7 +4,7 @@
 //! the checked tree; here they're already flattened into an explicit graph
 //! of [`MirBlockData`]s ending in one [`MirTerminator`] each, exactly the
 //! shape both Cranelift and (eventually) an LLVM backend want. See
-//! `omega-docs/16-mir-and-codegen.md` for the full rationale and worked
+//! `docs/16-mir-and-codegen.md` for the full rationale and worked
 //! examples of how each construct lowers.
 //!
 //! What's *not* flattened: ordinary computation (arithmetic, calls, casts,

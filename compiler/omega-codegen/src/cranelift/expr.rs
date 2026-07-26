@@ -1,6 +1,6 @@
 //! Evaluating one [`MirExprNode`] into its scalar leaves -- the bulk of
 //! what this backend actually does, since every control-flow shape was
-//! already flattened away by `omega-mir` (see `omega-docs/16-mir-and-
+//! already flattened away by `omega-mir` (see `docs/16-mir-and-
 //! codegen.md`); this is purely expression evaluation.
 
 use super::Codegen;

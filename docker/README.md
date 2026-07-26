@@ -46,7 +46,7 @@ Built from `alpine:3.23`:
 - **Rust 1.94.1** via `rustup` (`x86_64-unknown-linux-musl`), plus `rustfmt`
   and `clippy`. Pinned by build argument, not by whatever Alpine ships.
 - **build-base / binutils / gdb** — `cc`, `as` and `ld`, which the `justfile`
-  invokes directly to assemble `omega-shims` and link the object files `omgc`
+  invokes directly to assemble `shims` and link the object files `omgc`
   emits.
 - **just** — the project's task runner.
 - **Claude Code**, installed with the native installer

@@ -43,7 +43,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #     commands behave the way tooling (and Claude) expects instead of hitting
 #     busybox's reduced flag set.
 #   * build-base/binutils/gdb -- cc, as and ld, which the justfile invokes
-#     directly to assemble omega-shims and link what omgc emits, plus a
+#     directly to assemble shims and link what omgc emits, plus a
 #     debugger.
 #   * ripgrep -- Claude Code's search backend, and useful on its own.
 #   * just -- the project's task runner.

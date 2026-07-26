@@ -1,7 +1,7 @@
 //! The mid-level IR: a control-flow-graph-based lowering of
 //! `omega_analyzer::checked`'s fully resolved, monomorphized tree, sitting
 //! between semantic analysis and `omega-codegen`. See
-//! `omega-docs/16-mir-and-codegen.md` for the full rationale (multi-backend
+//! `docs/16-mir-and-codegen.md` for the full rationale (multi-backend
 //! support is the driving reason) and `crate::body`'s module doc comment
 //! for the CFG shape itself.
 //!

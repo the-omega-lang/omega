@@ -37,7 +37,7 @@ main() => i32 {
     0
 }
 ```
-`immutable_enum_member`/`EnumFieldImmutable` (`omega-analyzer/src/
+`immutable_enum_member`/`EnumFieldImmutable` (`compiler/omega-analyzer/src/
 analysis.rs:1881-1887`) is the check that makes plain assignment to a `.tag` or
 header field a hard error — correctly, since these are supposed to be
 per-variant compile-time constants, not writable storage. But it's called from
@@ -257,11 +257,11 @@ design tension pulling the other way.
 
 ### Packed-by-default layout's safety argument is single-target, but `\--target` already offers a second target
 
-`total_bytes`/the packed-layout doc comment (`omega-codegen/src/lib.rs:397-405`)
+`total_bytes`/the packed-layout doc comment (`compiler/omega-codegen/src/lib.rs:397-405`)
 justifies "packed by default, no implicit alignment" as safe with: "x86_64
 tolerates unaligned loads/stores with no correctness issue, so packed is safe
 as a default." That's a real, correct fact about x86_64. But `
-omega-codegen/src/target.rs` already defines `Arch::Aarch64` as a genuine,
+compiler/omega-codegen/src/target.rs` already defines `Arch::Aarch64` as a genuine,
 CLI-selectable `\--target` option (`omgc ... --target=aarch64-linux`) — and
 AArch64 does not give the same blanket guarantee: exclusive/atomic load-store
 instructions fault on misalignment, several OS/embedded configurations enable
@@ -299,7 +299,7 @@ expensive to debug once it's live.
 
 `\[T]` (a bare, unsized decayed-array parameter shape like `argv: \[*u8]`) is
 runtime-identical to a single thin pointer — one leaf, no length (`
-omega-codegen/src/lib.rs:352`) — the same relationship `\*[u8]` has to `\*str`
+compiler/omega-codegen/src/lib.rs:352`) — the same relationship `\*[u8]` has to `\*str`
 (different nominal types, identical runtime shape, deliberately no implicit
 coercion, but at least an explicit cast exists both ways). `Array` gets neither:
 it's absent from both `cast_class` and `accepts` (`resolved_type.rs`), so
