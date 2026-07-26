@@ -129,31 +129,44 @@ pub(crate) fn method_symbol(
     Symbol { path, signature: Some((params, ret)), vendor_suffix: None }
 }
 
-/// A `(concrete type, spec)` pair's vtable data symbol -- one concrete
-/// type can carry a separate vtable per spec it's dynamically dispatched
-/// through (see `Codegen::vtable_for`'s own `(concrete, spec)` cache
-/// key), so both names need to appear, nested as
-/// `<concrete>::<spec>::vtable`. That's an ordinary `vtable` identifier
-/// in the value namespace nested under an ordinary spec-named
-/// type-namespace segment -- there's no real "vtable" function to call
-/// and no real "spec-implementation" type to name, but reusing the same
-/// identifier/namespace machinery every other symbol already uses keeps
-/// this strictly within `[A-Za-z0-9_]`. RFC 2603's own
-/// `<vendor-specific-suffix>` production allows arbitrary bytes after a
-/// literal `.`/`$`, which the RFC's own motivation section flags as a
-/// real cross-platform portability problem in exactly this kind of
+/// A `(concrete type, spec, spec type args)` triple's vtable data symbol --
+/// one concrete type can carry a separate vtable per spec instantiation
+/// it's dynamically dispatched through (see `Codegen::vtable_for`'s own doc
+/// comment), so all three need to appear, nested as
+/// `<concrete>::<spec>[<args>]::vtable` -- `<args>`, when present, mangled
+/// exactly the way an ordinary generic type/function instantiation's own
+/// type arguments already are (`mangle_type_path`'s identical `ManglePath::
+/// Generic` construction), since this is the same underlying fact
+/// (a generic thing, instantiated at concrete types) in a new position.
+/// Without this, two different instantiations of the same generic spec on
+/// the same concrete type (`ToIterator<char>`/`ToIterator<*char>`, say)
+/// would mangle to the identical symbol despite having different content --
+/// exactly the kind of silent, wrong-vtable-picked bug this function exists
+/// to prevent. The bare `vtable` identifier in the value namespace nested
+/// under an ordinary spec-named type-namespace segment: there's no real
+/// "vtable" function to call and no real "spec-implementation" type to
+/// name, but reusing the same identifier/namespace machinery every other
+/// symbol already uses keeps this strictly within `[A-Za-z0-9_]`. RFC
+/// 2603's own `<vendor-specific-suffix>` production allows arbitrary bytes
+/// after a literal `.`/`$`, which the RFC's own motivation section flags as
+/// a real cross-platform portability problem in exactly this kind of
 /// compiler-emitted, not merely tool-appended, position -- see
 /// `omega_mangle::Symbol::vendor_suffix`'s doc comment -- so it's
 /// deliberately not used here.
 ///
 /// `concrete` is always a `Struct`/`Enum`/`Union` (a spec-object
 /// coercion's pointee can never be anything else -- see
-/// `Codegen::concrete_type_id`'s identical assumption).
-pub(crate) fn vtable_symbol(concrete: &ResolvedType, spec_name: &Ident) -> Symbol {
+/// `Codegen::vtable_for`'s identical assumption).
+pub(crate) fn vtable_symbol(concrete: &ResolvedType, spec_name: &Ident, spec_type_args: &[ResolvedType]) -> Symbol {
     let MangleType::Named(concrete_path, _) = mangle_type(concrete) else {
         unreachable!("a spec-object coercion's concrete pointee is always struct/enum/union, which always mangles to MangleType::Named");
     };
-    let with_spec = ManglePath::Nested(Box::new(concrete_path), Namespace::Type, spec_name.as_ref().to_string());
+    let spec_segment = ManglePath::Nested(Box::new(concrete_path), Namespace::Type, spec_name.as_ref().to_string());
+    let with_spec = if spec_type_args.is_empty() {
+        spec_segment
+    } else {
+        ManglePath::Generic(Box::new(spec_segment), spec_type_args.iter().map(mangle_type).collect())
+    };
     let path = ManglePath::Nested(Box::new(with_spec), Namespace::Value, "vtable".to_string());
     Symbol { path, signature: None, vendor_suffix: None }
 }

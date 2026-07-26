@@ -69,6 +69,53 @@ without a matching own-signature method, that has no default either, is
 the spec's own visibility floor — see
 [visibility](07-visibility.md)'s inheritance + minimum-permissiveness rule.
 
+### Implementing the same generic spec more than once
+
+```
+spec Consumer<T> {
+    consume(*self, value: T) => i32;
+}
+
+struct Multi : Consumer<i32>, Consumer<*u8> {
+    exposed consume(*self, value: i32) => i32 { value + 1 }
+    exposed consume(*self, value: *u8) => i32 { puts(value) }
+}
+```
+
+Supported: a type may implement the same generic spec at different type
+arguments, satisfied by ordinary overloading. Every requirement — across
+every `implements`-clause entry, not just within one — is matched against
+the implementor's own methods by **exact `(name, signature)`**, never by
+name alone: `Consumer<i32>`'s `consume(*self, value: i32)` and
+`Consumer<*u8>`'s `consume(*self, value: *u8)` are two independent
+requirements, each satisfied by its own overload, the same way any other
+overloaded method already works here. This was previously a hard
+`ConflictingSpecFunctions` error, purely because the matching was
+name-only — not a deliberate restriction, a compiler bug. Fixed at the
+root: the same name-only matching also existed one level deeper, in the
+dynamic-dispatch vtable builder (it resolved each vtable slot by matching
+a concrete method's *name* alone, which stopped being enough to pick the
+right one the moment two same-named overloads could both be pointed at by
+the same spec's own flattening) -- see `Analyzer::type_implements_spec`'s
+own doc comment for how each vtable slot's concrete method is now
+precomputed once, during analysis, instead of re-derived from a bare name
+in codegen.
+
+This is still bounded by ordinary overload rules, not a new exception to
+them: **overloading here is parameter-type-only** — a spec function
+shaped like `get(*self) => T`, varying *only* in return type across
+instantiations, can never be satisfied twice (`get(*self) => i32` and
+`get(*self) => *u8` collide as an outright `Redeclaration`, the identical
+rule that already blocks return-type-only overloading anywhere else in
+this language — see `check_overload_duplicates`). Implementing the same
+generic spec twice only actually works when the varying type shows up in
+a *parameter*, not only in the return type.
+
+Dynamic dispatch (`spec *Consumer<i32>` vs. `spec *Consumer<*u8>`) works
+identically for a doubly-implemented type — each instantiation gets its
+own, independently-correct vtable. See "Dynamic dispatch" below for why
+that needed its own fix, not just the analyzer-side one above.
+
 ## Static dispatch (generic bounds)
 
 ```
@@ -105,8 +152,10 @@ make_sound_with_dynamic_dispatch(&dog);        # &Dog coerces to spec *Animal
 the same 2-leaf template `*[T]` slices already established. Every Omega
 call already compiles to `call_indirect` (there is no direct-call
 instruction anywhere in this backend), so the vtable mechanism only needed
-one new piece: a static data blob per `(concrete type, spec)` pair, built
-once and cached, with a function-pointer relocation per vtable slot (the
+one new piece: a static data blob per resolved vtable-slot list (in
+practice, per distinct `(concrete type, spec, spec type args)` coercion —
+see the caveat below for why the cache key isn't literally that triple),
+built once and cached, with a function-pointer relocation per vtable slot (the
 exact same relocation mechanism const-slice rodata already used for
 pointer-shaped elements). `CheckedExpr::SpecCoerce` marks the one coercion
 in the whole type system that genuinely changes representation (a 1-leaf
@@ -160,6 +209,17 @@ what's imported.
 
 ## Caveats
 
+- **A vtable's real cache/dedup key is its own resolved slot list
+  (`Analyzer::type_implements_spec`'s output, one concrete method's
+  `decl_id` per slot), not `(concrete type, spec, spec type args)`
+  directly.** The two coincide almost always, but the slot list is
+  strictly more precise: two coercions that happen to resolve to the
+  identical ordered method list always produce byte-identical vtables no
+  matter which concrete type or spec they came from, so sharing one copy
+  is correct even then. The *symbol name* still has to be a function of
+  `(concrete, spec, spec type args)` though (`decl_id`s aren't meaningful
+  across separately-compiled translation units) — see
+  `mangle::vtable_symbol`.
 - **Spec implementation is struct/enum/union only** for ordinary specs — no
   primitives outside the dedicated `for`-attachment mechanism above.
 - **No `is_variadic` support** on spec functions.

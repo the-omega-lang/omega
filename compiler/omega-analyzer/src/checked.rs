@@ -428,6 +428,7 @@ pub enum CheckedExpr {
     /// is always the target `ResolvedType::SpecObject`; `base`'s own
     /// `r#type` (always a `Pointer` to a struct/enum/union) is what
     /// codegen reads to know the *concrete* type a vtable is needed for.
+    /// See `CheckedSpecCoerce::slots` for the vtable's own contents.
     SpecCoerce(CheckedSpecCoerce),
     /// `base.method(args)` where `base`'s type is `spec *Spec` -- a
     /// dynamic-dispatch call through a vtable, rather than an ordinary
@@ -442,6 +443,18 @@ pub enum CheckedExpr {
 #[derive(Debug, Clone)]
 pub struct CheckedSpecCoerce {
     pub base: Box<CheckedExprNode>,
+    /// The concrete method satisfying each of the target spec's flattened
+    /// requirements, in `Analyzer::flatten_spec`'s deterministic order --
+    /// exactly the vtable's own slot order, precomputed here by
+    /// `Analyzer::type_implements_spec` (which already has to find each one
+    /// to confirm the coercion is even legal in the first place) rather than
+    /// re-derived by codegen. This matters now that two different concrete
+    /// methods can share a name (an implementor satisfying the same generic
+    /// spec at two different type arguments via two overloads, see
+    /// `Analyzer::resolve_implements_clause`): a bare name is no longer
+    /// enough to know which one a given slot needs, so codegen is handed
+    /// the already-resolved answer instead of a name to match on its own.
+    pub slots: Vec<HirId>,
 }
 
 /// See `CheckedExpr::DynamicCall`. `base` is the `spec *Spec` fat-pointer

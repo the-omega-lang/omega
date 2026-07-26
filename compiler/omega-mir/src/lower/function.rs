@@ -748,7 +748,8 @@ impl FunctionLowerer {
             }
             CheckedExpr::SpecCoerce(coerce) => {
                 let base = Box::new(self.lower_expr(*coerce.base));
-                MirExprNode { id, span, r#type, kind: MirExpr::SpecCoerce(MirSpecCoerce { base }) }
+                let kind = MirExpr::SpecCoerce(MirSpecCoerce { base, slots: coerce.slots });
+                MirExprNode { id, span, r#type, kind }
             }
             CheckedExpr::DynamicCall(call) => {
                 let base = self.lower_place(call.base);

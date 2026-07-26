@@ -443,17 +443,18 @@ impl Codegen {
             // (`Analyzer::coerce_to_expected` guarantees it); `base`'s own
             // type is always a plain `Pointer` to the concrete struct/enum/
             // union that vtable is built for.
-            MirExpr::SpecCoerce(MirSpecCoerce { base }) => {
-                let ResolvedType::SpecObject { spec, .. } = &node.r#type else {
+            MirExpr::SpecCoerce(MirSpecCoerce { base, slots }) => {
+                let ResolvedType::SpecObject { spec, type_args, .. } = &node.r#type else {
                     unreachable!("mir body guarantees a SpecCoerce's own type is SpecObject");
                 };
                 let spec = spec.clone();
+                let type_args = type_args.clone();
                 let ResolvedType::Pointer { pointee, .. } = &base.r#type else {
                     unreachable!("mir body guarantees a SpecCoerce's base is a plain pointer");
                 };
                 let concrete = (**pointee).clone();
                 let data_ptr = self.process_expr(builder, *base)[0];
-                let vtable_id = self.vtable_for(&concrete, &spec);
+                let vtable_id = self.vtable_for(&concrete, &spec, &type_args, &slots);
                 let global_value = self.module.declare_data_in_func(vtable_id, builder.func);
                 let vtable_ptr = builder.ins().global_value(self.pointer_type(), global_value);
                 vec![data_ptr, vtable_ptr]

@@ -50,15 +50,19 @@ pub(crate) struct Codegen {
     /// ever differ in the *type* the surrounding expression carries, never
     /// in the bytes themselves).
     bytes: HashMap<String, DataId>,
-    /// One vtable per `(concrete type, spec)` pair actually coerced to a
-    /// `spec *Spec` value somewhere in this compilation -- built lazily,
-    /// the first time a `MirExpr::SpecCoerce` for that exact pair is
-    /// codegen'd (see `vtable::vtable_for`), and shared by every later
-    /// coercion of the same pair. Keyed by each side's own `HirId` rather
-    /// than the full `ResolvedType`/`Rc<RefCell<_>>` -- cheap, `Eq`/
-    /// `Hash`, and already the identity both `ResolvedType`'s own manual
-    /// `PartialEq`/`Hash` and `self.functions` use.
-    vtables: HashMap<(HirId, HirId), DataId>,
+    /// One vtable per distinct resolved slot list (`MirSpecCoerce::slots`)
+    /// actually coerced to a `spec *Spec` value somewhere in this
+    /// compilation -- built lazily, the first time a `MirExpr::SpecCoerce`
+    /// with that exact slot list is codegen'd (see `vtable::vtable_for`),
+    /// and shared by every later coercion with the same one. Keyed on
+    /// `slots` itself rather than `(concrete, spec)`: two coercions
+    /// resolving to the identical ordered method list always produce
+    /// byte-identical vtables regardless of which concrete type or spec
+    /// they came from, so `slots` alone is both simpler and strictly more
+    /// precise than an identity-based key (see `vtable_for`'s own doc
+    /// comment for why the old `(concrete, spec)` key stopped being enough
+    /// once one implementor could satisfy the same generic spec twice).
+    vtables: HashMap<Vec<HirId>, DataId>,
 
     // Local state (must be cleared per function)
     /// `bytes`'s per-function counterpart -- caches just the data pointer

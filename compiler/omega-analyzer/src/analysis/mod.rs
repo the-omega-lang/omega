@@ -383,14 +383,14 @@ impl<'r> Analyzer<'r> {
         if !*value_mutable && *expected_mutable {
             return value;
         }
-        if self.type_implements_spec(value.id, value.span, pointee, spec, type_args, true).is_err() {
+        let Ok(slots) = self.type_implements_spec(value.id, value.span, pointee, spec, type_args, true) else {
             return value;
-        }
+        };
         CheckedExprNode {
             id: value.id,
             span: value.span,
             r#type: target.clone(),
-            kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(value) }),
+            kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(value), slots }),
         }
     }
 

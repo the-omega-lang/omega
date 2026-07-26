@@ -212,9 +212,14 @@ pub struct MirCast {
     pub base: Box<MirExprNode>,
 }
 
+/// See `omega_analyzer::checked::CheckedSpecCoerce`, which this is lowered
+/// 1:1 from -- `slots` is already fully resolved (one concrete method's
+/// `decl_id` per vtable slot, in order) by the time this exists, so codegen
+/// never has to re-derive which concrete method satisfies which slot.
 #[derive(Debug, Clone)]
 pub struct MirSpecCoerce {
     pub base: Box<MirExprNode>,
+    pub slots: Vec<HirId>,
 }
 
 #[derive(Debug, Clone)]

@@ -562,24 +562,34 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    /// Resolves a struct/enum/union's `implements` clause: flattens every
-    /// declared spec (dependencies included, cross-entry dedup/conflict
-    /// handled the same way `flatten_spec_into` already handles it within
-    /// one spec -- everything accumulates into one shared list), then for
-    /// each required function not already provided by `own_functions`,
-    /// either queues a default-method instantiation (spec supplied a body)
-    /// or reports `MissingSpecFunction`. An own method whose *name*
-    /// matches but whose signature doesn't is treated the same as missing
-    /// -- it doesn't actually satisfy the contract; one whose signature
-    /// matches but whose own visibility is *less* permissive than the spec
-    /// function it's satisfying (`FlattenedSpecFn::visibility`) reports
-    /// `SpecMethodTooPrivate` instead -- an implementor can never narrow a
-    /// spec's own contract, only match or widen it (see
-    /// `omega_parser::ast::visibility::Visibility`'s ordering). Returns the
-    /// additional `(name, ResolvedMethod)` entries to merge into the
-    /// implementor's own `functions` list (already carrying freshly minted
-    /// `decl_id`s) plus every queued default body still needing to be
-    /// checked in phase 2.
+    /// Resolves a struct/enum/union's `implements` clause: flattens each
+    /// declared spec *independently* (`flatten_spec` -- own internal
+    /// name-based conflict detection fully intact, see `flatten_spec_into`'s
+    /// doc comment for why that part stays as-is), then merges the results
+    /// across entries keyed on the full `(name, signature)` pair, not the
+    /// bare name -- two entries requiring the exact same signature under one
+    /// name are still silently deduplicated (point 5 of the language
+    /// design), but two requiring genuinely *different* signatures under one
+    /// name (most commonly: the same generic spec implemented twice, at
+    /// different type arguments -- `struct X : ToIterator<char>,
+    /// ToIterator<*char>`) are now two independent requirements instead of a
+    /// hard `ConflictingSpecFunctions` error, each satisfiable by its own
+    /// overload exactly the way ordinary overloading already works for every
+    /// other method here. For each requirement not already provided by
+    /// `own_functions` (searched the same way: by exact `(name, signature)`,
+    /// never name alone -- an overload that merely shares a name without
+    /// matching a requirement's signature doesn't satisfy it, and must not
+    /// shadow a *different* overload that does), either queues a
+    /// default-method instantiation (spec supplied a body) or reports
+    /// `MissingSpecFunction`. A satisfying method whose own visibility is
+    /// *less* permissive than the spec function it's satisfying
+    /// (`FlattenedSpecFn::visibility`) reports `SpecMethodTooPrivate`
+    /// instead -- an implementor can never narrow a spec's own contract,
+    /// only match or widen it (see `omega_parser::ast::visibility::
+    /// Visibility`'s ordering). Returns the additional `(name,
+    /// ResolvedMethod)` entries to merge into the implementor's own
+    /// `functions` list (already carrying freshly minted `decl_id`s) plus
+    /// every queued default body still needing to be checked in phase 2.
     pub(super) fn resolve_implements_clause(
         &mut self,
         id: HirId,
@@ -592,27 +602,37 @@ impl<'r> Analyzer<'r> {
         let mut flattened: Vec<FlattenedSpecFn> = Vec::new();
         for spec_type in implements {
             let Some((spec, type_args)) = self.resolve_spec_reference(id, span, spec_type) else { continue };
-            // A conflict within this flattening is already reported inline
-            // (`ConflictingSpecFunctions`) -- nothing further to do here on
-            // `None` besides skipping this entry's remaining contribution.
-            let _ = self.flatten_spec_into(id, span, &spec, &type_args, self_type, &mut flattened);
+            // A conflict *within* this one entry's own dependency graph is
+            // already reported inline (`ConflictingSpecFunctions`); `None`
+            // just means skip this entry's remaining contribution.
+            let Some(this_entry) = self.flatten_spec(id, span, &spec, &type_args, self_type) else { continue };
+            for req in this_entry {
+                if let Some(existing_index) =
+                    flattened.iter().position(|f| f.name == req.name && f.fn_type == req.fn_type)
+                {
+                    // Exact duplicate (same name *and* signature), reached
+                    // through two different entries (e.g. a shared
+                    // dependency) -- silent dedup, same as within one
+                    // entry's own flattening, except when the earlier
+                    // occurrence was a bare requirement and this one brings
+                    // an actual default: see `flatten_spec_into`'s identical
+                    // "later default wins" reasoning.
+                    if flattened[existing_index].raw.default_body.is_none() && req.raw.default_body.is_some() {
+                        flattened[existing_index] = req;
+                    }
+                    continue;
+                }
+                flattened.push(req);
+            }
         }
 
         let mut extra_methods = Vec::new();
         let mut pending = Vec::new();
         for req in flattened {
-            if let Some((_, own)) = own_functions.iter().find(|(name, _)| *name == req.name) {
-                if own.fn_type != req.fn_type {
-                    self.error(
-                        id,
-                        span,
-                        AnalysisErrorKind::MissingSpecFunction {
-                            implementor: implementor_name.clone(),
-                            spec: req.spec_name.clone(),
-                            function: req.name.clone(),
-                        },
-                    );
-                } else if own.visibility < req.visibility {
+            if let Some((_, own)) =
+                own_functions.iter().find(|(name, own)| *name == req.name && own.fn_type == req.fn_type)
+            {
+                if own.visibility < req.visibility {
                     self.error(
                         id,
                         span,
@@ -687,13 +707,22 @@ impl<'r> Analyzer<'r> {
     /// `for`-attached spec's own `: Deps` list actually count as satisfying
     /// `Deps` for generic-bound purposes too (`find_methods`'s primitive
     /// fallback is what supplies a real answer here now -- see
-    /// `HirSpecDef::target`'s doc comment). Returns the missing function
-    /// names on failure -- an insufficiently-*visible* satisfying method
-    /// (only possible when `check_method_visibility` is set) is folded into
-    /// the same "missing" list, not a separate error shape: from this
-    /// caller's own perspective the two are equivalent ("you can't treat
-    /// `ty` as implementing `spec` from here"), matching `coerce_to_expected`'s
-    /// own accepted "no bespoke diagnostic per coercion site" simplification.
+    /// `HirSpecDef::target`'s doc comment). On success, returns each
+    /// satisfying method's own `decl_id`, one per required slot, in
+    /// `flatten_spec`'s deterministic order -- this is also the exact vtable
+    /// slot order `Codegen::vtable_for` needs, precomputed here (where a
+    /// resolver/`find_methods` is available) so codegen never has to
+    /// re-derive "which concrete method satisfies which slot" by matching
+    /// names on its own (a match that, post-`resolve_implements_clause`'s
+    /// exact-signature fix, a bare name is no longer enough to make
+    /// correctly -- see `CheckedSpecCoerce::slots`). Returns the missing
+    /// function names on failure instead -- an insufficiently-*visible*
+    /// satisfying method (only possible when `check_method_visibility` is
+    /// set) is folded into the same "missing" list, not a separate error
+    /// shape: from this caller's own perspective the two are equivalent
+    /// ("you can't treat `ty` as implementing `spec` from here"), matching
+    /// `coerce_to_expected`'s own accepted "no bespoke diagnostic per
+    /// coercion site" simplification.
     ///
     /// `check_method_visibility` exists because this function serves two
     /// genuinely different callers: `check_generic_bound` (a `T: Animal`
@@ -718,24 +747,27 @@ impl<'r> Analyzer<'r> {
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_type_args: &[ResolvedType],
         check_method_visibility: bool,
-    ) -> Result<(), Vec<Ident>> {
+    ) -> Result<Vec<HirId>, Vec<Ident>> {
         let Some(required) = self.flatten_spec(id, span, spec, spec_type_args, ty) else {
             return Err(vec![]);
         };
         let (owner_module_path, owner_id) = ty.declaring_owner().unwrap_or_else(|| (Vec::new(), id));
-        let missing: Vec<Ident> = required
-            .iter()
-            .filter(|req| {
-                let Some(method) =
-                    self.find_methods(id, span, ty, &req.name).into_iter().find(|m| m.fn_type == req.fn_type)
-                else {
-                    return true;
-                };
-                check_method_visibility && !self.check_member_visibility(method.visibility, &owner_module_path, owner_id)
-            })
-            .map(|req| req.name.clone())
-            .collect();
-        if missing.is_empty() { Ok(()) } else { Err(missing) }
+        let mut missing = Vec::new();
+        let mut slots = Vec::with_capacity(required.len());
+        for req in &required {
+            let Some(method) = self.find_methods(id, span, ty, &req.name).into_iter().find(|m| m.fn_type == req.fn_type)
+            else {
+                missing.push(req.name.clone());
+                continue;
+            };
+            if check_method_visibility && !self.check_member_visibility(method.visibility, &owner_module_path, owner_id)
+            {
+                missing.push(req.name.clone());
+                continue;
+            }
+            slots.push(method.decl_id);
+        }
+        if missing.is_empty() { Ok(slots) } else { Err(missing) }
     }
 
     /// Checks a single generic bound (`T: Animal`) against the concrete
@@ -758,7 +790,7 @@ impl<'r> Analyzer<'r> {
         let (spec, spec_args) = self.resolve_spec_reference(id, span, bound)?;
         let spec_name = spec.borrow().name.clone();
         match self.type_implements_spec(id, span, concrete, &spec, &spec_args, false) {
-            Ok(()) => Some(Ok(())),
+            Ok(_) => Some(Ok(())),
             Err(missing) => Some(Err((spec_name, missing))),
         }
     }
