@@ -6,7 +6,6 @@ use crate::similarity::best_match;
 use indexmap::IndexMap;
 use omega_hir::HirId;
 use omega_parser::prelude::*;
-use std::collections::HashMap;
 
 /// What a name resolves to within a scope: the declaring node's own id (so
 /// codegen can key its storage maps by declaration identity instead of by
@@ -75,14 +74,21 @@ pub struct ScopeContext {
     /// `HashMap`'s per-process-random one -- insertion order already *is*
     /// declaration order here, so this gets that for free.
     pub declared_variables: IndexMap<Ident, VarBinding>,
-    pub defined_types: HashMap<Ident, ResolvedType>,
+    /// `IndexMap`, not `HashMap` -- `Context::similar_type_name` (the "did
+    /// you mean" candidate source for an unrecognized type name) iterates
+    /// every scope's `defined_types` and picks the first candidate on an
+    /// edit-distance tie (`similarity::best_match`'s own `min_by_key`
+    /// semantics) -- with a `HashMap`, which candidate wins a tie varied
+    /// build-to-build for byte-identical source, an `IndexMap` makes that
+    /// deterministic (declaration order) instead.
+    pub defined_types: IndexMap<Ident, ResolvedType>,
 }
 
 impl ScopeContext {
     fn new() -> Self {
         Self {
             declared_variables: IndexMap::new(),
-            defined_types: HashMap::new(),
+            defined_types: IndexMap::new(),
         }
     }
 

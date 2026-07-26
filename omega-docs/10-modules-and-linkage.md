@@ -166,29 +166,43 @@ exists to avoid) and a legitimate pointer-indirected struct cycle both still
 compile clean.
 
 **Object files for byte-identical source used to differ, build-to-build.**
-Root cause: several whole-program sweeps in `omega-driver` iterated a
-`HashMap` directly to decide processing/emission order — a module's own
-item sweep, the overloaded-function sweep (twice), the generic-instantiation
-merge, the unused-import sweep, and the dead-code sweep (`sweep_dead_code`,
-over `struct_cells`/`union_cells`/`enum_cells`) — plus one spot in
-`omega-analyzer`'s own `warn_unused_bindings`, iterating a scope's
-`declared_variables`. `HashMap`'s iteration order is per-process-random
-(SipHash-seeded), so which order these produced their side effects (minting
-a globally-sequential synthetic `HirId` per spec-default-method
-instantiation, or simply the order items/warnings get pushed onto a `Vec`)
-varied build-to-build for identical source — harmless within any one
-compilation, but real object files (and diagnostic output order) differed
-across repeated builds. Fixed by sorting each of these before iterating: by
-declaration index for items, by each `decl_id`/span for warnings/imports,
-and by a `Display`-derived key for generic instantiations (`ResolvedType`
-has no `Ord` of its own, but a stable string key is enough here — this is
-about determinism, not meaningful ordering). Verified empirically, not just
+Root cause: several caches across `omega-driver`/`omega-analyzer` are
+`HashMap`s that also get *iterated as a whole* somewhere -- a module's own
+item sweep (`local_items`), the overloaded-function sweep
+(`function_overloads`), the generic-instantiation merge
+(`generic_instantiations`), the unused-import sweep (`raw_imports`), the
+dead-code sweep (`sweep_dead_code`, over `struct_cells`/`union_cells`/
+`enum_cells`), a scope's own declared-binding walk
+(`Analyzer::warn_unused_bindings`, over `declared_variables`), the
+`for`-attached-extension drain (`drain_pending_extensions`, over
+`extension_pending`), and a scope's own type-name typo-suggestion lookup
+(`Context::similar_type_name`, over `defined_types`). `HashMap`'s iteration
+order is per-process-random (SipHash-seeded), so whichever of these ran
+first produced side effects (minting a globally-sequential synthetic
+`HirId` per spec-default-method instantiation, picking a "did you mean"
+candidate on an edit-distance tie, or simply the order items/warnings get
+pushed onto a `Vec`) in an order that varied build-to-build for identical
+source -- harmless within any one compilation, but real object files (and
+diagnostic content/order) differed across repeated builds.
+
+Fixed by converting every one of these fields from `HashMap` to
+`IndexMap` (insertion-order-preserving, same O(1) lookup) rather than
+sorting at each iteration site -- insertion order already *is* the
+meaningful order in every case (declaration order for items/bindings/
+imports, first-reference order for cells, first-resolution order for
+extensions), so this closes the bug at the type level: a *future* iteration
+site over one of these caches inherits determinism for free instead of
+needing to remember to sort. Verified empirically at every step, not just
 reasoned about: `just clean && just run-exec`, run repeatedly against
-unmodified source, produced byte-different diagnostic output (confirming
-the bug was real and reproducible) before this fix and byte-identical
-output (diagnostics, order, and program output alike, module compile
-timings/`cargo`'s own parallel build log excepted) across 7 consecutive
-fresh runs after it.
+unmodified source, produced byte-different diagnostic output and
+byte-different object files (`cmp`/`nm -p`-confirmed differing function
+declaration order) before each fix, and byte-identical output across
+15+ consecutive fresh runs after -- including for two sites
+(`extension_pending`, `defined_types`) whose nondeterminism doesn't
+manifest in this project's own current source at all (nothing here
+currently leaves a `for`-attached spec default pending across multiple
+receivers, or ties two declared names at the same edit-distance from a
+typo) and needed a dedicated repro to prove real, not just theorized.
 
 ## Caveats
 

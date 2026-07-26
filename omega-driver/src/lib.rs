@@ -454,8 +454,12 @@ pub struct Driver {
     /// item identity of its own to key one with. Each entry also carries
     /// its owning `for`-spec's own module path (unlike a struct/enum/union's
     /// pending methods, there's no enclosing body-check call already
-    /// supplying it) -- drained by `drain_pending_extensions`.
-    extension_pending: HashMap<ResolvedType, Vec<(Vec<Ident>, PendingSpecMethod)>>,
+    /// supplying it) -- drained by `drain_pending_extensions`. `IndexMap` so
+    /// that drain visits receivers in the (deterministic) order
+    /// `discover_extensions` first resolved them in, instead of `HashMap`'s
+    /// per-process-random one -- same reasoning as `local_items` and the
+    /// other caches converted alongside it.
+    extension_pending: IndexMap<ResolvedType, Vec<(Vec<Ident>, PendingSpecMethod)>>,
 }
 
 /// One `--extern` flag, already split into its parts -- `name` is this
@@ -523,7 +527,7 @@ impl Driver {
             extension_module_paths: Vec::new(),
             extension_pattern: None,
             extension_cache: HashMap::new(),
-            extension_pending: HashMap::new(),
+            extension_pending: IndexMap::new(),
         }
     }
 
@@ -963,7 +967,11 @@ impl Driver {
     /// extension_target`'s doc comment for why this applies even to a
     /// non-generic, `Concrete` receiver).
     fn check_pending_extension_methods(&mut self, receiver: &ResolvedType) -> Vec<(Vec<Ident>, CheckedFunctionDef, Vec<AnalysisWarning>)> {
-        let pending = self.extension_pending.remove(receiver).unwrap_or_default();
+        // `swap_remove`, not `shift_remove` -- `drain_pending_extensions`
+        // always removes whatever `.keys().next()` currently returns, so
+        // nothing depends on the *remaining* entries' relative order being
+        // preserved, and `swap_remove` is O(1) instead of O(n).
+        let pending = self.extension_pending.swap_remove(receiver).unwrap_or_default();
         let mut results = Vec::with_capacity(pending.len());
         for (module_path, p) in pending {
             let span = p.raw.span;
