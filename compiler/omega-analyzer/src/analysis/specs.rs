@@ -526,22 +526,23 @@ impl<'r> Analyzer<'r> {
         Some((cell, raw_args))
     }
 
-    /// The ambiently-resolvable `core::iterator::ToIterator` spec cell --
-    /// `Analyzer::analyze_for_in`'s one caller, used purely for cell-identity
-    /// comparison against `ResolvedStructType::implemented_specs` (so no
-    /// type-argument resolution/validation happens here at all, unlike
-    /// `resolve_spec_reference`). Tries this module's own implicit absolute
-    /// path first (`[self.module_path, "ToIterator"]`, or a real import
-    /// alias if one exists), then falls back to `context::ambient_core_path`
-    /// -- the same two-step retry `Context::resolve_generic_type` already
-    /// gives every *type-position* `ToIterator<T>` reference (an `implements`
-    /// clause, a generic bound); this is the one caller that needs the
-    /// identical fallback from a for-in-loop's own value-analysis-time
-    /// context instead, which never goes through `resolve_type` at all.
-    /// `None` only if `core::iterator` itself is missing/broken -- callers
-    /// degrade to "not iterable" rather than a bespoke diagnostic for that.
-    fn resolve_ambient_to_iterator_cell(&mut self) -> Option<Rc<RefCell<ResolvedSpecType>>> {
-        let name = Ident("ToIterator".to_string());
+    /// The ambiently-resolvable `core::iterator::{name}` spec cell --
+    /// `Analyzer::for_in_source_declares`'s one caller, used purely for
+    /// cell-identity comparison against `ResolvedStructType::
+    /// implemented_specs` (so no type-argument resolution/validation
+    /// happens here at all, unlike `resolve_spec_reference`). Tries this
+    /// module's own implicit absolute path first (`[self.module_path,
+    /// name]`, or a real import alias if one exists), then falls back to
+    /// `context::ambient_core_path` -- the same two-step retry `Context::
+    /// resolve_generic_type` already gives every *type-position* reference
+    /// to `Option`/`Iterator`/`ToIterator` (an `implements` clause, a
+    /// generic bound); this is the one caller that needs the identical
+    /// fallback from a for-in-loop's own value-analysis-time context
+    /// instead, which never goes through `resolve_type` at all. `None` only
+    /// if `core::iterator` itself is missing/broken -- callers degrade to
+    /// "not iterable" rather than a bespoke diagnostic for that.
+    fn resolve_ambient_iterator_spec_cell(&mut self, name: &str) -> Option<Rc<RefCell<ResolvedSpecType>>> {
+        let name = Ident(name.to_string());
         let path = Path::from(name.clone());
         if let Ok(absolute) = self.context.resolve_absolute_item_path(&mut *self.resolver, &path, &self.module_path)
             && let Ok(Some(cell)) = self.resolver.spec_declaration(&absolute)
@@ -552,24 +553,25 @@ impl<'r> Analyzer<'r> {
         self.resolver.spec_declaration(&ambient).ok().flatten()
     }
 
-    /// Whether `ty` *nominally* declares `: ToIterator<AnyT>` in its own
+    /// Whether `ty` *nominally* declares `: {name}<AnyT>` in its own
     /// `implements` clause -- `Analyzer::analyze_for_in`'s real conformance
-    /// check, replacing the duck-typed "does a method named `to_iterator`
-    /// happen to resolve" the desugaring used to rely on exclusively.
-    /// Deliberately reads `implemented_specs` (see its own doc comment for
-    /// why this can't be `type_implements_spec`, which is structural) --
-    /// `false` for anything that isn't a struct/enum/union (a primitive has
-    /// no `implements` clause of its own outside the separate `for`-
-    /// attachment mechanism, out of scope here).
-    pub(super) fn for_in_source_declares_to_iterator(&mut self, ty: &ResolvedType) -> bool {
+    /// check (against `ToIterator`, or `Iterator` directly -- see
+    /// `for_in_source_kind`), replacing the duck-typed "does a method named
+    /// `to_iterator`/`next` happen to resolve" the desugaring used to rely
+    /// on exclusively. Deliberately reads `implemented_specs` (see its own
+    /// doc comment for why this can't be `type_implements_spec`, which is
+    /// structural) -- `false` for anything that isn't a struct/enum/union (a
+    /// primitive has no `implements` clause of its own outside the separate
+    /// `for`-attachment mechanism, out of scope here).
+    pub(super) fn for_in_source_declares(&mut self, ty: &ResolvedType, name: &str) -> bool {
         let implemented = match ty {
             ResolvedType::Struct(cell) => cell.borrow().implemented_specs.clone(),
             ResolvedType::Enum { cell, .. } => cell.borrow().implemented_specs.clone(),
             ResolvedType::Union(cell) => cell.borrow().implemented_specs.clone(),
             _ => return false,
         };
-        let Some(to_iterator_cell) = self.resolve_ambient_to_iterator_cell() else { return false };
-        implemented.iter().any(|(spec, _)| spec.borrow().id == to_iterator_cell.borrow().id)
+        let Some(target_cell) = self.resolve_ambient_iterator_spec_cell(name) else { return false };
+        implemented.iter().any(|(spec, _)| spec.borrow().id == target_cell.borrow().id)
     }
 
     /// Resolves one spec function's raw signature against `substitution`

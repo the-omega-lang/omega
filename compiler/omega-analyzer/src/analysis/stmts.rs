@@ -1,5 +1,15 @@
 use super::*;
 
+/// What `Analyzer::classify_for_in_source` found `f.iterator`'s type
+/// nominally declares -- `ToIterator<T>` (the common case, needing an
+/// actual `.to_iterator()` call to produce `$iter`) or `Iterator<T>`
+/// directly (the source *is* already an iterator; `f.iterator`'s own
+/// already-checked value becomes `$iter` verbatim, no method call at all).
+enum ForInSource {
+    ToIterator,
+    DirectIterator(CheckedExprNode),
+}
+
 impl<'r> Analyzer<'r> {
     /// Whether an expression unconditionally diverges: only an `if`/`else
     /// if`/`else` can (with a genuine `else`, not an implicit empty one)
@@ -443,34 +453,42 @@ impl<'r> Analyzer<'r> {
     /// `None` is hardcoded as variant 0, `Some` as variant 1 (see
     /// `runtime/core/core/option.omg`'s own doc comment).
     ///
-    /// Real, nominal `ToIterator<T>` conformance -- **not** duck-typed --
-    /// is checked first, via `check_for_in_source_nominal`: a type that
-    /// merely happens to have a same-shaped `to_iterator` method, without
-    /// ever declaring `: ToIterator<T>`, is rejected with
+    /// Real, nominal conformance -- **not** duck-typed -- is checked first,
+    /// via `classify_for_in_source`: a type that merely happens to have a
+    /// same-shaped `to_iterator`/`next` method, without ever declaring `:
+    /// ToIterator<T>`/`: Iterator<T>`, is rejected with
     /// `ForLoopSourceNotIterable` instead of silently accepted the way this
     /// desugaring originally worked (`synthesize_method_call` resolves a
     /// method purely by name/shape, with no notion of a declared spec at
     /// all -- true of `to_iterator` below just as much as of `next` in
     /// `analyze_for_in_loop`, but only `to_iterator`'s receiver is a type
     /// this feature doesn't otherwise already know implements the right
-    /// spec; `next`'s receiver, `$iter`, is `to_iterator`'s own return
-    /// type, already proven to implement `Iterator<T>` by construction --
-    /// see `runtime/core/core/iterator.omg`'s `spec Iterator<T>` return
-    /// bound).
+    /// spec; `next`'s receiver, `$iter`, is either `to_iterator`'s own
+    /// return type or `f.iterator` itself, both already proven to implement
+    /// `Iterator<T>` by construction).
+    ///
+    /// The source may declare **either** `ToIterator<T>` (the common case
+    /// -- a collection producing a fresh iterator) **or** `Iterator<T>`
+    /// directly (the source *is* already an iterator/cursor) -- mirroring
+    /// Rust's blanket `impl<I: Iterator> IntoIterator for I`. `ToIterator`
+    /// is tried first when a type declares both (matching Rust: an
+    /// explicit `IntoIterator` impl always wins over the blanket one).
     fn analyze_for_in(&mut self, f: &HirForIn) -> Option<Vec<CheckedStmt>> {
         self.context.enter_scope();
 
-        let source_declares_to_iterator = self.check_for_in_source_nominal(f);
-
-        let to_iterator = source_declares_to_iterator.then(|| {
-            self.synthesize_method_call(HirPlaceRoot::Expr(Box::new(f.iterator.clone())), "to_iterator", f.span)
-        }).flatten();
-        let ok = to_iterator.is_some();
+        let iter_init = match self.classify_for_in_source(f) {
+            Some(ForInSource::ToIterator) => {
+                self.synthesize_method_call(HirPlaceRoot::Expr(Box::new(f.iterator.clone())), "to_iterator", f.span)
+            }
+            Some(ForInSource::DirectIterator(checked)) => Some(checked),
+            None => None,
+        };
+        let ok = iter_init.is_some();
 
         let result = ok.then(|| {
-            let to_iterator = to_iterator.expect("checked by `ok` above");
+            let iter_init = iter_init.expect("checked by `ok` above");
             let iter_id = self.resolver.fresh_synthetic_id();
-            let iter_type = to_iterator.r#type.clone();
+            let iter_type = iter_init.r#type.clone();
             // `mut` -- `$iter.next()` takes `*mut self`, and `next`'s own
             // receiver auto-refs `$iter` itself now that `to_iterator`
             // returns an owned value (not a pointer): a mutable pointer can
@@ -481,7 +499,7 @@ impl<'r> Analyzer<'r> {
             // gets reassigned, this only affects whether one could be.
             self.declare_binding(iter_id, f.span, &Ident("$iter".to_string()), iter_type.clone(), Storage::Local, true);
             let (iter_decl, iter_assign) =
-                Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type, to_iterator);
+                Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type, iter_init);
 
             let while_stmt = self.analyze_for_in_loop(f)?;
             Some(vec![iter_decl, iter_assign, while_stmt])
@@ -492,35 +510,40 @@ impl<'r> Analyzer<'r> {
         result.flatten()
     }
 
-    /// Probes `f.iterator`'s own type once, purely to check it against
-    /// `Analyzer::for_in_source_declares_to_iterator` -- the real, nominal
-    /// half of `analyze_for_in`'s conformance check (see its own doc
-    /// comment). This necessarily re-analyzes `f.iterator` a second time
-    /// (`synthesize_method_call` will analyze the identical expression
-    /// again momentarily, embedded as `to_iterator`'s own receiver -- there
-    /// is no lower-level "resolve a method call against an already-checked
-    /// receiver" primitive to hand it off to instead), so this probe's own
-    /// diagnostics are only kept when it fails outright (a genuine type
-    /// error in `f.iterator` itself, which is the real problem and would
-    /// otherwise be silently swallowed); on success they're discarded
-    /// (truncated back to their pre-probe length) so nothing this analyzes
-    /// twice (a `hidden` bypass, say) warns twice.
-    fn check_for_in_source_nominal(&mut self, f: &HirForIn) -> bool {
+    /// Probes `f.iterator`'s own type once (single analysis -- reused
+    /// directly as `$iter`'s own initializer in the `DirectIterator` case,
+    /// unlike the `ToIterator` case, which still has `synthesize_method_call`
+    /// analyze the identical expression a second time, embedded as
+    /// `to_iterator`'s own receiver: there is no lower-level "resolve a
+    /// method call against an already-checked receiver" primitive to hand
+    /// it off to instead). This probe's own diagnostics are only kept when
+    /// it fails outright (a genuine type error in `f.iterator` itself,
+    /// which is the real problem and would otherwise be silently
+    /// swallowed); otherwise they're discarded (truncated back to their
+    /// pre-probe length) so nothing this analyzes twice (a `hidden` bypass,
+    /// say) warns twice, and so a rejected `DirectIterator` candidate that
+    /// falls through to `ToIterator`'s own (separate, real) analysis of the
+    /// same expression doesn't warn twice either.
+    fn classify_for_in_source(&mut self, f: &HirForIn) -> Option<ForInSource> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
         let Some(checked) = self.analyze_expr(&f.iterator, None) else {
             // A genuine type error in `f.iterator` -- keep it; it's the
-            // real problem, and `synthesize_method_call` would only
-            // reproduce it a moment later anyway.
-            return false;
+            // real problem, and re-analyzing it (`ToIterator`'s own path,
+            // or a second attempt here) would only reproduce it anyway.
+            return None;
         };
         self.errors.truncate(errors_before);
         self.warnings.truncate(warnings_before);
-        let declares = self.for_in_source_declares_to_iterator(&checked.r#type);
-        if !declares {
-            self.error(f.id, f.span, AnalysisErrorKind::ForLoopSourceNotIterable { r#type: checked.r#type });
+
+        if self.for_in_source_declares(&checked.r#type, "ToIterator") {
+            return Some(ForInSource::ToIterator);
         }
-        declares
+        if self.for_in_source_declares(&checked.r#type, "Iterator") {
+            return Some(ForInSource::DirectIterator(checked));
+        }
+        self.error(f.id, f.span, AnalysisErrorKind::ForLoopSourceNotIterable { r#type: checked.r#type });
+        None
     }
 
     /// The `while true { $next := $iter.next(); match $next { ... } }`

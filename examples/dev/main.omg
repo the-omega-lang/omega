@@ -1159,7 +1159,8 @@ main(argc : i32, argv : [*u8]) => i32 {
     # Iterator<T>`, static dispatch, no `*`) -- no heap allocation needed,
     # unlike a `spec *mut Iterator<T>` dynamic-dispatch handle would.
     my_bytes := MyByteString::new(b"omega");
-    for b in my_bytes {
+    my_bytes_iter := my_bytes.to_iterator();
+    for b in my_bytes_iter {
         printf(<*u8>b"%d \0", <i32>b);
     }
     puts(<*u8>b"\0");

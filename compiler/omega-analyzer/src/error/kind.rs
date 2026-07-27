@@ -418,9 +418,10 @@ pub enum AnalysisErrorKind {
     /// declared bound.
     SpecReturnTypeNotSatisfied { function: Ident, r#type: ResolvedType, spec: Ident, missing: Vec<Ident> },
     /// `for x in y { ... }` where `y`'s type doesn't *nominally* declare
-    /// `: ToIterator<T>` -- even if it happens to have a same-shaped
-    /// `to_iterator` method (see `Analyzer::for_in_source_declares_to_iterator`'s
-    /// doc comment for why that alone was never enough).
+    /// `: ToIterator<T>` **or** `: Iterator<T>` directly -- even if it
+    /// happens to have a same-shaped `to_iterator`/`next` method (see
+    /// `Analyzer::for_in_source_declares`'s doc comment for why that alone
+    /// was never enough).
     ForLoopSourceNotIterable { r#type: ResolvedType },
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
@@ -809,7 +810,7 @@ impl fmt::Display for AnalysisErrorKind {
                 spec.as_ref()
             ),
             Self::ForLoopSourceNotIterable { r#type } => {
-                write!(f, "'{type}' does not implement 'ToIterator<T>'")
+                write!(f, "'{type}' does not implement 'ToIterator<T>' or 'Iterator<T>'")
             }
             Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => write!(
                 f,

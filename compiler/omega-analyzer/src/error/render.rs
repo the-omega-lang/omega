@@ -451,8 +451,11 @@ impl AnalysisErrorKind {
                     missing.iter().map(|m| m.as_ref()).collect::<Vec<_>>().join(", ")
                 )),
             Self::ForLoopSourceNotIterable { r#type } => d
-                .with_label(span, format!("`{type}` does not implement `ToIterator<T>`"))
-                .with_help(format!("declare `{type} : ToIterator<T>` and implement `to_iterator`")),
+                .with_label(span, format!("`{type}` does not implement `ToIterator<T>` or `Iterator<T>`"))
+                .with_help(format!(
+                    "declare `{type} : ToIterator<T>` and implement `to_iterator`, \
+                     or `{type} : Iterator<T>` and implement `next` directly"
+                )),
             Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => d
                 .with_label(
                     span,

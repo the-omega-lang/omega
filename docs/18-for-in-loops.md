@@ -77,13 +77,40 @@ dynamic-dispatch fat pointer — so:
 ## Real, nominal conformance
 
 `for x in y` only compiles when `y`'s type *nominally* declares `:
-ToIterator<T>` — checked directly against the type's own declared
-`implements` clause (`Analyzer::for_in_source_declares_to_iterator`), not
-merely "does a method named `to_iterator` happen to resolve," which was
-this feature's one significant gap in an earlier iteration. A type with a
-same-shaped `to_iterator`/`next` pair but no `: ToIterator<T>` declaration
-is rejected with a dedicated `ForLoopSourceNotIterable` diagnostic rather
-than silently accepted or failing with a confusing, unrelated error.
+ToIterator<T>` **or** `: Iterator<T>` directly — checked directly against
+the type's own declared `implements` clause
+(`Analyzer::for_in_source_declares`), not merely "does a method named
+`to_iterator`/`next` happen to resolve," which was this feature's one
+significant gap in an earlier iteration. A type with a same-shaped
+`to_iterator`/`next` pair but neither declaration is rejected with a
+dedicated `ForLoopSourceNotIterable` diagnostic rather than silently
+accepted or failing with a confusing, unrelated error.
+
+```
+struct Counter : Iterator<i32> {
+    exposed value: i32;
+    exposed limit: i32;
+    exposed next(*mut self) => Option<i32> {
+        if self.value >= self.limit { return Option<i32>::None; }
+        v := self.value;
+        self.value += 1;
+        Option<i32>::Some { value = v; }
+    }
+}
+
+for x in Counter { value = 0; limit = 5; } {
+    printf(<*u8>b"%d \0", x);
+}
+```
+
+**An iterator/cursor is directly usable in `for`, with no `ToIterator`
+wrapper needed** — mirroring Rust's blanket `impl<I: Iterator> IntoIterator
+for I`. `Analyzer::classify_for_in_source` tries `ToIterator<T>` first (an
+explicit `ToIterator` impl always wins over treating the source as its own
+iterator, matching Rust's explicit-impl-beats-blanket-impl precedence);
+only if that's absent does it check `Iterator<T>` directly, in which case
+`f.iterator`'s own already-checked value becomes `$iter` verbatim — no
+`.to_iterator()` call is synthesized at all in that case.
 
 ## Desugaring
 
@@ -94,7 +121,7 @@ already-proven machinery (`Analyzer::analyze_for_in`,
 
 ```
 {
-    mut $iter := <iterator>.to_iterator();
+    mut $iter := <iterator>.to_iterator();  # or just `<iterator>` -- see below
     while true {
         $next := $iter.next();
         match $next {
@@ -111,6 +138,9 @@ already-proven machinery (`Analyzer::analyze_for_in`,
 `$iter` is declared `mut` — `next(*mut self)` needs a mutable pointer to
 call through, and only a binding actually declared `mut` can ever have one
 taken to it (see [variables & mutability](02-variables-and-mutability.md)).
+When the source declares `Iterator<T>` directly rather than `ToIterator<T>`
+("Real, nominal conformance" above), `$iter`'s own initializer is
+`<iterator>` itself, not a `.to_iterator()` call on it.
 
 This is why the feature needed **zero new MIR/codegen surface**: the
 result is built entirely out of `CheckedStmt::While`/`CheckedExpr::Match`/
