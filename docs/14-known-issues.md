@@ -56,6 +56,15 @@ new one is found.
   (struct-literal fields, array-literal elements, bare tail-return without
   `return` are missing). [specs.md](08-specs.md)
 - **No `is_variadic` support on spec functions.** [specs.md](08-specs.md)
+- **`spec T` (static-dispatch) return-type inference isn't supported on
+  struct/enum/union methods or overloaded free functions** — only a plain,
+  non-overloaded top-level function can infer its return type from its own
+  body; a method needing this hits `SpecStaticNotAllowedHere` instead.
+  [specs.md](08-specs.md)
+- **A type implementing `ToIterator<T>` more than once, at different `T`,
+  has no disambiguation mechanism** — the explicit-cast escape hatch
+  (`<spec *ToIterator<u64>>expr`) stopped working once `ToIterator<T>`
+  became not-object-safe. [for-in-loops.md](18-for-in-loops.md)
 
 ## Visibility
 

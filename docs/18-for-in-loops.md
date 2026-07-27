@@ -19,11 +19,8 @@ struct MyCustomString : ToIterator<char> {
     exposed ptr: *u8;
     exposed len: usize;
 
-    exposed to_iterator(*self) => spec *mut Iterator<char> {
-        it := malloc(<usize>sizeof<MyCustomStringIterator>);
-        it.current = self.ptr;
-        it.last = <*u8>(self.ptr + self.len);
-        return it;
+    exposed to_iterator(*self) => MyCustomStringIterator {
+        MyCustomStringIterator { current = self.ptr; last = <*u8>(self.ptr + self.len); }
     }
 }
 
@@ -47,7 +44,7 @@ spec Iterator<T> {
     next(*mut self) => Option<T>;
 }
 spec ToIterator<T> {
-    to_iterator(*self) => spec *mut Iterator<T>;
+    to_iterator(*self) => spec Iterator<T>;
 }
 ```
 
@@ -57,27 +54,36 @@ cursor, `ToIterator<T>` is what a collection implements to produce one.
 any type may implement `ToIterator<T>`/`Iterator<T>` and immediately work
 with `for`, the same nominal way any other spec pair does.
 
-`to_iterator`'s return is a **trait object** (`spec *mut Iterator<T>`),
-not some implementor-specific concrete type — this spec system has no
-associated-type mechanism to say "returns whatever type implements
-`Iterator<T>`" (Rust's `IntoIterator::IntoIter` associated type), so a
-dynamic-dispatch handle is the only way to express the contract at all
-today. Two real consequences, both deliberate, not oversights:
+`to_iterator`'s return, `spec Iterator<T>` (no `*`), is **static
+dispatch** — see [specs](08-specs.md)'s own section on the two spec-object
+forms. Each implementor returns its own concrete iterator type *by value*
+(Rust's `IntoIterator::IntoIter` equivalent, checked against the
+`Iterator<T>` bound rather than matched by exact signature), not a
+dynamic-dispatch fat pointer — so:
 
-- **Every `for`-loop pays one indirect call per element** (`next()`),
-  not just once per loop — genuine, ongoing overhead, unlike Rust's fully
-  static-dispatched iterators. True zero-cost iteration would need real
-  associated-type machinery this compiler doesn't have; that's legitimate
-  future work, not something worth blocking this feature on.
-- **The returned iterator's storage must outlive the loop.** `to_iterator`
-  only receives `*self` (immutable), so it can't stash the iterator inside
-  a field of the source collection — the mutable state has to live
-  somewhere else that survives the call returning. Heap-allocating it
-  (`malloc`, as in the example above) is the correct, expected pattern —
-  **not** returning `&mut` a stack local, which dangles the instant
-  `to_iterator` returns (an ordinary use-after-return bug, no different
-  from the same mistake in C; this compiler has no escape analysis to
-  catch it).
+- **No heap allocation, no indirect call.** The iterator is an ordinary,
+  fully monomorphized value; `next()` resolves through the same static
+  method-call machinery any concrete-type method call already does. There
+  is no `spec *mut Iterator<T>` handle anywhere in this feature any more,
+  and correspondingly no per-element vtable indirection — this is now
+  genuinely zero-cost iteration, matching Rust's.
+- **`ToIterator<T>` (and any other spec using a `spec T` return
+  requirement) is not object-safe** — `spec *ToIterator<T>` doesn't exist
+  (no vtable slot can represent "whichever concrete type each implementor
+  happens to use"). A deliberate, accepted tradeoff for the associated-
+  type-like expressiveness this buys — see [specs](08-specs.md)'s
+  object-safety caveat.
+
+## Real, nominal conformance
+
+`for x in y` only compiles when `y`'s type *nominally* declares `:
+ToIterator<T>` — checked directly against the type's own declared
+`implements` clause (`Analyzer::for_in_source_declares_to_iterator`), not
+merely "does a method named `to_iterator` happen to resolve," which was
+this feature's one significant gap in an earlier iteration. A type with a
+same-shaped `to_iterator`/`next` pair but no `: ToIterator<T>` declaration
+is rejected with a dedicated `ForLoopSourceNotIterable` diagnostic rather
+than silently accepted or failing with a confusing, unrelated error.
 
 ## Desugaring
 
@@ -88,7 +94,7 @@ already-proven machinery (`Analyzer::analyze_for_in`,
 
 ```
 {
-    $iter := <iterator>.to_iterator();
+    mut $iter := <iterator>.to_iterator();
     while true {
         $next := $iter.next();
         match $next {
@@ -101,6 +107,10 @@ already-proven machinery (`Analyzer::analyze_for_in`,
     }
 }
 ```
+
+`$iter` is declared `mut` — `next(*mut self)` needs a mutable pointer to
+call through, and only a binding actually declared `mut` can ever have one
+taken to it (see [variables & mutability](02-variables-and-mutability.md)).
 
 This is why the feature needed **zero new MIR/codegen surface**: the
 result is built entirely out of `CheckedStmt::While`/`CheckedExpr::Match`/
@@ -115,11 +125,11 @@ works:
 - **`to_iterator`/`next` are resolved as ordinary method calls** — ordinary
   overload resolution, auto-ref, and static-vs-dynamic-dispatch selection
   all apply exactly as they would if you wrote `x.to_iterator()` by hand.
-  Concretely: `to_iterator` is called via **static** dispatch when the
-  loop's source expression has a statically-known concrete type (the
-  common case), and only `next()` — always called on the now-erased
-  `spec *mut Iterator<T>` handle — pays the vtable indirection mentioned
-  above.
+  Both calls are ordinary static dispatch in the common case now that
+  `to_iterator` returns a concrete value rather than a `spec *T` handle —
+  dynamic dispatch only enters the picture if `Iterator<T>`'s own concrete
+  implementor is itself coerced into some *other* `spec *Something`
+  pointer independently, unrelated to this desugaring.
 - **The `match` is hand-built, not synthesized as source text.** This
   language's `match` has no destructuring pattern syntax at all —
   `Option::Some` doesn't bind a name on its own; only *narrowing* an
@@ -131,36 +141,6 @@ works:
   — is load-bearing here) using the same narrowing primitives `match`'s
   own analysis uses internally, not by generating and re-parsing text.
 
-## Disambiguating which spec instantiation to use
-
-```
-for n in <spec *ToIterator<u64>>&ambiguous_iterator {
-    ...
-}
-```
-
-A type may implement `ToIterator<T>` more than once, at different `T` (see
-[specs](08-specs.md)'s "Implementing the same generic spec more than
-once") — `for x in y` picks whichever one `y.to_iterator()` resolves to
-through ordinary overload resolution, same as any other overloaded
-method call. An explicit `<spec *Spec<Args>>expr` cast disambiguates when
-that's not enough on its own, by forcing `y`'s type to the target
-instantiation before the loop ever looks at it — this also works as a
-general expression, independent of `for`-loops (see
-[specs](08-specs.md)'s "Casting into a spec object" section).
-
-In practice, this exact disambiguation scenario can't currently arise for
-`ToIterator<T>` specifically: `to_iterator(*self)` takes no parameter that
-varies with `T`, only the return type does, and this language has no
-return-type-only overloading (confirmed intentional — see
-[functions](00-functions.md)) — so two `to_iterator` overloads differing
-only in `T` collide as an outright redeclaration before a `for`-loop is
-ever involved. The cast support was still worth building on its own
-merits (explicit casting into a `spec *T` never worked at all before this,
-only 4 sites of *implicit* coercion did — see
-[specs](08-specs.md)'s caveats), and it's there for the day some other
-spec pair (or a reshaped `ToIterator<T>`) actually needs it.
-
 ## Caveats
 
 - **`*str`/`*[T]` don't implement `ToIterator` yet.** `for c in
@@ -170,7 +150,14 @@ spec pair (or a reshaped `ToIterator<T>`) actually needs it.
   already use (see [specs](08-specs.md)) — not done as part of this
   feature, to keep its own scope to the language mechanism and the two
   specs it depends on.
-- **No zero-cost/fully-static iteration** — see "`core::iterator` /
-  `core::option`" above; would need real associated-type support.
 - **`Option<T>` itself has no convenience methods** (`is_some`,
   `unwrap_or`, ...) — see [core library](13-core-library.md).
+- **A type implementing `ToIterator<T>` more than once, at different `T`,
+  has no way to disambiguate which `for x in y` picks** — unlike an
+  ordinary overloaded method call, there's no argument shape to resolve
+  against (`to_iterator(*self)` takes none), and the explicit-cast
+  disambiguation the dynamic-dispatch design used to offer
+  (`<spec *ToIterator<u64>>expr`) no longer applies now that `ToIterator<T>`
+  isn't object-safe. Narrow in practice (this scenario needs two
+  `to_iterator` overloads differing only in return type, which most specs
+  won't hit), but a genuine, currently-unsolved gap if it comes up.

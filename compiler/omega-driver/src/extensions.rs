@@ -187,7 +187,7 @@ impl Driver {
             analyzer.resolve_extension_methods(sp, &self_type, pattern_binding)
         });
 
-        let (methods, pending) = resolved.unwrap_or_default();
+        let (methods, pending, _implemented_specs) = resolved.unwrap_or_default();
         self.extensions.resolved.insert(receiver.clone(), methods.clone());
         if !pending.is_empty() {
             let pending = pending

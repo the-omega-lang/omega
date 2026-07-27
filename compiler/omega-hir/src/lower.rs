@@ -204,17 +204,79 @@ impl Lowerer {
             body.stmts.insert(0, self.self_shadow_stmt(span));
         }
 
+        let mut generics = Self::lower_generics(&f.generics);
+        Self::desugar_spec_static_params(&mut params, &mut generics);
+
         HirFunctionDef {
             id: self.ids.next(),
             span,
             annotations: Self::lower_annotations(&f.annotations),
             visibility: f.visibility,
             name: f.ident.clone(),
-            generics: Self::lower_generics(&f.generics),
+            generics,
             self_mode: f.self_mode,
             params,
             return_type: f.return_type.clone(),
             body,
+        }
+    }
+
+    /// `f(x: spec Foo)` sugar -- an implicit, bound generic parameter,
+    /// exactly as if the caller had written `f<$ParamN: Foo>(x: $ParamN)`.
+    /// Purely mechanical (no semantic decisions: `item_generics`/
+    /// `collect_function_signature`/`ensure_item`'s bound-checking all run
+    /// completely unmodified afterward, seeing an ordinary bound generic
+    /// function) -- which is exactly why this belongs in lowering rather
+    /// than analysis, mirroring `self_param`'s identical "no type
+    /// information needed, so do it here" reasoning above. `self` can never
+    /// be `spec T`-typed (always `Self`), so it's harmless that it's
+    /// included in `params`' own indexing here.
+    ///
+    /// Recurses into the same compound shapes `unify_generic_type`/
+    /// `type_references_generics` already do (`*spec Foo`, `[spec Foo]`,
+    /// a function-typed parameter's own params/return, ...) rather than
+    /// only matching a bare top-level `spec Foo` -- `thing: *spec Speak`
+    /// (the common "pass by pointer" idiom this codebase already uses for
+    /// explicit bound generics, e.g. `animal: *T` in the specs docs) works
+    /// the same way a bare `thing: spec Speak` does.
+    ///
+    /// Every occurrence gets its *own* fresh generic (never shares one
+    /// across two `spec Foo` occurrences) -- matching Rust's `impl Trait`:
+    /// `f(a: impl Foo, b: impl Foo)` doesn't require `a`/`b` to be the same
+    /// concrete type. `$`-prefixed, matching the `$iter`/`$next` synthetic-
+    /// identifier convention the for-in loop desugaring already established
+    /// (`$` can't start a user identifier, so this can never collide with a
+    /// real generic parameter's name).
+    fn desugar_spec_static_params(params: &mut [HirParam], generics: &mut Vec<HirGenericParam>) {
+        let mut next = 0usize;
+        for param in params.iter_mut() {
+            Self::replace_spec_static(&mut param.r#type, &mut next, generics);
+        }
+    }
+
+    fn replace_spec_static(ty: &mut Type, next: &mut usize, generics: &mut Vec<HirGenericParam>) {
+        match ty {
+            Type::SpecStatic(bound) => {
+                let fresh = Ident(format!("$Param{next}"));
+                *next += 1;
+                generics.push(HirGenericParam { ident: fresh.clone(), bound: Some((**bound).clone()) });
+                *ty = Type::Named(fresh.into());
+            }
+            Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
+                Self::replace_spec_static(inner, next, generics);
+            }
+            Type::Generic(_, args) => {
+                for a in args.iter_mut() {
+                    Self::replace_spec_static(a, next, generics);
+                }
+            }
+            Type::Function(f) => {
+                for (_, p) in f.params.iter_mut() {
+                    Self::replace_spec_static(p, next, generics);
+                }
+                Self::replace_spec_static(&mut f.return_type, next, generics);
+            }
+            Type::Named(_) | Type::SpecObject(_, _) => {}
         }
     }
 

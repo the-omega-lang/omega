@@ -40,15 +40,18 @@ fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
     Some(Type::Pointer(Box::new(inner), mutable))
 }
 
-/// `spec *Animal` or `spec *mut Animal` -- mirrors `parse_pointer_type`
-/// exactly (same `mut` contextual-keyword handling), just requiring a `*`
-/// to immediately follow `spec` and producing `Type::SpecObject` instead of
-/// `Type::Pointer`. The pointee is parsed via the ordinary named-type path
-/// (`Path` or `Path<...>`), never recursing back into `parse_type` -- a
-/// spec object's pointee is always a spec reference, never another pointer.
+/// `spec *Animal` / `spec *mut Animal` (dynamic dispatch, `Type::SpecObject`)
+/// or `spec Animal` (static dispatch, `Type::SpecStatic`, no `*` at all) --
+/// disambiguated purely by whether a `*` immediately follows `spec`. Both
+/// forms parse their pointee via the same named-type path (`Path` or
+/// `Path<...>`), never recursing back into `parse_type` -- a spec
+/// reference is always a plain name, never itself a pointer.
 fn parse_spec_object_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // 'spec'
-    p.expect(&TokenKind::Star, "'*'");
+    if !p.eat(&TokenKind::Star) {
+        let inner = parse_named_type(p)?;
+        return Some(Type::SpecStatic(Box::new(inner)));
+    }
     let mutable = if let TokenKind::Ident(name) = p.peek()
         && name == "mut"
     {

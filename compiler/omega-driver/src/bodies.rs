@@ -216,7 +216,10 @@ impl Driver {
             unreachable!("only ever called with an index confirmed to be a function");
         };
 
-        let checked = self.analyze(module_path, &[], (f.id, f.span), |a| a.collect_function_signature(f));
+        // An overloaded free function doesn't yet support `spec T` return-
+        // type body inference either -- see the identical scope note on
+        // `collect_methods`'s own call site.
+        let checked = self.analyze(module_path, &[], (f.id, f.span), |a| a.collect_function_signature(f, None));
         let (fn_type, annotations) =
             checked.ok_or_else(|| ResolveError::ItemFailed { module: module_path.to_vec(), item: f.name.clone() })?;
 

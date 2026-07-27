@@ -402,6 +402,26 @@ pub enum AnalysisErrorKind {
     /// *Spec` value) could reach a method its own author declared more
     /// private than that.
     SpecMethodTooPrivate { implementor: Ident, spec: Ident, function: Ident, required: Visibility, found: Visibility },
+    /// A `spec T` (static-dispatch) return-type function's own body returns
+    /// two genuinely different concrete types across its exit points
+    /// (`return`s plus a possible tail expression) -- Rust's `impl Trait`
+    /// rule: exactly *one* concrete type across the whole function, not
+    /// merely "each individually satisfies the bound." See
+    /// `Analyzer::infer_body_return_type`.
+    AmbiguousSpecReturnType { function: Ident, first: ResolvedType, second: ResolvedType },
+    /// A `spec T`-returning function's body has no exit point at all to
+    /// infer a concrete type from (every path diverges without ever
+    /// `return`ing a value, and there's no tail expression either).
+    SpecReturnTypeUnconstrained { function: Ident },
+    /// A `spec T`-returning function's body consistently returns one
+    /// concrete type, but that type doesn't actually implement the
+    /// declared bound.
+    SpecReturnTypeNotSatisfied { function: Ident, r#type: ResolvedType, spec: Ident, missing: Vec<Ident> },
+    /// `for x in y { ... }` where `y`'s type doesn't *nominally* declare
+    /// `: ToIterator<T>` -- even if it happens to have a same-shaped
+    /// `to_iterator` method (see `Analyzer::for_in_source_declares_to_iterator`'s
+    /// doc comment for why that alone was never enough).
+    ForLoopSourceNotIterable { r#type: ResolvedType },
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction { spec: Ident, function: Ident },
@@ -772,6 +792,25 @@ impl fmt::Display for AnalysisErrorKind {
                 first_spec.as_ref(),
                 second_spec.as_ref()
             ),
+            Self::AmbiguousSpecReturnType { function, first, second } => write!(
+                f,
+                "'{}' returns two different types ('{first}' and '{second}') -- a 'spec T' return type needs exactly one concrete type",
+                function.as_ref()
+            ),
+            Self::SpecReturnTypeUnconstrained { function } => write!(
+                f,
+                "cannot infer '{}'s return type -- its body never returns a value",
+                function.as_ref()
+            ),
+            Self::SpecReturnTypeNotSatisfied { function, r#type, spec, .. } => write!(
+                f,
+                "'{}' returns '{type}', which does not implement spec '{}'",
+                function.as_ref(),
+                spec.as_ref()
+            ),
+            Self::ForLoopSourceNotIterable { r#type } => {
+                write!(f, "'{type}' does not implement 'ToIterator<T>'")
+            }
             Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => write!(
                 f,
                 "'{}' on '{}' is '{found}', but spec '{}' requires at least '{required}'",

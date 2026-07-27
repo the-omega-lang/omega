@@ -253,6 +253,15 @@ impl<'r> Analyzer<'r> {
                     self.error(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer);
                     return None;
                 }
+                // See `Analyzer::infer_body_return_type` -- there is no
+                // concrete return type to check against yet, so this exit
+                // point's own (uncoerced) resolved type is just recorded as
+                // a candidate instead.
+                if self.inferring_return_type {
+                    let checked = self.analyze_expr(expr, None)?;
+                    self.inferred_return_candidates.push((expr.span, checked.r#type.clone()));
+                    return Some(vec![CheckedStmt::Return(checked)]);
+                }
                 let return_type = self.current_return_type.clone();
                 let checked = self.analyze_expr(expr, Some(&return_type))?;
                 let checked = self.coerce_to_expected(Some(&return_type), checked);
@@ -433,21 +442,44 @@ impl<'r> Analyzer<'r> {
     /// `core::option::Option`'s variant order is load-bearing here --
     /// `None` is hardcoded as variant 0, `Some` as variant 1 (see
     /// `runtime/core/core/option.omg`'s own doc comment).
+    ///
+    /// Real, nominal `ToIterator<T>` conformance -- **not** duck-typed --
+    /// is checked first, via `check_for_in_source_nominal`: a type that
+    /// merely happens to have a same-shaped `to_iterator` method, without
+    /// ever declaring `: ToIterator<T>`, is rejected with
+    /// `ForLoopSourceNotIterable` instead of silently accepted the way this
+    /// desugaring originally worked (`synthesize_method_call` resolves a
+    /// method purely by name/shape, with no notion of a declared spec at
+    /// all -- true of `to_iterator` below just as much as of `next` in
+    /// `analyze_for_in_loop`, but only `to_iterator`'s receiver is a type
+    /// this feature doesn't otherwise already know implements the right
+    /// spec; `next`'s receiver, `$iter`, is `to_iterator`'s own return
+    /// type, already proven to implement `Iterator<T>` by construction --
+    /// see `runtime/core/core/iterator.omg`'s `spec Iterator<T>` return
+    /// bound).
     fn analyze_for_in(&mut self, f: &HirForIn) -> Option<Vec<CheckedStmt>> {
         self.context.enter_scope();
 
-        let to_iterator = self.synthesize_method_call(
-            HirPlaceRoot::Expr(Box::new(f.iterator.clone())),
-            "to_iterator",
-            f.span,
-        );
+        let source_declares_to_iterator = self.check_for_in_source_nominal(f);
+
+        let to_iterator = source_declares_to_iterator.then(|| {
+            self.synthesize_method_call(HirPlaceRoot::Expr(Box::new(f.iterator.clone())), "to_iterator", f.span)
+        }).flatten();
         let ok = to_iterator.is_some();
 
         let result = ok.then(|| {
             let to_iterator = to_iterator.expect("checked by `ok` above");
             let iter_id = self.resolver.fresh_synthetic_id();
             let iter_type = to_iterator.r#type.clone();
-            self.declare_binding(iter_id, f.span, &Ident("$iter".to_string()), iter_type.clone(), Storage::Local, false);
+            // `mut` -- `$iter.next()` takes `*mut self`, and `next`'s own
+            // receiver auto-refs `$iter` itself now that `to_iterator`
+            // returns an owned value (not a pointer): a mutable pointer can
+            // only ever be taken to a binding actually declared `mut` (see
+            // `VarBinding::mutable`). Harmless for the (rarer) case where
+            // `iter_type` is itself already a `spec *mut Iterator<T>`
+            // dynamic-dispatch handle -- the pointer *value* still never
+            // gets reassigned, this only affects whether one could be.
+            self.declare_binding(iter_id, f.span, &Ident("$iter".to_string()), iter_type.clone(), Storage::Local, true);
             let (iter_decl, iter_assign) =
                 Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type, to_iterator);
 
@@ -458,6 +490,37 @@ impl<'r> Analyzer<'r> {
         let scope = self.context.leave_scope();
         self.warn_unused_bindings(scope, false);
         result.flatten()
+    }
+
+    /// Probes `f.iterator`'s own type once, purely to check it against
+    /// `Analyzer::for_in_source_declares_to_iterator` -- the real, nominal
+    /// half of `analyze_for_in`'s conformance check (see its own doc
+    /// comment). This necessarily re-analyzes `f.iterator` a second time
+    /// (`synthesize_method_call` will analyze the identical expression
+    /// again momentarily, embedded as `to_iterator`'s own receiver -- there
+    /// is no lower-level "resolve a method call against an already-checked
+    /// receiver" primitive to hand it off to instead), so this probe's own
+    /// diagnostics are only kept when it fails outright (a genuine type
+    /// error in `f.iterator` itself, which is the real problem and would
+    /// otherwise be silently swallowed); on success they're discarded
+    /// (truncated back to their pre-probe length) so nothing this analyzes
+    /// twice (a `hidden` bypass, say) warns twice.
+    fn check_for_in_source_nominal(&mut self, f: &HirForIn) -> bool {
+        let errors_before = self.errors.len();
+        let warnings_before = self.warnings.len();
+        let Some(checked) = self.analyze_expr(&f.iterator, None) else {
+            // A genuine type error in `f.iterator` -- keep it; it's the
+            // real problem, and `synthesize_method_call` would only
+            // reproduce it a moment later anyway.
+            return false;
+        };
+        self.errors.truncate(errors_before);
+        self.warnings.truncate(warnings_before);
+        let declares = self.for_in_source_declares_to_iterator(&checked.r#type);
+        if !declares {
+            self.error(f.id, f.span, AnalysisErrorKind::ForLoopSourceNotIterable { r#type: checked.r#type });
+        }
+        declares
     }
 
     /// The `while true { $next := $iter.next(); match $next { ... } }`

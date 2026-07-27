@@ -75,6 +75,22 @@ pub enum TypeResolutionError {
     /// than a spec (a struct, a primitive, ...) -- a dynamic-dispatch
     /// pointer's pointee must always be a spec.
     NotASpec(Ident),
+    /// `spec *Foo`/`spec *mut Foo` where `Foo` has at least one `spec T`
+    /// (static-dispatch, associated-type-like) return requirement, directly
+    /// or through a dependency -- see `ResolvedSpecType::is_object_safe`'s
+    /// doc comment for why a spec shaped this way can never back a
+    /// dynamic-dispatch trait object.
+    SpecNotObjectSafe(Ident),
+    /// `spec Foo` (no `*`, static dispatch) written somewhere other than a
+    /// parameter type or a function's own return type -- the only two
+    /// positions this sugar is defined for (see `Type::SpecStatic`'s doc
+    /// comment). Reaching ordinary `resolve_type` with this shape at all
+    /// means neither the parameter-position desugaring (HIR lowering) nor
+    /// the return-position special-casing (`resolve_raw_spec_fn_type`/
+    /// the driver's spec-return inference) ever ran -- i.e. a position this
+    /// sugar was never meant to reach (a local variable annotation, a
+    /// struct field, an array element, ...).
+    SpecStaticNotAllowedHere(Ident),
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -95,6 +111,18 @@ impl fmt::Display for TypeResolutionError {
                 write!(f, "no variant '{}' on enum '{}'", name.as_ref(), r#enum.as_ref())
             }
             Self::NotASpec(name) => write!(f, "'{}' is not a spec", name.as_ref()),
+            Self::SpecNotObjectSafe(name) => {
+                write!(
+                    f,
+                    "'{}' can't be used as 'spec *{}' -- it has a 'spec T' (static-dispatch) return requirement, \
+                     which no dynamic-dispatch vtable slot can represent",
+                    name.as_ref(),
+                    name.as_ref()
+                )
+            }
+            Self::SpecStaticNotAllowedHere(name) => {
+                write!(f, "'spec {}' is only allowed as a parameter type or a function's own return type", name.as_ref())
+            }
         }
     }
 }

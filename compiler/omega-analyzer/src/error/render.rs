@@ -435,6 +435,24 @@ impl AnalysisErrorKind {
                     "give the implementing type its own `{}` method matching both",
                     name.as_ref()
                 )),
+            Self::AmbiguousSpecReturnType { function, first, second } => d
+                .with_label(span, format!("`{}` returns both `{first}` and `{second}`", function.as_ref()))
+                .with_help("a 'spec T' return type must resolve to exactly one concrete type across every exit point"),
+            Self::SpecReturnTypeUnconstrained { function } => d
+                .with_label(span, format!("cannot infer a concrete type for `{}`", function.as_ref()))
+                .with_help("a 'spec T' return type needs at least one 'return' or tail expression to infer from"),
+            Self::SpecReturnTypeNotSatisfied { function, r#type, spec, missing } => d
+                .with_label(
+                    span,
+                    format!("`{}` returns `{type}`, which does not implement `{}`", function.as_ref(), spec.as_ref()),
+                )
+                .with_help(format!(
+                    "`{type}` is missing: {}",
+                    missing.iter().map(|m| m.as_ref()).collect::<Vec<_>>().join(", ")
+                )),
+            Self::ForLoopSourceNotIterable { r#type } => d
+                .with_label(span, format!("`{type}` does not implement `ToIterator<T>`"))
+                .with_help(format!("declare `{type} : ToIterator<T>` and implement `to_iterator`")),
             Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => d
                 .with_label(
                     span,
@@ -551,6 +569,11 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         TypeResolutionError::NotASpec(_) => d
             .with_label(span, "not a spec")
             .with_help("`spec *...`'s pointee must name a spec, e.g. `spec *Animal`"),
+        TypeResolutionError::SpecNotObjectSafe(_) => d
+            .with_label(span, "not object-safe")
+            .with_help("use a generic bound (`T: ...`) or `spec T` static dispatch instead"),
+        TypeResolutionError::SpecStaticNotAllowedHere(_) => d
+            .with_label(span, "`spec ...` (static dispatch) is only allowed as a parameter type or a return type"),
     }
 }
 
@@ -603,6 +626,10 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 "missing: {}",
                 missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ))
+        }
+        ResolveError::SpecReturnTypeRecursion { item, .. } => {
+            with_label(d, format!("`{}` recursively depends on its own inferred return type", item.as_ref()))
+                .with_help("give this function an explicit, concrete return type instead of 'spec T'")
         }
     }
 }

@@ -112,6 +112,7 @@ pub fn type_references_generics(generics: &[Ident], raw: &Type) -> bool {
                 || args.iter().any(|a| type_references_generics(generics, a))
         }
         Type::SpecObject(inner, _) => type_references_generics(generics, inner),
+        Type::SpecStatic(inner) => type_references_generics(generics, inner),
         Type::Function(f) => {
             f.params.iter().any(|(_, p)| type_references_generics(generics, p))
                 || type_references_generics(generics, &f.return_type)

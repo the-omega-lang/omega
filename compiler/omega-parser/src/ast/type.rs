@@ -56,4 +56,18 @@ pub enum Type {
     /// on a `GenericParam`), which stays a thin, ordinary pointer once `T`
     /// is monomorphized to a concrete type.
     SpecObject(Box<Type>, bool),
+    /// `spec Animal` -- no `*`, unlike `SpecObject` above: a *static*-
+    /// dispatch spec bound written in type position, Rust's `impl Trait`
+    /// equivalent. In parameter position this is sugar for an implicit
+    /// generic parameter bound by the named spec (desugared away entirely
+    /// during HIR lowering -- the analyzer never sees this variant there).
+    /// In the return position of a spec's own function declaration, or of
+    /// an ordinary function, it means "some concrete type satisfying this
+    /// spec, to be determined per implementor / inferred from the body" --
+    /// never itself the type of a runtime value the way `SpecObject` is
+    /// (there is no fat pointer, no vtable; every occurrence is resolved
+    /// away to a genuine concrete type before codegen ever runs). The boxed
+    /// `Type` is always a `Named`/`Generic` spec reference, exactly like
+    /// `SpecObject`'s pointee.
+    SpecStatic(Box<Type>),
 }

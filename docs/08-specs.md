@@ -198,6 +198,106 @@ this coercion (`Analyzer::type_implements_spec`), including the identical
 mutable-pointer-needs-a-mutable-source rule ordinary pointer casts already
 enforce.
 
+## `spec T` — static dispatch as a type
+
+```
+my_function(thing: spec SomeSpec) => void { ... }
+```
+
+`spec SomeSpec` (no `*`) is Rust's `impl Trait` — a *static*-dispatch spec
+bound written directly as a type, contrasted with `spec *SomeSpec` above
+(a genuine dynamic-dispatch fat pointer). It has three positions, each
+with different mechanics under the hood, though all three share the same
+"some concrete type satisfying this bound" reading:
+
+### Parameter position
+
+Pure sugar, desugared away entirely during HIR lowering — before semantic
+analysis ever runs, `my_function(thing: spec SomeSpec) => void` becomes:
+
+```
+my_function<T: SomeSpec>(thing: T) => void { ... }
+```
+
+an ordinary bound generic parameter (a fresh, compiler-minted name), so
+every existing generic-bound mechanism — argument-driven inference,
+`ensure_item`'s bound-checking, monomorphization — applies completely
+unmodified. Each occurrence gets its own independent generic (two `spec
+SomeSpec` parameters in one function are never required to share a
+concrete type, matching Rust: `f(a: impl Foo, b: impl Foo)`), and this
+recurses through compound shapes (`thing: *spec SomeSpec`, the common
+"pass by pointer" idiom this language already uses for explicit bound
+generics — e.g. `animal: *T` above) the same way generic-argument
+unification already does elsewhere.
+
+### Return position, inside a spec's own function declaration
+
+```
+exposed spec ToIterator<T> {
+    to_iterator(*self) => spec Iterator<T>;
+}
+```
+
+This is the associated-type-like case: rather than every implementor's
+`to_iterator` needing to return the *exact same* concrete type (impossible
+here — each implementor's iterator is its own type), each implementor's
+own concrete return type is checked against the `Iterator<T>` bound
+(`Analyzer::type_implements_spec`) instead of matched by exact-signature
+equality the way every other spec requirement still is. The requirement
+itself carries no concrete return type at all — see
+`FlattenedSpecFn::return_type_bound`.
+
+**This makes the spec no longer object-safe.** `spec *ToIterator<T>`
+doesn't exist — no single vtable slot can represent "whichever concrete
+type each implementor happens to return," the identical reason Rust's own
+`IntoIterator` isn't object-safe. Attempting one produces a dedicated
+`SpecNotObjectSafe` diagnostic rather than a malformed vtable.
+`ResolvedSpecType::is_object_safe` is computed once, eagerly, the moment a
+spec's own signature is resolved (`false` the instant any of its own
+functions — or any dependency's — has a `spec T` return requirement), and
+checked at the one place a `spec *T` type actually gets built.
+
+### Return position, on an ordinary (non-spec) function
+
+```
+make_dog() => spec Animal {
+    Dog {}
+}
+```
+
+The concrete return type is *inferred from the function's own body* —
+every `return`/tail exit point must resolve to the exact same concrete
+type (Rust's `impl Trait` rule: one concrete type, not merely "each
+individually satisfies the bound"), which must itself implement the
+declared bound. This is the most involved of the three: it inverts the
+compiler's ordinary signature-before-body ordering (`collect_function_
+signature` has no concrete type to give `resolve_type_or_error` for a
+`spec T` return type at all), so the driver eagerly body-checks such a
+function — twice: a throwaway probe pass to discover the concrete type
+(`Analyzer::infer_body_return_type`, `expected = None` throughout, its own
+diagnostics discarded on success), then the ordinary, unmodified
+`check_function_body` once the type is known, which is what's actually
+cached and used everywhere (`Driver::resolve_spec_return_function`).
+Diverges to `AmbiguousSpecReturnType` (two different concrete types
+across exit points), `SpecReturnTypeUnconstrained` (no exit point to infer
+from at all), or an ordinary bound-violation diagnostic, as appropriate.
+
+Two functions whose inference calls each other would otherwise recurse
+forever (neither one's *own* signature key is ever `InProgress` for
+itself the way ordinary same-key recursion is caught) — guarded by a
+dedicated stack (`SpecReturnTypeRecursion`), independent of (and more
+general than) the ordinary single-key cycle guard. In practice, ordinary
+call resolution's own `InProgress` tracking already catches this first
+(as a generic cyclic-dependency error) for any recursion reachable through
+a normal function call, since callee-signature resolution for *any*
+function funnels through the same query the dedicated guard backstops.
+
+Not yet supported for struct/enum/union **methods** or overloaded free
+functions — both go through a different, harder-to-retrofit signature-
+collection path (`compute_aggregate`/`collect_methods`); a `spec T` return
+type there is rejected with the same `SpecStaticNotAllowedHere` diagnostic
+any other unsupported position gets.
+
 ## `for`-attached specs: giving primitives methods
 
 ```

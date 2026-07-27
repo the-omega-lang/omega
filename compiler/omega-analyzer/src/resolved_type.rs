@@ -86,6 +86,20 @@ pub struct ResolvedStructType {
     /// `Analyzer::check_struct_body` can just read it back without risking
     /// re-emitting the same annotation errors a second time.
     pub suppress: Vec<Ident>,
+    /// Every spec this type's own `implements` clause *nominally* names,
+    /// each already resolved to its cell + concrete type arguments (see
+    /// `Analyzer::resolve_implements_clause`, this field's only writer) --
+    /// deliberately **not** derivable from `functions` alone: a method
+    /// merely *shaped* like a spec requirement (same name, same signature)
+    /// is not the same fact as this type having actually declared `:
+    /// Spec<Args>`, and nothing else records that distinction anywhere
+    /// (`ResolvedMethod` carries no "which requirement (if any) this
+    /// satisfies" provenance). `Analyzer::analyze_for_in` is this field's
+    /// reader: real nominal `ToIterator<T>` conformance has to be checked
+    /// against *this*, not against `type_implements_spec` (which is
+    /// structural -- see its own doc comment -- and would happily accept a
+    /// type that merely duck-types the right method shapes).
+    pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
 }
 
 /// Nominal, not structural: two struct types are the same type iff they're
@@ -131,6 +145,8 @@ pub struct ResolvedUnionType {
     /// See `ResolvedStructType::suppress`'s doc comment. Unions don't
     /// support `@layout` yet -- only `@suppress` applies here.
     pub suppress: Vec<Ident>,
+    /// See `ResolvedStructType::implemented_specs`'s doc comment.
+    pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
 }
 
 impl PartialEq for ResolvedUnionType {
@@ -191,6 +207,8 @@ pub struct ResolvedEnumType {
     pub layout: crate::annotations::Layout,
     /// See `ResolvedStructType::suppress`'s doc comment.
     pub suppress: Vec<Ident>,
+    /// See `ResolvedStructType::implemented_specs`'s doc comment.
+    pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
 }
 
 /// One resolved variant: its unique tag value, its per-variant header
@@ -273,6 +291,22 @@ pub struct ResolvedSpecType {
     /// arguments `generics` was substituted with, empty for a
     /// non-generic spec.
     pub type_args: Vec<ResolvedType>,
+    /// Whether this spec can be used as a dynamic-dispatch trait object
+    /// (`spec *Self`) at all -- `false` the instant any of `functions`
+    /// declares a `spec T` (static-dispatch, no `*`) return type, directly
+    /// or transitively through a dependency (a vtable slot can't point at
+    /// "whichever concrete type each implementor happens to use" -- the
+    /// exact reason Rust's `IntoIterator` isn't object-safe either).
+    /// Computed once, eagerly, right where `functions`/`dependencies`
+    /// themselves are first resolved (`omega_driver::Driver::
+    /// resolve_spec_declaration`) -- a dependency's own cell is always
+    /// already fully built by then, so this never needs its own
+    /// resolution pass. Checked wherever a `Type::SpecObject` (`spec
+    /// *Self`) actually resolves into a real `ResolvedType::SpecObject`
+    /// value, so a not-object-safe spec is rejected at the one point that
+    /// matters instead of scattered across every dynamic-dispatch call
+    /// site.
+    pub is_object_safe: bool,
     /// Each dependency's own cell, resolved eagerly (see `ModuleResolver::
     /// spec_declaration`), paired with its **raw**, unresolved type
     /// arguments -- deliberately not `Vec<ResolvedType>`: resolving them

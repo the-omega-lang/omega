@@ -14,16 +14,35 @@ pub enum ExtensionTarget {
 }
 
 /// What resolving an `implements` clause or a `for` block produces: the
-/// methods to store on the implementor, paired with every spec-default body
-/// still owed a phase-2 check (see [`PendingSpecMethod`]).
-pub type SpecMethods = (Vec<(Ident, ResolvedMethod)>, Vec<PendingSpecMethod>);
+/// methods to store on the implementor, every spec-default body still owed
+/// a phase-2 check (see [`PendingSpecMethod`]), and every spec the clause
+/// *nominally* named (each resolved to its cell + concrete type arguments)
+/// -- the last is what `ResolvedStructType::implemented_specs` (and its
+/// enum/union siblings) get patched with; see that field's own doc comment
+/// for why this can't be reconstructed from the method list alone.
+pub type SpecMethods =
+    (Vec<(Ident, ResolvedMethod)>, Vec<PendingSpecMethod>, Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>);
 
 /// One spec function requirement, flattened out of a (possibly generic,
 /// possibly multiply-inherited) spec reference and resolved for one
 /// specific concrete implementor -- see `Analyzer::flatten_spec`.
 pub(super) struct FlattenedSpecFn {
     pub(super) name: Ident,
+    /// For a `spec T` (static-dispatch, associated-type-like) return
+    /// requirement, `fn_type.return_type` is an inert `ResolvedType::Void`
+    /// placeholder -- **never read** in that case; `return_type_bound`
+    /// (below) is the source of truth instead. See its own doc comment.
     pub(super) fn_type: ResolvedFunctionType,
+    /// `Some((spec, type_args))` when this requirement's return type was
+    /// declared `=> spec Bound<...>` rather than an ordinary concrete type
+    /// -- an implementor satisfies it with *any* concrete return type that
+    /// itself implements `Bound<...>` (checked via `type_implements_spec`),
+    /// not by exact-`ResolvedType`-equality the way every other requirement
+    /// still is. `None` for the overwhelmingly common case, preserving
+    /// today's exact-equality behavior unchanged. See
+    /// `fn_satisfies_requirement`/`requirements_are_same`, the two places
+    /// this is actually consulted.
+    pub(super) return_type_bound: Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub(super) raw: RawSpecFunctionSig,
     pub(super) spec_name: Ident,
     /// The visibility of whichever spec directly declares this function
@@ -70,8 +89,45 @@ impl FlattenedSpecFn {
 pub struct PendingSpecMethod {
     pub id: HirId,
     pub fn_type: ResolvedFunctionType,
+    /// See `FlattenedSpecFn::return_type_bound`'s doc comment -- propagated
+    /// unchanged from the `FlattenedSpecFn` this was queued from. A default
+    /// body queued with this `Some` still needs its concrete return type
+    /// inferred from its own body (the same machinery an ordinary `spec T`-
+    /// returning function uses) before `check_pending_spec_method` can
+    /// check it for real -- not yet wired in (`fn_type.return_type` is
+    /// still the inert placeholder in that case today).
+    pub return_type_bound: Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub raw: RawSpecFunctionSig,
     pub substitution: Vec<(Ident, ResolvedType)>,
+}
+
+/// Whether two requirements under the same name are the *same* requirement
+/// (safe to silently dedup, per point 5 of the language design) rather than
+/// a genuine conflict -- `self_mode`/`is_variadic`/`params` always compare
+/// structurally, exactly as plain `ResolvedFunctionType` equality already
+/// did; only the return type's comparison branches: ordinary `ResolvedType`
+/// equality when neither side is `spec`-bound (100% of today's behavior),
+/// or same-bound-spec-and-args when both are, via `ResolvedSpecType`'s own
+/// nominal (id-based) `PartialEq`. A `SpecBound` paired with a `Concrete`
+/// requirement under the same name is never considered the same (a real
+/// conflict, reported as `ConflictingSpecFunctions`).
+fn requirements_are_same(
+    a_fn_type: &ResolvedFunctionType,
+    a_bound: &Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    b_fn_type: &ResolvedFunctionType,
+    b_bound: &Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+) -> bool {
+    match (a_bound, b_bound) {
+        (None, None) => a_fn_type == b_fn_type,
+        (Some((spec_a, args_a)), Some((spec_b, args_b))) => {
+            a_fn_type.self_mode == b_fn_type.self_mode
+                && a_fn_type.is_variadic == b_fn_type.is_variadic
+                && a_fn_type.params == b_fn_type.params
+                && *spec_a.borrow() == *spec_b.borrow()
+                && args_a == args_b
+        }
+        _ => false,
+    }
 }
 
 impl<'r> Analyzer<'r> {
@@ -290,6 +346,12 @@ impl<'r> Analyzer<'r> {
         let dependencies = self.resolve_spec_dependencies(sp);
         let functions = self.resolve_spec_functions(sp);
         let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
+        // Never actually consulted -- a `for`-spec is never name-registered,
+        // so `spec *Name` can never be written against this cell -- but kept
+        // true anyway so this cell upholds the same invariant every other
+        // `ResolvedSpecType` does (see its own doc comment).
+        let is_object_safe = functions.iter().all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))
+            && dependencies.iter().all(|(dep, _)| dep.borrow().is_object_safe);
         let cell = Rc::new(RefCell::new(ResolvedSpecType {
             id: sp.id,
             name: sp.name.clone(),
@@ -297,6 +359,7 @@ impl<'r> Analyzer<'r> {
             generics,
             module_path: self.module_path.clone(),
             type_args: vec![],
+            is_object_safe,
             dependencies,
             functions,
         }));
@@ -330,6 +393,7 @@ impl<'r> Analyzer<'r> {
                     pending.push(PendingSpecMethod {
                         id: minted_id,
                         fn_type: f.fn_type,
+                        return_type_bound: f.return_type_bound,
                         raw: f.raw,
                         substitution: f.substitution,
                     });
@@ -348,7 +412,12 @@ impl<'r> Analyzer<'r> {
                 }
             }
         }
-        Some((methods, pending))
+        // A `for`-attached spec targets a primitive, which has no cell of
+        // its own to store `implemented_specs` on -- never consulted for
+        // this caller, so an empty list is fine (not a special case; every
+        // other `SpecMethods` producer that has nowhere to put this would
+        // do the same).
+        Some((methods, pending, vec![]))
     }
 
     /// Resolves a spec's own declared dependency list (`spec Mammal :
@@ -366,7 +435,7 @@ impl<'r> Analyzer<'r> {
     /// are resolved later, in `flatten_spec_into`, once `Self` + this
     /// spec's own generics are already bound in a pushed scope there.
     pub fn resolve_spec_dependencies(&mut self, sp: &HirSpecDef) -> Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
-        sp.dependencies.iter().filter_map(|dep| self.resolve_spec_dependency_cell(sp.id, sp.span, dep)).collect()
+        sp.dependencies.iter().filter_map(|dep| self.resolve_spec_dependency_cell(sp.id, sp.span, dep, false)).collect()
     }
 
     /// The cell-only half of resolving one raw dependency `Type` -- see
@@ -377,11 +446,22 @@ impl<'r> Analyzer<'r> {
     /// no visibility check of its own, so the accessor-aware check has to
     /// be re-run here by hand, through the same `check_visibility` choke
     /// point every other in-analyzer visibility check already goes through.
+    ///
+    /// `ambient_fallback` retries against `context::ambient_core_path` when
+    /// the primary lookup misses, mirroring `Context::resolve_generic_type`'s
+    /// identical retry for ordinary *type-position* references -- needed by
+    /// `resolve_raw_spec_fn_type`'s `Type::SpecStatic` case (`false` for
+    /// `resolve_spec_dependencies` above, unchanged): a `core`-declared
+    /// spec's own `spec T` return bound is flattened from an *implementor's*
+    /// module context, not `core`'s own, so an ambiently-resolvable bound
+    /// name (`Iterator`) would otherwise only resolve correctly from inside
+    /// `core` itself -- almost never true in practice.
     fn resolve_spec_dependency_cell(
         &mut self,
         id: HirId,
         span: Span,
         ty: &Type,
+        ambient_fallback: bool,
     ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
         let (path, raw_args) = match ty {
             Type::Generic(path, args) => (path, args.clone()),
@@ -402,20 +482,31 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let cell = match self.resolver.spec_declaration(&absolute) {
-            Ok(Some(cell)) => cell,
-            Ok(None) => {
-                self.error(
-                    id,
-                    span,
-                    AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(path.head.clone())),
-                );
-                return None;
-            }
+        let primary = match self.resolver.spec_declaration(&absolute) {
+            Ok(found) => found,
             Err(e) => {
                 self.error(id, span, AnalysisErrorKind::ModuleResolution(e));
                 return None;
             }
+        };
+        let not_a_spec = || TypeResolutionError::NotASpec(path.head.clone());
+        let cell = if let Some(cell) = primary {
+            cell
+        } else if ambient_fallback && path.is_unqualified() {
+            let Some(ambient_path) = crate::context::ambient_core_path(&path.head) else {
+                self.error(id, span, AnalysisErrorKind::UnresolvedType(not_a_spec()));
+                return None;
+            };
+            match self.resolver.spec_declaration(&ambient_path) {
+                Ok(Some(cell)) => cell,
+                _ => {
+                    self.error(id, span, AnalysisErrorKind::UnresolvedType(not_a_spec()));
+                    return None;
+                }
+            }
+        } else {
+            self.error(id, span, AnalysisErrorKind::UnresolvedType(not_a_spec()));
+            return None;
         };
         let (visibility, declaring_module) = {
             let c = cell.borrow();
@@ -435,15 +526,69 @@ impl<'r> Analyzer<'r> {
         Some((cell, raw_args))
     }
 
+    /// The ambiently-resolvable `core::iterator::ToIterator` spec cell --
+    /// `Analyzer::analyze_for_in`'s one caller, used purely for cell-identity
+    /// comparison against `ResolvedStructType::implemented_specs` (so no
+    /// type-argument resolution/validation happens here at all, unlike
+    /// `resolve_spec_reference`). Tries this module's own implicit absolute
+    /// path first (`[self.module_path, "ToIterator"]`, or a real import
+    /// alias if one exists), then falls back to `context::ambient_core_path`
+    /// -- the same two-step retry `Context::resolve_generic_type` already
+    /// gives every *type-position* `ToIterator<T>` reference (an `implements`
+    /// clause, a generic bound); this is the one caller that needs the
+    /// identical fallback from a for-in-loop's own value-analysis-time
+    /// context instead, which never goes through `resolve_type` at all.
+    /// `None` only if `core::iterator` itself is missing/broken -- callers
+    /// degrade to "not iterable" rather than a bespoke diagnostic for that.
+    fn resolve_ambient_to_iterator_cell(&mut self) -> Option<Rc<RefCell<ResolvedSpecType>>> {
+        let name = Ident("ToIterator".to_string());
+        let path = Path::from(name.clone());
+        if let Ok(absolute) = self.context.resolve_absolute_item_path(&mut *self.resolver, &path, &self.module_path)
+            && let Ok(Some(cell)) = self.resolver.spec_declaration(&absolute)
+        {
+            return Some(cell);
+        }
+        let ambient = crate::context::ambient_core_path(&name)?;
+        self.resolver.spec_declaration(&ambient).ok().flatten()
+    }
+
+    /// Whether `ty` *nominally* declares `: ToIterator<AnyT>` in its own
+    /// `implements` clause -- `Analyzer::analyze_for_in`'s real conformance
+    /// check, replacing the duck-typed "does a method named `to_iterator`
+    /// happen to resolve" the desugaring used to rely on exclusively.
+    /// Deliberately reads `implemented_specs` (see its own doc comment for
+    /// why this can't be `type_implements_spec`, which is structural) --
+    /// `false` for anything that isn't a struct/enum/union (a primitive has
+    /// no `implements` clause of its own outside the separate `for`-
+    /// attachment mechanism, out of scope here).
+    pub(super) fn for_in_source_declares_to_iterator(&mut self, ty: &ResolvedType) -> bool {
+        let implemented = match ty {
+            ResolvedType::Struct(cell) => cell.borrow().implemented_specs.clone(),
+            ResolvedType::Enum { cell, .. } => cell.borrow().implemented_specs.clone(),
+            ResolvedType::Union(cell) => cell.borrow().implemented_specs.clone(),
+            _ => return false,
+        };
+        let Some(to_iterator_cell) = self.resolve_ambient_to_iterator_cell() else { return false };
+        implemented.iter().any(|(spec, _)| spec.borrow().id == to_iterator_cell.borrow().id)
+    }
+
     /// Resolves one spec function's raw signature against `substitution`
     /// (`Self` plus the spec's own generics, bound to concrete types).
+    ///
+    /// A `=> spec Bound<...>` return type (`Type::SpecStatic`) is special-
+    /// cased: there is no concrete `ResolvedType` to resolve at all here
+    /// (each implementor answers differently) -- `fn_type.return_type` is
+    /// left as an inert `ResolvedType::Void` placeholder (never read; see
+    /// `FlattenedSpecFn::return_type_bound`'s doc comment) and the real
+    /// answer, `Bound`'s own resolved cell + type arguments, is returned
+    /// alongside it instead.
     fn resolve_raw_spec_fn_type(
         &mut self,
         id: HirId,
         span: Span,
         raw: &RawSpecFunctionSig,
         substitution: &[(Ident, ResolvedType)],
-    ) -> Option<ResolvedFunctionType> {
+    ) -> Option<(ResolvedFunctionType, Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>)> {
         self.with_substitution(substitution, |this| {
             let mut params = Vec::with_capacity(raw.params.len());
             let mut ok = true;
@@ -453,16 +598,36 @@ impl<'r> Analyzer<'r> {
                     None => ok = false,
                 }
             }
-            let return_type = this.resolve_type_or_error(id, span, &raw.return_type, true);
+            let mut return_type_bound = None;
+            let return_type = match &raw.return_type {
+                Type::SpecStatic(bound) => match this.resolve_spec_dependency_cell(id, span, bound, true) {
+                    Some((cell, raw_args)) => {
+                        let resolved_args: Option<Vec<ResolvedType>> =
+                            raw_args.iter().map(|a| this.resolve_type_or_error(id, span, a, true)).collect();
+                        match resolved_args {
+                            Some(args) => {
+                                return_type_bound = Some((cell, args));
+                                Some(ResolvedType::Void)
+                            }
+                            None => None,
+                        }
+                    }
+                    None => None,
+                },
+                other => this.resolve_type_or_error(id, span, other, true),
+            };
             if !ok {
                 return None;
             }
-            Some(ResolvedFunctionType {
-                params,
-                return_type: Box::new(return_type?),
-                is_variadic: false,
-                self_mode: raw.self_mode,
-            })
+            Some((
+                ResolvedFunctionType {
+                    params,
+                    return_type: Box::new(return_type?),
+                    is_variadic: false,
+                    self_mode: raw.self_mode,
+                },
+                return_type_bound,
+            ))
         })
     }
 
@@ -526,10 +691,11 @@ impl<'r> Analyzer<'r> {
         }
 
         for (name, raw) in &functions {
-            let fn_type = self.resolve_raw_spec_fn_type(id, span, raw, &substitution)?;
+            let (fn_type, return_type_bound) = self.resolve_raw_spec_fn_type(id, span, raw, &substitution)?;
             if let Some(existing_index) = out.iter().position(|f| &f.name == name) {
                 let existing = &out[existing_index];
-                if existing.fn_type != fn_type {
+                if !requirements_are_same(&existing.fn_type, &existing.return_type_bound, &fn_type, &return_type_bound)
+                {
                     self.error(
                         id,
                         span,
@@ -557,6 +723,7 @@ impl<'r> Analyzer<'r> {
                     out[existing_index] = FlattenedSpecFn {
                         name: name.clone(),
                         fn_type,
+                        return_type_bound,
                         raw: raw.clone(),
                         spec_name: spec_name.clone(),
                         visibility: spec_visibility,
@@ -568,6 +735,7 @@ impl<'r> Analyzer<'r> {
             out.push(FlattenedSpecFn {
                 name: name.clone(),
                 fn_type,
+                return_type_bound,
                 raw: raw.clone(),
                 spec_name: spec_name.clone(),
                 visibility: spec_visibility,
@@ -615,16 +783,19 @@ impl<'r> Analyzer<'r> {
         self_type: &ResolvedType,
     ) -> SpecMethods {
         let mut flattened: Vec<FlattenedSpecFn> = Vec::new();
+        let mut implemented_specs = Vec::new();
         for spec_type in implements {
             let Some((spec, type_args)) = self.resolve_spec_reference(id, span, spec_type) else { continue };
+            implemented_specs.push((spec.clone(), type_args.clone()));
             // A conflict *within* this one entry's own dependency graph is
             // already reported inline (`ConflictingSpecFunctions`); `None`
             // just means skip this entry's remaining contribution.
             let Some(this_entry) = self.flatten_spec(id, span, &spec, &type_args, self_type) else { continue };
             for req in this_entry {
-                if let Some(existing_index) =
-                    flattened.iter().position(|f| f.name == req.name && f.fn_type == req.fn_type)
-                {
+                if let Some(existing_index) = flattened.iter().position(|f| {
+                    f.name == req.name
+                        && requirements_are_same(&f.fn_type, &f.return_type_bound, &req.fn_type, &req.return_type_bound)
+                }) {
                     // Exact duplicate (same name *and* signature), reached
                     // through two different entries (e.g. a shared
                     // dependency) -- silent dedup, same as within one
@@ -644,9 +815,12 @@ impl<'r> Analyzer<'r> {
         let mut extra_methods = Vec::new();
         let mut pending = Vec::new();
         for req in flattened {
-            if let Some((_, own)) =
-                own_functions.iter().find(|(name, own)| *name == req.name && own.fn_type == req.fn_type)
-            {
+            let satisfying_index = own_functions.iter().position(|(name, own)| {
+                *name == req.name
+                    && self.fn_satisfies_requirement(id, span, &own.fn_type, &req.fn_type, &req.return_type_bound)
+            });
+            if let Some(index) = satisfying_index {
+                let own = &own_functions[index].1;
                 if own.visibility < req.visibility {
                     self.error(
                         id,
@@ -688,6 +862,7 @@ impl<'r> Analyzer<'r> {
                     pending.push(PendingSpecMethod {
                         id: minted_id,
                         fn_type: req.fn_type,
+                        return_type_bound: req.return_type_bound,
                         raw: req.raw,
                         substitution: req.substitution,
                     });
@@ -706,7 +881,7 @@ impl<'r> Analyzer<'r> {
                 }
             }
         }
-        (extra_methods, pending)
+        (extra_methods, pending, implemented_specs)
     }
 
     /// Whether `ty` (an already-concrete, resolved type) implements
@@ -755,6 +930,35 @@ impl<'r> Analyzer<'r> {
     /// see `check_member_visibility`), while a `Private` spec is scoped to
     /// its whole *declaring module* (wider) -- so "the spec is visible
     /// here" no longer implies "this satisfying method would be too."
+    /// Whether a concrete method's own resolved signature (`own`) satisfies
+    /// one requirement's signature (`req_fn_type` + `req_bound`) --
+    /// `self_mode`/`is_variadic`/`params` always compare structurally, the
+    /// same equality `ResolvedFunctionType` always used; the return type
+    /// alone branches: ordinary equality when `req_bound` is `None` (100%
+    /// of today's behavior, for the overwhelmingly common concrete-return
+    /// requirement), or `own`'s own return type checked against the bound
+    /// spec (`type_implements_spec`, recursively) when `Some` -- the
+    /// associated-type-like case a `=> spec Bound<...>` requirement needs
+    /// (see `FlattenedSpecFn::return_type_bound`'s doc comment).
+    fn fn_satisfies_requirement(
+        &mut self,
+        id: HirId,
+        span: Span,
+        own: &ResolvedFunctionType,
+        req_fn_type: &ResolvedFunctionType,
+        req_bound: &Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    ) -> bool {
+        match req_bound {
+            None => own == req_fn_type,
+            Some((spec, type_args)) => {
+                own.self_mode == req_fn_type.self_mode
+                    && own.is_variadic == req_fn_type.is_variadic
+                    && own.params == req_fn_type.params
+                    && self.type_implements_spec(id, span, &own.return_type, spec, type_args, false).is_ok()
+            }
+        }
+    }
+
     pub(super) fn type_implements_spec(
         &mut self,
         id: HirId,
@@ -771,7 +975,10 @@ impl<'r> Analyzer<'r> {
         let mut missing = Vec::new();
         let mut slots = Vec::with_capacity(required.len());
         for req in &required {
-            let Some(method) = self.find_methods(id, span, ty, &req.name).into_iter().find(|m| m.fn_type == req.fn_type)
+            let candidates = self.find_methods(id, span, ty, &req.name);
+            let Some(method) = candidates
+                .into_iter()
+                .find(|m| self.fn_satisfies_requirement(id, span, &m.fn_type, &req.fn_type, &req.return_type_bound))
             else {
                 missing.push(req.name.clone());
                 continue;

@@ -110,6 +110,17 @@ pub enum ResolveError {
     /// module-level `Cycle` guard to fall back on; it keeps its own,
     /// narrower cycle guard instead.
     SpecDependencyCycle { module: Vec<Ident>, spec: Ident },
+    /// `item` (in `module`) is a `spec T`-returning function whose own
+    /// return-type inference (see `omega_driver::Driver::
+    /// resolve_spec_return_function`) transitively calls back into itself
+    /// before its own signature is done -- the mutual-recursion analog of
+    /// `SpecDependencyCycle` above, needed for the identical reason: this
+    /// inference bypasses the ordinary phase-1-before-phase-2 barrier that
+    /// makes an *ordinary* function's own self-recursion safe (its
+    /// signature is always `Done` before any body, including its own, is
+    /// ever checked -- not true here, since discovering *this* signature
+    /// requires checking this body first).
+    SpecReturnTypeRecursion { module: Vec<Ident>, item: Ident },
 }
 
 fn join(path: &[Ident]) -> String {
@@ -169,6 +180,12 @@ impl fmt::Display for ResolveError {
             Self::SpecDependencyCycle { module, spec } => {
                 write!(f, "spec '{}::{}' depends on itself", join(module), spec.as_ref())
             }
+            Self::SpecReturnTypeRecursion { module, item } => write!(
+                f,
+                "cannot infer '{}::{}'s 'spec T' return type: it recursively depends on itself",
+                join(module),
+                item.as_ref()
+            ),
         }
     }
 }

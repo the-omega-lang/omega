@@ -163,6 +163,20 @@ pub struct Analyzer<'r> {
     /// (module-wide) rule, since it's compared against a single type's
     /// identity, not a module path. See `Analyzer::check_member_visibility`.
     current_owner: Option<HirId>,
+    /// Set only during `infer_body_return_type`'s throwaway "discover this
+    /// `spec T`-returning function's own concrete return type" pass. While
+    /// `true`, `HirStmt::Return`'s arm records each exit point's own
+    /// resolved type into `inferred_return_candidates` instead of
+    /// coercing/comparing it against `current_return_type` -- there is
+    /// nothing concrete to compare against yet (that's the entire point of
+    /// this pass). `false` for every ordinary body check.
+    inferring_return_type: bool,
+    /// Every `return <expr>;`'s own span + resolved type, collected only
+    /// while `inferring_return_type` is set -- read back by
+    /// `infer_body_return_type` once the body finishes, alongside the
+    /// body's own tail-position type (if any), to unify into one concrete
+    /// return type.
+    inferred_return_candidates: Vec<(Span, ResolvedType)>,
 }
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
@@ -284,6 +298,8 @@ impl<'r> Analyzer<'r> {
             suppressed: vec![],
             hidden_stack: vec![],
             current_owner: None,
+            inferring_return_type: false,
+            inferred_return_candidates: vec![],
         }
     }
 

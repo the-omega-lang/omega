@@ -17,8 +17,8 @@ use omega_analyzer::resolved_type::{
 };
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_diagnostics::Span;
-use omega_hir::{HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
-use omega_parser::prelude::{Ident, Visibility};
+use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
+use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -131,6 +131,7 @@ impl TypeCells {
                     functions: vec![],
                     layout: Default::default(),
                     suppress: vec![],
+                    implemented_specs: vec![],
                 }))
             })
             .clone()
@@ -155,6 +156,7 @@ impl TypeCells {
                     functions: vec![],
                     layout: Default::default(),
                     suppress: vec![],
+                    implemented_specs: vec![],
                 }))
             })
             .clone()
@@ -173,6 +175,7 @@ impl TypeCells {
                     fields: vec![],
                     functions: vec![],
                     suppress: vec![],
+                    implemented_specs: vec![],
                 }))
             })
             .clone()
@@ -276,6 +279,20 @@ pub(crate) struct ItemQueries {
     /// `SYNTHETIC_MODULE`, a module id the lowerer never produces, so these
     /// can never collide with a real per-file id.
     next_synthetic_id: u32,
+    /// Keys currently having their own `spec T` (static-dispatch) return
+    /// type inferred from their body (see `Driver::resolve_spec_return_function`).
+    /// A plain top-level function's signature is ordinarily fully resolved
+    /// before any body anywhere is ever checked (`compile`'s whole-program
+    /// phase barrier) -- a `spec T`-returning function's signature can't be,
+    /// since discovering its own concrete return type means checking its
+    /// body *during* phase 1, out of the normal order. That inversion is
+    /// exactly what could recurse forever for two functions whose inference
+    /// calls each other (neither key is ever `InProgress` for *itself* the
+    /// way an ordinary same-key cycle would be caught by `state` above) --
+    /// this stack is a second, narrower cycle guard for that one case,
+    /// mirroring `spec_state`'s identical reasoning for why spec-declaration
+    /// resolution needs its own guard instead of relying on `state`.
+    spec_return_inference_stack: Vec<ItemKey>,
 }
 
 impl ItemQueries {
@@ -550,16 +567,20 @@ impl Driver {
 
             HirItem::FunctionDefinition(f) => {
                 let id = self.items.identity_for(key, f.id);
-                self.analyze(module, &substitution, (f.id, f.span), |a| a.collect_function_signature(f)).map(
-                    |(fn_type, annotations)| {
-                        self.items.function_annotations.insert(id, annotations);
-                        ResolvedItem::Value {
-                            r#type: ResolvedType::Function(fn_type),
-                            storage: Storage::Function,
-                            decl_id: id,
-                        }
-                    },
-                )
+                if let Type::SpecStatic(bound) = &f.return_type {
+                    self.resolve_spec_return_function(key, f, id, bound, module, &substitution)?
+                } else {
+                    self.analyze(module, &substitution, (f.id, f.span), |a| a.collect_function_signature(f, None)).map(
+                        |(fn_type, annotations)| {
+                            self.items.function_annotations.insert(id, annotations);
+                            ResolvedItem::Value {
+                                r#type: ResolvedType::Function(fn_type),
+                                storage: Storage::Function,
+                                decl_id: id,
+                            }
+                        },
+                    )
+                }
             }
 
             HirItem::Struct(s) => {
@@ -686,6 +707,13 @@ impl Driver {
             return Err(ResolveError::ItemFailed { module: key.0, item: key.1 });
         }
         let (dependencies, functions) = run.result;
+        // See `ResolvedSpecType::is_object_safe`'s doc comment: computed
+        // once, here, since `functions`/`dependencies` are both already
+        // fully resolved (a dependency's own cell is always `Done` -- and
+        // so already carries its own `is_object_safe` -- by the time it's
+        // sitting in this list).
+        let is_object_safe = functions.iter().all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))
+            && dependencies.iter().all(|(dep, _)| dep.borrow().is_object_safe);
         let cell = Rc::new(RefCell::new(ResolvedSpecType {
             id: sp.id,
             name: sp.name.clone(),
@@ -693,10 +721,60 @@ impl Driver {
             generics: sp.generics.iter().map(|g| g.ident.clone()).collect(),
             module_path: module_path.to_vec(),
             type_args: vec![],
+            is_object_safe,
             dependencies,
             functions,
         }));
         self.items.finish_spec(&key, Some(&cell));
         Ok(Some(cell))
+    }
+
+    /// A `spec T` (static-dispatch) return-type function's signature can't
+    /// be resolved the ordinary way at all -- `f.return_type` names a bound,
+    /// not a concrete type, so `collect_function_signature` has nothing to
+    /// give `resolve_type_or_error`. This eagerly infers the concrete return
+    /// type from the function's own body (`Analyzer::infer_body_return_type`)
+    /// *before* the signature can be considered resolved -- a genuine
+    /// inversion of the ordinary phase-1-before-phase-2 order, but a
+    /// contained one: once the concrete type is known, `collect_function_
+    /// signature` runs exactly as it always does (with the inferred type as
+    /// `return_type_override`), and the ordinary phase-2 sweep reads the
+    /// result back like any other function's -- no separate body cache is
+    /// needed, since (unlike a generic instantiation or an overload
+    /// candidate) an ordinary top-level function is already fully enumerable
+    /// by `compile`'s static per-module sweep.
+    ///
+    /// `spec_return_inference_stack` guards against exactly the recursion
+    /// this inversion opens up: two spec-return functions whose inference
+    /// calls each other would otherwise recurse forever, since neither
+    /// function's own key is ever `InProgress` (in the ordinary `ensure_item`
+    /// sense) for *itself* the way a same-key cycle would normally be caught
+    /// -- see `ItemQueries::spec_return_inference_stack`'s doc comment.
+    fn resolve_spec_return_function(
+        &mut self,
+        key: &ItemKey,
+        f: &HirFunctionDef,
+        id: HirId,
+        bound: &Type,
+        module: &[Ident],
+        substitution: &[(Ident, ResolvedType)],
+    ) -> Result<Option<ResolvedItem>, ResolveError> {
+        if self.items.spec_return_inference_stack.contains(key) {
+            return Err(ResolveError::SpecReturnTypeRecursion { module: key.module.clone(), item: key.name.clone() });
+        }
+        self.items.spec_return_inference_stack.push(key.clone());
+        let inferred = self.analyze(module, substitution, (f.id, f.span), |a| a.infer_body_return_type(f, bound));
+        self.items.spec_return_inference_stack.pop();
+
+        let Some(return_type) = inferred else {
+            return Ok(None);
+        };
+
+        let checked =
+            self.analyze(module, substitution, (f.id, f.span), |a| a.collect_function_signature(f, Some(return_type)));
+        Ok(checked.map(|(fn_type, annotations)| {
+            self.items.function_annotations.insert(id, annotations);
+            ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage: Storage::Function, decl_id: id }
+        }))
     }
 }

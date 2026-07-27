@@ -328,6 +328,21 @@ impl Context {
             Type::SpecObject(pointee, mutable) => {
                 self.resolve_spec_object_type(*pointee, mutable, resolver, module_path, bypass)
             }
+            // A bare `spec Foo` reaching ordinary type resolution at all
+            // means it's sitting somewhere this sugar was never defined for
+            // -- see `Type::SpecStatic`'s doc comment. The two legitimate
+            // positions (a parameter type, a function's own return type)
+            // are both intercepted *before* `resolve_type` is ever called
+            // on this shape (HIR-lowering desugaring for the former,
+            // `resolve_raw_spec_fn_type`/the driver's spec-return inference
+            // for the latter).
+            Type::SpecStatic(pointee) => {
+                let name = match pointee.as_ref() {
+                    Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
+                    _ => Ident("<spec>".to_string()),
+                };
+                Err(TypeResolutionError::SpecStaticNotAllowedHere(name))
+            }
             Type::Function(fntyp) => {
                 Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?))
             }
@@ -544,6 +559,9 @@ impl Context {
             };
             match self.resolve_type(*pointee, resolver, module_path, true, bypass)? {
                 ResolvedType::Spec(spec) => {
+                    if !spec.borrow().is_object_safe {
+                        return Err(TypeResolutionError::SpecNotObjectSafe(pointee_name));
+                    }
                     ResolvedType::SpecObject { spec, type_args: resolved_args, mutable }
                 }
                 _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
