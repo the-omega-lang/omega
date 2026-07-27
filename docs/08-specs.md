@@ -176,6 +176,28 @@ assignment, declaration-with-init, and `return` — **not** yet struct-
 literal fields, array-literal elements, or a bare tail-return without the
 `return` keyword (a documented, narrow gap).
 
+### Casting into a spec object
+
+```
+obj := <spec *Animal>&dog;
+```
+
+An explicit `<spec *Spec<Args>>expr` cast, independent of (and not
+subject to) the 4-site limitation above — this simply didn't exist at all
+until it was added for [for-in loops](18-for-in-loops.md)'s explicit
+disambiguation syntax, and generalizes cleanly beyond that one use case.
+Unlike every numeric/pointer cast, this one can't be decided by a pure
+width/signedness computation — it has to *prove* something (`expr`'s
+pointee genuinely implements `Spec<Args>`), so `Analyzer::analyze_cast`
+checks it first, as its own family, before ever reaching the ordinary
+`cast_class`-based machinery (mirroring how the `*str`/`*[u8]`/`*[i8]`
+byte-pointer family already gets its own first-checked special case, for
+the identical reason — neither fits the scalar-width model at all). Runs
+the exact same proof `coerce_to_expected` runs for the implicit version of
+this coercion (`Analyzer::type_implements_spec`), including the identical
+mutable-pointer-needs-a-mutable-source rule ordinary pointer casts already
+enforce.
+
 ## `for`-attached specs: giving primitives methods
 
 ```

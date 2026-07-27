@@ -292,6 +292,7 @@ impl<'r> Analyzer<'r> {
                 })])
             }
             HirStmt::For(f) => self.analyze_for(f),
+            HirStmt::ForIn(f) => self.analyze_for_in(f),
             HirStmt::Break(b) => match self.loop_stack.last() {
                 Some(&loop_id) => Some(vec![CheckedStmt::Break(CheckedBreak { id: b.id, span: b.span, loop_id })]),
                 None => {
@@ -391,6 +392,292 @@ impl<'r> Analyzer<'r> {
             post: checked_post,
             body: checked_body?,
         }))])
+    }
+
+    /// `for <mut>? binding in iterator { body }` -- desugars entirely at
+    /// analysis time into the `while true { }`+`match` shape a hand-written
+    /// equivalent would use, reusing already-proven machinery rather than
+    /// adding any new MIR/codegen surface:
+    ///
+    /// ```text
+    /// {
+    ///     $iter := <iterator>.to_iterator();
+    ///     while true {
+    ///         $next := $iter.next();
+    ///         match $next {
+    ///             Option::None => { break; }
+    ///             Option::Some => {
+    ///                 <mut>? binding := $next.value;
+    ///                 <body, spliced in unchanged>
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The two method calls (`to_iterator`/`next`) are resolved by
+    /// synthesizing a small amount of ordinary, source-shaped HIR (see
+    /// `synthesize_method_call`) and feeding it through `analyze_expr` --
+    /// the same auto-ref/overload-resolution/static-vs-dynamic-dispatch
+    /// selection any hand-written `x.method()` call already goes through,
+    /// not reimplemented here. The `match`, by contrast, is hand-built
+    /// directly (`resolve_field_projection`/`declare_narrowed_binding`,
+    /// the same primitives `analyze_enum_match` itself uses) rather than
+    /// synthesized as HIR and re-parsed, because this language's `match`
+    /// has no destructuring pattern syntax at all -- `Option::Some`
+    /// doesn't bind a name on its own; only *narrowing* an already-named
+    /// scrutinee does (see `analyze_enum_match`'s own doc comment), and
+    /// `$next` is a synthetic local with no source-level name a pattern
+    /// could reference in the first place.
+    ///
+    /// `core::option::Option`'s variant order is load-bearing here --
+    /// `None` is hardcoded as variant 0, `Some` as variant 1 (see
+    /// `runtime/core/core/option.omg`'s own doc comment).
+    fn analyze_for_in(&mut self, f: &HirForIn) -> Option<Vec<CheckedStmt>> {
+        self.context.enter_scope();
+
+        let to_iterator = self.synthesize_method_call(
+            HirPlaceRoot::Expr(Box::new(f.iterator.clone())),
+            "to_iterator",
+            f.span,
+        );
+        let ok = to_iterator.is_some();
+
+        let result = ok.then(|| {
+            let to_iterator = to_iterator.expect("checked by `ok` above");
+            let iter_id = self.resolver.fresh_synthetic_id();
+            let iter_type = to_iterator.r#type.clone();
+            self.declare_binding(iter_id, f.span, &Ident("$iter".to_string()), iter_type.clone(), Storage::Local, false);
+            let (iter_decl, iter_assign) =
+                Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type, to_iterator);
+
+            let while_stmt = self.analyze_for_in_loop(f)?;
+            Some(vec![iter_decl, iter_assign, while_stmt])
+        });
+
+        let scope = self.context.leave_scope();
+        self.warn_unused_bindings(scope, false);
+        result.flatten()
+    }
+
+    /// The `while true { $next := $iter.next(); match $next { ... } }`
+    /// portion of `analyze_for_in` -- split out so its own scope
+    /// (`$next`, and each match arm's narrowing) can be entered/left
+    /// independently of the outer `$iter` scope `analyze_for_in` itself
+    /// owns.
+    fn analyze_for_in_loop(&mut self, f: &HirForIn) -> Option<CheckedStmt> {
+        let while_id = self.resolver.fresh_synthetic_id();
+        self.loop_stack.push(while_id);
+        self.context.enter_scope();
+
+        let iter_read = HirPlaceRoot::Path(ExprPath::from(Ident("$iter".to_string())));
+        let next = self.synthesize_method_call(iter_read, "next", f.span);
+
+        let body = next.and_then(|next| {
+            let next_id = self.resolver.fresh_synthetic_id();
+            let next_type = next.r#type.clone();
+            let ResolvedType::Enum { cell: option_cell, .. } = next_type.clone() else {
+                // `core::iterator::Iterator::next` is declared to return
+                // `Option<T>` (an ordinary enum), never a `spec *T` or
+                // anything else -- if this doesn't hold, `core::iterator`
+                // itself was edited inconsistently with this function.
+                unreachable!("Iterator::next's declared return type is always an Option<T> enum");
+            };
+            self.declare_binding(next_id, f.span, &Ident("$next".to_string()), next_type.clone(), Storage::Local, false);
+            let (next_decl, next_assign) =
+                Self::synthetic_declaration(next_id, f.span, "$next", next_type.clone(), next);
+
+            let mut tag_projections = Vec::new();
+            let tag_type = self.resolve_field_projection(
+                f.id,
+                f.span,
+                &mut tag_projections,
+                &next_type,
+                &Ident("tag".to_string()),
+                &mut false,
+            )?;
+            let tag_read = CheckedExprNode {
+                id: f.id,
+                span: f.span,
+                r#type: tag_type.clone(),
+                kind: CheckedExpr::Place(CheckedPlace {
+                    root: CheckedPlaceRoot::Variable { decl_id: next_id, storage: Storage::Local, r#type: next_type },
+                    projections: tag_projections,
+                }),
+            };
+
+            let none_arm = self.for_in_none_arm(f, while_id, next_id, &option_cell, &tag_type, &tag_read);
+            let some_arm = self.for_in_some_arm(f, next_id, &option_cell, &tag_type, tag_read);
+
+            let match_expr = CheckedStmt::Expression(CheckedExprNode {
+                id: f.id,
+                span: f.span,
+                // Never read -- this `match` is only ever used as a bare
+                // statement (both arms fall through or `break`), so its
+                // own result type is a don't-care placeholder, the same
+                // way a `while`/`for` body's own tail value already is.
+                r#type: ResolvedType::Void,
+                kind: CheckedExpr::Match(CheckedMatch { arms: vec![none_arm?, some_arm?], else_branch: None }),
+            });
+
+            Some(CheckedBlock { stmts: vec![next_decl, next_assign, match_expr], tail: None })
+        });
+
+        self.context.leave_scope();
+        self.loop_stack.pop();
+
+        Some(CheckedStmt::While(CheckedWhile {
+            id: while_id,
+            span: f.span,
+            condition: CheckedExprNode { id: while_id, span: f.span, r#type: ResolvedType::Bool, kind: CheckedExpr::Bool(true) },
+            body: body?,
+        }))
+    }
+
+    /// `Option::None => { break; }`.
+    fn for_in_none_arm(
+        &mut self,
+        f: &HirForIn,
+        while_id: HirId,
+        next_id: HirId,
+        option_cell: &Rc<RefCell<ResolvedEnumType>>,
+        tag_type: &ResolvedType,
+        tag_read: &CheckedExprNode,
+    ) -> Option<CheckedMatchArm> {
+        self.context.enter_scope();
+        let refined = ResolvedType::Enum { cell: option_cell.clone(), variant: Some(0) };
+        self.declare_narrowed_binding(next_id, f.span, &Ident("$next".to_string()), refined, Storage::Local, false);
+        let body = CheckedBlock {
+            stmts: vec![CheckedStmt::Break(CheckedBreak {
+                id: self.resolver.fresh_synthetic_id(),
+                span: f.span,
+                loop_id: while_id,
+            })],
+            tail: None,
+        };
+        let scope = self.context.leave_scope();
+        self.warn_unused_bindings(scope, false);
+
+        let condition = Self::tag_equals(f, tag_type, tag_read, option_cell.borrow().variants[0].tag);
+        Some(CheckedMatchArm { conditions: vec![condition], body })
+    }
+
+    /// `Option::Some => { <mut>? binding := $next.value; ...body... }`.
+    fn for_in_some_arm(
+        &mut self,
+        f: &HirForIn,
+        next_id: HirId,
+        option_cell: &Rc<RefCell<ResolvedEnumType>>,
+        tag_type: &ResolvedType,
+        tag_read: CheckedExprNode,
+    ) -> Option<CheckedMatchArm> {
+        self.context.enter_scope();
+        let refined = ResolvedType::Enum { cell: option_cell.clone(), variant: Some(1) };
+        self.declare_narrowed_binding(next_id, f.span, &Ident("$next".to_string()), refined.clone(), Storage::Local, false);
+
+        let result = (|| {
+            let mut value_projections = Vec::new();
+            let value_type = self.resolve_field_projection(
+                f.id,
+                f.span,
+                &mut value_projections,
+                &refined,
+                &Ident("value".to_string()),
+                &mut false,
+            )?;
+            let value_read = CheckedExprNode {
+                id: f.id,
+                span: f.span,
+                r#type: value_type.clone(),
+                kind: CheckedExpr::Place(CheckedPlace {
+                    root: CheckedPlaceRoot::Variable { decl_id: next_id, storage: Storage::Local, r#type: refined },
+                    projections: value_projections,
+                }),
+            };
+
+            self.declare_binding(f.id, f.span, &f.binding, value_type.clone(), Storage::Local, f.mutable);
+            let (binding_decl, binding_assign) =
+                Self::synthetic_declaration(f.id, f.span, f.binding.as_ref(), value_type, value_read);
+
+            let user_stmts = self.analyze_stmts(&f.body.stmts)?;
+            let user_tail = match &f.body.tail {
+                Some(t) => Some(Box::new(self.analyze_expr(t, None)?)),
+                None => None,
+            };
+
+            let mut stmts = vec![binding_decl, binding_assign];
+            stmts.extend(user_stmts);
+            Some(CheckedBlock { stmts, tail: user_tail })
+        })();
+
+        let scope = self.context.leave_scope();
+        self.warn_unused_bindings(scope, false);
+
+        let condition = Self::tag_equals(f, tag_type, &tag_read, option_cell.borrow().variants[1].tag);
+        Some(CheckedMatchArm { conditions: vec![condition], body: result? })
+    }
+
+    /// `tag_read == <variant's own constant tag>` -- shared by both of
+    /// `analyze_for_in`'s hand-built match arms.
+    fn tag_equals(f: &HirForIn, tag_type: &ResolvedType, tag_read: &CheckedExprNode, tag: NumberValue) -> CheckedExprNode {
+        let tag_const = CheckedExprNode { id: f.id, span: f.span, r#type: tag_type.clone(), kind: CheckedExpr::Number(tag) };
+        CheckedExprNode {
+            id: f.id,
+            span: f.span,
+            r#type: ResolvedType::Bool,
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op: BinaryOp::Eq, left: Box::new(tag_read.clone()), right: Box::new(tag_const) }),
+        }
+    }
+
+    /// Builds `root.method()` as ordinary, source-shaped HIR (fresh
+    /// synthetic ids throughout) and analyzes it exactly like a
+    /// hand-written call -- auto-ref, overload resolution, and static-vs-
+    /// dynamic-dispatch selection all Just Work, unreimplemented, the same
+    /// way they would for `x.method()` written by a user. `root` is
+    /// `HirPlaceRoot::Expr` for a receiver that's itself an arbitrary
+    /// expression (evaluated exactly once, as part of this call), or
+    /// `HirPlaceRoot::Path` for a receiver that's a synthetic local
+    /// already declared by name (`$iter`) -- see `HirPlaceRoot`'s own doc
+    /// comment for why those are the only two shapes a place root has.
+    fn synthesize_method_call(&mut self, root: HirPlaceRoot, method: &str, span: Span) -> Option<CheckedExprNode> {
+        let callee = HirExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            expr: HirExpr::Place(HirPlace { root, projections: vec![HirProjection::FieldAccess(Ident(method.to_string()))] }),
+        };
+        let call = HirExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            expr: HirExpr::FunctionCall(HirFunctionCall { callee: Box::new(callee), args: vec![] }),
+        };
+        self.analyze_expr(&call, None)
+    }
+
+    /// The `CheckedStmt::Declaration` + `CheckedStmt::Expression(Assignment)`
+    /// pair every synthetic `name := value;` in `analyze_for_in` needs --
+    /// exactly `analyze_walrus`'s own shape, just built from an
+    /// already-`CheckedExprNode` value instead of lowering one from HIR
+    /// (there's no HIR here to lower from -- `value` was already produced
+    /// by `synthesize_method_call`/a hand-built field read).
+    fn synthetic_declaration(
+        id: HirId,
+        span: Span,
+        name: &str,
+        r#type: ResolvedType,
+        value: CheckedExprNode,
+    ) -> (CheckedStmt, CheckedStmt) {
+        let ident = Ident(name.to_string());
+        let declaration = CheckedStmt::Declaration(CheckedDeclaration { id, span, ident, r#type: r#type.clone() });
+        let assignment = CheckedStmt::Expression(CheckedExprNode {
+            id,
+            span,
+            r#type: r#type.clone(),
+            kind: CheckedExpr::Assignment(CheckedAssignment {
+                target: CheckedPlace { root: CheckedPlaceRoot::Variable { decl_id: id, storage: Storage::Local, r#type }, projections: vec![] },
+                value: Box::new(value),
+            }),
+        });
+        (declaration, assignment)
     }
 
     fn analyze_stmts(&mut self, stmts: &[HirStmt]) -> Option<Vec<CheckedStmt>> {

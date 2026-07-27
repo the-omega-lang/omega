@@ -87,6 +87,27 @@ concrete instantiations are fully (re)compiled locally, since nothing else
 will ever produce that exact instantiation's body (see
 [generics](06-generics.md)).
 
+## Ambient resolution: `Option`/`Iterator`/`ToIterator`, and nothing else
+
+Every name in this language needs an explicit `import` to be visible —
+except these three, resolved directly against `core::option`/
+`core::iterator` (`context::ambient_core_path`,
+`compiler/omega-analyzer/src/context.rs`) whenever ordinary local/import
+resolution of a bare, unqualified name doesn't find anything, tried
+*after* everything above, so it can never shadow a real local import.
+This is **not** a general prelude/auto-import mechanism — there's no way
+to add another name to it short of editing that one hardcoded table — it
+exists purely because `for <binding> in <iterator> { }` (see
+[for-in loops](18-for-in-loops.md)) needs to work identically in every
+file, the same way `core`'s `for`-attached extension methods are already
+discovered without requiring an import (this file's "Imports" section
+above; `omega_driver::extensions`). Requiring `import core::iterator::
+{Iterator, ToIterator};`/`import core::option::Option;` in every file that
+implements or uses the iteration protocol was considered and rejected —
+no other language with a `for`-in loop makes users import the iterator
+protocol to use it, and this language has no prelude concept to extend
+in a more general way instead.
+
 ## Symbol mangling (`omega-mangle`)
 
 A standalone crate implementing a scheme adapted from Rust's RFC 2603

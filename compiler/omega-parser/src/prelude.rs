@@ -17,7 +17,7 @@ pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode, declaration::DeclarationStmt,
     defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
-    extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt,
+    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
     macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
     r#return::ReturnStmt, spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,

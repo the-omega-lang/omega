@@ -383,7 +383,8 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
                 .with_note(
                     "casts are only supported between numeric types, pointers, \
-                     and the str/byte-slice family (*str, *[u8], *[i8])",
+                     the str/byte-slice family (*str, *[u8], *[i8]), and into a \
+                     spec object (spec *Spec) when the source genuinely implements it",
                 ),
             Self::CastToMutablePointer { from, to } => d
                 .with_label(span, format!("cannot cast '{from}' to '{to}'"))

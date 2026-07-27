@@ -2,6 +2,7 @@ pub mod declaration;
 pub mod defer;
 pub mod r#enum;
 pub mod extern_declaration;
+pub mod for_in_stmt;
 pub mod for_stmt;
 pub mod function_definition;
 pub mod import;
@@ -17,7 +18,7 @@ use crate::ast::expression::{ExpressionNode, macro_invocation::MacroInvocationEx
 use crate::ast::statement::{
     declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
     extern_declaration::ExternDeclarationStmt,
-    for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
+    for_in_stmt::ForInStmt, for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
     macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
     r#struct::StructStmt, union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
@@ -85,6 +86,12 @@ pub enum Statement {
     /// Boxed since `ForStmt.init` embeds a bare `Statement` -- without the
     /// indirection here, `Statement` would have infinite size.
     For(Box<ForStmt>),
+    /// `for <mut>? binding in iterator { ... }` -- see `ForInStmt`'s doc
+    /// comment. No infinite-size concern here (`ForInStmt` embeds only
+    /// expressions/a codeblock, never a bare `Statement`), but boxed
+    /// anyway for consistency with `For`'s own sizing and to keep this
+    /// enum's largest variant small.
+    ForIn(Box<ForInStmt>),
     /// `defer <statement>;` / `defer { ... }` -- see `DeferStmt`'s doc
     /// comment. Unlike `For`, no extra `Box` is needed at this level:
     /// `DeferStmt` itself already boxes its embedded `Statement`

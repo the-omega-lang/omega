@@ -8,6 +8,8 @@
 
 import cmp;
 import default;
+import iterator;
 import numerics;
+import option;
 import slices;
 import strings;

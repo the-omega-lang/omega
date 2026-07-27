@@ -65,10 +65,6 @@ pub(crate) struct Codegen {
     vtables: HashMap<Vec<HirId>, DataId>,
 
     // Local state (must be cleared per function)
-    /// `bytes`'s per-function counterpart -- caches just the data pointer
-    /// (the length, when needed, is a cheap `iconst` recomputed each call,
-    /// same as any other compile-time-constant length).
-    local_bytes: HashMap<String, Value>,
     /// One entry per `MirBody::locals` index -- `local_args[i]` is
     /// non-empty exactly when local `i` is a parameter (`i < arg_count`),
     /// caching its already-materialized SSA leaves straight from the entry
@@ -158,7 +154,6 @@ impl Codegen {
             bytes: HashMap::new(),
             vtables: HashMap::new(),
 
-            local_bytes: HashMap::new(),
             local_args: Vec::new(),
             stack_slots: Vec::new(),
             arg_count: 0,
@@ -176,7 +171,6 @@ impl Codegen {
     }
 
     fn clear_local(&mut self) {
-        self.local_bytes.clear();
         self.ctx.clear();
         self.stack_slots.clear();
         self.local_args.clear();

@@ -1,7 +1,8 @@
 use crate::ast::expression::Expression;
+use crate::ast::identifier::Ident;
 use crate::ast::statement::{
     Statement, StatementNode, declaration::DeclarationStmt, defer::DeferStmt,
-    extern_declaration::ExternDeclarationStmt, for_stmt::ForStmt, r#return::ReturnStmt,
+    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt, r#return::ReturnStmt,
     walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::ast::visibility::Visibility;
@@ -89,7 +90,7 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             None
         }
         TokenKind::While => Some((Statement::While(parse_while(p)?), true)),
-        TokenKind::For => Some((Statement::For(Box::new(parse_for(p)?)), true)),
+        TokenKind::For => Some((parse_for(p)?, true)),
         TokenKind::Defer => {
             p.advance(); // 'defer'
             let (inner, block_shaped) = parse_statement_content(p)?;
@@ -222,11 +223,16 @@ fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
 /// body as one balanced unit, leaving the cursor positioned right after
 /// this (entire, if malformed) `for` statement, ready for whatever comes
 /// next, rather than resynchronizing mid-header.
-fn parse_for(p: &mut Parser) -> Option<ForStmt> {
+fn parse_for(p: &mut Parser) -> Option<Statement> {
     p.expect(&TokenKind::For, "'for'");
+
+    if is_for_in_lookahead(p) {
+        return parse_for_in(p).map(|f| Statement::ForIn(Box::new(f)));
+    }
+
     let init = parse_for_init(p);
     if !p.expect_terminator(&TokenKind::Semi, "';'") {
-        return recover_for_header(p);
+        return recover_for_header(p).map(|f| Statement::For(Box::new(f)));
     }
     // The whole `cond; post` header shares the same body-`{` ambiguity an
     // `if`/`while` condition has, so struct literals are restricted in both
@@ -236,12 +242,52 @@ fn parse_for(p: &mut Parser) -> Option<ForStmt> {
     let condition =
         if p.check(&TokenKind::Semi) { None } else { p.restrict_struct_literals(parse_expression) };
     if !p.expect_terminator(&TokenKind::Semi, "';'") {
-        return recover_for_header(p);
+        return recover_for_header(p).map(|f| Statement::For(Box::new(f)));
     }
     let post =
         if p.check(&TokenKind::LBrace) { None } else { p.restrict_struct_literals(parse_expression) };
-    let Some(body) = parse_codeblock(p) else { return recover_for_header(p) };
-    Some(ForStmt { init, condition, post, body })
+    let Some(body) = parse_codeblock(p) else { return recover_for_header(p).map(|f| Statement::For(Box::new(f))) };
+    Some(Statement::For(Box::new(ForStmt { init, condition, post, body })))
+}
+
+/// Whether the tokens right after `for` (already consumed) spell a
+/// `for <mut>? binding in ...` header, without consuming anything --
+/// `parse_for` uses this to decide which of the two `for` grammars to
+/// commit to before parsing either. `in` is a contextual keyword here,
+/// exactly like `mut`/`self` elsewhere in this grammar (see
+/// `parse_statement_content`'s identical `mut` check) -- never reserved
+/// outside this one lookahead position, so it stays usable as an ordinary
+/// identifier everywhere else.
+fn is_for_in_lookahead(p: &mut Parser) -> bool {
+    let offset = if let TokenKind::Ident(name) = p.peek() && name == "mut" { 1 } else { 0 };
+    matches!(p.peek_at(offset), TokenKind::Ident(_))
+        && matches!(p.peek_at(offset + 1), TokenKind::Ident(name) if name == "in")
+}
+
+/// `for <mut>? binding in iterator { ... }` -- called only once
+/// `is_for_in_lookahead` has already confirmed the shape, so every
+/// `expect`/`advance` here is expected to succeed.
+fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
+    let mutable = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+    {
+        p.advance(); // 'mut'
+        true
+    } else {
+        false
+    };
+    let TokenKind::Ident(binding) = p.peek().clone() else {
+        unreachable!("is_for_in_lookahead already confirmed this token is an identifier");
+    };
+    p.advance(); // binding
+    let binding = Ident(binding);
+    p.advance(); // 'in' (contextual; `is_for_in_lookahead` already confirmed this token)
+
+    // Same body-`{` ambiguity `while`/the classic `for`'s own condition
+    // clause has -- restricted for the same reason.
+    let iterator = p.restrict_struct_literals(parse_expression)?;
+    let body = parse_codeblock(p)?;
+    Some(ForInStmt { mutable, binding, iterator, body })
 }
 
 fn parse_for_init(p: &mut Parser) -> Option<Statement> {

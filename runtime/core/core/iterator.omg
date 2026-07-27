@@ -1,0 +1,23 @@
+# `core::iterator` -- the iteration protocol `for <binding> in <iterator>`
+# is built on (see `Analyzer::analyze_for_in`). Split into two specs, the
+# same way Rust splits `Iterator` from `IntoIterator`: `Iterator<T>` is the
+# actual cursor (owns mutable position state, produced once), `ToIterator
+# <T>` is what a *collection* implements to produce one.
+
+import option::Option;
+
+# `to_iterator`'s return is a `spec *mut Iterator<T>` (a trait object), not
+# some implementor-specific concrete type -- this spec system has no
+# associated-type mechanism to say "returns whatever type implements
+# `Iterator<T>`", so a dynamic-dispatch handle is the only way to express
+# this contract at all. `next` gets called once per loop iteration, so
+# this does mean every `for`-loop pays one indirect call per element, not
+# just once per loop -- a conscious, documented tradeoff (see
+# `docs/08-specs.md`), not an oversight.
+exposed spec Iterator<T> {
+    next(*mut self) => Option<T>;
+}
+
+exposed spec ToIterator<T> {
+    to_iterator(*self) => spec *mut Iterator<T>;
+}

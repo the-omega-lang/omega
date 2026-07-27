@@ -280,8 +280,9 @@ impl<'r> Analyzer<'r> {
         }
 
         let type_args = self.resolve_generic_arg_list(node_id, span, expr_path)?;
-        let absolute = self.generic_prefix_absolute(node_id, span, &segments[..=expr_path.args_at])?;
-        match self.resolve_item_checked(&absolute, &type_args, true) {
+        let prefix = &segments[..=expr_path.args_at];
+        let absolute = self.generic_prefix_absolute(node_id, span, prefix)?;
+        match self.resolve_item_checked_with_ambient_fallback(prefix, &absolute, &type_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None

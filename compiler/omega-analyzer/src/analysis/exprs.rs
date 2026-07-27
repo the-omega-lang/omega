@@ -604,6 +604,55 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        // `<spec *Spec>base` -- explicit dynamic-dispatch coercion. A
+        // third family, genuinely separate from both the numeric path and
+        // the byte-pointer family below (`SpecObject` has no `cast_class`
+        // either): unlike every other cast here, this one can only ever
+        // succeed by *proving* something (`pointee` genuinely implements
+        // `spec<type_args>`), not by a pure width/signedness computation,
+        // so it's checked and returned immediately rather than folding
+        // into `cast_kind`'s three-way `if`/`else`. Reuses exactly the
+        // same proof `coerce_to_expected` already runs for the *implicit*
+        // version of this same coercion (see its own doc comment) --
+        // explicit casting was previously the one direction that never
+        // worked at all (only 4 implicit-coercion sites did; see
+        // `docs/08-specs.md`'s "Coercion into `spec *T`" caveat).
+        if let ResolvedType::SpecObject { spec, type_args, mutable } = &target_type {
+            let ResolvedType::Pointer { pointee, mutable: base_mutable } = &checked_base.r#type else {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::InvalidCast { from: checked_base.r#type.clone(), to: target_type.clone() },
+                );
+                return None;
+            };
+            if *mutable && !base_mutable {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::CastToMutablePointer { from: checked_base.r#type.clone(), to: target_type.clone() },
+                );
+                return None;
+            }
+            let pointee = (**pointee).clone();
+            let spec = spec.clone();
+            let type_args = type_args.clone();
+            let Ok(slots) = self.type_implements_spec(node_id, span, &pointee, &spec, &type_args, true) else {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::InvalidCast { from: checked_base.r#type.clone(), to: target_type.clone() },
+                );
+                return None;
+            };
+            return Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: target_type.clone(),
+                kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(checked_base), slots }),
+            });
+        }
+
         // The str/byte-slice family (`*str`/`*[u8]`/`*[i8]`) is
         // tried first: a fat pointer doesn't fit `cast_class`'s
         // scalar-width model at all (`Str`/`Slice` both return

@@ -23,27 +23,32 @@ use omega_mir::{
 impl Codegen {
     /// A byte-run constant's two-leaf `[pointer, length]` form -- the
     /// shape both `ResolvedType::Slice` and `ResolvedType::Str`'s leaf
-    /// flattening expect (identical for both) -- deduplicated per module
-    /// (`bytes`) and per function (`local_bytes`, which only caches the
-    /// pointer; the length is a cheap `iconst` recomputed each call, same
-    /// as any other compile-time-constant length). Shared by string
-    /// literal expressions, byte-string literal expressions, and enum
-    /// header/dynamic-field constants -- the caller alone decides whether
-    /// the surrounding value is typed `*str` or `*[u8]`.
+    /// flattening expect (identical for both) -- the underlying data is
+    /// deduplicated per module (`bytes`, a `DataId` cache). Shared by
+    /// string literal expressions, byte-string literal expressions, and
+    /// enum header/dynamic-field constants -- the caller alone decides
+    /// whether the surrounding value is typed `*str` or `*[u8]`.
+    ///
+    /// Both leaves are recomputed at every call site, deliberately never
+    /// cached *within* a function the way the underlying `DataId` is
+    /// across the module: `global_value`/`iconst` are each one cheap,
+    /// side-effect-free instruction, but the `Value` they produce is tied
+    /// to the specific block that defines it -- Cranelift is strict SSA,
+    /// so reusing one across two sibling blocks (e.g. the same literal
+    /// appearing in two separate, non-nested loops) is a dominance
+    /// violation the verifier rejects, not a valid optimization. (This
+    /// was a real, if narrow-triggering, bug: caching the pointer `Value`
+    /// per function in a `HashMap<String, Value>` here, keyed purely by
+    /// content and never invalidated mid-function, crashed the compiler
+    /// on exactly that "same literal, two sibling blocks" shape.)
     fn emit_bytes(&mut self, builder: &mut FunctionBuilder, s: String) -> Vec<Value> {
         let len = builder.ins().iconst(types::I32, s.len() as i64);
-
-        if let Some(local_value) = self.local_bytes.get(&s) {
-            return vec![*local_value, len];
-        }
 
         let ptr_type = self.pointer_type();
         let data_id = if let Some(id) = self.bytes.get(&s) { *id } else { self.get_or_declare_global_bytes(s.clone()) };
 
         let global_value = self.module.declare_data_in_func(data_id, builder.func);
         let ptr = builder.ins().global_value(ptr_type, global_value);
-
-        self.local_bytes.insert(s, ptr);
 
         vec![ptr, len]
     }

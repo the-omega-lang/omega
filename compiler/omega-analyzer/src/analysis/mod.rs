@@ -73,7 +73,7 @@ use crate::{
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
     HirExternDeclaration,
-    HirFor, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
+    HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
     HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirUnionDef, HirWalrusDeclaration,
 };
@@ -488,6 +488,34 @@ impl<'r> Analyzer<'r> {
             *self.hidden_stack.last_mut().expect("bypass true implies a non-empty hidden_stack") = true;
         }
         result
+    }
+
+    /// `resolve_item_checked`, plus one extra retry against a short,
+    /// hardcoded list of well-known `core` generic items (`Option`/
+    /// `Iterator`/`ToIterator`) when `absolute` names an unqualified
+    /// single segment that didn't resolve locally -- see `context::
+    /// ambient_core_path`'s doc comment for why this exists and why it's
+    /// deliberately not a general prelude mechanism. `prefix` is the
+    /// original, pre-absolute-path segment list a caller built `absolute`
+    /// from (`generic_prefix_absolute`'s own input) -- needed because
+    /// `absolute` alone can't tell "this was genuinely unqualified" apart
+    /// from "this happens to produce a same-shaped absolute path", so the
+    /// fallback can only be judged safe by whoever still has `prefix`
+    /// around, not by `resolve_item_checked` after the fact.
+    fn resolve_item_checked_with_ambient_fallback(
+        &mut self,
+        prefix: &[Ident],
+        absolute: &[Ident],
+        type_args: &[ResolvedType],
+    ) -> Result<ResolvedItem, ResolveError> {
+        let result = self.resolve_item_checked(absolute, type_args, true);
+        match (prefix, &result) {
+            ([single], Err(ResolveError::UnknownItem { .. })) => match crate::context::ambient_core_path(single) {
+                Some(ambient) => self.resolve_item_checked(&ambient, type_args, true),
+                None => result,
+            },
+            _ => result,
+        }
     }
 
     /// `indirect` is true whenever `typ` sits somewhere that never embeds

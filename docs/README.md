@@ -69,6 +69,9 @@ New to the codebase — read roughly in this order:
 17. [Design review](17-design-review.md) — unsoundness, inconsistencies, and
     rough edges found on a deeper audit pass; distinct from the known-issues
     tracker in that most entries here aren't bugs at all, just weak spots.
+18. [`for` .. `in` loops](18-for-in-loops.md) — the iteration protocol
+    (`Iterator<T>`/`ToIterator<T>`/`Option<T>`), how it desugars, and the
+    one narrow ambient-name-resolution exception it needed.
 
 ## What this is not
 

@@ -59,6 +59,12 @@ first, never attempting to parse an expression there.
 exits (not the enclosing block) — Omega's only structured cleanup
 mechanism; there is no `try`/`catch`/exceptions in the language at all.
 
+A third loop form, `for <mut>? binding in iterator { ... }`, iterates
+anything implementing `core::iterator::ToIterator<T>` — see
+[for-in loops](18-for-in-loops.md) for the full story (it's involved
+enough to warrant its own chapter: a real spec-backed protocol, not just
+grammar).
+
 ## Boolean operators — native `bool`, but still no `!`
 
 `bool` supports `== != & | ^` directly, staying `bool` (no `numeric_kind`

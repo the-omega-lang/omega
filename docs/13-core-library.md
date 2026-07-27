@@ -12,9 +12,11 @@ runtime/core/
     core.omg          # real root: imports every submodule, nothing else
     cmp.omg              # core::cmp — Ordering, Eq, Ord
     default.omg              # core::default — Default
+    iterator.omg               # core::iterator — Iterator<T>, ToIterator<T>
     numerics.omg                # core::numerics — all scalar for-blocks (macros)
-    slices.omg                     # core::slices — SliceImpl<T> for [T]
-    strings.omg                       # core::strings — StrOps for str
+    option.omg                     # core::option — Option<T>
+    slices.omg                        # core::slices — SliceImpl<T> for [T]
+    strings.omg                          # core::strings — StrOps for str
 ```
 
 `core.omg` exists solely to `import` every sibling submodule. This isn't
@@ -45,6 +47,14 @@ side's TU" model (see [specs](08-specs.md) and
   should be.
 - **`core::default`** — `Default { default() => Self; }`. Its own tiny
   file deliberately, for reuse beyond just numerics.
+- **`core::option`** — `Option<T> { None, Some { exposed value: T; }; }`.
+  Real, ordinary generic enum — see "`Option<T>` finally exists" below for
+  why it's here now, and why its variant order (`None` = 0, `Some` = 1) is
+  load-bearing, not incidental.
+- **`core::iterator`** — `Iterator<T> { next(*mut self) => Option<T>; }`
+  and `ToIterator<T> { to_iterator(*self) => spec *mut Iterator<T>; }` —
+  the protocol `for <binding> in <iterator> { }` is built on. See
+  [for-in loops](18-for-in-loops.md).
 - **`core::numerics`** — three macros (`signed_integer`/
   `unsigned_integer`/`float_ops`), invoked once per concrete type (10
   integers + 2 floats), **not** one shared template copy-pasted three
@@ -73,41 +83,52 @@ side's TU" model (see [specs](08-specs.md) and
   deliberately no skip table, which would need working memory proportional
   to the needle — this layer never does hidden allocation).
 
-## Why no `char` module, no `Option<T>`/`Result<T>` (yet)
+## `Option<T>` finally exists — but `core::slices` still doesn't use it
 
-Both cuts trace back to confirmed language gaps, not missing effort — see
-[generics](06-generics.md) and [control flow](03-control-flow.md). The
-`Option<T>` blockers are now fixed; it's absent by scope choice, not by
-compiler limitation, as of this writing:
+`Option<T>`'s blockers (a generic enum with methods failing signature
+collection; `T` not deducible from a generic-enum-typed argument) were
+fixed independently of any real need for `Option<T>` itself — it stayed
+out of `core` on scope grounds alone until `for <binding> in <iterator>
+{ }` (see [for-in loops](18-for-in-loops.md)) needed a real "maybe a
+value" return type for `Iterator<T>::next`, at which point adding it
+stopped being optional. It's the plainest possible shape (`None`, `Some {
+value: T }`, no methods) — deliberately not extended with `is_some`/
+`unwrap_or`-style conveniences in the same pass that added it, to avoid
+piling unrelated scope onto a change driven by one specific need.
 
-- **No `core::chars`** — `char` gained comparison and `match`/range
-  support (see [primitives](01-primitives.md)), so ASCII
-  *classification* (`is_upper`, `is_digit`, and similar range-based
-  predicates) is implementable now. `char` also now has arithmetic (see
-  [primitives](01-primitives.md)'s "`char`, `bool`, and pointer
-  arithmetic"), which unblocks ASCII *case conversion* too: `to_upper`/
-  `to_lower` can compute the shifted codepoint as a `u32`, truncate to
-  `u8` (every ASCII letter fits), then cast the `u8` back to `char` (the
-  one direction guaranteed valid). Full Unicode case conversion is still
-  blocked — a shifted codepoint outside ASCII doesn't fit in a `u8`, and
-  there is still no general integer-to-`char` cast (see
-  [known-issues.md](14-known-issues.md)). A `core::chars` module scoped to
-  ASCII (classification and case conversion both) would be straightforward
-  to add when wanted, but hasn't been, to avoid shipping a half-finished
-  module.
-- **No `Option<T>`/`Result<T>`** — historically because a generic enum
-  with methods failed to even pass signature collection, and `T` couldn't
-  be deduced from a generic-enum-typed argument either (two distinct
-  confirmed bugs). **Both are now fixed** (see [generics](06-generics.md))
-  — a generic enum with `is_some()`/`unwrap_or()`-style methods is viable
-  today. `core::slices`' `(bool, out: *mut T)` pattern is still used here
-  (arguably more embedded-idiomatic anyway — no hidden tag-copy, closer to
-  a C/Zig fallible-call convention than a coincidence), and `core` itself
-  hasn't been changed to add `Option<T>` — that's a separate scope
-  decision, not implied by fixing the underlying compiler bugs.
-- **No `contains`/generic-bound methods on `core::slices`** — a spec's own
-  generics don't support *per-function* bounds (`SliceImpl<T: Eq>` would
-  gate the whole spec, including `is_empty`/`get`, behind `Eq` too, wrongly).
+`core::slices`' own `(index, out: *mut T) => bool` pattern (`get`/`first`/
+`last`) is **not** being migrated to return `Option<T>` — both shapes now
+coexist deliberately: the out-pointer form avoids a hidden tag-copy and
+reads as a closer match to a C/Zig fallible-call convention, which is
+still the better fit for a hot, no-allocation slice-indexing path;
+`Option<T>` is the better fit for a one-shot "maybe produced a value"
+result like an iterator step, which was never going to be `#[inline]`-hot
+the same way `get` is. Picking one uniformly across `core` would have
+been consistency for its own sake at a real ergonomics/performance cost
+somewhere.
+
+## No `char` module yet
+
+`char` gained comparison and `match`/range support (see
+[primitives](01-primitives.md)), so ASCII *classification* (`is_upper`,
+`is_digit`, and similar range-based predicates) is implementable now.
+`char` also now has arithmetic (see [primitives](01-primitives.md)'s
+"`char`, `bool`, and pointer arithmetic"), which unblocks ASCII *case
+conversion* too: `to_upper`/`to_lower` can compute the shifted codepoint
+as a `u32`, truncate to `u8` (every ASCII letter fits), then cast the
+`u8` back to `char` (the one direction guaranteed valid). Full Unicode
+case conversion is still blocked — a shifted codepoint outside ASCII
+doesn't fit in a `u8`, and there is still no general integer-to-`char`
+cast (see [known-issues.md](14-known-issues.md)). A `core::chars` module
+scoped to ASCII (classification and case conversion both) would be
+straightforward to add when wanted, but hasn't been, to avoid shipping a
+half-finished module.
+
+## No `contains`/generic-bound methods on `core::slices`
+
+A spec's own generics don't support *per-function* bounds (`SliceImpl<T:
+Eq>` would gate the whole spec, including `is_empty`/`get`, behind `Eq`
+too, wrongly).
 
 ## Building it
 

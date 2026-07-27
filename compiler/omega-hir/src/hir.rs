@@ -325,6 +325,7 @@ pub enum HirStmt {
     WalrusDeclaration(HirWalrusDeclaration),
     While(HirWhile),
     For(HirFor),
+    ForIn(HirForIn),
     Break(HirBreak),
     Continue(HirContinue),
     Defer(HirDefer),
@@ -401,6 +402,22 @@ pub struct HirFor {
     pub init: Vec<HirStmt>,
     pub condition: Option<HirExprNode>,
     pub post: Option<HirExprNode>,
+    pub body: HirBlock,
+}
+
+/// `for <mut>? binding in iterator { body }` -- see `omega_parser::ast::
+/// statement::for_in_stmt::ForInStmt`'s doc comment. Purely a mechanical,
+/// 1:1 lowering of the source syntax, same as `HirFor` -- every semantic
+/// decision (resolving `iterator`'s `ToIterator<T>` implementation,
+/// desugaring into the equivalent `while`/`match` form) belongs to
+/// analysis, not here; see `Analyzer::analyze_for_in`.
+#[derive(Debug, Clone)]
+pub struct HirForIn {
+    pub id: HirId,
+    pub span: Span,
+    pub mutable: bool,
+    pub binding: Ident,
+    pub iterator: HirExprNode,
     pub body: HirBlock,
 }
 

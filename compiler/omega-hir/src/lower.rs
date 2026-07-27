@@ -3,7 +3,7 @@ use crate::hir::{
     HirBreak, HirCast,
     HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
-    HirExternDeclaration, HirFor, HirFunctionCall, HirFunctionDef, HirGenericParam,
+    HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam,
     HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
     HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirSpecFunction, HirStmt,
     HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
@@ -123,6 +123,14 @@ impl Lowerer {
                 let body = self.lower_block(&f.body);
                 vec![HirStmt::For(HirFor { id: self.ids.next(), span, init, condition, post, body })]
             }
+            Statement::ForIn(f) => vec![HirStmt::ForIn(HirForIn {
+                id: self.ids.next(),
+                span,
+                mutable: f.mutable,
+                binding: f.binding.clone(),
+                iterator: self.lower_expr(&f.iterator),
+                body: self.lower_block(&f.body),
+            })],
             Statement::Defer(d) => {
                 let body_stmts = self.lower_statement(&d.body, span);
                 vec![HirStmt::Defer(HirDefer {

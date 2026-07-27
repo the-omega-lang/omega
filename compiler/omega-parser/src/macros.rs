@@ -487,6 +487,14 @@ fn expand_statement(
                 body: expand_codeblock(f.body, defs, budget)?,
             }))
         }
+        Statement::ForIn(f) => {
+            let f = *f;
+            Statement::ForIn(Box::new(ForInStmt {
+                iterator: expand_expr(f.iterator, defs, budget)?,
+                body: expand_codeblock(f.body, defs, budget)?,
+                ..f
+            }))
+        }
         Statement::Defer(d) => Statement::Defer(DeferStmt {
             body: Box::new(expand_statement(*d.body, defs, budget)?),
         }),
