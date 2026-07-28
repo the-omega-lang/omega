@@ -336,6 +336,21 @@ pub trait ModuleResolver {
         variant: Option<&Ident>,
     ) -> Result<Option<GenericLiteralSignature>, ResolveError>;
 
+    /// A *raw*, unresolved view of a generic struct/union/enum's own
+    /// declared `self`-less (static) function named `function_name` --
+    /// just enough for duck-typed, argument-driven type inference at a
+    /// call site (`Owner::function(args)`, no explicit `<...>`, see
+    /// `Analyzer::resolve_generic_static_call`), with no analysis
+    /// triggered and no instantiation attempted. `Ok(None)` for anything
+    /// that isn't a generic struct/union/enum, or that has no matching
+    /// static function under that name -- deferring both diagnoses to the
+    /// ordinary call path, which re-derives them identically.
+    fn generic_static_function_signature(
+        &mut self,
+        owner_absolute: &[Ident],
+        function_name: &Ident,
+    ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError>;
+
     /// `name`'s every overload candidate in `module_path`, each already
     /// paired with the `HirId` a callee place root needs -- an escape hatch
     /// alongside `resolve_item` exactly like `generic_function_signature`
@@ -456,6 +471,18 @@ pub struct GenericLiteralSignature {
     /// struct's/union's own `fields`, or an enum variant's `dynamic_fields`
     /// chained with the variant's own `fields`.
     pub fields: Vec<(Ident, Type)>,
+}
+
+/// See `ModuleResolver::generic_static_function_signature`.
+#[derive(Debug, Clone)]
+pub struct GenericStaticFunctionSignature {
+    pub owner_generics: Vec<Ident>,
+    /// The function's own declared generics, if any -- almost always
+    /// empty. Kept (not silently dropped) so `resolve_generic_static_call`
+    /// can make an explicit, honest decision about them (decline, today)
+    /// instead of quietly assuming none exist.
+    pub function_generics: Vec<Ident>,
+    pub params: Vec<Type>,
 }
 
 

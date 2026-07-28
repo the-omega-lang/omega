@@ -75,6 +75,7 @@ the type arguments out (`Option<i32>::Some { ... }`), with no exceptions:
 opt := Option::Some { value = 42u32; };     # T = u32, from `value`'s own type
 none : Option<i32> = Option::None;          # T = i32, from the declaration
 gp := GenericPair { a = 3; b = 4; };        # T = i32, from `a`/`b`
+gp2 := GenericPair::new(7, 8);              # T = i32, from `new`'s own args
 ```
 
 Two independent sources feed this, tried in order:
@@ -96,11 +97,33 @@ all) is a dedicated, explicit diagnostic naming which type parameter(s)
 are missing, rather than a confusing arg-count mismatch or a silent wrong
 guess.
 
-**Not covered**: a generic struct's own *static* function call with the
-struct's generics omitted (e.g. a hypothetical `List::new(5)` inferring
-`List<T>` from `new`'s own argument) — composing this with call-argument
-inference across two separate generic scopes at once is a distinct,
-separable piece of work nothing in `core` currently exercises.
+A third source, specific to a **generic struct/union/enum's own static
+(`self`-less) function call** (`Owner::function(args)`, no explicit
+`<...>`, e.g. `GenericPair::new(7, 8)` above): the owner's own type
+arguments are deduced from unifying the call's argument types against
+`function`'s own declared parameter types — the identical
+`unify_generic_type` machinery, just composed across the owner/function
+boundary (`Analyzer::resolve_generic_static_call`,
+`compiler/omega-analyzer/src/analysis/calls.rs`). Tried only when
+`expected`-context and (for a literal) field-driven inference don't apply
+in the first place — a call is never a literal or a bare variant
+reference.
+
+**Not covered**:
+
+- **The static function's own independent generics**, if it declares any
+  beyond the owner's (`fn new<U>(...)`) — declines outright, the same way
+  an ordinary method-shaped generic call already does (see "Fixed:
+  generic struct/enum methods" below); no example needs this.
+- **2+ overloaded static candidates** sharing the omitted-generics owner
+  and the same name — composing overload scoring with owner-generic
+  inference at once is a distinct, separable piece of work; today this
+  falls back to the same `GenericArgCountMismatch` calling any of them
+  with explicit generics omitted always produced.
+- **A zero-argument static factory inferred from `expected` alone** (e.g.
+  a hypothetical `x : List<i32> = List::empty();`) — `analyze_call`'s
+  interceptor pipeline doesn't thread an `expected` type through today; a
+  real, separable follow-up if a use case comes up.
 
 ## Fixed: generic struct/enum methods, and `T`-deduction from them
 

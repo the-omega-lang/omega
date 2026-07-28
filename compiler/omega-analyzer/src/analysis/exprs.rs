@@ -228,14 +228,15 @@ impl<'r> Analyzer<'r> {
     
     }
 
-    /// An ordinary call, after the three interceptors (overloaded,
-    /// overloaded-static, generic) have each declined it.
+    /// An ordinary call, after the four interceptors (overloaded,
+    /// overloaded-static, generic, generic-static) have each declined it.
     fn analyze_call(&mut self, node_id: HirId, span: Span, call: &HirFunctionCall) -> Option<CheckedExprNode> {
         // Tried in priority order; the first to claim the call answers it.
-        let interceptors: [Interceptor<'r>; 3] = [
+        let interceptors: [Interceptor<'r>; 4] = [
             Self::resolve_overloaded_call,
             Self::resolve_overloaded_static_call,
             Self::resolve_generic_call,
+            Self::resolve_generic_static_call,
         ];
         for intercept in interceptors {
             if let Intercepted::Claimed(result) = intercept(self, node_id, span, call) {

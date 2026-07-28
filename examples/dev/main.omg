@@ -712,6 +712,12 @@ main(argc : i32, argv : [*u8]) => i32 {
     gp2 := GenericPair { a = 5; b = 6; };
     printf(<*u8>b"generic pair (inferred T) sum: %d\n\0", gp2.sum());
 
+    # Deep inference: `T` deduced from a *static function call's* own
+    # argument types (`GenericPair::new`, no `<i32>` anywhere) -- composes
+    # the same duck-typed unification across the owner/function boundary.
+    gp3 := GenericPair::new(7, 8);
+    printf(<*u8>b"generic pair (static new, inferred T) sum: %d\n\0", gp3.sum());
+
     mut gn : GenericNode<i32>;
     gn.value = 7;
     mut gn2 : GenericNode<i32>;
@@ -1258,6 +1264,12 @@ struct GenericPair<T> {
     exposed b: T;
 
     exposed sum(*self) => T { self.a + self.b }
+
+    # A static (`self`-less) constructor -- `T` is deduced from `new`'s own
+    # argument types the same way a bare generic function's is, composed
+    # across the owner/function boundary: `GenericPair::new(7, 8)` (no
+    # `<i32>` anywhere) infers `GenericPair<i32>` from `a`/`b`'s own types.
+    exposed new(a: T, b: T) => Self { Self { a = a; b = b; } }
 }
 
 # A duck-typed generic function: `T` is never written at the call site --

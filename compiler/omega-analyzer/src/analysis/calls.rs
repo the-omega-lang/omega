@@ -624,6 +624,198 @@ impl<'r> Analyzer<'r> {
         Intercepted::Claimed(Some(self.checked_call(node_id, span, &call.callee, decl_id, Storage::Function, fn_type, args)))
     }
 
+    /// If `call`'s callee is `Owner::function(args)` where `Owner` is a
+    /// generic struct/union/enum referenced with no explicit `<...>` and
+    /// `function` names exactly one of its own non-overloaded, `self`-less
+    /// (static) functions, infers `Owner`'s own omitted type arguments
+    /// from the call's own argument types -- the same duck-typed
+    /// unification a bare generic function call's arguments already get
+    /// (`resolve_generic_call`), extended across the owner/function
+    /// boundary. Declines (falls through to the ordinary path, unchanged)
+    /// for every other shape: an already-concrete `Owner`, a
+    /// module-qualified callee, 2+ overloaded static candidates under
+    /// `function`'s name (`resolve_overloaded_static_call`'s own concern
+    /// once `Owner` itself is concrete -- composing overload scoring with
+    /// owner-generic inference at once is a separable follow-up, not
+    /// attempted here), or a static function that declares independent
+    /// generics of its own (matches `resolve_generic_call`'s own
+    /// precedent of never attempting to infer a method-shaped generic
+    /// call -- "struct generics are always explicit, so by the time a
+    /// value of that type exists its methods are already fully
+    /// monomorphized").
+    pub(super) fn resolve_generic_static_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+    ) -> Intercepted {
+        let Some(path) = Self::callee_path(call) else { return Intercepted::Declined };
+        let [member] = path.tail.as_slice() else { return Intercepted::Declined };
+        if self.context.find_defined_type(&path.head).is_some() {
+            return Intercepted::Declined;
+        }
+
+        // Silent probe, like `resolve_overloaded_static_call`'s identical
+        // alias check -- a real resolution failure here isn't this
+        // function's to report; it's left for whichever fallback path
+        // ends up actually needing this same alias to surface it.
+        let alias = self.resolve_alias(&path.head).ok().flatten();
+        let absolute: Vec<Ident> = match &alias {
+            Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::GenericItem(absolute)) => absolute.clone(),
+            Some(ImportTarget::Module(_)) => return Intercepted::Declined,
+            None => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+        };
+
+        let Some((real_absolute, sig)) = self.generic_static_function_signature_with_ambient(
+            std::slice::from_ref(&path.head),
+            &absolute,
+            member,
+        ) else {
+            return Intercepted::Declined;
+        };
+        if !sig.function_generics.is_empty() {
+            return Intercepted::Declined;
+        }
+
+        Intercepted::Claimed(self.finish_generic_static_call(
+            node_id,
+            span,
+            call,
+            std::slice::from_ref(&path.head),
+            &real_absolute,
+            member,
+            &sig,
+        ))
+    }
+
+    /// `resolver.generic_static_function_signature(absolute, function_name)`,
+    /// retried against the `core` ambient fallback (see `context::
+    /// ambient_core_path`) when `prefix` is a genuinely unqualified single
+    /// segment and the direct lookup finds nothing there -- the same
+    /// retry `Analyzer::generic_literal_signature_with_ambient` (literals.rs)
+    /// already gives the literal-construction path, needed here for the
+    /// identical reason (a bare, unimported ambient generic type's own
+    /// static function must be discoverable too). Hands back whichever
+    /// absolute path actually matched, since the final instantiation call
+    /// needs the *real* declaration's path, not the naive own-module guess
+    /// that failed to find anything locally.
+    fn generic_static_function_signature_with_ambient(
+        &mut self,
+        prefix: &[Ident],
+        absolute: &[Ident],
+        function_name: &Ident,
+    ) -> Option<(Vec<Ident>, GenericStaticFunctionSignature)> {
+        if let Ok(Some(sig)) = self.resolver.generic_static_function_signature(absolute, function_name) {
+            return Some((absolute.to_vec(), sig));
+        }
+        let [single] = prefix else { return None };
+        let ambient = crate::context::ambient_core_path(single)?;
+        let sig = self.resolver.generic_static_function_signature(&ambient, function_name).ok().flatten()?;
+        Some((ambient, sig))
+    }
+
+    /// The actual work behind `resolve_generic_static_call`, once it's
+    /// confirmed `call`'s callee genuinely names a single-candidate static
+    /// function on a generic type at `owner_absolute` -- split out so
+    /// `resolve_generic_static_call` can stay a single check, mirroring
+    /// `finish_generic_call`'s identical split for the free-function case.
+    fn finish_generic_static_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+        prefix: &[Ident],
+        owner_absolute: &[Ident],
+        member: &Ident,
+        sig: &GenericStaticFunctionSignature,
+    ) -> Option<CheckedExprNode> {
+        let mut checked_args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            checked_args.push(self.analyze_expr(arg, None)?);
+        }
+
+        let mut subst = HashMap::new();
+        for (raw_type, arg) in sig.params.iter().zip(&checked_args) {
+            unify_generic_type(&sig.owner_generics, raw_type, &arg.r#type, &mut subst);
+        }
+
+        let type_args = match resolve_inferred_type_args(&sig.owner_generics, &subst) {
+            Ok(type_args) => type_args,
+            Err(_) => {
+                let missing: Vec<Ident> =
+                    sig.owner_generics.iter().filter(|g| !subst.contains_key(g)).cloned().collect();
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UnresolvedLiteralGeneric {
+                        r#type: owner_absolute.last().cloned().expect("an absolute path always has a last segment"),
+                        generics: missing,
+                    },
+                );
+                return None;
+            }
+        };
+
+        let owner_type = match self.resolve_item_checked_with_ambient_fallback(prefix, owner_absolute, &type_args) {
+            Ok(ResolvedItem::Type(t)) => t,
+            Ok(ResolvedItem::Value { .. }) => {
+                self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
+                return None;
+            }
+            Err(e) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
+                return None;
+            }
+        };
+
+        let all_methods = match &owner_type {
+            ResolvedType::Struct(cell) => cell.borrow().functions.clone(),
+            ResolvedType::Union(cell) => cell.borrow().functions.clone(),
+            ResolvedType::Enum { cell, .. } => cell.borrow().functions.clone(),
+            _ => unreachable!("generic_static_function_signature only ever matches Struct/Union/Enum"),
+        };
+        let method = all_methods
+            .into_iter()
+            .find(|(name, m)| name == member && m.fn_type.self_mode.is_none())
+            .map(|(_, m)| m)
+            .expect("generic_static_function_signature confirmed this static function exists");
+
+        let (owner_module_path, owner_id) = owner_type.declaring_owner().unwrap_or_else(|| (Vec::new(), node_id));
+        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id) {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::MethodNotVisible { method: member.clone(), base: owner_type.clone() },
+            );
+            return None;
+        }
+
+        let ResolvedMethod { decl_id, fn_type, .. } = method;
+        if checked_args.len() != fn_type.params.len() && !fn_type.is_variadic {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::WrongArgumentCount { expected: fn_type.params.len(), found: checked_args.len() },
+            );
+            return None;
+        }
+        for (arg, (_, expected_type)) in checked_args.iter().zip(&fn_type.params) {
+            if !expected_type.accepts(&arg.r#type) {
+                self.error(
+                    arg.id,
+                    arg.span,
+                    AnalysisErrorKind::ArgumentTypeMismatch {
+                        expected: expected_type.clone(),
+                        found: arg.r#type.clone(),
+                    },
+                );
+                return None;
+            }
+        }
+
+        Some(self.checked_call(node_id, span, &call.callee, decl_id, Storage::Function, fn_type, checked_args))
+    }
+
     /// If `ident` -- used unqualified, whether it's declared in this module
     /// or reached through a named import alias -- names an *overloaded*
     /// free function (2+ candidates), returns its real absolute path and

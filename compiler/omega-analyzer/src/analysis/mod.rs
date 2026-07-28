@@ -65,8 +65,8 @@ use crate::{
         ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
-        GenericLiteralSignature, GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, OverloadCandidates,
-        ResolveError, ResolvedItem,
+        GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget, ItemNamespace,
+        ModuleResolver, OverloadCandidates, ResolveError, ResolvedItem,
     },
     similarity::best_match,
 };

@@ -7,11 +7,11 @@
 use crate::{Driver, ModulePath};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_analyzer::resolver::{
-    GenericLiteralSignature, GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError,
-    ResolvedItem,
+    GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget, ItemNamespace,
+    ModuleResolver, ResolveError, ResolvedItem,
 };
 use omega_analyzer::similarity::best_match;
-use omega_hir::{HirId, HirItem};
+use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
 use omega_parser::prelude::{Ident, Visibility};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -252,6 +252,52 @@ impl ModuleResolver for Driver {
             return Ok(None);
         }
         Ok(Some(GenericLiteralSignature { generics: generics.iter().map(|g| g.ident.clone()).collect(), fields }))
+    }
+
+    fn generic_static_function_signature(
+        &mut self,
+        owner_absolute: &[Ident],
+        function_name: &Ident,
+    ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError> {
+        let Some((name, module_path)) = owner_absolute.split_last() else {
+            return Err(ResolveError::UnknownModule(owner_absolute.to_vec()));
+        };
+        // "Doesn't exist"/"not generic"/"no such static function" are all
+        // deferred to the ordinary call path, which re-derives and reports
+        // them identically -- this query only ever needs to say "not this
+        // shape" either way.
+        let Ok(index) = self.local_item_index(module_path, name) else {
+            return Ok(None);
+        };
+        let (owner_generics, functions): (&[HirGenericParam], &[HirFunctionDef]) =
+            match &self.modules.parsed(module_path).hir.items[index] {
+                HirItem::Struct(s) => (&s.generics, &s.functions),
+                HirItem::Union(u) => (&u.generics, &u.functions),
+                HirItem::Enum(e) => (&e.generics, &e.functions),
+                _ => return Ok(None),
+            };
+        if owner_generics.is_empty() {
+            return Ok(None);
+        }
+        // Exactly one candidate only -- 2+ overloaded statics under this
+        // name is `resolve_overloaded_static_call`'s own concern (once the
+        // owner is concrete), not this query's; composing overload scoring
+        // with owner-generic inference at once is deliberately out of
+        // scope (see `Analyzer::resolve_generic_static_call`'s doc
+        // comment), so this must not silently pick a first match.
+        let mut matches = functions.iter().filter(|f| &f.name == function_name && f.self_mode.is_none());
+        let f = matches.next();
+        if matches.next().is_some() {
+            return Ok(None);
+        }
+        let Some(f) = f else {
+            return Ok(None);
+        };
+        Ok(Some(GenericStaticFunctionSignature {
+            owner_generics: owner_generics.iter().map(|g| g.ident.clone()).collect(),
+            function_generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
+            params: f.params.iter().map(|p| p.r#type.clone()).collect(),
+        }))
     }
 
     fn spec_declaration(
