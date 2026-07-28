@@ -155,6 +155,13 @@ pub enum AnalysisErrorKind {
     /// for this declared generic parameter -- it never appeared (in a
     /// structurally recognizable position) in any of the call's arguments.
     UnresolvedGenericParam(Ident),
+    /// A generic struct/union/enum-variant literal (`Name { field = value;
+    /// ... }`), or a bare enum unit-variant reference (`Enum::Variant`),
+    /// was written with no explicit `<...>` type arguments, and neither the
+    /// literal's own field values nor an available `expected` (surrounding
+    /// context) type pinned down every one of `r#type`'s declared generic
+    /// parameters -- `generics` names whichever ones are still unresolved.
+    UnresolvedLiteralGeneric { r#type: Ident, generics: Vec<Ident> },
     /// `defer` lexically inside a `while`/`for` loop body -- out of scope for
     /// now. A `defer`'s "was this reached" tracking is a single runtime
     /// boolean flag (see `omega_codegen`'s `defer_flags`), which can't
@@ -617,6 +624,12 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "cannot infer type parameter '{}' from this call's arguments",
                 ident.as_ref()
+            ),
+            Self::UnresolvedLiteralGeneric { r#type, generics } => write!(
+                f,
+                "cannot infer type argument(s) {} of '{}' here",
+                generics.iter().map(|g| format!("'{}'", g.as_ref())).collect::<Vec<_>>().join(", "),
+                r#type.as_ref()
             ),
             Self::DeferInsideLoopNotSupported => {
                 write!(f, "'defer' is not supported inside a loop body")

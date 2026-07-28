@@ -318,6 +318,24 @@ pub trait ModuleResolver {
         absolute_path: &[Ident],
     ) -> Result<Option<GenericSignature>, ResolveError>;
 
+    /// A *raw*, unresolved view of a generic struct/union/enum-variant's own
+    /// declared field shape -- just enough for duck-typed, field-driven type
+    /// inference at a literal construction site (`Name { field = value; }`,
+    /// see `Analyzer::resolve_literal_item`), with no analysis triggered and
+    /// no instantiation attempted. Exactly `generic_function_signature`'s own
+    /// contract, one level down: `Ok(None)` for anything that isn't a
+    /// generic struct/union/enum -- including a non-generic item, a name
+    /// that doesn't resolve at all, or (when `variant` is `Some`) an enum
+    /// whose variant name doesn't exist -- deferring all of those diagnoses
+    /// to the ordinary literal-resolution path, which re-derives them
+    /// identically. `variant` is `None` for a struct/union target, `Some`
+    /// (always, and always validated) for an enum variant target.
+    fn generic_literal_signature(
+        &mut self,
+        absolute_path: &[Ident],
+        variant: Option<&Ident>,
+    ) -> Result<Option<GenericLiteralSignature>, ResolveError>;
+
     /// `name`'s every overload candidate in `module_path`, each already
     /// paired with the `HirId` a callee place root needs -- an escape hatch
     /// alongside `resolve_item` exactly like `generic_function_signature`
@@ -427,6 +445,17 @@ pub type OverloadCandidates = Vec<(HirId, ResolvedFunctionType, Visibility)>;
 pub struct GenericSignature {
     pub generics: Vec<Ident>,
     pub params: Vec<Type>,
+}
+
+/// See `ModuleResolver::generic_literal_signature`.
+#[derive(Debug, Clone)]
+pub struct GenericLiteralSignature {
+    pub generics: Vec<Ident>,
+    /// Raw, unresolved declared field types, in the same order
+    /// `Analyzer::analyze_struct_literal`'s own `declared` already uses: a
+    /// struct's/union's own `fields`, or an enum variant's `dynamic_fields`
+    /// chained with the variant's own `fields`.
+    pub fields: Vec<(Ident, Type)>,
 }
 
 

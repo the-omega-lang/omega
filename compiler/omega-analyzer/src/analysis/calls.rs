@@ -985,20 +985,13 @@ impl<'r> Analyzer<'r> {
             unify_generic_type(&sig.generics, raw_type, &arg.r#type, &mut subst);
         }
 
-        let mut type_args = Vec::with_capacity(sig.generics.len());
-        for generic in &sig.generics {
-            match subst.get(generic) {
-                // Widened: a deduced `T` must never carry a caller-specific
-                // enum-variant refinement -- `T = MyEnum`, not
-                // `T = MyEnum::Second` (which would mint a spurious extra
-                // instantiation per variant).
-                Some(resolved) => type_args.push(resolved.widened()),
-                None => {
-                    self.error(node_id, span, AnalysisErrorKind::UnresolvedGenericParam(generic.clone()));
-                    return None;
-                }
+        let type_args = match resolve_inferred_type_args(&sig.generics, &subst) {
+            Ok(type_args) => type_args,
+            Err(generic) => {
+                self.error(node_id, span, AnalysisErrorKind::UnresolvedGenericParam(generic));
+                return None;
             }
-        }
+        };
 
         let (fn_type, storage, decl_id) = match self.resolve_item_checked(absolute, &type_args, true) {
             Ok(ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage, decl_id }) => {

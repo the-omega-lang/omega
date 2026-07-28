@@ -61,6 +61,47 @@ shows up). Bound-checking happens once, at instantiation, via
 type or a genuine caller mistake, since anything that already passed
 implements-clause resolution has a complete method list by construction.
 
+## Inference: omitted type arguments, deduced wherever possible
+
+A generic function call never needed explicit `<T>` in the first place —
+`sum_generic(gp.a, gp.b)` above deduces `T` from the argument types alone
+(`Analyzer::resolve_generic_call`/`finish_generic_call`, backed by
+`unify_generic_type`). The same duck-typed deduction now also applies to
+**constructing** a generic struct/union/enum-variant value and to a bare
+enum unit-variant reference — previously these *always* required writing
+the type arguments out (`Option<i32>::Some { ... }`), with no exceptions:
+
+```
+opt := Option::Some { value = 42u32; };     # T = u32, from `value`'s own type
+none : Option<i32> = Option::None;          # T = i32, from the declaration
+gp := GenericPair { a = 3; b = 4; };        # T = i32, from `a`/`b`
+```
+
+Two independent sources feed this, tried in order:
+
+1. An **`expected`** (surrounding-context) type — a declaration's own
+   annotation, a `return`'s function signature, an argument's parameter
+   type, ... — naming the exact same declaration. This is the *only*
+   source available for a bare unit-variant reference like `Option::None`
+   (there are no field values to look at at all), and is tried first even
+   when fields are present.
+2. Otherwise, the literal's own field initializer values, unified
+   positionally against the target's raw declared field types — the same
+   `unify_generic_type` machinery a call's arguments already go through,
+   just matched by field name instead of parameter position.
+
+A generic left unresolved by both (no matching `expected`, and no field
+whose value pins it down — e.g. a bare `Option::None` with no context at
+all) is a dedicated, explicit diagnostic naming which type parameter(s)
+are missing, rather than a confusing arg-count mismatch or a silent wrong
+guess.
+
+**Not covered**: a generic struct's own *static* function call with the
+struct's generics omitted (e.g. a hypothetical `List::new(5)` inferring
+`List<T>` from `new`'s own argument) — composing this with call-argument
+inference across two separate generic scopes at once is a distinct,
+separable piece of work nothing in `core` currently exercises.
+
 ## Fixed: generic struct/enum methods, and `T`-deduction from them
 
 Two bugs that used to make "a generic struct/enum with methods" almost

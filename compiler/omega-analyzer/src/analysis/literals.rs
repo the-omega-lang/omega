@@ -76,8 +76,9 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         lit: &HirStructLiteral,
+        expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        match self.resolve_literal_target(node_id, span, &lit.path)? {
+        match self.resolve_literal_target(node_id, span, lit, expected)? {
             LiteralTarget::Struct(resolved) => {
                 let ResolvedType::Struct(cell) = &resolved else {
                     unreachable!("LiteralTarget::Struct always wraps ResolvedType::Struct");
@@ -326,8 +327,10 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        path: &ExprPath,
+        lit: &HirStructLiteral,
+        expected: Option<&ResolvedType>,
     ) -> Option<LiteralTarget> {
+        let path = &lit.path;
         if path.plain().is_none() {
             let segments = path.path.segments();
             let rest = segments[path.args_at + 1..].to_vec();
@@ -363,19 +366,65 @@ impl<'r> Analyzer<'r> {
         let plain = &path.path;
 
         // A bare name: exactly a written type annotation, same diagnostics
-        // (typo suggestions included) and all.
+        // (typo suggestions included) and all -- unless it turns out to
+        // name a *generic* struct/union, in which case its omitted type
+        // arguments are inferred first (see `infer_literal_type_args`)
+        // before falling through to the same resolution either way.
         if plain.is_unqualified() {
+            if let Some(local) = self.context.find_defined_type(&plain.head).cloned() {
+                return self.literal_target_from_type(node_id, span, local, &[]);
+            }
+            let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
+            let absolute: Vec<Ident> = match &alias {
+                Some(ImportTarget::Item(absolute, _))
+                | Some(ImportTarget::GenericItem(absolute))
+                | Some(ImportTarget::Module(absolute)) => absolute.clone(),
+                None => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
+            };
+            if let Some((real_absolute, sig)) =
+                self.generic_literal_signature_with_ambient(std::slice::from_ref(&plain.head), &absolute, None)
+            {
+                let result = self.resolve_generic_literal(
+                    node_id,
+                    span,
+                    std::slice::from_ref(&plain.head),
+                    &real_absolute,
+                    &sig,
+                    &lit.fields,
+                    expected,
+                )?;
+                let resolved = match result {
+                    Ok(ResolvedItem::Type(t)) => t,
+                    Ok(ResolvedItem::Value { .. }) => {
+                        self.error(node_id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotAType(real_absolute)));
+                        return None;
+                    }
+                    Err(e) => {
+                        self.error(node_id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::ModuleResolution(e)));
+                        return None;
+                    }
+                };
+                return self.literal_target_from_type(node_id, span, resolved, &[]);
+            }
             let resolved = self.resolve_type_or_error(node_id, span, &Type::Named(plain.clone()), true)?;
             return self.literal_target_from_type(node_id, span, resolved, &[]);
         }
 
         // Module-qualified head: the whole path as the type first
         // (`mymodule::Vec2 { ... }`), then all-but-last as an enum whose
-        // last segment names the variant (`mymodule::Shape::Circle`).
+        // last segment names the variant (`mymodule::Shape::Circle`) --
+        // each attempt tries generic inference first (a no-op, `Ok(None)`,
+        // for the overwhelmingly common non-generic case).
         let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
         if let Some(ImportTarget::Module(target)) = &alias {
             let absolute: Vec<Ident> = target.iter().cloned().chain(plain.tail.iter().cloned()).collect();
-            let first_error = match self.resolve_item_checked(&absolute, &[], true) {
+            let whole_result = match self.resolver.generic_literal_signature(&absolute, None) {
+                Ok(Some(sig)) => {
+                    self.resolve_generic_literal(node_id, span, &absolute, &absolute, &sig, &lit.fields, expected)?
+                }
+                _ => self.resolve_item_checked(&absolute, &[], true),
+            };
+            let first_error = match whole_result {
                 Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
                 Ok(ResolvedItem::Value { .. }) => {
                     self.error(
@@ -389,7 +438,13 @@ impl<'r> Analyzer<'r> {
             };
             if absolute.len() >= 3 {
                 let (variant, prefix) = absolute.split_last().expect("length checked above");
-                if let Ok(ResolvedItem::Type(t)) = self.resolve_item_checked(prefix, &[], true) {
+                let variant_result = match self.resolver.generic_literal_signature(prefix, Some(variant)) {
+                    Ok(Some(sig)) => {
+                        self.resolve_generic_literal(node_id, span, prefix, prefix, &sig, &lit.fields, expected)?
+                    }
+                    _ => self.resolve_item_checked(prefix, &[], true),
+                };
+                if let Ok(ResolvedItem::Type(t)) = variant_result {
                     return self.literal_target_from_type(node_id, span, t, std::slice::from_ref(variant));
                 }
             }
@@ -410,7 +465,20 @@ impl<'r> Analyzer<'r> {
             Some(ImportTarget::GenericItem(absolute)) => absolute,
             _ => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
         };
-        let kind = match self.resolve_item_checked(&absolute, &[], true) {
+        let variant = (plain.tail.len() == 1).then(|| &plain.tail[0]);
+        let result = match self.generic_literal_signature_with_ambient(std::slice::from_ref(&plain.head), &absolute, variant) {
+            Some((real_absolute, sig)) => self.resolve_generic_literal(
+                node_id,
+                span,
+                std::slice::from_ref(&plain.head),
+                &real_absolute,
+                &sig,
+                &lit.fields,
+                expected,
+            )?,
+            None => self.resolve_item_checked_with_ambient_fallback(std::slice::from_ref(&plain.head), &absolute, &[]),
+        };
+        let kind = match result {
             Ok(ResolvedItem::Type(t)) => {
                 return self.literal_target_from_type(node_id, span, t, &plain.tail);
             }
@@ -426,6 +494,158 @@ impl<'r> Analyzer<'r> {
         };
         self.error(node_id, span, kind);
         None
+    }
+
+    /// `resolver.generic_literal_signature(absolute, variant)`, retried
+    /// against the `core` ambient fallback (see `context::
+    /// ambient_core_path`) when `prefix` is a genuinely unqualified single
+    /// segment and the direct lookup finds nothing generic there -- the
+    /// same retry `resolve_item_checked_with_ambient_fallback` gives the
+    /// final *resolve* call, needed here too so a bare, unimported
+    /// `Option::Some { ... }`'s own generic-ness is discovered before
+    /// inference ever runs, not just its final type. Hands back whichever
+    /// absolute path actually matched (the original, or the ambient one),
+    /// since `expected`-identity matching (`expected_matches_generic_item`)
+    /// needs the *real* declaration's path, not the naive own-module guess
+    /// that failed to find anything locally.
+    pub(super) fn generic_literal_signature_with_ambient(
+        &mut self,
+        prefix: &[Ident],
+        absolute: &[Ident],
+        variant: Option<&Ident>,
+    ) -> Option<(Vec<Ident>, GenericLiteralSignature)> {
+        if let Ok(Some(sig)) = self.resolver.generic_literal_signature(absolute, variant) {
+            return Some((absolute.to_vec(), sig));
+        }
+        let [single] = prefix else { return None };
+        let ambient = crate::context::ambient_core_path(single)?;
+        let sig = self.resolver.generic_literal_signature(&ambient, variant).ok().flatten()?;
+        Some((ambient, sig))
+    }
+
+    /// Once `absolute` (naming enum variant `variant`, if any, via
+    /// whichever `generic_literal_signature` call found `sig`) is confirmed
+    /// generic, infers its omitted type arguments (see
+    /// `infer_literal_type_args`) and resolves it with them -- the shared
+    /// tail of every "plain path, no explicit generics" branch in
+    /// `resolve_literal_target`, once each has confirmed this applies.
+    /// `None` means inference itself already reported a dedicated
+    /// diagnostic; the caller must give up immediately (`?`).
+    fn resolve_generic_literal(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        prefix: &[Ident],
+        absolute: &[Ident],
+        sig: &GenericLiteralSignature,
+        lit_fields: &[HirStructLiteralField],
+        expected: Option<&ResolvedType>,
+    ) -> Option<Result<ResolvedItem, ResolveError>> {
+        let type_args = self.infer_literal_type_args(node_id, span, absolute, sig, lit_fields, expected)?;
+        Some(self.resolve_item_checked_with_ambient_fallback(prefix, absolute, &type_args))
+    }
+
+    /// Infers the concrete type arguments for a generic literal-
+    /// construction target (or a bare unit-variant reference, which passes
+    /// an empty `lit_fields`): an `expected` (surrounding-context) type
+    /// naming the exact same declaration wins outright when available
+    /// (covers the zero-field case, e.g. `Option::None` assigned into an
+    /// `Option<i32>`-typed binding); otherwise, duck-typed unification
+    /// against `lit_fields`' own bottom-up-analyzed values, mirroring
+    /// `Analyzer::finish_generic_call`'s identical call-argument-driven
+    /// scheme. `None` means a dedicated diagnostic was already reported
+    /// (either a genuine error within a probed field's own value, kept
+    /// as-is since the real pass below would only reproduce it, or
+    /// `UnresolvedLiteralGeneric` naming whichever generics stayed
+    /// unbound).
+    pub(super) fn infer_literal_type_args(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        absolute: &[Ident],
+        sig: &GenericLiteralSignature,
+        lit_fields: &[HirStructLiteralField],
+        expected: Option<&ResolvedType>,
+    ) -> Option<Vec<ResolvedType>> {
+        if let Some(type_args) = Self::expected_matches_generic_item(expected, absolute) {
+            return Some(type_args);
+        }
+        let subst = self.probe_literal_type_args(sig, lit_fields)?;
+        match resolve_inferred_type_args(&sig.generics, &subst) {
+            Ok(type_args) => Some(type_args),
+            Err(_) => {
+                let missing: Vec<Ident> = sig.generics.iter().filter(|g| !subst.contains_key(g)).cloned().collect();
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UnresolvedLiteralGeneric {
+                        r#type: absolute.last().cloned().expect("an absolute path always has a last segment"),
+                        generics: missing,
+                    },
+                );
+                None
+            }
+        }
+    }
+
+    /// `expected`'s own type arguments, when it resolves to the exact same
+    /// struct/union/enum declaration `absolute` (module path + name)
+    /// names -- compared by declaration identity, not by any already-bound
+    /// type arguments (there are none yet, that's what this is deducing).
+    fn expected_matches_generic_item(expected: Option<&ResolvedType>, absolute: &[Ident]) -> Option<Vec<ResolvedType>> {
+        let expected = expected?;
+        let (name, module) = absolute.split_last()?;
+        let (cell_module, cell_name, type_args) = match expected {
+            ResolvedType::Struct(cell) => {
+                let c = cell.borrow();
+                (c.module_path.clone(), c.name.clone(), c.type_args.clone())
+            }
+            ResolvedType::Union(cell) => {
+                let c = cell.borrow();
+                (c.module_path.clone(), c.name.clone(), c.type_args.clone())
+            }
+            ResolvedType::Enum { cell, .. } => {
+                let c = cell.borrow();
+                (c.module_path.clone(), c.name.clone(), c.type_args.clone())
+            }
+            _ => return None,
+        };
+        (cell_module == module && &cell_name == name).then_some(type_args)
+    }
+
+    /// Duck-typed unification of `sig`'s raw declared field types against
+    /// `lit_fields`' own values, analyzed bottom-up (`expected = None`) --
+    /// each matched by field name, unmatched/unknown field names simply
+    /// contribute nothing (the real `check_field_initializers` pass reports
+    /// those precisely). Diagnostics from a *successful* probe are
+    /// discarded (same truncate-on-success pattern `Analyzer::
+    /// classify_for_in_source` already uses, `stmts.rs`) since the real
+    /// pass re-derives them; a field whose value itself fails to analyze
+    /// for an unrelated reason keeps its diagnostics and this returns
+    /// `None`, so that real error surfaces directly instead of being
+    /// masked by a confusing "cannot infer" message.
+    fn probe_literal_type_args(
+        &mut self,
+        sig: &GenericLiteralSignature,
+        lit_fields: &[HirStructLiteralField],
+    ) -> Option<HashMap<Ident, ResolvedType>> {
+        let errors_before = self.errors.len();
+        let warnings_before = self.warnings.len();
+        let mut subst = HashMap::new();
+        let mut ok = true;
+        for field in lit_fields {
+            let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name) else { continue };
+            match self.analyze_expr(&field.value, None) {
+                Some(checked) => unify_generic_type(&sig.generics, raw_type, &checked.r#type, &mut subst),
+                None => ok = false,
+            }
+        }
+        if !ok {
+            return None;
+        }
+        self.errors.truncate(errors_before);
+        self.warnings.truncate(warnings_before);
+        Some(subst)
     }
 
     /// Interprets an already-resolved type (plus at most one trailing path

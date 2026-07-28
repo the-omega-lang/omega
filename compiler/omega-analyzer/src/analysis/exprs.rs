@@ -72,7 +72,7 @@ impl<'r> Analyzer<'r> {
             HirExpr::Decrement(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Sub),
             HirExpr::BinaryOp(bin) => self.analyze_binary_expr(id, span, bin, expected),
             HirExpr::ArrayLiteral(elements) => self.analyze_array_literal(id, span, elements, expected),
-            HirExpr::StructLiteral(lit) => self.analyze_struct_literal(id, span, lit),
+            HirExpr::StructLiteral(lit) => self.analyze_struct_literal(id, span, lit, expected),
             HirExpr::Match(m) => self.analyze_match(id, span, m),
             HirExpr::Cast(HirCast { target, base }) => self.analyze_cast(id, span, target, base),
 

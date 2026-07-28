@@ -7,7 +7,8 @@
 use crate::{Driver, ModulePath};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_analyzer::resolver::{
-    GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem,
+    GenericLiteralSignature, GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, ResolveError,
+    ResolvedItem,
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirId, HirItem};
@@ -210,6 +211,47 @@ impl ModuleResolver for Driver {
             generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))
+    }
+
+    fn generic_literal_signature(
+        &mut self,
+        absolute_path: &[Ident],
+        variant: Option<&Ident>,
+    ) -> Result<Option<GenericLiteralSignature>, ResolveError> {
+        let Some((name, module_path)) = absolute_path.split_last() else {
+            return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
+        };
+        // "Doesn't exist"/"not generic" are deferred to the ordinary literal
+        // path, which re-derives and reports them identically -- this query
+        // only ever needs to say "not a generic literal target" either way.
+        let Ok(index) = self.local_item_index(module_path, name) else {
+            return Ok(None);
+        };
+        let (generics, fields) = match (&self.modules.parsed(module_path).hir.items[index], variant) {
+            (HirItem::Struct(s), None) => {
+                (&s.generics, s.fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect())
+            }
+            (HirItem::Union(u), None) => {
+                (&u.generics, u.fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect())
+            }
+            (HirItem::Enum(e), Some(variant_name)) => {
+                let Some(v) = e.variants.iter().find(|v| &v.name == variant_name) else {
+                    return Ok(None);
+                };
+                let fields = e
+                    .dynamic_fields
+                    .iter()
+                    .chain(v.fields.iter())
+                    .map(|f| (f.ident.clone(), f.r#type.clone()))
+                    .collect();
+                (&e.generics, fields)
+            }
+            _ => return Ok(None),
+        };
+        if generics.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(GenericLiteralSignature { generics: generics.iter().map(|g| g.ident.clone()).collect(), fields }))
     }
 
     fn spec_declaration(

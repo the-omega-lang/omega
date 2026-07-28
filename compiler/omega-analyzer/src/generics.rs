@@ -80,6 +80,28 @@ pub fn unify_generic_type(
     }
 }
 
+/// Turns a completed `unify_generic_type` substitution into `generics`'
+/// own ordered `Vec<ResolvedType>`, or the first generic name that never
+/// got a binding -- the shared tail end of every duck-typed inference site
+/// (a generic function call, a generic struct/enum/union literal, ...):
+/// each has its own reason to know *which* generic came up empty (to shape
+/// its own diagnostic), so this stops at the first miss and hands the name
+/// back rather than picking a wording itself.
+///
+/// Every deduced type is widened -- a deduced `T` must never carry a
+/// caller-specific enum-variant refinement (`T = MyEnum`, not `T =
+/// MyEnum::Second`), which would mint a spurious extra instantiation per
+/// variant.
+pub fn resolve_inferred_type_args(
+    generics: &[Ident],
+    subst: &HashMap<Ident, ResolvedType>,
+) -> Result<Vec<ResolvedType>, Ident> {
+    generics
+        .iter()
+        .map(|generic| subst.get(generic).map(ResolvedType::widened).ok_or_else(|| generic.clone()))
+        .collect()
+}
+
 /// `concrete`'s own generic type arguments, if it's a struct/enum/union
 /// instantiation -- `None` for anything else (including a non-generic
 /// struct/enum/union, whose `type_args` is simply empty, and every other

@@ -206,6 +206,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         path: &omega_parser::prelude::Path,
+        expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         // `str` is deliberately absent from `defined_types` (the `*str`
         // feature's own invariant -- see `Context::resolve_type`'s doc
@@ -231,7 +232,20 @@ impl<'r> Analyzer<'r> {
             Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => absolute,
             _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
         };
-        let kind = match self.resolve_item_checked(&absolute, &[], true) {
+        // A bare reference to a generic enum's unit variant (`Option::
+        // None`, no `{ }` at all -- so no field values to unify against,
+        // unlike a literal) can still be inferred from an `expected`
+        // (surrounding-context) type -- see `infer_literal_type_args`,
+        // called here with no fields.
+        let variant = path.tail.first();
+        let result = match self.generic_literal_signature_with_ambient(std::slice::from_ref(&path.head), &absolute, variant) {
+            Some((real_absolute, sig)) => {
+                let type_args = self.infer_literal_type_args(node_id, span, &real_absolute, &sig, &[], expected)?;
+                self.resolve_item_checked_with_ambient_fallback(std::slice::from_ref(&path.head), &real_absolute, &type_args)
+            }
+            None => self.resolve_item_checked_with_ambient_fallback(std::slice::from_ref(&path.head), &absolute, &[]),
+        };
+        let kind = match result {
             Ok(ResolvedItem::Type(t)) => {
                 return self.resolve_type_member(node_id, span, &t, &path.tail);
             }

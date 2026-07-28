@@ -59,14 +59,14 @@ use crate::{
     },
     context::{Context, ScopeContext, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError},
-    generics::{type_references_generics, unify_generic_type},
+    generics::{resolve_inferred_type_args, type_references_generics, unify_generic_type},
     resolved_type::{
         CastClass, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedEnumType, ResolvedEnumVariant,
         ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
-        GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, OverloadCandidates, ResolveError,
-        ResolvedItem,
+        GenericLiteralSignature, GenericSignature, ImportTarget, ItemNamespace, ModuleResolver, OverloadCandidates,
+        ResolveError, ResolvedItem,
     },
     similarity::best_match,
 };
@@ -75,7 +75,7 @@ use omega_hir::{
     HirExternDeclaration,
     HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
     HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
-    HirUnionDef, HirWalrusDeclaration,
+    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{ExprPath, Ident, NumberBase, NumberExpr, Path, SelfMode, Span, Type, Visibility};
 use std::cell::RefCell;

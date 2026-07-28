@@ -682,7 +682,7 @@ impl<'r> Analyzer<'r> {
                         let absolute: Vec<Ident> = target.into_iter().chain(path.tail.iter().cloned()).collect();
                         self.resolve_qualified_value(node_id, span, absolute, None, expected)?
                     }
-                    _ => self.resolve_type_qualified_value(node_id, span, path)?,
+                    _ => self.resolve_type_qualified_value(node_id, span, path, expected)?,
                 };
                 Some((root, r#type, false))
             }

@@ -187,6 +187,11 @@ impl AnalysisErrorKind {
             Self::UnresolvedGenericParam(name) => d
                 .with_label(span, format!("cannot deduce `{}` from this call's arguments", name.as_ref()))
                 .with_note("a generic function's type parameters are deduced from its argument types only"),
+            Self::UnresolvedLiteralGeneric { r#type, generics } => {
+                let names = generics.iter().map(|g| format!("`{}`", g.as_ref())).collect::<Vec<_>>().join(", ");
+                d.with_label(span, format!("cannot infer type argument(s) {names} of `{type}` here"))
+                    .with_help(format!("write them explicitly, e.g. `{type}<...>`"))
+            }
             Self::DeferInsideLoopNotSupported => d
                 .with_label(span, "`defer` cannot appear inside a loop body")
                 .with_help("move the `defer` outside the loop, or run the cleanup code directly"),
