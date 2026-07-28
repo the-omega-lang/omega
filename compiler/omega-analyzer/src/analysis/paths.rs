@@ -470,7 +470,7 @@ impl<'r> Analyzer<'r> {
                 // A primitive extension method is always `Exposed` (see
                 // `resolve_extension_methods`) -- the empty path/`node_id`
                 // placeholder here are never actually consulted by
-                // `check_member_visibility` (only reached for `Private`).
+                // `check_member_visibility` (only reached for `Hidden`).
                 (type_name, method, missing, Vec::new(), node_id)
             }
         };

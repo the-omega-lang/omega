@@ -104,7 +104,7 @@ impl<'r> Analyzer<'r> {
     /// `analyze_match`'s doc comment), so this just unwraps the one shape
     /// that's ever narrowable before delegating.
     fn narrowable_scrutinee(&self, scrutinee: &HirExprNode) -> Option<(Ident, HirId, Storage, bool)> {
-        let HirExpr::Place(place) = &Self::strip_hidden(scrutinee).1.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_reveal(scrutinee).1.expr else { return None };
         self.narrowable_place(place)
     }
 
@@ -254,7 +254,7 @@ impl<'r> Analyzer<'r> {
     /// ever tests the tag, so a variant with a body is just as matchable as
     /// one without.
     fn resolve_variant_pattern(&mut self, cell: &Rc<RefCell<ResolvedEnumType>>, expr: &HirExprNode) -> Option<usize> {
-        let expr = Self::strip_hidden(expr).1;
+        let expr = Self::strip_reveal(expr).1;
         let shaped_as_variant_path = matches!(
             &expr.expr,
             HirExpr::Place(HirPlace { root: HirPlaceRoot::Path(p), projections })

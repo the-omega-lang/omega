@@ -77,8 +77,8 @@ pub struct HirImport {
     /// `@suppress(...)` only -- see `omega_analyzer::annotations::
     /// ItemKind::Import`.
     pub annotations: Vec<HirAnnotation>,
-    /// See `omega_parser::ast::statement::import::ImportStmt::hidden`.
-    pub hidden: bool,
+    /// See `omega_parser::ast::statement::import::ImportStmt::reveal`.
+    pub reveal: bool,
     pub root: ImportRoot,
     pub path: Path,
 }
@@ -92,7 +92,7 @@ pub struct HirDeclaration {
     /// See `omega_parser::ast::statement::declaration::DeclarationStmt::mutable`.
     pub mutable: bool,
     /// See `DeclarationStmt::visibility` -- meaningful for a top-level
-    /// global (`HirItem::Declaration`), left at its default (`Private`) for
+    /// global (`HirItem::Declaration`), left at its default (`Hidden`) for
     /// a local statement declaration (`HirStmt::Declaration`), which never
     /// has one.
     pub visibility: Visibility,
@@ -119,7 +119,7 @@ pub struct HirParam {
     pub r#type: Type,
     /// See `DeclarationStmt::visibility`'s doc comment -- meaningful for a
     /// struct/union/enum-header/enum-dynamic/enum-variant field, left at
-    /// its default (`Private`) for a function/spec parameter, which never
+    /// its default (`Hidden`) for a function/spec parameter, which never
     /// has one.
     pub visibility: Visibility,
 }
@@ -463,18 +463,18 @@ pub enum HirExpr {
     /// `target op= value` -- see `HirCompoundAssign`'s doc comment.
     CompoundAssign(HirCompoundAssign),
     AddressOf(HirAddressOf),
-    /// `hidden base` -- a visibility-bypass wrapper, deliberately kept as a
+    /// `reveal base` -- a visibility-bypass wrapper, deliberately kept as a
     /// generic node (not folded into `HirPlace` the way `FieldAccess`/
     /// `Index`/`Deref` are) since `base` isn't restricted to place-shaped
-    /// expressions (`hidden Struct { f = v }`, `hidden foo()` are both
+    /// expressions (`reveal Struct { f = v }`, `reveal foo()` are both
     /// legal). Fully transparent to analysis otherwise: `Analyzer::
-    /// analyze_expr`'s `Hidden` arm produces exactly whatever analyzing
-    /// `base` alone would, after pushing/popping a `hidden_stack` frame --
+    /// analyze_expr`'s `Reveal` arm produces exactly whatever analyzing
+    /// `base` alone would, after pushing/popping a `reveal_stack` frame --
     /// no `CheckedExpr` variant of its own, no codegen representation. Every
     /// "is this raw node a place" match elsewhere in the analyzer (`assign`/
     /// `compound-assign` targets, call callees, match scrutinees) must peel
-    /// this off first -- see `Analyzer::strip_hidden`.
-    Hidden(Box<HirExprNode>),
+    /// this off first -- see `Analyzer::strip_reveal`.
+    Reveal(Box<HirExprNode>),
     Negate(Box<HirExprNode>),
     /// `~base` -- see `Expression::BitNot`'s doc comment.
     BitNot(Box<HirExprNode>),

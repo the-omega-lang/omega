@@ -54,7 +54,7 @@ offsets/interpretation baked in by codegen no longer agree with what the tag
 claims.
 
 This isn't a narrow oversight in one call site; it's the general shape of this
-codebase's known failure mode (see the `hidden` finding right below, and the
+codebase's known failure mode (see the `reveal` finding right below, and the
 README's own "resolve once, read back everywhere" pillar) — a constraint
 enforced at exactly one of several structurally-equivalent call sites instead
 of at the single choke point (`analyze_place` itself, or `require_mutable_place`
@@ -67,38 +67,38 @@ header write; the `=`\-only check that used to sit in the assignment arm is
 gone, so there is no longer a second place that could drift. Reads, and writes
 to a variant's own body fields or the shared dynamic fields, are unaffected.
 
-### Fixed: `\&hidden` silently dropped the bypass through a slice/array-literal position
+### Fixed: `\&reveal` silently dropped the bypass through a slice/array-literal position
 
 ```
 struct Box { data: [i32; 4]; }
 
-peek_whole(b: *Box) => *[i32; 4] { &hidden b.data }         # works
-peek(b: *Box) => *[i32] { &hidden b.data[0...1] }         # fails:
+peek_whole(b: *Box) => *[i32; 4] { &reveal b.data }         # works
+peek(b: *Box) => *[i32] { &reveal b.data[0...1] }         # fails:
 # error: 'data' on 'Box' is not visible here
-#   = help: mark the field `exposed`/`internal` on `Box`, or bypass with `hidden`
+#   = help: mark the field `exposed`/`internal` on `Box`, or bypass with `reveal`
 ```
 Verified: the `peek` version fails with a visibility error whose own suggested
-fix ("bypass with `hidden`") is already present in the source that just failed. `
+fix ("bypass with `reveal`") is already present in the source that just failed. `
 07-visibility.md` already documents one shipped bug in this exact family (`
-hidden abc.number = 10;` losing its bypass because `=` is handled one level
-above where `Hidden` sits) and describes the fix as "explicitly re-checking for
-a stripped `Hidden` wrapper... at every genuine target/operand position that
+reveal abc.number = 10;` losing its bypass because `=` is handled one level
+above where `Reveal` sits) and describes the fix as "explicitly re-checking for
+a stripped `Reveal` wrapper... at every genuine target/operand position that
 isn't itself call/postfix syntax." This is a second, unfixed occurrence of the
 identical class: `HirExpr::AddressOf` (`analysis.rs:4852-4878`) computes `
-was_hidden := Self::strip_hidden(base)` but only threads it into `
-with_hidden_bypass` on the final bare-`Place` branch — the `Slice` and `
+was_reveal := Self::strip_reveal(base)` but only threads it into `
+with_reveal_bypass` on the final bare-`Place` branch — the `Slice` and `
 ArrayLiteral` early-return branches (`analyze_slice`/`analyze_const_slice`)
 never see it, so no bypass frame is pushed at all. Because no frame is pushed, `
-UnnecessaryHidden` can't fire either — the failure has no diagnostic trail
-pointing at the real cause; it just looks like `hidden` silently didn't work.
+UnnecessaryReveal` can't fire either — the failure has no diagnostic trail
+pointing at the real cause; it just looks like `reveal` silently didn't work.
 
-Worth treating as a pattern, not a one-off patch target: `hidden`'s correctness
+Worth treating as a pattern, not a one-off patch target: `reveal`'s correctness
 depends on every current and future write/borrow position individually
 remembering to re-check for a stripped wrapper. That's a "remember to do this
 everywhere" invariant with no compiler-enforced backstop — precisely the shape
 of bug this project's own commit history shows it already hit twice.
 
-**Fix**: both early-return branches now run under `with_hidden_bypass`, so all
+**Fix**: both early-return branches now run under `with_reveal_bypass`, so all
 three `&`\-operand shapes (plain place, slice, compile-time slice) activate the
 bypass identically. The underlying "every position must remember" invariant is
 unchanged and still has no backstop — see the note on it in the compiler
@@ -311,14 +311,14 @@ consistently; it just wasn't extended to this one older, legacy shape.
 
 ## Minor rough edges
 
-### `hidden hidden x` is accepted by the parser and always produces a spurious `UnnecessaryHidden` warning
+### `reveal reveal x` is accepted by the parser and always produces a spurious `UnnecessaryReveal` warning
 
 `parse_unary` recurses freely on its own prefix set with no special-casing for a
-doubled `hidden`, so `hidden hidden x` lowers to a nested `Hidden(Hidden(x))`
+doubled `reveal`, so `reveal reveal x` lowers to a nested `Reveal(Reveal(x))`
 with two stacked bypass frames. `check_visibility`/ `check_member_visibility`
 only ever mark the *innermost* active frame as used, so if the bypass is
-genuinely needed and gets consumed while evaluating `x`, the *outer* `hidden`'s
-frame is never marked used and always reports `UnnecessaryHidden` — even when
+genuinely needed and gets consumed while evaluating `x`, the *outer* `reveal`'s
+frame is never marked used and always reports `UnnecessaryReveal` — even when
 removing it would break the inner one's own reasoning about redundancy. Not a
 correctness bug (access is still correctly granted either way) and not
 high-value to fix on its own, but it's a real, guaranteed false-positive
@@ -496,10 +496,10 @@ narrow -- but the asymmetry (`else` exists, `...` doesn't) is worth a
 decision rather than an accident. The diagnostic now explains the rule
 explicitly (see the fix note below); the rule itself is unchanged.
 
-#### `hidden` still has no backstop for the "every position must remember" invariant
+#### `reveal` still has no backstop for the "every position must remember" invariant
 
-The `&hidden base[range]` bug fixed above was the *third* occurrence of one
-pattern: `hidden` is a wrapper the parser can leave in several different
+The `&reveal base[range]` bug fixed above was the *third* occurrence of one
+pattern: `reveal` is a wrapper the parser can leave in several different
 places, and each write/borrow position has to individually remember to strip
 it and re-activate the bypass. Three positions have now been fixed one at a
 time (`=`, `&`/`&mut` on a plain place, and now the slice/array-literal
@@ -507,7 +507,7 @@ operand forms).
 
 The invariant itself is unenforced -- a fourth position added later will
 silently drop the bypass again, with no diagnostic pointing at the cause
-(since no frame is pushed, `UnnecessaryHidden` cannot fire either). Making
+(since no frame is pushed, `UnnecessaryReveal` cannot fire either). Making
 the *place resolver itself* own the bypass, rather than every syntactic
 operand position, is the structural fix.
 
@@ -517,7 +517,7 @@ operand position, is the structural fix.
 |Finding|Kind|Verified how|
 |-|-|-|
 |Enum tag write bypass via `\+=`/`\&mut`|soundness bug (**fixed**)|real compile, before and after|
-|`\&hidden base\[range]` drops the bypass|soundness bug (**fixed**)|real compile, before and after|
+|`\&reveal base\[range]` drops the bypass|soundness bug (**fixed**)|real compile, before and after|
 |`(a >= x) & (a <= y)` doesn't compile|doc/code contradiction|real compile|
 |"Nominal, not structural" is false for all-required specs|doc/code contradiction|source read, cross-referenced against 07-visibility.md's own contradicting line|
 |`bool` has zero operators, including `!`|design asymmetry|source read|
@@ -526,7 +526,7 @@ operand position, is the structural fix.
 |packed layout's safety argument is x86_64-only, `\--target` offers aarch64|latent assumption|source read|
 |`cast_class` hardcodes pointer width to 64|latent assumption|source read|
 |`Array` has no coercion or cast to/from `Pointer`|narrow gap|source read|
-|`hidden hidden x` always warns spuriously|minor|source read|
+|`reveal reveal x` always warns spuriously|minor|source read|
 |implicit enum tag has no width bound-check|minor, theoretical|source read|
 |overloading needs a whole parallel item pipeline|architecture|source read, whole-crate restructure|
 |two separate pending-spec-method queues|architecture|source read, whole-crate restructure|
@@ -536,5 +536,5 @@ operand position, is the structural fix.
 |borrowed-module diagnostic scoping has no stated policy|design gap|source read|
 |`(HirId, Span)` threaded as two parameters everywhere|architecture|source read, whole-crate restructure|
 |value-`match` arms must partition the domain, no catch-all|design gap|real compile|
-|`hidden`'s "every position must remember" invariant has no backstop|latent bug class|real compile (third occurrence fixed)|
+|`reveal`'s "every position must remember" invariant has no backstop|latent bug class|real compile (third occurrence fixed)|
 

@@ -768,7 +768,7 @@ impl<'r> Analyzer<'r> {
     /// default-method instantiation (spec supplied a body) or reports
     /// `MissingSpecFunction`. A satisfying method whose own visibility is
     /// *less* permissive than the spec function it's satisfying
-    /// (`FlattenedSpecFn::visibility`) reports `SpecMethodTooPrivate`
+    /// (`FlattenedSpecFn::visibility`) reports `SpecMethodTooHidden`
     /// instead -- an implementor can never narrow a spec's own contract,
     /// only match or widen it (see `omega_parser::ast::visibility::
     /// Visibility`'s ordering). Returns the additional `(name,
@@ -827,7 +827,7 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         id,
                         span,
-                        AnalysisErrorKind::SpecMethodTooPrivate {
+                        AnalysisErrorKind::SpecMethodTooHidden {
                             implementor: implementor_name.clone(),
                             spec: req.spec_name.clone(),
                             function: req.name.clone(),
@@ -926,10 +926,10 @@ impl<'r> Analyzer<'r> {
     /// one place a concrete type's own method identity is erased into an
     /// opaque `spec *T` handle -- once erased, `finish_dynamic_dispatch_call`
     /// never re-checks visibility at all (by design: erasure means there's
-    /// no concrete method left to check). A `Private` method satisfying a
-    /// `Private` spec would otherwise leak: an implementor's own `Private`
+    /// no concrete method left to check). A `Hidden` method satisfying a
+    /// `Hidden` spec would otherwise leak: an implementor's own `Hidden`
     /// method is scoped to its *owning type's* method bodies (narrower --
-    /// see `check_member_visibility`), while a `Private` spec is scoped to
+    /// see `check_member_visibility`), while a `Hidden` spec is scoped to
     /// its whole *declaring module* (wider) -- so "the spec is visible
     /// here" no longer implies "this satisfying method would be too."
     /// Whether a concrete method's own resolved signature (`own`) satisfies

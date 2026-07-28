@@ -386,7 +386,7 @@ impl ItemQueries {
 }
 
 impl Driver {
-    /// `exposed`/`internal`/(default private)'s access decision --
+    /// `exposed`/`internal`/(default hidden)'s access decision --
     /// `declaring`/`accessor` are absolute module paths. `Internal` is
     /// package-wide (same root segment), Rust `pub(crate)`-style, rather than
     /// the narrower "declaring module and its descendants only".
@@ -394,7 +394,7 @@ impl Driver {
         match visibility {
             Visibility::Exposed => true,
             Visibility::Internal => declaring.first() == accessor.first(),
-            Visibility::Private => declaring == accessor,
+            Visibility::Hidden => declaring == accessor,
         }
     }
 
@@ -407,7 +407,7 @@ impl Driver {
     }
 
     /// Gates a resolved item behind its own declared visibility. `bypass`
-    /// (the `hidden` modifier) suppresses only this one check; it never
+    /// (the `reveal` modifier) suppresses only this one check; it never
     /// affects what is cached.
     fn gate_visibility(
         item: ResolvedItem,

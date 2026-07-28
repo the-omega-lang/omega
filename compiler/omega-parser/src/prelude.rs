@@ -4,10 +4,10 @@ pub use crate::ast::expression::{
     assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
     bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
     codeblock::CodeblockExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
-    field_access::FieldAccessExpr, function_call::FunctionCallExpr, hidden::HiddenExpr, if_expr::IfExpr,
+    field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     macro_invocation::MacroInvocationExpr, match_expr::{MatchArm, MatchExpr, Pattern},
-    negate::NegateExpr, number::{NumberBase, NumberExpr}, sizeof::SizeofExpr, slice::SliceExpr,
+    negate::NegateExpr, number::{NumberBase, NumberExpr}, reveal::RevealExpr, sizeof::SizeofExpr, slice::SliceExpr,
     string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 pub use crate::ast::generics::GenericParam;

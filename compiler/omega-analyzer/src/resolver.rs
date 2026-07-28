@@ -227,7 +227,7 @@ pub trait ModuleResolver {
 
     /// `alias`'s own already-computed absolute target path in `module_path`
     /// (`import lib::pick;` -> `["lib", "pick"]`), plus whether that import
-    /// was written `hidden` -- purely structural and resolution-free, like
+    /// was written `reveal` -- purely structural and resolution-free, like
     /// `import_alias_names`, deliberately **not** going through
     /// `resolve_import_alias`/`ensure_item` at all. `resolve_import_alias`
     /// eagerly resolves to *one* concrete item, which is exactly wrong for
@@ -235,8 +235,8 @@ pub trait ModuleResolver {
     /// function_overload_signatures`'s whole reason to exist): picking a
     /// single winner before the call's own argument types are known would
     /// silently commit to whichever overload happened to be indexed first,
-    /// regardless of arity/types -- and regardless of `hidden`, since a
-    /// `hidden`-only-visible overload could never even be considered.
+    /// regardless of arity/types -- and regardless of `reveal`, since a
+    /// `reveal`-only-visible overload could never even be considered.
     /// `Analyzer::resolve_overloaded_call`'s unqualified-alias case uses
     /// this instead, mirroring how its own unqualified-*own-module* case
     /// already builds an absolute path directly rather than resolving
@@ -280,10 +280,10 @@ pub trait ModuleResolver {
     /// `accessor_module_path` is the *querying* module -- the one piece of
     /// context this query didn't used to need, back when every item was
     /// implicitly public; now the target's own declared `exposed`/
-    /// `internal`/(default private) visibility is checked against it on
+    /// `internal`/(default hidden) visibility is checked against it on
     /// every call (see `omega_driver::Driver::ensure_item`), returning
     /// `ResolveError::NotVisible` on denial -- unless `bypass` is set
-    /// (`hidden`, see `omega_analyzer::analysis::Analyzer::hidden_stack`),
+    /// (`reveal`, see `omega_analyzer::analysis::Analyzer::reveal_stack`),
     /// which allows the access through regardless. `bypass` never affects
     /// what's cached; it only ever suppresses this one call's own
     /// `NotVisible` result.
@@ -297,9 +297,9 @@ pub trait ModuleResolver {
     ) -> Result<ResolvedItem, ResolveError>;
 
     /// Whether `absolute_path` is visible from `accessor_module_path`
-    /// *ignoring* any `hidden` bypass -- the one query `Analyzer` uses, after
+    /// *ignoring* any `reveal` bypass -- the one query `Analyzer` uses, after
     /// a bypassed `resolve_item` call succeeds, to decide whether that bypass
-    /// actually mattered (see `AnalysisWarningKind::UnnecessaryHidden`).
+    /// actually mattered (see `AnalysisWarningKind::UnnecessaryReveal`).
     /// Answered from the item's own *declaration*, so it needs no prior
     /// resolution and is identical for every instantiation of a generic
     /// template. `false` for a name that doesn't resolve at all.

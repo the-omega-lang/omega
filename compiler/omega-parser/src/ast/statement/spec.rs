@@ -43,7 +43,7 @@ use crate::ast::visibility::Visibility;
 #[derive(Debug, Clone)]
 pub struct SpecStmt {
     pub ident: Ident,
-    /// `exposed`/`internal`/(default `Private`) -- meaningless when
+    /// `exposed`/`internal`/(default `Hidden`) -- meaningless when
     /// `target.is_some()` (a `for`-attached spec is never registered under
     /// its own name at all, see `target`'s own doc comment), but parsed
     /// uniformly regardless, for grammar consistency.

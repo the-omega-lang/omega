@@ -44,7 +44,7 @@ use crate::diagnostics::Span;
 pub struct EnumStmt {
     /// See `StructStmt::annotations`'s doc comment.
     pub annotations: Vec<AnnotationNode>,
-    /// `exposed`/`internal`/(default `Private`) on the enum itself -- every
+    /// `exposed`/`internal`/(default `Hidden`) on the enum itself -- every
     /// variant always inherits this exact value (there is no per-variant
     /// modifier, enforced structurally: `parse_enum_variant` never offers a
     /// visibility-prefix parse position for a variant name).

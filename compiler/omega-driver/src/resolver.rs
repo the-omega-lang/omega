@@ -59,7 +59,7 @@ impl Driver {
         module_path: &[Ident],
         alias: &Ident,
         target: &[Ident],
-        hidden: bool,
+        reveal: bool,
     ) -> Result<ImportTarget, ResolveError> {
         let key = (module_path.to_vec(), alias.clone());
         match self.imports.resolved.get(&key) {
@@ -69,7 +69,7 @@ impl Driver {
         }
 
         self.imports.resolved.insert(key.clone(), AliasState::InProgress);
-        let result = self.resolve_import_target(module_path, target, hidden);
+        let result = self.resolve_import_target(module_path, target, reveal);
         self.imports.resolved.insert(key, AliasState::Done(result.clone()));
         result
     }
@@ -81,7 +81,7 @@ impl Driver {
         &mut self,
         accessor: &[Ident],
         segments: &[Ident],
-        hidden: bool,
+        reveal: bool,
     ) -> Result<ImportTarget, ResolveError> {
         match self.roots.locate(segments) {
             Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
@@ -110,7 +110,7 @@ impl Driver {
         // absolute path travels along with the resolved snapshot so a
         // type-position consumer whose own `indirect` differs can re-resolve
         // with its own real value instead of trusting this one.
-        let item = self.ensure_item(accessor, module_path, item_name, &[], true, hidden)?;
+        let item = self.ensure_item(accessor, module_path, item_name, &[], true, reveal)?;
         Ok(ImportTarget::Item(segments.to_vec(), item))
     }
 
@@ -121,7 +121,7 @@ impl Driver {
         let Some(import) = self.modules.index(module_path).imports.get(alias) else {
             return Ok(None);
         };
-        let entry = (import.target.clone(), import.hidden);
+        let entry = (import.target.clone(), import.reveal);
         // Querying an alias's target *is* using it, for `UnusedImport`'s
         // purposes, regardless of which query got here.
         self.imports.mark_used(module_path, alias);
@@ -135,10 +135,10 @@ impl ModuleResolver for Driver {
         module_path: &[Ident],
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
-        let Some((target, hidden)) = self.import_entry(module_path, alias)? else {
+        let Some((target, reveal)) = self.import_entry(module_path, alias)? else {
             return Ok(None);
         };
-        self.resolve_alias(module_path, alias, &target, hidden).map(Some)
+        self.resolve_alias(module_path, alias, &target, reveal).map(Some)
     }
 
     fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident> {
@@ -177,7 +177,7 @@ impl ModuleResolver for Driver {
     /// every instantiation of a generic template, so no cache entry needs to
     /// exist (or be searched) to answer it. `false` for a name that doesn't
     /// resolve at all -- erring toward not claiming a bypass was unnecessary,
-    /// rather than risking a wrong `UnnecessaryHidden` warning.
+    /// rather than risking a wrong `UnnecessaryReveal` warning.
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
         let Some((item_name, module_path)) = absolute_path.split_last() else { return false };
         self.declared_visibility(module_path, item_name)

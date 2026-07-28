@@ -94,7 +94,7 @@ need a breaking change to fix — full writeups in
   lists** with four different outcomes and no stated policy.
 - **A node's identity is threaded as a bare `(HirId, Span)` pair** through
   ~60 analyzer signatures, with nothing tying the two together.
-- **`hidden`'s bypass must be re-activated by every operand position
+- **`reveal`'s bypass must be re-activated by every operand position
   individually**, with no backstop — three positions have now been fixed
   one at a time.
 

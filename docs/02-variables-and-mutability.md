@@ -17,7 +17,7 @@ the language (added after enums/pattern-matching already existed) that
 closed a real soundness gap — see below.
 
 `mut` and `:=` are **contextual keywords**, recognized by comparing an
-already-lexed identifier's text, the same way `self`/`type`/`root`/`hidden`
+already-lexed identifier's text, the same way `self`/`type`/`root`/`reveal`
 are — not reserved words, so none of them ever collide with a user
 identifier of the same spelling.
 

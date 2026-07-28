@@ -25,7 +25,7 @@ impl<'r> Analyzer<'r> {
 
         match &node.expr {
             HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected),
-            HirExpr::Hidden(inner) => self.analyze_hidden(id, span, inner, expected),
+            HirExpr::Reveal(inner) => self.analyze_reveal(id, span, inner, expected),
             HirExpr::Number(number) => self.analyze_number(id, span, number, expected),
             HirExpr::Bool(b) => literal(ResolvedType::Bool, CheckedExpr::Bool(*b)),
             HirExpr::Char(c) => literal(ResolvedType::Char, CheckedExpr::Char(*c)),
@@ -107,16 +107,16 @@ impl<'r> Analyzer<'r> {
         Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Place(checked_place) })
     }
 
-    /// `hidden base` -- fully transparent: this produces exactly what
+    /// `reveal base` -- fully transparent: this produces exactly what
     /// analyzing `base` alone would (this node's own `id`/`span` are
-    /// discarded in favor of `base`'s), with a `hidden_stack` frame pushed
-    /// around it. See `check_visibility`/`hidden_stack`.
-    fn analyze_hidden(&mut self, id: HirId, span: Span, inner: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
-        self.hidden_stack.push(false);
+    /// discarded in favor of `base`'s), with a `reveal_stack` frame pushed
+    /// around it. See `check_visibility`/`reveal_stack`.
+    fn analyze_reveal(&mut self, id: HirId, span: Span, inner: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+        self.reveal_stack.push(false);
         let result = self.analyze_expr(inner, expected);
-        let load_bearing = self.hidden_stack.pop().expect("just pushed above");
+        let load_bearing = self.reveal_stack.pop().expect("just pushed above");
         if !load_bearing {
-            self.warn(id, span, AnalysisWarningKind::UnnecessaryHidden);
+            self.warn(id, span, AnalysisWarningKind::UnnecessaryReveal);
         }
         result
     
@@ -317,19 +317,19 @@ impl<'r> Analyzer<'r> {
 
     /// `target = value`.
     fn analyze_assignment(&mut self, node_id: HirId, span: Span, assignment: &omega_hir::HirAssignment) -> Option<CheckedExprNode> {
-        let (was_hidden, target) = Self::strip_hidden(&assignment.target);
+        let (was_reveal, target) = Self::strip_reveal(&assignment.target);
         let HirExpr::Place(place) = &target.expr else {
             self.error(node_id, span, AnalysisErrorKind::AssignmentTargetNotAPlace);
             return None;
         };
-        // `was_hidden` activates the bypass for `analyze_place`'s own
-        // field-visibility checks -- see `strip_hidden`'s doc
-        // comment for why `hidden` on an assignment's target (`hidden
+        // `was_reveal` activates the bypass for `analyze_place`'s own
+        // field-visibility checks -- see `strip_reveal`'s doc
+        // comment for why `reveal` on an assignment's target (`reveal
         // a.b = c;`) never reaches `analyze_expr`'s own `HirExpr::
-        // Hidden` arm at all (it wraps only `target`, never the whole
+        // Reveal` arm at all (it wraps only `target`, never the whole
         // `Assignment`).
-        let (checked_target, target_type, target_mutable) = self.with_hidden_bypass(
-            was_hidden,
+        let (checked_target, target_type, target_mutable) = self.with_reveal_bypass(
+            was_reveal,
             node_id,
             span,
             |this| this.analyze_place(target.id, target.span, place, None),
@@ -382,23 +382,23 @@ impl<'r> Analyzer<'r> {
         mutable: bool,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let (was_hidden, base) = Self::strip_hidden(base);
+        let (was_reveal, base) = Self::strip_reveal(base);
         // `&base[range]`/`&mut base[range]` -- a slice, not an ordinary
         // pointer; see `analyze_slice` for why this is the *only* way to
         // produce one. Both this and the compile-time-slice form below run
-        // under `was_hidden` exactly like the plain-place form further down:
-        // a stripped `hidden` has to keep its bypass at *every* operand
+        // under `was_reveal` exactly like the plain-place form further down:
+        // a stripped `reveal` has to keep its bypass at *every* operand
         // position, not just the one that happens to reach `analyze_place`
         // directly.
         if let HirExpr::Slice(HirSlice { base: slice_base, range }) = &base.expr {
-            return self.with_hidden_bypass(was_hidden, node_id, span, |this| {
+            return self.with_reveal_bypass(was_reveal, node_id, span, |this| {
                 this.analyze_slice(node_id, span, slice_base, range, mutable)
             });
         }
         // `&[...]`/`&mut [...]` -- a compile-time slice, not an ordinary
         // place; see `analyze_const_slice`.
         if let HirExpr::ArrayLiteral(elements) = &base.expr {
-            return self.with_hidden_bypass(was_hidden, node_id, span, |this| {
+            return self.with_reveal_bypass(was_reveal, node_id, span, |this| {
                 this.analyze_const_slice(node_id, span, elements, mutable, expected)
             });
         }
@@ -406,10 +406,10 @@ impl<'r> Analyzer<'r> {
             self.error(node_id, span, AnalysisErrorKind::AddressOfNotAPlace);
             return None;
         };
-        // See `Analyzer::strip_hidden`'s doc comment -- same
+        // See `Analyzer::strip_reveal`'s doc comment -- same
         // reasoning as `HirExpr::Assignment`'s arm.
-        let (checked_place, place_type, place_mutable) = self.with_hidden_bypass(
-            was_hidden,
+        let (checked_place, place_type, place_mutable) = self.with_reveal_bypass(
+            was_reveal,
             node_id,
             span,
             |this| this.analyze_place(base.id, base.span, place, None),
@@ -715,15 +715,15 @@ impl<'r> Analyzer<'r> {
     /// every other numeric type) -- analysis already knows `base`'s exact
     /// type here, so it can build a same-typed constant directly.
     fn analyze_incr_decr(&mut self, node_id: HirId, span: Span, base: &HirExprNode, op: BinaryOp) -> Option<CheckedExprNode> {
-        let (was_hidden, base) = Self::strip_hidden(base);
+        let (was_reveal, base) = Self::strip_reveal(base);
         let HirExpr::Place(place) = &base.expr else {
             self.error(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace);
             return None;
         };
-        // See `Analyzer::strip_hidden`'s doc comment -- same reasoning as
+        // See `Analyzer::strip_reveal`'s doc comment -- same reasoning as
         // `HirExpr::Assignment`'s arm.
         let (checked_place, place_type, mutable) =
-            self.with_hidden_bypass(was_hidden, node_id, span, |this| this.analyze_place(base.id, base.span, place, None))?;
+            self.with_reveal_bypass(was_reveal, node_id, span, |this| this.analyze_place(base.id, base.span, place, None))?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let Some(kind) = place_type.numeric_kind() else {
@@ -1005,15 +1005,15 @@ impl<'r> Analyzer<'r> {
         op: BinaryOp,
         value: &HirExprNode,
     ) -> Option<CheckedExprNode> {
-        let (was_hidden, target) = Self::strip_hidden(target);
+        let (was_reveal, target) = Self::strip_reveal(target);
         let HirExpr::Place(place) = &target.expr else {
             self.error(node_id, span, AnalysisErrorKind::CompoundAssignTargetNotAPlace);
             return None;
         };
-        // See `Analyzer::strip_hidden`'s doc comment -- same reasoning as
+        // See `Analyzer::strip_reveal`'s doc comment -- same reasoning as
         // `HirExpr::Assignment`'s arm.
-        let (checked_place, place_type, mutable) = self.with_hidden_bypass(
-            was_hidden,
+        let (checked_place, place_type, mutable) = self.with_reveal_bypass(
+            was_reveal,
             node_id,
             span,
             |this| this.analyze_place(target.id, target.span, place, None),

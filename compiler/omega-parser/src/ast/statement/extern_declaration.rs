@@ -6,7 +6,7 @@ use crate::ast::visibility::Visibility;
 pub struct ExternDeclarationStmt {
     pub ident: Ident,
     pub r#type: Type,
-    /// `exposed`/`internal`/(default `Private`) -- an `extern` declaration
+    /// `exposed`/`internal`/(default `Hidden`) -- an `extern` declaration
     /// is an ordinary top-level item like any other, so it gets the same
     /// treatment.
     pub visibility: Visibility,

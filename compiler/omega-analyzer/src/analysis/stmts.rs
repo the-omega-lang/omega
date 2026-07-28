@@ -520,7 +520,7 @@ impl<'r> Analyzer<'r> {
     /// it fails outright (a genuine type error in `f.iterator` itself,
     /// which is the real problem and would otherwise be silently
     /// swallowed); otherwise they're discarded (truncated back to their
-    /// pre-probe length) so nothing this analyzes twice (a `hidden` bypass,
+    /// pre-probe length) so nothing this analyzes twice (a `reveal` bypass,
     /// say) warns twice, and so a rejected `DirectIterator` candidate that
     /// falls through to `ToIterator`'s own (separate, real) analysis of the
     /// same expression doesn't warn twice either.

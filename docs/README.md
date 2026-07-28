@@ -31,8 +31,8 @@ flat, cross-referenced index of every one of them for a quick scan.
   source of bugs this project has hit and fixed more than once (see the
   `@mangling` + `extern` story in [annotations.md](09-annotations.md)).
 - **Root-cause fixes over narrow patches.** When a bug pattern is found,
-  the fix generalizes to the whole pattern (see the private-field →
-  private-method generalization in [visibility.md](07-visibility.md)), and
+  the fix generalizes to the whole pattern (see the hidden-field →
+  hidden-method generalization in [visibility.md](07-visibility.md)), and
   a fix's own newly-exposed edge cases get tested and flagged before
   shipping, not left for the next bug report.
 
@@ -51,7 +51,7 @@ New to the codebase — read roughly in this order:
    dynamic/body fields, `match`, ranges, refinement.
 7. [Generics](06-generics.md) — the monomorphization model and its
    confirmed gaps.
-8. [Visibility](07-visibility.md) — `exposed`/`internal`/private/`hidden`.
+8. [Visibility](07-visibility.md) — `exposed`/`internal`/hidden/`reveal`.
 9. [Specs](08-specs.md) — interfaces, static + dynamic dispatch,
    primitive extension.
 10. [Annotations](09-annotations.md) — `@layout`, `@inline`, `@mangling`,

@@ -310,7 +310,7 @@ impl Context {
     /// embeds its referent inline (behind a pointer, or in a function
     /// signature) -- the distinction that lets a self-referential pointer
     /// field resolve while its own type is still being collected, and that
-    /// rejects a by-value cycle. `bypass` is the `hidden` modifier.
+    /// rejects a by-value cycle. `bypass` is the `reveal` modifier.
     pub fn resolve_type(
         &self,
         typ: Type,

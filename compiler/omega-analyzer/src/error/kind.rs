@@ -21,8 +21,8 @@ pub enum AnalysisErrorKind {
     NoSuchField { field: Ident, base: ResolvedType },
     /// A field access (or struct/union/enum-variant literal initializer)
     /// naming a field that exists on `base` but isn't visible from this
-    /// module -- `field` is private (or `internal` to a different package)
-    /// relative to the accessing site. Bypassed by `hidden` (see
+    /// module -- `field` is hidden (or `internal` to a different package)
+    /// relative to the accessing site. Bypassed by `reveal` (see
     /// `Analyzer::check_visibility`).
     FieldNotVisible { field: Ident, base: ResolvedType },
     /// A method call resolving to a method that exists on `base` but isn't
@@ -407,8 +407,8 @@ pub enum AnalysisErrorKind {
     /// narrow it. Otherwise a caller who can see the spec (and so, per
     /// dynamic dispatch, can call every one of its functions on any `spec
     /// *Spec` value) could reach a method its own author declared more
-    /// private than that.
-    SpecMethodTooPrivate { implementor: Ident, spec: Ident, function: Ident, required: Visibility, found: Visibility },
+    /// hidden than that.
+    SpecMethodTooHidden { implementor: Ident, spec: Ident, function: Ident, required: Visibility, found: Visibility },
     /// A `spec T` (static-dispatch) return-type function's own body returns
     /// two genuinely different concrete types across its exit points
     /// (`return`s plus a possible tail expression) -- Rust's `impl Trait`
@@ -825,7 +825,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ForLoopSourceNotIterable { r#type } => {
                 write!(f, "'{type}' does not implement 'ToIterator<T>' or 'Iterator<T>'")
             }
-            Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => write!(
+            Self::SpecMethodTooHidden { implementor, spec, function, required, found } => write!(
                 f,
                 "'{}' on '{}' is '{found}', but spec '{}' requires at least '{required}'",
                 function.as_ref(),

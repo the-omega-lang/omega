@@ -145,7 +145,7 @@ impl<'r> Analyzer<'r> {
                 &mut *self.resolver,
                 &self.module_path,
                 true,
-                !self.hidden_stack.is_empty(),
+                !self.reveal_stack.is_empty(),
             );
             match suffixed {
                 Ok(t) if t == *expected => {}

@@ -16,7 +16,7 @@ pub struct DeclarationStmt {
     /// `omega_hir::lower::Lowerer::self_param`. See
     /// `omega_analyzer::context::VarBinding::mutable`.
     pub mutable: bool,
-    /// `exposed`/`internal`/(default `Private`) -- same "meaningless in
+    /// `exposed`/`internal`/(default `Hidden`) -- same "meaningless in
     /// most of this shared type's positions" treatment as `mutable`:
     /// genuinely meaningful for a struct/union/enum-dynamic/enum-variant
     /// field or a top-level global declaration (`Item::Declaration`), left

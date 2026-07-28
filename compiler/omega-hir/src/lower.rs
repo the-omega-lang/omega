@@ -53,7 +53,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span: node.span,
                 annotations: Self::lower_annotations(&import.annotations),
-                hidden: import.hidden,
+                reveal: import.reveal,
                 root: import.root,
                 path: import.path.clone(),
             }),
@@ -610,9 +610,9 @@ impl Lowerer {
                     expr: HirExpr::AddressOf(HirAddressOf { base, mutable: addr.mutable }),
                 }
             }
-            Expression::Hidden(hidden) => {
-                let base = Box::new(self.lower_expr(&hidden.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Hidden(base) }
+            Expression::Reveal(reveal) => {
+                let base = Box::new(self.lower_expr(&reveal.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Reveal(base) }
             }
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));

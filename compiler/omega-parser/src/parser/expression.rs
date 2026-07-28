@@ -3,9 +3,9 @@ use crate::ast::expression::{
     assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
     bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
     codeblock::CodeblockExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
-    field_access::FieldAccessExpr, function_call::FunctionCallExpr, hidden::HiddenExpr, if_expr::IfExpr,
+    field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
-    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, sizeof::SizeofExpr, slice::SliceExpr,
+    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, reveal::RevealExpr, sizeof::SizeofExpr, slice::SliceExpr,
     string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 use crate::ast::range::RangeExpr;
@@ -198,7 +198,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         BitNot,
         Increment,
         Decrement,
-        Hidden,
+        Reveal,
     }
     let prefix = match p.peek() {
         TokenKind::PlusPlus => Prefix::Increment,
@@ -214,11 +214,11 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         TokenKind::Amp => Prefix::AddressOf { mutable: false },
         TokenKind::Minus => Prefix::Negate,
         TokenKind::Tilde => Prefix::BitNot,
-        // `hidden` is a contextual keyword here too (same text-comparison
-        // pattern as `mut` above) -- see `HiddenExpr`'s doc comment for why
+        // `reveal` is a contextual keyword here too (same text-comparison
+        // pattern as `mut` above) -- see `RevealExpr`'s doc comment for why
         // this sits at the same precedence tier as `Deref`/`AddressOf`
         // rather than being restricted to place-shaped expressions.
-        TokenKind::Ident(name) if name == "hidden" => Prefix::Hidden,
+        TokenKind::Ident(name) if name == "reveal" => Prefix::Reveal,
         _ => return parse_postfix(p),
     };
     p.advance();
@@ -232,7 +232,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Prefix::AddressOf { mutable } => Expression::AddressOf(Box::new(AddressOfExpr { base, mutable })),
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
         Prefix::BitNot => Expression::BitNot(Box::new(BitNotExpr { base })),
-        Prefix::Hidden => Expression::Hidden(Box::new(HiddenExpr { base })),
+        Prefix::Reveal => Expression::Reveal(Box::new(RevealExpr { base })),
         Prefix::Increment => Expression::Increment(Box::new(IncrementExpr { base })),
         Prefix::Decrement => Expression::Decrement(Box::new(DecrementExpr { base })),
     };

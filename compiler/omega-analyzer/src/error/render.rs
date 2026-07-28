@@ -46,10 +46,10 @@ impl AnalysisErrorKind {
             Self::NoSuchField { base, .. } => d.with_label(span, format!("`{base}` has no field by that name")),
             Self::FieldNotVisible { field, base } => d
                 .with_label(span, format!("`{field}` is not visible from this module"))
-                .with_help(format!("mark the field `exposed`/`internal` on `{base}`, or bypass with `hidden`")),
+                .with_help(format!("mark the field `exposed`/`internal` on `{base}`, or bypass with `reveal`")),
             Self::MethodNotVisible { method, base } => d
                 .with_label(span, format!("`{method}` is not visible from this module"))
-                .with_help(format!("mark the method `exposed`/`internal` on `{base}`, or bypass with `hidden`")),
+                .with_help(format!("mark the method `exposed`/`internal` on `{base}`, or bypass with `reveal`")),
             Self::NotAnArray { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be indexed"))
                 .with_note("only arrays (`[T; N]`, `[T]`) and slices (`*[T]`) support indexing"),
@@ -461,7 +461,7 @@ impl AnalysisErrorKind {
                     "declare `{type} : ToIterator<T>` and implement `to_iterator`, \
                      or `{type} : Iterator<T>` and implement `next` directly"
                 )),
-            Self::SpecMethodTooPrivate { implementor, spec, function, required, found } => d
+            Self::SpecMethodTooHidden { implementor, spec, function, required, found } => d
                 .with_label(
                     span,
                     format!(

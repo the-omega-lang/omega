@@ -80,8 +80,8 @@ pub(crate) struct ImportEntry {
     /// import has no per-item analysis pass of its own for `UnusedImport` to
     /// hook into otherwise.
     pub suppress: Vec<Ident>,
-    /// The `hidden` modifier, needed when the target is finally resolved.
-    pub hidden: bool,
+    /// The `reveal` modifier, needed when the target is finally resolved.
+    pub reveal: bool,
 }
 
 /// Why a module's own file never produced usable HIR. Stashed structurally
@@ -346,7 +346,7 @@ impl Driver {
                         span: import.span,
                         target,
                         suppress,
-                        hidden: import.hidden,
+                        reveal: import.reveal,
                     });
                 }
             }

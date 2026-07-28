@@ -361,5 +361,5 @@ what's imported.
   with this compiler's general "only what's referenced gets analyzed"
   philosophy, not a regression specific to this feature.
 - See [visibility](07-visibility.md) for the dynamic-dispatch visibility
-  gap this system's `Private`-method owner-scoping opened and how it was
+  gap this system's `Hidden`-method owner-scoping opened and how it was
   closed.

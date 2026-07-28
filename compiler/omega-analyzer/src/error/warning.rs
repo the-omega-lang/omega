@@ -36,9 +36,9 @@ impl AnalysisWarning {
             AnalysisWarningKind::UnnecessaryMut { name } => d
                 .with_label(self.span, format!("`{}` is declared `mut` but never reassigned", name.as_ref()))
                 .with_help("remove `mut` -- it isn't just a hint, dropping it changes nothing about how this compiles"),
-            AnalysisWarningKind::UnnecessaryHidden => d
-                .with_label(self.span, "this 'hidden' never suppresses anything")
-                .with_help("remove 'hidden' -- every check inside it would already pass without it"),
+            AnalysisWarningKind::UnnecessaryReveal => d
+                .with_label(self.span, "this 'reveal' never suppresses anything")
+                .with_help("remove 'reveal' -- every check inside it would already pass without it"),
             AnalysisWarningKind::UnusedImport { alias } => {
                 d.with_label(self.span, format!("`{}` is never referenced in this module", alias.as_ref()))
             }
@@ -119,11 +119,11 @@ pub enum AnalysisWarningKind {
     /// a completely dead `mut` local only produces `UnusedVariable`, not
     /// both.
     UnnecessaryMut { name: Ident },
-    /// A `hidden` expression where every visibility check reached while
+    /// A `reveal` expression where every visibility check reached while
     /// analyzing its wrapped expression would have passed anyway -- the
-    /// bypass was never load-bearing. See `Analyzer::hidden_stack`'s doc
-    /// comment and `HirExpr::Hidden`'s analysis arm.
-    UnnecessaryHidden,
+    /// bypass was never load-bearing. See `Analyzer::reveal_stack`'s doc
+    /// comment and `HirExpr::Reveal`'s analysis arm.
+    UnnecessaryReveal,
     /// A module-level `import` whose alias is never referenced anywhere in
     /// that module -- tracked across the whole module by `Driver`, not by
     /// any one `Analyzer` (imports aren't per-item). See
@@ -195,7 +195,7 @@ impl AnalysisWarningKind {
             Self::UnusedVariable { .. } => "unused_variable",
             Self::UnusedParameter { .. } => "unused_parameter",
             Self::UnnecessaryMut { .. } => "unnecessary_mut",
-            Self::UnnecessaryHidden => "unnecessary_hidden",
+            Self::UnnecessaryReveal => "unnecessary_reveal",
             Self::UnusedImport { .. } => "unused_import",
             Self::UnusedField { .. } => "unused_field",
             Self::NeverConstructedVariant { .. } => "never_constructed_variant",
@@ -217,7 +217,7 @@ impl fmt::Display for AnalysisWarningKind {
             Self::UnusedVariable { name } => write!(f, "unused variable '{}'", name.as_ref()),
             Self::UnusedParameter { name } => write!(f, "unused parameter '{}'", name.as_ref()),
             Self::UnnecessaryMut { name } => write!(f, "unnecessary 'mut' on '{}'", name.as_ref()),
-            Self::UnnecessaryHidden => write!(f, "unnecessary 'hidden'"),
+            Self::UnnecessaryReveal => write!(f, "unnecessary 'reveal'"),
             Self::UnusedImport { alias } => write!(f, "unused import '{}'", alias.as_ref()),
             Self::UnusedField { owner, field } => {
                 write!(f, "field '{}' of '{}' is never read", field.as_ref(), owner.as_ref())

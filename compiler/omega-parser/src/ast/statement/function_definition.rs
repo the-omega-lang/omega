@@ -14,7 +14,7 @@ pub struct FunctionDefinitionStmt {
     /// top-level function or a struct/enum/union method, since both are
     /// this same node (see `self_mode`). See `omega_analyzer::annotations`.
     pub annotations: Vec<AnnotationNode>,
-    /// `exposed`/`internal`/(default `Private`) -- applies identically
+    /// `exposed`/`internal`/(default `Hidden`) -- applies identically
     /// whether this is a top-level function or a struct/enum/union method,
     /// same dual-purpose treatment as `self_mode`.
     pub visibility: Visibility,

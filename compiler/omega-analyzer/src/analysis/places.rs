@@ -792,7 +792,7 @@ impl<'r> Analyzer<'r> {
         // No post-winner visibility check needed -- see
         // `resolve_overloaded_call`'s identical reasoning: `candidates` is
         // already the final, decided set (filtered, or fully admitted by
-        // `import hidden`).
+        // `import reveal`).
         let r#type = ResolvedType::Function(fn_type);
         let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
         Some((root, r#type))

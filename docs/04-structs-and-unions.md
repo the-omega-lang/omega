@@ -22,7 +22,7 @@ declared **without** a self-mode parameter is *static* (called
 [variables & mutability](02-variables-and-mutability.md) for the four
 self-forms and their call-site auto-adaptation, and
 [visibility](07-visibility.md) for per-field/per-method `exposed`/
-`internal`/private modifiers.
+`internal`/hidden modifiers.
 
 Struct-literal fields use `name = value;` (not `:` — `:` stays reserved for
 declarations, avoiding any ambiguity with a `struct` statement's own field

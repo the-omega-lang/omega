@@ -731,7 +731,7 @@ impl<'r> Analyzer<'r> {
                 &mut *self.resolver,
                 &self.module_path,
                 true,
-                !self.hidden_stack.is_empty(),
+                !self.reveal_stack.is_empty(),
             ) {
                 Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
                 _ => {

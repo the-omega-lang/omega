@@ -9,7 +9,7 @@
 //! The implementation is split by *what is being analyzed*, one submodule
 //! per concern, each contributing its own `impl Analyzer` block:
 //!
-//! - [`visibility`] -- `exposed`/`internal`/private and the `hidden` bypass.
+//! - [`visibility`] -- `exposed`/`internal`/hidden and the `reveal` bypass.
 //! - [`specs`] -- spec declarations, flattening, `implements`, `for` blocks.
 //! - [`items`] -- top-level item signatures and bodies (the driver's entry
 //!   points).
@@ -142,24 +142,24 @@ pub struct Analyzer<'r> {
     /// (see `Analyzer::warn`), the same lexical-nesting behavior Rust's
     /// `#[allow]` has.
     suppressed: Vec<Vec<Ident>>,
-    /// One frame per currently-active `hidden` expression (innermost last),
+    /// One frame per currently-active `reveal` expression (innermost last),
     /// each tracking whether *its* bypass has proven load-bearing yet (i.e.
     /// whether some check nested inside it would actually have failed
-    /// without it) -- see `HirExpr::Hidden`'s analysis arm and
-    /// `AnalysisWarningKind::UnnecessaryHidden`. `check_visibility` marks
+    /// without it) -- see `HirExpr::Reveal`'s analysis arm and
+    /// `AnalysisWarningKind::UnnecessaryReveal`. `check_visibility` marks
     /// only the *innermost* frame (`.last_mut()`), so a redundant outer
-    /// `hidden hidden x.y` still warns on the outer wrapper even though the
+    /// `reveal reveal x.y` still warns on the outer wrapper even though the
     /// inner one saved the access.
-    hidden_stack: Vec<bool>,
+    reveal_stack: Vec<bool>,
     /// The struct/union/enum whose own method bodies this `Analyzer`
     /// instance is currently checking -- `Some(cell.borrow().id)` for the
     /// whole duration of `check_struct_body`/`check_union_body`/
     /// `check_enum_body` (one fresh `Analyzer` per type, never shared
     /// across two different types -- see those functions' own callers in
     /// `omega_driver::Driver`), `None` for a plain top-level function/
-    /// global. This is what a **private field or method**'s own visibility
+    /// global. This is what a **hidden field or method**'s own visibility
     /// rule is actually scoped to -- "cannot be accessed outside of the
-    /// struct definition," a narrower scope than a private *item*'s
+    /// struct definition," a narrower scope than a hidden *item*'s
     /// (module-wide) rule, since it's compared against a single type's
     /// identity, not a module path. See `Analyzer::check_member_visibility`.
     current_owner: Option<HirId>,
@@ -204,10 +204,10 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
     }
 }
 
-/// A top-level item's own declared `exposed`/`internal`/(default `Private`)
+/// A top-level item's own declared `exposed`/`internal`/(default `Hidden`)
 /// -- what `omega_driver::Driver::ensure_item` reads instead of hardcoding
 /// `Visibility::Public`. `Import` has no visibility of its own (only
-/// `hidden`, a different, use-site concept -- see `HirImport::hidden`) and
+/// `reveal`, a different, use-site concept -- see `HirImport::reveal`) and
 /// is never looked up through this path anyway (`item_name` already returns
 /// `None` for it), so it's `unreachable!()` here rather than an arbitrary
 /// default.
@@ -296,7 +296,7 @@ impl<'r> Analyzer<'r> {
             loop_stack: vec![],
             in_defer_body: false,
             suppressed: vec![],
-            hidden_stack: vec![],
+            reveal_stack: vec![],
             current_owner: None,
             inferring_return_type: false,
             inferred_return_candidates: vec![],
@@ -480,13 +480,13 @@ impl<'r> Analyzer<'r> {
     }
 
     /// The one choke point every ordinary `ModuleResolver::resolve_item`
-    /// call goes through -- computes `bypass` from `hidden_stack`, calls
+    /// call goes through -- computes `bypass` from `reveal_stack`, calls
     /// through with `self.module_path` as the accessor, and on a bypassed
-    /// success, consults `is_item_visible` to mark the innermost `hidden`
+    /// success, consults `is_item_visible` to mark the innermost `reveal`
     /// frame load-bearing (the same "was this bypass actually necessary"
     /// tracking `check_visibility` does for in-analyzer checks, just across
     /// the `ModuleResolver` trait boundary -- see `AnalysisWarningKind::
-    /// UnnecessaryHidden`). Every other argument passes straight through
+    /// UnnecessaryReveal`). Every other argument passes straight through
     /// unchanged; this exists purely to avoid repeating the bypass/mark
     /// dance at each of this crate's ~10 call sites.
     fn resolve_item_checked(
@@ -495,13 +495,13 @@ impl<'r> Analyzer<'r> {
         type_args: &[ResolvedType],
         indirect: bool,
     ) -> Result<ResolvedItem, ResolveError> {
-        let bypass = !self.hidden_stack.is_empty();
+        let bypass = !self.reveal_stack.is_empty();
         let result = self.resolver.resolve_item(&self.module_path, absolute, type_args, indirect, bypass);
         if bypass
             && result.is_ok()
             && !self.resolver.is_item_visible(&self.module_path, absolute)
         {
-            *self.hidden_stack.last_mut().expect("bypass true implies a non-empty hidden_stack") = true;
+            *self.reveal_stack.last_mut().expect("bypass true implies a non-empty reveal_stack") = true;
         }
         result
     }
@@ -546,7 +546,7 @@ impl<'r> Analyzer<'r> {
     /// calls the resolver directly on an unqualified miss), so this is just
     /// a thin error-reporting wrapper around it.
     pub(crate) fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
-        let bypass = !self.hidden_stack.is_empty();
+        let bypass = !self.reveal_stack.is_empty();
         match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect, bypass) {
             Ok(resolved) => Some(resolved),
             Err(err) => {

@@ -10,7 +10,7 @@ pub struct StructStmt {
     /// `@packing(...)`/`@suppress(...)` written directly above the `struct`
     /// keyword -- see `omega_analyzer::annotations`.
     pub annotations: Vec<AnnotationNode>,
-    /// `exposed`/`internal`/(default `Private`), written directly before
+    /// `exposed`/`internal`/(default `Hidden`), written directly before
     /// the `struct` keyword -- see `visibility::Visibility`.
     pub visibility: Visibility,
     pub ident: Ident,

@@ -60,7 +60,7 @@ removed).
 import sibling;                # relative to the importing module's own directory
 import root::simplemodule;       # escapes to the project's own root
 import extern::mathlib;             # into a registered --extern project
-import hidden extern::lib;             # bypasses visibility (see visibility.md)
+import reveal extern::lib;             # bypasses visibility (see visibility.md)
 ```
 
 Default resolution is **relative to the importing module's own directory**
@@ -251,7 +251,7 @@ reported once. This is why `examples/dev/main.omg` no longer warns about
 constructed on line 849, so the old warning was simply false.
 
 **`is_item_visible` searched a cache instead of reading the declaration.** The
-query behind `UnnecessaryHidden` did a linear scan over every resolved item
+query behind `UnnecessaryReveal` did a linear scan over every resolved item
 looking for any entry that happened to share a module and name, taking
 whichever one the hash order surfaced first, and answered `false` (not
 visible) whenever nothing had been resolved yet. Visibility is a property of

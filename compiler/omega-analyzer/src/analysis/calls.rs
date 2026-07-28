@@ -83,7 +83,7 @@ impl<'r> Analyzer<'r> {
     /// generic arguments (which already pin their own instantiation, so
     /// nothing here needs to deduce one).
     fn callee_path(call: &HirFunctionCall) -> Option<&Path> {
-        let HirExpr::Place(place) = &Self::strip_hidden(&call.callee).1.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_reveal(&call.callee).1.expr else { return None };
         if !place.projections.is_empty() {
             return None;
         }
@@ -131,12 +131,12 @@ impl<'r> Analyzer<'r> {
     /// Everything else is an ordinary expression whose type must be a
     /// function.
     pub(super) fn resolve_callee(&mut self, callee: &HirExprNode, args: &[HirExprNode]) -> Option<CalleeResolution> {
-        // `hidden` is fully transparent, so every use of `callee` below
-        // (including its own `id`/`span`) sees through it. `was_hidden` feeds
-        // `with_hidden_bypass` at this path's own visibility checks -- there
-        // is no enclosing `analyze_expr` `Hidden` arm to rely on here (see
-        // `strip_hidden`).
-        let (was_hidden, callee) = Self::strip_hidden(callee);
+        // `reveal` is fully transparent, so every use of `callee` below
+        // (including its own `id`/`span`) sees through it. `was_reveal` feeds
+        // `with_reveal_bypass` at this path's own visibility checks -- there
+        // is no enclosing `analyze_expr` `Reveal` arm to rely on here (see
+        // `strip_reveal`).
+        let (was_reveal, callee) = Self::strip_reveal(callee);
 
         let member = match &callee.expr {
             HirExpr::Place(place) => match place.projections.last() {
@@ -180,9 +180,9 @@ impl<'r> Analyzer<'r> {
 
         let methods = self.find_methods(callee.id, callee.span, &receiver.r#type, field);
         if methods.is_empty() {
-            return self.resolve_field_callee(callee, was_hidden, field, receiver);
+            return self.resolve_field_callee(callee, was_reveal, field, receiver);
         }
-        self.resolve_method_callee(callee, was_hidden, field, receiver, methods, args)
+        self.resolve_method_callee(callee, was_reveal, field, receiver, methods, args)
     }
 
     /// A member call, `base.method(args)`: pick the method, check it is
@@ -191,14 +191,14 @@ impl<'r> Analyzer<'r> {
     fn resolve_method_callee(
         &mut self,
         callee: &HirExprNode,
-        was_hidden: bool,
+        was_reveal: bool,
         field: &Ident,
         receiver: Receiver,
         methods: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<CalleeResolution> {
         let (method, checked_args) = self.pick_method(callee, field, &receiver.r#type, methods, args)?;
-        self.require_method_visible(callee, was_hidden, field, &receiver.r#type, &method)?;
+        self.require_method_visible(callee, was_reveal, field, &receiver.r#type, &method)?;
 
         // `self`'s own declared mode (`self`/`mut self`/`*self`/`*mut self`)
         // is read straight off the resolved signature, never
@@ -292,7 +292,7 @@ impl<'r> Analyzer<'r> {
     fn require_method_visible(
         &mut self,
         callee: &HirExprNode,
-        was_hidden: bool,
+        was_reveal: bool,
         field: &Ident,
         receiver_type: &ResolvedType,
         method: &ResolvedMethod,
@@ -303,7 +303,7 @@ impl<'r> Analyzer<'r> {
         let (module_path, owner_id) =
             receiver_type.autoderef().declaring_owner().unwrap_or_else(|| (Vec::new(), callee.id));
         let visible = self
-            .with_hidden_bypass(was_hidden, callee.id, callee.span, |this| {
+            .with_reveal_bypass(was_reveal, callee.id, callee.span, |this| {
                 Some(this.check_member_visibility(method.visibility, &module_path, owner_id))
             })
             .expect("the closure above always returns Some");
@@ -416,13 +416,13 @@ impl<'r> Analyzer<'r> {
     fn resolve_field_callee(
         &mut self,
         callee: &HirExprNode,
-        was_hidden: bool,
+        was_reveal: bool,
         field: &Ident,
         receiver: Receiver,
     ) -> Option<CalleeResolution> {
         let CheckedPlace { root, mut projections } = receiver.checked;
         let base_type = receiver.r#type;
-        let field_type = self.with_hidden_bypass(was_hidden, callee.id, callee.span, |this| {
+        let field_type = self.with_reveal_bypass(was_reveal, callee.id, callee.span, |this| {
             this.resolve_field_projection(callee.id, callee.span, &mut projections, &base_type, field, &mut false)
         })?;
         let checked = CheckedExprNode {
@@ -629,22 +629,22 @@ impl<'r> Analyzer<'r> {
     /// free function (2+ candidates), returns its real absolute path and
     /// its candidate list. For an aliased name, the list is filtered down
     /// to only the overloads this module can actually see, *unless* the
-    /// import itself was written `hidden` (which brings every overload --
+    /// import itself was written `reveal` (which brings every overload --
     /// visible or not -- into context; see `ModuleResolver::
     /// raw_import_absolute_path`'s doc comment). Own-module names are
-    /// never filtered (a module always sees its own declarations, `hidden`
-    /// or not -- filtering would be a no-op there anyway, since `Private`
+    /// never filtered (a module always sees its own declarations, `reveal`
+    /// or not -- filtering would be a no-op there anyway, since `Hidden`
     /// visibility already trivially allows same-module access).
     ///
-    /// **`hidden` at the *use site* can no longer expand this set on its
-    /// own** -- only `import hidden` can. Which overloads are even
+    /// **`reveal` at the *use site* can no longer expand this set on its
+    /// own** -- only `import reveal` can. Which overloads are even
     /// candidates has to be a fixed, resolution-time fact (the same way an
     /// ordinary, non-overloaded import's own target already is), not
-    /// something a call-site `hidden` reaches into after the fact -- see
+    /// something a call-site `reveal` reaches into after the fact -- see
     /// `Analyzer::check_visibility`'s doc comment for the *different* rule
     /// that still applies to a module-*qualified* reference
     /// (`mymodule::thing::foo`, no alias involved at all), which keeps
-    /// working with a use-site `hidden` exactly as before.
+    /// working with a use-site `reveal` exactly as before.
     ///
     /// `None` means "not an overloaded name at all" (0 or 1 real
     /// candidates) -- the caller falls through to the ordinary single-item
@@ -654,9 +654,9 @@ impl<'r> Analyzer<'r> {
         &mut self,
         ident: &Ident,
     ) -> Option<(Vec<Ident>, OverloadCandidates)> {
-        let (absolute, is_alias, import_hidden) = match self.resolver.raw_import_absolute_path(&self.module_path, ident)
+        let (absolute, is_alias, import_reveal) = match self.resolver.raw_import_absolute_path(&self.module_path, ident)
         {
-            Ok(Some((absolute, hidden))) => (absolute, true, hidden),
+            Ok(Some((absolute, reveal))) => (absolute, true, reveal),
             Ok(None) => (
                 self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect(),
                 false,
@@ -669,7 +669,7 @@ impl<'r> Analyzer<'r> {
         };
         let (name, module_path) = absolute.split_last()?;
         let raw_candidates = self.resolver.function_overload_signatures(module_path, name).ok().flatten()?;
-        let candidates = if is_alias && !import_hidden {
+        let candidates = if is_alias && !import_reveal {
             raw_candidates
                 .into_iter()
                 .filter(|(_, _, visibility)| Self::visibility_allows(*visibility, module_path, &self.module_path))
@@ -709,7 +709,7 @@ impl<'r> Analyzer<'r> {
         // `resolve_bare_overload_candidates`'s doc comment -- while a
         // module-qualified reference has no alias to fix anything through,
         // so it keeps working exactly as before (every candidate considered,
-        // `hidden` at this call site free to bypass the winner's own
+        // `reveal` at this call site free to bypass the winner's own
         // visibility).
         let (name, module_path, candidates, needs_visibility_check): (Ident, Vec<Ident>, _, bool) =
             if path.is_unqualified() {
@@ -749,12 +749,12 @@ impl<'r> Analyzer<'r> {
 
         // Only the module-qualified branch needs this: the unqualified/
         // aliased branch already committed to its final candidate set
-        // up front (filtered, or fully admitted by `import hidden`), so
+        // up front (filtered, or fully admitted by `import reveal`), so
         // every possible winner from it is already known-allowed -- a
         // second check here would either be a redundant no-op or, worse,
-        // could wrongly *deny* an `import hidden`-admitted private winner
-        // when the call site itself doesn't also write `hidden` (no
-        // ambient `hidden_stack` frame would be active to fall back on).
+        // could wrongly *deny* an `import reveal`-admitted hidden winner
+        // when the call site itself doesn't also write `reveal` (no
+        // ambient `reveal_stack` frame would be active to fall back on).
         if needs_visibility_check && !self.check_visibility(visibility, &module_path) {
             self.error(
                 node_id,

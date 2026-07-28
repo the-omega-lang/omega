@@ -12,7 +12,6 @@ pub mod compound_assign;
 pub mod deref;
 pub mod field_access;
 pub mod function_call;
-pub mod hidden;
 pub mod if_expr;
 pub mod incr_decr;
 pub mod index;
@@ -20,6 +19,7 @@ pub mod macro_invocation;
 pub mod match_expr;
 pub mod negate;
 pub mod number;
+pub mod reveal;
 pub mod sizeof;
 pub mod slice;
 pub mod string;
@@ -31,9 +31,9 @@ use crate::ast::expression::{
     bit_not::BitNotExpr, binary_op::BinaryOpExpr, bool_literal::BoolExpr, byte_string::ByteStringExpr,
     cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr,
     compound_assign::CompoundAssignExpr, deref::DerefExpr, field_access::FieldAccessExpr,
-    function_call::FunctionCallExpr, hidden::HiddenExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
+    function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
     index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
-    negate::NegateExpr, number::NumberExpr, sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr,
+    negate::NegateExpr, number::NumberExpr, reveal::RevealExpr, sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr,
     struct_literal::StructLiteralExpr,
 };
 use crate::diagnostics::Span;
@@ -54,8 +54,8 @@ pub enum Expression {
     Index(Box<IndexExpr>),
     Deref(Box<DerefExpr>),
     AddressOf(Box<AddressOfExpr>),
-    /// `hidden base` -- see `HiddenExpr`'s doc comment.
-    Hidden(Box<HiddenExpr>),
+    /// `reveal base` -- see `RevealExpr`'s doc comment.
+    Reveal(Box<RevealExpr>),
     Negate(Box<NegateExpr>),
     /// `~base` -- see `BitNotExpr`'s doc comment.
     BitNot(Box<BitNotExpr>),

@@ -47,10 +47,10 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Import => {
             reject_visibility(p, visibility, visibility_span);
             p.advance();
-            // `hidden` is a contextual keyword here too (same text-
+            // `reveal` is a contextual keyword here too (same text-
             // comparison pattern as `root`/`mut` below) -- see
-            // `ImportStmt::hidden`'s doc comment.
-            let hidden = if matches!(p.peek(), TokenKind::Ident(name) if name == "hidden") {
+            // `ImportStmt::reveal`'s doc comment.
+            let reveal = if matches!(p.peek(), TokenKind::Ident(name) if name == "reveal") {
                 p.advance();
                 true
             } else {
@@ -79,7 +79,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             };
             let path = parse_path(p)?;
             p.expect_terminator(&TokenKind::Semi, "';'");
-            Item::Import(ImportStmt { annotations, hidden, root, path })
+            Item::Import(ImportStmt { annotations, reveal, root, path })
         }
         TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations, visibility)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations, visibility)?),
@@ -128,7 +128,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
 
 /// An optional leading `exposed`/`internal` -- contextual keywords, same
 /// text-comparison recognition as `mut` (see `lexer::TokenKind`'s doc
-/// comment). Returns the visibility (defaulting to `Private` when neither
+/// comment). Returns the visibility (defaulting to `Hidden` when neither
 /// is written) and, when one was, its own span -- for `reject_visibility`
 /// to anchor an error at, for item kinds with nowhere to store one.
 fn parse_optional_visibility(p: &mut Parser) -> (Visibility, Option<Span>) {
@@ -142,7 +142,7 @@ fn parse_optional_visibility(p: &mut Parser) -> (Visibility, Option<Span>) {
             p.advance();
             (Visibility::Internal, Some(span))
         }
-        _ => (Visibility::Private, None),
+        _ => (Visibility::Hidden, None),
     }
 }
 
@@ -151,8 +151,8 @@ fn parse_optional_visibility(p: &mut Parser) -> (Visibility, Option<Span>) {
 /// (`import`/macro definition/macro invocation). Same precedent as
 /// `reject_annotations`.
 fn reject_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>) {
-    if visibility != Visibility::Private {
-        p.error_at(span.expect("non-Private visibility always has a span"), ParseErrorKind::VisibilityNotAllowedHere);
+    if visibility != Visibility::Hidden {
+        p.error_at(span.expect("non-Hidden visibility always has a span"), ParseErrorKind::VisibilityNotAllowedHere);
     }
 }
 

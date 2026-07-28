@@ -107,7 +107,7 @@ bitand (&)
 shift (<< >>)
 additive (+ -)
 multiplicative (* / %)
-unary (- * & &mut ~ hidden)
+unary (- * & &mut ~ reveal)
 cast (<Type>expr)
 postfix (call, index/slice, field access)
 ```

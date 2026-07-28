@@ -6,7 +6,7 @@
 /// variant is actually enforced.
 ///
 /// Declared least to most permissive, and `PartialOrd`/`Ord`-derived on
-/// that basis: `Private < Internal < Exposed`. This ordering is itself
+/// that basis: `Hidden < Internal < Exposed`. This ordering is itself
 /// meaningful, not just a derive of convenience -- a spec implementation's
 /// own visibility must be `>=` the spec function it's satisfying (see
 /// `omega_analyzer::analysis::Analyzer::resolve_implements_clause`), which
@@ -16,7 +16,7 @@ pub enum Visibility {
     /// The default when no modifier is written -- visible only within the
     /// exact module that declares it (not submodules, not siblings).
     #[default]
-    Private,
+    Hidden,
     /// `internal` -- visible anywhere within the same top-level package
     /// (same root module segment), regardless of nesting depth or
     /// ancestor/descendant relationship. Rust `pub(crate)`-style.
@@ -28,7 +28,7 @@ pub enum Visibility {
 impl std::fmt::Display for Visibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Visibility::Private => "private",
+            Visibility::Hidden => "hidden",
             Visibility::Internal => "internal",
             Visibility::Exposed => "exposed",
         })

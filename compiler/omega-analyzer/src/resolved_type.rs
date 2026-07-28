@@ -26,7 +26,7 @@ pub struct ResolvedFunctionType {
 pub struct ResolvedMethod {
     pub decl_id: HirId,
     pub fn_type: ResolvedFunctionType,
-    /// `exposed`/`internal`/(default `Private`), resolved once here
+    /// `exposed`/`internal`/(default `Hidden`), resolved once here
     /// (alongside `annotations`) at signature time -- see
     /// `Analyzer::check_visibility`'s method-call hook (`resolve_callee`)
     /// for where this is actually enforced.
@@ -275,7 +275,7 @@ impl Hash for ResolvedEnumType {
 pub struct ResolvedSpecType {
     pub id: HirId,
     pub name: Ident,
-    /// `exposed`/`internal`/(default `Private`) -- the spec's own
+    /// `exposed`/`internal`/(default `Hidden`) -- the spec's own
     /// visibility, already checked wherever this spec is *named* (an
     /// ordinary item-visibility check, same as any other top-level item).
     /// Kept here too because every one of this spec's own functions
