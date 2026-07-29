@@ -66,8 +66,8 @@ impl CompileError {
             Self::MacroExpansion { error, .. } => vec![Diagnostic::error(error.to_string())],
             Self::Analysis { errors, .. } => errors.iter().map(AnalysisError::to_diagnostic).collect(),
             Self::DuplicateModuleIdentity { name, first, second } => vec![Diagnostic::error(format!(
-                "module identity '{}' is claimed by two different files: '{}' and '{}' -- \
-                 give one an explicit --name=/--extern=<name>:<file> to disambiguate",
+                "module identity '{}' is claimed by two different --extern directories: '{}' and '{}' -- \
+                 give one an explicit --extern=<name>:<dir> to disambiguate",
                 name.as_ref(),
                 first.display(),
                 second.display(),

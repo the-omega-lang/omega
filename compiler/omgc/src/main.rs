@@ -30,14 +30,14 @@ fn main() {
 /// is handled separately, before this ever runs (see `run`) -- everything
 /// here assumes a real compile was actually requested.
 struct Args {
-    entry_file: PathBuf,
+    entry_dir: PathBuf,
     /// `-o <file>` -- required, no default (unlike every flag below, which
     /// falls back to today's previously-hardcoded behavior when omitted).
     output_file: PathBuf,
     externs: Vec<ExternRoot>,
-    /// `--name=<name>` -- overrides the entry module's own declared
-    /// identity; `None` (the default) keeps `module_from_file`'s
-    /// stem-derived name.
+    /// `--name=<name>` -- overrides the local project's own declared
+    /// identity; `None` (the default) keeps `basename`'s directory-derived
+    /// name.
     name: Option<Ident>,
     opt_level: OptLevel,
     target: Target,
@@ -50,35 +50,16 @@ struct Args {
     verbose: bool,
 }
 
-/// A module's own *default* identity (its file's stem) and search-root
-/// directory -- the convention every module follows unless explicitly
-/// overridden, applied here to both the entry file and every `--extern`
-/// target before any `--name=`/explicit `--extern=<name>:<file>` name is
-/// applied on top (see `parse_args`): an extern file is just an entry file
-/// for someone else's project.
-///
-/// Ordinarily the search root is just `file`'s own parent directory. But a
-/// *directory-shaped* module's own content always lives at `dir/dir.omg`
-/// (see `fs_resolve::resolve_segment`'s doc comment -- children live
-/// directly in `dir/`, alongside that file) -- if `file`'s immediate
-/// parent is itself named exactly `file`'s own stem, `file` isn't a plain
-/// leaf sibling of anything; it's that directory's own nested content, so
-/// the real search root is one level higher (`dir`'s own parent), where
-/// the name resolves as a genuine directory instead of colliding with the
-/// very file naming it. Without this, a directory-shaped package could
-/// only ever be pointed at through a sibling path that doesn't exist on
-/// disk (a real, if non-obvious, gotcha this closes for good).
-fn module_from_file(file: &Path) -> Option<(Ident, PathBuf)> {
-    let name = file.file_stem()?.to_str()?.to_string();
-    let parent = file.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    let dir = match parent.file_name().and_then(|n| n.to_str()) {
-        Some(parent_name) if parent_name == name => {
-            parent.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
-        }
-        _ => parent,
-    };
-    Some((Ident(name), dir))
+/// A root directory's own *default* declared identity: its basename,
+/// applied to both the local project's root and every `--extern` target
+/// unless explicitly overridden (`--name=`/`--extern=<name>:<dir>`, see
+/// `parse_args`) -- an extern's own root is just someone else's project
+/// root. `None` for a path with no usable final component (`/`, `.`, `..`,
+/// or one that isn't valid UTF-8).
+fn basename(dir: &Path) -> Option<Ident> {
+    dir.file_name()?.to_str().map(|s| Ident(s.to_string()))
 }
+
 
 /// `omgc <entry-file> -o <output-file> [OPTIONS]` -- the entry file is the
 /// only positional argument; `-o` is a separate next-token argument (unlike
@@ -86,7 +67,7 @@ fn module_from_file(file: &Path) -> Option<(Ident, PathBuf)> {
 /// `args` with an explicit iterator rather than a plain `for` loop, to
 /// consume the token following `-o` on demand.
 fn parse_args(args: &[String]) -> Result<Args, String> {
-    let mut entry_file = None;
+    let mut entry_dir = None;
     let mut output_file = None;
     let mut externs = Vec::new();
     let mut name = None;
@@ -99,36 +80,33 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if let Some(rest) = arg.strip_prefix("--extern=") {
-            // Two shapes: a bare `--extern=<file>` (the common case --
-            // identity inferred from the file's own stem, exactly like the
-            // entry file), or an explicit `--extern=<name>:<file>` (the
-            // name is author-stated and used exactly as typed -- never
-            // re-derived, never a separate translated alias). Distinguished
-            // by whether `rest` contains a `:` at all; `split_once` takes
-            // only the *first* one, so a file path containing later colons
-            // still parses correctly in the explicit form, same as before.
-            let (explicit_name, file) = match rest.split_once(':') {
-                Some((name, file)) => {
+            // Two shapes: a bare `--extern=<dir>` (the common case --
+            // identity inferred from the directory's own basename, exactly
+            // like the local project's root), or an explicit
+            // `--extern=<name>:<dir>` (the name is author-stated and used
+            // exactly as typed -- never re-derived, never a separate
+            // translated alias). Distinguished by whether `rest` contains a
+            // `:` at all; `split_once` takes only the *first* one, so a
+            // directory path containing later colons still parses correctly
+            // in the explicit form, same as before.
+            let (explicit_name, dir) = match rest.split_once(':') {
+                Some((name, dir)) => {
                     if name.is_empty() {
                         return Err(format!(
                             "invalid --extern flag '{arg}': the name before ':' cannot be empty"
                         ));
                     }
-                    (Some(Ident(name.to_string())), PathBuf::from(file))
+                    (Some(Ident(name.to_string())), PathBuf::from(dir))
                 }
                 None => (None, PathBuf::from(rest)),
             };
-            let Some((inferred_name, dir)) = module_from_file(&file) else {
+            let Some(name) = explicit_name.or_else(|| basename(&dir)) else {
                 return Err(format!(
-                    "invalid --extern flag '{arg}': '{}' has no usable file name",
-                    file.display()
+                    "invalid --extern flag '{arg}': '{}' has no usable directory name",
+                    dir.display()
                 ));
             };
-            externs.push(ExternRoot {
-                name: explicit_name.unwrap_or(inferred_name),
-                dir,
-                file,
-            });
+            externs.push(ExternRoot { name, dir });
         } else if let Some(rest) = arg.strip_prefix("--name=") {
             if rest.is_empty() {
                 return Err(format!("invalid --name flag '{arg}': the name cannot be empty"));
@@ -164,19 +142,19 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             verbose = true;
         } else if arg.starts_with('-') {
             return Err(format!("unknown flag '{arg}'"));
-        } else if entry_file.is_some() {
+        } else if entry_dir.is_some() {
             return Err(format!(
-                "unexpected extra argument '{arg}' (the entry file was already given)"
+                "unexpected extra argument '{arg}' (the entry directory was already given)"
             ));
         } else {
-            entry_file = Some(PathBuf::from(arg));
+            entry_dir = Some(PathBuf::from(arg));
         }
     }
 
-    let entry_file = entry_file
-        .ok_or_else(|| "usage: omgc <entry-file> -o <output-file> [OPTIONS] (see --help)".to_string())?;
+    let entry_dir = entry_dir
+        .ok_or_else(|| "usage: omgc <entry-dir> -o <output-file> [OPTIONS] (see --help)".to_string())?;
     let output_file = output_file.ok_or_else(|| "the -o <file> flag is required".to_string())?;
-    Ok(Args { entry_file, output_file, externs, name, opt_level, target, emit, backend, verbose })
+    Ok(Args { entry_dir, output_file, externs, name, opt_level, target, emit, backend, verbose })
 }
 
 /// One `-h`/`--help` line: `flag` padded to a fixed column *before* being
@@ -190,14 +168,14 @@ fn help_option(colors: bool, flag: &str, desc: &str) {
 /// Prints to stdout (colored based on *stdout's* own terminal-ness,
 /// independent of the stderr-based `colors` diagnostics/verbose output
 /// use) and exits -- checked before any other argument parsing, so
-/// `omgc -h` alone works with no entry file or `-o`, standard CLI
+/// `omgc -h` alone works with no entry directory or `-o`, standard CLI
 /// convention.
 fn print_help() {
     let colors = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     println!("{}", paint(colors, BOLD, "omgc"));
     println!("The Omega compiler\n");
     println!("{}", paint(colors, BOLD, "USAGE:"));
-    println!("    omgc <entry-file> -o <output-file> [OPTIONS]\n");
+    println!("    omgc <entry-dir> -o <output-file> [OPTIONS]\n");
     println!("{}", paint(colors, BOLD, "OPTIONS:"));
     help_option(colors, "-o <file>", "Output file path (required)");
     help_option(colors, "-O<0-3>", "Optimization level (default: 0)");
@@ -218,10 +196,14 @@ fn print_help() {
     );
     help_option(
         colors,
-        "--extern=[<name>:]<file>",
-        "Register an external module (name inferred from the file by default, repeatable)",
+        "--extern=[<name>:]<dir>",
+        "Register an external module's root directory (name inferred from its basename by default, repeatable)",
     );
-    help_option(colors, "--name=<name>", "Override the entry module's own identity (default: derived from its file name)");
+    help_option(
+        colors,
+        "--name=<name>",
+        "Override the local project's own declared identity (default: derived from <entry-dir>'s basename)",
+    );
     help_option(colors, "-v, --verbose", "Print progress information");
     help_option(colors, "-h, --help", "Print this help message");
 }
@@ -241,20 +223,13 @@ fn run() {
     }
 
     let start = Instant::now();
-    let Args { entry_file, output_file, externs, name, opt_level, target, emit, backend, verbose } = match parse_args(&args) {
+    let Args { entry_dir, output_file, externs, name, opt_level, target, emit, backend, verbose } = match parse_args(&args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("error: {message}");
             std::process::exit(1);
         }
     };
-
-    let Some((stem_name, entry_dir)) = module_from_file(&entry_file) else {
-        eprintln!("error: '{}' has no usable file name", entry_file.display());
-        std::process::exit(1);
-    };
-    let entry_name = name.unwrap_or(stem_name);
-    let entry_module = vec![entry_name.clone()];
 
     // Diagnostics (and verbose output, which shares the same stream) go to
     // stderr, colored only when stderr really is a terminal (and the user
@@ -263,12 +238,56 @@ fn run() {
     let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
+    let Some(declared_name) = name.or_else(|| basename(&entry_dir)) else {
+        eprintln!(
+            "error: '{}' has no usable directory name (pass --name=<name> explicitly)",
+            entry_dir.display()
+        );
+        std::process::exit(1);
+    };
+
     if verbose {
-        verbose_step(colors, "Compiling", &format!("{} ({target})", entry_file.display()));
+        verbose_step(colors, "Compiling", &format!("{} ({target})", entry_dir.display()));
     }
 
-    let mut driver = Driver::new(vec![entry_dir], externs);
-    let program = match driver.compile(&entry_module, &entry_file) {
+    let mut driver = match Driver::new(entry_dir.clone(), externs) {
+        Ok(driver) => driver,
+        Err(errors) => {
+            for error in &errors {
+                for diagnostic in error.to_diagnostics() {
+                    eprintln!("{}\n", renderer.render(&diagnostic, None));
+                }
+            }
+            std::process::exit(1);
+        }
+    };
+
+    // The local project's own declared identity first (right for a
+    // library-shaped package, whose directory name and entry module
+    // already agree -- see `basename`), falling back to the fixed `main`
+    // convention (right for an ordinary executable, where the directory
+    // name has nothing to do with the program). Mirrors Rust's own
+    // `lib.rs`/`main.rs` split without needing an explicit `--lib`/`--bin`
+    // mode flag. Queried through `Driver::has_local_module` rather than
+    // checked against the filesystem directly here, so a directory-shaped
+    // entry (`<name>/<name>.omg`, nested -- `core`'s own real shape) is
+    // recognized exactly like a flat `<name>.omg` file would be.
+    let main_name = Ident("main".to_string());
+    let entry_name = if driver.has_local_module(&declared_name) {
+        declared_name
+    } else if driver.has_local_module(&main_name) {
+        main_name
+    } else {
+        eprintln!(
+            "error: no entry module found in '{}' (expected '{}.omg' or 'main.omg')",
+            entry_dir.display(),
+            declared_name.as_ref()
+        );
+        std::process::exit(1);
+    };
+    let entry_module = vec![entry_name.clone()];
+
+    let program = match driver.compile(&entry_module) {
         Ok(program) => program,
         Err(errors) => {
             let mut count = 0usize;

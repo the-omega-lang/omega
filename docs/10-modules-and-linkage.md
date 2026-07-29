@@ -3,56 +3,78 @@
 ## The `omgc` CLI
 
 ```
-omgc <entry-file> -o <output> [--name=<name>] [--extern=[<name>:]<file>]... \
+omgc <entry-dir> -o <output> [--name=<name>] [--extern=[<name>:]<dir>]... \
      [-O<0-3>] [--target=<triplet>] [--emit=<obj|ir|asm>] [-v]
 ```
 
-`-o` is **required** — no default output path. `--extern` may be repeated;
-each one points **directly at another project's own entry file** (not a
-directory), e.g. `--extern=mathlib:examples/extern_lib/mathlib.omg`. A real
-build, from this repo's own `justfile`:
+`-o` is **required** — no default output path. Both the local project and
+every `--extern` are given as a **root directory**, never a file — the
+filesystem, recursively walked, is the source of truth for what a package
+contains (see "Eager local discovery" below), so there is no file for the
+CLI to point at in the first place. A real build, from this repo's own
+`justfile`:
 
 ```
-omgc runtime/core/core/core.omg --name=core -o target/core.o
-omgc examples/extern_lib/mathlib.omg -o target/mathlib.o
-omgc examples/dev/main.omg \
-     --extern=mathlib:examples/extern_lib/mathlib.omg \
-     --extern=core:runtime/core/core/core.omg \
+omgc runtime/core/ -o target/core.o
+omgc examples/extern_lib/ --name=mathlib -o target/mathlib.o
+omgc examples/dev/ \
+     --extern=mathlib:examples/extern_lib/ \
+     --extern=core:runtime/core/ \
      -o target/main.o
 cc target/main.o target/mathlib.o target/core.o -o example
 ```
 
-Each `--extern`/entry file is compiled by its **own separate** `omgc`
+Each `--extern`/local root is compiled by its **own separate** `omgc`
 process and linked afterward with a plain linker (`cc`) — there is no
 whole-program single-invocation build. This works because module identity,
 symbol mangling, and linkage are all deterministic, pure functions of
 source text (see below) — two independent processes agree on symbol names
 without ever communicating.
 
-## Module identity
+## Module identity, and the entry module
 
 A module's identity (used for both name resolution *and* symbol mangling)
-defaults to its file's stem, overridable: `--name=<name>` for the entry,
-`--extern=<name>:<file>` for an extern. There is **no separate alias
-concept** — whatever name an extern ends up with (inferred or explicit) is
-simultaneously what `import extern::<name>;` selects it by *and* its real
-mangled-symbol identity. Two different files claiming the same declared
-name is a hard `DuplicateModuleIdentity` compile error (checked before any
-parsing happens) — this used to silently misroute imports via a plain
-`HashMap::insert` collision; the user flagged it directly as "a bomb
-waiting to blow up," not a nice-to-have.
+defaults to its root directory's own basename, overridable: `--name=<name>`
+for the local project, `--extern=<name>:<dir>` for an extern. There is
+**no separate alias concept** — whatever name an extern ends up with
+(inferred or explicit) is simultaneously what `import extern::<name>;`
+selects it by *and* its real mangled-symbol identity. Two different
+directories claiming the same declared name is a hard
+`DuplicateModuleIdentity` compile error, checked once, at construction,
+before any parsing happens.
 
-A directory-shaped package's own content lives **nested one level inside**
-its own directory (`runtime/core/core/core.omg`, not
-`runtime/core/core.omg`) — `fs_resolve` treats `dir/name.omg` and `dir/name/`
-as competing siblings, so a package's real content can't sit beside its own
-directory. `--extern`/`--name` point directly at that real, nested file;
-`omgc` auto-detects the `dir/dir.omg` nesting convention (parent directory
-name equals the file's own stem) and searches from the grandparent
-directory instead — no sentinel/nonexistent placeholder path is needed
-anywhere in the project (an earlier revision of the toolchain required
-one; the user pushed back on it directly as bad design, and it was
-removed).
+Given the local root directory and its declared identity, `omgc` finds the
+entry module itself, trying two conventions in order: `<name>.omg`/a
+directory-shaped `<name>/<name>.omg` (the *library* convention — the same
+one any nested directory-shaped module's own content already follows,
+applied to the root itself; right when the directory's name and the
+package's own identity already agree, e.g. `core`, whose own content lives
+at `runtime/core/core/core.omg` — a directory-shaped module named `core`,
+nested one level inside `runtime/core/`, which is why that's the root
+`--extern=core:` points at, not `runtime/core/core/` itself), else the
+fixed, purpose-specific `main.omg` (the *executable* convention — right
+when the directory's name has nothing to do with the program, e.g.
+`examples/dev/`, whose default identity is `dev` but whose entry is
+`main.omg`). Mirrors Rust's own `lib.rs`/`main.rs` split without an
+explicit `--lib`/`--bin` mode flag. Neither present is a real,
+reportable error, not a silent empty build.
+
+## Eager local discovery
+
+The local project's own root is **recursively, eagerly walked in full**
+the moment `omgc` starts (`fs_resolve::discover_tree`) — metadata only (no
+file is ever opened at this point, just `read_dir`/`is_file`/`is_dir`), so
+this stays cheap regardless of how large the package is. The result is a
+complete inventory of every module the local project actually contains;
+looking one up (`ModuleRoots::locate`) is a plain map lookup afterward, and
+an absent entry is a real, checked fact — "does not exist" — not "wasn't
+asked about yet". This is deliberately *not* the same as eager *analysis*:
+nothing about parsing bodies, resolving names, or type-checking changed —
+that's still exactly as lazy and reference-driven as ever (see "Imports"
+below). An `--extern` dependency never gets this treatment either way; it
+stays resolved lazily, one path at a time, on demand — eager discovery
+belongs only to whichever package is actually *being compiled* in this
+invocation, never to one merely referenced.
 
 ## Imports
 

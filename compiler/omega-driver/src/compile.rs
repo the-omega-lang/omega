@@ -21,7 +21,6 @@ use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_hir::{HirEnumDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 
 /// Every warning found in a module, tagged with it so the CLI can render it
@@ -47,12 +46,7 @@ impl Driver {
     /// module during final assembly, once both phases have fully finished (so
     /// however late one was discovered, it is guaranteed present by then).
     ///
-    /// `entry_file` is the concrete on-disk file backing `entry`, needed by
-    /// the very first step both to register the entry's own identity for
-    /// collision detection against every `--extern` and to seed the
-    /// declared-name -> real-file translation every lookup goes through.
-    pub fn compile(&mut self, entry: &[Ident], entry_file: &Path) -> Result<CompiledProgram, Vec<CompileError>> {
-        self.roots.resolve_identities(entry, entry_file)?;
+    pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
         let reachable = self.discover_reachable(entry).map_err(|e| vec![e])?;
         // An extern module's items resolve lazily, on demand, exactly like a
         // generic instantiation: "scanned, not compiled" means its signatures

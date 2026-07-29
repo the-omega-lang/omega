@@ -75,17 +75,18 @@ pub struct Driver {
 }
 
 impl Driver {
-    /// `roots` are the local project's search roots (exactly one today: the
-    /// entry file's own directory); `externs` is every `--extern` the CLI was
-    /// given.
-    pub fn new(roots: Vec<PathBuf>, externs: Vec<ExternRoot>) -> Self {
-        Self {
-            roots: ModuleRoots::new(roots, externs),
+    /// `root` is the local project's own root directory, eagerly and fully
+    /// discovered right here (see `roots::ModuleRoots::new`); `externs` is
+    /// every `--extern` the CLI was given, each resolved lazily instead.
+    /// Fails only if two different `--extern`s claim the same declared name.
+    pub fn new(root: PathBuf, externs: Vec<ExternRoot>) -> Result<Self, Vec<CompileError>> {
+        Ok(Self {
+            roots: ModuleRoots::new(root, externs)?,
             modules: ModuleStore::default(),
             diagnostics: Diagnostics::default(),
             items: ItemQueries::default(),
             imports: ImportState::default(),
             extensions: Extensions::default(),
-        }
+        })
     }
 }
