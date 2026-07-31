@@ -116,22 +116,57 @@ failure happened several calls deep), never a crash:
 - **Dynamic dispatch** (`spec *Self`, a coercion or a call through one) —
   no compile-time meaning without real vtable data.
 - **Calling through a function-typed variable or field** (an indirect
-  call) — only a call to a plain named function is supported today.
+  call) — only a call to a plain named function is supported today. This
+  includes a function-typed *field* reached through a `comp` binding
+  (`comp_binding.callable_field()`) — a plain *method* call on a `comp`
+  binding is a different, already-supported case (see "Taking the address
+  of ... or calling a method on a `comp` binding" below).
 - **Reading a non-`comp` global.** Only `comp`-bound identifiers (no
   storage, pure substitution) are readable from inside a `comp`
   evaluation; referencing an *earlier* `comp` binding works fine
   (ordinary substitution, same as calling an earlier-defined function
   already works).
-- **Taking the address of, range-slicing, dereferencing, or calling a
-  method on a `comp` binding** (`&SIZE`, `SIZE[0..1]`, `*SIZE`,
-  `SIZE.method()`) — soundly supporting this means producing
-  `ConstValue::Ref` the way `&<place>` *inside* a `comp` evaluation
-  already does (see below), threaded through every place-producing call
-  site, not just one; deliberately deferred rather than reaching codegen
-  with a `Storage::Comp` place it has no defined meaning for. Plain field
-  access and single-element indexing (`SIZE.field`, `SIZE[i]`) are
-  unaffected — only address-of/range-slicing/deref/method-call are
-  rejected, whether the binding is local or top-level.
+
+### Taking the address of, range-slicing, or calling a method on a `comp` binding
+
+`&SIZE`, `SIZE[0..1]`, and `SIZE.method()` (from *outside* a `comp`
+evaluation, on a `comp`-bound identifier) all work, via **const
+promotion** — the same answer Rust gives for the identical problem.
+Rust's `const` is inlined at every use site (no storage of its own), but
+`&SOME_CONST` (or an implicit `&self` a method call needs) triggers
+promotion: if the value has no interior mutability/`Drop` glue, rustc
+materializes one anonymous `'static` read-only allocation for it on
+demand and takes a real address into *that*, rather than trying to
+address the substituted value itself.
+
+Omega does the same thing, reusing machinery that already existed for a
+different reason: `&<place>` *inside* a `comp` evaluation already produces
+`ConstValue::Ref` (see below), and codegen already knows how to emit any
+`ConstValue` into an anonymous, content-deduplicated rodata blob (the same
+family of machinery `"..."`/`b"..."` literals and `&[...]` compile-time
+slices use). Taking `&SIZE` from outside a `comp` evaluation, or calling a
+`*self`-receiver method on it, or range-slicing it, all just wrap the
+binding's already-known value in that same `ConstValue::Ref` on demand and
+let the existing emission path materialize it — no new codegen, only a
+new analysis-time call site for it.
+
+Two call shapes never need promotion at all, since they never need an
+address:
+
+- **Plain field access and single-element indexing** (`SIZE.field`,
+  `SIZE[i]`) — substituted directly against the already-known value, no
+  address involved either way.
+- **A `self`-receiver method call** (`SIZE.method()` where `method` takes
+  `self` by value) — `SIZE`'s value is simply substituted in as an
+  ordinary by-value argument, exactly like passing any other
+  `comp`-computed value into any other function.
+
+A `*mut self`/`&mut` in any of these shapes is still rejected (with the
+same diagnostic an ordinary immutable binding's `&mut` gets) — the
+promoted data is always read-only rodata, so there is no writable storage
+to hand out a mutable pointer into. Dereferencing a `comp` binding
+directly (`*SIZE`, distinct from a `*self`-receiver method call on one)
+remains unsupported.
 
 ## `&<place>` inside a `comp` evaluation
 
@@ -140,11 +175,13 @@ itself being computed inside the same `comp` evaluation) produces
 `ConstValue::Ref` — the address of another piece of `comp`-evaluated data,
 generalizing what a compile-time string/slice literal already does
 (both are secretly "pointer to a separately-built rodata blob") into one
-explicit case. This is what will let a `comp`-constructed value contain a
+explicit case. This is what lets a `comp`-constructed value contain a
 pointer into another piece of `comp`-computed data (e.g. a fixed buffer),
-not just string/slice literals — the interpreter and codegen both already
-support it; only the "take the address of a whole `comp` *binding* from
-outside a `comp` evaluation" case above is the deferred one.
+not just string/slice literals, and it's the exact same mechanism the
+"taking the address of ... a whole `comp` *binding* from outside a `comp`
+evaluation" section above reuses for const promotion — the two differ only
+in *when* the promotion fires (always, inside the interpreter, vs. on
+demand, from ordinary analysis).
 
 ## Codegen
 
@@ -159,6 +196,16 @@ math needed, mirroring an ordinary struct literal), while enum/union
 values are built in an anonymous stack slot at their real byte offsets
 (mirroring ordinary `EnumConstruct`/`UnionConstruct` codegen) and read
 back out as leaves.
+
+Every anonymous rodata blob a `ConstValue` (or a `&[...]` compile-time
+slice) gets emitted into is content-addressed and deduplicated by
+`Codegen::const_blobs`, keyed by the same content hash used to name the
+blob's own symbol — needed once const promotion (above) could reasonably
+emit *the same* comp value's content from two independent call sites
+(e.g. `&SIZE` and a `*self`-receiver method call on `SIZE`, both in the
+same compile): without a dedup check before `define_data`, the second
+emission would try to define an already-defined symbol and the linker
+step would reject it.
 
 ## Consolidation with existing constant positions
 

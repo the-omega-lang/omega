@@ -50,6 +50,20 @@ pub(crate) struct Codegen {
     /// ever differ in the *type* the surrounding expression carries, never
     /// in the bytes themselves).
     bytes: HashMap<String, DataId>,
+    /// `build_const_data`/`build_const_slice_data`'s own dedup cache,
+    /// keyed by their already-content-addressed symbol name
+    /// (`Codegen::data_symbol`'s hash of the value's canonical bytes) --
+    /// the `comp`/const-slice counterpart of `bytes` above, kept as its
+    /// own map rather than folded into `bytes` since the two are keyed by
+    /// different things (raw string content there, an arbitrary
+    /// `ConstValue`'s hash here). Without this, two independent constant
+    /// expressions that happen to evaluate to identical content (e.g. a
+    /// `comp` binding promoted to an address at two separate call sites --
+    /// see `analyze_address_of`'s and `adapt_comp_self_argument`'s own doc
+    /// comments) would each try to `define_data` under the same
+    /// content-derived symbol name, and `cranelift_module` rejects
+    /// defining the same symbol twice.
+    const_blobs: HashMap<String, DataId>,
     /// One vtable per distinct resolved slot list (`MirSpecCoerce::slots`)
     /// actually coerced to a `spec *Spec` value somewhere in this
     /// compilation -- built lazily, the first time a `MirExpr::SpecCoerce`
@@ -159,6 +173,7 @@ impl Codegen {
             captured_text: String::new(),
 
             bytes: HashMap::new(),
+            const_blobs: HashMap::new(),
             vtables: HashMap::new(),
             globals: HashMap::new(),
 

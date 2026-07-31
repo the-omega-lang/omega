@@ -461,21 +461,11 @@ impl<'r> Analyzer<'r> {
         range: &HirRange,
         requested_mutable: bool,
     ) -> Option<CheckedExprNode> {
-        let (checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base, None)?;
-        // See `Analyzer::analyze_address_of`'s identical `comp`-binding
-        // guard -- `&comp_binding[range]` has the same "not yet supported"
-        // gap `&comp_binding` does, for the same reason.
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_base.root {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::CompEvalFailed {
-                    reason: "slicing a 'comp' binding isn't supported yet".into(),
-                    trace: vec![],
-                },
-            );
-            return None;
-        }
+        let (mut checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base, None)?;
+        // Snapshotted before the match below moves `base_type` -- only
+        // needed by the `comp`-binding const-promotion path further down,
+        // as the `Deref` projection's target type (see there for why).
+        let base_type_snapshot = base_type.clone();
 
         // The slice's *source* mutability: for inline storage
         // (`SizedArray`), whether the storage being sliced is itself
@@ -511,6 +501,58 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
             self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
+        }
+
+        // `comp_binding[range]` -- const promotion, same as
+        // `analyze_address_of`'s identical guard (see there, and
+        // docs/19-compile-time-evaluation.md's "calling a method on a
+        // `comp` binding" section). `requested_mutable` is already ruled
+        // out by this point: a comp binding's own `source_mutable` is
+        // always `false` (never `mut`), so the check just above already
+        // rejected `&mut comp_binding[range]`.
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_base.root {
+            let value = self.resolve_comp_place(node_id, span, &checked_base)?;
+            checked_base = if from_fat_pointer {
+                // Already its own fat pointer (`Slice`/`Str`) -- no address
+                // needed at all, just materialize its two leaves (data
+                // pointer + length) directly; whatever rodata blob its own
+                // data pointer already targets (from whenever this comp
+                // value was originally built) is reused as-is, no new
+                // indirection layered on top.
+                let r#type = if is_str {
+                    ResolvedType::Str { mutable: false }
+                } else {
+                    ResolvedType::Slice { item: Box::new(item_type.clone()), mutable: false }
+                };
+                CheckedPlace {
+                    root: CheckedPlaceRoot::Expr(Box::new(CheckedExprNode {
+                        id: node_id,
+                        span,
+                        r#type,
+                        kind: CheckedExpr::Const(value),
+                    })),
+                    projections: vec![],
+                }
+            } else {
+                // Inline (`SizedArray`) storage -- needs a real address to
+                // slice into, which a `comp` binding doesn't have; promote
+                // it into one via the same `ConstValue::Ref` "address of a
+                // separately-built piece of `comp` data" codegen already
+                // knows how to emit into an anonymous rodata blob, then
+                // dereference it like any other pointer -- identical
+                // machinery to `analyze_address_of`'s own promotion, just
+                // immediately deref'd back down since a slice needs the
+                // *pointee*'s storage, not the pointer value itself.
+                CheckedPlace {
+                    root: CheckedPlaceRoot::Expr(Box::new(CheckedExprNode {
+                        id: node_id,
+                        span,
+                        r#type: ResolvedType::Pointer { pointee: Box::new(item_type.clone()), mutable: false },
+                        kind: CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
+                    })),
+                    projections: vec![CheckedProjection::Deref { r#type: base_type_snapshot }],
+                }
+            };
         }
 
         let analyze_bound = |this: &mut Self, bound: &Option<Box<HirExprNode>>| -> Option<Option<Box<CheckedExprNode>>> {

@@ -159,24 +159,6 @@ impl<'r> Analyzer<'r> {
         let base_place =
             HirPlace { root: place.root.clone(), projections: place.projections[..place.projections.len() - 1].to_vec() };
         let (checked, r#type, mutable) = self.analyze_place(callee.id, callee.span, &base_place, None)?;
-        // See `Analyzer::analyze_address_of`'s identical `comp`-binding
-        // guard -- a member call's receiver (`comp_binding.method(...)`)
-        // gets adapted into either a `CheckedExpr::AddressOf` or a bare
-        // `CheckedExpr::Place` further down (`adapt_self_argument`),
-        // neither of which goes through `analyze_place_read`'s own
-        // substitution -- same "not yet supported" gap, caught here before
-        // either path can build one.
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked.root {
-            self.error(
-                callee.id,
-                callee.span,
-                AnalysisErrorKind::CompEvalFailed {
-                    reason: "calling a method on a 'comp' binding isn't supported yet".into(),
-                    trace: vec![],
-                },
-            );
-            return None;
-        }
         let receiver = Receiver { place: base_place, checked, r#type, mutable };
 
         // Dynamic dispatch: the receiver is a `spec *Spec` value, not a
@@ -351,6 +333,17 @@ impl<'r> Analyzer<'r> {
         let wants_mutable = self_mode.is_mutable();
         let Receiver { place, checked, r#type, mutable } = receiver;
 
+        // `comp_binding.method(...)` -- resolved separately, before any of
+        // the ordinary arms below run: every one of them builds a
+        // `CheckedExpr::Place`/`AddressOf` node from `checked`, which a
+        // `Storage::Comp` place has no codegen meaning for (see
+        // `Storage::Comp`'s own doc comment). See
+        // `adapt_comp_self_argument`'s own doc comment for the substituted
+        // counterpart.
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked.root {
+            return self.adapt_comp_self_argument(id, span, checked, r#type, self_mode);
+        }
+
         let node = |r#type, kind| CheckedExprNode { id, span, r#type, kind };
         match (&r#type, self_mode.is_pointer()) {
             // self wants a pointer, the receiver already is one -- reuse it,
@@ -416,6 +409,84 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// `adapt_self_argument`'s `Storage::Comp` counterpart -- the same
+    /// six-way shape (pointer-typed/`Str`/`Slice`/plain-value receiver,
+    /// crossed with whether `self` wants a pointer or a value), just built
+    /// from an already-known `ConstValue` (via `resolve_comp_place`)
+    /// instead of a real place, since a `comp` binding has no address of
+    /// its own to build `CheckedExpr::Place`/`AddressOf` from.
+    ///
+    /// `self` wants a pointer needs const promotion exactly like a bare
+    /// `&comp_binding` does (see `analyze_address_of`'s identical case, and
+    /// docs/19-compile-time-evaluation.md's "calling a method on a `comp`
+    /// binding" section) -- except when the receiver's own type is already
+    /// `Pointer`/`Str`/`Slice` (its own fat-pointer-shaped representation),
+    /// in which case it's reused as-is, no extra indirection layered on.
+    /// `self` wants a value needs no promotion at all: the already-known
+    /// `ConstValue` is simply substituted in as an ordinary by-value
+    /// argument, same as passing any other comp-computed value into any
+    /// other function today.
+    ///
+    /// A `*mut self`/`&mut` is never legal here in any shape: once
+    /// promoted (or, if already a pointer, wherever it already points),
+    /// the data is real read-only rodata -- there is no writable storage a
+    /// `comp` binding could ever hand out a mutable pointer into.
+    fn adapt_comp_self_argument(
+        &mut self,
+        id: HirId,
+        span: Span,
+        checked: CheckedPlace,
+        r#type: ResolvedType,
+        self_mode: SelfMode,
+    ) -> Option<CheckedExprNode> {
+        if self_mode.is_pointer() && self_mode.is_mutable() {
+            self.error(id, span, AnalysisErrorKind::NotMutablePointer);
+            return None;
+        }
+        let value = self.resolve_comp_place(id, span, &checked)?;
+        let node = |r#type, kind| CheckedExprNode { id, span, r#type, kind };
+        match (&r#type, self_mode.is_pointer()) {
+            // self wants a pointer, the receiver is already one -- only
+            // reachable via `&<place>` *inside* an earlier `comp`
+            // evaluation (see `ConstValue::Ref`'s own doc comment) --
+            // reused as-is, widened to exactly the pointer shape self
+            // expects.
+            (ResolvedType::Pointer { pointee, .. }, true) => {
+                let pointer = ResolvedType::Pointer { pointee: Box::new(pointee.widened()), mutable: false };
+                Some(node(pointer, CheckedExpr::Const(value)))
+            }
+            // self wants a pointer, the receiver is a `Str`/`Slice` value
+            // -- already its own fat-pointer representation, exactly like
+            // the ordinary path's identical arms, so used as-is.
+            (ResolvedType::Str { .. }, true) => Some(node(ResolvedType::Str { mutable: false }, CheckedExpr::Const(value))),
+            (ResolvedType::Slice { item, .. }, true) => {
+                let slice = ResolvedType::Slice { item: item.clone(), mutable: false };
+                Some(node(slice, CheckedExpr::Const(value)))
+            }
+            // self wants a pointer, the receiver is a plain value -- const
+            // promotion (see `analyze_address_of`'s identical case).
+            (_, true) => {
+                let pointer = ResolvedType::Pointer { pointee: Box::new(r#type.widened()), mutable: false };
+                Some(node(pointer, CheckedExpr::Const(ConstValue::Ref(Box::new(value)))))
+            }
+            // self wants a value, the receiver is a pointer -- auto-deref:
+            // unwrap the one `ConstValue::Ref` layer `&<place>` *inside*
+            // the originating `comp` evaluation produced.
+            (ResolvedType::Pointer { pointee, .. }, false) => {
+                let ConstValue::Ref(inner) = value else {
+                    unreachable!(
+                        "a comp value's own type is only ever Pointer alongside a ConstValue::Ref -- see ConstValue::Ref's doc comment"
+                    );
+                };
+                Some(node(pointee.widened(), CheckedExpr::Const(*inner)))
+            }
+            // self wants a value and the receiver already is one --
+            // substituted in unchanged, exactly like the ordinary path's
+            // identical final arm.
+            (_, false) => Some(node(r#type.widened(), CheckedExpr::Const(value))),
+        }
+    }
+
     /// A `mut self` call needs a receiver that is writable *through the
     /// pointer it already is* -- an immutable pointer can never supply one.
     fn require_mutable_pointer(&mut self, id: HirId, span: Span, wants_mutable: bool, is_mutable: bool) -> Option<()> {
@@ -438,6 +509,24 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         receiver: Receiver,
     ) -> Option<CalleeResolution> {
+        // `comp_binding.callable_field(...)` -- calling a function *value*
+        // reached through a place, i.e. an indirect call, which is a
+        // separate, deliberately still-open gap (unlike a plain method
+        // call, resolved through `resolve_method_callee` instead -- see
+        // `Analyzer::adapt_self_argument`'s own `Storage::Comp` handling).
+        // Caught here, not in `resolve_callee`, so a comp-binding *method*
+        // call isn't dragged down by the same restriction.
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = receiver.checked.root {
+            self.error(
+                callee.id,
+                callee.span,
+                AnalysisErrorKind::CompEvalFailed {
+                    reason: "calling a function stored in a 'comp' binding's field isn't supported yet".into(),
+                    trace: vec![],
+                },
+            );
+            return None;
+        }
         let CheckedPlace { root, mut projections } = receiver.checked;
         let base_type = receiver.r#type;
         let field_type = self.with_reveal_bypass(was_reveal, callee.id, callee.span, |this| {

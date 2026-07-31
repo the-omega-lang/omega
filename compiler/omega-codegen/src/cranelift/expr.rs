@@ -307,6 +307,15 @@ impl Codegen {
     /// `EmptyArrayLiteral` already rejects it at analysis, same as a bare
     /// `[]`.
     fn build_const_slice_data(&mut self, elements: &[ConstValue], item_type: &ResolvedType) -> DataId {
+        let mut hash_input = Vec::new();
+        for element in elements {
+            self.hash_const_element(&mut hash_input, element, item_type);
+        }
+        let sym = Self::data_symbol(&hash_input);
+        if let Some(id) = self.const_blobs.get(&sym) {
+            return *id;
+        }
+
         let stride = layout::total_bytes(item_type, self.pointer_bytes());
         let mut bytes = vec![0u8; stride as usize * elements.len()];
         let mut desc = DataDescription::new();
@@ -315,13 +324,9 @@ impl Codegen {
         }
         desc.define(bytes.into_boxed_slice());
 
-        let mut hash_input = Vec::new();
-        for element in elements {
-            self.hash_const_element(&mut hash_input, element, item_type);
-        }
-        let sym = Self::data_symbol(&hash_input);
         let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
         self.module.define_data(id, &desc).unwrap();
+        self.const_blobs.insert(sym, id);
         id
     }
 
@@ -332,17 +337,22 @@ impl Codegen {
     /// at. Same anonymous, content-hashed, deduplicated `Preemptible` data
     /// object shape as every other rodata blob this module builds.
     fn build_const_data(&mut self, value: &ConstValue, r#type: &ResolvedType) -> DataId {
+        let mut hash_input = Vec::new();
+        self.hash_const_element(&mut hash_input, value, r#type);
+        let sym = Self::data_symbol(&hash_input);
+        if let Some(id) = self.const_blobs.get(&sym) {
+            return *id;
+        }
+
         let total = layout::total_bytes(r#type, self.pointer_bytes());
         let mut bytes = vec![0u8; total as usize];
         let mut desc = DataDescription::new();
         self.write_const_element(&mut desc, &mut bytes, 0, value, r#type);
         desc.define(bytes.into_boxed_slice());
 
-        let mut hash_input = Vec::new();
-        self.hash_const_element(&mut hash_input, value, r#type);
-        let sym = Self::data_symbol(&hash_input);
         let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
         self.module.define_data(id, &desc).unwrap();
+        self.const_blobs.insert(sym, id);
         id
     }
 

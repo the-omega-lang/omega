@@ -111,34 +111,51 @@ impl<'r> Analyzer<'r> {
         // doc comment). Any projections (`comp_struct.field`, `comp_arr[i]`,
         // ...) are applied directly against the already-known `ConstValue`
         // -- see `apply_comp_projection`.
-        if let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Comp, .. } = checked_place.root {
-            // `checked_place`'s own projection chain (`FieldAccess`,
-            // `EnumDynamicField`, ...) never reaches the final
-            // `CheckedModule` -- this whole node collapses into
-            // `CheckedExpr::Const` below -- so it would otherwise be
-            // invisible to `crate::dead_code::collect_module`'s
-            // whole-program usage walk, exactly like `eval_comp`'s own doc
-            // comment explains for a `comp <expr>`'s subtree. Recorded
-            // here, on the still-intact `CheckedPlace`, using the identical
-            // walk the post-hoc pass itself uses.
-            crate::dead_code::collect_place(&checked_place, &mut self.field_usage);
-            // A *local* comp binding's value lives in this throwaway
-            // `Analyzer`'s own `Context`; a top-level one's was recorded by
-            // a *different* `Analyzer` (the one that resolved its own
-            // `HirItem::Walrus`) and only survives in the driver's
-            // cross-item state -- see `ModuleResolver::resolve_comp_value`.
-            let mut value = self
-                .context
-                .comp_value(decl_id)
-                .cloned()
-                .or_else(|| self.resolver.resolve_comp_value(decl_id))
-                .expect("Storage::Comp is only ever produced alongside a recorded comp value, local or global");
-            for proj in &checked_place.projections {
-                value = self.apply_comp_projection(id, span, value, proj)?;
-            }
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_place.root {
+            let value = self.resolve_comp_place(id, span, &checked_place)?;
             return Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Const(value) });
         }
         Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Place(checked_place) })
+    }
+
+    /// Resolves a `Storage::Comp` place root's already-known value and
+    /// applies every remaining projection against it -- the shared
+    /// substitution logic every comp-binding read site needs identically
+    /// (`analyze_place_read`, `analyze_address_of`, and a comp-binding
+    /// method receiver in `calls::adapt_self_argument`).
+    ///
+    /// Also records `checked_place`'s field/variant usage
+    /// (`crate::dead_code`): every one of those call sites collapses
+    /// `checked_place` into a bare `CheckedExpr::Const` (or discards it
+    /// entirely), so it would otherwise never reach
+    /// `crate::dead_code::collect_module`'s whole-program usage walk --
+    /// exactly the same reasoning `eval_comp`'s own doc comment explains
+    /// for a `comp <expr>`'s subtree.
+    pub(super) fn resolve_comp_place(
+        &mut self,
+        id: HirId,
+        span: Span,
+        checked_place: &CheckedPlace,
+    ) -> Option<ConstValue> {
+        let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Comp, .. } = checked_place.root else {
+            unreachable!("resolve_comp_place is only ever called on a Storage::Comp place root");
+        };
+        crate::dead_code::collect_place(checked_place, &mut self.field_usage);
+        // A *local* comp binding's value lives in this throwaway
+        // `Analyzer`'s own `Context`; a top-level one's was recorded by a
+        // *different* `Analyzer` (the one that resolved its own
+        // `HirItem::Walrus`) and only survives in the driver's cross-item
+        // state -- see `ModuleResolver::resolve_comp_value`.
+        let mut value = self
+            .context
+            .comp_value(decl_id)
+            .cloned()
+            .or_else(|| self.resolver.resolve_comp_value(decl_id))
+            .expect("Storage::Comp is only ever produced alongside a recorded comp value, local or global");
+        for proj in &checked_place.projections {
+            value = self.apply_comp_projection(id, span, value, proj)?;
+        }
+        Some(value)
     }
 
     /// Applies one projection to an already-known `comp` value, producing
@@ -154,7 +171,7 @@ impl<'r> Analyzer<'r> {
     /// `eval_comp` -- an out-of-range or non-`comp`-evaluable index is
     /// exactly as much a "not evaluable at compile time" failure as
     /// anything else here.
-    fn apply_comp_projection(
+    pub(super) fn apply_comp_projection(
         &mut self,
         id: HirId,
         span: Span,
@@ -583,27 +600,30 @@ impl<'r> Analyzer<'r> {
             span,
             |this| this.analyze_place(base.id, base.span, place, None),
         )?;
-        // `&comp_binding` -- `&mut` on one is already impossible
-        // (`require_mutable_place` below rejects it: a `comp` binding is
-        // never `mutable`), but plain `&` isn't gated by mutability at all,
-        // so it needs its own explicit check here. Not yet supported: doing
-        // this soundly means producing `ConstValue::Ref` the same way the
-        // interpreter's own `&<comp place>` handling does (see `comp_eval::
-        // Interpreter::eval_expr`'s `AddressOf` arm), which needs threading
-        // through every place-producing call site, not just this one --
-        // deliberately deferred rather than reaching codegen with a
-        // `Storage::Comp` place it has no defined meaning for (see
-        // `Storage::Comp`'s own doc comment).
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_place.root {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::CompEvalFailed {
-                    reason: "taking the address of a 'comp' binding isn't supported yet".into(),
-                    trace: vec![],
-                },
-            );
-            return None;
+        // `&comp_binding` -- `&mut` on one is impossible (a `comp` binding
+        // is never `mutable`, so `require_mutable_place` below rejects it
+        // with the same diagnostic any other immutable binding's `&mut`
+        // gets -- deliberately *not* intercepted here), but plain `&` isn't
+        // gated by mutability at all, so it's handled here: **const
+        // promotion**, mirroring Rust's identical answer for `&SOME_CONST`
+        // (see docs/19-compile-time-evaluation.md's "calling a method on a
+        // `comp` binding" section). The binding's already-known value is
+        // wrapped in `ConstValue::Ref` -- the exact same "address of a
+        // separately-built piece of `comp` data" codegen already emits for
+        // `&<place>` *inside* a `comp` evaluation (see `comp_eval::
+        // Interpreter::eval_expr`'s `AddressOf` arm) -- so materializing it
+        // into a real, addressable rodata blob is already-proven machinery,
+        // just triggered from a new call site.
+        if !mutable {
+            if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_place.root {
+                let value = self.resolve_comp_place(node_id, span, &checked_place)?;
+                return Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: ResolvedType::Pointer { pointee: Box::new(place_type), mutable: false },
+                    kind: CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
+                });
+            }
         }
 
         let pointee_type = if mutable {
