@@ -2,11 +2,17 @@
 //! and leaf-flattening for any [`ResolvedType`]. Every function here is
 //! pure data computation over `ResolvedType` and a target's pointer width
 //! -- nothing in this module names a specific backend's native IR type, so
-//! a second backend (see `crate::BackendKind`) calls straight into this
-//! instead of re-deriving struct/enum layout from scratch. The one
-//! Cranelift-specific seam is `crate::cranelift::leaf::cranelift_type`,
-//! which maps a [`Leaf`] onto `cranelift::Type` -- a future backend adds
-//! its own equally small mapping, not another copy of this file.
+//! a second backend (see `omega_codegen::BackendKind`) calls straight into
+//! this instead of re-deriving struct/enum layout from scratch, and (the
+//! reason this lives here, in `omega-analyzer`, rather than in
+//! `omega-codegen` where it originated) a `comp` evaluation's own `sizeof`
+//! support (`comp_eval::Interpreter`) can call straight into it too --
+//! `omega-codegen` depends on `omega-analyzer`, never the other way, so
+//! this module has to live on the side both can reach. The one
+//! Cranelift-specific seam is `omega_codegen::cranelift::leaf::
+//! cranelift_type`, which maps a [`Leaf`] onto `cranelift::Type` -- a
+//! future backend adds its own equally small mapping, not another copy of
+//! this file.
 //!
 //! Layout is packed by default -- each field sits at the raw running byte
 //! sum of its predecessors -- unless `@layout(pack = ...)`/`@layout(align =
@@ -18,7 +24,7 @@
 //! passed as flattened positional scalars, not per-platform aggregate
 //! rules).
 
-use omega_analyzer::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
+use crate::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
 
 /// A single scalar machine value -- the backend-agnostic vocabulary every
 /// backend's own native IR type maps onto. `Ptr`'s size depends on the

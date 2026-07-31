@@ -8,14 +8,15 @@
 //!
 //! Everything backend-agnostic lives at the crate root or in a shared
 //! module: [`Target`] (a compilation target, in Omega's own vocabulary --
-//! see `target`'s own doc comment), `mangle` (linker symbol names), and
-//! `layout` (struct/enum/union byte layout -- the actual multi-backend
-//! enabler; see its own doc comment for why this used to be welded to
-//! Cranelift and no longer is).
+//! see `target`'s own doc comment) and `mangle` (linker symbol names).
+//! Struct/enum/union byte layout (`omega_analyzer::layout`) lives one
+//! crate down, in `omega-analyzer` -- originally lived here, moved so a
+//! `comp` evaluation's own `sizeof` support could call straight into the
+//! identical layout math this backend uses, rather than maintaining a
+//! second copy that could drift out of agreement with it.
 
 #[cfg(feature = "cranelift")]
 mod cranelift;
-mod layout;
 mod mangle;
 mod target;
 

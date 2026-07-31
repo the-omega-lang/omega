@@ -174,6 +174,18 @@ type CompResult<T> = Result<T, Outcome>;
 #[derive(Default)]
 struct Frame {
     locals: HashMap<HirId, ConstValue>,
+    /// Every `defer`'s own body, in the order each was *reached* (not
+    /// lexical/declaration order -- a `defer` inside a conditional branch
+    /// only queues if that branch actually runs) -- run in reverse (FILO)
+    /// when this frame's own function exits, whether via `return` or
+    /// falling off the end, matching this language's real `defer`
+    /// semantics (see `docs/00-functions.md`'s `defer` section): scoped to
+    /// the whole *function*, not the block a `defer` statement happens to
+    /// sit in, so this lives on the frame, not on any block-local state.
+    /// Cloned out of the checked tree at the point each `defer` runs (see
+    /// `Interpreter::eval_stmt`'s own `Defer` arm) since nothing here
+    /// borrows the callee's `CheckedFunctionDef` past its own call.
+    defers: Vec<CheckedBlock>,
 }
 
 struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
@@ -199,7 +211,28 @@ struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
 /// needs no coercion at all, just the ordinary blanket impl.
 pub fn eval<R: CompFunctionResolver + ?Sized>(resolver: &mut R, expr: &CheckedExprNode) -> Result<ConstValue, CompError> {
     let mut interp = Interpreter { resolver, fuel: FUEL_LIMIT, frames: vec![Frame::default()], call_trace: vec![] };
-    match interp.eval_expr(expr) {
+    let result = interp.eval_expr(expr);
+    // A `defer` reached directly by the outermost `comp <expr>` (rather
+    // than inside a function `call_function` itself calls into, which
+    // already drains its own frame's defers on the way out -- see its own
+    // doc comment) has no function-call boundary of its own to run at the
+    // end of; this frame is the closest thing to one. Same "only once the
+    // value itself evaluated cleanly" rule `call_function` applies.
+    let result = match result {
+        Ok(value) => {
+            let defers = std::mem::take(&mut interp.frame().defers);
+            let mut result = Ok(value);
+            for deferred in defers.into_iter().rev() {
+                if let Err(e) = interp.eval_block(&deferred) {
+                    result = Err(e);
+                    break;
+                }
+            }
+            result
+        }
+        Err(other) => Err(other),
+    };
+    match result {
         Ok(value) => Ok(value),
         Err(Outcome::Error(e)) => Err(e),
         // A bare `return`/`break`/`continue` reaching the outermost `comp
@@ -297,12 +330,28 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 Ok(ConstValue::Struct(fields))
             }
             CheckedExpr::EnumConstruct(construct) => {
-                let tag = self.enum_tag(node, construct.variant_index)?;
-                let mut fields = Vec::with_capacity(construct.fields.len());
+                let (tag, header, dynamic_count) = self.enum_variant_facts(node, construct.variant_index)?;
+                // `construct.fields` is in *source* (evaluation) order, each
+                // entry carrying its *declared* position in the combined
+                // "dynamic fields, then this variant's own body fields"
+                // list (see `CheckedEnumConstruct`'s doc comment) -- values
+                // are evaluated in source order (their side effects must
+                // run in that order) but stored positionally, exactly like
+                // `CheckedExpr::StructLiteral` just above.
+                let mut values: Vec<Option<ConstValue>> = (0..construct.fields.len()).map(|_| None).collect();
                 for field in &construct.fields {
-                    fields.push(self.eval_expr(&field.value)?);
+                    let value = self.eval_expr(&field.value)?;
+                    if field.field_index >= values.len() {
+                        values.resize(field.field_index + 1, None);
+                    }
+                    values[field.field_index] = Some(value);
                 }
-                Ok(ConstValue::Enum { variant_index: construct.variant_index, tag, fields })
+                let mut values: Vec<ConstValue> = values
+                    .into_iter()
+                    .map(|v| v.expect("analysis guarantees every declared field is initialized exactly once"))
+                    .collect();
+                let fields = values.split_off(dynamic_count);
+                Ok(ConstValue::Enum { variant_index: construct.variant_index, tag, header, dynamic_fields: values, fields })
             }
             CheckedExpr::UnionConstruct(construct) => {
                 let value = self.eval_expr(&construct.value)?;
@@ -310,23 +359,40 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::Slice(slice) => self.eval_slice(slice, node.span),
             CheckedExpr::Cast(cast) => self.eval_cast(cast, node.span),
-            CheckedExpr::Sizeof(_) => Err(self.err(node.span, CompErrorKind::Unsupported("sizeof"))),
+            // Pointer-width-independent: this compiler targets exactly one
+            // pointer width today (see `ResolvedType::numeric_kind`'s
+            // identical `ISize`/`USize` hardcoding), so `sizeof` inside a
+            // `comp` evaluation uses that same fixed width rather than
+            // threading a real target through the interpreter.
+            CheckedExpr::Sizeof(target) => {
+                Ok(ConstValue::Number(NumberValue::Unsigned(crate::layout::total_bytes(target, 8) as u64)))
+            }
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
         }
     }
 
-    /// The tag a fresh `EnumConstruct` needs -- read directly off the
+    /// The facts a fresh `EnumConstruct` needs -- read directly off the
     /// enum's shared resolved cell (`node.r#type` is always `ResolvedType::
     /// Enum { cell, variant: Some(variant_index) }` for an `EnumConstruct`
     /// node, per `CheckedExpr::EnumConstruct`'s own doc comment), the one
     /// point where the interpreter needs a `ResolvedType`, not just a
-    /// `ConstValue`, in scope.
-    fn enum_tag(&self, node: &CheckedExprNode, variant_index: usize) -> CompResult<NumberValue> {
+    /// `ConstValue`, in scope: the tag, a clone of the variant's own
+    /// per-variant header constants (see `ConstValue::Enum`'s doc comment
+    /// on why this is duplicated here rather than re-read from the cell at
+    /// every later access), and how many of `CheckedEnumConstruct::fields`'
+    /// combined list are shared dynamic fields (the rest are this
+    /// variant's own body fields) -- see that type's doc comment.
+    fn enum_variant_facts(
+        &self,
+        node: &CheckedExprNode,
+        variant_index: usize,
+    ) -> CompResult<(NumberValue, Vec<ConstValue>, usize)> {
         match &node.r#type {
             ResolvedType::Enum { cell, .. } => {
                 let cell = cell.borrow();
-                Ok(cell.variants[variant_index].tag)
+                let variant = &cell.variants[variant_index];
+                Ok((variant.tag, variant.header_values.clone(), cell.dynamic_fields.len()))
             }
             _ => unreachable!("CheckedExpr::EnumConstruct's own type is always ResolvedType::Enum"),
         }
@@ -469,7 +535,25 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // needs no per-shape handling here since the `ConstValue` is
             // simply carried through as-is either way.
             CastKind::Reinterpret => Ok(base),
-            CastKind::DropLength => Err(self.err(span, CompErrorKind::Unsupported("a fat-to-thin pointer cast"))),
+            // `*str`/`*[T]` (fat, `[ptr, len]`) -> `*u8`/`*T` (thin) --
+            // keeps the pointer leaf, discards the length, exactly like
+            // ordinary (non-`comp`) `DropLength` codegen does. Represented
+            // as `&<the raw bytes/elements, as an inline Array>`: `Ref`
+            // already means "address of a separately-built piece of comp
+            // data" (see its doc comment), and an `Array`'s own leaves are
+            // already written inline with no indirection of their own --
+            // exactly the byte layout a thin pointer's pointee has. Doesn't
+            // alias the *same* data object the fat-pointer form would use
+            // (a fresh one is built instead) -- harmless: nothing needs
+            // this pointer to be reference-equal to another, only valid.
+            CastKind::DropLength => match base {
+                ConstValue::Str(s) => {
+                    let bytes = s.bytes().map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64))).collect();
+                    Ok(ConstValue::Ref(Box::new(ConstValue::Array(bytes))))
+                }
+                ConstValue::Slice(elements) => Ok(ConstValue::Ref(Box::new(ConstValue::Array(elements)))),
+                _ => Err(self.err(span, CompErrorKind::Unsupported("a fat-to-thin pointer cast of a non-str/slice comp value"))),
+            },
             _ => {
                 let ConstValue::Number(n) = base else {
                     return Err(self.err(span, CompErrorKind::Unsupported("a numeric cast of a non-numeric comp value")));
@@ -605,13 +689,34 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             frame.locals.insert(param.id, value);
         }
         self.frames.push(frame);
-        let result = match self.eval_block(&body.body) {
+        let value = match self.eval_block(&body.body) {
             Ok(BlockResult::Value(v)) => Ok(v),
             // `Void`-returning function falling off the end with no tail --
             // matches `CheckedBlock::tail`'s own "no trailing expression"
             // convention; there is no meaningful value to hand back.
             Ok(BlockResult::Diverged) => Ok(ConstValue::Bool(false)),
             Err(Outcome::Signal(Signal::Return(v))) => Ok(v),
+            Err(other) => Err(other),
+        };
+        // Defers run only once the body itself finished evaluating cleanly
+        // (fell through, or hit an ordinary `return`) -- in FILO order,
+        // matching this language's real `defer` semantics. If the body
+        // failed instead, there's nothing for a defer to be cleaning up
+        // after: the whole comp evaluation has already failed regardless
+        // of what a deferred block might otherwise have done, so they're
+        // skipped rather than run against a value that was never produced.
+        let result = match value {
+            Ok(v) => {
+                let defers = std::mem::take(&mut self.frame().defers);
+                let mut result = Ok(v);
+                for deferred in defers.into_iter().rev() {
+                    if let Err(e) = self.eval_block(&deferred) {
+                        result = Err(e);
+                        break;
+                    }
+                }
+                result
+            }
             Err(other) => Err(other),
         };
         self.frames.pop();
@@ -650,7 +755,14 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedStmt::For(f) => self.eval_for(f),
             CheckedStmt::Break(_) => Err(Outcome::Signal(Signal::Break)),
             CheckedStmt::Continue(_) => Err(Outcome::Signal(Signal::Continue)),
-            CheckedStmt::Defer(d) => Err(self.err(d.span, CompErrorKind::Unsupported("defer inside a comp evaluation"))),
+            // Queued on the *frame* (function-scoped, not block-scoped --
+            // see `Frame::defers`' doc comment), not run here -- `call_
+            // function` runs every queued defer, in FILO order, once this
+            // frame's own function body finishes evaluating.
+            CheckedStmt::Defer(d) => {
+                self.frame().defers.push(d.body.clone());
+                Ok(())
+            }
         }
     }
 
@@ -758,19 +870,14 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 ConstValue::Enum { fields, .. } => Ok(fields[*field_index].clone()),
                 _ => Err(self.err(span, CompErrorKind::Unsupported("body-field access on a non-enum comp value"))),
             },
-            // A per-variant constant (`EnumHeader`) or genuine per-instance
-            // storage alongside the tag/body (`EnumDynamicField`) -- both
-            // need enum-shaped `comp` values to carry more than they do
-            // today (`ConstValue::Enum` only carries the tag and the
-            // statically-known variant's own body fields). Left for a
-            // follow-up rather than widening `ConstValue::Enum` further
-            // here; not needed by any case this feature was built for.
-            CheckedProjection::EnumHeader { .. } => {
-                Err(self.err(span, CompErrorKind::Unsupported("an enum header field inside a comp evaluation")))
-            }
-            CheckedProjection::EnumDynamicField { .. } => {
-                Err(self.err(span, CompErrorKind::Unsupported("an enum dynamic field inside a comp evaluation")))
-            }
+            CheckedProjection::EnumHeader { index, .. } => match value {
+                ConstValue::Enum { header, .. } => Ok(header[*index].clone()),
+                _ => Err(self.err(span, CompErrorKind::Unsupported("header access on a non-enum comp value"))),
+            },
+            CheckedProjection::EnumDynamicField { index, .. } => match value {
+                ConstValue::Enum { dynamic_fields, .. } => Ok(dynamic_fields[*index].clone()),
+                _ => Err(self.err(span, CompErrorKind::Unsupported("dynamic-field access on a non-enum comp value"))),
+            },
             CheckedProjection::UnionField { index, .. } => match value {
                 ConstValue::Union { field_index, value } if field_index == *index => Ok(*value),
                 ConstValue::Union { .. } => Err(self.err(span, CompErrorKind::Unsupported("reading a union through its inactive field"))),

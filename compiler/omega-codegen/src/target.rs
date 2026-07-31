@@ -36,7 +36,7 @@ impl Target {
 
     /// The width of a pointer/`usize`/`isize` on this target, in bytes --
     /// the one piece of target-specific information the shared layout
-    /// math (`crate::layout`) needs, so it never has to ask a backend
+    /// math (`omega_analyzer::layout`) needs, so it never has to ask a backend
     /// (which might not even exist yet, or might use a completely
     /// different native type system) what a pointer "is". Both
     /// architectures this compiler supports today are 64-bit; a future

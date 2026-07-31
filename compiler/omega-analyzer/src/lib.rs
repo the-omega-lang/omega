@@ -37,6 +37,7 @@ pub mod dead_code;
 pub mod error;
 mod exhaustiveness;
 mod generics;
+pub mod layout;
 pub mod resolved_type;
 pub mod resolver;
 pub mod similarity;

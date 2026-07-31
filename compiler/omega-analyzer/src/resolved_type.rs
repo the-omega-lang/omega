@@ -400,18 +400,28 @@ pub enum ConstValue {
     /// guarantee, so codegen can write leaves in list order with no name
     /// lookup, exactly like `Array`'s elements already are.
     Struct(Vec<ConstValue>),
-    /// A whole enum value, built by `comp` evaluation. `tag` is embedded
-    /// directly (rather than re-derived from the enum's shared
-    /// `ResolvedEnumType` cell via `variant_index` at every read) since a
-    /// `ConstValue` carries no reference back to its own `ResolvedType` --
-    /// this is the one deliberate divergence from `CheckedEnumConstruct`'s
-    /// shape, which *can* rely on the enclosing expression's own `r#type`
-    /// instead. `fields` are the variant's own body fields only, exactly
-    /// like `CheckedEnumConstruct::fields` -- the header is a per-variant
-    /// constant, not per-instance data, and (like `EnumDynamicField`) isn't
-    /// yet readable through a `comp`-evaluated enum value at all (see
-    /// `comp_eval`'s doc comment on `EnumHeader`/`EnumDynamicField`).
-    Enum { variant_index: usize, tag: crate::checked::NumberValue, fields: Vec<ConstValue> },
+    /// A whole enum value, built by `comp` evaluation. `tag` and `header`
+    /// are embedded directly (rather than re-derived from the enum's
+    /// shared `ResolvedEnumType` cell via `variant_index` at every read)
+    /// since a `ConstValue` carries no reference back to its own
+    /// `ResolvedType` -- the one deliberate divergence from
+    /// `CheckedEnumConstruct`'s shape, which *can* rely on the enclosing
+    /// expression's own `r#type` instead. `header` is a straight clone of
+    /// `ResolvedEnumVariant::header_values` (a per-variant *constant*, not
+    /// per-instance data -- duplicated here purely so a `comp` evaluation
+    /// can read `.header_field` back without needing type context, not
+    /// because it's genuinely separate storage). `dynamic_fields`/`fields`
+    /// split `CheckedEnumConstruct::fields`'s own combined "shared dynamic
+    /// fields first, then this variant's own body fields" list back into
+    /// its two real regions (see that type's doc comment) -- `comp_eval`'s
+    /// own construction is what does the splitting.
+    Enum {
+        variant_index: usize,
+        tag: crate::checked::NumberValue,
+        header: Vec<ConstValue>,
+        dynamic_fields: Vec<ConstValue>,
+        fields: Vec<ConstValue>,
+    },
     /// A whole union value, built by `comp` evaluation -- mirrors
     /// `CheckedUnionConstruct`: exactly one field written, at `field_index`.
     Union { field_index: usize, value: Box<ConstValue> },

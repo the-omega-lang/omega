@@ -86,7 +86,7 @@ impl Driver {
         }
         warnings.extend(self.diagnostics.drain_warnings(&local));
 
-        let mut usage = FieldUsage::default();
+        let mut usage = self.diagnostics.take_comp_field_usage();
         for (_, checked_module) in &modules {
             dead_code::collect_module(checked_module, &mut usage);
         }

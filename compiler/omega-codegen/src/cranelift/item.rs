@@ -3,7 +3,7 @@
 //! regardless of import direction.
 
 use super::Codegen;
-use crate::layout;
+use omega_analyzer::layout;
 use crate::mangle;
 use cranelift_module::{DataDescription, Linkage, Module};
 use omega_analyzer::annotations::ManglingMode;

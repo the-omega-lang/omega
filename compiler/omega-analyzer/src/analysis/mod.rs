@@ -177,6 +177,14 @@ pub struct Analyzer<'r> {
     /// body's own tail-position type (if any), to unify into one concrete
     /// return type.
     inferred_return_candidates: Vec<(Span, ResolvedType)>,
+    /// Field/variant usage recorded from `comp`-evaluated subtrees this
+    /// `Analyzer` run interpreted (see `eval_comp`) -- they collapse into a
+    /// `CheckedExpr::Const` and never reach the final `CheckedModule`, so
+    /// `crate::dead_code::collect_module`'s own whole-program walk would
+    /// otherwise never see the field accesses/enum constructions they
+    /// contained. Folded into the driver-wide `FieldUsage` by
+    /// `omega_driver::Driver::with_analyzer` once this `Analyzer` finishes.
+    field_usage: crate::dead_code::FieldUsage,
 }
 
 /// A top-level item's own name, or `None` for an `import` (which binds no
@@ -303,14 +311,17 @@ impl<'r> Analyzer<'r> {
             current_owner: None,
             inferring_return_type: false,
             inferred_return_candidates: vec![],
+            field_usage: crate::dead_code::FieldUsage::default(),
         }
     }
 
     /// Consumes this throwaway, per-item `Analyzer`, handing back whatever
     /// it accumulated -- `omega_driver::Driver` folds these into its own
-    /// per-module `module_errors`/warnings after every signature/body call.
-    pub fn finish(self) -> (Vec<AnalysisError>, Vec<AnalysisWarning>) {
-        (self.errors, self.warnings)
+    /// per-module `module_errors`/warnings after every signature/body call,
+    /// and `field_usage` into its own whole-program `FieldUsage` accumulator
+    /// (see `field_usage`'s own doc comment).
+    pub fn finish(self) -> (Vec<AnalysisError>, Vec<AnalysisWarning>, crate::dead_code::FieldUsage) {
+        (self.errors, self.warnings, self.field_usage)
     }
 
     /// Whether any currently active `@suppress(...)` frame (see

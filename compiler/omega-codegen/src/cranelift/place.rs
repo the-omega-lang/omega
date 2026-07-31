@@ -4,7 +4,7 @@
 
 use super::Codegen;
 use super::leaf::IntoCraneliftLeaves;
-use crate::layout;
+use omega_analyzer::layout;
 use cranelift::codegen::ir::StackSlot;
 use cranelift::prelude::{FunctionBuilder, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Value};
 use cranelift_module::Module;

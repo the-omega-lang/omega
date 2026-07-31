@@ -190,7 +190,7 @@ impl Codegen {
     }
 
     /// The width of a pointer on the target this `Codegen` was built for,
-    /// in bytes -- what every `crate::layout` call site needs in place of
+    /// in bytes -- what every `omega_analyzer::layout` call site needs in place of
     /// the `&Codegen` those functions used to take directly.
     pub(super) fn pointer_bytes(&self) -> u32 {
         self.pointer_type().bytes()

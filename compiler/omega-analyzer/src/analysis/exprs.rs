@@ -108,35 +108,117 @@ impl<'r> Analyzer<'r> {
         // A `comp` binding carries no storage -- every read substitutes its
         // already-known value directly, so this never reaches MIR lowering/
         // codegen as a `Storage::Comp` place at all (see `Storage::Comp`'s
-        // doc comment). A projection into a `comp` value (`comp_struct.field`)
-        // isn't supported yet -- a real, explicitly flagged v1 gap (see
-        // `docs/19-compile-time-evaluation.md`), not silently mishandled.
+        // doc comment). Any projections (`comp_struct.field`, `comp_arr[i]`,
+        // ...) are applied directly against the already-known `ConstValue`
+        // -- see `apply_comp_projection`.
         if let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Comp, .. } = checked_place.root {
-            if !checked_place.projections.is_empty() {
-                self.error(
-                    id,
-                    span,
-                    AnalysisErrorKind::CompEvalFailed {
-                        reason: "projecting into a 'comp' binding (e.g. a field access) isn't supported yet".into(),
-                        trace: vec![],
-                    },
-                );
-                return None;
-            }
+            // `checked_place`'s own projection chain (`FieldAccess`,
+            // `EnumDynamicField`, ...) never reaches the final
+            // `CheckedModule` -- this whole node collapses into
+            // `CheckedExpr::Const` below -- so it would otherwise be
+            // invisible to `crate::dead_code::collect_module`'s
+            // whole-program usage walk, exactly like `eval_comp`'s own doc
+            // comment explains for a `comp <expr>`'s subtree. Recorded
+            // here, on the still-intact `CheckedPlace`, using the identical
+            // walk the post-hoc pass itself uses.
+            crate::dead_code::collect_place(&checked_place, &mut self.field_usage);
             // A *local* comp binding's value lives in this throwaway
             // `Analyzer`'s own `Context`; a top-level one's was recorded by
             // a *different* `Analyzer` (the one that resolved its own
             // `HirItem::Walrus`) and only survives in the driver's
             // cross-item state -- see `ModuleResolver::resolve_comp_value`.
-            let value = self
+            let mut value = self
                 .context
                 .comp_value(decl_id)
                 .cloned()
                 .or_else(|| self.resolver.resolve_comp_value(decl_id))
                 .expect("Storage::Comp is only ever produced alongside a recorded comp value, local or global");
+            for proj in &checked_place.projections {
+                value = self.apply_comp_projection(id, span, value, proj)?;
+            }
             return Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Const(value) });
         }
         Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Place(checked_place) })
+    }
+
+    /// Applies one projection to an already-known `comp` value, producing
+    /// the projected-into `ConstValue` -- the analyzer-side counterpart of
+    /// `comp_eval::Interpreter`'s own (near-identical) `read_projection`,
+    /// kept as its own implementation rather than shared: this one reports
+    /// through `Analyzer::error`/`AnalysisErrorKind::CompEvalFailed`
+    /// (matching every other diagnostic in this module), while the
+    /// interpreter's uses its own `CompError`/call-trace machinery -- the
+    /// two error-reporting conventions don't unify cheaply, so a small
+    /// amount of duplicated *logic* (not the value itself) is the simpler
+    /// tradeoff. `Index`'s own index expression is evaluated via
+    /// `eval_comp` -- an out-of-range or non-`comp`-evaluable index is
+    /// exactly as much a "not evaluable at compile time" failure as
+    /// anything else here.
+    fn apply_comp_projection(
+        &mut self,
+        id: HirId,
+        span: Span,
+        value: ConstValue,
+        proj: &CheckedProjection,
+    ) -> Option<ConstValue> {
+        let unsupported = |this: &mut Self, reason: &str| -> Option<ConstValue> {
+            this.error(id, span, AnalysisErrorKind::CompEvalFailed { reason: reason.into(), trace: vec![] });
+            None
+        };
+        match proj {
+            CheckedProjection::FieldAccess { index, .. } => match value {
+                ConstValue::Struct(fields) => Some(fields[*index].clone()),
+                _ => unsupported(self, "field access on a non-struct comp value"),
+            },
+            CheckedProjection::Index { index_expr, .. } => {
+                let index_value = self.eval_comp(id, index_expr)?;
+                let index = match index_value {
+                    ConstValue::Number(NumberValue::Unsigned(n)) => n as usize,
+                    ConstValue::Number(NumberValue::Signed(n)) if n >= 0 => n as usize,
+                    _ => return unsupported(self, "a non-integer comp index"),
+                };
+                match value {
+                    ConstValue::Array(v) | ConstValue::Slice(v) => match v.get(index) {
+                        Some(v) => Some(v.clone()),
+                        None => unsupported(self, "an out-of-range comp index"),
+                    },
+                    _ => unsupported(self, "indexing a non-array/slice comp value"),
+                }
+            }
+            CheckedProjection::SliceLength => match value {
+                ConstValue::Slice(v) | ConstValue::Array(v) => Some(ConstValue::Number(NumberValue::Unsigned(v.len() as u64))),
+                ConstValue::Str(s) => Some(ConstValue::Number(NumberValue::Unsigned(s.len() as u64))),
+                _ => unsupported(self, "length of a non-slice/str comp value"),
+            },
+            CheckedProjection::EnumTag { .. } => match value {
+                ConstValue::Enum { tag, .. } => Some(ConstValue::Number(tag)),
+                _ => unsupported(self, "tag access on a non-enum comp value"),
+            },
+            CheckedProjection::EnumHeader { index, .. } => match value {
+                ConstValue::Enum { header, .. } => Some(header[*index].clone()),
+                _ => unsupported(self, "header access on a non-enum comp value"),
+            },
+            CheckedProjection::EnumDynamicField { index, .. } => match value {
+                ConstValue::Enum { dynamic_fields, .. } => Some(dynamic_fields[*index].clone()),
+                _ => unsupported(self, "dynamic-field access on a non-enum comp value"),
+            },
+            CheckedProjection::EnumBody { field_index, .. } => match value {
+                ConstValue::Enum { fields, .. } => Some(fields[*field_index].clone()),
+                _ => unsupported(self, "body-field access on a non-enum comp value"),
+            },
+            CheckedProjection::UnionField { index, .. } => match value {
+                ConstValue::Union { field_index, value } if field_index == *index => Some(*value),
+                ConstValue::Union { .. } => unsupported(self, "reading a union through its inactive field"),
+                _ => unsupported(self, "field access on a non-union comp value"),
+            },
+            // No real memory for a `comp` value to dereference through --
+            // the interpreter's own `Deref` handling has the identical
+            // restriction (see `comp_eval::Interpreter::read_projection`),
+            // for the identical reason.
+            CheckedProjection::Deref { .. } => {
+                unsupported(self, "dereferencing a pointer inside a 'comp' binding projection isn't supported yet")
+            }
+        }
     }
 
     /// `reveal base` -- fully transparent: this produces exactly what
@@ -181,7 +263,20 @@ impl<'r> Analyzer<'r> {
     /// interprets an already-`CheckedExpr::Const` node, an immediate,
     /// trivial success -- see `comp_eval::Interpreter::eval_expr`'s own
     /// `Const` arm).
+    ///
+    /// `expr` is about to collapse into (or be discarded in favor of) a
+    /// bare `CheckedExpr::Const` at every one of this method's call sites,
+    /// which would otherwise silently erase any field access/enum
+    /// construction it contains from `crate::dead_code`'s whole-program
+    /// usage walk (that walk only ever sees the final, persisted tree) --
+    /// recording `expr`'s usage here, unconditionally, before it's gone,
+    /// is what keeps a field/variant touched only inside a `comp`
+    /// evaluation from false-positiving as unused/never-constructed. Done
+    /// regardless of whether interpretation below actually succeeds: the
+    /// access is real in the source either way, and a failed evaluation
+    /// already hard-errors the compile on its own.
     pub(super) fn eval_comp(&mut self, id: HirId, expr: &CheckedExprNode) -> Option<crate::resolved_type::ConstValue> {
+        crate::dead_code::collect_expr(expr, &mut self.field_usage);
         match crate::comp_eval::eval(self.resolver, expr) {
             Ok(value) => Some(value),
             Err(err) => {

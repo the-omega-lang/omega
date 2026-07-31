@@ -78,7 +78,12 @@ type-checking, generic/overload/cross-module resolution, exactly as if
 interpreted. This means the interpreter needs no type-checking logic of
 its own, and covers everything ordinary expression analysis does:
 arithmetic, comparisons, `if`/`match`/`while`/`for`, struct/enum/union
-construction, and calls into other functions (same-module or
+construction (including a variant's header and shared dynamic fields, not
+just its tag and body fields), casts (including a fat-to-thin pointer
+cast, `<*u8>some_str_or_slice`), `sizeof<Type>`, `defer` (queued per call
+frame and run in FILO order once that frame's function finishes, exactly
+like at runtime — after the return value is already fixed, so a defer can
+never influence it), and calls into other functions (same-module or
 cross-module) — including a function whose own body itself uses `comp`.
 
 ```
@@ -110,27 +115,23 @@ failure happened several calls deep), never a crash:
   foreign/OS call inside the interpreter.
 - **Dynamic dispatch** (`spec *Self`, a coercion or a call through one) —
   no compile-time meaning without real vtable data.
-- **`sizeof<Type>`.**
+- **Calling through a function-typed variable or field** (an indirect
+  call) — only a call to a plain named function is supported today.
 - **Reading a non-`comp` global.** Only `comp`-bound identifiers (no
   storage, pure substitution) are readable from inside a `comp`
   evaluation; referencing an *earlier* `comp` binding works fine
   (ordinary substitution, same as calling an earlier-defined function
   already works).
-- **An enum's header or dynamic fields**, either read or constructed via
-  `comp` — only the tag and a variant's own body fields are supported
-  today (see `ConstValue::Enum`'s doc comment). The header is a
-  per-variant constant with no per-instance storage of its own, so this
-  is a narrower gap than it might sound — see [enums & pattern
-  matching](05-enums-and-pattern-matching.md).
-- **Taking the address of, slicing, or calling a method on a `comp`
-  binding** (`&SIZE`, `SIZE[0..1]`, `SIZE.method()`) — soundly supporting
-  this means producing `ConstValue::Ref` the way `&<place>` *inside* a
-  `comp` evaluation already does (see below), threaded through every
-  place-producing call site, not just one; deliberately deferred rather
-  than reaching codegen with a `Storage::Comp` place it has no defined
-  meaning for. Plain field access (`SIZE.field`) is unaffected — only
-  address-of/slice/method-call are rejected, whether the binding is local
-  or top-level.
+- **Taking the address of, range-slicing, dereferencing, or calling a
+  method on a `comp` binding** (`&SIZE`, `SIZE[0..1]`, `*SIZE`,
+  `SIZE.method()`) — soundly supporting this means producing
+  `ConstValue::Ref` the way `&<place>` *inside* a `comp` evaluation
+  already does (see below), threaded through every place-producing call
+  site, not just one; deliberately deferred rather than reaching codegen
+  with a `Storage::Comp` place it has no defined meaning for. Plain field
+  access and single-element indexing (`SIZE.field`, `SIZE[i]`) are
+  unaffected — only address-of/range-slicing/deref/method-call are
+  rejected, whether the binding is local or top-level.
 
 ## `&<place>` inside a `comp` evaluation
 

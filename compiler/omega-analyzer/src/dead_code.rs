@@ -9,6 +9,17 @@
 //! actually touched. `omega_driver::Driver::compile` then diffs this against
 //! each struct/union/enum cell's own declared fields/variants.
 //!
+//! One access pattern can't be found this way: a `comp <expr>` subtree is
+//! interpreted and then collapses into a single `CheckedExpr::Const`,
+//! discarding the `FieldAccess`/`EnumConstruct` nodes that this walk would
+//! otherwise have found -- by the time `collect_module` runs over the final
+//! tree, they're already gone. `Analyzer::eval_comp` covers that gap itself,
+//! calling `collect_expr` on the about-to-be-discarded checked subtree
+//! before replacing it, into a `FieldUsage` of its own that the driver folds
+//! into this module's post-hoc one (`FieldUsage::merge`) before the final
+//! sweep -- the same usage-collection logic, just run once eagerly (per
+//! `comp` evaluation) instead of only in the one whole-program pass.
+//!
 //! The walk itself mirrors `omega_codegen`'s `collect_defer_ids` family (same
 //! four-function recursive shape: block/stmt/expr/place) -- the two exist
 //! for different reasons (this collects usage, that collects defer ids to
@@ -39,6 +50,21 @@ pub struct FieldUsage {
     pub enum_dynamic_fields: HashSet<(HirId, usize)>,
     pub enum_body_fields: HashSet<(HirId, usize, usize)>,
     pub enum_variants: HashSet<(HirId, usize)>,
+}
+
+impl FieldUsage {
+    /// Folds `other` into `self` -- how a per-item `Analyzer`'s own usage
+    /// (recorded from a `comp`-evaluated subtree that never survives into
+    /// the final `CheckedModule`, see `Analyzer::eval_comp`) reaches the
+    /// driver-wide accumulator this module's own post-hoc `collect_module`
+    /// walk populates.
+    pub fn merge(&mut self, other: FieldUsage) {
+        self.struct_fields.extend(other.struct_fields);
+        self.union_fields.extend(other.union_fields);
+        self.enum_dynamic_fields.extend(other.enum_dynamic_fields);
+        self.enum_body_fields.extend(other.enum_body_fields);
+        self.enum_variants.extend(other.enum_variants);
+    }
 }
 
 pub fn collect_module(module: &CheckedModule, usage: &mut FieldUsage) {
@@ -101,7 +127,7 @@ fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
     }
 }
 
-fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
+pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
     match &expr.kind {
         CheckedExpr::Number(_)
         | CheckedExpr::Bool(_)
@@ -194,7 +220,7 @@ fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
 /// struct/union/enum owns the field a given projection reads requires the
 /// type one step *before* it, threaded through exactly like
 /// `Analyzer::analyze_place` itself threads its own running type.
-fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
+pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
     let mut current_type = match &place.root {
         CheckedPlaceRoot::Variable { r#type, .. } => Some(r#type.clone()),
         CheckedPlaceRoot::Expr(e) => {

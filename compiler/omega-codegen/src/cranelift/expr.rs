@@ -6,7 +6,7 @@
 use super::Codegen;
 use super::leaf::IntoCraneliftLeaves;
 use super::place::PlaceStorage;
-use crate::layout;
+use omega_analyzer::layout;
 use cranelift::codegen::ir::{FuncRef, Inst, StackSlot};
 use cranelift::prelude::{
     AbiParam, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind, Value, types,
@@ -19,6 +19,31 @@ use omega_mir::{
     MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall, MirEnumConstruct, MirExpr,
     MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
 };
+
+/// A `ConstValue::Ref(inner)`'s own real type, given the *pointee* type its
+/// enclosing `ResolvedType::Pointer` carries. For the ordinary case (`&x`
+/// where `x`'s own type already exactly matches the pointer's declared
+/// pointee -- e.g. `&some_i32`, pointee `I32`), `inner` and `pointee`
+/// genuinely are the same type, so this just returns `leaf_type` unchanged.
+/// But `CastKind::DropLength` (see `comp_eval::Interpreter::eval_cast`)
+/// produces a `Ref` wrapping an `Array` of `leaf_type`-typed elements (the
+/// fat pointer's raw bytes/items, rewrapped as an inline block so taking
+/// their address gives exactly the thin pointer a `DropLength` cast wants)
+/// -- there, `inner`'s real type is `SizedArray(leaf_type, N)`, not
+/// `leaf_type` itself, and building/hashing/writing it as the wrong type
+/// would either panic (wrong `ResolvedType` variant) or produce the wrong
+/// bytes. Reconstructing this from `inner`'s own shape (rather than
+/// carrying a real `ResolvedType` on `ConstValue::Ref` directly, which no
+/// other `ConstValue` variant does either) keeps `ConstValue` itself
+/// self-contained.
+fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedType {
+    match inner {
+        ConstValue::Array(elements) => {
+            ResolvedType::SizedArray(Box::new(leaf_type.clone()), elements.len() as u32)
+        }
+        _ => leaf_type.clone(),
+    }
+}
 
 impl Codegen {
     /// A byte-run constant's two-leaf `[pointer, length]` form -- the
@@ -159,16 +184,16 @@ impl Codegen {
             // real byte offsets (`layout.rs`, identical helpers), then read
             // the whole thing back out as flattened leaves. The header is
             // read from the enum's own shared cell (a per-variant constant,
-            // not per-instance data -- `ConstValue::Enum` never carries it,
-            // see its own doc comment); the dynamic-fields region is left
-            // zeroed (not yet constructible via `comp`, same documented gap
-            // `comp_eval::Interpreter`'s own `EnumDynamicField` rejection has).
-            ConstValue::Enum { variant_index, tag, fields } => {
+            // not per-instance data), same source `ConstValue::Enum::header`
+            // itself was cloned from -- re-derived here anyway since this
+            // already needs the cell for the dynamic/body field types and
+            // offsets regardless.
+            ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
                 };
                 let pointer_bytes = self.pointer_bytes();
-                let (tag_type, header, body) = {
+                let (tag_type, header, dynamic, body) = {
                     let enum_type = cell.borrow();
                     let variant = &enum_type.variants[*variant_index];
                     let header: Vec<(ResolvedType, ConstValue)> = enum_type
@@ -177,13 +202,19 @@ impl Codegen {
                         .zip(&variant.header_values)
                         .map(|((_, t, _), v)| (t.clone(), v.clone()))
                         .collect();
+                    let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
+                        .map(|i| {
+                            let offset = layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
+                            (offset, enum_type.dynamic_fields[i].1.clone())
+                        })
+                        .collect();
                     let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
                         .map(|i| {
                             let offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
                             (offset, variant.fields[i].1.clone())
                         })
                         .collect();
-                    (enum_type.tag_type.clone(), header, body)
+                    (enum_type.tag_type.clone(), header, dynamic, body)
                 };
 
                 let shift = layout::stack_align_shift(layout::type_alignment(r#type));
@@ -198,6 +229,11 @@ impl Codegen {
                     let values = self.emit_const_value(builder, value, field_type);
                     self.store_scalars(builder, &PlaceStorage::Slot { slot, offset }, &values);
                     offset += layout::total_bytes(field_type, pointer_bytes);
+                }
+
+                for (value, (field_offset, field_type)) in dynamic_fields.iter().zip(&dynamic) {
+                    let values = self.emit_const_value(builder, value, field_type);
+                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: *field_offset }, &values);
                 }
 
                 for (value, (field_offset, field_type)) in fields.iter().zip(&body) {
@@ -239,7 +275,8 @@ impl Codegen {
                 let ResolvedType::Pointer { pointee, .. } = r#type else {
                     unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
                 };
-                let data_id = self.build_const_data(inner, pointee);
+                let inner_type = ref_pointee_type(inner, pointee);
+                let data_id = self.build_const_data(inner, &inner_type);
                 let global_value = self.module.declare_data_in_func(data_id, builder.func);
                 vec![builder.ins().global_value(self.pointer_type(), global_value)]
             }
@@ -375,7 +412,7 @@ impl Codegen {
                     self.hash_const_element(out, value, field_type);
                 }
             }
-            ConstValue::Enum { variant_index, tag, fields } => {
+            ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
                 };
@@ -386,8 +423,17 @@ impl Codegen {
                     NumberValue::Float(v) => v.to_bits(),
                 };
                 out.extend_from_slice(&tag_bits.to_le_bytes());
-                let field_types: Vec<ResolvedType> =
-                    cell.borrow().variants[*variant_index].fields.iter().map(|(_, t, _)| t.clone()).collect();
+                let (dynamic_types, field_types) = {
+                    let enum_type = cell.borrow();
+                    let dynamic_types: Vec<ResolvedType> =
+                        enum_type.dynamic_fields.iter().map(|(_, t, _)| t.clone()).collect();
+                    let field_types: Vec<ResolvedType> =
+                        enum_type.variants[*variant_index].fields.iter().map(|(_, t, _)| t.clone()).collect();
+                    (dynamic_types, field_types)
+                };
+                for (value, field_type) in dynamic_fields.iter().zip(&dynamic_types) {
+                    self.hash_const_element(out, value, field_type);
+                }
                 for (value, field_type) in fields.iter().zip(&field_types) {
                     self.hash_const_element(out, value, field_type);
                 }
@@ -404,7 +450,7 @@ impl Codegen {
                 let ResolvedType::Pointer { pointee, .. } = r#type else {
                     unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
                 };
-                self.hash_const_element(out, inner, pointee);
+                self.hash_const_element(out, inner, &ref_pointee_type(inner, pointee));
             }
         }
     }
@@ -507,12 +553,12 @@ impl Codegen {
             // `emit_const_value`'s identical `Enum` case, one level of
             // indirection removed (writing into a byte buffer/relocation
             // list instead of a stack slot).
-            ConstValue::Enum { variant_index, tag, fields } => {
+            ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
                 };
                 let pointer_bytes = self.pointer_bytes();
-                let (tag_type, header, body) = {
+                let (tag_type, header, dynamic, body) = {
                     let enum_type = cell.borrow();
                     let variant = &enum_type.variants[*variant_index];
                     let header: Vec<(ResolvedType, ConstValue)> = enum_type
@@ -521,13 +567,19 @@ impl Codegen {
                         .zip(&variant.header_values)
                         .map(|((_, t, _), v)| (t.clone(), v.clone()))
                         .collect();
+                    let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
+                        .map(|i| {
+                            let field_offset = layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
+                            (field_offset, enum_type.dynamic_fields[i].1.clone())
+                        })
+                        .collect();
                     let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
                         .map(|i| {
                             let field_offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
                             (field_offset, variant.fields[i].1.clone())
                         })
                         .collect();
-                    (enum_type.tag_type.clone(), header, body)
+                    (enum_type.tag_type.clone(), header, dynamic, body)
                 };
 
                 self.write_const_element(desc, bytes, offset, &ConstValue::Number(*tag), &tag_type);
@@ -535,6 +587,9 @@ impl Codegen {
                 for (field_type, value) in &header {
                     self.write_const_element(desc, bytes, header_offset, value, field_type);
                     header_offset += layout::total_bytes(field_type, pointer_bytes);
+                }
+                for (value, (field_offset, field_type)) in dynamic_fields.iter().zip(&dynamic) {
+                    self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
                 }
                 for (value, (field_offset, field_type)) in fields.iter().zip(&body) {
                     self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
@@ -558,7 +613,8 @@ impl Codegen {
                 let ResolvedType::Pointer { pointee, .. } = r#type else {
                     unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
                 };
-                let inner_id = self.build_const_data(inner, pointee);
+                let inner_type = ref_pointee_type(inner, pointee);
+                let inner_id = self.build_const_data(inner, &inner_type);
                 let global_value = self.module.declare_data_in_data(inner_id, desc);
                 desc.write_data_addr(offset, global_value, 0);
             }

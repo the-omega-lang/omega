@@ -10,6 +10,7 @@
 use crate::error::CompileError;
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::Analyzer;
+use omega_analyzer::dead_code::FieldUsage;
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_diagnostics::Span;
@@ -23,6 +24,13 @@ use std::collections::HashMap;
 pub(crate) struct Diagnostics {
     errors: HashMap<ModulePath, Vec<AnalysisError>>,
     warnings: HashMap<ModulePath, Vec<AnalysisWarning>>,
+    /// Field/variant usage recorded from every `Analyzer` run's own
+    /// `comp`-evaluated subtrees (see `Analyzer::field_usage`'s doc
+    /// comment) -- folded in by every `with_analyzer` call, drained once by
+    /// `compile::Driver::compile` and merged with its own post-hoc,
+    /// whole-program `crate::dead_code::collect_module` walk before the
+    /// final unused-field/never-constructed-variant sweep.
+    comp_field_usage: FieldUsage,
 }
 
 impl Diagnostics {
@@ -67,6 +75,14 @@ impl Diagnostics {
             .flat_map(|path| self.warnings.remove(path).into_iter().flatten().map(move |w| (path.clone(), w)))
             .collect()
     }
+
+    /// Takes every `comp`-evaluation field/variant usage recorded so far,
+    /// leaving `FieldUsage::default()` behind -- `compile::Driver::compile`
+    /// calls this exactly once, after every module has finished checking,
+    /// to merge into its own post-hoc whole-program walk.
+    pub fn take_comp_field_usage(&mut self) -> FieldUsage {
+        std::mem::take(&mut self.comp_field_usage)
+    }
 }
 
 /// What one throwaway `Analyzer` run produced besides its own result.
@@ -98,8 +114,9 @@ impl Driver {
     ) -> AnalyzerRun<R> {
         let mut analyzer = Analyzer::new(self, module.to_vec(), generics, owner);
         let result = f(&mut analyzer);
-        let (errors, warnings) = analyzer.finish();
+        let (errors, warnings, field_usage) = analyzer.finish();
         let failed = self.diagnostics.record_errors(module, errors);
+        self.diagnostics.comp_field_usage.merge(field_usage);
         AnalyzerRun { result, failed, warnings }
     }
 

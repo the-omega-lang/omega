@@ -1,10 +1,10 @@
 //! The one Cranelift-specific seam in the shared layout math
-//! (`crate::layout`): mapping a backend-agnostic [`Leaf`] onto
+//! (`omega_analyzer::layout`): mapping a backend-agnostic [`Leaf`] onto
 //! Cranelift's own `Type`. A future backend adds an equally small mapping
-//! of its own here-shaped module -- never another copy of `crate::layout`.
+//! of its own here-shaped module -- never another copy of `omega_analyzer::layout`.
 
 use super::Codegen;
-use crate::layout::{self, Leaf};
+use omega_analyzer::layout::{self, Leaf};
 use cranelift::prelude::{Type, types};
 use omega_analyzer::resolved_type::ResolvedType;
 
@@ -23,7 +23,7 @@ pub(super) fn cranelift_type(leaf: Leaf, pointer_type: Type) -> Type {
 /// `ResolvedType -> Vec<cranelift::Type>` -- the direct replacement for
 /// what used to be a self-contained `IntoIRType` trait computing
 /// Cranelift types directly; the actual layout math now lives in
-/// `crate::layout`, shared with any future backend, and this is just the
+/// `omega_analyzer::layout`, shared with any future backend, and this is just the
 /// last step (`Leaf` -> `Type`) on top of it. Implemented for
 /// `&ResolvedType` (borrowing) rather than by value, so call sites never
 /// need a defensive `.clone()` just to ask "how many leaves does this
