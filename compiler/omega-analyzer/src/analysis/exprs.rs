@@ -26,6 +26,7 @@ impl<'r> Analyzer<'r> {
         match &node.expr {
             HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected),
             HirExpr::Reveal(inner) => self.analyze_reveal(id, span, inner, expected),
+            HirExpr::Comp(inner) => self.analyze_comp(id, span, inner, expected),
             HirExpr::Number(number) => self.analyze_number(id, span, number, expected),
             HirExpr::Bool(b) => literal(ResolvedType::Bool, CheckedExpr::Bool(*b)),
             HirExpr::Char(c) => literal(ResolvedType::Char, CheckedExpr::Char(*c)),
@@ -104,6 +105,37 @@ impl<'r> Analyzer<'r> {
         if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
             self.context.mark_used(decl_id);
         }
+        // A `comp` binding carries no storage -- every read substitutes its
+        // already-known value directly, so this never reaches MIR lowering/
+        // codegen as a `Storage::Comp` place at all (see `Storage::Comp`'s
+        // doc comment). A projection into a `comp` value (`comp_struct.field`)
+        // isn't supported yet -- a real, explicitly flagged v1 gap (see
+        // `docs/19-compile-time-evaluation.md`), not silently mishandled.
+        if let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Comp, .. } = checked_place.root {
+            if !checked_place.projections.is_empty() {
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::CompEvalFailed {
+                        reason: "projecting into a 'comp' binding (e.g. a field access) isn't supported yet".into(),
+                        trace: vec![],
+                    },
+                );
+                return None;
+            }
+            // A *local* comp binding's value lives in this throwaway
+            // `Analyzer`'s own `Context`; a top-level one's was recorded by
+            // a *different* `Analyzer` (the one that resolved its own
+            // `HirItem::Walrus`) and only survives in the driver's
+            // cross-item state -- see `ModuleResolver::resolve_comp_value`.
+            let value = self
+                .context
+                .comp_value(decl_id)
+                .cloned()
+                .or_else(|| self.resolver.resolve_comp_value(decl_id))
+                .expect("Storage::Comp is only ever produced alongside a recorded comp value, local or global");
+            return Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Const(value) });
+        }
         Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Place(checked_place) })
     }
 
@@ -119,7 +151,48 @@ impl<'r> Analyzer<'r> {
             self.warn(id, span, AnalysisWarningKind::UnnecessaryReveal);
         }
         result
-    
+
+    }
+
+    /// `comp base` -- evaluates `base` at compile time (see
+    /// `docs/19-compile-time-evaluation.md`). `base` is analyzed completely
+    /// ordinarily first -- full type-checking, generic/overload/cross-
+    /// module resolution, exactly as if `comp` weren't there at all -- so
+    /// this needs no type-checking logic of its own; only the resulting,
+    /// already-checked tree is handed to the interpreter
+    /// (`crate::comp_eval`). On success the whole node collapses into
+    /// `CheckedExpr::Const`, exactly like an ordinary literal, so nothing
+    /// downstream of analysis (MIR lowering, codegen) ever needs to know a
+    /// value came from `comp` at all.
+    fn analyze_comp(&mut self, id: HirId, span: Span, inner: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+        let checked = self.analyze_expr(inner, expected)?;
+        let r#type = checked.r#type.clone();
+        let value = self.eval_comp(id, &checked)?;
+        Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Const(value) })
+    }
+
+    /// Interprets an already-checked `expr` at compile time, reporting a
+    /// precise diagnostic (naming the exact blocking construct, plus the
+    /// call-site trace -- see `comp_eval::CompError`) and returning `None`
+    /// on failure. Shared by `analyze_comp` itself and a `comp`-bound
+    /// binding's own initializer, which needs exactly the same evaluate-or-
+    /// diagnose step regardless of whether its right-hand side happened to
+    /// carry its own explicit leading `comp` too (if it did, this simply
+    /// interprets an already-`CheckedExpr::Const` node, an immediate,
+    /// trivial success -- see `comp_eval::Interpreter::eval_expr`'s own
+    /// `Const` arm).
+    pub(super) fn eval_comp(&mut self, id: HirId, expr: &CheckedExprNode) -> Option<crate::resolved_type::ConstValue> {
+        match crate::comp_eval::eval(self.resolver, expr) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                self.error(
+                    id,
+                    err.span,
+                    AnalysisErrorKind::CompEvalFailed { reason: err.kind.to_string(), trace: err.trace },
+                );
+                None
+            }
+        }
     }
 
     /// An `if`/`else if`/`else` chain used as an expression.
@@ -415,6 +488,28 @@ impl<'r> Analyzer<'r> {
             span,
             |this| this.analyze_place(base.id, base.span, place, None),
         )?;
+        // `&comp_binding` -- `&mut` on one is already impossible
+        // (`require_mutable_place` below rejects it: a `comp` binding is
+        // never `mutable`), but plain `&` isn't gated by mutability at all,
+        // so it needs its own explicit check here. Not yet supported: doing
+        // this soundly means producing `ConstValue::Ref` the same way the
+        // interpreter's own `&<comp place>` handling does (see `comp_eval::
+        // Interpreter::eval_expr`'s `AddressOf` arm), which needs threading
+        // through every place-producing call site, not just this one --
+        // deliberately deferred rather than reaching codegen with a
+        // `Storage::Comp` place it has no defined meaning for (see
+        // `Storage::Comp`'s own doc comment).
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_place.root {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CompEvalFailed {
+                    reason: "taking the address of a 'comp' binding isn't supported yet".into(),
+                    trace: vec![],
+                },
+            );
+            return None;
+        }
 
         let pointee_type = if mutable {
             // `&mut` requires write access, and -- unlike plain `&`

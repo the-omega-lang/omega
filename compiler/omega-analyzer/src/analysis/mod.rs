@@ -189,6 +189,7 @@ pub struct Analyzer<'r> {
 pub fn item_name(item: &HirItem) -> Option<Ident> {
     match item {
         HirItem::Declaration(d) => Some(d.ident.clone()),
+        HirItem::Walrus(w) => Some(w.ident.clone()),
         HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
         HirItem::FunctionDefinition(f) => Some(f.name.clone()),
         HirItem::Struct(s) => Some(s.name.clone()),
@@ -214,6 +215,7 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
 pub fn item_visibility(item: &HirItem) -> Visibility {
     match item {
         HirItem::Declaration(d) => d.visibility,
+        HirItem::Walrus(w) => w.visibility,
         HirItem::ExternDeclaration(d) => d.visibility,
         HirItem::FunctionDefinition(f) => f.visibility,
         HirItem::Struct(s) => s.visibility,
@@ -229,6 +231,7 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
 pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
     match item {
         HirItem::Declaration(d) => (d.id, d.span),
+        HirItem::Walrus(w) => (w.id, w.span),
         HirItem::ExternDeclaration(d) => (d.id, d.span),
         HirItem::FunctionDefinition(f) => (f.id, f.span),
         HirItem::Struct(s) => (s.id, s.span),
@@ -435,6 +438,24 @@ impl<'r> Analyzer<'r> {
                 written: false,
             },
         )
+    }
+
+    /// `comp ident := comp expr;` -- binds `ident` with `Storage::Comp`
+    /// (never `mutable`: see `AnalysisErrorKind::MutCompBinding`, checked
+    /// by the caller before this runs) and records its already-evaluated
+    /// `value` in `Context::comp_values`, so `analyze_place_read` can
+    /// substitute every later reference with it directly.
+    fn declare_comp_binding(
+        &mut self,
+        id: HirId,
+        span: Span,
+        ident: &Ident,
+        r#type: ResolvedType,
+        value: crate::resolved_type::ConstValue,
+    ) -> Option<()> {
+        self.declare_binding(id, span, ident, r#type, Storage::Comp, false)?;
+        self.context.set_comp_value(id, value);
+        Some(())
     }
 
     /// See `VarBinding::narrowed`'s doc comment -- used only by

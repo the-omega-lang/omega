@@ -159,6 +159,24 @@ impl<'r> Analyzer<'r> {
         let base_place =
             HirPlace { root: place.root.clone(), projections: place.projections[..place.projections.len() - 1].to_vec() };
         let (checked, r#type, mutable) = self.analyze_place(callee.id, callee.span, &base_place, None)?;
+        // See `Analyzer::analyze_address_of`'s identical `comp`-binding
+        // guard -- a member call's receiver (`comp_binding.method(...)`)
+        // gets adapted into either a `CheckedExpr::AddressOf` or a bare
+        // `CheckedExpr::Place` further down (`adapt_self_argument`),
+        // neither of which goes through `analyze_place_read`'s own
+        // substitution -- same "not yet supported" gap, caught here before
+        // either path can build one.
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked.root {
+            self.error(
+                callee.id,
+                callee.span,
+                AnalysisErrorKind::CompEvalFailed {
+                    reason: "calling a method on a 'comp' binding isn't supported yet".into(),
+                    trace: vec![],
+                },
+            );
+            return None;
+        }
         let receiver = Receiver { place: base_place, checked, r#type, mutable };
 
         // Dynamic dispatch: the receiver is a `spec *Spec` value, not a

@@ -684,7 +684,7 @@ impl FunctionLowerer {
             CheckedExpr::Char(c) => MirExprNode { id, span, r#type, kind: MirExpr::Char(c) },
             CheckedExpr::String(s) => MirExprNode { id, span, r#type, kind: MirExpr::String(s) },
             CheckedExpr::ByteString(s) => MirExprNode { id, span, r#type, kind: MirExpr::ByteString(s) },
-            CheckedExpr::ConstSlice(v) => MirExprNode { id, span, r#type, kind: MirExpr::ConstSlice(v) },
+            CheckedExpr::Const(v) => MirExprNode { id, span, r#type, kind: MirExpr::Const(v) },
             CheckedExpr::Sizeof(t) => MirExprNode { id, span, r#type, kind: MirExpr::Sizeof(t) },
 
             CheckedExpr::FunctionCall(call) => {
@@ -980,7 +980,7 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) 
         | CheckedExpr::Char(_)
         | CheckedExpr::String(_)
         | CheckedExpr::ByteString(_)
-        | CheckedExpr::ConstSlice(_)
+        | CheckedExpr::Const(_)
         | CheckedExpr::Sizeof(_) => {}
         CheckedExpr::Place(p) => collect_defer_ids_place(p, out),
         CheckedExpr::FunctionCall(call) => {

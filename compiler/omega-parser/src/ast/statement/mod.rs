@@ -44,6 +44,15 @@ pub enum Item {
     /// See `SpecStmt`'s doc comment -- same top-level-only reasoning as
     /// `Struct`/`Enum`/`Union` above.
     Spec(SpecStmt),
+    /// `[comp] ident := value;` -- top-level walrus. Unlike `Declaration`
+    /// (whose type is always written down), only legal when `comp` (see
+    /// `WalrusStmt::comp`); a top-level binding whose type must be
+    /// *inferred* but that has no `comp` marker is rejected during
+    /// analysis, not here (see `AnalysisErrorKind::TopLevelWalrusNotComp`)
+    /// -- consistent with how this language generally defers semantic
+    /// rules to analysis rather than the grammar wherever the shape alone
+    /// doesn't already make something illegal.
+    Walrus(WalrusStmt),
     Import(ImportStmt),
     /// Expanded away entirely (along with `MacroInvocation` below) by
     /// `omega_parser::macros::expand` before HIR lowering ever runs -- see

@@ -3,7 +3,7 @@ pub use crate::ast::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
     assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
     bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
-    codeblock::CodeblockExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
+    codeblock::CodeblockExpr, comp::CompExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     macro_invocation::MacroInvocationExpr, match_expr::{MatchArm, MatchExpr, Pattern},

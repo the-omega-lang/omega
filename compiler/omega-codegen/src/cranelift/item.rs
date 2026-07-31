@@ -3,8 +3,9 @@
 //! regardless of import direction.
 
 use super::Codegen;
+use crate::layout;
 use crate::mangle;
-use cranelift_module::Linkage;
+use cranelift_module::{DataDescription, Linkage, Module};
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::resolved_type::ResolvedType;
@@ -104,8 +105,30 @@ impl Codegen {
                     self.declare_function_def(f, mangled, linkage_for(&u.type_args));
                 }
             }
-            MirItem::Declaration(_) => {
-                todo!("global data declarations are not yet implemented");
+            // A top-level global (`ident: Type;`, `Storage::Global`) --
+            // always zero-initialized: `CheckedDeclaration` carries no
+            // initializer at all (a real one exists only for a `comp`-
+            // initialized *non-`comp`* binding, `b := comp expr();`, which
+            // doesn't lower through this path yet -- see the compile-time-
+            // evaluation implementation plan's top-level-bindings task).
+            // `Export` (strong) linkage unconditionally: a global is never
+            // a generic instantiation the way a function/method can be, so
+            // there's no multi-definition-folding need for `Preemptible`
+            // here (see `linkage_for`'s own doc comment for why that
+            // distinction matters at all). `writable: true` regardless of
+            // the source-level `mut`/plain distinction -- that's enforced
+            // at analysis time (only a `mut` binding's `CheckedAssignment`
+            // ever exists in the checked tree at all), not by object-file
+            // memory protection, exactly like a local's stack slot is
+            // never protected either.
+            MirItem::Declaration(decl) => {
+                let symbol = mangle::encode(&mangle::global_symbol(path, &decl.ident));
+                let total = layout::total_bytes(&decl.r#type, self.pointer_bytes());
+                let data_id = self.module.declare_data(&symbol, Linkage::Export, true, false).unwrap();
+                let mut desc = DataDescription::new();
+                desc.define_zeroinit(total as usize);
+                self.module.define_data(data_id, &desc).unwrap();
+                self.globals.insert(decl.id, data_id);
             }
         }
     }
@@ -134,9 +157,9 @@ impl Codegen {
                     self.define_function_def(f);
                 }
             }
-            MirItem::Declaration(_) => {
-                todo!("global data declarations are not yet implemented");
-            }
+            // Already fully handled by `declare_item` -- there's no
+            // separate initializer body to define (see its own doc comment).
+            MirItem::Declaration(_) => {}
         }
     }
 

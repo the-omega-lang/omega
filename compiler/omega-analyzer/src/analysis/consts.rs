@@ -110,10 +110,24 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
-            _ => {
-                self.error(expr.id, expr.span, AnalysisErrorKind::EnumValueNotConstant);
-                None
-            }
+            // Not a recognized literal shape -- fall back to the general
+            // `comp` evaluator (`crate::comp_eval`) rather than immediately
+            // rejecting: an enum header value is an inherently compile-
+            // time-only position (no `comp` keyword needed here, same as
+            // every literal shape above), so anything the interpreter can
+            // resolve -- arithmetic, a call, even a nested struct built
+            // from a `comp` function -- is just as legitimate a header
+            // value as a bare literal always was. This is the one place
+            // `const_eval`'s literal-only origins actually generalize; the
+            // literal arms above stay exactly as they are (same accepted
+            // syntax, same error wording) rather than being rerouted
+            // through this same path, since their existing messages are
+            // more specific than anything a general fallback could give.
+            _ => match self.analyze_expr(expr, Some(expected)) {
+                Some(checked) if checked.r#type == *expected => self.eval_comp(expr.id, &checked),
+                Some(checked) => mismatch(self, &format!("a value of type `{}`", checked.r#type)),
+                None => None,
+            },
         }
     }
 
@@ -305,10 +319,15 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
-            _ => {
-                self.error(expr.id, expr.span, AnalysisErrorKind::ConstSliceElementNotConstant);
-                None
-            }
+            // See `const_eval`'s identical fallback -- a `&[...]` compile-
+            // time slice's elements are just as inherently compile-time-
+            // only as an enum header's, so anything the interpreter can
+            // resolve is as legitimate an element as a bare literal.
+            _ => match self.analyze_expr(expr, Some(expected)) {
+                Some(checked) if checked.r#type == *expected => self.eval_comp(expr.id, &checked),
+                Some(checked) => mismatch(self, &format!("a value of type `{}`", checked.r#type)),
+                None => None,
+            },
         }
     }
 }

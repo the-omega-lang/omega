@@ -39,6 +39,15 @@ impl Lowerer {
             Item::Declaration(decl) => {
                 HirItem::Declaration(self.lower_declaration(decl, node.span))
             }
+            Item::Walrus(w) => HirItem::Walrus(HirWalrusDeclaration {
+                id: self.ids.next(),
+                span: node.span,
+                ident: w.ident.clone(),
+                value: self.lower_expr(&w.value),
+                mutable: w.mutable,
+                comp: w.comp,
+                visibility: w.visibility,
+            }),
             Item::ExternDeclaration(decl) => {
                 HirItem::ExternDeclaration(self.lower_extern_declaration(decl, node.span))
             }
@@ -105,6 +114,8 @@ impl Lowerer {
                 ident: w.ident.clone(),
                 value: self.lower_expr(&w.value),
                 mutable: w.mutable,
+                comp: w.comp,
+                visibility: Visibility::default(),
             })],
             Statement::While(w) => vec![HirStmt::While(HirWhile {
                 id: self.ids.next(),
@@ -340,6 +351,8 @@ impl Lowerer {
                 }),
             },
             mutable: true,
+            comp: false,
+            visibility: Visibility::default(),
         })
     }
 
@@ -613,6 +626,10 @@ impl Lowerer {
             Expression::Reveal(reveal) => {
                 let base = Box::new(self.lower_expr(&reveal.base));
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Reveal(base) }
+            }
+            Expression::Comp(comp) => {
+                let base = Box::new(self.lower_expr(&comp.base));
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Comp(base) }
             }
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));

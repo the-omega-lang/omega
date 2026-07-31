@@ -394,6 +394,37 @@ pub enum ConstValue {
     /// header region, or a nested array/slice element), exactly like an
     /// ordinary `SizedArray` value's own layout.
     Array(Vec<ConstValue>),
+    /// A whole struct value, built by `comp` evaluation (see
+    /// `crate::comp_eval`) -- fields in declared (`field_index`) order,
+    /// mirroring `crate::checked::CheckedStructLiteral`'s own field-order
+    /// guarantee, so codegen can write leaves in list order with no name
+    /// lookup, exactly like `Array`'s elements already are.
+    Struct(Vec<ConstValue>),
+    /// A whole enum value, built by `comp` evaluation. `tag` is embedded
+    /// directly (rather than re-derived from the enum's shared
+    /// `ResolvedEnumType` cell via `variant_index` at every read) since a
+    /// `ConstValue` carries no reference back to its own `ResolvedType` --
+    /// this is the one deliberate divergence from `CheckedEnumConstruct`'s
+    /// shape, which *can* rely on the enclosing expression's own `r#type`
+    /// instead. `fields` are the variant's own body fields only, exactly
+    /// like `CheckedEnumConstruct::fields` -- the header is a per-variant
+    /// constant, not per-instance data, and (like `EnumDynamicField`) isn't
+    /// yet readable through a `comp`-evaluated enum value at all (see
+    /// `comp_eval`'s doc comment on `EnumHeader`/`EnumDynamicField`).
+    Enum { variant_index: usize, tag: crate::checked::NumberValue, fields: Vec<ConstValue> },
+    /// A whole union value, built by `comp` evaluation -- mirrors
+    /// `CheckedUnionConstruct`: exactly one field written, at `field_index`.
+    Union { field_index: usize, value: Box<ConstValue> },
+    /// The address of another piece of `comp`-evaluated data (`&<place>`
+    /// where `<place>` itself evaluated cleanly) -- generalizes what `Str`/
+    /// `Slice` above already do ad hoc (both are secretly "pointer to a
+    /// separately-built rodata blob") into one explicit indirection, so a
+    /// struct field can point at e.g. a sibling `comp`-computed buffer, not
+    /// just a string/slice literal. Never a pointer into *runtime* memory --
+    /// the interpreter only ever produces one of these by evaluating a
+    /// place it fully evaluated itself; see `comp_eval`'s rejection of any
+    /// pointer the interpreter didn't itself produce.
+    Ref(Box<ConstValue>),
 }
 
 /// How a numeric resolved type behaves arithmetically: its signedness (or

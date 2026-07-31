@@ -22,6 +22,9 @@ pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) ->
             }
             Storage::Function => MirPlaceRoot::Function(decl_id),
             Storage::Global => MirPlaceRoot::Global { id: decl_id, r#type },
+            Storage::Comp => {
+                unreachable!("a comp binding is substituted into CheckedExpr::Const during analysis -- see Storage::Comp's doc comment")
+            }
         },
         CheckedPlaceRoot::Expr(e) => MirPlaceRoot::Expr(Box::new(lowerer.lower_expr(*e))),
     };

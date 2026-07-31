@@ -467,7 +467,13 @@ impl<'r> Analyzer<'r> {
             }
             ConstValue::Bool(b) => *b as i128,
             ConstValue::Char(c) => *c as i128,
-            ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
+            ConstValue::Str(_)
+            | ConstValue::Slice(_)
+            | ConstValue::Array(_)
+            | ConstValue::Struct(_)
+            | ConstValue::Enum { .. }
+            | ConstValue::Union { .. }
+            | ConstValue::Ref(_) => {
                 unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
             }
         }
@@ -485,7 +491,13 @@ impl<'r> Analyzer<'r> {
             ConstValue::Number(n) => CheckedExpr::Number(n),
             ConstValue::Bool(b) => CheckedExpr::Bool(b),
             ConstValue::Char(c) => CheckedExpr::Char(c),
-            ConstValue::Str(_) | ConstValue::Slice(_) | ConstValue::Array(_) => {
+            ConstValue::Str(_)
+            | ConstValue::Slice(_)
+            | ConstValue::Array(_)
+            | ConstValue::Struct(_)
+            | ConstValue::Enum { .. }
+            | ConstValue::Union { .. }
+            | ConstValue::Ref(_) => {
                 unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
             }
         };

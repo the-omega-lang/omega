@@ -8,6 +8,7 @@ pub mod byte_string;
 pub mod cast;
 pub mod char_literal;
 pub mod codeblock;
+pub mod comp;
 pub mod compound_assign;
 pub mod deref;
 pub mod field_access;
@@ -29,7 +30,7 @@ use crate::ast::identifier::ExprPath;
 use crate::ast::expression::{
     address_of::AddressOfExpr, array_literal::ArrayLiteralExpr, assignment::AssignmentExpr,
     bit_not::BitNotExpr, binary_op::BinaryOpExpr, bool_literal::BoolExpr, byte_string::ByteStringExpr,
-    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr,
+    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr, comp::CompExpr,
     compound_assign::CompoundAssignExpr, deref::DerefExpr, field_access::FieldAccessExpr,
     function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
     index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
@@ -56,6 +57,8 @@ pub enum Expression {
     AddressOf(Box<AddressOfExpr>),
     /// `reveal base` -- see `RevealExpr`'s doc comment.
     Reveal(Box<RevealExpr>),
+    /// `comp base` -- see `CompExpr`'s doc comment.
+    Comp(Box<CompExpr>),
     Negate(Box<NegateExpr>),
     /// `~base` -- see `BitNotExpr`'s doc comment.
     BitNot(Box<BitNotExpr>),

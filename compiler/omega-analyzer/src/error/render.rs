@@ -533,6 +533,19 @@ impl AnalysisErrorKind {
             Self::ManglingDisabledOnMethod => d
                 .with_label(span, "cannot disable mangling on a struct/enum/union method")
                 .with_help("only top-level functions can disable mangling for now"),
+            Self::CompEvalFailed { trace, .. } => {
+                let mut d = d.with_label(span, "cannot be evaluated at compile time");
+                for call_site in trace {
+                    d = d.with_secondary_label(*call_site, "required by this compile-time call");
+                }
+                d
+            }
+            Self::MutCompBinding => d
+                .with_label(span, "'comp' binding cannot be 'mut'")
+                .with_note("a 'comp' binding has no storage of its own -- every use is substituted with its already-known value at compile time, so a later mutation could never be observed"),
+            Self::TopLevelWalrusNotComp => d
+                .with_label(span, "missing 'comp'")
+                .with_help("write 'comp ident := value;' -- a runtime-computed top-level global isn't supported yet"),
         }
     }
 }

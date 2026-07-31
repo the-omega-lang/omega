@@ -2,7 +2,7 @@ use crate::ast::expression::{
     Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
     assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
     bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
-    codeblock::CodeblockExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
+    codeblock::CodeblockExpr, comp::CompExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, reveal::RevealExpr, sizeof::SizeofExpr, slice::SliceExpr,
@@ -199,6 +199,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Increment,
         Decrement,
         Reveal,
+        Comp,
     }
     let prefix = match p.peek() {
         TokenKind::PlusPlus => Prefix::Increment,
@@ -219,6 +220,9 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         // this sits at the same precedence tier as `Deref`/`AddressOf`
         // rather than being restricted to place-shaped expressions.
         TokenKind::Ident(name) if name == "reveal" => Prefix::Reveal,
+        // `comp` is a contextual keyword too (identical text-comparison
+        // pattern) -- see `CompExpr`'s doc comment.
+        TokenKind::Ident(name) if name == "comp" => Prefix::Comp,
         _ => return parse_postfix(p),
     };
     p.advance();
@@ -233,6 +237,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
         Prefix::BitNot => Expression::BitNot(Box::new(BitNotExpr { base })),
         Prefix::Reveal => Expression::Reveal(Box::new(RevealExpr { base })),
+        Prefix::Comp => Expression::Comp(Box::new(CompExpr { base })),
         Prefix::Increment => Expression::Increment(Box::new(IncrementExpr { base })),
         Prefix::Decrement => Expression::Decrement(Box::new(DecrementExpr { base })),
     };

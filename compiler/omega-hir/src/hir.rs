@@ -43,6 +43,11 @@ pub struct HirModule {
 #[derive(Debug, Clone)]
 pub enum HirItem {
     Declaration(HirDeclaration),
+    /// `[comp] ident := value;` -- see `omega_parser::ast::statement::
+    /// Item::Walrus`'s doc comment. Reuses `HirWalrusDeclaration` (the
+    /// local-statement node) directly -- `HirWalrusDeclaration::visibility`
+    /// is what's actually meaningful here.
+    Walrus(HirWalrusDeclaration),
     ExternDeclaration(HirExternDeclaration),
     FunctionDefinition(HirFunctionDef),
     Struct(HirStructDef),
@@ -435,6 +440,14 @@ pub struct HirWalrusDeclaration {
     pub value: HirExprNode,
     /// See `omega_parser::ast::statement::walrus::WalrusStmt::mutable`.
     pub mutable: bool,
+    /// See `omega_parser::ast::statement::walrus::WalrusStmt::comp`.
+    pub comp: bool,
+    /// See `omega_parser::ast::statement::walrus::WalrusStmt::visibility`
+    /// -- meaningful only for a top-level binding (`HirItem::Walrus`), left
+    /// at its default (`Hidden`) for a local statement declaration
+    /// (`HirStmt::WalrusDeclaration`), same treatment `HirDeclaration::
+    /// visibility` documents.
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +488,17 @@ pub enum HirExpr {
     /// `compound-assign` targets, call callees, match scrutinees) must peel
     /// this off first -- see `Analyzer::strip_reveal`.
     Reveal(Box<HirExprNode>),
+    /// `comp base` -- evaluate `base` at compile time (see
+    /// `docs/19-compile-time-evaluation.md`). Unlike `Reveal`, this *does*
+    /// get its own `CheckedExpr` -- but only transiently: `Analyzer::
+    /// analyze_comp` analyzes `base` completely ordinarily (full type-
+    /// checking, generic/overload/cross-module resolution, all reused
+    /// as-is), then interprets the resulting already-checked tree
+    /// (`omega_analyzer::comp_eval`) and replaces the whole node with
+    /// `CheckedExpr::Const` on success -- so nothing downstream of analysis
+    /// (MIR lowering, codegen) ever needs to know a value came from `comp`
+    /// at all, only that it's a constant, exactly like an ordinary literal.
+    Comp(Box<HirExprNode>),
     Negate(Box<HirExprNode>),
     /// `~base` -- see `Expression::BitNot`'s doc comment.
     BitNot(Box<HirExprNode>),

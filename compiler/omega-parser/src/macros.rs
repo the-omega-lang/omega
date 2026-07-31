@@ -184,6 +184,10 @@ fn expand_item_list(
             other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
                 result.push(ItemNode { item: other, span: node.span });
             }
+            Item::Walrus(w) => result.push(ItemNode {
+                item: Item::Walrus(WalrusStmt { value: expand_expr(w.value, defs, budget)?, ..w }),
+                span: node.span,
+            }),
             Item::MacroDefinition(_) => {
                 unreachable!("macro definitions were already removed by collect_definitions")
             }
@@ -554,6 +558,10 @@ fn expand_expr(
         Expression::Reveal(reveal) => {
             let reveal = *reveal;
             Expression::Reveal(Box::new(RevealExpr { base: expand_expr(reveal.base, defs, budget)? }))
+        }
+        Expression::Comp(comp) => {
+            let comp = *comp;
+            Expression::Comp(Box::new(CompExpr { base: expand_expr(comp.base, defs, budget)? }))
         }
         Expression::Cast(cast) => {
             let cast = *cast;

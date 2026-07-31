@@ -60,17 +60,34 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
 /// specifically to avoid double-consuming a terminator (see this module's
 /// top doc comment).
 fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
-    // `mut` is a contextual keyword here (see `lexer::TokenKind`'s doc
-    // comment, exactly like `self`) -- only recognized leading a binding
-    // declaration (`mut a := ...`/`mut a : T;`), never anywhere else, so it
-    // stays usable as an ordinary identifier in every other position.
-    if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-        && matches!(p.peek_at(1), TokenKind::Ident(_))
-        && matches!(p.peek_at(2), TokenKind::ColonEq | TokenKind::Colon)
+    // `mut`/`comp` are both contextual keywords here (see `lexer::
+    // TokenKind`'s doc comment, exactly like `self`), each only recognized
+    // leading a binding declaration -- never anywhere else, so both stay
+    // usable as ordinary identifiers (and `comp` also as its own prefix
+    // *expression*, see `parser::expression::parse_unary`) in every other
+    // position. Only committed to once the *whole* `[mut] [comp] ident
+    // (':='/':')` shape is confirmed below -- a bare `comp foo();`
+    // statement (an expression, not a binding) never reaches this branch
+    // at all, since `foo` isn't followed by `:=`/`:`. `mut comp a := ...;`
+    // parses (both flags recognized) but is rejected during analysis
+    // (`AnalysisErrorKind::MutCompBinding`), not here -- see that type's
+    // doc comment for why a `comp` binding can never be `mut`.
+    let mut_offset = if matches!(p.peek(), TokenKind::Ident(name) if name == "mut") { 1 } else { 0 };
+    let comp_offset = if matches!(p.peek_at(mut_offset), TokenKind::Ident(name) if name == "comp") { 1 } else { 0 };
+    let ident_offset = mut_offset + comp_offset;
+    if (mut_offset > 0 || comp_offset > 0)
+        && matches!(p.peek_at(ident_offset), TokenKind::Ident(_))
+        && matches!(p.peek_at(ident_offset + 1), TokenKind::ColonEq | TokenKind::Colon)
     {
-        p.advance(); // 'mut'
-        return parse_walrus_or_declaration(p, true);
+        let mutable = mut_offset > 0;
+        let comp = comp_offset > 0;
+        if mutable {
+            p.advance(); // 'mut'
+        }
+        if comp {
+            p.advance(); // 'comp'
+        }
+        return parse_walrus_or_declaration(p, mutable, comp);
     }
     match p.peek() {
         TokenKind::Struct => {
@@ -107,7 +124,7 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             Some((Statement::Continue, false))
         }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon) => {
-            parse_walrus_or_declaration(p, false)
+            parse_walrus_or_declaration(p, false, false)
         }
         _ => {
             let expr = parse_expression(p)?;
@@ -134,19 +151,26 @@ fn reject_local_type_decl(p: &mut Parser, kind: ParseErrorKind) {
     }
 }
 
-/// `ident := value` or `ident : Type` (optionally `= value`) -- `mutable`
-/// is already known by the time this runs (an optional leading `mut` is
-/// handled by the caller, `parse_statement_content`, since it has to decide
-/// *before* seeing which of these two shapes follows). `p.peek_at(1)` (the
-/// token right after `ident`) is what tells them apart.
-fn parse_walrus_or_declaration(p: &mut Parser, mutable: bool) -> Option<(Statement, bool)> {
+/// `ident := value` or `ident : Type` (optionally `= value`) -- `mutable`/
+/// `comp` are already known by the time this runs (any leading `mut`/`comp`
+/// is handled by the caller, `parse_statement_content`, since it has to
+/// decide *before* seeing which of these two shapes follows). `p.peek_at(1)`
+/// (the token right after `ident`) is what tells them apart. `comp` is only
+/// supported on the inferred (`:=`) form -- a typed declaration reports a
+/// clean error rather than silently dropping the flag.
+fn parse_walrus_or_declaration(p: &mut Parser, mutable: bool, comp: bool) -> Option<(Statement, bool)> {
     match p.peek_at(1) {
         TokenKind::ColonEq => {
             let mut w = parse_walrus(p)?;
             w.mutable = mutable;
+            w.comp = comp;
             Some((Statement::Walrus(w), false))
         }
         _ => {
+            if comp {
+                p.error(ParseErrorKind::Expected { expected: "':=' ('comp' only supports inferred bindings)", found: p.peek_at(1).describe() });
+                return None;
+            }
             let mut decl = parse_declaration(p)?;
             decl.mutable = mutable;
             if p.eat(&TokenKind::Eq) {
@@ -183,12 +207,13 @@ fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {
     Some(ReturnStmt { return_value })
 }
 
-/// Always `mutable: false` here -- see `parse_declaration`'s identical note.
+/// Always `mutable: false`/`comp: false` here -- see `parse_declaration`'s
+/// identical note; both are applied by the caller afterward.
 fn parse_walrus(p: &mut Parser) -> Option<WalrusStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::ColonEq, "':='");
     let value = parse_expression(p)?;
-    Some(WalrusStmt { ident, value, mutable: false })
+    Some(WalrusStmt { ident, value, mutable: false, comp: false, visibility: Visibility::default() })
 }
 
 fn parse_while(p: &mut Parser) -> Option<WhileStmt> {

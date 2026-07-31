@@ -53,10 +53,65 @@ impl CheckedAggregate for CheckedUnionDef {
 }
 
 impl Driver {
+    /// [`Self::check_item_body`], memoized by [`ItemKey`] -- the one entry
+    /// point both `compile`'s own per-module phase-2 sweep and a `comp`
+    /// evaluation's on-demand `resolve_function_body` now go through, so
+    /// whichever of the two reaches a given item *second* gets the cached
+    /// result instead of silently re-checking (and, downstream, re-
+    /// lowering/re-codegening) the same body a second time. `index` is the
+    /// item's position in its module's own list, needed only on a cache
+    /// miss, matching `check_generic_instantiation_body`'s identical shape.
+    ///
+    /// A generic instantiation reuses `generic_instantiations` (the cache
+    /// `ensure_item` itself already populates via `check_generic_
+    /// instantiation_body` the moment the instantiation's own signature
+    /// resolves) rather than `checked_bodies` -- so a `comp` call that
+    /// reaches an instantiation *before* `ensure_item` naturally would
+    /// still only computes it once, and `compile`'s own final-assembly
+    /// merge (which reads `generic_instantiations` specifically) still
+    /// finds it there either way.
+    ///
+    /// `None` on a self-referential cycle (`items.body_in_progress`) --
+    /// possible now in a way it never was before `comp`: body-checking can
+    /// reenter itself when a function's own body contains a `comp`
+    /// expression that (directly, or through another function) calls back
+    /// into the very item currently being checked.
+    pub(crate) fn ensure_item_body(&mut self, key: &ItemKey, index: usize) -> Option<CheckedBody> {
+        if key.is_instantiation() {
+            if let Some(body) = self.items.generic_instantiations.get(key) {
+                return Some(body.clone_of());
+            }
+            if !self.items.body_in_progress.insert(key.clone()) {
+                return None;
+            }
+            self.check_generic_instantiation_body(key, index);
+            self.items.body_in_progress.remove(key);
+            return self.items.generic_instantiations.get(key).map(CheckedBody::clone_of);
+        }
+
+        if let Some(body) = self.items.checked_bodies.get(key) {
+            return Some(body.clone_of());
+        }
+        if !self.items.body_in_progress.insert(key.clone()) {
+            return None;
+        }
+        let hir = self.modules.hir(&key.module);
+        let body = self.check_item_body(key, &hir.items[index]);
+        self.items.body_in_progress.remove(key);
+        let body = body?;
+        self.items.checked_bodies.insert(key.clone(), body.clone_of());
+        Some(body)
+    }
+
     /// Checks one item's body, reading its already-`Done` signature straight
     /// out of the query caches. `Declaration`/`ExternDeclaration` have no
     /// body at all, so they need no `Analyzer` -- just their resolved type
     /// paired with the identity already on the HIR node.
+    ///
+    /// Not memoized on its own -- see [`Self::ensure_item_body`], the entry
+    /// point every caller other than `check_generic_instantiation_body`
+    /// (whose own `generic_instantiations` cache already serves the same
+    /// purpose for an instantiation) should use instead.
     pub(crate) fn check_item_body(&mut self, key: &ItemKey, item: &HirItem) -> Option<CheckedBody> {
         match item {
             HirItem::Declaration(decl) => {
@@ -69,6 +124,16 @@ impl Driver {
                 };
                 Some(CheckedBody { item: CheckedItem::Declaration(checked), warnings: vec![] })
             }
+
+            // A top-level `comp` binding has no body-phase work left at
+            // all -- `compute_item`'s own `Walrus` arm already evaluated
+            // it (eagerly, during signature resolution -- see that arm's
+            // doc comment) and recorded its value in `items.comp_values`.
+            // `None`, not a `CheckedBody`: it contributes nothing to the
+            // final `CheckedModule` -- every reference substitutes its
+            // value directly (`Storage::Comp`), so MIR/codegen never need
+            // to see it as an item at all.
+            HirItem::Walrus(_) => None,
 
             HirItem::ExternDeclaration(decl) => {
                 let r#type = self.resolved_value_type(key);

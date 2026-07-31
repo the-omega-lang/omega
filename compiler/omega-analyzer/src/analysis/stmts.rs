@@ -210,9 +210,26 @@ impl<'r> Analyzer<'r> {
     /// a type otherwise). `value` is analyzed exactly once and reused as the
     /// assignment's value, rather than re-analyzed, to avoid double-reporting
     /// any error inside it.
-    fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<[CheckedStmt; 2]> {
+    ///
+    /// `comp ident := value;` desugars into *nothing* instead (an empty
+    /// `Vec`): a `comp` binding carries no storage at all, so there is no
+    /// declaration and no assignment to emit -- `value` is evaluated once,
+    /// right here, and every later reference substitutes the result
+    /// directly (see `Analyzer::declare_comp_binding`/`analyze_place_read`).
+    fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<Vec<CheckedStmt>> {
         let checked_value = self.analyze_expr(&w.value, None)?;
         let r#type = checked_value.r#type.clone();
+
+        if w.comp {
+            if w.mutable {
+                self.error(w.id, w.span, AnalysisErrorKind::MutCompBinding);
+                return None;
+            }
+            let value = self.eval_comp(w.id, &checked_value)?;
+            self.declare_comp_binding(w.id, w.span, &w.ident, r#type, value)?;
+            return Some(vec![]);
+        }
+
         self.declare_binding(w.id, w.span, &w.ident, r#type.clone(), Storage::Local, w.mutable)?;
 
         let declaration = CheckedStmt::Declaration(CheckedDeclaration {
@@ -234,7 +251,7 @@ impl<'r> Analyzer<'r> {
             }),
         });
 
-        Some([declaration, assignment])
+        Some(vec![declaration, assignment])
     }
 
     /// Most statements analyze into exactly one `CheckedStmt`; a walrus
@@ -288,7 +305,7 @@ impl<'r> Analyzer<'r> {
                 }
                 Some(vec![CheckedStmt::Return(checked)])
             }
-            HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w).map(Vec::from),
+            HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w),
             HirStmt::While(w) => {
                 let checked_cond = self.analyze_expr(&w.condition, None)?;
                 if checked_cond.r#type != ResolvedType::Bool {

@@ -112,6 +112,13 @@ impl ScopeContext {
 #[derive(Debug, Clone)]
 pub struct Context {
     scopes: Vec<ScopeContext>,
+    /// Every `comp` binding's already-evaluated value, keyed by `decl_id`
+    /// rather than kept per-scope -- a `decl_id` is already globally unique
+    /// (see `omega_hir::HirId`), so this needs no shadowing/scope-exit
+    /// logic of its own; ordinary scoped name lookup (`find_variable`)
+    /// already decided *which* `decl_id` a reference means before this is
+    /// ever consulted. See `Storage::Comp` and `Analyzer::analyze_place_read`.
+    comp_values: std::collections::HashMap<HirId, crate::resolved_type::ConstValue>,
 }
 
 impl Context {
@@ -135,7 +142,21 @@ impl Context {
             (Ident("f32".into()), ResolvedType::F32),
             (Ident("f64".into()), ResolvedType::F64),
         ]);
-        Self { scopes: vec![global_scope] }
+        Self { scopes: vec![global_scope], comp_values: std::collections::HashMap::new() }
+    }
+
+    /// Records `decl_id`'s already-evaluated `comp` value -- called once,
+    /// by `Analyzer::declare_comp_binding`, right alongside the ordinary
+    /// `declare_binding` that gives it its `Storage::Comp` place.
+    pub fn set_comp_value(&mut self, decl_id: HirId, value: crate::resolved_type::ConstValue) {
+        self.comp_values.insert(decl_id, value);
+    }
+
+    /// `decl_id`'s recorded `comp` value -- always `Some` for a place whose
+    /// root resolved to `Storage::Comp` (the two are only ever produced
+    /// together, see `set_comp_value`'s doc comment).
+    pub fn comp_value(&self, decl_id: HirId) -> Option<&crate::resolved_type::ConstValue> {
+        self.comp_values.get(&decl_id)
     }
 
     // Finder functions

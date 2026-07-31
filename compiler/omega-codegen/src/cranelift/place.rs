@@ -7,6 +7,7 @@ use super::leaf::IntoCraneliftLeaves;
 use crate::layout;
 use cranelift::codegen::ir::StackSlot;
 use cranelift::prelude::{FunctionBuilder, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Value};
+use cranelift_module::Module;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_mir::{MirPlace, MirPlaceRoot, MirProjection};
 
@@ -63,7 +64,19 @@ impl Codegen {
                     "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
                 );
             }
-            MirPlaceRoot::Global { .. } => todo!("global/extern data storage is not yet implemented"),
+            // A global's own runtime address, exactly like a vtable's or an
+            // interned string's (`declare_data_in_func` + `global_value`) --
+            // then an ordinary `Address` storage from there, offset 0, so
+            // every projection below walks it exactly like a dereferenced
+            // pointer's storage already does.
+            MirPlaceRoot::Global { id, r#type } => {
+                let data_id = *self.globals.get(id).unwrap_or_else(|| {
+                    panic!("mir body guarantees {id:?} was declared as a global before this use")
+                });
+                let global_value = self.module.declare_data_in_func(data_id, builder.func);
+                let base = builder.ins().global_value(self.pointer_type(), global_value);
+                (PlaceStorage::Address { base, offset: 0 }, r#type.clone())
+            }
             // A temporary as the root of a projection chain -- `foo().bar`,
             // `Vec2 { ... }.x`, or a method call's implicit `&self` on
             // either: materialized into an anonymous stack slot so the rest

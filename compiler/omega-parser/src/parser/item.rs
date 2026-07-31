@@ -7,12 +7,12 @@ use crate::ast::statement::{
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
     spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,
-    union::UnionStmt,
+    union::UnionStmt, walrus::WalrusStmt,
 };
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
-use crate::parser::expression::parse_codeblock;
+use crate::parser::expression::{parse_codeblock, parse_expression};
 use crate::parser::macro_syntax::{parse_macro_definition, parse_macro_invocation};
 use crate::parser::statement::{parse_declaration, parse_extern_declaration};
 use crate::parser::{Parser, parse_path, recovery};
@@ -36,6 +36,38 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     let annotations = parse_annotations(p);
     let (visibility, visibility_span) = parse_optional_visibility(p);
     let start = p.peek_span();
+
+    // `mut`/`comp` are both contextual keywords here (see `lexer::
+    // TokenKind`'s doc comment), each only recognized leading a binding
+    // declaration -- never anywhere else, so both stay usable as ordinary
+    // identifiers (and `comp` also as its own prefix *expression*, see
+    // `parser::expression::parse_unary`) in every other position. Only
+    // committed to once the *whole* `[mut] [comp] ident (':='/':')` shape
+    // is confirmed below -- mirrors `parser::statement`'s identical
+    // combined lookahead exactly. `mut comp x := ...;` parses (both flags
+    // recognized) but is rejected during analysis (`AnalysisErrorKind::
+    // MutCompBinding`), not here.
+    let mut_offset = if matches!(p.peek(), TokenKind::Ident(name) if name == "mut") { 1 } else { 0 };
+    let comp_offset = if matches!(p.peek_at(mut_offset), TokenKind::Ident(name) if name == "comp") { 1 } else { 0 };
+    let ident_offset = mut_offset + comp_offset;
+    if (mut_offset > 0 || comp_offset > 0)
+        && matches!(p.peek_at(ident_offset), TokenKind::Ident(_))
+        && matches!(p.peek_at(ident_offset + 1), TokenKind::ColonEq | TokenKind::Colon)
+    {
+        reject_annotations(p, &annotations);
+        let mutable = mut_offset > 0;
+        let comp = comp_offset > 0;
+        if mutable {
+            p.advance(); // 'mut'
+        }
+        if comp {
+            p.advance(); // 'comp'
+        }
+        let item = parse_item_declaration_or_walrus(p, mutable, comp, visibility)?;
+        let span = start.to(p.last_span());
+        return Some(ItemNode { item, span });
+    }
+
     let item = match p.peek() {
         TokenKind::Extern => {
             reject_annotations(p, &annotations);
@@ -100,20 +132,13 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
         }
-        // `mut` is a contextual keyword here (see `lexer::TokenKind`'s doc
-        // comment) -- only a global *declaration* can be `mut` at item
-        // position (there's no top-level walrus/`:=` at all, see
-        // `WalrusStmt`'s own doc comment), so a leading `mut` commits
-        // straight to `parse_declaration` rather than the function-
-        // definition-or-declaration dispatch below.
-        TokenKind::Ident(name) if name == "mut" => {
+        // No leading `mut`/`comp` (handled above) -- `ident := value;`, a
+        // plain (non-`comp`) top-level walrus. Still parses (`comp` isn't
+        // required by the grammar), rejected during analysis instead (see
+        // `Item::Walrus`'s doc comment).
+        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq) => {
             reject_annotations(p, &annotations);
-            p.advance(); // 'mut'
-            let mut decl = parse_declaration(p)?;
-            decl.mutable = true;
-            decl.visibility = visibility;
-            p.expect_terminator(&TokenKind::Semi, "';'");
-            Item::Declaration(decl)
+            Item::Walrus(parse_item_walrus(p, false, false, visibility)?)
         }
         TokenKind::Ident(_) => parse_declaration_or_function_definition(p, annotations, visibility)?,
         _ => {
@@ -267,6 +292,43 @@ fn parse_declaration_or_function_definition(
             Some(Item::Declaration(decl))
         }
     }
+}
+
+/// `ident := value;` / `ident : Type;` at item position -- `mutable`/`comp`
+/// are already known by the time this runs (see `parse_item`'s combined
+/// lookahead). `p.peek_at(1)` (the token right after `ident`) is what tells
+/// the two shapes apart, exactly like `parser::statement::
+/// parse_walrus_or_declaration`'s identical local-scope dispatch. `comp` on
+/// the typed (`:`) shape reports a clean error rather than silently
+/// dropping the flag -- `comp` only makes sense on an inferred binding.
+fn parse_item_declaration_or_walrus(
+    p: &mut Parser,
+    mutable: bool,
+    comp: bool,
+    visibility: Visibility,
+) -> Option<Item> {
+    match p.peek_at(1) {
+        TokenKind::ColonEq => Some(Item::Walrus(parse_item_walrus(p, mutable, comp, visibility)?)),
+        _ => {
+            if comp {
+                p.error(ParseErrorKind::Expected { expected: "':=' ('comp' only supports inferred bindings)", found: p.peek_at(1).describe() });
+                return None;
+            }
+            let mut decl = parse_declaration(p)?;
+            decl.mutable = mutable;
+            decl.visibility = visibility;
+            p.expect_terminator(&TokenKind::Semi, "';'");
+            Some(Item::Declaration(decl))
+        }
+    }
+}
+
+fn parse_item_walrus(p: &mut Parser, mutable: bool, comp: bool, visibility: Visibility) -> Option<WalrusStmt> {
+    let ident = p.expect_ident()?;
+    p.expect(&TokenKind::ColonEq, "':='");
+    let value = parse_expression(p)?;
+    p.expect_terminator(&TokenKind::Semi, "';'");
+    Some(WalrusStmt { ident, value, mutable, comp, visibility })
 }
 
 /// `name<T, U, ...>(params) => ReturnType { body }` -- shared verbatim

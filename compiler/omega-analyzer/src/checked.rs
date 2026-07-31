@@ -84,6 +84,16 @@ pub enum Storage {
     /// A top-level variable or non-function extern; storage layout for this
     /// is not yet decided (`todo!()` in codegen).
     Global,
+    /// A `comp` binding (`comp a := comp expr;`) -- carries no storage at
+    /// all. Never reaches MIR lowering or codegen as a place: `Analyzer::
+    /// analyze_place_read` substitutes every reference straight into
+    /// `CheckedExpr::Const` with the binding's already-known value, the
+    /// moment it's read (see `Context::comp_value`). A `CheckedPlaceRoot`
+    /// with this storage escaping that substitution would be an analyzer
+    /// bug, not a real program state -- every downstream consumer that
+    /// matches on `Storage` exhaustively treats it as unreachable rather
+    /// than handling it.
+    Comp,
 }
 
 #[derive(Debug, Clone)]
@@ -413,11 +423,18 @@ pub enum CheckedExpr {
     /// `UnionLiteralTooManyFields`). The node's own `r#type` is always the
     /// union being built (`ResolvedType::Union`).
     UnionConstruct(CheckedUnionConstruct),
-    /// `&[...]` -- a compile-time slice literal (see `ConstValue::Slice`).
-    /// The node's own `r#type` is always `ResolvedType::Slice { item,
-    /// mutable: false }`, which already fully describes the element type,
-    /// so nothing else needs to be carried here.
-    ConstSlice(ConstValue),
+    /// Any fully compile-time-known value -- a `&[...]` compile-time slice
+    /// literal (`ResolvedType::Slice { item, mutable: false }`, see
+    /// `ConstValue::Slice`), an enum's per-variant header/tag constant, or
+    /// (see `docs/19-compile-time-evaluation.md`) a `comp <expr>` that
+    /// evaluated successfully -- `crate::comp_eval::eval`'s result,
+    /// spliced in by `Analyzer::analyze_comp` in place of whatever tree
+    /// `<expr>` originally was, so nothing downstream of analysis (MIR
+    /// lowering, codegen) needs to know a value came from `comp` at all.
+    /// The node's own `r#type` is exactly `ConstValue`'s own type, whatever
+    /// that happens to be -- unlike this variant's earlier, narrower
+    /// `ConstSlice` name, not restricted to `Slice`.
+    Const(ConstValue),
     /// An implicit `*Concrete` -> `spec *Spec` dynamic-dispatch coercion
     /// (see `Analyzer::coerce_to_expected`) -- unlike every other
     /// coercion this language has (all representation-preserving, handled

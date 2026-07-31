@@ -63,6 +63,13 @@ pub(crate) struct Codegen {
     /// comment for why the old `(concrete, spec)` key stopped being enough
     /// once one implementor could satisfy the same generic spec twice).
     vtables: HashMap<Vec<HirId>, DataId>,
+    /// Every top-level global's (`Storage::Global`/`MirItem::Declaration`)
+    /// own `DataId`, keyed by its declaration id -- the `globals`
+    /// counterpart of `functions`, filled in by `declare_item`'s
+    /// `Declaration` arm (pass 1) and read back by `Storage::Global` place
+    /// codegen (`cranelift/place.rs`) whenever a reference needs its
+    /// address, regardless of which module declared it or which imports it.
+    globals: HashMap<HirId, DataId>,
 
     // Local state (must be cleared per function)
     /// One entry per `MirBody::locals` index -- `local_args[i]` is
@@ -153,6 +160,7 @@ impl Codegen {
 
             bytes: HashMap::new(),
             vtables: HashMap::new(),
+            globals: HashMap::new(),
 
             local_args: Vec::new(),
             stack_slots: Vec::new(),

@@ -1,5 +1,5 @@
 use crate::checked::Storage;
-use crate::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
+use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
@@ -437,6 +437,39 @@ pub trait ModuleResolver {
     /// into whatever this compilation already reports, never silently
     /// dropped.
     fn extension_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError>;
+
+    /// A `comp` evaluation's one hook into the driver (see
+    /// `crate::comp_eval::CompFunctionResolver`, which this trait re-exposes
+    /// through `omega_driver::Driver`'s own `ModuleResolver` impl, matching
+    /// every other cross-item query here): the checked body behind
+    /// `decl_id`, found by identity alone -- a generic instantiation mints
+    /// its own fresh synthetic id at resolution time (`identity_for`), so
+    /// `decl_id` alone is already exact identity for one specific
+    /// instantiation, with no separate module path or type-args needed.
+    ///
+    /// Unlike every other query above, this can be asked for an item whose
+    /// *body* has never been checked yet, regardless of where whole-program
+    /// compilation's own two-phase sweep currently stands -- the
+    /// implementation is responsible for checking (and memoizing) it on
+    /// demand, exactly like a generic instantiation's body already is.
+    /// `Ok(None)` means `decl_id` doesn't name an ordinary checked function
+    /// at all (most likely an `extern` declaration) -- distinguished from
+    /// `Err` (a genuine resolution failure) so a `comp` evaluation can
+    /// report the precise "calling an extern" reason instead of a generic
+    /// failure.
+    fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<crate::checked::CheckedFunctionDef>, ResolveError>;
+
+    /// A top-level `comp` binding's already-evaluated value, found by its
+    /// own `decl_id` -- the cross-item counterpart of `Context::
+    /// comp_value`, which only ever holds *local* bindings. `Analyzer::
+    /// analyze_place_read` falls back to this the moment a local lookup
+    /// misses, so a reference to a `comp` global (declared by some other
+    /// item, resolved the ordinary cross-item way -- see `ModuleResolver::
+    /// resolve_item`) substitutes exactly like a local one does. `None`
+    /// for any `decl_id` that isn't a `comp` global's own -- including
+    /// every local `comp` binding, which `Context::comp_value` alone
+    /// already answers, so this is never even asked about those.
+    fn resolve_comp_value(&mut self, decl_id: HirId) -> Option<ConstValue>;
 }
 
 /// Which namespace a "did you mean" suggestion should draw from -- a type

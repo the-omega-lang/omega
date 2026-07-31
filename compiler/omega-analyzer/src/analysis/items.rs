@@ -32,6 +32,28 @@ impl<'r> Analyzer<'r> {
         })
     }
 
+    /// `[comp] ident := value;` at item level (`HirItem::Walrus`) -- unlike
+    /// a local `comp` binding (`Analyzer::analyze_walrus`'s own `comp`
+    /// branch), this never calls `declare_binding`/`Context::
+    /// set_comp_value`: a top-level binding's identity and value must
+    /// survive past this one throwaway `Analyzer`, so the driver
+    /// (`Driver::compute_item`) records them in its own cross-item state
+    /// (`ItemQueries::comp_values`) instead, once this returns.
+    pub fn analyze_comp_declaration(&mut self, w: &HirWalrusDeclaration) -> Option<(ResolvedType, ConstValue)> {
+        if !w.comp {
+            self.error(w.id, w.span, AnalysisErrorKind::TopLevelWalrusNotComp);
+            return None;
+        }
+        if w.mutable {
+            self.error(w.id, w.span, AnalysisErrorKind::MutCompBinding);
+            return None;
+        }
+        let checked = self.analyze_expr(&w.value, None)?;
+        let r#type = checked.r#type.clone();
+        let value = self.eval_comp(w.id, &checked)?;
+        Some((r#type, value))
+    }
+
     pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDeclaration> {
         let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type, true)?;
         // An extern of function type imports a callable symbol; anything

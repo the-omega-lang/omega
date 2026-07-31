@@ -31,6 +31,7 @@
 pub mod analysis;
 pub mod annotations;
 pub mod checked;
+pub mod comp_eval;
 mod context;
 pub mod dead_code;
 pub mod error;

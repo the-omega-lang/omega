@@ -5,7 +5,8 @@
 //! answered.
 
 use crate::{Driver, ModulePath};
-use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
+use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
+use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget, ItemNamespace,
     ModuleResolver, ResolveError, ResolvedItem,
@@ -355,9 +356,10 @@ impl ModuleResolver for Driver {
                 HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) | HirItem::Spec(_) => {
                     namespace == ItemNamespace::Type
                 }
-                HirItem::FunctionDefinition(_) | HirItem::Declaration(_) | HirItem::ExternDeclaration(_) => {
-                    namespace == ItemNamespace::Value
-                }
+                HirItem::FunctionDefinition(_)
+                | HirItem::Declaration(_)
+                | HirItem::Walrus(_)
+                | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
                 HirItem::Import(_) => false,
             })
             .map(|(name, _)| name);
@@ -366,5 +368,54 @@ impl ModuleResolver for Driver {
 
     fn extension_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError> {
         self.methods_attached_to(receiver)
+    }
+
+    /// `decl_id`'s owning item, found via `items.decl_id_owner` (populated
+    /// by `ItemQueries::identity_for`, the one place a function/method's
+    /// identity is ever decided) then body-checked (or served from cache)
+    /// through `ensure_item_body` -- see its own doc comment for why this,
+    /// unlike every other query above, can run before `compile`'s ordinary
+    /// phase-2 sweep would otherwise have reached this item, and why that's
+    /// safe. A `decl_id` with no entry in `decl_id_owner` at all is
+    /// impossible for a real `comp` call in practice (see `comp_eval::
+    /// Interpreter::eval_call`'s own guard: it only ever calls this with a
+    /// `Storage::Function` place's `decl_id`, which `compute_item` always
+    /// records identity for) -- treated as `Ok(None)` rather than a panic
+    /// regardless, since nothing here can prove that guard holds.
+    fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+        let Some(key) = self.items.decl_id_owner.get(&decl_id).cloned() else {
+            return Ok(None);
+        };
+        let index = self.local_item_index(&key.module, &key.name)?;
+        let Some(body) = self.ensure_item_body(&key, index) else {
+            return Err(ResolveError::ItemFailed { module: key.module, item: key.name });
+        };
+        Ok(match body.item {
+            // The ordinary case: `key` names the free function directly,
+            // and `identity_for` guarantees its own id is exactly `decl_id`.
+            CheckedItem::FunctionDefinition(f) => Some(f),
+            // `key` names the *owning* struct/enum/union -- a method has no
+            // `ItemKey` of its own (see `decl_id_owner`'s doc comment), so
+            // its body is found by searching its owner's already-checked
+            // method list instead.
+            CheckedItem::Struct(s) => s.functions.into_iter().find(|f| f.id == decl_id),
+            CheckedItem::Enum(e) => e.functions.into_iter().find(|f| f.id == decl_id),
+            CheckedItem::Union(u) => u.functions.into_iter().find(|f| f.id == decl_id),
+            // Neither ever gets a `Storage::Function` place root, so a real
+            // `comp` call can't actually reach this arm.
+            CheckedItem::Declaration(_) | CheckedItem::ExternDeclaration(_) => None,
+        })
+    }
+
+    /// A plain lookup into `items.comp_values` -- unlike `resolve_function_
+    /// body`, nothing here can be "not yet computed but computable on
+    /// demand": a top-level `comp` binding's value is always produced
+    /// eagerly, during its own signature resolution (`compute_item`'s
+    /// `Walrus` arm), and `decl_id` only ever reaches this call at all
+    /// once the binding it names has already resolved successfully (its
+    /// own reference went through the ordinary `ModuleResolver::
+    /// resolve_item` -> `Storage::Comp` path first).
+    fn resolve_comp_value(&mut self, decl_id: HirId) -> Option<ConstValue> {
+        self.items.comp_values.get(&decl_id).cloned()
     }
 }

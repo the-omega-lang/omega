@@ -134,7 +134,7 @@ pub enum MirExpr {
     Cast(MirCast),
     Sizeof(ResolvedType),
     UnionConstruct(MirUnionConstruct),
-    ConstSlice(ConstValue),
+    Const(ConstValue),
     SpecCoerce(MirSpecCoerce),
     DynamicCall(MirDynamicCall),
 }

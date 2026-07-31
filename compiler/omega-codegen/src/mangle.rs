@@ -111,6 +111,18 @@ pub(crate) fn free_function_symbol(
     Symbol { path, signature: Some((params, ret)), vendor_suffix: None }
 }
 
+/// A top-level global's symbol (`Storage::Global` -- see `MirItem::
+/// Declaration`) -- `signature: None`, unlike `free_function_symbol`: a
+/// plain value has no parameter/return-type signature to encode, only a
+/// name nested under its module path, same `Namespace::Value` a function's
+/// own leaf segment uses (a global and a function can never collide on a
+/// bare name within one module regardless, since nothing here ever indexes
+/// two different *kinds* of item under the same name in the first place).
+pub(crate) fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
+    let path = ManglePath::Nested(Box::new(mangle_module_path(module_path)), Namespace::Value, name.as_ref().to_string());
+    Symbol { path, signature: None, vendor_suffix: None }
+}
+
 /// A struct/enum/union method's symbol -- nested under its owner type's
 /// own path (itself possibly generic), never a separate `impl`-block
 /// root (Omega methods are declared directly on the type; see the

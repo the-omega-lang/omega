@@ -96,7 +96,7 @@ impl Codegen {
     }
 
     /// Emits one `ConstValue` (an enum tag/header constant, or a
-    /// `MirExpr::ConstSlice`) as its leaves, in leaf order -- every
+    /// `MirExpr::Const`) as its leaves, in leaf order -- every
     /// variant but `Slice`/`Array` is exactly one IR leaf; `Slice` is the
     /// two-leaf `[ptr, len]` fat pointer every other `ResolvedType::Slice`
     /// value already is (see `emit_const_slice`); `Array` is every
@@ -132,6 +132,116 @@ impl Codegen {
                     values.extend(self.emit_const_value(builder, element, item));
                 }
                 values
+            }
+            // A `comp`-evaluated struct value -- fields in declared
+            // (`field_index`) order, mirroring `ConstValue::Struct`'s own
+            // doc comment. No byte-offset math needed, exactly like
+            // `MirExpr::StructLiteral`'s ordinary runtime codegen (a
+            // struct's fields never overlap, so its leaves are just every
+            // field's own leaves concatenated in order).
+            ConstValue::Struct(fields) => {
+                let ResolvedType::Struct(struct_type) = r#type else {
+                    unreachable!("a Struct constant's own type is always ResolvedType::Struct");
+                };
+                let field_types: Vec<ResolvedType> =
+                    struct_type.borrow().fields.iter().map(|(_, t, _)| t.clone()).collect();
+                fields
+                    .iter()
+                    .zip(&field_types)
+                    .flat_map(|(value, field_type)| self.emit_const_value(builder, value, field_type))
+                    .collect()
+            }
+            // A `comp`-evaluated enum value -- unlike `Struct`, tag/header/
+            // body regions *do* overlap a union's worth of payload storage,
+            // so this needs the same memory-backed approach `MirExpr::
+            // EnumConstruct`'s ordinary runtime codegen uses: build an
+            // anonymous scratch stack slot, write tag/header/body at their
+            // real byte offsets (`layout.rs`, identical helpers), then read
+            // the whole thing back out as flattened leaves. The header is
+            // read from the enum's own shared cell (a per-variant constant,
+            // not per-instance data -- `ConstValue::Enum` never carries it,
+            // see its own doc comment); the dynamic-fields region is left
+            // zeroed (not yet constructible via `comp`, same documented gap
+            // `comp_eval::Interpreter`'s own `EnumDynamicField` rejection has).
+            ConstValue::Enum { variant_index, tag, fields } => {
+                let ResolvedType::Enum { cell, .. } = r#type else {
+                    unreachable!("an Enum constant's own type is always ResolvedType::Enum");
+                };
+                let pointer_bytes = self.pointer_bytes();
+                let (tag_type, header, body) = {
+                    let enum_type = cell.borrow();
+                    let variant = &enum_type.variants[*variant_index];
+                    let header: Vec<(ResolvedType, ConstValue)> = enum_type
+                        .header
+                        .iter()
+                        .zip(&variant.header_values)
+                        .map(|((_, t, _), v)| (t.clone(), v.clone()))
+                        .collect();
+                    let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
+                        .map(|i| {
+                            let offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
+                            (offset, variant.fields[i].1.clone())
+                        })
+                        .collect();
+                    (enum_type.tag_type.clone(), header, body)
+                };
+
+                let shift = layout::stack_align_shift(layout::type_alignment(r#type));
+                let total = layout::total_bytes(r#type, pointer_bytes);
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, shift));
+
+                let tag_values = self.emit_const_value(builder, &ConstValue::Number(*tag), &tag_type);
+                self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &tag_values);
+
+                let mut offset = layout::total_bytes(&tag_type, pointer_bytes);
+                for (field_type, value) in &header {
+                    let values = self.emit_const_value(builder, value, field_type);
+                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset }, &values);
+                    offset += layout::total_bytes(field_type, pointer_bytes);
+                }
+
+                for (value, (field_offset, field_type)) in fields.iter().zip(&body) {
+                    let values = self.emit_const_value(builder, value, field_type);
+                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: *field_offset }, &values);
+                }
+
+                self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, r#type)
+            }
+            // A `comp`-evaluated union value -- mirrors `MirExpr::
+            // UnionConstruct`'s ordinary runtime codegen (anonymous slot,
+            // zero the whole region, store the one active field, read the
+            // whole thing back as flattened leaves).
+            ConstValue::Union { value, .. } => {
+                let total = layout::total_bytes(r#type, self.pointer_bytes());
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
+
+                let mut chunk_offset = 0u32;
+                for chunk in r#type.cranelift_leaves(self) {
+                    let zero = builder.ins().iconst(chunk, 0);
+                    builder.ins().stack_store(zero, slot, chunk_offset as i32);
+                    chunk_offset += chunk.bytes();
+                }
+
+                let ResolvedType::Union(union_type) = r#type else {
+                    unreachable!("a Union constant's own type is always ResolvedType::Union");
+                };
+                let field_type = union_type.borrow().fields[0].1.clone();
+                let values = self.emit_const_value(builder, value, &field_type);
+                self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &values);
+
+                self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, r#type)
+            }
+            // `&<comp place>` -- the address of a separately-built piece of
+            // `comp`-evaluated data, mirroring how `Str`/a nested `Slice`
+            // already embed "pointer to a separately-built rodata blob" --
+            // generalized here to any `ConstValue` shape via `build_const_data`.
+            ConstValue::Ref(inner) => {
+                let ResolvedType::Pointer { pointee, .. } = r#type else {
+                    unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
+                };
+                let data_id = self.build_const_data(inner, pointee);
+                let global_value = self.module.declare_data_in_func(data_id, builder.func);
+                vec![builder.ins().global_value(self.pointer_type(), global_value)]
             }
         }
     }
@@ -172,6 +282,27 @@ impl Codegen {
         for element in elements {
             self.hash_const_element(&mut hash_input, element, item_type);
         }
+        let sym = Self::data_symbol(&hash_input);
+        let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
+        self.module.define_data(id, &desc).unwrap();
+        id
+    }
+
+    /// `build_const_slice_data`'s `ConstValue::Ref` counterpart: one
+    /// `comp`-evaluated value (not an array of them) as its own separately
+    /// addressable static data object -- what a `Ref`'s own leaf (an
+    /// ordinary thin pointer, see `ConstValue::Ref`'s doc comment) points
+    /// at. Same anonymous, content-hashed, deduplicated `Preemptible` data
+    /// object shape as every other rodata blob this module builds.
+    fn build_const_data(&mut self, value: &ConstValue, r#type: &ResolvedType) -> DataId {
+        let total = layout::total_bytes(r#type, self.pointer_bytes());
+        let mut bytes = vec![0u8; total as usize];
+        let mut desc = DataDescription::new();
+        self.write_const_element(&mut desc, &mut bytes, 0, value, r#type);
+        desc.define(bytes.into_boxed_slice());
+
+        let mut hash_input = Vec::new();
+        self.hash_const_element(&mut hash_input, value, r#type);
         let sym = Self::data_symbol(&hash_input);
         let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
         self.module.define_data(id, &desc).unwrap();
@@ -233,6 +364,47 @@ impl Codegen {
                 for element in elements {
                     self.hash_const_element(out, element, item);
                 }
+            }
+            ConstValue::Struct(fields) => {
+                let ResolvedType::Struct(struct_type) = r#type else {
+                    unreachable!("a Struct constant's own type is always ResolvedType::Struct");
+                };
+                let field_types: Vec<ResolvedType> =
+                    struct_type.borrow().fields.iter().map(|(_, t, _)| t.clone()).collect();
+                for (value, field_type) in fields.iter().zip(&field_types) {
+                    self.hash_const_element(out, value, field_type);
+                }
+            }
+            ConstValue::Enum { variant_index, tag, fields } => {
+                let ResolvedType::Enum { cell, .. } = r#type else {
+                    unreachable!("an Enum constant's own type is always ResolvedType::Enum");
+                };
+                out.extend_from_slice(&(*variant_index as u32).to_le_bytes());
+                let tag_bits: u64 = match tag {
+                    NumberValue::Signed(v) => *v as u64,
+                    NumberValue::Unsigned(v) => *v,
+                    NumberValue::Float(v) => v.to_bits(),
+                };
+                out.extend_from_slice(&tag_bits.to_le_bytes());
+                let field_types: Vec<ResolvedType> =
+                    cell.borrow().variants[*variant_index].fields.iter().map(|(_, t, _)| t.clone()).collect();
+                for (value, field_type) in fields.iter().zip(&field_types) {
+                    self.hash_const_element(out, value, field_type);
+                }
+            }
+            ConstValue::Union { field_index, value } => {
+                let ResolvedType::Union(union_type) = r#type else {
+                    unreachable!("a Union constant's own type is always ResolvedType::Union");
+                };
+                out.extend_from_slice(&(*field_index as u32).to_le_bytes());
+                let field_type = union_type.borrow().fields[*field_index].1.clone();
+                self.hash_const_element(out, value, &field_type);
+            }
+            ConstValue::Ref(inner) => {
+                let ResolvedType::Pointer { pointee, .. } = r#type else {
+                    unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
+                };
+                self.hash_const_element(out, inner, pointee);
             }
         }
     }
@@ -310,6 +482,85 @@ impl Codegen {
                 for (i, element) in elements.iter().enumerate() {
                     self.write_const_element(desc, bytes, offset + i as u32 * stride, element, item);
                 }
+            }
+            // Real byte offsets this time (unlike `emit_const_value`'s
+            // `Struct` case, which needs none for its SSA-leaf-list form)
+            // -- a struct's fields can have interior alignment/pack gaps
+            // in memory, exactly what `MirExpr::EnumConstruct`'s runtime
+            // codegen also has to account for.
+            ConstValue::Struct(fields) => {
+                let ResolvedType::Struct(struct_type) = r#type else {
+                    unreachable!("a Struct constant's own type is always ResolvedType::Struct");
+                };
+                let pointer_bytes = self.pointer_bytes();
+                let field_types: Vec<ResolvedType> =
+                    struct_type.borrow().fields.iter().map(|(_, t, _)| t.clone()).collect();
+                for (i, (value, field_type)) in fields.iter().zip(&field_types).enumerate() {
+                    let field_offset = layout::field_byte_offset(&struct_type.borrow(), i, pointer_bytes);
+                    self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
+                }
+            }
+            // Tag, header (a per-variant constant read from the enum's own
+            // shared cell, never carried on `ConstValue::Enum` itself --
+            // see its doc comment), then body fields, each at its real
+            // byte offset -- the static-data counterpart of
+            // `emit_const_value`'s identical `Enum` case, one level of
+            // indirection removed (writing into a byte buffer/relocation
+            // list instead of a stack slot).
+            ConstValue::Enum { variant_index, tag, fields } => {
+                let ResolvedType::Enum { cell, .. } = r#type else {
+                    unreachable!("an Enum constant's own type is always ResolvedType::Enum");
+                };
+                let pointer_bytes = self.pointer_bytes();
+                let (tag_type, header, body) = {
+                    let enum_type = cell.borrow();
+                    let variant = &enum_type.variants[*variant_index];
+                    let header: Vec<(ResolvedType, ConstValue)> = enum_type
+                        .header
+                        .iter()
+                        .zip(&variant.header_values)
+                        .map(|((_, t, _), v)| (t.clone(), v.clone()))
+                        .collect();
+                    let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
+                        .map(|i| {
+                            let field_offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
+                            (field_offset, variant.fields[i].1.clone())
+                        })
+                        .collect();
+                    (enum_type.tag_type.clone(), header, body)
+                };
+
+                self.write_const_element(desc, bytes, offset, &ConstValue::Number(*tag), &tag_type);
+                let mut header_offset = offset + layout::total_bytes(&tag_type, pointer_bytes);
+                for (field_type, value) in &header {
+                    self.write_const_element(desc, bytes, header_offset, value, field_type);
+                    header_offset += layout::total_bytes(field_type, pointer_bytes);
+                }
+                for (value, (field_offset, field_type)) in fields.iter().zip(&body) {
+                    self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
+                }
+            }
+            // A union's one active field, at offset 0 -- no tag, no header,
+            // mirroring `CheckedProjection::UnionField`'s own "every field
+            // lives at offset 0" layout.
+            ConstValue::Union { field_index, value } => {
+                let ResolvedType::Union(union_type) = r#type else {
+                    unreachable!("a Union constant's own type is always ResolvedType::Union");
+                };
+                let field_type = union_type.borrow().fields[*field_index].1.clone();
+                self.write_const_element(desc, bytes, offset, value, &field_type);
+            }
+            // `&<comp place>` -- an ordinary thin pointer to a separately
+            // built data object, exactly like `Str`/nested-`Slice` above,
+            // minus the trailing length leaf (a `Ref` is never a fat
+            // pointer -- see `ConstValue::Ref`'s doc comment).
+            ConstValue::Ref(inner) => {
+                let ResolvedType::Pointer { pointee, .. } = r#type else {
+                    unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
+                };
+                let inner_id = self.build_const_data(inner, pointee);
+                let global_value = self.module.declare_data_in_data(inner_id, desc);
+                desc.write_data_addr(offset, global_value, 0);
             }
         }
     }
@@ -412,7 +663,7 @@ impl Codegen {
         match node.kind {
             MirExpr::String(s) => self.emit_bytes(builder, s),
             MirExpr::ByteString(s) => self.emit_bytes(builder, s),
-            MirExpr::ConstSlice(value) => self.emit_const_value(builder, &value, &node.r#type),
+            MirExpr::Const(value) => self.emit_const_value(builder, &value, &node.r#type),
 
             MirExpr::FunctionCall(MirFunctionCall { callee, fn_type, args }) => {
                 // The mir guarantees the callee resolves to exactly one

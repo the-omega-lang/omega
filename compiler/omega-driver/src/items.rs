@@ -279,6 +279,51 @@ pub(crate) struct ItemQueries {
     /// `SYNTHETIC_MODULE`, a module id the lowerer never produces, so these
     /// can never collide with a real per-file id.
     next_synthetic_id: u32,
+    /// Every non-generic, non-overload item's checked body, memoized the
+    /// first time anything asks for it -- either `compile`'s own per-module
+    /// phase-2 sweep (`check_module_bodies`), or a `comp` evaluation
+    /// reaching it early, out of that sweep's own order, via
+    /// `resolve_function_body`. Without this, whichever of the two asks
+    /// second would re-check (and, for a function, re-lower/re-codegen) the
+    /// exact same body, producing a duplicate-symbol link error -- the same
+    /// failure mode `overload_bodies`/`generic_instantiations` already exist
+    /// to avoid for their own cases. `ensure_item_body` (`bodies.rs`) is the
+    /// one entry point both callers now go through.
+    pub checked_bodies: HashMap<ItemKey, CheckedBody>,
+    /// The reverse of an ordinary forward `ItemKey` lookup: given a
+    /// function/method's own already-decided identity (`identity_for`'s
+    /// return value), which item it belongs to. Exists purely for `comp`
+    /// evaluation (`resolve_function_body`), which is handed a bare
+    /// `HirId` -- the only identity a `CheckedPlaceRoot::Variable`'s
+    /// `Storage::Function` root carries -- and needs to work backwards to
+    /// "which `ItemKey` do I `ensure_item_body` to get this body checked".
+    /// A method's id maps to its *owner* aggregate's own key (methods have
+    /// no `ItemKey` of their own; their bodies are only ever checked as
+    /// part of their owner's), matching `identity_for`'s own call sites
+    /// (`method_identities` calls it once per method, but always with the
+    /// owner's `key`).
+    pub decl_id_owner: HashMap<HirId, ItemKey>,
+    /// Every top-level `comp` binding's already-evaluated value
+    /// (`HirItem::Walrus`, always `comp` -- see `Analyzer::
+    /// analyze_comp_declaration`), keyed by its own `decl_id`. The driver-
+    /// level counterpart of `omega_analyzer::context::Context::
+    /// comp_values`, which only ever holds *local* bindings (scoped to one
+    /// throwaway per-item `Analyzer`) -- a global's value has to survive
+    /// past that, for every other item's own separate analysis to read
+    /// back via `ModuleResolver::resolve_comp_value`.
+    pub comp_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
+    /// The body-checking counterpart of `state`'s `InProgress` guard --
+    /// needed because body-checking (unlike signature resolution) can now
+    /// genuinely reenter itself: a `comp` expression inside function `f`'s
+    /// own body can call `resolve_function_body` on `f` itself (directly,
+    /// or through a `g` that calls back into `f`) before `f`'s own body has
+    /// finished checking, since `comp` evaluation runs *during* body-
+    /// checking rather than only after it. `ensure_item_body` reports this
+    /// as a failure (rather than reentering, which would recurse the real
+    /// Rust call stack without bound -- the interpreter's own fuel/depth
+    /// budget bounds *interpretation*, not this, a level below it) the
+    /// moment it finds `key` already present here.
+    pub body_in_progress: std::collections::HashSet<ItemKey>,
     /// Keys currently having their own `spec T` (static-dispatch) return
     /// type inferred from their body (see `Driver::resolve_spec_return_function`).
     /// A plain top-level function's signature is ordinarily fully resolved
@@ -312,7 +357,9 @@ impl ItemQueries {
     /// it, so `List<u32>` and `List<i64>` are guaranteed genuinely distinct
     /// types/symbols with no risk of drift between the two phases.
     pub fn identity_for(&mut self, key: &ItemKey, declared: HirId) -> HirId {
-        if key.is_instantiation() { self.fresh_synthetic_id() } else { declared }
+        let id = if key.is_instantiation() { self.fresh_synthetic_id() } else { declared };
+        self.decl_id_owner.insert(id, key.clone());
+        id
     }
 
     /// [`Self::identity_for`] over an item's whole method list.
@@ -554,6 +601,25 @@ impl Driver {
                     a.analyze_declaration(decl, Storage::Global)
                 })
                 .map(|c| ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id }),
+
+            // A top-level `comp` binding -- evaluated right here, during
+            // signature resolution (not deferred to a body-check phase the
+            // way an ordinary global would be): `comp <expr>` interprets
+            // eagerly as an inherent part of ordinary expression analysis
+            // (`Analyzer::analyze_comp`), so analyzing `w.value` at all
+            // already triggers it, the same "signature resolution that
+            // needs a body-shaped answer" inversion `resolve_spec_return_
+            // function` uses for the identical reason -- safe here for the
+            // same reason it's safe there (`ensure_item_body`'s own cycle
+            // guard, see its doc comment, protects the one new reentrancy
+            // hazard this opens). `check_item_body`'s own `Walrus` arm has
+            // nothing left to do -- see its doc comment.
+            HirItem::Walrus(w) => self
+                .analyze(module, &substitution, (w.id, w.span), |a| a.analyze_comp_declaration(w))
+                .map(|(r#type, value)| {
+                    self.items.comp_values.insert(w.id, value);
+                    ResolvedItem::Value { r#type, storage: Storage::Comp, decl_id: w.id }
+                }),
 
             HirItem::ExternDeclaration(decl) => self
                 .analyze(module, &substitution, (decl.id, decl.span), |a| a.analyze_extern_decl(decl))

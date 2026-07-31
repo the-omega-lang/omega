@@ -462,6 +462,20 @@ impl<'r> Analyzer<'r> {
         requested_mutable: bool,
     ) -> Option<CheckedExprNode> {
         let (checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base, None)?;
+        // See `Analyzer::analyze_address_of`'s identical `comp`-binding
+        // guard -- `&comp_binding[range]` has the same "not yet supported"
+        // gap `&comp_binding` does, for the same reason.
+        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_base.root {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CompEvalFailed {
+                    reason: "slicing a 'comp' binding isn't supported yet".into(),
+                    trace: vec![],
+                },
+            );
+            return None;
+        }
 
         // The slice's *source* mutability: for inline storage
         // (`SizedArray`), whether the storage being sliced is itself
@@ -579,7 +593,7 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: ResolvedType::Slice { item: Box::new(item_type), mutable: false },
-            kind: CheckedExpr::ConstSlice(ConstValue::Slice(values)),
+            kind: CheckedExpr::Const(ConstValue::Slice(values)),
         })
     }
 

@@ -173,14 +173,13 @@ impl Driver {
     ) -> Result<Vec<CheckedItem>, Vec<CompileError>> {
         self.reject_local_extensions(path);
 
-        let hir = self.modules.hir(path);
         let mut bodies: Vec<CheckedBody> = Vec::new();
 
         for (name, index) in self.modules.index(path).plain_items() {
             if self.is_generic_template(path, &name).map_err(fatal)? {
                 continue;
             }
-            bodies.extend(self.check_item_body(&ItemKey::new(path, &name, &[]), &hir.items[index]));
+            bodies.extend(self.ensure_item_body(&ItemKey::new(path, &name, &[]), index));
         }
 
         for indices in self.modules.index(path).overloads.clone().into_values() {

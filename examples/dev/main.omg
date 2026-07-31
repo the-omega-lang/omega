@@ -1208,6 +1208,44 @@ main(argc : i32, argv : [*u8]) => i32 {
     }
     puts(<*u8>b"\0");
 
+    # Compile-time evaluation (`comp`) -- see
+    # docs/19-compile-time-evaluation.md. `comp` is a prefix on either an
+    # *expression* (`comp <expr>`, evaluate this now) or a *binding*
+    # (`comp ident := ...`, this identifier carries no storage of its own).
+    #
+    # `COMP_SUM` is a `comp` binding: `comp_add(10, 20)` runs at compile
+    # time, and every reference to `COMP_SUM` below is substituted with the
+    # already-known result `30` -- there is no runtime local backing it at
+    # all, exactly like a literal.
+    comp COMP_SUM := comp comp_add(10, 20);
+    printf(<*u8>b"comp binding (no storage): %d\n\0", COMP_SUM);
+
+    # `comp_point` is an *ordinary* local (no `comp` on the binding) --
+    # only its *initializer* is compile-time evaluated: `Point { x = 3; y
+    # = 4; }` is built once, ahead of time, and its bytes are baked
+    # directly into the binary as `comp_point`'s starting value. Unlike
+    # `COMP_SUM` above, `comp_point` is a real runtime place -- calling an
+    # ordinary method on it (`magnitude_sq`) works exactly as it would on
+    # any other struct value.
+    comp_point := comp Point { x = 3; y = 4; };
+    printf(
+        <*u8>b"comp-constructed struct: (%d, %d), magnitude_sq=%d\n\0",
+        comp_point.x,
+        comp_point.y,
+        comp_point.magnitude_sq()
+    );
+
+    # `GLOBAL_COMP_VALUE` (declared at module scope, near `comp_add` below)
+    # is read here directly *and* from `uses_global_comp_value`, an
+    # entirely separate function -- the same no-storage substitution as
+    # `COMP_SUM` above, just visible module-wide instead of only within
+    # `main`.
+    printf(
+        <*u8>b"global comp binding: %d, from another function: %d\n\0",
+        GLOBAL_COMP_VALUE,
+        uses_global_comp_value()
+    );
+
     return 69;
 }
 
@@ -1304,6 +1342,28 @@ struct GenericNode<T> {
 # same-module forward reference resolves.
 forward_declared_fn() => i32 {
     42
+}
+
+# An ordinary function -- nothing about its own declaration marks it as
+# usable at compile time. `comp comp_add(10, 20)` (in `main`, above) still
+# interprets this exact body: `comp` is never a function-level color (see
+# docs/19-compile-time-evaluation.md) -- any function can be *attempted* at
+# compile time, on demand, at the call site.
+comp_add(a: i32, b: i32) => i32 {
+    a + b
+}
+
+# A top-level `comp` binding -- unlike `COMP_SUM` in `main` above, this one
+# is visible to *every* item in the module (or anything that imports it),
+# not just the function it's declared in. Still no storage of its own:
+# every reference substitutes `60`, the already-known value.
+comp GLOBAL_COMP_VALUE := comp comp_add(40, 20);
+
+# Reads `GLOBAL_COMP_VALUE` from a function entirely separate from the one
+# that (transitively) triggered its evaluation -- proving the substitution
+# genuinely works cross-item, not just within the declaring scope.
+uses_global_comp_value() => i32 {
+    GLOBAL_COMP_VALUE + 9
 }
 
 # `defer` schedules a piece of code to run when *this* function exits --

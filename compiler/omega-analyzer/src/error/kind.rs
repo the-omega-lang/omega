@@ -487,6 +487,27 @@ pub enum AnalysisErrorKind {
     /// now: a bare method name has no owning-type prefix once mangling is
     /// off, a much easier accidental collision than a top-level function's.
     ManglingDisabledOnMethod,
+    /// `comp <expr>` couldn't be evaluated at compile time -- `reason` names
+    /// the specific construct that actually blocked it (an already-
+    /// formatted description of a `comp_eval::CompErrorKind`, from
+    /// `Analyzer::analyze_comp`), and `trace` is the call-site chain from
+    /// the outermost `comp` down to wherever `reason` happened, outermost
+    /// first -- empty when the failure was directly inside the outermost
+    /// evaluation, with no intervening call. See `docs/19-compile-time-evaluation.md`.
+    CompEvalFailed { reason: String, trace: Vec<Span> },
+    /// `mut comp a := ...;` -- a `comp` binding carries no storage of its
+    /// own (every reference to it is substituted with its already-known
+    /// value at compile time), so a later mutation could never be observed
+    /// by anything that already substituted it -- incoherent, not just
+    /// discouraged.
+    MutCompBinding,
+    /// `ident := value;` at item level with no `comp` -- a top-level
+    /// binding whose type must be *inferred* (there's nothing else this
+    /// grammar shape could mean) needs a compile-time-known value to infer
+    /// it from; a runtime-computed top-level global (no `comp` at all,
+    /// initializer support with real init-order semantics) is a distinct,
+    /// larger feature nobody has built. See `docs/19-compile-time-evaluation.md`.
+    TopLevelWalrusNotComp,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -860,6 +881,9 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::ManglingDisabledOnGeneric => write!(f, "cannot disable mangling on a generic function"),
             Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
+            Self::CompEvalFailed { reason, .. } => write!(f, "cannot evaluate this expression at compile time: {reason}"),
+            Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
+            Self::TopLevelWalrusNotComp => write!(f, "a top-level ':=' binding must be 'comp'"),
         }
     }
 }
