@@ -549,6 +549,12 @@ receives_any_optional<T>(abc: Optional<T>) => void {
     }
 }
 
+marker MyZst {
+    hello() => void {
+        puts(<*u8>b"MyZst::hello called!\0");
+    }
+}
+
 main(argc : i32, argv : [*u8]) => i32 {
     mut mynode1 : MyNode<i32>;
     mynode1.value = 20;
@@ -1245,6 +1251,13 @@ main(argc : i32, argv : [*u8]) => i32 {
         GLOBAL_COMP_VALUE,
         uses_global_comp_value()
     );
+
+
+    zst := MyZst {};
+    next_to_zst := 123;
+    printf(<*u8>b"&zst = %p\n\0", &zst);
+    printf(<*u8>b"&next_to_zst = %p\n\0", &next_to_zst);
+    printf(<*u8>b"&zst == &next_to_zst ? %s\n\0", if &zst == &next_to_zst { <*u8>b"YES\0" } else { <*u8>b"NO\0" });
 
     return 69;
 }
