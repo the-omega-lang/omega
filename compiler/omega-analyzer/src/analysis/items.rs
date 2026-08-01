@@ -395,10 +395,22 @@ impl<'r> Analyzer<'r> {
         let annotations = self.item_annotations(s.id, &s.annotations, crate::annotations::ItemKind::Struct);
         cell.borrow_mut().layout = annotations.layout;
         cell.borrow_mut().suppress = annotations.suppress;
+        cell.borrow_mut().is_marker = s.is_marker;
 
         cell.borrow_mut().fields = self.resolve_declared_fields(&s.fields)?;
 
         let self_type = ResolvedType::Struct(cell.clone());
+        // A `marker` is exempt by design (see `ResolvedStructType::
+        // is_marker`'s doc comment); an ordinary struct isn't -- checked
+        // against the type's own full leaf list (`layout::is_zero_sized`),
+        // not just `s.fields.is_empty()`, so this also catches a struct
+        // whose only field is itself zero-sized, and a generic struct that
+        // only becomes zero-sized for one particular instantiation (this
+        // runs once per instantiation, same as everything else here).
+        if !s.is_marker && crate::layout::is_zero_sized(&self_type) {
+            self.error(s.id, s.span, AnalysisErrorKind::ZeroSizedAggregate { name: s.name.clone(), is_union: false });
+        }
+
         let (functions, pending, implemented_specs) =
             self.collect_methods((s.id, s.span), &s.name, &s.functions, &s.implements, method_ids, &self_type)?;
         cell.borrow_mut().functions = functions;
@@ -421,6 +433,13 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().fields = self.resolve_declared_fields(&u.fields)?;
 
         let self_type = ResolvedType::Union(cell.clone());
+        // Unions have no `marker` exemption -- see `signature_of_struct`'s
+        // identical check for why this uses the full leaf list rather than
+        // `u.fields.is_empty()`.
+        if crate::layout::is_zero_sized(&self_type) {
+            self.error(u.id, u.span, AnalysisErrorKind::ZeroSizedAggregate { name: u.name.clone(), is_union: true });
+        }
+
         let (functions, pending, implemented_specs) =
             self.collect_methods((u.id, u.span), &u.name, &u.functions, &u.implements, method_ids, &self_type)?;
         cell.borrow_mut().functions = functions;

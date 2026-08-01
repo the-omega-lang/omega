@@ -452,6 +452,7 @@ impl Lowerer {
             implements: s.implements.clone(),
             fields,
             functions,
+            is_marker: s.is_marker,
         }
     }
 

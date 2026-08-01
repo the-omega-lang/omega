@@ -508,6 +508,16 @@ pub enum AnalysisErrorKind {
     /// initializer support with real init-order semantics) is a distinct,
     /// larger feature nobody has built. See `docs/19-compile-time-evaluation.md`.
     TopLevelWalrusNotComp,
+    /// A `struct`/`union` whose fields (if any) all resolve to zero-sized
+    /// types -- unlike `marker`, a `struct`/`union` is meant to hold real
+    /// data, so this is rejected outright rather than silently accepted as
+    /// a `marker` would be. Checked against the type's own full,
+    /// recursively-flattened leaf list (`layout::is_zero_sized`), so this
+    /// also catches a struct whose only field is itself another zero-sized
+    /// type, and a generic struct/union whose fields happen to all resolve
+    /// to a zero-sized type for one particular instantiation -- not just a
+    /// literally empty field list.
+    ZeroSizedAggregate { name: Ident, is_union: bool },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -884,6 +894,10 @@ impl fmt::Display for AnalysisErrorKind {
             Self::CompEvalFailed { reason, .. } => write!(f, "cannot evaluate this expression at compile time: {reason}"),
             Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
             Self::TopLevelWalrusNotComp => write!(f, "a top-level ':=' binding must be 'comp'"),
+            Self::ZeroSizedAggregate { name, is_union } => {
+                let kind = if *is_union { "union" } else { "struct" };
+                write!(f, "{kind} '{}' has no sized fields", name.as_ref())
+            }
         }
     }
 }

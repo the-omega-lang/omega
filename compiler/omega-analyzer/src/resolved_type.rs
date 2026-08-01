@@ -100,6 +100,17 @@ pub struct ResolvedStructType {
     /// structural -- see its own doc comment -- and would happily accept a
     /// type that merely duck-types the right method shapes).
     pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    /// `true` for a `marker` declaration -- see
+    /// `omega_parser::ast::statement::r#struct::StructStmt::is_marker`. The
+    /// *only* thing this changes anywhere in the analyzer/codegen: it's
+    /// what exempts this cell from the "a struct must have at least one
+    /// sized field" check (`Analyzer::signature_of_struct`) -- everything
+    /// else (implements-clause resolution, method dispatch, generics,
+    /// dead-code tracking, spec/vtable coercion, layout) already works
+    /// unmodified for a zero-field struct, which is deliberately why
+    /// `marker` reuses this type wholesale instead of being a separate
+    /// `ResolvedType` variant.
+    pub is_marker: bool,
 }
 
 /// Nominal, not structural: two struct types are the same type iff they're

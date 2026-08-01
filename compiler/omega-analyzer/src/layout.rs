@@ -190,6 +190,20 @@ pub fn total_bytes(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
     leaves_of(ty, pointer_bytes).iter().map(|leaf| leaf.bytes(pointer_bytes)).sum()
 }
 
+/// Whether `ty` occupies zero bytes -- used to reject a zero-field
+/// `struct`/`union` (see `AnalysisErrorKind::ZeroSizedAggregate`), for
+/// which a `marker` declaration exists instead. Deliberately independent of
+/// any real target's pointer width: a leaf's own *existence* in
+/// `leaves_of`'s result never depends on `pointer_bytes` (only a
+/// `Leaf::Ptr` leaf's *byte size* does, via `total_bytes` above), so `0`
+/// here is a safe placeholder rather than a real target width -- this is
+/// what lets the analyzer call this without carrying pointer-width state
+/// of its own (it doesn't have any; `sizeof<T>` is deferred to codegen for
+/// exactly this reason).
+pub fn is_zero_sized(ty: &ResolvedType) -> bool {
+    leaves_of(ty, 0).is_empty()
+}
+
 /// A struct/enum's own alignment requirement when embedded as a field --
 /// `1` (no alignment; the implicit default) for everything except an
 /// explicit `@layout(align = n)` struct/enum, which imposes `n`. The

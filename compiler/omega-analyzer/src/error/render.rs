@@ -546,6 +546,12 @@ impl AnalysisErrorKind {
             Self::TopLevelWalrusNotComp => d
                 .with_label(span, "missing 'comp'")
                 .with_help("write 'comp ident := value;' -- a runtime-computed top-level global isn't supported yet"),
+            Self::ZeroSizedAggregate { name, is_union } => {
+                let kind = if *is_union { "union" } else { "struct" };
+                d.with_label(span, format!("`{}` has no sized fields", name.as_ref())).with_help(format!(
+                    "a {kind} must hold at least one field with nonzero size -- use 'marker' to declare a type with no data"
+                ))
+            }
         }
     }
 }

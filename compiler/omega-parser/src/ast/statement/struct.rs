@@ -26,4 +26,14 @@ pub struct StructStmt {
     pub implements: Vec<Type>,
     pub fields: Vec<DeclarationStmt>,
     pub functions: Vec<FunctionDefinitionStmt>,
+    /// `true` for a `marker` declaration -- grammatically always paired
+    /// with an empty `fields` (the `marker` parse path never reaches the
+    /// field-list loop at all, see `parser::item::parse_struct_def`), so a
+    /// marker's "no data, ever" property is structural, not merely a
+    /// zero-length list an ordinary struct could also happen to have.
+    /// Everything else (generics, `implements`, `functions`) is identical
+    /// to an ordinary struct's -- see `ResolvedStructType`'s own doc
+    /// comment for why this reuses `Struct` wholesale instead of being a
+    /// separate item kind.
+    pub is_marker: bool,
 }

@@ -72,6 +72,11 @@ New to the codebase — read roughly in this order:
 18. [`for` .. `in` loops](18-for-in-loops.md) — the iteration protocol
     (`Iterator<T>`/`ToIterator<T>`/`Option<T>`), how it desugars, and the
     one narrow ambient-name-resolution exception it needed.
+19. [Compile-time evaluation (`comp`)](19-compile-time-evaluation.md) — the
+    `comp` interpreter, no-storage `comp` bindings, and const promotion.
+20. [Zero-sized types (`marker`)](20-marker-types.md) — a data-free
+    declaration that can still implement specs, why `struct`/`union` must
+    always hold real data, and what's already free vs. newly built.
 
 ## What this is not
 

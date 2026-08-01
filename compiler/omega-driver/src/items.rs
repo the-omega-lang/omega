@@ -132,6 +132,7 @@ impl TypeCells {
                     layout: Default::default(),
                     suppress: vec![],
                     implemented_specs: vec![],
+                    is_marker: false,
                 }))
             })
             .clone()

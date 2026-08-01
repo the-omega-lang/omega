@@ -116,6 +116,18 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations, visibility)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations, visibility)?),
         TokenKind::Union => Item::Union(parse_union_def(p, annotations, visibility)?),
+        // `marker` is contextual, matching `mut`/`comp`/`reveal`'s own
+        // precedent (`lexer::TokenKind`'s doc comment) -- only committed to
+        // once followed by another identifier (the marker's own name),
+        // exactly like `mut`/`comp` above are only committed to once the
+        // *whole* binding shape is confirmed. This keeps `marker` usable as
+        // an ordinary function/variable name everywhere else (in
+        // particular, `marker(...)` -- a call/function definition named
+        // `marker` -- is never followed by a bare `Ident`, so it falls
+        // through to the ordinary function-definition arm below untouched).
+        TokenKind::Ident(name) if name == "marker" && matches!(p.peek_at(1), TokenKind::Ident(_)) => {
+            Item::Struct(parse_marker_def(p, annotations, visibility)?)
+        }
         TokenKind::Spec => {
             reject_annotations(p, &annotations);
             Item::Spec(parse_spec_def(p, visibility)?)
@@ -442,27 +454,53 @@ fn parse_declaration_list(p: &mut Parser) -> Vec<DeclarationStmt> {
 /// always first (matching the old grammar's `declarations_parser.repeated()`
 /// *then* `functions_parser.repeated()`, not an interleaved single loop):
 /// once the field-shaped lookahead (`Ident` + `:`) stops matching, the
-/// struct body is assumed to be all methods from there on. Shared between
-/// root-item position (`Item::Struct`) and nested statement
-/// position (`Statement::Struct`, see `parser::statement`) exactly like the
-/// old grammar's single `StructStmt::parser` was.
+/// struct body is assumed to be all methods from there on.
 pub fn parse_struct_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibility: Visibility) -> Option<StructStmt> {
     p.expect(&TokenKind::Struct, "'struct'");
+    parse_struct_or_marker_body(p, annotations, visibility, false)
+}
+
+/// `marker Name<T, ...> : Spec1, Spec2 { method(...) => T { ... } ... }` --
+/// `marker`'s own doc comment (`ast::statement::struct::StructStmt::
+/// is_marker`) covers the *semantics*; here it's purely a grammar fact that
+/// a marker's field-list section doesn't exist: `parse_struct_or_marker_body`
+/// below is handed `is_marker = true` and never even calls `field_follows`,
+/// so `marker Foo { x: i32; }` fails to parse as a field at all (it falls
+/// through into the *functions* loop, which then rejects `x: i32;` as an
+/// invalid method) rather than being silently accepted and only rejected
+/// later during analysis.
+pub fn parse_marker_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibility: Visibility) -> Option<StructStmt> {
+    p.advance(); // 'marker' -- contextual keyword, already confirmed by the caller's lookahead
+    parse_struct_or_marker_body(p, annotations, visibility, true)
+}
+
+/// The shared tail both `struct` and `marker` parse into, after their own
+/// leading keyword: name, generics, `implements`, an optional field-list
+/// section (skipped entirely for a marker -- see `parse_marker_def`), and
+/// the trailing method list.
+fn parse_struct_or_marker_body(
+    p: &mut Parser,
+    annotations: Vec<AnnotationNode>,
+    visibility: Visibility,
+    is_marker: bool,
+) -> Option<StructStmt> {
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
     let implements = parse_optional_implements(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
-    while field_follows(p) {
-        let (field_visibility, _) = parse_optional_visibility(p);
-        match parse_declaration(p) {
-            Some(mut decl) => {
-                decl.visibility = field_visibility;
-                fields.push(decl);
-                p.expect_terminator(&TokenKind::Semi, "';'");
+    if !is_marker {
+        while field_follows(p) {
+            let (field_visibility, _) = parse_optional_visibility(p);
+            match parse_declaration(p) {
+                Some(mut decl) => {
+                    decl.visibility = field_visibility;
+                    fields.push(decl);
+                    p.expect_terminator(&TokenKind::Semi, "';'");
+                }
+                None => recovery::synchronize_to_statement_boundary(p),
             }
-            None => recovery::synchronize_to_statement_boundary(p),
         }
     }
 
@@ -477,7 +515,7 @@ pub fn parse_struct_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibi
     }
 
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(StructStmt { annotations, visibility, ident, generics, implements, fields, functions })
+    Some(StructStmt { annotations, visibility, ident, generics, implements, fields, functions, is_marker })
 }
 
 /// Whether a field declaration (as opposed to the start of the methods

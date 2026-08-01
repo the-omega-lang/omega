@@ -196,6 +196,8 @@ pub struct HirStructDef {
     pub implements: Vec<Type>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
+    /// See `omega_parser::ast::statement::r#struct::StructStmt::is_marker`.
+    pub is_marker: bool,
 }
 
 /// A C/Rust-style union -- see `omega_parser::ast::statement::union::
