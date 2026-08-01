@@ -8,10 +8,17 @@ new one is found.
 
 ## Codegen
 
-- **Variadic `f64` from a function parameter prints `0.0`.** Any `-O`
-  level. [primitives.md](01-primitives.md)
-- **Variadic `f64` read via an enum body-field projection prints garbage.**
-  Only under `-O1` and above. [primitives.md](01-primitives.md)
+- **A float argument to a variadic (`printf`-style) call reads garbage
+  from whatever's left in `%al`.** Not this compiler's bug — Cranelift
+  itself has no support for the x86-64 SysV vararg calling convention
+  (`%al` must hold the caller's XMM-register count; confirmed nothing in
+  `cranelift-codegen` handles this at all, and `rustc_codegen_cranelift`
+  hit the same wall and just forbids the shape). Surfaces differently
+  depending on register allocation: a function parameter forwarded
+  straight into a variadic call (any `-O` level), an enum body-field
+  projection (`-O1`+ only), or even a plain local in a large enough
+  function (previously believed safe; it isn't, it was just small
+  enough to not show it). [primitives.md](01-primitives.md)
 - **No real C-ABI aggregate-passing convention** — structs/enums pass as
   flattened positional scalars, fine Omega-to-Omega, not safely callable
   from hand-written C expecting real struct-passing rules.
