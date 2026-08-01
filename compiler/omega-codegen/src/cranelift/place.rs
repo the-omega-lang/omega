@@ -44,18 +44,14 @@ impl Codegen {
                 let current = if (id.0 as usize) < self.arg_count {
                     PlaceStorage::Values(self.local_args[id.0 as usize].clone())
                 } else {
-                    let slot = match self.stack_slots[id.0 as usize] {
-                        Some(slot) => slot,
-                        None => {
-                            let shift = layout::stack_align_shift(layout::type_alignment(r#type));
-                            let size = layout::total_bytes(r#type, self.pointer_bytes());
-                            let slot = builder
-                                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
-                            self.stack_slots[id.0 as usize] = Some(slot);
-                            slot
-                        }
-                    };
-                    PlaceStorage::Slot { slot, offset: 0 }
+                    // One shared per-function slot, offset by this local's
+                    // own precomputed position within it -- see
+                    // `Codegen::frame_slot`'s doc comment for why this
+                    // (rather than one independent slot per local) is what
+                    // makes a zero-sized local's address genuinely coincide
+                    // with whatever real local comes next, cross-backend.
+                    let slot = self.frame_slot.expect("define_function_def always sets this before any block runs");
+                    PlaceStorage::Slot { slot, offset: self.local_offsets[id.0 as usize] }
                 };
                 (current, r#type.clone())
             }

@@ -93,17 +93,30 @@ pub(crate) struct Codegen {
     /// later takes its address -- see `place::place_storage_address`'s
     /// own `todo!()`).
     local_args: Vec<Vec<Value>>,
-    /// `MirBody::locals`-indexed, one stack slot per *non-parameter* local
-    /// (`i >= arg_count`), sized to its type's total byte size (not one
-    /// slot per scalar leaf) -- a prerequisite for `&`/`*`: a local needs a
-    /// single address, and three independent per-leaf slots have three
-    /// unrelated addresses. Sized to `MirBody::locals.len()` up front (all
-    /// `None`) but each entry is only actually allocated lazily, the first
-    /// time `resolve_place_storage` resolves that local -- a branch that
-    /// never runs never pays for a slot it never touches.
-    stack_slots: Vec<Option<StackSlot>>,
+    /// One combined stack slot for *every* non-parameter local in the
+    /// current function (`i >= arg_count`), sized to
+    /// `layout::locals_layout`'s own `packed_end` and created once, up
+    /// front, in `define_function_def` -- never one slot per local. This is
+    /// what makes `layout::locals_layout` (the same field-layout algorithm
+    /// a struct's own fields already go through) the actual, load-bearing
+    /// source of a non-parameter local's address, rather than merely a
+    /// number nothing downstream honors: a zero-sized local's precomputed
+    /// offset genuinely coincides with whatever real address comes next in
+    /// `local_offsets`, in the one shared slot they both live in, exactly
+    /// like a zero-sized struct field already does within its own struct.
+    /// `None` only between functions (`clear_local`); always `Some` by the
+    /// time any block in the current function is processed.
+    frame_slot: Option<StackSlot>,
+    /// `MirBody::locals`-indexed (full length, matching `local_args`) --
+    /// `local_offsets[i]` (`i >= arg_count`) is `i`'s own byte offset into
+    /// `frame_slot`, precomputed once per function by `layout::
+    /// locals_layout` alongside `frame_slot` itself. Entries `< arg_count`
+    /// are never read (a parameter's storage is `local_args`, not
+    /// `frame_slot`, unless/until `place::place_storage_address`'s own
+    /// `todo!()` for a parameter's address is filled in).
+    local_offsets: Vec<u32>,
     /// The current function's own `MirBody::arg_count` -- the boundary
-    /// `local_args`/`stack_slots` use to tell a parameter local apart from
+    /// `local_args`/`frame_slot` use to tell a parameter local apart from
     /// a declared/synthetic one (see `MirBody::locals`'s own doc comment
     /// for why both share one index space).
     arg_count: usize,
@@ -178,7 +191,8 @@ impl Codegen {
             globals: HashMap::new(),
 
             local_args: Vec::new(),
-            stack_slots: Vec::new(),
+            frame_slot: None,
+            local_offsets: Vec::new(),
             arg_count: 0,
             declared_symbols: HashMap::new(),
             symbol_error: None,
@@ -195,7 +209,8 @@ impl Codegen {
 
     fn clear_local(&mut self) {
         self.ctx.clear();
-        self.stack_slots.clear();
+        self.frame_slot = None;
+        self.local_offsets.clear();
         self.local_args.clear();
         self.arg_count = 0;
     }

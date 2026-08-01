@@ -306,6 +306,20 @@ pub fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, p
     layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).byte_offsets[field_index]
 }
 
+/// A function's own non-parameter locals (`MirBody::locals[arg_count..]`),
+/// laid out exactly like a struct's fields -- `pack = 1`, the same default
+/// an unannotated struct already uses. This is deliberately the *only*
+/// place a function's stack frame is laid out: every backend calls this one
+/// function (instead of independently deciding its own per-local stack
+/// placement) so that "a zero-sized local's address is wherever it would
+/// be if it existed" is a property of this shared, backend-agnostic
+/// algorithm -- the same guarantee a struct field already gets from reusing
+/// `layout_fields` -- rather than an accident of whichever backend's own
+/// stack-slot allocator happens to be compiling a given function.
+pub fn locals_layout(local_types: &[ResolvedType], pointer_bytes: u32) -> FieldLayout {
+    layout_fields(local_types, 1, pointer_bytes)
+}
+
 /// The size of an enum's payload region: the largest variant body, each
 /// laid out via `layout_fields` with the enum's own `pack` (so a variant
 /// whose own fields need internal alignment/pack-chunking is sized

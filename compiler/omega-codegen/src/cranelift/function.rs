@@ -7,10 +7,11 @@ use super::leaf::IntoCraneliftLeaves;
 use crate::mangle;
 use cranelift::codegen;
 use cranelift::codegen::ir::ArgumentPurpose;
-use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, Signature, isa};
+use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, Signature, StackSlotData, StackSlotKind, isa};
 use cranelift_module::{FuncId, Linkage, Module};
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
+use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
 
@@ -233,8 +234,28 @@ impl Codegen {
         builder.func.signature = sig;
 
         self.arg_count = body.arg_count;
-        self.stack_slots = vec![None; body.locals.len()];
         self.local_args = vec![Vec::new(); body.locals.len()];
+
+        // One combined stack slot for every non-parameter local, laid out
+        // by `layout::locals_layout` -- the same field-layout algorithm a
+        // struct's own fields already go through (see `frame_slot`'s own
+        // doc comment for why this, not a per-local slot, is what makes a
+        // zero-sized local's address genuinely coincide with whatever real
+        // local comes next). Created unconditionally, even when
+        // `packed_end` is `0` (no non-parameter locals, or all of them are
+        // zero-sized) -- a zero-size stack slot is already relied on
+        // elsewhere (an all-zero-leaf struct/`marker` local) and costs
+        // nothing to create.
+        let non_param_types: Vec<ResolvedType> =
+            body.locals[body.arg_count..].iter().map(|local| local.r#type.clone()).collect();
+        let frame = layout::locals_layout(&non_param_types, self.pointer_bytes());
+        let max_align = non_param_types.iter().map(|ty| layout::type_alignment(ty)).max().unwrap_or(1);
+        let shift = layout::stack_align_shift(max_align);
+        self.frame_slot =
+            Some(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, frame.packed_end, shift)));
+        let mut local_offsets = vec![0u32; body.locals.len()];
+        local_offsets[body.arg_count..].copy_from_slice(&frame.byte_offsets);
+        self.local_offsets = local_offsets;
 
         // One cranelift block per mir block, minted up front so a forward
         // reference (or a loop's own back-edge) always resolves regardless

@@ -115,21 +115,29 @@ below), and for a marker's data pointer under dynamic dispatch (see
 ordinary `ResolvedType::Struct` value with an empty leaf list, a shape
 codegen already handled correctly before `marker` existed.
 
-**The one place this isn't guaranteed is two independent top-level local
-variables.** Each local gets its own independently-placed Cranelift stack
-slot (`Codegen::stack_slots`), with no adjacency promised between any two
-locals, zero-sized or not — so a zero-sized local's address, while always
-real, valid, non-null, and safe to compare, isn't guaranteed to coincide
-with a specific neighboring local's the way a struct field's does. This
-is a deliberate scope decision: guaranteeing that would mean replacing
-"one Cranelift stack slot per local" with "one combined per-function
-frame, byte-offset addressed," a real refactor to how *every* local in
-every function is addressed (not just zero-sized ones), trading away
-Cranelift's own stack-slot allocator for a hand-rolled scheme. The cases
-that actually matter for specs/generics/comp — aggregate fields, array
-elements, comp-promoted values, dynamic-dispatch data pointers — already
-have the "as if laid out sequentially" property today, for free, without
-it.
+**This also holds for two independent top-level local variables**, and
+is guaranteed, not incidental:
+
+```
+zst := SomeMarker {};
+next_to_zst := 123;
+&zst == &next_to_zst   # true
+```
+
+A function's own non-parameter locals are laid out by
+`layout::locals_layout` — the exact same `layout_fields` call a struct's
+fields go through, just applied to `MirBody::locals[arg_count..]` instead
+— into **one combined stack slot per function** (`Codegen::frame_slot`),
+each local addressed at its own precomputed byte offset within it, rather
+than each local getting its own independently-placed Cranelift stack
+slot. This is deliberately the *only* place a function's stack frame is
+laid out: because the offset math lives in the backend-agnostic `layout`
+module rather than in Cranelift-specific code, this is a genuine
+cross-backend guarantee (any future backend calling the same function
+gets the identical answer), not an accident of whichever backend's own
+allocator happens to be compiling a given function — exactly the same
+guarantee a zero-sized struct field already had, extended to locals by
+reusing the same mechanism rather than inventing a second one.
 
 ## By-value parameters, including `self`, cost nothing
 
@@ -181,10 +189,14 @@ already accepts an empty payload without complaint.
 
 ## Caveats
 
-- A `marker`'s local-variable address isn't guaranteed to coincide with
-  any particular neighboring local's, even though it's always a real,
-  valid, comparable address (see "Addresses" above) — a deliberate scope
-  decision, not an oversight.
+- The combined per-function stack frame (see "Addresses" above) sizes
+  itself off every non-parameter local's declared type, whether or not
+  that local is ever actually read — unlike the old one-slot-per-local
+  model, where a genuinely unused local cost nothing (no slot was ever
+  allocated for it). A legitimately dead local now occupies space in the
+  frame regardless; the dead-code lint already warns about unused
+  variables, so this is expected to be rare in practice, not a
+  correctness concern.
 - The `ZeroSizedAggregate` diagnostic for a generic struct/union that
   only becomes zero-sized for one instantiation points at the generic
   declaration's own span, not the specific instantiation call site that
