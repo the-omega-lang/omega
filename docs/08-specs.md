@@ -198,6 +198,39 @@ this coercion (`Analyzer::type_implements_spec`), including the identical
 mutable-pointer-needs-a-mutable-source rule ordinary pointer casts already
 enforce.
 
+### Reading the two leaves directly: `.ptr`/`.vtable`
+
+```
+obj : spec *Animal = &dog;
+raw := obj.ptr;      # *u8 (or *mut u8, mirroring `obj`'s own mutability)
+vt := obj.vtable;    # always *u8, immutable -- the vtable is read-only rodata
+```
+
+`.ptr`/`.vtable` read the fat pointer's own two leaves directly, exactly
+like `.length`/`.size` already do for `*[T]`/`*str`'s `[data_ptr, len]`
+leaves — not real fields (the concrete implementor is erased, so there's
+nothing to look up by name), so they're recognized before the ordinary
+struct-field paths would reject `spec *Spec` outright. `.ptr`'s own
+pointee is always the opaque `u8` (there's no concrete type left to name
+it as); its mutability mirrors the spec object's own (`spec *mut Animal`
+gives a `*mut u8`, `spec *Animal` a `*u8`). `.vtable` is always an
+immutable `*u8` regardless — the vtable itself is always compiler-
+generated, content-deduplicated rodata (see "Dynamic dispatch" above),
+never writable.
+
+Two spec objects coerced from the same concrete type share the exact same
+`.vtable` address (the dedup cache keys purely on the resolved slot list,
+not on which coercion produced it — see the caveat in "Dynamic dispatch"
+above), so `.vtable` equality is a sound "are these two objects backed by
+the same concrete type" check without needing to know what that type is.
+`.ptr` equality is the ordinary "same underlying instance" check, exactly
+like comparing two plain pointers.
+
+Neither field is reachable from inside a `comp` evaluation (see
+[compile-time evaluation](19-compile-time-evaluation.md)) — dynamic
+dispatch has no `ConstValue` shape at all, so a `spec *Spec`-typed value
+can never appear as a comp-evaluable base in the first place.
+
 ## `spec T` — static dispatch as a type
 
 ```

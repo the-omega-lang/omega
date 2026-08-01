@@ -40,6 +40,8 @@ fn lower_projection(lowerer: &mut FunctionLowerer, projection: CheckedProjection
         }
         CheckedProjection::Deref { r#type } => MirProjection::Deref { r#type },
         CheckedProjection::SliceLength => MirProjection::SliceLength,
+        CheckedProjection::SpecObjectPtr { mutable } => MirProjection::SpecObjectPtr { mutable },
+        CheckedProjection::SpecObjectVtable => MirProjection::SpecObjectVtable,
         CheckedProjection::EnumTag { r#type } => MirProjection::EnumTag { r#type },
         CheckedProjection::EnumHeader { field, index, r#type } => {
             MirProjection::EnumHeader { field, index, r#type }

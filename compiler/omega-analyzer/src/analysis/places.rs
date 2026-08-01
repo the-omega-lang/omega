@@ -56,6 +56,9 @@ impl<'r> Analyzer<'r> {
             ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                 self.project_slice_field(node_id, span, projections, &base, field)
             }
+            ResolvedType::SpecObject { mutable, .. } => {
+                self.project_spec_object_field(node_id, span, projections, &base, field, *mutable)
+            }
             ResolvedType::Enum { cell, variant } => {
                 self.project_enum_field(node_id, span, projections, cell, *variant, &base, field)
             }
@@ -103,6 +106,38 @@ impl<'r> Analyzer<'r> {
         }
         projections.push(CheckedProjection::SliceLength);
         Some(ResolvedType::I32)
+    }
+
+    /// `.ptr`/`.vtable` on a `spec *Spec` value -- not real fields (the
+    /// concrete implementor is erased, so there's nothing to look up by
+    /// name/index), answered before the aggregate paths below would reject
+    /// it, exactly like `project_slice_field`. Both read one of the two
+    /// leaves `ResolvedType::SpecObject`'s own doc comment describes; see
+    /// `CheckedProjection::SpecObjectPtr`/`SpecObjectVtable` for why the
+    /// pointee is always the opaque `u8` and which one tracks `mutable`.
+    fn project_spec_object_field(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        projections: &mut Vec<CheckedProjection>,
+        base: &ResolvedType,
+        field: &Ident,
+        mutable: bool,
+    ) -> Option<ResolvedType> {
+        match field.as_ref() {
+            "ptr" => {
+                projections.push(CheckedProjection::SpecObjectPtr { mutable });
+                Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable })
+            }
+            "vtable" => {
+                projections.push(CheckedProjection::SpecObjectVtable);
+                Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false })
+            }
+            _ => {
+                self.no_such_field(node_id, span, field, base);
+                None
+            }
+        }
     }
 
     /// Enum member access: `tag`, header fields, and shared dynamic fields
@@ -371,6 +406,8 @@ impl<'r> Analyzer<'r> {
         a.projections.iter().zip(b.projections.iter()).all(|(a, b)| match (a, b) {
             (CheckedProjection::FieldAccess { index: a, .. }, CheckedProjection::FieldAccess { index: b, .. }) => a == b,
             (CheckedProjection::SliceLength, CheckedProjection::SliceLength) => true,
+            (CheckedProjection::SpecObjectPtr { .. }, CheckedProjection::SpecObjectPtr { .. }) => true,
+            (CheckedProjection::SpecObjectVtable, CheckedProjection::SpecObjectVtable) => true,
             (CheckedProjection::EnumTag { .. }, CheckedProjection::EnumTag { .. }) => true,
             (CheckedProjection::EnumHeader { index: a, .. }, CheckedProjection::EnumHeader { index: b, .. }) => a == b,
             (

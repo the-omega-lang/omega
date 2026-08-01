@@ -327,6 +327,32 @@ impl Codegen {
                     };
                     current_type = ResolvedType::I32;
                 }
+
+                // A spec object is flattened as [data pointer, vtable
+                // pointer] (see `ResolvedType::SpecObject`'s own doc
+                // comment) -- `.ptr` is the first leaf, at no offset;
+                // `.vtable` is the second, exactly like `SliceLength` above
+                // reads a fat pointer's second leaf.
+                MirProjection::SpecObjectPtr { mutable } => {
+                    current = match current {
+                        PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[0]]),
+                        other => other,
+                    };
+                    current_type = ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: *mutable };
+                }
+                MirProjection::SpecObjectVtable => {
+                    let ptr_size = self.pointer_type().bytes();
+                    current = match current {
+                        PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[1]]),
+                        PlaceStorage::Slot { slot, offset } => {
+                            PlaceStorage::Slot { slot, offset: offset + ptr_size }
+                        }
+                        PlaceStorage::Address { base, offset } => {
+                            PlaceStorage::Address { base, offset: offset + ptr_size }
+                        }
+                    };
+                    current_type = ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false };
+                }
             }
         }
 

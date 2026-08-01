@@ -654,6 +654,20 @@ pub enum CheckedProjection {
     /// two types spell this differently despite sharing one projection
     /// kind).
     SliceLength,
+    /// `spec_obj.ptr` -- reads the data-pointer leaf of a `spec *Spec`/
+    /// `spec *mut Spec` fat pointer (see `ResolvedType::SpecObject`'s own
+    /// doc comment for the `[data_ptr, vtable_ptr]` leaf order codegen
+    /// already relies on), as an opaque `*u8`/`*mut u8`. `mutable` mirrors
+    /// the spec object's own `mutable` flag -- see
+    /// `Analyzer::project_spec_object_field`.
+    SpecObjectPtr {
+        mutable: bool,
+    },
+    /// `spec_obj.vtable` -- reads the second (vtable) leaf of the same fat
+    /// pointer, always as an immutable `*u8`: the vtable itself is always
+    /// compiler-generated, content-deduplicated read-only rodata (see
+    /// `Codegen::vtables`), regardless of the spec object's own mutability.
+    SpecObjectVtable,
     /// `value.tag` on an enum -- reads the tag, which every enum value has
     /// (implicit-tag enums included). `r#type` is the enum's tag type.
     EnumTag {

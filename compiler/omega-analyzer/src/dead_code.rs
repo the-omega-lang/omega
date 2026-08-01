@@ -261,6 +261,13 @@ pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
             }
             CheckedProjection::Deref { r#type } => current_type = Some(r#type.clone()),
             CheckedProjection::SliceLength => current_type = Some(ResolvedType::USize),
+            CheckedProjection::SpecObjectPtr { mutable } => {
+                current_type = Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: *mutable })
+            }
+            CheckedProjection::SpecObjectVtable => {
+                current_type =
+                    Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false })
+            }
             CheckedProjection::EnumTag { r#type } => current_type = Some(r#type.clone()),
             CheckedProjection::EnumHeader { r#type, .. } => current_type = Some(r#type.clone()),
         }

@@ -883,6 +883,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 ConstValue::Union { .. } => Err(self.err(span, CompErrorKind::Unsupported("reading a union through its inactive field"))),
                 _ => Err(self.err(span, CompErrorKind::Unsupported("field access on a non-union comp value"))),
             },
+            // A `spec *Self` value has no `ConstValue` shape -- dynamic
+            // dispatch isn't comp-evaluable, so this can never actually see
+            // a real base value; reject uniformly rather than panic.
+            CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
+                Err(self.err(span, CompErrorKind::Unsupported("accessing a spec object's pointer/vtable inside a 'comp' evaluation")))
+            }
         }
     }
 
@@ -939,6 +945,10 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 Ok(ConstValue::Union { field_index: *index, value: Box::new(inner) })
             }
             CheckedProjection::Deref { .. } => Err(self.err(span, CompErrorKind::UnresolvableMemory)),
+            CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("writing through a spec object's pointer/vtable inside a 'comp' evaluation"),
+            )),
             _ => Err(self.err(span, CompErrorKind::Unsupported("this write target inside a comp evaluation"))),
         }
     }

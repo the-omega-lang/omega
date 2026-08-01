@@ -235,6 +235,14 @@ impl<'r> Analyzer<'r> {
             CheckedProjection::Deref { .. } => {
                 unsupported(self, "dereferencing a pointer inside a 'comp' binding projection isn't supported yet")
             }
+            // A `spec *Self` value has no `ConstValue` shape at all --
+            // dynamic dispatch isn't comp-evaluable in the first place (see
+            // `docs/19-compile-time-evaluation.md`'s "What it can't (yet)"),
+            // so `.ptr`/`.vtable` can never actually see a real base value
+            // here; reject uniformly rather than reach the fallback panic.
+            CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
+                unsupported(self, "accessing a spec object's pointer/vtable inside a 'comp' evaluation isn't supported")
+            }
         }
     }
 

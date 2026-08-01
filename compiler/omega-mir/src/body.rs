@@ -261,6 +261,10 @@ pub enum MirProjection {
     Index { index_expr: Box<MirExprNode>, item_type: ResolvedType },
     Deref { r#type: ResolvedType },
     SliceLength,
+    /// `CheckedProjection::SpecObjectPtr`'s direct analogue.
+    SpecObjectPtr { mutable: bool },
+    /// `CheckedProjection::SpecObjectVtable`'s direct analogue.
+    SpecObjectVtable,
     EnumTag { r#type: ResolvedType },
     EnumHeader { field: Ident, index: usize, r#type: ResolvedType },
     EnumDynamicField { field: Ident, index: usize, r#type: ResolvedType },
