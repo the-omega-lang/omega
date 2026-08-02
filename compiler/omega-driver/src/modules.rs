@@ -384,7 +384,10 @@ impl Driver {
             HirItem::Union(u) => u.generics.clone(),
             HirItem::FunctionDefinition(f) => f.generics.clone(),
             HirItem::Spec(sp) => sp.generics.clone(),
-            HirItem::Declaration(_) | HirItem::ExternDeclaration(_) | HirItem::Walrus(_) => vec![],
+            HirItem::Declaration(_)
+            | HirItem::DeclarationWithInit(..)
+            | HirItem::ExternDeclaration(_)
+            | HirItem::Walrus(_) => vec![],
             HirItem::Import(_) => unreachable!("imports are never indexed into a module's items"),
         })
     }

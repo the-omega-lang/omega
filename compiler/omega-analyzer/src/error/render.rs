@@ -546,9 +546,10 @@ impl AnalysisErrorKind {
             Self::TopLevelValueNotComp => d
                 .with_label(span, "this value isn't known at compile time")
                 .with_help(
-                    "write 'ident := comp value;' if the value should be computed at compile time but still get \
-                     real, mutable-if-'mut' storage, or 'comp ident := comp value;' for a no-storage substituted \
-                     binding instead -- a runtime-computed top-level global isn't supported",
+                    "write 'comp value' (e.g. 'ident := comp value;' or 'ident : Type = comp value;') if the value \
+                     should be computed at compile time but still get real, mutable-if-'mut' storage, or 'comp \
+                     ident := comp value;' for a no-storage substituted binding instead -- a runtime-computed \
+                     top-level global isn't supported",
                 ),
             Self::ZeroSizedAggregate { name, is_union } => {
                 let kind = if *is_union { "union" } else { "struct" };

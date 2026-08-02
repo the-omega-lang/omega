@@ -60,10 +60,16 @@ initializer at all:
 struct Thing { exposed number: i32; }
 make_thing() => Thing { Thing { number = 10; } }
 
-def := comp make_thing();      # real storage, immutable, starts at {10}
-mut jkl := comp make_thing();  # real storage, mutable, starts at {10}
-mut pqr : Thing;                # real storage, mutable, starts zeroed
-stu : Thing;                    # real storage, immutable, starts zeroed
+def := comp make_thing();          # real storage, immutable, starts at {10}
+mut jkl := comp make_thing();      # real storage, mutable, starts at {10}
+mut pqr : Thing;                    # real storage, mutable, starts zeroed
+stu : Thing;                        # real storage, immutable, starts zeroed
+ghi : Thing = comp make_thing();    # typed + initializer -- same rule,
+                                      # written type instead of an inferred
+                                      # one (and usable as an `expected`
+                                      # hint, e.g. `abc : u64 = comp 10;`
+                                      # coercing the unsuffixed literal)
+mut vwx : Thing = comp make_thing(); # ...and mutable, same as `jkl`
 ```
 
 The one rule governing all of these: **a top-level binding's value, when

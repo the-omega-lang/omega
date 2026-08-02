@@ -897,7 +897,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
             Self::CompEvalFailed { reason, .. } => write!(f, "cannot evaluate this expression at compile time: {reason}"),
             Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
-            Self::TopLevelValueNotComp => write!(f, "a top-level ':=' binding's value must be compile-time-known"),
+            Self::TopLevelValueNotComp => write!(f, "a top-level binding's value must be compile-time-known"),
             Self::ZeroSizedAggregate { name, is_union } => {
                 let kind = if *is_union { "union" } else { "struct" };
                 write!(f, "{kind} '{}' has no sized fields", name.as_ref())

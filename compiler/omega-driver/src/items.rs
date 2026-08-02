@@ -620,6 +620,22 @@ impl Driver {
                     mutable: c.mutable,
                 }),
 
+            // `ident : Type = value;` -- `HirItem::Declaration`'s explicit-
+            // initializer sibling, same "must be compile-time-known" rule
+            // as a non-`comp` `Walrus` below, just with a written-down
+            // type instead of an inferred one. See `Analyzer::
+            // analyze_global_declaration_with_init`'s own doc comment.
+            HirItem::DeclarationWithInit(decl, value) => self
+                .analyze(module, &substitution, (decl.id, decl.span), |a| {
+                    a.analyze_global_declaration_with_init(decl, value)
+                })
+                .map(|c| {
+                    if let Some(v) = c.initial_value {
+                        self.items.global_initial_values.insert(c.id, v);
+                    }
+                    ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id, mutable: c.mutable }
+                }),
+
             // A top-level binding, `comp` or not -- evaluated right here,
             // during signature resolution (not deferred to a body-check
             // phase the way a function's own body would be): `comp <expr>`

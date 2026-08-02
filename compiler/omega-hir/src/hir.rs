@@ -43,6 +43,11 @@ pub struct HirModule {
 #[derive(Debug, Clone)]
 pub enum HirItem {
     Declaration(HirDeclaration),
+    /// `ident : Type = value;` -- see `omega_parser::ast::statement::
+    /// Item::DeclarationWithInit`'s doc comment. Reuses `HirDeclaration`
+    /// directly, exactly like `HirStmt::DeclarationWithInit` does at
+    /// local scope.
+    DeclarationWithInit(HirDeclaration, HirExprNode),
     /// `[comp] ident := value;` -- see `omega_parser::ast::statement::
     /// Item::Walrus`'s doc comment. Reuses `HirWalrusDeclaration` (the
     /// local-statement node) directly -- `HirWalrusDeclaration::visibility`

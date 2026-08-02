@@ -358,6 +358,7 @@ impl ModuleResolver for Driver {
                 }
                 HirItem::FunctionDefinition(_)
                 | HirItem::Declaration(_)
+                | HirItem::DeclarationWithInit(..)
                 | HirItem::Walrus(_)
                 | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
                 HirItem::Import(_) => false,

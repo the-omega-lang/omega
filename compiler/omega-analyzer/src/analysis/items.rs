@@ -80,19 +80,63 @@ impl<'r> Analyzer<'r> {
     /// uses.
     pub fn analyze_global_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<CheckedDeclaration> {
         let checked = self.analyze_expr(&w.value, None)?;
-        let CheckedExpr::Const(value) = checked.kind else {
-            self.error(w.id, w.span, AnalysisErrorKind::TopLevelValueNotComp);
+        self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, checked)
+    }
+
+    /// `ident : Type = value;` at item level (`HirItem::DeclarationWithInit`)
+    /// -- `analyze_global_walrus`'s explicitly-typed sibling, and the
+    /// top-level counterpart of `analyze_declaration_with_init` (locals):
+    /// `value` is analyzed *with* the declared type as an `expected` hint
+    /// (so an unsuffixed literal picks it, e.g. `abc : u64 = 10;`),
+    /// coerced, and checked for acceptance exactly like the local version
+    /// -- the only thing added here is `finish_global_binding`'s shared
+    /// "must already be compile-time-known" requirement, which a plain
+    /// local declaration never needed (a local's value becomes an ordinary
+    /// runtime `Assignment`, not baked-in static data).
+    pub fn analyze_global_declaration_with_init(
+        &mut self,
+        decl: &HirDeclaration,
+        value: &HirExprNode,
+    ) -> Option<CheckedDeclaration> {
+        let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type, true)?;
+        let checked_value = self.analyze_expr(value, Some(&resolved_type))?;
+        let checked_value = self.coerce_to_expected(Some(&resolved_type), checked_value);
+        if !resolved_type.accepts(&checked_value.r#type) {
+            self.error(
+                value.id,
+                value.span,
+                AnalysisErrorKind::AssignmentTypeMismatch {
+                    target: resolved_type,
+                    value: checked_value.r#type,
+                },
+            );
+            return None;
+        }
+        self.finish_global_binding(decl.id, decl.span, &decl.ident, decl.mutable, checked_value)
+    }
+
+    /// The shared tail `analyze_global_walrus` and
+    /// `analyze_global_declaration_with_init` both need once `value` is
+    /// fully analyzed (and, for the typed form, already coerced/accepted
+    /// against its declared type): enforce the one rule every non-`comp`
+    /// top-level binding shares (`value` must already be `CheckedExpr::
+    /// Const`), then register and build the `CheckedDeclaration` both
+    /// shapes produce identically from there.
+    fn finish_global_binding(
+        &mut self,
+        id: HirId,
+        span: Span,
+        ident: &Ident,
+        mutable: bool,
+        value: CheckedExprNode,
+    ) -> Option<CheckedDeclaration> {
+        let r#type = value.r#type.clone();
+        let CheckedExpr::Const(const_value) = value.kind else {
+            self.error(id, span, AnalysisErrorKind::TopLevelValueNotComp);
             return None;
         };
-        self.declare_binding(w.id, w.span, &w.ident, checked.r#type.clone(), Storage::Global, w.mutable)?;
-        Some(CheckedDeclaration {
-            id: w.id,
-            span: w.span,
-            ident: w.ident.clone(),
-            r#type: checked.r#type,
-            mutable: w.mutable,
-            initial_value: Some(value),
-        })
+        self.declare_binding(id, span, ident, r#type.clone(), Storage::Global, mutable)?;
+        Some(CheckedDeclaration { id, span, ident: ident.clone(), r#type, mutable, initial_value: Some(const_value) })
     }
 
     pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDeclaration> {

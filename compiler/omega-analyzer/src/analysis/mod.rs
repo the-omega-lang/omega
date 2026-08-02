@@ -197,6 +197,7 @@ pub struct Analyzer<'r> {
 pub fn item_name(item: &HirItem) -> Option<Ident> {
     match item {
         HirItem::Declaration(d) => Some(d.ident.clone()),
+        HirItem::DeclarationWithInit(d, _) => Some(d.ident.clone()),
         HirItem::Walrus(w) => Some(w.ident.clone()),
         HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
         HirItem::FunctionDefinition(f) => Some(f.name.clone()),
@@ -223,6 +224,7 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
 pub fn item_visibility(item: &HirItem) -> Visibility {
     match item {
         HirItem::Declaration(d) => d.visibility,
+        HirItem::DeclarationWithInit(d, _) => d.visibility,
         HirItem::Walrus(w) => w.visibility,
         HirItem::ExternDeclaration(d) => d.visibility,
         HirItem::FunctionDefinition(f) => f.visibility,
@@ -239,6 +241,7 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
 pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
     match item {
         HirItem::Declaration(d) => (d.id, d.span),
+        HirItem::DeclarationWithInit(d, _) => (d.id, d.span),
         HirItem::Walrus(w) => (w.id, w.span),
         HirItem::ExternDeclaration(d) => (d.id, d.span),
         HirItem::FunctionDefinition(f) => (f.id, f.span),

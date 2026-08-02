@@ -188,6 +188,10 @@ fn expand_item_list(
                 item: Item::Walrus(WalrusStmt { value: expand_expr(w.value, defs, budget)?, ..w }),
                 span: node.span,
             }),
+            Item::DeclarationWithInit(decl, value) => result.push(ItemNode {
+                item: Item::DeclarationWithInit(decl, expand_expr(value, defs, budget)?),
+                span: node.span,
+            }),
             Item::MacroDefinition(_) => {
                 unreachable!("macro definitions were already removed by collect_definitions")
             }

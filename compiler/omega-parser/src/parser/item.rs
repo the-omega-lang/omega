@@ -300,8 +300,14 @@ fn parse_declaration_or_function_definition(
             reject_annotations(p, &annotations);
             let mut decl = parse_declaration(p)?;
             decl.visibility = visibility;
-            p.expect_terminator(&TokenKind::Semi, "';'");
-            Some(Item::Declaration(decl))
+            if p.eat(&TokenKind::Eq) {
+                let value = parse_expression(p)?;
+                p.expect_terminator(&TokenKind::Semi, "';'");
+                Some(Item::DeclarationWithInit(decl, value))
+            } else {
+                p.expect_terminator(&TokenKind::Semi, "';'");
+                Some(Item::Declaration(decl))
+            }
         }
     }
 }
@@ -329,8 +335,14 @@ fn parse_item_declaration_or_walrus(
             let mut decl = parse_declaration(p)?;
             decl.mutable = mutable;
             decl.visibility = visibility;
-            p.expect_terminator(&TokenKind::Semi, "';'");
-            Some(Item::Declaration(decl))
+            if p.eat(&TokenKind::Eq) {
+                let value = parse_expression(p)?;
+                p.expect_terminator(&TokenKind::Semi, "';'");
+                Some(Item::DeclarationWithInit(decl, value))
+            } else {
+                p.expect_terminator(&TokenKind::Semi, "';'");
+                Some(Item::Declaration(decl))
+            }
         }
     }
 }

@@ -28,6 +28,14 @@ use crate::diagnostics::Span;
 #[derive(Debug, Clone)]
 pub enum Item {
     Declaration(DeclarationStmt),
+    /// `ident : Type = value;` -- a typed top-level declaration with an
+    /// initializer, the item-level counterpart of `Statement::
+    /// DeclarationWithInit` (see its own doc comment for why this reuses
+    /// `DeclarationStmt` rather than a dedicated struct). Unlike
+    /// `Declaration` above, `value` is semantically restricted at
+    /// analysis time to a compile-time-known expression, same as
+    /// `Walrus`'s own value -- see `AnalysisErrorKind::TopLevelValueNotComp`.
+    DeclarationWithInit(DeclarationStmt, ExpressionNode),
     ExternDeclaration(ExternDeclarationStmt),
     FunctionDefinition(FunctionDefinitionStmt),
     Struct(StructStmt),
@@ -44,14 +52,15 @@ pub enum Item {
     /// See `SpecStmt`'s doc comment -- same top-level-only reasoning as
     /// `Struct`/`Enum`/`Union` above.
     Spec(SpecStmt),
-    /// `[comp] ident := value;` -- top-level walrus. Unlike `Declaration`
-    /// (whose type is always written down), only legal when `comp` (see
-    /// `WalrusStmt::comp`); a top-level binding whose type must be
-    /// *inferred* but that has no `comp` marker is rejected during
-    /// analysis, not here (see `AnalysisErrorKind::TopLevelWalrusNotComp`)
-    /// -- consistent with how this language generally defers semantic
-    /// rules to analysis rather than the grammar wherever the shape alone
-    /// doesn't already make something illegal.
+    /// `[comp] ident := value;` -- top-level walrus, type always inferred
+    /// from `value`. `comp` (see `WalrusStmt::comp`) decides whether this
+    /// gets real storage or is substituted everywhere with no storage at
+    /// all; either way `value` must be compile-time-known -- checked
+    /// during analysis, not here (see
+    /// `AnalysisErrorKind::TopLevelValueNotComp`), consistent with how
+    /// this language generally defers semantic rules to analysis rather
+    /// than the grammar wherever the shape alone doesn't already make
+    /// something illegal.
     Walrus(WalrusStmt),
     Import(ImportStmt),
     /// Expanded away entirely (along with `MacroInvocation` below) by

@@ -127,6 +127,26 @@ impl Driver {
                 Some(CheckedBody { item: CheckedItem::Declaration(checked), warnings: vec![] })
             }
 
+            // `ident : Type = value;` -- identical shape to the non-`comp`
+            // `Walrus` arm below (`initial_value` read back from the same
+            // `items.global_initial_values` cache, populated by
+            // `compute_item`'s `analyze_global_declaration_with_init`
+            // call), just sourced from a `HirDeclaration` instead of a
+            // `HirWalrusDeclaration`.
+            HirItem::DeclarationWithInit(decl, _) => {
+                let r#type = self.resolved_value_type(key);
+                let initial_value = self.items.global_initial_values.get(&decl.id).cloned();
+                let checked = CheckedDeclaration {
+                    id: decl.id,
+                    span: decl.span,
+                    ident: decl.ident.clone(),
+                    r#type,
+                    mutable: decl.mutable,
+                    initial_value,
+                };
+                Some(CheckedBody { item: CheckedItem::Declaration(checked), warnings: vec![] })
+            }
+
             // A `comp` top-level binding (`w.comp == true`) has no body-
             // phase work left at all -- `compute_item`'s own `Walrus` arm
             // already evaluated it (eagerly, during signature resolution --

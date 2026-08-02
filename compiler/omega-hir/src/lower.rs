@@ -39,6 +39,9 @@ impl Lowerer {
             Item::Declaration(decl) => {
                 HirItem::Declaration(self.lower_declaration(decl, node.span))
             }
+            Item::DeclarationWithInit(decl, value) => {
+                HirItem::DeclarationWithInit(self.lower_declaration(decl, node.span), self.lower_expr(value))
+            }
             Item::Walrus(w) => HirItem::Walrus(HirWalrusDeclaration {
                 id: self.ids.next(),
                 span: node.span,
