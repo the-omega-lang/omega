@@ -80,7 +80,7 @@ impl<'r> Analyzer<'r> {
     /// uses.
     pub fn analyze_global_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<CheckedDeclaration> {
         let checked = self.analyze_expr(&w.value, None)?;
-        self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, checked)
+        self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, &w.value, checked)
     }
 
     /// `ident : Type = value;` at item level (`HirItem::DeclarationWithInit`)
@@ -112,31 +112,119 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        self.finish_global_binding(decl.id, decl.span, &decl.ident, decl.mutable, checked_value)
+        self.finish_global_binding(decl.id, decl.span, &decl.ident, decl.mutable, value, checked_value)
     }
 
     /// The shared tail `analyze_global_walrus` and
     /// `analyze_global_declaration_with_init` both need once `value` is
     /// fully analyzed (and, for the typed form, already coerced/accepted
     /// against its declared type): enforce the one rule every non-`comp`
-    /// top-level binding shares (`value` must already be `CheckedExpr::
-    /// Const`), then register and build the `CheckedDeclaration` both
-    /// shapes produce identically from there.
+    /// top-level binding shares (`value` must be compile-time-known),
+    /// then register and build the `CheckedDeclaration` both shapes
+    /// produce identically from there. `raw_value` (the pre-analysis HIR
+    /// node) is only needed for `recognize_top_level_literal`'s fallback
+    /// below -- `checked_value` alone can't tell "a bare `10`" apart from
+    /// something else that happened to analyze to the same type.
     fn finish_global_binding(
         &mut self,
         id: HirId,
         span: Span,
         ident: &Ident,
         mutable: bool,
-        value: CheckedExprNode,
+        raw_value: &HirExprNode,
+        checked_value: CheckedExprNode,
     ) -> Option<CheckedDeclaration> {
-        let r#type = value.r#type.clone();
-        let CheckedExpr::Const(const_value) = value.kind else {
-            self.error(id, span, AnalysisErrorKind::TopLevelValueNotComp);
-            return None;
+        let r#type = checked_value.r#type.clone();
+        let const_value = match checked_value.kind {
+            CheckedExpr::Const(v) => v,
+            // Not already `comp`-evaluated -- still worth checking whether
+            // it's a plain literal (`10`, `"hi"`, `&[1, 2]`, ...) before
+            // giving up: a literal never needed evaluating in the first
+            // place, so it shouldn't need `comp` either. Reports its own
+            // error on failure (`?` propagates it), so nothing further is
+            // reported here.
+            _ => self.recognize_top_level_literal(raw_value, &r#type)?,
         };
         self.declare_binding(id, span, ident, r#type.clone(), Storage::Global, mutable)?;
         Some(CheckedDeclaration { id, span, ident: ident.clone(), r#type, mutable, initial_value: Some(const_value) })
+    }
+
+    /// Whether `expr`'s *raw* HIR shape is a literal this compiler already
+    /// recognizes as inherently compile-time-known with no `comp` needed
+    /// anywhere -- `analysis/consts.rs`'s `const_eval`/`const_eval_slice`
+    /// boundary (a number/string/bool/char, or an array/slice literal
+    /// built from more of the same, recursively), reused here as a
+    /// fallback once `finish_global_binding`'s caller has already
+    /// established `expected` as this expression's own, already-validated
+    /// type.
+    ///
+    /// Deliberately **not** the same function as `const_eval`/
+    /// `const_eval_slice`, and not just for their usual "differently-
+    /// worded errors" reason (see `const_eval_slice`'s own doc comment):
+    /// those two *also* fall back to the general `comp` interpreter for
+    /// any shape they don't otherwise recognize, since an enum header or
+    /// a `&[...]` position is already unambiguously compile-time-only.
+    /// A top-level binding is not that -- `10 + 20` or a function call is
+    /// genuine computation, which still needs an explicit `comp` here, so
+    /// this has no such fallback: an unrecognized shape is just rejected.
+    ///
+    /// Reports exactly one error on every failure path (either a specific
+    /// one via `const_number`, or `TopLevelValueNotComp` for anything
+    /// else), so `finish_global_binding` can propagate `None` via `?`
+    /// without risking a second, redundant diagnostic on top.
+    fn recognize_top_level_literal(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+        let not_comp = |this: &mut Self| {
+            this.error(expr.id, expr.span, AnalysisErrorKind::TopLevelValueNotComp);
+            None
+        };
+        match &expr.expr {
+            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Negate(inner) => match &inner.expr {
+                HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number),
+                _ => not_comp(self),
+            },
+            HirExpr::String(s) => match expected {
+                ResolvedType::Str { mutable: false } => Some(ConstValue::Str(s.0.clone())),
+                _ => not_comp(self),
+            },
+            HirExpr::Bool(b) => match expected {
+                ResolvedType::Bool => Some(ConstValue::Bool(*b)),
+                _ => not_comp(self),
+            },
+            HirExpr::Char(c) => match expected {
+                ResolvedType::Char => Some(ConstValue::Char(*c)),
+                _ => not_comp(self),
+            },
+            HirExpr::ArrayLiteral(elements) => match expected {
+                ResolvedType::SizedArray(item, size) if elements.len() == *size as usize => {
+                    let mut values = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        values.push(self.recognize_top_level_literal(element, item)?);
+                    }
+                    Some(ConstValue::Array(values))
+                }
+                _ => not_comp(self),
+            },
+            // `&[...]` is the only recognized spelling for a compile-time
+            // slice, matching `const_eval`/`const_eval_slice`'s identical
+            // rule -- a bare `[...]` is never treated as one, and `&mut
+            // [...]` isn't recognized here at all (falls through to
+            // `not_comp`, same as any other unrecognized shape).
+            HirExpr::AddressOf(HirAddressOf { base, mutable: false }) => match &base.expr {
+                HirExpr::ArrayLiteral(elements) => match expected {
+                    ResolvedType::Slice { item, mutable: false } => {
+                        let mut values = Vec::with_capacity(elements.len());
+                        for element in elements {
+                            values.push(self.recognize_top_level_literal(element, item)?);
+                        }
+                        Some(ConstValue::Slice(values))
+                    }
+                    _ => not_comp(self),
+                },
+                _ => not_comp(self),
+            },
+            _ => not_comp(self),
+        }
     }
 
     pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDeclaration> {

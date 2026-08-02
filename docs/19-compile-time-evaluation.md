@@ -80,15 +80,43 @@ silently misinterpreted — a genuinely runtime-computed top-level global
 would need a real runtime constructor/init-order story (closer to a C++
 static initializer than anything this feature builds), which is a
 distinct, larger piece of work nobody has asked for, and stays out of
-scope regardless of `mut`. This is checked structurally, not by looking
-for the literal word `comp`: the initializer is analyzed completely
-ordinarily, and whatever it analyzes down to must already be
-`CheckedExpr::Const` — exactly what `comp <expr>` (and, for free, any of
-the handful of already-const-recognized literal positions elsewhere in
-this compiler) already collapses into during that same ordinary
-analysis. `mut comp` (`comp` on *both* the binding and requesting
-mutability) is rejected the same way it is locally — a substituted
-binding has no storage to write into, `mut` or not.
+scope regardless of `mut`. `mut comp` (`comp` on *both* the binding and
+requesting mutability) is rejected the same way it is locally — a
+substituted binding has no storage to write into, `mut` or not.
+
+This is checked structurally, not by looking for the literal word
+`comp`: the initializer is analyzed completely ordinarily, and if it
+already analyzes down to `CheckedExpr::Const` (what `comp <expr>`
+collapses into), that's accepted outright. If it doesn't, there's one
+more fallback before rejecting: a bare literal — a number, string, bool,
+char, or an array/`&[...]` slice literal built from more of the same,
+recursively (the exact boundary `analysis/consts.rs`'s `const_eval`/
+`const_eval_slice` already draw for enum header values and const-slice
+literals) — is accepted with no `comp` needed either:
+
+```
+abc := 10;              # fine, no comp needed -- a literal was never
+name := "hello";         # "executed" to begin with, there's nothing for
+sl := &[1, 2, 3];         # comp to mark as "evaluate this"
+
+abc := 10 + 20;          # still rejected -- arithmetic is computation,
+abc := some_function();  # same for a call -- both need an explicit comp
+```
+
+The distinction is deliberate: `comp` marks "run this at compile time,"
+and a literal never needed running in the first place, so requiring the
+keyword there is pure ceremony — but `10 + 20` and a function call are
+genuine computation, however trivial, and still need it. This fallback
+is intentionally narrower than `const_eval`/`const_eval_slice`
+themselves: those two *also* fall back to the general interpreter for
+anything they don't recognize (an enum header or `&[...]` position is
+already unambiguously compile-time-only, so a function call is fine
+there too, no `comp` needed even for that) — a top-level binding isn't
+that permissive, so this one stops at literals and rejects everything
+else, `Analyzer::recognize_top_level_literal` (a third, deliberately
+separate copy of that literal-recognition boundary, alongside
+`const_eval`/`const_eval_slice` — see its own doc comment for why a
+third copy, not a shared one).
 
 Declaring a global with no initializer at all (`ident : Type;`) needs no
 `comp` anywhere, and works precisely like a C `static`'s tentative
