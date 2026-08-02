@@ -234,12 +234,12 @@ fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
 }
 
 /// `ident` (`always`, `enabled`, a `@suppress` warning name, ...) or
-/// `ident = value`, where `value` is either a plain integer (kept as raw
-/// decimal digit text, exactly like `parser::type::parse_array_size`'s
-/// "shape, not value" convention: no base prefix, suffix, or fraction is
-/// accepted here, so a malformed numeric shape is rejected at parse time
-/// rather than silently misread later) or `sizeof<Type>` (`align = 4`,
-/// `pack = sizeof<usize>`).
+/// `ident = value`, where `value` is a plain integer (kept as raw decimal
+/// digit text, exactly like `parser::type::parse_array_size`'s "shape, not
+/// value" convention: no base prefix, suffix, or fraction is accepted here,
+/// so a malformed numeric shape is rejected at parse time rather than
+/// silently misread later), `sizeof<Type>` (`align = 4`, `pack =
+/// sizeof<usize>`), or a string literal (`force = "some_symbol_name"`).
 fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
     let ident = p.expect_ident()?;
     if !p.eat(&TokenKind::Eq) {
@@ -262,8 +262,14 @@ fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
             p.expect(&TokenKind::Gt, "'>'");
             Some(AnnotationArg::KeyValue(ident, AnnotationValue::Sizeof(r#type)))
         }
+        TokenKind::Str(_) => {
+            let TokenKind::Str(s) = p.advance().kind else { unreachable!() };
+            Some(AnnotationArg::KeyValue(ident, AnnotationValue::StrLiteral(s)))
+        }
         _ => {
-            p.error(ParseErrorKind::Expected { expected: "a plain integer or 'sizeof<Type>'", found: p.peek().describe() });
+            p.error(
+                ParseErrorKind::Expected { expected: "a plain integer, 'sizeof<Type>', or a string literal", found: p.peek().describe() },
+            );
             None
         }
     }

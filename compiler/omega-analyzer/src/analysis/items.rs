@@ -1107,7 +1107,7 @@ impl<'r> Analyzer<'r> {
             return_type: (*fn_type.return_type).clone(),
             body,
             inline: annotations.inline,
-            mangling: annotations.mangling,
+            mangling: annotations.mangling.clone(),
             extension_target: None,
         })
     }

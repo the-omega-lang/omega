@@ -287,7 +287,7 @@ impl Driver {
     /// A free function's own resolved `@mangling(...)`, which a consuming
     /// compilation must agree with or the two mangled symbols diverge.
     fn mangling_of(&self, decl_id: &HirId) -> ManglingMode {
-        self.items.function_annotations.get(decl_id).map(|a| a.mangling).unwrap_or_default()
+        self.items.function_annotations.get(decl_id).map(|a| a.mangling.clone()).unwrap_or_default()
     }
 
     /// `UnusedField`/`NeverConstructedVariant`'s whole-program sweep, run once

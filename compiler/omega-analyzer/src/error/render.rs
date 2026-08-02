@@ -533,6 +533,9 @@ impl AnalysisErrorKind {
             Self::ManglingDisabledOnMethod => d
                 .with_label(span, "cannot disable mangling on a struct/enum/union method")
                 .with_help("only top-level functions can disable mangling for now"),
+            Self::ManglingForcedOnGeneric => d
+                .with_label(span, "cannot force a mangled symbol name on a generic function")
+                .with_note("every instantiation would share the exact same hardcoded symbol -- a guaranteed multiple-definition error"),
             Self::CompEvalFailed { trace, .. } => {
                 let mut d = d.with_label(span, "cannot be evaluated at compile time");
                 for call_site in trace {

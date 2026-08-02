@@ -99,8 +99,9 @@ impl Codegen {
     /// `Linkage::Preemptible` (weak) for a generic instantiation -- see
     /// `declare_item`'s `linkage_for`, this function's only caller for the
     /// choice. A within-process collision between two *different* strong
-    /// symbols is still exactly the `@mangling(disabled)` user error this
-    /// check has always caught; it's untouched by generics, since the
+    /// symbols is still exactly the `@mangling(disabled)`/`@mangling(force =
+    /// "...")` user error this check has always caught; it's untouched by
+    /// generics, since the
     /// driver's own `ItemKey` cache already guarantees at most one
     /// `MirFunctionDef` per instantiation reaches this function at all
     /// within a single compilation -- weak linkage is what lets two
@@ -122,7 +123,8 @@ impl Codegen {
             self.symbol_error.get_or_insert_with(|| {
                 format!(
                     "two different functions both produce the linker symbol '{symbol}' -- this can \
-                     happen when '@mangling(disabled)' is used on more than one function with the same name; \
+                     happen when '@mangling(disabled)' is used on more than one function with the same name, \
+                     or when '@mangling(force = \"...\")' gives two different functions the same forced name; \
                      give one of them a different name, or re-enable mangling"
                 )
             });
@@ -163,7 +165,8 @@ impl Codegen {
     /// `CompiledProgram::extern_functions`'s doc comment for why that's a
     /// safe assumption.
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
-        let mangled = match (extern_fn.mangling, &extern_fn.kind) {
+        let mangled = match (&extern_fn.mangling, &extern_fn.kind) {
+            (ManglingMode::Forced(name), _) => name.clone(),
             (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
             // `@mangling(disabled)` is rejected on methods at analysis time
             // -- an extern method's own declaration went through the exact

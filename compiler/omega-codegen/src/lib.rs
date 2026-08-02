@@ -132,8 +132,9 @@ impl Default for BackendKind {
 /// step is target/ISA construction (a `--target` this build of the
 /// compiler -- or the backend itself -- can't support comes back as a
 /// plain `String`, matching `omgc`'s own CLI-error convention) or a
-/// genuine within-program symbol collision (`@mangling(disabled)` used on
-/// two functions with the same name); there is no other rejectable
+/// genuine within-program symbol collision (`@mangling(disabled)` or
+/// `@mangling(force = "...")` used such that two functions land on the same
+/// final symbol name); there is no other rejectable
 /// *program* input left by the time this runs, since everything else was
 /// already enforced while building the checked tree these `MirModule`s
 /// were lowered from.

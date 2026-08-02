@@ -126,10 +126,11 @@ pub(crate) struct Codegen {
     /// `cranelift_module::declare_function` -- built up as
     /// `declare_function_def` runs for every item across every module (see
     /// `update_all`). A second, different function claiming a symbol
-    /// already seen (only possible via `@mangling(disabled)`, since a
-    /// mangled name always embeds a unique module path + `HirId`) is caught
-    /// here instead of surfacing as a confusing linker error or, worse, a
-    /// silent single-definition merge.
+    /// already seen (only possible via `@mangling(disabled)` or
+    /// `@mangling(force = "...")`, since an ordinary mangled name always
+    /// embeds a unique module path + `HirId`) is caught here instead of
+    /// surfacing as a confusing linker error or, worse, a silent
+    /// single-definition merge.
     declared_symbols: HashMap<String, HirId>,
     /// The first symbol collision found (see `declared_symbols`) -- checked
     /// once, at the end of `generate`, and turned into that function's

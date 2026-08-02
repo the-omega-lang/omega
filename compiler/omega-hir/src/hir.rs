@@ -32,6 +32,7 @@ pub enum HirAnnotationArg {
 pub enum HirAnnotationValue {
     IntLiteral(String),
     Sizeof(Type),
+    StrLiteral(String),
 }
 
 #[derive(Debug, Clone)]

@@ -106,12 +106,26 @@ pub enum InlineMode {
 /// `@mangling(...)`'s resolved mode -- `Enabled` is the default (today's
 /// only behavior). Unlike `@inline`/`@layout`, there's no sensible default
 /// *mode* for a bare `@mangling` to mean, so it still requires an explicit
-/// `enabled`/`disabled` argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// `enabled`/`disabled`/`force = "..."` argument. Not `Copy` (unlike most of
+/// this module's other resolved-annotation types) because `Forced` owns its
+/// exact symbol string -- every read site clones instead.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ManglingMode {
     #[default]
     Enabled,
     Disabled,
+    /// `@mangling(force = "...")` -- skips this compiler's own mangling
+    /// scheme entirely and uses the given string as the exact, final linker
+    /// symbol, verbatim (no further encoding, unlike `mangle::encode`'s
+    /// output). Unlike `Disabled`, which is rejected on a method (a bare
+    /// method name has no owning-type prefix -- see
+    /// `AnalysisErrorKind::ManglingDisabledOnMethod`), `Forced` is allowed
+    /// there: the caller supplies a complete, deliberate name, so there's no
+    /// bare-name collision risk the way `Disabled` has. Still rejected on a
+    /// generic function (`AnalysisErrorKind::ManglingForcedOnGeneric`) --
+    /// every instantiation would otherwise share the one hardcoded name, an
+    /// unconditional multiple-definition collision, not just a possible one.
+    Forced(String),
 }
 
 /// Every annotation's resolved value, regardless of which ones actually
@@ -222,6 +236,9 @@ pub fn resolve(
                     }
                     Ok(ManglingMode::Disabled) if is_generic => {
                         analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnGeneric)
+                    }
+                    Ok(ManglingMode::Forced(_)) if is_generic => {
+                        analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingForcedOnGeneric)
                     }
                     Ok(mode) => result.mangling = mode,
                     Err(reason) => analyzer.error(
@@ -372,6 +389,7 @@ fn resolve_size_value(
                 )),
             })
         }
+        HirAnnotationValue::StrLiteral(_) => Some(Err("expected a plain integer or 'sizeof<Type>', found a string literal".to_string())),
     }
 }
 
@@ -391,7 +409,13 @@ fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> 
     match annotation.args.as_slice() {
         [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
         [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "disabled" => Ok(ManglingMode::Disabled),
-        _ => Err("expected 'enabled' or 'disabled'".to_string()),
+        [HirAnnotationArg::KeyValue(key, HirAnnotationValue::StrLiteral(name))] if key.as_ref() == "force" => {
+            if name.is_empty() {
+                return Err("'force' needs a non-empty symbol name".to_string());
+            }
+            Ok(ManglingMode::Forced(name.clone()))
+        }
+        _ => Err("expected 'enabled', 'disabled', or 'force = \"...\"'".to_string()),
     }
 }
 

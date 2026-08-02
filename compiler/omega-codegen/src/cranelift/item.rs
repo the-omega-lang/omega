@@ -71,7 +71,8 @@ impl Codegen {
                 // primitive doesn't otherwise have, avoiding a collision
                 // with an unrelated, same-named, same-`type_args`-shaped
                 // free function elsewhere in the same module.
-                let mangled = match (f.mangling, &f.extension_target) {
+                let mangled = match (&f.mangling, &f.extension_target) {
+                    (ManglingMode::Forced(name), _) => name.clone(),
                     (ManglingMode::Disabled, _) => f.name.as_ref().to_string(),
                     (ManglingMode::Enabled, _) if path == entry && f.name.as_ref() == "main" => "main".to_string(),
                     (ManglingMode::Enabled, Some(target)) => {
@@ -86,22 +87,41 @@ impl Codegen {
             }
             MirItem::Struct(s) => {
                 for f in &s.functions {
-                    let mangled =
-                        mangle::encode(&mangle::method_symbol(path, &s.name, &s.type_args, &f.name, &f.fn_type()));
+                    let mangled = match &f.mangling {
+                        // `@mangling(disabled)` is rejected on methods at
+                        // analysis time (`ManglingDisabledOnMethod`), but
+                        // `@mangling(force = "...")` is deliberately allowed
+                        // there -- see `ManglingMode::Forced`'s doc comment.
+                        ManglingMode::Forced(name) => name.clone(),
+                        ManglingMode::Disabled => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
+                        ManglingMode::Enabled => {
+                            mangle::encode(&mangle::method_symbol(path, &s.name, &s.type_args, &f.name, &f.fn_type()))
+                        }
+                    };
                     self.declare_function_def(f, mangled, linkage_for(&s.type_args));
                 }
             }
             MirItem::Enum(e) => {
                 for f in &e.functions {
-                    let mangled =
-                        mangle::encode(&mangle::method_symbol(path, &e.name, &e.type_args, &f.name, &f.fn_type()));
+                    let mangled = match &f.mangling {
+                        ManglingMode::Forced(name) => name.clone(),
+                        ManglingMode::Disabled => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
+                        ManglingMode::Enabled => {
+                            mangle::encode(&mangle::method_symbol(path, &e.name, &e.type_args, &f.name, &f.fn_type()))
+                        }
+                    };
                     self.declare_function_def(f, mangled, linkage_for(&e.type_args));
                 }
             }
             MirItem::Union(u) => {
                 for f in &u.functions {
-                    let mangled =
-                        mangle::encode(&mangle::method_symbol(path, &u.name, &u.type_args, &f.name, &f.fn_type()));
+                    let mangled = match &f.mangling {
+                        ManglingMode::Forced(name) => name.clone(),
+                        ManglingMode::Disabled => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
+                        ManglingMode::Enabled => {
+                            mangle::encode(&mangle::method_symbol(path, &u.name, &u.type_args, &f.name, &f.fn_type()))
+                        }
+                    };
                     self.declare_function_def(f, mangled, linkage_for(&u.type_args));
                 }
             }

@@ -487,6 +487,14 @@ pub enum AnalysisErrorKind {
     /// now: a bare method name has no owning-type prefix once mangling is
     /// off, a much easier accidental collision than a top-level function's.
     ManglingDisabledOnMethod,
+    /// `@mangling(force = "...")` on a function with any generic parameters
+    /// -- unlike plain `disabled`, this isn't even a *possible* collision to
+    /// avoid by naming carefully: every instantiation would share the exact
+    /// same hardcoded symbol, an unconditional multiple-definition error.
+    /// Allowed on a method, unlike `ManglingDisabledOnMethod` -- the forced
+    /// name is complete and deliberate, so there's no bare-name collision
+    /// risk to guard against.
+    ManglingForcedOnGeneric,
     /// `comp <expr>` couldn't be evaluated at compile time -- `reason` names
     /// the specific construct that actually blocked it (an already-
     /// formatted description of a `comp_eval::CompErrorKind`, from
@@ -895,6 +903,7 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::ManglingDisabledOnGeneric => write!(f, "cannot disable mangling on a generic function"),
             Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
+            Self::ManglingForcedOnGeneric => write!(f, "cannot force a mangled symbol name on a generic function"),
             Self::CompEvalFailed { reason, .. } => write!(f, "cannot evaluate this expression at compile time: {reason}"),
             Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
             Self::TopLevelValueNotComp => write!(f, "a top-level binding's value must be compile-time-known"),

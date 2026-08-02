@@ -15,8 +15,9 @@ raw_add(a: i32, b: i32) => i32 { a + b }
 Grammar: `'@' Ident ['(' Arg (',' Arg)* ')']` above a struct/enum/union/
 function declaration. Parens are optional (bare `@inline` and `@inline()`
 both mean zero arguments). An argument is a bare identifier or a `key =
-value` pair, where `value` is either a raw integer literal or `sizeof<Type>`
-(scoped to primitive types only when used here — see below).
+value` pair, where `value` is a raw integer literal, `sizeof<Type>` (scoped
+to primitive types only when used here — see below), or a string literal
+(`@mangling(force = "...")`'s own argument — see below).
 
 Called "annotation," not "attribute" — deliberately: "attribute" reads as
 vague, "annotation" is explicit about talking directly to the compiler.
@@ -83,16 +84,32 @@ produces a warning (`InlineNotEnforced`), suppressible via
 (per the spec: "if unavailable, only a warning"), not a bug — it will stop
 warning once real inlining support lands.
 
-## `@mangling(disabled)`
+## `@mangling(disabled)` / `@mangling(force = "...")`
 
-Emits the function under its bare, unmangled name (`Linkage::Import`-only
-for an extern reference, no `Export` pairing needed there). Rejected
-outright on struct/enum/union methods and on any function with generics —
-the `$$N`-style instantiation disambiguation is the only thing preventing
-distinct instantiations from colliding once mangling is off entirely. A
-whole-program duplicate-symbol check catches two different declarations
-that would collide under disabled mangling and turns it into a compile
-error rather than a `cranelift_module` panic or a silent linker failure.
+`disabled` emits the function under its bare, unmangled name
+(`Linkage::Import`-only for an extern reference, no `Export` pairing needed
+there). Rejected outright on struct/enum/union methods and on any function
+with generics — the `$$N`-style instantiation disambiguation is the only
+thing preventing distinct instantiations from colliding once mangling is
+off entirely, and a bare method name has no owning-type prefix to keep it
+from colliding with an unrelated same-named method elsewhere.
+
+`force = "some_symbol_name"` instead gives the function an *exact*,
+caller-chosen linker symbol, verbatim — no mangling scheme applied at all,
+not even the bare-name fallback `disabled` uses. Unlike `disabled`, `force`
+**is** allowed on a struct/enum/union method: the name is a complete,
+deliberate choice, so there's no bare-name collision risk to guard against
+the way `disabled` has. Still rejected on a generic function, for a
+stronger reason than `disabled`'s: every instantiation would share the
+exact same hardcoded name, an *unconditional* collision, not merely a
+possible one. An empty string is rejected outright (`'force' needs a
+non-empty symbol name`).
+
+Either way, a whole-program duplicate-symbol check catches two different
+declarations that would collide on the same final symbol (whether from two
+`disabled` functions sharing a name, or two `force`d names coinciding) and
+turns it into a compile error rather than a `cranelift_module` panic or a
+silent linker failure.
 
 **The fix that generalized this feature's own placement**: an extern
 function's own `@mangling(disabled)` used to be invisible to a consumer's

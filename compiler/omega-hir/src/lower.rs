@@ -384,6 +384,9 @@ impl Lowerer {
                         AnnotationArg::KeyValue(key, AnnotationValue::Sizeof(r#type)) => {
                             HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::Sizeof(r#type.clone()))
                         }
+                        AnnotationArg::KeyValue(key, AnnotationValue::StrLiteral(value)) => {
+                            HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::StrLiteral(value.clone()))
+                        }
                     })
                     .collect(),
                 span: a.span,
