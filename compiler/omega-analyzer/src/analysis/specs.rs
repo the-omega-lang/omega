@@ -159,7 +159,11 @@ impl<'r> Analyzer<'r> {
             Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
             _ => Ident("<spec>".to_string()),
         };
-        let resolved = self.resolve_type_or_error(id, span, ty, true)?;
+        // `resolve_type_or_error_raw`, not `resolve_type_or_error`: a bare
+        // spec name is exactly the expected result here (unlike everywhere
+        // else that resolves a type), so this deliberately bypasses the
+        // wrapper's bare-spec-is-never-a-value-type check.
+        let resolved = self.resolve_type_or_error_raw(id, span, ty, true)?;
         if !ok {
             return None;
         }

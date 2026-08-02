@@ -91,6 +91,19 @@ pub enum TypeResolutionError {
     /// sugar was never meant to reach (a local variable annotation, a
     /// struct field, an array element, ...).
     SpecStaticNotAllowedHere(Ident),
+    /// A bare spec name (`Animal`, no `spec *`/`spec` prefix) resolved
+    /// somewhere a value's actual type is required -- a variable's
+    /// declaration, a field, a parameter, a return type, a cast/`sizeof`
+    /// target, a generic argument, and so on. A spec definition alone has
+    /// no size or representation (see `ResolvedType::Spec`'s doc comment,
+    /// "never itself the type of a runtime value") -- only `spec *Foo`
+    /// (dynamic dispatch, a fat pointer) or a generic bound (`T: Foo`) give
+    /// it one. Every legitimate producer of a bare `ResolvedType::Spec`
+    /// (an implements clause, a generic bound, `spec *Foo`'s own pointee)
+    /// resolves it through a dedicated path that never reaches this check;
+    /// reaching this variant means a spec name was written where none of
+    /// those apply.
+    SpecUsedAsValueType(Ident),
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -122,6 +135,9 @@ impl fmt::Display for TypeResolutionError {
             }
             Self::SpecStaticNotAllowedHere(name) => {
                 write!(f, "'spec {}' is only allowed as a parameter type or a function's own return type", name.as_ref())
+            }
+            Self::SpecUsedAsValueType(name) => {
+                write!(f, "'{}' is a spec -- it has no size on its own, so it can't be used as a value's type", name.as_ref())
             }
         }
     }

@@ -606,6 +606,9 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
             .with_help("use a generic bound (`T: ...`) or `spec T` static dispatch instead"),
         TypeResolutionError::SpecStaticNotAllowedHere(_) => d
             .with_label(span, "`spec ...` (static dispatch) is only allowed as a parameter type or a return type"),
+        TypeResolutionError::SpecUsedAsValueType(name) => d
+            .with_label(span, "a spec has no size or representation on its own")
+            .with_help(format!("use `spec *{0}`/`spec *mut {0}` for dynamic dispatch, or a generic bound (`T: {0}`)", name.as_ref())),
     }
 }
 

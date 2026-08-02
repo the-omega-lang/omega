@@ -581,6 +581,29 @@ impl<'r> Analyzer<'r> {
     /// calls the resolver directly on an unqualified miss), so this is just
     /// a thin error-reporting wrapper around it.
     pub(crate) fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
+        let resolved = self.resolve_type_or_error_raw(id, span, typ, indirect)?;
+        // A bare spec name (`ResolvedType::Spec`) is never a valid value
+        // type -- see `TypeResolutionError::SpecUsedAsValueType`'s doc
+        // comment. Every position that legitimately wants one (an implements
+        // clause, a generic bound, `spec *Foo`'s own pointee) goes through
+        // `resolve_spec_reference`, which calls `resolve_type_or_error_raw`
+        // directly instead of this wrapper -- so every other caller (which
+        // is every caller reached through here) is asking for an actual
+        // value type, and a bare spec is always a mistake.
+        if let ResolvedType::Spec(spec) = &resolved {
+            let name = spec.borrow().name.clone();
+            self.error(id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::SpecUsedAsValueType(name)));
+            return None;
+        }
+        Some(resolved)
+    }
+
+    /// The same resolution `resolve_type_or_error` does, minus its
+    /// bare-`ResolvedType::Spec`-is-never-a-value-type check -- for the one
+    /// legitimate exception, `resolve_spec_reference` (an implements-clause
+    /// entry, a spec dependency, a generic bound), where a bare spec is
+    /// exactly the expected, successful result.
+    pub(crate) fn resolve_type_or_error_raw(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
         let bypass = !self.reveal_stack.is_empty();
         match self.context.resolve_type(typ.to_owned(), &mut *self.resolver, &self.module_path, indirect, bypass) {
             Ok(resolved) => Some(resolved),
