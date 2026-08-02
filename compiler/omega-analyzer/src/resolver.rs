@@ -15,7 +15,7 @@ use std::rc::Rc;
 #[derive(Debug, Clone)]
 pub enum ResolvedItem {
     Type(ResolvedType),
-    Value { r#type: ResolvedType, storage: Storage, decl_id: HirId },
+    Value { r#type: ResolvedType, storage: Storage, decl_id: HirId, mutable: bool },
 }
 
 /// What an `import` statement's path actually names -- not decidable from

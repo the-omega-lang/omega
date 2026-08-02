@@ -313,6 +313,18 @@ pub(crate) struct ItemQueries {
     /// past that, for every other item's own separate analysis to read
     /// back via `ModuleResolver::resolve_comp_value`.
     pub comp_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
+    /// The identical cross-phase-survival need as `comp_values`, for a
+    /// non-`comp` top-level binding's compile-time-known initial value
+    /// (`HirItem::Walrus`, `w.comp == false`, with a value) -- `compute_item`
+    /// (signature resolution) is the only phase that actually runs
+    /// `Analyzer::analyze_global_walrus`; `check_item_body` (a separate,
+    /// possibly much later call) reads the result back from here to build
+    /// this global's `CheckedDeclaration` rather than re-analyzing the
+    /// initializer a second time. Unlike `comp_values`, absence here is
+    /// meaningful too (a `mut pqr : Thing;`-shaped global with no
+    /// initializer at all): `check_item_body` treats a missing entry as
+    /// `initial_value: None`, not an error.
+    pub global_initial_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
     /// The body-checking counterpart of `state`'s `InProgress` guard --
     /// needed because body-checking (unlike signature resolution) can now
     /// genuinely reenter itself: a `comp` expression inside function `f`'s
@@ -601,25 +613,48 @@ impl Driver {
                 .analyze(module, &substitution, (decl.id, decl.span), |a| {
                     a.analyze_declaration(decl, Storage::Global)
                 })
-                .map(|c| ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id }),
+                .map(|c| ResolvedItem::Value {
+                    r#type: c.r#type,
+                    storage: Storage::Global,
+                    decl_id: c.id,
+                    mutable: c.mutable,
+                }),
 
-            // A top-level `comp` binding -- evaluated right here, during
-            // signature resolution (not deferred to a body-check phase the
-            // way an ordinary global would be): `comp <expr>` interprets
-            // eagerly as an inherent part of ordinary expression analysis
-            // (`Analyzer::analyze_comp`), so analyzing `w.value` at all
-            // already triggers it, the same "signature resolution that
-            // needs a body-shaped answer" inversion `resolve_spec_return_
-            // function` uses for the identical reason -- safe here for the
-            // same reason it's safe there (`ensure_item_body`'s own cycle
-            // guard, see its doc comment, protects the one new reentrancy
-            // hazard this opens). `check_item_body`'s own `Walrus` arm has
-            // nothing left to do -- see its doc comment.
-            HirItem::Walrus(w) => self
+            // A top-level binding, `comp` or not -- evaluated right here,
+            // during signature resolution (not deferred to a body-check
+            // phase the way a function's own body would be): `comp <expr>`
+            // interprets eagerly as an inherent part of ordinary expression
+            // analysis (`Analyzer::analyze_comp`), so analyzing `w.value`
+            // at all already triggers it, the same "signature resolution
+            // that needs a body-shaped answer" inversion `resolve_spec_
+            // return_function` uses for the identical reason -- safe here
+            // for the same reason it's safe there (`ensure_item_body`'s own
+            // cycle guard, see its doc comment, protects the one new
+            // reentrancy hazard this opens). `check_item_body`'s own
+            // `Walrus` arm has nothing left to do -- see its doc comment.
+            //
+            // `w.comp` decides which of two genuinely different things
+            // this binding is (see `CheckedDeclaration::initial_value`'s
+            // doc comment): a `comp` binding has no storage at all, so its
+            // value lives only in `ItemQueries::comp_values`, substituted
+            // at every use; a non-`comp` binding gets real `Storage::
+            // Global` storage (optionally starting from a compile-time-
+            // known value), the same as `HirItem::Declaration` above --
+            // `analyze_global_walrus` builds the identical `CheckedDeclaration`
+            // shape `analyze_declaration` does, just with `initial_value: Some`.
+            HirItem::Walrus(w) if w.comp => self
                 .analyze(module, &substitution, (w.id, w.span), |a| a.analyze_comp_declaration(w))
                 .map(|(r#type, value)| {
                     self.items.comp_values.insert(w.id, value);
-                    ResolvedItem::Value { r#type, storage: Storage::Comp, decl_id: w.id }
+                    ResolvedItem::Value { r#type, storage: Storage::Comp, decl_id: w.id, mutable: false }
+                }),
+            HirItem::Walrus(w) => self
+                .analyze(module, &substitution, (w.id, w.span), |a| a.analyze_global_walrus(w))
+                .map(|c| {
+                    if let Some(value) = c.initial_value {
+                        self.items.global_initial_values.insert(c.id, value);
+                    }
+                    ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id, mutable: c.mutable }
                 }),
 
             HirItem::ExternDeclaration(decl) => self
@@ -629,7 +664,9 @@ impl Driver {
                         ResolvedType::Function(_) => Storage::Function,
                         _ => Storage::Global,
                     };
-                    ResolvedItem::Value { r#type: c.r#type, storage, decl_id: c.id }
+                    // `extern` declarations are always immutable for now --
+                    // see `Analyzer::analyze_extern_decl`'s own doc comment.
+                    ResolvedItem::Value { r#type: c.r#type, storage, decl_id: c.id, mutable: false }
                 }),
 
             HirItem::FunctionDefinition(f) => {
@@ -644,6 +681,7 @@ impl Driver {
                                 r#type: ResolvedType::Function(fn_type),
                                 storage: Storage::Function,
                                 decl_id: id,
+                                mutable: false,
                             }
                         },
                     )
@@ -841,7 +879,7 @@ impl Driver {
             self.analyze(module, substitution, (f.id, f.span), |a| a.collect_function_signature(f, Some(return_type)));
         Ok(checked.map(|(fn_type, annotations)| {
             self.items.function_annotations.insert(id, annotations);
-            ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage: Storage::Function, decl_id: id }
+            ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage: Storage::Function, decl_id: id, mutable: false }
         }))
     }
 }

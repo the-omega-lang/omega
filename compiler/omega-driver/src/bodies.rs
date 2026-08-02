@@ -121,19 +121,45 @@ impl Driver {
                     span: decl.span,
                     ident: decl.ident.clone(),
                     r#type,
+                    mutable: decl.mutable,
+                    initial_value: None,
                 };
                 Some(CheckedBody { item: CheckedItem::Declaration(checked), warnings: vec![] })
             }
 
-            // A top-level `comp` binding has no body-phase work left at
-            // all -- `compute_item`'s own `Walrus` arm already evaluated
-            // it (eagerly, during signature resolution -- see that arm's
-            // doc comment) and recorded its value in `items.comp_values`.
-            // `None`, not a `CheckedBody`: it contributes nothing to the
-            // final `CheckedModule` -- every reference substitutes its
-            // value directly (`Storage::Comp`), so MIR/codegen never need
-            // to see it as an item at all.
-            HirItem::Walrus(_) => None,
+            // A `comp` top-level binding (`w.comp == true`) has no body-
+            // phase work left at all -- `compute_item`'s own `Walrus` arm
+            // already evaluated it (eagerly, during signature resolution --
+            // see that arm's doc comment) and recorded its value in
+            // `items.comp_values`. `None`, not a `CheckedBody`: it
+            // contributes nothing to the final `CheckedModule` -- every
+            // reference substitutes its value directly (`Storage::Comp`),
+            // so MIR/codegen never need to see it as an item at all.
+            //
+            // A non-`comp` `Walrus` (`w.comp == false`) is the opposite:
+            // it *does* need to reach MIR/codegen, as a real
+            // `Storage::Global` place -- same shape as `HirItem::
+            // Declaration` above, just with `initial_value` read back from
+            // `items.global_initial_values` (populated by `compute_item`'s
+            // own `analyze_global_walrus` call; `None` there simply means
+            // this global has no initializer at all, e.g. `pqr : Thing;`
+            // spelled with `:=`... which the grammar doesn't actually
+            // allow, so in practice this is always `Some` here -- see
+            // `CheckedDeclaration::initial_value`'s doc comment).
+            HirItem::Walrus(w) if w.comp => None,
+            HirItem::Walrus(w) => {
+                let r#type = self.resolved_value_type(key);
+                let initial_value = self.items.global_initial_values.get(&w.id).cloned();
+                let checked = CheckedDeclaration {
+                    id: w.id,
+                    span: w.span,
+                    ident: w.ident.clone(),
+                    r#type,
+                    mutable: w.mutable,
+                    initial_value,
+                };
+                Some(CheckedBody { item: CheckedItem::Declaration(checked), warnings: vec![] })
+            }
 
             HirItem::ExternDeclaration(decl) => {
                 let r#type = self.resolved_value_type(key);

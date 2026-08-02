@@ -1293,7 +1293,7 @@ impl<'r> Analyzer<'r> {
         };
 
         let (fn_type, storage, decl_id) = match self.resolve_item_checked(absolute, &type_args, true) {
-            Ok(ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage, decl_id }) => {
+            Ok(ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage, decl_id, mutable: _ }) => {
                 (fn_type, storage, decl_id)
             }
             Ok(_) => {

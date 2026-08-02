@@ -501,13 +501,17 @@ pub enum AnalysisErrorKind {
     /// by anything that already substituted it -- incoherent, not just
     /// discouraged.
     MutCompBinding,
-    /// `ident := value;` at item level with no `comp` -- a top-level
-    /// binding whose type must be *inferred* (there's nothing else this
-    /// grammar shape could mean) needs a compile-time-known value to infer
-    /// it from; a runtime-computed top-level global (no `comp` at all,
-    /// initializer support with real init-order semantics) is a distinct,
-    /// larger feature nobody has built. See `docs/19-compile-time-evaluation.md`.
-    TopLevelWalrusNotComp,
+    /// `ident := value;` at item level (no `comp` on the binding) whose
+    /// `value` doesn't resolve to a compile-time-known `CheckedExpr::Const`
+    /// -- a non-`comp` top-level binding gets real storage (unlike a
+    /// `comp` binding), but its initial value still has to be known before
+    /// codegen runs: there's no runtime constructor/init-order machinery
+    /// (a genuinely runtime-computed top-level global is a distinct,
+    /// larger feature nobody has built). The fix is an explicit `comp
+    /// <expr>` initializer, not `comp` on the binding -- see
+    /// `Analyzer::analyze_global_walrus`'s own doc comment, and
+    /// `docs/19-compile-time-evaluation.md`.
+    TopLevelValueNotComp,
     /// A `struct`/`union` whose fields (if any) all resolve to zero-sized
     /// types -- unlike `marker`, a `struct`/`union` is meant to hold real
     /// data, so this is rejected outright rather than silently accepted as
@@ -893,7 +897,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
             Self::CompEvalFailed { reason, .. } => write!(f, "cannot evaluate this expression at compile time: {reason}"),
             Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
-            Self::TopLevelWalrusNotComp => write!(f, "a top-level ':=' binding must be 'comp'"),
+            Self::TopLevelValueNotComp => write!(f, "a top-level ':=' binding's value must be compile-time-known"),
             Self::ZeroSizedAggregate { name, is_union } => {
                 let kind = if *is_union { "union" } else { "struct" };
                 write!(f, "{kind} '{}' has no sized fields", name.as_ref())

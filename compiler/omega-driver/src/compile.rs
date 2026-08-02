@@ -233,6 +233,7 @@ impl Driver {
                 r#type: ResolvedType::Function(fn_type),
                 storage: Storage::Function,
                 decl_id,
+                mutable: _,
             } = item
             else {
                 continue;

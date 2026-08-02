@@ -37,6 +37,13 @@ impl<'r> Analyzer<'r> {
                 span,
                 ident: Ident("$scrutinee".to_string()),
                 r#type: scrutinee_type.clone(),
+                // Synthetic, written immediately below (`Assignment`) --
+                // `mutable` isn't actually consulted for a `Storage::Local`
+                // declaration (see `CheckedDeclaration::mutable`'s doc
+                // comment), but `true` is the semantically accurate answer
+                // regardless.
+                mutable: true,
+                initial_value: None,
             });
             let assign = CheckedStmt::Expression(CheckedExprNode {
                 id: node_id,

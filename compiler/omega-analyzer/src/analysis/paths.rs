@@ -61,7 +61,7 @@ impl<'r> Analyzer<'r> {
         absolute: Vec<Ident>,
         unqualified: Option<&Ident>,
         expected: Option<&ResolvedType>,
-    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+    ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
         // A bare (uncalled) reference to an overloaded name -- `resolve_item`
         // would otherwise silently resolve it to whichever candidate the
         // driver happens to index first (see `ModuleResolver::resolve_item`'s
@@ -103,7 +103,7 @@ impl<'r> Analyzer<'r> {
                 }
                 let r#type = ResolvedType::Function(fn_type);
                 let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
-                return Some((root, r#type));
+                return Some((root, r#type, false));
             }
             self.error(
                 node_id,
@@ -116,9 +116,9 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         match self.resolve_item_checked(&absolute, &[], true) {
-            Ok(ResolvedItem::Value { r#type, storage, decl_id }) => {
+            Ok(ResolvedItem::Value { r#type, storage, decl_id, mutable }) => {
                 let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
-                Some((root, r#type))
+                Some((root, r#type, mutable))
             }
             Ok(ResolvedItem::Type(_)) => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
@@ -144,9 +144,9 @@ impl<'r> Analyzer<'r> {
                 if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
             {
                 match self.resolve_item_checked(&missing, &[], true) {
-                    Ok(ResolvedItem::Type(t)) => {
-                        self.resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
-                    }
+                    Ok(ResolvedItem::Type(t)) => self
+                        .resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
+                        .map(|(root, r#type)| (root, r#type, false)),
                     _ => {
                         self.error(
                             node_id,
@@ -302,7 +302,7 @@ impl<'r> Analyzer<'r> {
                 None
             }
             Ok(ResolvedItem::Type(t)) => self.resolve_type_member(node_id, span, &t, rest),
-            Ok(ResolvedItem::Value { r#type, storage, decl_id }) if rest.is_empty() => {
+            Ok(ResolvedItem::Value { r#type, storage, decl_id, mutable: _ }) if rest.is_empty() => {
                 let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
                 Some((root, r#type))
             }

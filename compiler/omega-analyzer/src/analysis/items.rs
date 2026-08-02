@@ -29,21 +29,31 @@ impl<'r> Analyzer<'r> {
             span: decl.span,
             ident: decl.ident.clone(),
             r#type: resolved_type,
+            mutable: decl.mutable,
+            // `analyze_declaration` never receives an initializer -- a
+            // local with one goes through `DeclarationWithInit` instead,
+            // and a top-level binding with one is a `Walrus`, handled by
+            // `analyze_global_walrus` below, which builds its own
+            // `CheckedDeclaration` directly rather than through here.
+            initial_value: None,
         })
     }
 
-    /// `[comp] ident := value;` at item level (`HirItem::Walrus`) -- unlike
+    /// `comp ident := value;` at item level (`HirItem::Walrus`, `w.comp ==
+    /// true` -- the driver only ever calls this once it's already decided
+    /// that, see `Driver::compute_item`'s `HirItem::Walrus` arm) -- unlike
     /// a local `comp` binding (`Analyzer::analyze_walrus`'s own `comp`
     /// branch), this never calls `declare_binding`/`Context::
     /// set_comp_value`: a top-level binding's identity and value must
     /// survive past this one throwaway `Analyzer`, so the driver
     /// (`Driver::compute_item`) records them in its own cross-item state
-    /// (`ItemQueries::comp_values`) instead, once this returns.
+    /// (`ItemQueries::comp_values`) instead, once this returns. `w.value`
+    /// needs no explicit inner `comp` of its own -- the binding's own
+    /// `comp` is already the one unambiguous marker this whole line means
+    /// "evaluate at compile time" (unlike `analyze_global_walrus` below,
+    /// where that explicitness is exactly what's needed to tell a
+    /// genuinely-runtime initializer apart from a compile-time-known one).
     pub fn analyze_comp_declaration(&mut self, w: &HirWalrusDeclaration) -> Option<(ResolvedType, ConstValue)> {
-        if !w.comp {
-            self.error(w.id, w.span, AnalysisErrorKind::TopLevelWalrusNotComp);
-            return None;
-        }
         if w.mutable {
             self.error(w.id, w.span, AnalysisErrorKind::MutCompBinding);
             return None;
@@ -52,6 +62,37 @@ impl<'r> Analyzer<'r> {
         let r#type = checked.r#type.clone();
         let value = self.eval_comp(w.id, &checked)?;
         Some((r#type, value))
+    }
+
+    /// `ident := value;` at item level, without `comp` on the binding
+    /// (`HirItem::Walrus`, `w.comp == false`) -- a real `Storage::Global`
+    /// place, not substituted, but still requiring a compile-time-known
+    /// initial value: no runtime constructor/init-order machinery exists
+    /// (see `docs/19-compile-time-evaluation.md`), so `value`'s only
+    /// legal shape here is one that's *already* `CheckedExpr::Const` by
+    /// the time ordinary analysis finishes with it -- exactly what an
+    /// explicit `comp <expr>` (or any of the handful of already-const-
+    /// recognized literal positions `analysis/consts.rs` handles) already
+    /// collapses into. This is a check on the analyzed *result*'s shape,
+    /// not a re-derivation of "was the word `comp` written somewhere" --
+    /// strictly more general, and it's the same signal every other
+    /// compile-time-known-or-not distinction in this compiler already
+    /// uses.
+    pub fn analyze_global_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<CheckedDeclaration> {
+        let checked = self.analyze_expr(&w.value, None)?;
+        let CheckedExpr::Const(value) = checked.kind else {
+            self.error(w.id, w.span, AnalysisErrorKind::TopLevelValueNotComp);
+            return None;
+        };
+        self.declare_binding(w.id, w.span, &w.ident, checked.r#type.clone(), Storage::Global, w.mutable)?;
+        Some(CheckedDeclaration {
+            id: w.id,
+            span: w.span,
+            ident: w.ident.clone(),
+            r#type: checked.r#type,
+            mutable: w.mutable,
+            initial_value: Some(value),
+        })
     }
 
     pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDeclaration> {

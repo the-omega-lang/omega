@@ -36,10 +36,10 @@ evaluates at compile time, but the binding itself (`b` above) is an
 ordinary, `mut`-if-declared-`mut` runtime place — its value just happens to
 start out already computed.
 
-## Top-level (global) `comp` bindings
+## Top-level (global) bindings
 
-`comp ident := comp expr;` also works at module scope, visible to every
-other item exactly like any other top-level name:
+`comp ident := comp expr;` works at module scope, visible to every other
+item exactly like any other top-level name:
 
 ```
 add(a: i32, b: i32) => i32 { a + b }
@@ -51,24 +51,59 @@ comp SIZE := comp add(10, 20);   # module-level -- no storage, substituted
 uses_it_elsewhere() => i32 { SIZE * 2 }
 ```
 
-A top-level `:=` binding must be `comp` — `ident := value;` with no `comp`
-reports a dedicated error (`AnalysisErrorKind::TopLevelWalrusNotComp`)
-rather than being accepted or silently misinterpreted: a non-`comp`
-top-level global would need a real runtime constructor/init-order story
-(closer to a C++ static initializer than anything this feature builds),
-which is a distinct, larger piece of work nobody has asked for. `mut comp`
-is rejected the same way it is locally.
+A top-level binding doesn't have to be `comp`, though — dropping `comp`
+from the *binding* (keeping it on the *value*) gets you a real global
+instead of a substituted one, optionally `mut`, optionally with no
+initializer at all:
 
-Evaluated *eagerly*, during the binding's own signature resolution — not
-deferred to a later body-check phase — since `comp <expr>` interprets as
-an inherent part of ordinary expression analysis regardless of which phase
-touches it first. This is the same "signature resolution needs a body-
-shaped answer" situation a `spec T`-return-type function's own inference
-already has to handle; the driver's per-item body-check cache
-(`ensure_item_body`) and its cycle guard (`body_in_progress`) are what
-make it safe for a `comp` global to (directly, or through another
-function) reference something that in turn calls back into it, without
-either hanging or corrupting driver state.
+```
+struct Thing { exposed number: i32; }
+make_thing() => Thing { Thing { number = 10; } }
+
+def := comp make_thing();      # real storage, immutable, starts at {10}
+mut jkl := comp make_thing();  # real storage, mutable, starts at {10}
+mut pqr : Thing;                # real storage, mutable, starts zeroed
+stu : Thing;                    # real storage, immutable, starts zeroed
+```
+
+The one rule governing all of these: **a top-level binding's value, when
+one is given, must be compile-time-known.** `ident := make_thing();` (no
+`comp` anywhere) reports a dedicated error
+(`AnalysisErrorKind::TopLevelValueNotComp`) rather than being accepted or
+silently misinterpreted — a genuinely runtime-computed top-level global
+would need a real runtime constructor/init-order story (closer to a C++
+static initializer than anything this feature builds), which is a
+distinct, larger piece of work nobody has asked for, and stays out of
+scope regardless of `mut`. This is checked structurally, not by looking
+for the literal word `comp`: the initializer is analyzed completely
+ordinarily, and whatever it analyzes down to must already be
+`CheckedExpr::Const` — exactly what `comp <expr>` (and, for free, any of
+the handful of already-const-recognized literal positions elsewhere in
+this compiler) already collapses into during that same ordinary
+analysis. `mut comp` (`comp` on *both* the binding and requesting
+mutability) is rejected the same way it is locally — a substituted
+binding has no storage to write into, `mut` or not.
+
+Declaring a global with no initializer at all (`ident : Type;`) needs no
+`comp` anywhere, and works precisely like a C `static`'s tentative
+definition: the storage starts zero-initialized, readable immediately,
+and — if `mut` — writable from then on by ordinary assignment. `mut`
+genuinely governs writability here: a non-`mut` global (with or without
+an initializer) is a compile error the moment anything tries to assign
+into it, checked correctly regardless of which module or function the
+reference comes from.
+
+Every one of these (`comp` binding or not) is evaluated *eagerly*, during
+the binding's own signature resolution — not deferred to a later body-
+check phase — since `comp <expr>` interprets as an inherent part of
+ordinary expression analysis regardless of which phase touches it first.
+This is the same "signature resolution needs a body-shaped answer"
+situation a `spec T`-return-type function's own inference already has to
+handle; the driver's per-item body-check cache (`ensure_item_body`) and
+its cycle guard (`body_in_progress`) are what make it safe for a global's
+initializer to (directly, or through another function) reference
+something that in turn calls back into it, without either hanging or
+corrupting driver state.
 
 ## What the interpreter can evaluate
 

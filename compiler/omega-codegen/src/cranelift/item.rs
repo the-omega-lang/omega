@@ -106,27 +106,39 @@ impl Codegen {
                 }
             }
             // A top-level global (`ident: Type;`, `Storage::Global`) --
-            // always zero-initialized: `CheckedDeclaration` carries no
-            // initializer at all (a real one exists only for a `comp`-
-            // initialized *non-`comp`* binding, `b := comp expr();`, which
-            // doesn't lower through this path yet -- see the compile-time-
-            // evaluation implementation plan's top-level-bindings task).
+            // zero-initialized when `initial_value` is `None` (a plain
+            // `ident : Type;`, or `mut`), or built from real bytes via
+            // `write_const_element` when it's `Some` (a non-`comp`
+            // `ident := comp expr();`, see `CheckedDeclaration::
+            // initial_value`'s doc comment) -- the exact same call
+            // `build_const_data` makes for an anonymous rodata blob,
+            // just against this global's own real, named symbol instead.
             // `Export` (strong) linkage unconditionally: a global is never
             // a generic instantiation the way a function/method can be, so
             // there's no multi-definition-folding need for `Preemptible`
             // here (see `linkage_for`'s own doc comment for why that
-            // distinction matters at all). `writable: true` regardless of
-            // the source-level `mut`/plain distinction -- that's enforced
-            // at analysis time (only a `mut` binding's `CheckedAssignment`
-            // ever exists in the checked tree at all), not by object-file
-            // memory protection, exactly like a local's stack slot is
-            // never protected either.
+            // distinction matters at all), and unlike `build_const_data`'s
+            // blobs, this symbol must never be deduplicated by content --
+            // two different globals that merely start out byte-identical
+            // can still diverge after a `mut` write. `writable: true`
+            // regardless of the source-level `mut`/plain distinction --
+            // that's enforced at analysis time (only a `mut` binding's
+            // `CheckedAssignment` ever exists in the checked tree at all),
+            // not by object-file memory protection, exactly like a local's
+            // stack slot is never protected either.
             MirItem::Declaration(decl) => {
                 let symbol = mangle::encode(&mangle::global_symbol(path, &decl.ident));
                 let total = layout::total_bytes(&decl.r#type, self.pointer_bytes());
                 let data_id = self.module.declare_data(&symbol, Linkage::Export, true, false).unwrap();
                 let mut desc = DataDescription::new();
-                desc.define_zeroinit(total as usize);
+                match &decl.initial_value {
+                    None => desc.define_zeroinit(total as usize),
+                    Some(value) => {
+                        let mut bytes = vec![0u8; total as usize];
+                        self.write_const_element(&mut desc, &mut bytes, 0, value, &decl.r#type);
+                        desc.define(bytes.into_boxed_slice());
+                    }
+                }
                 self.module.define_data(data_id, &desc).unwrap();
                 self.globals.insert(decl.id, data_id);
             }

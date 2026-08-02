@@ -770,14 +770,21 @@ impl<'r> Analyzer<'r> {
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
                 let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
-                let (root, r#type) = match alias {
+                let (root, r#type, mutable) = match alias {
                     Some(ImportTarget::Module(target)) => {
                         let absolute: Vec<Ident> = target.into_iter().chain(path.tail.iter().cloned()).collect();
                         self.resolve_qualified_value(node_id, span, absolute, None, expected)?
                     }
-                    _ => self.resolve_type_qualified_value(node_id, span, path, expected)?,
+                    // A type-qualified member (`MyEnum::Variant`, a static
+                    // function, ...) is never itself an assignable place --
+                    // `mutable` is unconditionally `false` here, not just
+                    // defaulted.
+                    _ => {
+                        let (root, r#type) = self.resolve_type_qualified_value(node_id, span, path, expected)?;
+                        (root, r#type, false)
+                    }
                 };
-                Some((root, r#type, false))
+                Some((root, r#type, mutable))
             }
             HirPlaceRoot::Expr(expr) => {
                 let checked = self.analyze_expr(expr, None)?;
@@ -834,9 +841,9 @@ impl<'r> Analyzer<'r> {
         // through to the implicit own-module assumption --
         // `resolve_qualified_value` reports whichever precise error fits.
         let alias = self.resolve_alias_or_error(node_id, span, ident)?;
-        if let Some(ImportTarget::Item(_, ResolvedItem::Value { r#type, storage, decl_id })) = alias {
+        if let Some(ImportTarget::Item(_, ResolvedItem::Value { r#type, storage, decl_id, mutable })) = alias {
             let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
-            return Some((root, r#type, false));
+            return Some((root, r#type, mutable));
         }
         let (absolute, unqualified) = match alias {
             Some(ImportTarget::GenericItem(absolute)) => (absolute, None),
@@ -845,8 +852,7 @@ impl<'r> Analyzer<'r> {
                 (absolute, Some(ident))
             }
         };
-        let (root, r#type) = self.resolve_qualified_value(node_id, span, absolute, unqualified, expected)?;
-        Some((root, r#type, false))
+        self.resolve_qualified_value(node_id, span, absolute, unqualified, expected)
     }
 
     /// A bare reference to an overloaded name. Nothing about the name alone

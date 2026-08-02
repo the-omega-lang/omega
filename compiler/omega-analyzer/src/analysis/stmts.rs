@@ -237,6 +237,12 @@ impl<'r> Analyzer<'r> {
             span: w.span,
             ident: w.ident.clone(),
             r#type: r#type.clone(),
+            mutable: w.mutable,
+            // A local's value comes from the `Assignment` statement right
+            // below, never baked into the declaration itself -- unlike a
+            // global, whose `initial_value` this pattern's own doc comment
+            // covers.
+            initial_value: None,
         });
         let assignment = CheckedStmt::Expression(CheckedExprNode {
             id: w.id,
@@ -770,7 +776,14 @@ impl<'r> Analyzer<'r> {
         value: CheckedExprNode,
     ) -> (CheckedStmt, CheckedStmt) {
         let ident = Ident(name.to_string());
-        let declaration = CheckedStmt::Declaration(CheckedDeclaration { id, span, ident, r#type: r#type.clone() });
+        let declaration = CheckedStmt::Declaration(CheckedDeclaration {
+            id,
+            span,
+            ident,
+            r#type: r#type.clone(),
+            mutable: true,
+            initial_value: None,
+        });
         let assignment = CheckedStmt::Expression(CheckedExprNode {
             id,
             span,

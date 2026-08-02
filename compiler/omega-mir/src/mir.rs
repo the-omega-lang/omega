@@ -9,7 +9,7 @@
 use crate::body::MirBody;
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
 use omega_analyzer::checked::CheckedParam;
-use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
+use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::ModuleId;
 use omega_parser::prelude::{Ident, SelfMode, Span};
 
@@ -21,9 +21,10 @@ pub struct MirModule {
 
 #[derive(Debug, Clone)]
 pub enum MirItem {
-    /// See `CheckedItem::Declaration`'s doc comment -- still `todo!()` in
-    /// codegen (global data storage isn't decided yet); carried through
-    /// unchanged so that remains true only in one place.
+    /// A top-level global (`ident : Type;` or a non-`comp` `ident := value;`)
+    /// -- see `MirDeclaration::initial_value`'s doc comment and
+    /// `Codegen::declare_item`'s `Declaration` arm for how this becomes
+    /// real static storage.
     Declaration(MirDeclaration),
     ExternDeclaration(MirExternDeclaration),
     FunctionDefinition(MirFunctionDef),
@@ -38,6 +39,13 @@ pub struct MirDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
+    /// See `CheckedDeclaration::initial_value`'s doc comment. `mutable`
+    /// itself doesn't need to travel this far -- it's only ever consulted
+    /// at analysis time (`ResolvedItem::Value::mutable`, checked wherever
+    /// a place is resolved), never by codegen, which always emits
+    /// writable storage regardless (see `Codegen::declare_item`'s
+    /// `Declaration` arm).
+    pub initial_value: Option<ConstValue>,
 }
 
 #[derive(Debug, Clone)]

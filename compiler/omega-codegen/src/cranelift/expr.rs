@@ -476,7 +476,13 @@ impl Codegen {
     /// formats already support for e.g. initialized pointer tables. A
     /// nested `Slice` element's trailing length leaf has no such address
     /// dependency, so it's still a literal byte write.
-    fn write_const_element(
+    ///
+    /// `pub(super)`, not private: `cranelift::item`'s `Declaration` arm
+    /// reuses this directly for a top-level global's own initial-value
+    /// bytes -- the same call `build_const_data` makes for an anonymous
+    /// rodata blob, just against a real, named, `Export`-linkage symbol
+    /// instead of an anonymous content-hashed one.
+    pub(super) fn write_const_element(
         &mut self,
         desc: &mut DataDescription,
         bytes: &mut [u8],

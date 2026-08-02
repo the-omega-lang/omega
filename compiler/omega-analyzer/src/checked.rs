@@ -81,8 +81,14 @@ pub enum Storage {
     /// A named function -- top-level, extern, or a struct method -- resolved
     /// to a callable symbol.
     Function,
-    /// A top-level variable or non-function extern; storage layout for this
-    /// is not yet decided (`todo!()` in codegen).
+    /// A top-level variable (`ident : Type;`, or a non-`comp` `ident :=
+    /// value;`), zero-initialized or, when `CheckedDeclaration::
+    /// initial_value` is `Some`, built from real bytes -- see
+    /// `Codegen::declare_item`'s `Declaration` arm. Extern *data* (a
+    /// non-function `extern`) is the one remaining gap here: still
+    /// `todo!()` in codegen, since its storage lives in another
+    /// translation unit entirely -- a genuinely separate question from an
+    /// ordinary global's.
     Global,
     /// A `comp` binding (`comp a := comp expr;`) -- carries no storage at
     /// all. Never reaches MIR lowering or codegen as a place: `Analyzer::
@@ -102,6 +108,22 @@ pub struct CheckedDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
+    /// Whether this global may be assigned to after its initial value (if
+    /// any) is set -- the top-level counterpart of `VarBinding::mutable`,
+    /// threaded all the way out to `ResolvedItem::Value` so a *reference*
+    /// to this global from any other item/module sees the real fact
+    /// instead of the `false` every such reference used to be hardcoded
+    /// to (see `Analyzer::resolve_unqualified_root`'s and
+    /// `resolve_qualified_value`'s own doc comments).
+    pub mutable: bool,
+    /// `Some` for a non-`comp` top-level binding whose initializer is
+    /// present and compile-time-known (`ident := comp expr;`) -- the
+    /// binding still gets real `Storage::Global` storage (unlike a `comp`
+    /// binding, which never reaches this struct at all: see
+    /// `Analyzer::analyze_comp_declaration`), it just starts out with
+    /// this already-known value instead of zero bytes. `None` for a plain
+    /// `ident : Type;` declaration, which starts zero-initialized.
+    pub initial_value: Option<ConstValue>,
 }
 
 #[derive(Debug, Clone)]

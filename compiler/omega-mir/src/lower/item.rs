@@ -27,7 +27,7 @@ fn lower_item(item: CheckedItem) -> MirItem {
 }
 
 fn lower_declaration(decl: CheckedDeclaration) -> MirDeclaration {
-    MirDeclaration { id: decl.id, span: decl.span, ident: decl.ident, r#type: decl.r#type }
+    MirDeclaration { id: decl.id, span: decl.span, ident: decl.ident, r#type: decl.r#type, initial_value: decl.initial_value }
 }
 
 fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclaration {

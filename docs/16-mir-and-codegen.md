@@ -247,10 +247,13 @@ layout math.
   (an `if`/`match` join's result, the function's own return value threaded
   through its `defer` exit chain) is an ordinary local instead, with the
   fast path above recovering the common case's cost back.
-- **Global/extern data storage** (`MirItem::Declaration`,
-  `MirPlaceRoot::Global`) is still `todo!()` in codegen — unchanged from
-  before this crate existed; the mir already carries the shape, codegen
-  just has nothing sound to do with it yet.
+- **`MirItem::Declaration`/`MirPlaceRoot::Global` are fully implemented**
+  (an ordinary top-level global, `mut` included, with or without a
+  compile-time-known initial value — see
+  [compile-time-evaluation.md](19-compile-time-evaluation.md)). Extern
+  *data* (a non-function `extern`) is the one storage gap left, still
+  `todo!()` in `update_extern_decl` — its storage lives in another
+  translation unit, a genuinely separate question.
 - **Taking the address of, or assigning into, a function parameter
   directly (no deref in between) is `todo!()`** — also unchanged from
   before this crate existed. A parameter's leaves are seeded straight from
