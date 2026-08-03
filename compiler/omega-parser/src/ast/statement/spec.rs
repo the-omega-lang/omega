@@ -1,3 +1,4 @@
+use crate::ast::annotation::AnnotationNode;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
@@ -52,6 +53,19 @@ pub struct SpecStmt {
     pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,
     pub target: Option<Type>,
+    /// `true` for the `=`/`|`-separated alias form (`spec Alias = A | B;`),
+    /// `false` for the ordinary `:`/`{}` declaration form -- both are
+    /// carried in this same struct shape (see the type's own doc comment),
+    /// so this is the one thing that actually tells them apart. Needed by
+    /// `@gap` (only legal on an ordinary declaration -- an alias has no
+    /// function list of its own to make into gap requirements, and no
+    /// implementor concept to speak of).
+    pub is_alias: bool,
+    /// `@gap`/`@suppress` -- the only annotations a spec accepts (see
+    /// `omega_analyzer::annotations::ItemKind::Spec`). Empty for a `for`-
+    /// attached or alias spec today, though nothing stops writing one; that
+    /// combination is rejected during analysis, not parsing.
+    pub annotations: Vec<AnnotationNode>,
 }
 
 /// One function member of a spec -- `body: None` for a required function

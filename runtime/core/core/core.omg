@@ -8,6 +8,7 @@
 
 import cmp;
 import default;
+import glue;
 import iterator;
 import numerics;
 import option;

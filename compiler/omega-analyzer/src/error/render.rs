@@ -536,6 +536,37 @@ impl AnalysisErrorKind {
             Self::ManglingForcedOnGeneric => d
                 .with_label(span, "cannot force a mangled symbol name on a generic function")
                 .with_note("every instantiation would share the exact same hardcoded symbol -- a guaranteed multiple-definition error"),
+            Self::GapFunctionMustBeStatic { .. } => d
+                .with_label(span, "'@gap' functions must be static (no 'self')")
+                .with_note("a gap function is always a static, symbol-bound call -- there's no instance to provide 'self'"),
+            Self::GapFunctionBodyNotYetSupported { .. } => d
+                .with_label(span, "default-bodied '@gap' functions aren't supported yet")
+                .with_help("declare this as a bare requirement (no body) instead -- every '@glue' implementor must then provide one"),
+            Self::GapOnForSpec => d
+                .with_label(span, "'@gap' cannot be used on a 'for'-attached spec")
+                .with_note("a 'for'-spec has no name of its own to glue against, and no implementor concept beyond the primitive it extends"),
+            Self::GapOnSpecAlias => d
+                .with_label(span, "'@gap' cannot be used on a spec alias")
+                .with_note("an alias has no function list of its own to make into gap requirements"),
+            Self::GapMustNotBeGeneric => d
+                .with_label(span, "'@gap' cannot be used on a generic spec")
+                .with_note("a gap's expected linker symbol is computed once for the whole spec -- a generic instantiation has no separate one"),
+            Self::GlueOnNonMarker => d
+                .with_label(span, "'@glue' can only be used on a 'marker'")
+                .with_help("declare this as 'marker Name : ...' instead of 'struct Name : ...'"),
+            Self::GlueMustNotBeGeneric => d
+                .with_label(span, "'@glue' cannot be used on a generic marker")
+                .with_note("every instantiation would force its methods onto the same gap symbol -- a guaranteed multiple-definition error"),
+            Self::GlueOnNonGapSpec { spec } => d
+                .with_label(span, "not a '@gap' spec")
+                .with_help(format!("add '@gap' to '{}', or remove it from this glue's implements clause", spec.as_ref())),
+            Self::MultipleGluesForGap { glues, .. } => d
+                .with_label(span, "this gap has more than one '@glue' implementation")
+                .with_note(format!(
+                    "found: {}",
+                    glues.iter().map(|g| format!("'{}'", g.as_ref())).collect::<Vec<_>>().join(", ")
+                ))
+                .with_help("exactly one '@glue' is allowed per gap, project-wide -- remove or rename all but one"),
             Self::CompEvalFailed { trace, .. } => {
                 let mut d = d.with_label(span, "cannot be evaluated at compile time");
                 for call_site in trace {

@@ -72,12 +72,26 @@ impl Codegen {
     pub(super) fn update_extern_decl(&mut self, extern_decl: MirExternDeclaration) {
         match extern_decl.r#type {
             ResolvedType::Function(resolved_fntype) => {
+                // `Disabled` is every ordinary, hand-written `extern`
+                // (annotations are rejected on `extern` at parse time, so
+                // this is the only reachable case for one of those) --
+                // `Glued` is a `@gap` spec's own synthesized required
+                // function (see `CheckedExternDeclaration::mangling`'s doc
+                // comment), which must link against the exact same symbol
+                // its `@glue` implementation forces -- computed the
+                // identical way, via `mangle::glued_symbol`.
+                let symbol = match &extern_decl.mangling {
+                    ManglingMode::Disabled => extern_decl.ident.0.clone(),
+                    ManglingMode::Glued { spec_module_path, spec_name, function_name } => {
+                        mangle::glued_symbol(spec_module_path, spec_name, function_name, &resolved_fntype)
+                    }
+                    ManglingMode::Enabled | ManglingMode::Forced(_) => {
+                        unreachable!("'@mangling' is rejected on 'extern' declarations at parse time")
+                    }
+                };
                 let sig = self.make_function_sig(resolved_fntype);
 
-                let function_id = self
-                    .module
-                    .declare_function(&extern_decl.ident.0, Linkage::Import, &sig)
-                    .unwrap();
+                let function_id = self.module.declare_function(&symbol, Linkage::Import, &sig).unwrap();
 
                 self.functions.insert(extern_decl.id, function_id);
             }
@@ -167,6 +181,9 @@ impl Codegen {
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
         let mangled = match (&extern_fn.mangling, &extern_fn.kind) {
             (ManglingMode::Forced(name), _) => name.clone(),
+            (ManglingMode::Glued { spec_module_path, spec_name, function_name }, _) => {
+                mangle::glued_symbol(spec_module_path, spec_name, function_name, &extern_fn.fn_type)
+            }
             (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
             // `@mangling(disabled)` is rejected on methods at analysis time
             // -- an extern method's own declaration went through the exact

@@ -400,8 +400,20 @@ impl Lowerer {
         let dependencies = sp.dependencies.clone();
         let functions = sp.functions.iter().map(|f| self.lower_spec_function(f, span)).collect();
         let target = sp.target.clone();
+        let annotations = Self::lower_annotations(&sp.annotations);
 
-        HirSpecDef { id, span, visibility: sp.visibility, name: sp.ident.clone(), generics, dependencies, functions, target }
+        HirSpecDef {
+            id,
+            span,
+            visibility: sp.visibility,
+            name: sp.ident.clone(),
+            generics,
+            dependencies,
+            functions,
+            target,
+            is_alias: sp.is_alias,
+            annotations,
+        }
     }
 
     fn lower_spec_function(&mut self, f: &SpecFunctionStmt, span: Span) -> HirSpecFunction {

@@ -74,6 +74,19 @@ new one is found.
   (`<spec *ToIterator<u64>>expr`) stopped working once `ToIterator<T>`
   became not-object-safe. [for-in-loops.md](18-for-in-loops.md)
 
+## Gaps and glue
+
+- **No default-bodied `@gap` function** — every gap function must
+  currently be a bare requirement; a body is rejected outright
+  (`GapFunctionBodyNotYetSupported`). [gaps-and-glue.md](21-gaps-and-glue.md)
+- **No generic gap convenience overloads** (e.g. `alloc<T>()` alongside
+  `alloc(size: usize)`) — blocked on the pre-existing overload-pipeline
+  bug just above, not specific to gaps.
+  [gaps-and-glue.md](21-gaps-and-glue.md)
+- **No "override" or test-only glue concept** — a second `@glue` for the
+  same gap is always a hard error project-wide, with no way to shadow one
+  intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
+
 ## Visibility
 
 - **No re-export / `pub use`-equivalent.** Matches the language having no

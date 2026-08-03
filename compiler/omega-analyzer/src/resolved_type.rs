@@ -111,6 +111,11 @@ pub struct ResolvedStructType {
     /// `marker` reuses this type wholesale instead of being a separate
     /// `ResolvedType` variant.
     pub is_marker: bool,
+    /// `true` for a marker tagged `@glue` -- see
+    /// `annotations::ResolvedAnnotations::glue`'s doc comment. Read back by
+    /// the driver (alongside `implemented_specs`) to populate the
+    /// whole-program gap/glue registry.
+    pub is_glue: bool,
 }
 
 /// Nominal, not structural: two struct types are the same type iff they're
@@ -330,6 +335,23 @@ pub struct ResolvedSpecType {
     /// already uses, for the identical reason.
     pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
+    /// Empty unless `is_gap` -- see `GapFunction`'s own doc comment for why
+    /// a gap's functions get a real, eagerly resolved `ResolvedFunctionType`
+    /// here, instead of staying deferred in `functions`/`RawSpecFunctionSig`
+    /// like every ordinary spec's do. `docs/21-gaps-and-glue.md`'s call
+    /// resolution (`GapPath::function(...)`) and codegen's synthesized
+    /// extern declarations are this field's two readers.
+    pub gap_functions: Vec<(Ident, GapFunction)>,
+    /// The spec's own declaration span -- used to anchor
+    /// `AnalysisWarningKind::UnfilledGap`, which has no single call site of
+    /// its own to point at (see `docs/21-gaps-and-glue.md`). Not needed by
+    /// anything else here, so it isn't threaded any further than that.
+    pub span: Span,
+    /// See `annotations::ResolvedAnnotations::gap`'s doc comment.
+    pub is_gap: bool,
+    /// This spec's own resolved `@suppress` list -- same shape and purpose
+    /// as `ResolvedStructType::suppress`.
+    pub suppress: Vec<Ident>,
 }
 
 impl PartialEq for ResolvedSpecType {
@@ -376,6 +398,24 @@ pub struct RawSpecFunctionSig {
     /// concrete implementor overrides it with its own same-named,
     /// same-signature method.
     pub default_body: Option<HirBlock>,
+}
+
+/// One `@gap` spec function, fully resolved -- unlike `RawSpecFunctionSig`,
+/// which every *ordinary* spec function stays as (deferring type
+/// resolution until a concrete implementor's `Self` is known). A gap
+/// function is self-less by construction (`AnalysisErrorKind::
+/// GapFunctionMustBeStatic`), so there's no `Self` to wait for -- its
+/// signature is resolved exactly once, eagerly, right where the gap spec
+/// itself is (`Analyzer::resolve_spec_functions`). A gap function with a
+/// body is currently rejected outright (`AnalysisErrorKind::
+/// GapFunctionBodyNotYetSupported`) -- see that error's own doc comment
+/// for why default-bodied gap functions are deliberately out of scope for
+/// now rather than half-supported.
+#[derive(Debug, Clone)]
+pub struct GapFunction {
+    pub decl_id: HirId,
+    pub span: Span,
+    pub fn_type: ResolvedFunctionType,
 }
 
 /// A compile-time constant value -- what an enum variant's tag and header

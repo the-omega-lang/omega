@@ -32,6 +32,16 @@ pub enum ItemKind {
     /// all); every other annotation stays rejected on it via the ordinary
     /// `AnnotationNotApplicable` path, no new error-handling code needed.
     Import,
+    /// A `spec` -- the only item kind `@gap` applies to (see
+    /// `ResolvedAnnotations::gap`'s doc comment). `@glue` stays under
+    /// `Struct` (a marker *is* a struct, `HirStructDef::is_marker`) rather
+    /// than getting its own variant here -- its "must be a marker, not an
+    /// ordinary struct" restriction is checked right where `is_marker` is
+    /// already read (`Analyzer::signature_of_struct`), the same way
+    /// `@mangling(disabled)`'s method/generic restrictions are checked
+    /// alongside `is_member_function`/`is_generic` rather than through a
+    /// finer-grained `ItemKind`.
+    Spec,
 }
 
 impl ItemKind {
@@ -42,6 +52,7 @@ impl ItemKind {
             Self::Union => "a union",
             Self::Function => "a function",
             Self::Import => "an import",
+            Self::Spec => "a spec",
         }
     }
 
@@ -52,6 +63,7 @@ impl ItemKind {
             Self::Union => "unions",
             Self::Function => "functions",
             Self::Import => "imports",
+            Self::Spec => "specs",
         }
     }
 }
@@ -126,6 +138,20 @@ pub enum ManglingMode {
     /// every instantiation would otherwise share the one hardcoded name, an
     /// unconditional multiple-definition collision, not just a possible one.
     Forced(String),
+    /// A `@glue` marker's own method, matched by name against one of a
+    /// `@gap` spec's functions (see `Analyzer::collect_methods`, this
+    /// variant's only writer) -- carries just enough (the gap's own module
+    /// path + name, and the function name) for codegen to compute *the
+    /// exact same* symbol the gap's own synthesized extern declaration
+    /// uses, via the identical `mangle::method_symbol` call, rather than
+    /// duplicating that computation here: `omega_analyzer` has no
+    /// dependency on `omega_mangle`/`omega_codegen`'s mangling scheme, and
+    /// shouldn't gain one just to precompute a string that's cheaper to
+    /// derive once, lazily, where the algorithm already lives (see
+    /// `omega_codegen::cranelift::item::declare_item`'s `Struct`/`Enum`/
+    /// `Union` arms and `cranelift::function::declare_extern_function`,
+    /// this variant's readers).
+    Glued { spec_module_path: Vec<Ident>, spec_name: Ident, function_name: Ident },
 }
 
 /// Every annotation's resolved value, regardless of which ones actually
@@ -143,6 +169,20 @@ pub struct ResolvedAnnotations {
     /// warnings may be renamed/removed, so an unrecognized name is
     /// silently harmless rather than an error.
     pub suppress: Vec<Ident>,
+    /// `@gap`, bare, on a `spec` -- marks it a platform-capability gap:
+    /// every one of its own functions (required or default-bodied) must be
+    /// self-less (see `AnalysisErrorKind::GapFunctionMustBeStatic`), and its
+    /// own qualified name becomes callable as if it were a marker's static
+    /// function (see `docs/21-gaps-and-glue.md`). Rejected on a `for`-spec
+    /// or a spec alias -- neither has an implementor concept.
+    pub gap: bool,
+    /// `@glue`, bare, on a `marker` -- marks it as the whole program's one
+    /// concrete implementation of every `@gap` spec it implements. Every
+    /// spec named in its `implements` clause must itself be a gap (see
+    /// `AnalysisErrorKind::GlueOnNonGapSpec`); ordinary conformance
+    /// (function-for-function, matching signatures) is unchanged, still
+    /// `resolve_implements_clause`'s job.
+    pub glue: bool,
 }
 
 /// Validates `annotations` against what `kind` allows, pushing every
@@ -241,6 +281,55 @@ pub fn resolve(
                         analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingForcedOnGeneric)
                     }
                     Ok(mode) => result.mangling = mode,
+                    Err(reason) => analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
+                    ),
+                }
+            }
+            "gap" => {
+                if kind != ItemKind::Spec {
+                    analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::AnnotationNotApplicable {
+                            name: annotation.name.clone(),
+                            found: kind,
+                            allowed: vec![ItemKind::Spec],
+                        },
+                    );
+                    continue;
+                }
+                match reject_arguments(annotation) {
+                    Ok(()) => result.gap = true,
+                    Err(reason) => analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
+                    ),
+                }
+            }
+            "glue" => {
+                // `@glue`'s further "must be a marker, not an ordinary
+                // struct" restriction can't be checked here -- `is_marker`
+                // isn't part of `ItemKind`, see `ItemKind::Spec`'s doc
+                // comment -- so it's checked back at the call site
+                // (`Analyzer::signature_of_struct`) instead.
+                if kind != ItemKind::Struct {
+                    analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::AnnotationNotApplicable {
+                            name: annotation.name.clone(),
+                            found: kind,
+                            allowed: vec![ItemKind::Struct],
+                        },
+                    );
+                    continue;
+                }
+                match reject_arguments(annotation) {
+                    Ok(()) => result.glue = true,
                     Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
@@ -403,6 +492,14 @@ fn resolve_inline(annotation: &HirAnnotation) -> Result<InlineMode, String> {
         [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "never" => Ok(InlineMode::Never),
         _ => Err("expected 'always' or 'never'".to_string()),
     }
+}
+
+/// `@gap`/`@glue` -- both are bare markers with no arguments at all (unlike
+/// every other annotation in this file, which either requires or accepts
+/// some). `@gap()`/`@glue()` (empty parens) are also fine, matching
+/// `@inline()`'s own "absent parens mean the same as empty ones" precedent.
+fn reject_arguments(annotation: &HirAnnotation) -> Result<(), String> {
+    if annotation.args.is_empty() { Ok(()) } else { Err("takes no arguments".to_string()) }
 }
 
 fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> {

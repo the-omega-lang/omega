@@ -1,0 +1,17 @@
+# Platform-capability gaps: functionality `core` (and, eventually, the rest
+# of `std`) needs a concrete answer for, but has no single portable one --
+# the target platform, or the final application, supplies exactly one
+# implementation via `@glue`. See docs/21-gaps-and-glue.md for the full
+# design; this file only ever adds new `@gap` specs, never their glue.
+
+# The global heap allocator. Every function is required (no default body --
+# see docs/21-gaps-and-glue.md for why a default-bodied gap function isn't
+# supported yet) and self-less: called through this spec's own qualified
+# name (`core::glue::GlobalAllocator::alloc(...)`), exactly like a marker's
+# static function, never through an instance.
+@gap
+exposed spec GlobalAllocator {
+    alloc(size: usize) => *u8;
+    free(ptr: *u8) => void;
+    realloc(ptr: *u8, size: usize) => *u8;
+}

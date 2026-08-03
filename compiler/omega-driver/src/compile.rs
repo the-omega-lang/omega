@@ -13,9 +13,9 @@ use crate::items::{CheckedBody, ItemKey};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::annotations::ManglingMode;
-use omega_analyzer::checked::{CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage};
+use omega_analyzer::checked::{CheckedExternDeclaration, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage};
 use omega_analyzer::dead_code::{self, FieldUsage};
-use omega_analyzer::error::{AnalysisWarning, AnalysisWarningKind};
+use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_hir::{HirEnumDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
@@ -92,8 +92,65 @@ impl Driver {
         }
         warnings.extend(self.sweep_dead_code(&local, &usage));
 
+        let (gap_warnings, gap_errors) = self.sweep_gaps();
+        if !gap_errors.is_empty() {
+            return Err(gap_errors);
+        }
+        warnings.extend(gap_warnings);
+
         let extern_functions = self.collect_extern_functions();
         Ok(CompiledProgram { modules, entry: entry.to_vec(), warnings, extern_functions })
+    }
+
+    /// Every `@gap` this compilation actually resolved (see
+    /// `ItemQueries::spec_cells`'s doc comment for why "resolved" is
+    /// exactly the right scope, local or `--extern`, rather than mirroring
+    /// `sweep_dead_code`'s "local only" convention), checked against every
+    /// `@glue` marker resolved alongside it: zero matches is `UnfilledGap`
+    /// (a warning -- see its own doc comment for why this design leaves
+    /// precise reachability to the linker), two or more is
+    /// `MultipleGluesForGap` (a real error). Returns `CompileError`s
+    /// directly, bypassing `Diagnostics`' per-module scope filtering
+    /// (`drain_errors`) entirely -- a gap/glue conflict is a whole-program
+    /// fact belonging to neither side's module more than the other's, the
+    /// same reasoning `CompileError::DuplicateModuleIdentity` already
+    /// carries no single module of its own for.
+    fn sweep_gaps(&self) -> (TaggedWarnings, Vec<CompileError>) {
+        let mut warnings = TaggedWarnings::new();
+        let mut errors = Vec::new();
+        for (_, gap_cell) in self.items.spec_cells() {
+            let gap = gap_cell.borrow();
+            if !gap.is_gap {
+                continue;
+            }
+            let glues: Vec<Ident> = self
+                .items
+                .cells
+                .structs()
+                .filter_map(|(_, s)| {
+                    let s = s.borrow();
+                    let implements_this_gap =
+                        s.implemented_specs.iter().any(|(spec, _)| *spec.borrow() == *gap);
+                    (s.is_glue && implements_this_gap).then(|| s.name.clone())
+                })
+                .collect();
+            match glues.as_slice() {
+                [] => {
+                    let functions = gap.gap_functions.iter().map(|(name, _)| name.clone()).collect();
+                    let kind = AnalysisWarningKind::UnfilledGap { gap: gap.name.clone(), functions };
+                    warnings.push((gap.module_path.clone(), AnalysisWarning::new(gap.id, gap.span, kind)));
+                }
+                [_] => {}
+                _ => {
+                    let kind = AnalysisErrorKind::MultipleGluesForGap { gap: gap.name.clone(), glues };
+                    errors.push(CompileError::Analysis {
+                        module: gap.module_path.clone(),
+                        errors: vec![AnalysisError::new(gap.id, gap.span, kind)],
+                    });
+                }
+            }
+        }
+        (warnings, errors)
     }
 
     /// Phase 1: every local module's every non-generic item's signature.
@@ -193,8 +250,65 @@ impl Driver {
             items.push(body.item);
             warnings.extend(body.warnings.into_iter().map(|w| (path.to_vec(), w)));
         }
+        items.extend(self.synthesize_gap_items(path));
         self.report_unused_imports(path, warnings);
         Ok(items)
+    }
+
+    /// Every `@gap` spec declared directly in `path`, synthesized as one
+    /// `CheckedItem::ExternDeclaration` per required function -- reuses
+    /// that exact shape (see `CheckedExternDeclaration::mangling`'s doc
+    /// comment) since a gap's required function *is*, at codegen time,
+    /// indistinguishable from a hand-written top-level `extern`, just with
+    /// its symbol forced to match its `@glue`'s own (`ManglingMode::Glued`)
+    /// instead of staying bare. A gap spec is never itself a `CheckedItem`
+    /// otherwise -- specs declare no code of their own (see
+    /// `check_item_body`'s own `HirItem::Spec` arm) -- so this is the one
+    /// place a gap's own functions turn into anything codegen can see.
+    fn synthesize_gap_items(&mut self, path: &[Ident]) -> Vec<CheckedItem> {
+        let mut items = Vec::new();
+        for (name, index) in self.modules.index(path).plain_items() {
+            let HirItem::Spec(sp) = &self.modules.parsed(path).hir.items[index] else { continue };
+            // A `for`-spec or an alias can never legitimately be a gap
+            // (already rejected at analysis time if tagged `@gap` anyway;
+            // see `GapOnForSpec`/`GapOnSpecAlias`) -- skipped here purely
+            // to avoid `resolve_spec_declaration`'s ordinary-spec-only
+            // lookup on a `for`-spec, which is never name-registered at all
+            // (see `HirSpecDef::target`'s doc comment).
+            if sp.target.is_some() || sp.is_alias {
+                continue;
+            }
+            let absolute: Vec<Ident> = path.iter().cloned().chain([name.clone()]).collect();
+            // `Err`/`Ok(None)` both just mean "skip" here, deliberately not
+            // escalated (unlike `is_generic_template`'s own `.map_err(fatal)?`
+            // a few lines up in `check_module_bodies`): a spec that already
+            // failed for some unrelated reason (e.g. `@gap` on a generic
+            // spec, `GapMustNotBeGeneric`) has its real error already
+            // recorded in the diagnostics sink and drained normally at the
+            // end of `compile` -- escalating `ItemFailed` into a second,
+            // pipeline-halting fatal error here would short-circuit
+            // `compile` *before* that drain ever runs, silently swallowing
+            // the one diagnostic that actually explains what went wrong.
+            let Ok(Some(cell)) = self.resolve_spec_declaration(&absolute) else { continue };
+            let cell = cell.borrow();
+            if !cell.is_gap {
+                continue;
+            }
+            for (fn_name, gap_fn) in &cell.gap_functions {
+                items.push(CheckedItem::ExternDeclaration(CheckedExternDeclaration {
+                    id: gap_fn.decl_id,
+                    span: gap_fn.span,
+                    ident: fn_name.clone(),
+                    r#type: ResolvedType::Function(gap_fn.fn_type.clone()),
+                    mangling: ManglingMode::Glued {
+                        spec_module_path: cell.module_path.clone(),
+                        spec_name: cell.name.clone(),
+                        function_name: fn_name.clone(),
+                    },
+                }));
+            }
+        }
+        items
     }
 
     /// Every alias this module declared that no reference ever looked up, now
@@ -277,6 +391,41 @@ impl Driver {
                     kind: ExternFunctionKind::Method { type_name: key.name.clone(), method_name },
                     mangling: method.annotations.mangling,
                     fn_type: method.fn_type,
+                });
+            }
+        }
+
+        // A `@gap` spec declared in an `--extern`-referenced module (the
+        // realistic shape -- `core::glue::GlobalAllocator` is meant to be
+        // referenced this way, not compiled inline with its own glue) needs
+        // its required functions declared here too, exactly like an
+        // ordinary extern free function/method above -- otherwise a call
+        // resolved against `gap_fn.decl_id` (see `analysis/paths.rs`'s
+        // `GapSpec::function(...)` arm) has no `FuncId` to find in *this*
+        // compilation at all (only the gap's own, separate, local
+        // compilation would ever have declared one). `kind` is never
+        // actually consulted for a `Glued` mangling (see
+        // `declare_extern_function`'s own match) -- `Free` here is an
+        // arbitrary, unread filler, not a real classification.
+        for (key, gap_cell) in self.items.spec_cells() {
+            if !self.roots.is_extern(&key.0) {
+                continue;
+            }
+            let gap = gap_cell.borrow();
+            if !gap.is_gap {
+                continue;
+            }
+            for (fn_name, gap_fn) in &gap.gap_functions {
+                functions.push(ExternFunctionRef {
+                    decl_id: gap_fn.decl_id,
+                    module_path: gap.module_path.clone(),
+                    kind: ExternFunctionKind::Free(fn_name.clone()),
+                    fn_type: gap_fn.fn_type.clone(),
+                    mangling: ManglingMode::Glued {
+                        spec_module_path: gap.module_path.clone(),
+                        spec_name: gap.name.clone(),
+                        function_name: fn_name.clone(),
+                    },
                 });
             }
         }

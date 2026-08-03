@@ -254,6 +254,7 @@ impl<'r> Analyzer<'r> {
             span: extern_decl.span,
             ident: extern_decl.ident.clone(),
             r#type: resolved_type,
+            mangling: crate::annotations::ManglingMode::Disabled,
         })
     }
 
@@ -526,6 +527,7 @@ impl<'r> Analyzer<'r> {
         implements: &[Type],
         method_ids: &[HirId],
         self_type: &ResolvedType,
+        glue: bool,
     ) -> Option<SpecMethods> {
         self.context.enter_scope();
         // A struct/enum/union method never yet supports `spec T` return-type
@@ -541,7 +543,7 @@ impl<'r> Analyzer<'r> {
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
 
-        let own: Vec<(Ident, ResolvedMethod)> = functions
+        let mut own: Vec<(Ident, ResolvedMethod)> = functions
             .iter()
             .zip(signatures)
             .zip(method_ids)
@@ -551,7 +553,34 @@ impl<'r> Analyzer<'r> {
             .collect();
 
         let (from_specs, pending, implemented_specs) =
-            self.resolve_implements_clause(owner.0, owner.1, name, implements, &own, self_type);
+            self.resolve_implements_clause(owner.0, owner.1, name, implements, &own, self_type, glue);
+
+        // `@glue`'s actual wiring: for every gap this marker implements,
+        // any of its *own* methods matching one of that gap's own function
+        // names (by name -- the signature match was already verified by
+        // ordinary spec conformance, above) gets its mangled symbol forced
+        // to match the gap's own expected one (`ManglingMode::Glued`). Only
+        // `own` is ever eligible -- a method inherited from a spec default
+        // is compiled once, in the gap's own declaring module, never
+        // per-glue (see `docs/21-gaps-and-glue.md`).
+        if glue {
+            for (spec, _) in &implemented_specs {
+                let spec = spec.borrow();
+                if !spec.is_gap {
+                    continue;
+                }
+                for (fn_name, _) in &spec.functions {
+                    if let Some((_, method)) = own.iter_mut().find(|(name, _)| name == fn_name) {
+                        method.annotations.mangling = crate::annotations::ManglingMode::Glued {
+                            spec_module_path: spec.module_path.clone(),
+                            spec_name: spec.name.clone(),
+                            function_name: fn_name.clone(),
+                        };
+                    }
+                }
+            }
+        }
+
         let mut all = own;
         all.extend(from_specs);
         Some((all, pending, implemented_specs))
@@ -569,6 +598,23 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().layout = annotations.layout;
         cell.borrow_mut().suppress = annotations.suppress;
         cell.borrow_mut().is_marker = s.is_marker;
+        cell.borrow_mut().is_glue = annotations.glue;
+        // `@glue`'s "must be a marker" restriction can't be expressed as an
+        // ordinary `ItemKind` applicability check (`@glue` still applies to
+        // `ItemKind::Struct` as a whole -- see `ItemKind::Spec`'s doc
+        // comment for why) -- checked here instead, right where `is_marker`
+        // is already known, the same way `ZeroSizedAggregate`'s own marker
+        // exemption is a few lines down.
+        if annotations.glue && !s.generics.is_empty() {
+            // Same reasoning as `GapMustNotBeGeneric`: `ManglingMode::Glued`
+            // forces every matching method onto one fixed symbol, computed
+            // from the *gap's* identity alone -- every instantiation of a
+            // generic glue marker would collide on that identical symbol.
+            self.error(s.id, s.span, AnalysisErrorKind::GlueMustNotBeGeneric);
+        }
+        if annotations.glue && !s.is_marker {
+            self.error(s.id, s.span, AnalysisErrorKind::GlueOnNonMarker);
+        }
 
         cell.borrow_mut().fields = self.resolve_declared_fields(&s.fields)?;
 
@@ -584,8 +630,15 @@ impl<'r> Analyzer<'r> {
             self.error(s.id, s.span, AnalysisErrorKind::ZeroSizedAggregate { name: s.name.clone(), is_union: false });
         }
 
-        let (functions, pending, implemented_specs) =
-            self.collect_methods((s.id, s.span), &s.name, &s.functions, &s.implements, method_ids, &self_type)?;
+        let (functions, pending, implemented_specs) = self.collect_methods(
+            (s.id, s.span),
+            &s.name,
+            &s.functions,
+            &s.implements,
+            method_ids,
+            &self_type,
+            annotations.glue,
+        )?;
         cell.borrow_mut().functions = functions;
         cell.borrow_mut().implemented_specs = implemented_specs;
         Some(pending)
@@ -613,8 +666,15 @@ impl<'r> Analyzer<'r> {
             self.error(u.id, u.span, AnalysisErrorKind::ZeroSizedAggregate { name: u.name.clone(), is_union: true });
         }
 
-        let (functions, pending, implemented_specs) =
-            self.collect_methods((u.id, u.span), &u.name, &u.functions, &u.implements, method_ids, &self_type)?;
+        let (functions, pending, implemented_specs) = self.collect_methods(
+            (u.id, u.span),
+            &u.name,
+            &u.functions,
+            &u.implements,
+            method_ids,
+            &self_type,
+            false, // `@glue` only applies to markers -- see `ItemKind::Spec`'s doc comment.
+        )?;
         cell.borrow_mut().functions = functions;
         cell.borrow_mut().implemented_specs = implemented_specs;
         Some(pending)
@@ -949,8 +1009,15 @@ impl<'r> Analyzer<'r> {
         }
 
         let self_type = ResolvedType::Enum { cell: cell.clone(), variant: None };
-        let (functions, pending, implemented_specs) =
-            self.collect_methods((e.id, e.span), &e.name, &e.functions, &e.implements, method_ids, &self_type)?;
+        let (functions, pending, implemented_specs) = self.collect_methods(
+            (e.id, e.span),
+            &e.name,
+            &e.functions,
+            &e.implements,
+            method_ids,
+            &self_type,
+            false, // `@glue` only applies to markers -- see `ItemKind::Spec`'s doc comment.
+        )?;
         cell.borrow_mut().functions = functions;
         cell.borrow_mut().implemented_specs = implemented_specs;
         Some(pending)

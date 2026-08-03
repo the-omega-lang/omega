@@ -31,7 +31,7 @@ fn lower_declaration(decl: CheckedDeclaration) -> MirDeclaration {
 }
 
 fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclaration {
-    MirExternDeclaration { id: decl.id, span: decl.span, ident: decl.ident, r#type: decl.r#type }
+    MirExternDeclaration { id: decl.id, span: decl.span, ident: decl.ident, r#type: decl.r#type, mangling: decl.mangling }
 }
 
 fn lower_function_def(f: CheckedFunctionDef) -> MirFunctionDef {

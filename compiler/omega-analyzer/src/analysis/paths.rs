@@ -439,6 +439,40 @@ impl<'r> Analyzer<'r> {
                 };
                 (e.name.clone(), method, missing, e.module_path.clone(), e.id)
             }
+            // `GapSpec::function(...)` -- a `@gap` spec's own qualified
+            // name is callable exactly as if it were a marker's static
+            // function (see `docs/21-gaps-and-glue.md`), resolving directly
+            // against its already-resolved `gap_functions` (eagerly typed
+            // at the spec's own declaration -- see `GapFunction`'s doc
+            // comment -- so there's no `Self`/implementor to wait for the
+            // way an ordinary spec's functions would need). A synthetic
+            // `ResolvedMethod` lets this share every bit of the shared tail
+            // below (visibility, "too many segments", the final
+            // `CheckedPlaceRoot`) with the `Struct`/`Union`/`Enum` arms
+            // above, rather than duplicating it. A *non*-gap spec falls
+            // through to the `other` arm below, completely unchanged --
+            // still the ordinary `StaticAccessOnNonStruct`.
+            ResolvedType::Spec(cell) if cell.borrow().is_gap => {
+                let spec_type = cell.borrow();
+                let method = spec_type.gap_functions.iter().find(|(name, _)| name == member).map(|(_, gap_fn)| {
+                    ResolvedMethod {
+                        decl_id: gap_fn.decl_id,
+                        fn_type: gap_fn.fn_type.clone(),
+                        visibility: spec_type.visibility,
+                        annotations: crate::annotations::ResolvedAnnotations::default(),
+                    }
+                });
+                let similar = match method {
+                    Some(_) => None,
+                    None => best_match(member, spec_type.gap_functions.iter().map(|(name, _)| name)),
+                };
+                let missing = AnalysisErrorKind::NoSuchStructFunction {
+                    r#struct: spec_type.name.clone(),
+                    function: member.clone(),
+                    similar,
+                };
+                (spec_type.name.clone(), method, missing, spec_type.module_path.clone(), spec_type.id)
+            }
             // A primitive (or `Slice`/`Str`) has no static members of its
             // own, unless a `for`-attached spec in `core` gave it some (see
             // `HirSpecDef::target`'s doc comment) -- a self-less function

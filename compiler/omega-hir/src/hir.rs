@@ -298,6 +298,10 @@ pub struct HirSpecDef {
     /// `SpecStmt::target`'s doc comment. `name` is never registered as a
     /// lookup-able name anywhere once this is set (see `item_name`).
     pub target: Option<Type>,
+    /// See `SpecStmt::is_alias`'s doc comment.
+    pub is_alias: bool,
+    /// See `SpecStmt::annotations`'s doc comment.
+    pub annotations: Vec<HirAnnotation>,
 }
 
 /// One function member of a spec. `body: None` for a required function --

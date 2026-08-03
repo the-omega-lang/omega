@@ -69,6 +69,13 @@ impl AnalysisWarning {
             AnalysisWarningKind::LargeStructByValue { r#type, size } => d
                 .with_label(self.span, format!("`{type}` is at least {size} bytes, passed by value"))
                 .with_note("this backend passes structs as flattened scalars, not by reference -- consider a pointer instead"),
+            AnalysisWarningKind::UnfilledGap { functions, .. } => d
+                .with_label(self.span, "no '@glue' implements this gap anywhere in this compilation")
+                .with_note(format!(
+                    "missing: {}",
+                    functions.iter().map(|f| format!("'{}'", f.as_ref())).collect::<Vec<_>>().join(", ")
+                ))
+                .with_help("this only matters if something actually calls this gap -- an unglued, uncalled gap links fine"),
         };
         // Always last, after any warning-specific notes above -- a trailing,
         // low-priority hint (mirrors rustc's own `` `#[warn(...)]` on by
@@ -178,6 +185,16 @@ pub enum AnalysisWarningKind {
     /// doc comment for why this is a deliberately approximate lower bound,
     /// not this type's real, `@layout`-aware size.
     LargeStructByValue { r#type: ResolvedType, size: u32 },
+    /// A `@gap` spec with no `@glue` anywhere in this compilation (local or
+    /// `--extern`-visible) implementing it -- deliberately a warning, not an
+    /// error (see `docs/21-gaps-and-glue.md`: catching this precisely would
+    /// need whole-program reachability analysis through indirect calls,
+    /// which this design specifically avoids by leaving it to the linker).
+    /// `functions` names every one of the gap's own required functions, so
+    /// a later bare linker "undefined reference" (naming the *mangled*
+    /// symbol, not this) is traceable back to this warning by the gap name
+    /// alone.
+    UnfilledGap { gap: Ident, functions: Vec<Ident> },
 }
 
 impl AnalysisWarningKind {
@@ -205,6 +222,7 @@ impl AnalysisWarningKind {
             Self::AlwaysTrueFalseComparison { .. } => "always_true_false_comparison",
             Self::RedundantLayoutAnnotation => "redundant_layout_annotation",
             Self::LargeStructByValue { .. } => "large_struct_by_value",
+            Self::UnfilledGap { .. } => "unfilled_gap",
         }
     }
 }
@@ -231,6 +249,7 @@ impl fmt::Display for AnalysisWarningKind {
             Self::AlwaysTrueFalseComparison { result } => write!(f, "comparison is always {result}"),
             Self::RedundantLayoutAnnotation => write!(f, "redundant '@layout' arguments"),
             Self::LargeStructByValue { r#type, .. } => write!(f, "large type '{type}' passed by value"),
+            Self::UnfilledGap { gap, .. } => write!(f, "gap '{}' has no '@glue' implementation", gap.as_ref()),
         }
     }
 }

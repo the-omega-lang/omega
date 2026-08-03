@@ -132,6 +132,15 @@ pub struct CheckedExternDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
+    /// `Disabled` for every ordinary, hand-written `extern` declaration --
+    /// annotations are rejected outright on `extern` at parse time, so this
+    /// stays fixed at "keep the bare, unmangled name" (today's only actual
+    /// behavior) except for one synthesized case: a `@gap` spec's own
+    /// required function, represented internally as exactly this same
+    /// `CheckedItem::ExternDeclaration` shape (see
+    /// `Driver::synthesize_gap_items`), gets `Glued` instead, so it links
+    /// against the identical symbol its `@glue` implementation forces.
+    pub mangling: crate::annotations::ManglingMode,
 }
 
 #[derive(Debug, Clone)]

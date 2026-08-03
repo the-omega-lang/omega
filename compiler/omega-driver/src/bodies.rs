@@ -188,6 +188,7 @@ impl Driver {
                     span: decl.span,
                     ident: decl.ident.clone(),
                     r#type,
+                    mangling: omega_analyzer::annotations::ManglingMode::Disabled,
                 };
                 Some(CheckedBody { item: CheckedItem::ExternDeclaration(checked), warnings: vec![] })
             }

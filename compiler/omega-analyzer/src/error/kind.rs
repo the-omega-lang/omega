@@ -495,6 +495,62 @@ pub enum AnalysisErrorKind {
     /// name is complete and deliberate, so there's no bare-name collision
     /// risk to guard against.
     ManglingForcedOnGeneric,
+    /// A `@gap` spec function (required or default-bodied) declared with
+    /// any `self` at all -- a gap's functions are always static, symbol-
+    /// bound calls (see `docs/21-gaps-and-glue.md`); there's no instance to
+    /// hang a `self` off of.
+    GapFunctionMustBeStatic { name: Ident },
+    /// A `@gap` spec function declared with a body (`fn(...) => T { ... }`)
+    /// -- deliberately unsupported for now, not silently mishandled: a
+    /// default-bodied gap function needs a real, once-compiled MIR
+    /// function of its own (see `docs/21-gaps-and-glue.md`), which reuses
+    /// the same synthetic-`HirFunctionDef`-reconstruction machinery an
+    /// ordinary spec default method already needs
+    /// (`Analyzer::check_pending_spec_method`) -- left for a dedicated
+    /// follow-up rather than folded into this feature's first cut, whose
+    /// only gap (`core::glue::GlobalAllocator`) has no default-bodied
+    /// functions at all.
+    GapFunctionBodyNotYetSupported { name: Ident },
+    /// `@gap` on a `for`-attached spec (`spec Name for Target { ... }`) --
+    /// a `for`-spec has no name of its own to glue against (see
+    /// `HirSpecDef::target`'s doc comment) and no implementor concept at
+    /// all beyond the one primitive it extends.
+    GapOnForSpec,
+    /// `@gap` on a spec alias (`spec Name = A | B;`) -- an alias has no
+    /// function list of its own to make into gap requirements.
+    GapOnSpecAlias,
+    /// `@gap` on a generic spec (`spec Name<T> { ... }`) -- a gap's own
+    /// expected linker symbol is computed once, for the bare, ungenericized
+    /// spec (see `mangle::glued_symbol`); a generic gap would need a
+    /// separate symbol per instantiation, which nothing here tracks (the
+    /// same reasoning `ManglingForcedOnGeneric` already applies to a single
+    /// function -- a gap is exactly as unconditional a collision).
+    GapMustNotBeGeneric,
+    /// `@glue` on an ordinary (non-`marker`) struct -- a glue's methods
+    /// must be zero-sized/self-elided static functions the same way a
+    /// gap's own are; an ordinary struct has real fields and a real `self`.
+    GlueOnNonMarker,
+    /// `@glue` on a generic marker (`marker Name<T> : Gap { ... }`) --
+    /// `ManglingMode::Glued` forces every matching method onto one fixed
+    /// symbol derived from the gap's own identity; every instantiation of a
+    /// generic glue would collide on that identical symbol (the same
+    /// reasoning `GapMustNotBeGeneric` already applies to the gap side).
+    GlueMustNotBeGeneric,
+    /// A `@glue` marker's `implements` clause names a spec that isn't
+    /// itself `@gap` -- only gaps are meaningful to glue; an ordinary spec
+    /// has no symbol-binding story for `@glue` to hook into (see the
+    /// user-facing rationale in `docs/21-gaps-and-glue.md`: there's little
+    /// advantage to a glue also implementing an unrelated ordinary spec, so
+    /// this is rejected outright rather than silently allowed).
+    GlueOnNonGapSpec { spec: Ident },
+    /// Two or more different `@glue` markers implement the same gap --
+    /// exactly one glue is allowed per gap, project-wide. Anchored at the
+    /// gap's own declaration (a whole-program check, run once at the end of
+    /// compilation -- see `Driver::sweep_gaps` -- rather than at either
+    /// individual `@glue` site, since neither is more "at fault" than the
+    /// other). `glues` names every conflicting implementor found, in
+    /// discovery order.
+    MultipleGluesForGap { gap: Ident, glues: Vec<Ident> },
     /// `comp <expr>` couldn't be evaluated at compile time -- `reason` names
     /// the specific construct that actually blocked it (an already-
     /// formatted description of a `comp_eval::CompErrorKind`, from
@@ -904,6 +960,26 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ManglingDisabledOnGeneric => write!(f, "cannot disable mangling on a generic function"),
             Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
             Self::ManglingForcedOnGeneric => write!(f, "cannot force a mangled symbol name on a generic function"),
+            Self::GapFunctionMustBeStatic { name } => {
+                write!(f, "'@gap' function '{}' cannot take 'self'", name.as_ref())
+            }
+            Self::GapFunctionBodyNotYetSupported { name } => {
+                write!(f, "'@gap' function '{}' with a default body is not yet supported", name.as_ref())
+            }
+            Self::GapOnForSpec => write!(f, "'@gap' cannot be used on a 'for'-attached spec"),
+            Self::GapOnSpecAlias => write!(f, "'@gap' cannot be used on a spec alias"),
+            Self::GapMustNotBeGeneric => write!(f, "'@gap' cannot be used on a generic spec"),
+            Self::GlueOnNonMarker => write!(f, "'@glue' can only be used on a 'marker'"),
+            Self::GlueMustNotBeGeneric => write!(f, "'@glue' cannot be used on a generic marker"),
+            Self::GlueOnNonGapSpec { spec } => {
+                write!(f, "'{}' is not a '@gap' spec -- '@glue' can only implement gaps", spec.as_ref())
+            }
+            Self::MultipleGluesForGap { gap, glues } => write!(
+                f,
+                "more than one '@glue' implements gap '{}' ({})",
+                gap.as_ref(),
+                glues.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
+            ),
             Self::CompEvalFailed { reason, .. } => write!(f, "cannot evaluate this expression at compile time: {reason}"),
             Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
             Self::TopLevelValueNotComp => write!(f, "a top-level binding's value must be compile-time-known"),

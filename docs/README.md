@@ -77,6 +77,12 @@ New to the codebase — read roughly in this order:
 20. [Zero-sized types (`marker`)](20-marker-types.md) — a data-free
     declaration that can still implement specs, why `struct`/`union` must
     always hold real data, and what's already free vs. newly built.
+21. [Gaps and glue (`@gap`, `@glue`)](21-gaps-and-glue.md) — how
+    `core`/`std` declares a platform-specific capability (a heap
+    allocator, first) with no portable implementation of its own, and how
+    exactly one project-wide implementation gets wired to it, deferring an
+    unfilled gap to the linker rather than whole-program reachability
+    analysis.
 
 ## What this is not
 

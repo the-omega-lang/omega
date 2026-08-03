@@ -73,6 +73,9 @@ impl Codegen {
                 // free function elsewhere in the same module.
                 let mangled = match (&f.mangling, &f.extension_target) {
                     (ManglingMode::Forced(name), _) => name.clone(),
+                    (ManglingMode::Glued { spec_module_path, spec_name, function_name }, _) => {
+                        mangle::glued_symbol(spec_module_path, spec_name, function_name, &f.fn_type())
+                    }
                     (ManglingMode::Disabled, _) => f.name.as_ref().to_string(),
                     (ManglingMode::Enabled, _) if path == entry && f.name.as_ref() == "main" => "main".to_string(),
                     (ManglingMode::Enabled, Some(target)) => {
@@ -93,6 +96,9 @@ impl Codegen {
                         // `@mangling(force = "...")` is deliberately allowed
                         // there -- see `ManglingMode::Forced`'s doc comment.
                         ManglingMode::Forced(name) => name.clone(),
+                        ManglingMode::Glued { spec_module_path, spec_name, function_name } => {
+                            mangle::glued_symbol(spec_module_path, spec_name, function_name, &f.fn_type())
+                        }
                         ManglingMode::Disabled => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
                         ManglingMode::Enabled => {
                             mangle::encode(&mangle::method_symbol(path, &s.name, &s.type_args, &f.name, &f.fn_type()))
@@ -105,6 +111,9 @@ impl Codegen {
                 for f in &e.functions {
                     let mangled = match &f.mangling {
                         ManglingMode::Forced(name) => name.clone(),
+                        ManglingMode::Glued { spec_module_path, spec_name, function_name } => {
+                            mangle::glued_symbol(spec_module_path, spec_name, function_name, &f.fn_type())
+                        }
                         ManglingMode::Disabled => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
                         ManglingMode::Enabled => {
                             mangle::encode(&mangle::method_symbol(path, &e.name, &e.type_args, &f.name, &f.fn_type()))
@@ -117,6 +126,9 @@ impl Codegen {
                 for f in &u.functions {
                     let mangled = match &f.mangling {
                         ManglingMode::Forced(name) => name.clone(),
+                        ManglingMode::Glued { spec_module_path, spec_name, function_name } => {
+                            mangle::glued_symbol(spec_module_path, spec_name, function_name, &f.fn_type())
+                        }
                         ManglingMode::Disabled => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
                         ManglingMode::Enabled => {
                             mangle::encode(&mangle::method_symbol(path, &u.name, &u.type_args, &f.name, &f.fn_type()))

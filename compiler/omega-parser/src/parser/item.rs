@@ -128,10 +128,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Ident(name) if name == "marker" && matches!(p.peek_at(1), TokenKind::Ident(_)) => {
             Item::Struct(parse_marker_def(p, annotations, visibility)?)
         }
-        TokenKind::Spec => {
-            reject_annotations(p, &annotations);
-            Item::Spec(parse_spec_def(p, visibility)?)
-        }
+        TokenKind::Spec => Item::Spec(parse_spec_def(p, annotations, visibility)?),
         TokenKind::Macro => {
             reject_annotations(p, &annotations);
             reject_visibility(p, visibility, visibility_span);
@@ -595,7 +592,7 @@ pub fn parse_union_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibil
 /// `:`/`=` token is what disambiguates the two forms; both keep parsing a
 /// `Type`-list afterward (`,`-separated for `:`, `|`-separated for `=`),
 /// just with different terminators (`{ ... }` vs `;`).
-pub fn parse_spec_def(p: &mut Parser, visibility: Visibility) -> Option<SpecStmt> {
+pub fn parse_spec_def(p: &mut Parser, annotations: Vec<AnnotationNode>, visibility: Visibility) -> Option<SpecStmt> {
     p.expect(&TokenKind::Spec, "'spec'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
@@ -611,7 +608,16 @@ pub fn parse_spec_def(p: &mut Parser, visibility: Visibility) -> Option<SpecStmt
         } else {
             p.expect_terminator(&TokenKind::Semi, "';'");
         }
-        return Some(SpecStmt { ident, visibility, generics, dependencies, functions: Vec::new(), target: None });
+        return Some(SpecStmt {
+            ident,
+            visibility,
+            generics,
+            dependencies,
+            functions: Vec::new(),
+            target: None,
+            is_alias: true,
+            annotations,
+        });
     }
 
     let dependencies = parse_optional_implements(p)?;
@@ -629,7 +635,7 @@ pub fn parse_spec_def(p: &mut Parser, visibility: Visibility) -> Option<SpecStmt
         }
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(SpecStmt { ident, visibility, generics, dependencies, functions, target })
+    Some(SpecStmt { ident, visibility, generics, dependencies, functions, target, is_alias: false, annotations })
 }
 
 /// `name(params) => Ret;` (required -- every implementor must provide a

@@ -133,6 +133,7 @@ impl TypeCells {
                     suppress: vec![],
                     implemented_specs: vec![],
                     is_marker: false,
+                    is_glue: false,
                 }))
             })
             .clone()
@@ -412,6 +413,16 @@ impl ItemQueries {
 
     pub fn spec_cell(&self, key: &SpecKey) -> Option<Rc<RefCell<ResolvedSpecType>>> {
         self.spec_cells.get(key).cloned()
+    }
+
+    /// Every spec this compilation actually resolved -- local or extern,
+    /// `@gap` or not. Used by `Driver::sweep_gaps`'s end-of-compile check:
+    /// a gap nothing in this compilation ever referenced (no `@glue`, no
+    /// `GapSpec::function(...)` call) is never in here at all, which is
+    /// exactly the right scope for `UnfilledGap` -- if nothing referenced
+    /// it, nothing will ever fail to link over it either.
+    pub fn spec_cells(&self) -> impl Iterator<Item = (&SpecKey, &Rc<RefCell<ResolvedSpecType>>)> {
+        self.spec_cells.iter()
     }
 
     /// [`Self::state`]'s spec-granular counterpart.
@@ -827,7 +838,7 @@ impl Driver {
             self.items.finish_spec(&key, None);
             return Err(ResolveError::ItemFailed { module: key.0, item: key.1 });
         }
-        let (dependencies, functions) = run.result;
+        let (dependencies, (functions, annotations, gap_functions)) = run.result;
         // See `ResolvedSpecType::is_object_safe`'s doc comment: computed
         // once, here, since `functions`/`dependencies` are both already
         // fully resolved (a dependency's own cell is always `Done` -- and
@@ -845,6 +856,10 @@ impl Driver {
             is_object_safe,
             dependencies,
             functions,
+            gap_functions,
+            span: sp.span,
+            is_gap: annotations.gap,
+            suppress: annotations.suppress,
         }));
         self.items.finish_spec(&key, Some(&cell));
         Ok(Some(cell))

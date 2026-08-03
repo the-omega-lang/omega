@@ -54,6 +54,8 @@ pub struct MirExternDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
+    /// See `CheckedExternDeclaration::mangling`'s doc comment.
+    pub mangling: ManglingMode,
 }
 
 /// See `CheckedFunctionDef`'s doc comment -- every field here means exactly
