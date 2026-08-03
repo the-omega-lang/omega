@@ -88,7 +88,12 @@ need a breaking change to fix — full writeups in
 - **Overloading needs a whole parallel item pipeline** (two extra caches,
   two extra sweeps, two extra resolver methods) purely because the item
   query key can't name one candidate of an overload group — which also
-  makes generic overloads structurally impossible.
+  makes generic overloads structurally impossible. Confirmed: a generic and
+  non-generic overload of the same name (`f(x: i32)` / `f<T>(x: T)`) doesn't
+  just get rejected, it fails with an opaque, rootless diagnostic
+  (`ResolveError::ItemFailed` firing with no primary error ever shown) —
+  likely `ensure_overload_signature` resolving a generic candidate's own
+  signature with an empty substitution list.
 - **Two independent pending-spec-method queues** that differ only in
   whether the owner has a declared item to key on.
 - **`core` is hardcoded as the only place a `for` block may be declared**,

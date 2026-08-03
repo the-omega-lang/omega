@@ -369,6 +369,33 @@ Every candidate is also forced to be non-generic, so `f<T>(x: T)` and
 `f(x: i32)` cannot coexist — not a decision anyone made, just what falls out
 of the parallel path not having a `type_args` dimension.
 
+**Confirmed empirically, and worse than a clean rejection**: declaring both
+(e.g. `free(ptr: *u8) => void { ... }` and `free<T>(ptr: *T) => void { ...
+}` in the same module, no call site needed at all) doesn't compile, but
+also doesn't report *why* — the only diagnostic is
+
+```
+error: cannot use 'main::free' because of its own error
+= note: `free`'s own error is reported where it is defined
+```
+
+with no other error printed anywhere. `ResolveError::ItemFailed` is meant
+to suppress a confusing *secondary* error once the real one has already
+been reported elsewhere — here it fires with no primary diagnostic ever
+having been shown. The likely mechanism: `ensure_overload_signature`
+(`omega-driver/src/bodies.rs`) resolves every overload candidate's
+signature for `check_overload_duplicates`'s comparison via
+`collect_function_signature(f, None)` with an **empty substitution list**
+(`&[]`) — fine for a non-generic candidate, but for a generic one this
+means resolving its own still-unbound type parameter (`T` in `*T`) with
+nothing bound to it at all, which is exactly the shape "collect this
+generic's signature outside of any instantiation" was never designed to
+handle. Whatever fails during that resolution attempt isn't surfacing as
+its own visible diagnostic before `ItemFailed` wraps it. Not yet root-caused
+to the exact line; flagged here for whoever picks up the fix above, since
+it means the *symptom* of this gap is a broken error message, not just a
+missing feature.
+
 The fix is to make the key able to name a candidate (a disambiguator
 alongside `name`, its declaration position, `0` for the overwhelmingly common
 unambiguous case), after which both parallel caches, both extra sweeps, and
