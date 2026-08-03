@@ -1,10 +1,13 @@
-# `core`'s own root file. Its only job is importing every submodule, so
-# that compiling `core` standalone (see the `justfile`'s `build-core`
-# recipe) produces one object file with everything ordinary (non-`for`)
-# declared in the whole package -- `Ordering`'s own methods, most notably,
-# since an ordinary enum method (unlike a `for`-attached one) is compiled
-# by whoever declares it, not by whoever uses it, exactly like any other
-# `--extern` dependency's own code.
+# `core`'s own root file. The filesystem is the source of truth for what a
+# *local* build compiles (see docs/10-modules-and-linkage.md's "Eager local
+# discovery") -- every submodule here is included in `core`'s own build
+# (`just build-core`) whether or not it's imported below. These imports
+# still matter for one, narrower reason: `for`-extension discovery
+# (`Driver::discover_extensions`) walks `core`'s tree via its *own* import
+# graph, from this file, unconditionally -- for a consumer that `--extern`s
+# `core` (the ordinary case), not just when `core` is compiled standalone --
+# so a submodule missing here would have any `for`-block it declares
+# silently invisible to every consumer, regardless of local/extern.
 
 import cmp;
 import default;

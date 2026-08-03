@@ -127,6 +127,19 @@ impl ModuleRoots {
     pub fn module_exists(&self, path: &[Ident]) -> bool {
         self.locate(path).is_ok()
     }
+
+    /// The complete local inventory, exactly as discovered at construction
+    /// -- `Driver::local_module_paths`' only reader, for turning "every
+    /// module path under the local root" into "every module the local
+    /// package's own build actually contains" (filtering out namespace-only
+    /// directories, surfacing a genuine discovery failure like
+    /// `AmbiguousModule` as a real error). Kept as a thin, unfiltered
+    /// accessor here -- the same division of labor `structs()`/`spec_cells()`
+    /// already follow elsewhere in this codebase -- rather than baking that
+    /// filtering into `ModuleRoots` itself.
+    pub fn local_modules(&self) -> impl Iterator<Item = (&ModulePath, &Result<ModuleLocation, ResolveError>)> {
+        self.local_tree.iter()
+    }
 }
 
 impl crate::Driver {

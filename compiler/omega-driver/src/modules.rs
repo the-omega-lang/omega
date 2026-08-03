@@ -481,15 +481,20 @@ impl Driver {
 
     /// Every module transitively reachable from `entry` via `import`
     /// statements, parsing each exactly once as it's discovered. Nothing
-    /// outside this set is ever parsed or analyzed -- the whole point of
-    /// resolving imports lazily rather than walking the entire search tree.
+    /// outside this set is ever parsed or analyzed this way -- the whole
+    /// point of resolving imports lazily rather than walking the entire
+    /// search tree. Used only for a *secondary* root today
+    /// (`discover_module_tree`, `core`'s own tree for `for`-extension
+    /// discovery) -- the local package's own reachable set no longer comes
+    /// from this walk at all (see `Driver::local_module_paths`): the
+    /// filesystem is the source of truth for what it contains, so nothing
+    /// needs to be *imported* from an entry point to be included, only an
+    /// extern's own tree still genuinely needs on-demand, import-driven
+    /// discovery like this (never eagerly walked wholesale -- see
+    /// `ModuleRoots`'s own doc comment).
     ///
     /// `on_failure` turns a failure into the caller's own error type, given
-    /// the importing site that pulled the failing module in. The two callers
-    /// need genuinely different failure handling: the program's own entry
-    /// point wants richly importer-attributed `CompileError`s, while `core`'s
-    /// tree (walked lazily mid-body-check) only needs to fail one lookup
-    /// cleanly with the plain `ResolveError` underneath.
+    /// the importing site that pulled the failing module in.
     fn walk_import_graph<E>(
         &mut self,
         entry: &[Ident],
@@ -518,20 +523,6 @@ impl Driver {
             }
         }
         Ok(reachable)
-    }
-
-    /// The reachable set for the program's own entry point. Failures come
-    /// back as first-class `CompileError`s tagged with the `import` statement
-    /// that pulled the failing module in, so "cannot find module" points at
-    /// the actual `import` line and a module with syntax errors reports those
-    /// errors themselves rather than a second-hand summary.
-    pub(crate) fn discover_reachable(&mut self, entry: &[Ident]) -> Result<Vec<ModulePath>, CompileError> {
-        self.walk_import_graph(entry, |driver, path, error, importer| match error {
-            // A failure *at* a module (as opposed to at one of its imports)
-            // may have a stashed parse/macro error to report instead.
-            ResolveError::LoadFailed { .. } => driver.load_failure(path, error, importer),
-            error => CompileError::Resolve { error, importer },
-        })
     }
 
     /// The reachable set for a secondary root (`core`, see

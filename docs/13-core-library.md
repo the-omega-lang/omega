@@ -19,13 +19,20 @@ runtime/core/
     strings.omg                          # core::strings — StrOps for str
 ```
 
-`core.omg` exists solely to `import` every sibling submodule. This isn't
-cosmetic: it's what makes the whole package **reachable-sweepable** as one
-unit when compiled standalone (`omgc runtime/core/core/core.omg --name=core
--o core.o`), and it's separately what [specs](08-specs.md)'s lazy
-`for`-attachment discovery walks to find every extension method in the
-package, since that discovery is a transitive import-graph walk, not a
-filesystem scan.
+`core.omg` exists to `import` every sibling submodule -- **not** to make
+the whole package reachable when compiled standalone anymore (the
+filesystem alone already guarantees that, unconditionally, for whichever
+package is being compiled locally -- see
+[modules & linkage](10-modules-and-linkage.md)'s "Eager local discovery").
+What still makes these imports load-bearing is
+[specs](08-specs.md)'s lazy `for`-attachment discovery, which walks
+`core.omg`'s own import graph, from `core`'s own entry, to find every
+extension method in the package -- that discovery is a transitive
+import-graph walk, not a filesystem scan, and it runs identically whether
+`core` is the package being compiled or merely `--extern`-referenced (an
+extern package never gets the eager, filesystem-driven treatment). A
+submodule missing from `core.omg`'s own imports would have any
+`for`-block it declares silently invisible to every consumer.
 
 `core` is built and linked exactly like any other `--extern` dependency —
 its own **ordinary** (non-`for`) items, like `Ordering`'s own methods, are

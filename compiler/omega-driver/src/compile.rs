@@ -37,7 +37,9 @@ fn fatal(error: ResolveError) -> Vec<CompileError> {
 }
 
 impl Driver {
-    /// Compiles every module reachable from `entry`.
+    /// Compiles every module the local package contains (see
+    /// `local_module_paths`) -- `entry` names which one has `main`, nothing
+    /// more; it plays no role in *discovering* what gets compiled.
     ///
     /// A *generic template* is skipped by both phases -- it has no concrete
     /// signature or body of its own, only a specific instantiation does,
@@ -47,19 +49,10 @@ impl Driver {
     /// however late one was discovered, it is guaranteed present by then).
     ///
     pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
-        let reachable = self.discover_reachable(entry).map_err(|e| vec![e])?;
-        // An extern module's items resolve lazily, on demand, exactly like a
-        // generic instantiation: "scanned, not compiled" means its signatures
-        // are fully available to whatever local code references them, but
-        // nothing in it is ever eagerly resolved, body-checked, or handed to
-        // codegen for a *definition* -- that's the separate `omgc` invocation
-        // compiling it standalone's job. Errors purely internal to an extern
-        // module (a broken import nothing local ever needed, say) are
-        // correspondingly never surfaced by this compilation either.
-        let local: Vec<ModulePath> = reachable.iter().filter(|p| !self.roots.is_extern(p)).cloned().collect();
+        let local = self.local_module_paths().map_err(|e| vec![e])?;
 
         self.collect_signatures(&local)?;
-        let (mut modules, mut warnings) = self.check_bodies(&reachable)?;
+        let (mut modules, mut warnings) = self.check_bodies(&local)?;
 
         // Merged only now that both phases have finished, in the
         // (deterministic) order instantiations were discovered.
@@ -100,6 +93,55 @@ impl Driver {
 
         let extern_functions = self.collect_extern_functions();
         Ok(CompiledProgram { modules, entry: entry.to_vec(), warnings, extern_functions })
+    }
+
+    /// Every module the local package -- the one actually being compiled --
+    /// contains, unconditionally. The filesystem is the source of truth for
+    /// what a package contains (`ModuleRoots`'s own doc comment): nothing
+    /// needs to *import* a sibling module for it to be part of the build,
+    /// only to *reference* it. An `--extern` dependency is the opposite,
+    /// deliberately -- it stays resolved lazily, one path at a time, on
+    /// demand, exactly as before; this only ever concerns the local root.
+    ///
+    /// A namespace-only directory (no own file, only further children)
+    /// contributes no module of its own. Each real module is parsed here,
+    /// not merely inventoried, so a genuine parse/macro-expansion failure
+    /// anywhere in the package is caught with its full diagnostic detail
+    /// (`load_failure`) rather than falling through to a generic
+    /// `ResolveError` the first time something else happens to reference
+    /// it -- the same precision `discover_reachable`'s old import-graph
+    /// walk used to provide, just sourced from the eager local inventory
+    /// instead of a transitive walk from one entry point.
+    fn local_module_paths(&mut self) -> Result<Vec<ModulePath>, CompileError> {
+        // Collected into an owned `Vec` first, not iterated in place --
+        // `load_failure` below needs `&mut self`, which can't coexist with
+        // `local_modules()`'s own borrow of `self.roots`.
+        let entries: Vec<(ModulePath, Result<crate::fs_resolve::ModuleLocation, ResolveError>)> =
+            self.roots.local_modules().map(|(path, result)| (path.clone(), result.clone())).collect();
+
+        let mut paths: Vec<ModulePath> = Vec::new();
+        for (path, location) in entries {
+            match location {
+                Ok(location) if location.own_file.is_some() => paths.push(path),
+                Ok(_) => {} // namespace-only directory -- no module of its own
+                Err(error) => return Err(self.load_failure(&path, error, None)),
+            }
+        }
+        // Deterministic order: `local_modules()`'s backing map never
+        // guarantees an iteration order, and `collect_signatures` mints
+        // globally-sequential synthetic ids as it visits modules -- a
+        // random order would bake a different id onto each instantiation
+        // build-to-build, exactly the reproducibility concern
+        // `collect_signatures`'s own doc comment already covers one layer
+        // down, at the item level within one module.
+        paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+
+        for path in &paths {
+            if let Err(error) = self.parse_module(path) {
+                return Err(self.load_failure(path, error, None));
+            }
+        }
+        Ok(paths)
     }
 
     /// Every `@gap` this compilation actually resolved (see
@@ -195,25 +237,19 @@ impl Driver {
     }
 
     /// Phase 2: every local module's every non-generic item's body, now that
-    /// every reachable signature is guaranteed to exist.
-    fn check_bodies(
-        &mut self,
-        reachable: &[ModulePath],
-    ) -> Result<(CheckedModules, TaggedWarnings), Vec<CompileError>> {
-        let mut modules = Vec::with_capacity(reachable.len());
+    /// every local signature is guaranteed to exist. `local` never contains
+    /// an `--extern` path (see `local_module_paths`) -- an extern module's
+    /// *ordinary* items are never body-checked or defined by this
+    /// compilation at all; only a generic instantiation of one of its
+    /// templates is (merged during final assembly), since nothing else will
+    /// ever compile that exact instantiation, and that must happen in
+    /// whichever project actually asked for it.
+    fn check_bodies(&mut self, local: &[ModulePath]) -> Result<(CheckedModules, TaggedWarnings), Vec<CompileError>> {
+        let mut modules = Vec::with_capacity(local.len());
         let mut warnings = TaggedWarnings::new();
 
-        for path in reachable {
-            // An extern module's *ordinary* items are never body-checked or
-            // defined here -- only a generic instantiation of one of its
-            // templates is (merged during final assembly): nothing else will
-            // ever compile that exact instantiation, so it must happen in
-            // whichever project actually asked for it.
-            let items = if self.roots.is_extern(path) {
-                Vec::new()
-            } else {
-                self.check_module_bodies(path, &mut warnings)?
-            };
+        for path in local {
+            let items = self.check_module_bodies(path, &mut warnings)?;
             let id = self.modules.parsed(path).id;
             modules.push((path.clone(), CheckedModule { id, items }));
         }

@@ -97,6 +97,19 @@ impl Driver {
     /// Does nothing (not an error) when `core` isn't registered for this
     /// compilation at all -- `for`-attached methods are simply unavailable,
     /// like any other `--extern`-gated feature.
+    ///
+    /// `core`'s own tree is found one of two ways, deliberately not the
+    /// same one every time. When `core` is `--extern`'d (the ordinary
+    /// case), it's never eagerly filesystem-walked by this compilation at
+    /// all (see `ModuleRoots`'s own doc comment) -- the only way to find
+    /// every `for`-block scattered through it is `discover_module_tree`'s
+    /// import-graph walk, starting from `core.omg`'s own entry, exactly as
+    /// before. But when `core` *is* the package actually being compiled
+    /// (`just build-core`), its complete module set is already known,
+    /// unconditionally, straight from the filesystem (`Driver::
+    /// local_module_paths`'s own source of truth) -- walking its import
+    /// graph a second time here would be a redundant, `core.omg`-import-
+    /// dependent way to re-derive something already fully known.
     fn discover_extensions(&mut self) {
         if self.extensions.discovered {
             return;
@@ -107,12 +120,29 @@ impl Driver {
         if !self.roots.module_exists(&core) {
             return;
         }
-        let module_paths = match self.discover_module_tree(&core) {
-            Ok(paths) => paths,
-            Err(error) => {
-                self.extensions.discovery_error = Some(error);
-                return;
+        let module_paths = if self.roots.is_extern(&core) {
+            match self.discover_module_tree(&core) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    self.extensions.discovery_error = Some(error);
+                    return;
+                }
             }
+        } else {
+            let mut paths: Vec<ModulePath> = self
+                .roots
+                .local_modules()
+                .filter_map(|(path, result)| match result {
+                    Ok(location) if location.own_file.is_some() => Some(path.clone()),
+                    // An ambiguous/broken local module would already have
+                    // failed `local_module_paths` before `compile` could
+                    // ever reach the point this runs from -- nothing left
+                    // to report a second time here.
+                    _ => None,
+                })
+                .collect();
+            paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+            paths
         };
         self.extensions.module_paths = module_paths.clone();
 

@@ -68,13 +68,25 @@ this stays cheap regardless of how large the package is. The result is a
 complete inventory of every module the local project actually contains;
 looking one up (`ModuleRoots::locate`) is a plain map lookup afterward, and
 an absent entry is a real, checked fact — "does not exist" — not "wasn't
-asked about yet". This is deliberately *not* the same as eager *analysis*:
-nothing about parsing bodies, resolving names, or type-checking changed —
-that's still exactly as lazy and reference-driven as ever (see "Imports"
-below). An `--extern` dependency never gets this treatment either way; it
-stays resolved lazily, one path at a time, on demand — eager discovery
-belongs only to whichever package is actually *being compiled* in this
-invocation, never to one merely referenced.
+asked about yet". An `--extern` dependency never gets this treatment
+either way; it stays resolved lazily, one path at a time, on demand —
+eager discovery belongs only to whichever package is actually *being
+compiled* in this invocation, never to one merely referenced.
+
+**This inventory is also, directly, the local package's own build set**
+(`Driver::local_module_paths`) — every module it finds is parsed and
+compiled, whether or not anything imports it. The filesystem is the
+source of truth for what a package *contains*, full stop, not just for
+what a *path* resolves to: nothing needs to import a sibling module for
+it to be part of the build, only to *reference* its contents (imports
+remain required for that — see "Imports" below). A module with a genuine
+parse or macro-expansion error is caught with its full diagnostic detail
+regardless of whether anything references it, the same as any other
+module — there is no "not imported yet, so not checked" exemption for the
+local package. This is still distinct from eager *analysis*: nothing
+about type-checking a specific *item*'s body changed (a generic template,
+say, is still only instantiated on demand) — only which *modules* are
+swept at all is no longer import-graph-driven for the local package.
 
 ## Imports
 
