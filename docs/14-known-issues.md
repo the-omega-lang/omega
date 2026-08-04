@@ -107,7 +107,11 @@ new one is found.
   duplicate entry has nothing to be ambiguous over. Would surface as a
   real `AmbiguousAmbientName` (or an outright duplicate-definition error)
   the moment any directory-shaped module's own entry file declares
-  anything and shares its directory's name.
+  anything and shares its directory's name -- now reachable from *any*
+  registered `--extern` shaped this way, not just `core`, since eager tree
+  discovery (`ModuleRoots::extern_trees`) applies uniformly to every
+  extern, and `Driver::collect_extern_signatures` eagerly resolves every
+  discovered struct/spec regardless of import.
   [modules-and-linkage.md](10-modules-and-linkage.md)
 - **A `for`-attached extension method's own internal calls to a sibling
   extension method on the same type lose visibility when the type is

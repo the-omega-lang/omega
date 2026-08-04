@@ -1,8 +1,17 @@
 //! Where module content comes from on disk: the local project's own root
-//! directory (eagerly, structurally discovered in full -- see
-//! [`fs_resolve::discover_tree`]) and every registered `--extern`
-//! dependency's own root (resolved lazily, on demand, one path at a time --
-//! it is never the package *being compiled*).
+//! directory, and every registered `--extern` dependency's own root --
+//! both eagerly, structurally discovered in full at construction (see
+//! [`fs_resolve::discover_tree`]), so every module *path* any extern
+//! contains is already known upfront (`extern_modules`/`core_modules`).
+//! What gets done with a known path still varies by how "eager" its owner
+//! is: the local project's own modules are always fully parsed, signature-
+//! resolved, *and* body-checked (`Driver::local_module_paths`/
+//! `collect_signatures`/`check_bodies`); an extern module's own struct/spec
+//! *signatures* are now eagerly resolved too, whichever extern it belongs
+//! to (`Driver::collect_extern_signatures`) -- but never its body, and
+//! never anything reached only through an ordinary reference (a free
+//! function, an overload, ...), which stays exactly as on-demand as ever
+//! (`ModuleRoots::locate`/`Driver::ensure_item`).
 //!
 //! This is the *only* place a module path is turned into a filesystem
 //! lookup: everything above it deals in declared module paths exclusively.
@@ -23,17 +32,24 @@ use std::path::PathBuf;
 /// extern::<name>;` selects it with *and* its real ABI/mangling identity --
 /// there is no separate local alias. `dir` is its own search root -- an
 /// extern's root is just someone else's project root, resolved exactly the
-/// same way the local project's is, just never eagerly walked (see
-/// `ModuleRoots::locate`).
+/// same way the local project's is: its own tree is eagerly *discovered*
+/// (`ModuleRoots::extern_trees`) but only ever *parsed*/*resolved* on
+/// demand -- for an ordinary reference one path at a time
+/// (`ModuleRoots::locate`), for its struct/spec surface eagerly but never
+/// its body (`Driver::collect_extern_signatures`).
 pub struct ExternRoot {
     pub name: Ident,
     pub dir: PathBuf,
 }
 
 /// Every filesystem root this compilation may resolve a module path
-/// against: the local project's own (eagerly discovered in full, once, at
-/// construction) and every `--extern` (resolved lazily, on demand,
-/// scanned but never eagerly compiled -- see `Driver::compile`).
+/// against: the local project's own, and every `--extern`'s -- both
+/// eagerly discovered in full, once, at construction. Turning a discovered
+/// path into actual content still differs: the local tree is fully parsed
+/// and compiled by `Driver::compile`; an extern's is parsed and
+/// signature-resolved for every struct/spec eagerly
+/// (`Driver::collect_extern_signatures`), and otherwise still resolved
+/// lazily, on demand, one path at a time (`ModuleRoots::locate`).
 pub(crate) struct ModuleRoots {
     /// Every module reachable under the local project's own root directory,
     /// discovered once, eagerly, at construction
@@ -48,15 +64,17 @@ pub(crate) struct ModuleRoots {
     /// module: resolved against that entry's own `dir` instead of the local
     /// tree above.
     externs: IndexMap<Ident, ExternRoot>,
-    /// `core`'s own eager inventory, when `core` is registered as an
-    /// `--extern` -- `Some`, discovered once at construction exactly like
-    /// `local_tree` is, specifically because `core` is always meant to be
-    /// fully available (see `core_modules`'s doc comment); every *other*
-    /// extern deliberately never gets this. `None` when `core` isn't
-    /// registered as an extern at all (either it's the local package
-    /// itself, whose own tree already lives in `local_tree`, or it isn't
-    /// registered for this compilation whatsoever).
-    core_extern_tree: Option<HashMap<ModulePath, Result<ModuleLocation, ResolveError>>>,
+    /// Every registered `--extern`'s own eager inventory, keyed the same as
+    /// `externs` -- discovered once at construction exactly like
+    /// `local_tree` is (see `Driver::collect_extern_signatures`, this
+    /// field's main reader: every extern's own struct/spec surface is now
+    /// eagerly resolved, not just `core`'s). `core_modules` reads its own
+    /// entry out of this same map rather than getting a separate field --
+    /// `core` needed eager *tree discovery* even before every other extern
+    /// did (for ambient bare-name resolution and `for`-block discovery,
+    /// both still `core`-exclusive), but the discovery mechanism itself has
+    /// no reason to stay special-cased once every extern gets it anyway.
+    extern_trees: IndexMap<Ident, HashMap<ModulePath, Result<ModuleLocation, ResolveError>>>,
 }
 
 impl ModuleRoots {
@@ -91,9 +109,9 @@ impl ModuleRoots {
         }
 
         let local_tree = fs_resolve::discover_tree(&local);
-        let core_extern_tree =
-            registered.get(&Ident(CORE_MODULE.to_string())).map(|core| fs_resolve::discover_tree(&core.dir));
-        Ok(Self { local_tree, externs: registered, core_extern_tree })
+        let extern_trees =
+            registered.iter().map(|(name, root)| (name.clone(), fs_resolve::discover_tree(&root.dir))).collect();
+        Ok(Self { local_tree, externs: registered, extern_trees })
     }
 
     /// Whether `path` names an *extern* module -- a pure function of its own
@@ -120,9 +138,11 @@ impl ModuleRoots {
     /// filesystem access, and no possibility of "doesn't exist yet, but
     /// might once something imports it": the whole point of eager local
     /// discovery is that this is already a complete, structural fact. An
-    /// extern path is still resolved live, on demand, exactly as before --
-    /// it's never the package being compiled, so it never earns the eager
-    /// treatment (see this module's own doc comment).
+    /// extern path is still resolved live, on demand, one path at a time --
+    /// its *existence* is already eagerly known (`extern_trees`), but it's
+    /// never the package being compiled, so a single lookup here still
+    /// just re-derives the same `ModuleLocation` live rather than reading
+    /// the inventory back (see this module's own doc comment).
     pub fn locate(&self, path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
         if self.is_extern(path) {
             let root = &self.externs[&path[0]].dir;
@@ -153,37 +173,49 @@ impl ModuleRoots {
         self.local_tree.iter()
     }
 
-    /// Every real module (`own_file: Some`) in `core`'s own tree, however
-    /// `core` happens to be registered for *this* compilation -- unlike
-    /// every other package, `core` is always fully, eagerly known, whether
-    /// it's the local package itself (a plain filter over `local_tree`,
-    /// already fully known -- covers both "the local package's own
-    /// identity is literally `core`" and "`core` is an ordinary nested
-    /// module of a bigger local project" uniformly) or a registered
-    /// `--extern` (its own eagerly discovered `core_extern_tree`). Empty if
-    /// `core` isn't registered at all. This is what makes `core` a true,
-    /// always-available prelude (see `docs/10-modules-and-linkage.md`)
-    /// rather than the ordinary "extern stays lazy, one path at a time"
-    /// treatment every other package gets.
+    /// Every real module (`own_file: Some`) in a tree -- the shared filter
+    /// `core_modules`/`extern_modules` both apply, kept as one place rather
+    /// than duplicated across them.
+    fn real_modules(tree: &HashMap<ModulePath, Result<ModuleLocation, ResolveError>>) -> Vec<ModulePath> {
+        tree.iter()
+            .filter_map(|(path, result)| match result {
+                Ok(location) if location.own_file.is_some() => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every real module in `core`'s own tree, however `core` happens to be
+    /// registered for *this* compilation -- unlike every other package,
+    /// `core` is always fully, eagerly known, whether it's the local
+    /// package itself (a plain filter over `local_tree`, already fully
+    /// known -- covers both "the local package's own identity is literally
+    /// `core`" and "`core` is an ordinary nested module of a bigger local
+    /// project" uniformly) or a registered `--extern` (its own entry in
+    /// `extern_trees`). Empty if `core` isn't registered at all. This is
+    /// what makes `core` a true, always-available prelude (see
+    /// `docs/10-modules-and-linkage.md`), and the one package `for`-blocks
+    /// may live in -- both still exclusive to `core`, unlike the eager
+    /// *tree discovery* `extern_trees` itself now gives every extern.
     pub fn core_modules(&self) -> Vec<ModulePath> {
-        match &self.core_extern_tree {
-            Some(tree) => tree
-                .iter()
-                .filter_map(|(path, result)| match result {
-                    Ok(location) if location.own_file.is_some() => Some(path.clone()),
-                    _ => None,
-                })
-                .collect(),
-            None => self
-                .local_tree
-                .iter()
-                .filter(|(path, _)| path.first().map(Ident::as_ref) == Some(CORE_MODULE))
-                .filter_map(|(path, result)| match result {
-                    Ok(location) if location.own_file.is_some() => Some(path.clone()),
-                    _ => None,
-                })
+        match self.extern_trees.get(&Ident(CORE_MODULE.to_string())) {
+            Some(tree) => Self::real_modules(tree),
+            None => Self::real_modules(&self.local_tree)
+                .into_iter()
+                .filter(|path| path.first().map(Ident::as_ref) == Some(CORE_MODULE))
                 .collect(),
         }
+    }
+
+    /// Every real module across *every* registered `--extern`'s own eager
+    /// tree -- what `Driver::collect_extern_signatures` walks to eagerly
+    /// resolve every extern's struct/spec surface, `core` included (`core`
+    /// gets no special exemption here; its *other* privileges above stay
+    /// exclusive, this one doesn't). The local package is never reached
+    /// through here -- it already gets full signature *and* body treatment
+    /// via `local_module_paths`/`collect_signatures`.
+    pub fn extern_modules(&self) -> Vec<ModulePath> {
+        self.extern_trees.values().flat_map(Self::real_modules).collect()
     }
 }
 

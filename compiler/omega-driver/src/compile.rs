@@ -50,6 +50,7 @@ impl Driver {
     ///
     pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
         let local = self.local_module_paths().map_err(|e| vec![e])?;
+        let extern_surface = self.collect_extern_signatures()?;
 
         self.collect_signatures(&local)?;
         let (mut modules, mut warnings) = self.check_bodies(&local)?;
@@ -73,6 +74,7 @@ impl Driver {
         // modules only, deliberately.
         let mut error_scope = local.clone();
         error_scope.extend(self.extensions.module_paths.iter().cloned());
+        error_scope.extend(extern_surface);
         let errors = self.diagnostics.drain_errors(&error_scope);
         if !errors.is_empty() {
             return Err(errors);
@@ -139,6 +141,73 @@ impl Driver {
         for path in &paths {
             if let Err(error) = self.parse_module(path) {
                 return Err(self.load_failure(path, error, None));
+            }
+        }
+        Ok(paths)
+    }
+
+    /// Every registered `--extern`'s own struct/spec surface -- signatures
+    /// only, never a body (an extern's body is never this compilation's to
+    /// check, see `check_bodies`'s doc comment) -- eagerly resolved
+    /// regardless of whether anything actually imports or path-references
+    /// them. Returns every module path visited, for `compile`'s own
+    /// `error_scope` to extend (see there for why that's required, not
+    /// optional).
+    ///
+    /// Why: before this, `sweep_gaps` only ever saw a `@gap`/`@glue` item
+    /// this compilation happened to *reference* (`ItemQueries::spec_cells`/
+    /// `cells.structs()` are populated purely as an `ensure_item` side
+    /// effect) -- a real `@glue` sitting in an extern module nothing
+    /// imports was invisible, producing a false `UnfilledGap`, and two
+    /// different externs each shipping an unimported `@glue` for the same
+    /// gap were never compared at all, silently deferring a genuine
+    /// conflict all the way to a raw "duplicate symbol" error from the
+    /// system linker (each extern's own build already compiles its own
+    /// glue into its own object file unconditionally, whether or not this
+    /// compilation ever references it -- see `check_bodies`'s doc
+    /// comment). This closes that gap by bringing every extern's
+    /// struct/spec surface to the same eagerness the local package's
+    /// signatures already have (`collect_signatures`), so `sweep_gaps`'
+    /// existing logic -- unchanged -- sees the whole picture.
+    ///
+    /// Restricted to `HirItem::Struct`/`HirItem::Spec` specifically -- the
+    /// only two kinds `@gap`/`@glue` can ever attach to
+    /// (`annotations.rs`'s `"gap"`/`"glue"` match arms reject every other
+    /// `ItemKind`) -- rather than mirroring `collect_signatures`'s full
+    /// per-module sweep (free functions, overloads, enums, unions as their
+    /// own eager entry points too). Anything a struct/spec's own signature
+    /// transitively needs (a field's enum type, a generic bound, ...)
+    /// still resolves normally, recursively, through the exact same
+    /// `ensure_item` every other reference already goes through -- keeping
+    /// this narrowly scoped to the actual problem, rather than paying for
+    /// (and risking a build break from) every extern function/overload/
+    /// enum/union nobody uses too.
+    ///
+    /// A parse or signature failure here is a real, fatal `CompileError`,
+    /// exactly like a local module's -- deliberately, not swallowed: a
+    /// silently-skipped broken `@glue` would fail *invisibly* instead,
+    /// which defeats the point of this sweep more than a loud failure
+    /// does. This does mean a broken, wholly unrelated struct/spec
+    /// anywhere in any registered extern -- `core` included -- can now
+    /// fail a build that never references it; accepted as the cost of
+    /// eager whole-tree resolution without incremental builds to cache it
+    /// (see `docs/10-modules-and-linkage.md`).
+    fn collect_extern_signatures(&mut self) -> Result<Vec<ModulePath>, Vec<CompileError>> {
+        let paths = self.roots.extern_modules();
+        for path in &paths {
+            if let Err(error) = self.parse_module(path) {
+                return Err(vec![self.load_failure(path, error, None)]);
+            }
+        }
+        for path in &paths {
+            self.ensure_module_indexed(path).map_err(fatal)?;
+            for (name, index) in self.modules.index(path).plain_items() {
+                let relevant =
+                    matches!(self.modules.parsed(path).hir.items[index], HirItem::Struct(_) | HirItem::Spec(_));
+                if !relevant || self.is_generic_template(path, &name).map_err(fatal)? {
+                    continue;
+                }
+                let _ = self.ensure_item(path, path, &name, &[], true, false);
             }
         }
         Ok(paths)

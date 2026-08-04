@@ -416,11 +416,16 @@ impl ItemQueries {
     }
 
     /// Every spec this compilation actually resolved -- local or extern,
-    /// `@gap` or not. Used by `Driver::sweep_gaps`'s end-of-compile check:
-    /// a gap nothing in this compilation ever referenced (no `@glue`, no
-    /// `GapSpec::function(...)` call) is never in here at all, which is
-    /// exactly the right scope for `UnfilledGap` -- if nothing referenced
-    /// it, nothing will ever fail to link over it either.
+    /// `@gap` or not. Used by `Driver::sweep_gaps`'s end-of-compile check.
+    /// A local spec's signature is always resolved regardless of reference
+    /// (`Driver::collect_signatures`'s own eager sweep), and so, now, is
+    /// every registered extern's (`Driver::collect_extern_signatures`) --
+    /// so in practice every declared, non-generic spec anywhere in this
+    /// compilation ends up in here, referenced or not (a gap can never be
+    /// generic at all, see `GapMustNotBeGeneric`, so that's not a carve-out
+    /// for `@gap` specifically). What's *not* eagerly forced is a spec's
+    /// own body -- irrelevant for a spec either way, which declares no
+    /// code of its own (see `check_module_bodies`'s `HirItem::Spec` arm).
     pub fn spec_cells(&self) -> impl Iterator<Item = (&SpecKey, &Rc<RefCell<ResolvedSpecType>>)> {
         self.spec_cells.iter()
     }

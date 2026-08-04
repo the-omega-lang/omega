@@ -100,8 +100,43 @@ built. Either way, the result feeds three separate consumers uniformly,
 with no local/extern branch anywhere downstream: the local build set
 (when `core` is local), `for`-block extension discovery (see "Imports"
 below), and ambient/prelude name resolution (see "`core` as an ambient
-prelude" below). No other `--extern` gets any of this — see that section
+prelude" below). No other `--extern` gets *this* — see that section
 for why `core` specifically earns the exception.
+
+**Every `--extern`, not just `core`, now gets its own eager tree
+*discovery*** (`ModuleRoots::extern_trees`, generalized from what used to
+be `core`-only) — every module path it contains is known upfront, the same
+way `core`'s always has been. This is narrower than what `core` gets
+above: knowing a path exists is not the same as eagerly parsing or
+resolving it. What every extern's tree discovery *does* feed, uniformly:
+`Driver::collect_extern_signatures` eagerly resolves every struct's and
+spec's own *signature* (never a body, never a free function/overload/
+enum/union as its own eager entry point) in every registered extern,
+`core` included, before the local package's own signatures are collected.
+
+This exists for one reason: `@gap`/`@glue` tracking
+([gaps and glue](21-gaps-and-glue.md)) needs to see every gap and every
+glue in the whole compilation, not just whichever ones happened to be
+referenced. Before this, an extern module nobody imported was invisible
+to that check entirely — a real `@glue` sitting in an unimported sibling
+module produced a false "unfilled gap" warning, and two different externs
+each shipping an unimported `@glue` for the same gap were never compared
+at all, silently deferring a genuine conflict to a raw linker "duplicate
+symbol" error. Now every extern's struct/spec surface is resolved
+regardless of reference, exactly like the local package's already is, so
+the existing gap/glue sweep sees the whole picture without needing any
+logic of its own to change.
+
+This is a real, unconditional, uncached cost paid on every single
+compile — there is no incremental build to cache it against yet (see
+[known issues](14-known-issues.md)) — and it also means a broken,
+wholly unrelated struct or spec anywhere in *any* registered extern can
+now fail a build that never references it, the same way it already could
+for `core`'s own `for`-block tree. Deliberately not a general "every
+extern behaves exactly like the local package" change, though: unlike
+`core` (see "`core` as an ambient prelude" below), an ordinary extern
+still gets no ambient/prelude name resolution and no `for`-block
+discovery — only this one, narrowly-scoped struct/spec signature sweep.
 
 ## Imports
 
@@ -130,11 +165,17 @@ across modules is (mostly — see caveat below) still correctly rejected.
 
 **Extern modules are scanned, not compiled.** An extern module's ordinary
 items resolve lazily, exactly like a generic instantiation, only when a
-local item actually references one — never eagerly swept or body-checked.
-A *generic* template defined in an extern module is the one exception: its
-concrete instantiations are fully (re)compiled locally, since nothing else
-will ever produce that exact instantiation's body (see
-[generics](06-generics.md)).
+local item actually references one — never body-checked. The one
+exception, besides `core`'s ambient/`for`-block treatment above, is every
+struct's and spec's own *signature*, now eagerly resolved regardless of
+reference too (see "Eager local discovery" above) — purely so `@gap`/
+`@glue` tracking sees the whole picture; nothing about ordinary name
+resolution changed, an unreferenced struct/spec's signature being resolved
+doesn't make it importable or visible any differently than before. A
+*generic* template defined in an extern module is the one true exception
+to lazy *body* resolution: its concrete instantiations are fully
+(re)compiled locally, since nothing else will ever produce that exact
+instantiation's body (see [generics](06-generics.md)).
 
 **`for`-block extension discovery never needs an import at all**, in
 either direction: a spec `for`-attached to some type (`spec SliceImpl<T>

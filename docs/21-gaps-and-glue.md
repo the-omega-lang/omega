@@ -62,7 +62,16 @@ glue satisfies, exactly the same syntax any spec conformance already uses.
 - **Exactly one glue per gap, project-wide**, checked once, at the end of
   compilation (`Driver::sweep_gaps`): two or more markers implementing the
   same gap is `AnalysisErrorKind::MultipleGluesForGap`, naming every
-  conflicting implementor.
+  conflicting implementor. "Project-wide" is genuinely whole-program, not
+  just "whatever this compilation happened to reference" — every
+  registered `--extern`'s own struct/spec surface is eagerly resolved
+  regardless of import (`Driver::collect_extern_signatures`, see
+  [modules & linkage](10-modules-and-linkage.md)'s "Eager local
+  discovery"), so two different externs each shipping an unimported
+  `@glue` for the same gap are still compared and still caught here,
+  rather than silently reaching the linker as a raw duplicate-symbol
+  error (both would already be compiled into their own object files
+  unconditionally — see "Across an `--extern` boundary" below).
 - **An unglued gap is a warning, never an error**
   (`AnalysisWarningKind::UnfilledGap`) — deliberately: proving a gap is
   never actually *called* would need whole-program reachability analysis
@@ -122,7 +131,10 @@ the mangling algorithm at all, and shouldn't gain one just for this).
   the two `.o` files' matching symbols at final link time. Confirmed
   working end to end: a `@glue` marker in an application, implementing
   `core::glue::GlobalAllocator` via `--extern=core:...`, links and runs
-  correctly.
+  correctly — and this holds even when the `@glue` marker's own module is
+  never `import`ed by the application at all, only registered via
+  `--extern`, since its signature (and `@glue`/`implements` status) is now
+  resolved eagerly rather than only on reference.
 - **A gap with no glue at all** leaves its `Import` genuinely unresolved —
   if nothing ever calls it, nothing ever references the symbol, and the
   program links fine regardless (matching `UnfilledGap`'s own "this only
