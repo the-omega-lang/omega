@@ -52,11 +52,6 @@ pub(crate) struct Extensions {
     /// Whether `core`'s tree has already been walked -- nothing about its
     /// `for` declarations changes mid-compile, so this happens exactly once.
     discovered: bool,
-    /// Set when the walk itself failed: `core` was registered (unlike the
-    /// silently-tolerated "not registered at all" case) but something in its
-    /// own tree is genuinely broken. Surfaced through the next lookup rather
-    /// than swallowed.
-    discovery_error: Option<ResolveError>,
     /// Every module the walk visited. Extends the scope errors are drained
     /// from, so a genuine error inside `core`'s own tree still surfaces even
     /// when nothing local imports that submodule. Deliberately *not* used to
@@ -98,52 +93,22 @@ impl Driver {
     /// compilation at all -- `for`-attached methods are simply unavailable,
     /// like any other `--extern`-gated feature.
     ///
-    /// `core`'s own tree is found one of two ways, deliberately not the
-    /// same one every time. When `core` is `--extern`'d (the ordinary
-    /// case), it's never eagerly filesystem-walked by this compilation at
-    /// all (see `ModuleRoots`'s own doc comment) -- the only way to find
-    /// every `for`-block scattered through it is `discover_module_tree`'s
-    /// import-graph walk, starting from `core.omg`'s own entry, exactly as
-    /// before. But when `core` *is* the package actually being compiled
-    /// (`just build-core`), its complete module set is already known,
-    /// unconditionally, straight from the filesystem (`Driver::
-    /// local_module_paths`'s own source of truth) -- walking its import
-    /// graph a second time here would be a redundant, `core.omg`-import-
-    /// dependent way to re-derive something already fully known.
+    /// `core`'s own tree comes straight from `ModuleRoots::core_modules`,
+    /// unconditionally -- `core` is always eagerly, filesystem-discovered
+    /// for this compilation, whether it's the package actually being
+    /// compiled or a registered `--extern` (see that method's own doc
+    /// comment), so there's no import-graph walk left to do here at all,
+    /// and no local-vs-extern branch needed either.
     fn discover_extensions(&mut self) {
         if self.extensions.discovered {
             return;
         }
         self.extensions.discovered = true;
 
-        let core = vec![Ident(CORE_MODULE.to_string())];
-        if !self.roots.module_exists(&core) {
+        let module_paths = self.roots.core_modules();
+        if module_paths.is_empty() {
             return;
         }
-        let module_paths = if self.roots.is_extern(&core) {
-            match self.discover_module_tree(&core) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    self.extensions.discovery_error = Some(error);
-                    return;
-                }
-            }
-        } else {
-            let mut paths: Vec<ModulePath> = self
-                .roots
-                .local_modules()
-                .filter_map(|(path, result)| match result {
-                    Ok(location) if location.own_file.is_some() => Some(path.clone()),
-                    // An ambiguous/broken local module would already have
-                    // failed `local_module_paths` before `compile` could
-                    // ever reach the point this runs from -- nothing left
-                    // to report a second time here.
-                    _ => None,
-                })
-                .collect();
-            paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
-            paths
-        };
         self.extensions.module_paths = module_paths.clone();
 
         // See `Extensions::resolved` on why a `ResolvedType` key is stable.
@@ -237,11 +202,12 @@ impl Driver {
         receiver: &ResolvedType,
     ) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError> {
         // Returns immediately once the walk has already run, so this is also
-        // the memoized path's only cost.
+        // the memoized path's only cost. `core`'s own tree is now always
+        // eagerly, filesystem-discovered (`ModuleRoots::core_modules`), so
+        // there's no walk-failure case left to check for here at all --
+        // this can never actually fail, `Result` is kept only because
+        // `ModuleResolver::extension_methods`'s own signature is.
         self.discover_extensions();
-        if let Some(error) = &self.extensions.discovery_error {
-            return Err(error.clone());
-        }
         // A concrete target was resolved by the walk itself, and every
         // pattern receiver asked about before is cached -- so a miss here
         // means either nothing targets `receiver` at all, or it's a fresh job

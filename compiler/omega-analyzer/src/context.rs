@@ -446,12 +446,38 @@ impl Context {
                         // from the visible scopes, this module's own
                         // import aliases, then its top-level structs
                         // (which only the resolver can enumerate).
+                        // An unqualified name that doesn't resolve to
+                        // anything local gets one more try against every
+                        // exposed name in `core`'s own tree -- see
+                        // `ModuleResolver::ambient_core_candidates`'s doc
+                        // comment. Mirrors `resolve_generic_type`'s
+                        // identical fallback; needed here too since a bare
+                        // (non-generic) named type -- `GlobalAllocator`,
+                        // not `Option<T>` -- never reaches that function at
+                        // all.
                         Err(ResolveError::UnknownItem { .. }) => {
-                            let similar = self
-                                .similar_type_name(&path.head)
-                                .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
-                                .or_else(|| resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type));
-                            return Err(TypeResolutionError::UnrecognizedNamedType { name: path.head.clone(), similar });
+                            match resolver.ambient_core_candidates(module_path, &path.head) {
+                                Ok(Some(ambient_absolute)) => {
+                                    match resolver.resolve_item(module_path, &ambient_absolute, &[], indirect, bypass) {
+                                        Ok(ResolvedItem::Type(t)) => t,
+                                        Ok(ResolvedItem::Value { .. }) => {
+                                            return Err(TypeResolutionError::NotAType(ambient_absolute));
+                                        }
+                                        Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
+                                    }
+                                }
+                                Ok(None) => {
+                                    let similar = self
+                                        .similar_type_name(&path.head)
+                                        .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
+                                        .or_else(|| resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type));
+                                    return Err(TypeResolutionError::UnrecognizedNamedType {
+                                        name: path.head.clone(),
+                                        similar,
+                                    });
+                                }
+                                Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
+                            }
                         }
                         Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                     }
@@ -493,15 +519,19 @@ impl Context {
             let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
             let result = resolver.resolve_item(module_path, &absolute, &resolved_args, indirect, bypass);
             // An unqualified name that doesn't resolve to anything local
-            // gets one more try against `core`, for a short, hardcoded list
-            // of well-known generic items the `for`-in-loop feature depends
-            // on (`Option`/`Iterator`/`ToIterator`) -- see `ambient_core_path`'s
-            // doc comment for why this exists and why it's deliberately not
-            // a general prelude/auto-import mechanism.
-            let result = match (&result, path.is_unqualified().then(|| ambient_core_path(&path.head)).flatten())
-            {
-                (Err(ResolveError::UnknownItem { .. }), Some(ambient_absolute)) => {
-                    resolver.resolve_item(module_path, &ambient_absolute, &resolved_args, indirect, bypass)
+            // gets one more try against every exposed name in `core`'s own
+            // tree -- see `ModuleResolver::ambient_core_candidates`'s doc
+            // comment (`core` is a full ambient prelude, not the short,
+            // hardcoded table this used to be).
+            let result = match (&result, path.is_unqualified()) {
+                (Err(ResolveError::UnknownItem { .. }), true) => {
+                    match resolver.ambient_core_candidates(module_path, &path.head) {
+                        Ok(Some(ambient_absolute)) => {
+                            resolver.resolve_item(module_path, &ambient_absolute, &resolved_args, indirect, bypass)
+                        }
+                        Ok(None) => result,
+                        Err(e) => Err(e),
+                    }
                 }
                 _ => result,
             };
@@ -654,32 +684,5 @@ impl Context {
             .pop()
             .expect("BAD: Context does not have a scope. This should NEVER happen.")
     }
-}
-
-/// The absolute path of a well-known `core` generic item a bare,
-/// unqualified name might refer to, with no `import` needed -- `None` for
-/// every other name. This is deliberately a short, hardcoded table, not a
-/// general prelude/auto-import mechanism: nothing else in this language is
-/// ambiently available without an explicit import, and this doesn't
-/// change that -- it exists only because `for <binding> in <iterator>`
-/// needs `Option`/`Iterator`/`ToIterator` to work the same way in *every*
-/// file, the same way `core`'s `for`-attached extension methods are
-/// already discovered without requiring an import (`omega_driver::
-/// extensions`). A free function (not a `Context` method) since both
-/// `Context::resolve_generic_type` (type positions) and `Analyzer::
-/// resolve_item_checked_with_ambient_fallback` (expression positions,
-/// `analysis/mod.rs`) need it -- consulted only after ordinary
-/// local/import resolution of the same name already failed, at each call
-/// site, so it can never shadow a user's own same-named type.
-pub(crate) fn ambient_core_path(name: &Ident) -> Option<Vec<Ident>> {
-    const WELL_KNOWN: &[(&str, &[&str])] = &[
-        ("Option", &["core", "option", "Option"]),
-        ("Iterator", &["core", "iterator", "Iterator"]),
-        ("ToIterator", &["core", "iterator", "ToIterator"]),
-    ];
-    WELL_KNOWN
-        .iter()
-        .find(|(known, _)| *known == name.as_ref())
-        .map(|(_, path)| path.iter().map(|s| Ident(s.to_string())).collect())
 }
 

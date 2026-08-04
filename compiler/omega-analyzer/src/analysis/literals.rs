@@ -497,10 +497,10 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `resolver.generic_literal_signature(absolute, variant)`, retried
-    /// against the `core` ambient fallback (see `context::
-    /// ambient_core_path`) when `prefix` is a genuinely unqualified single
-    /// segment and the direct lookup finds nothing generic there -- the
-    /// same retry `resolve_item_checked_with_ambient_fallback` gives the
+    /// against the `core` ambient fallback (see `ModuleResolver::
+    /// ambient_core_candidates`) when `prefix` is a genuinely unqualified
+    /// single segment and the direct lookup finds nothing generic there --
+    /// the same retry `resolve_item_checked_with_ambient_fallback` gives the
     /// final *resolve* call, needed here too so a bare, unimported
     /// `Option::Some { ... }`'s own generic-ness is discovered before
     /// inference ever runs, not just its final type. Hands back whichever
@@ -518,7 +518,7 @@ impl<'r> Analyzer<'r> {
             return Some((absolute.to_vec(), sig));
         }
         let [single] = prefix else { return None };
-        let ambient = crate::context::ambient_core_path(single)?;
+        let ambient = self.resolver.ambient_core_candidates(&self.module_path, single).ok().flatten()?;
         let sig = self.resolver.generic_literal_signature(&ambient, variant).ok().flatten()?;
         Some((ambient, sig))
     }

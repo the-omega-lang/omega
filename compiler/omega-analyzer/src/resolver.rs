@@ -121,6 +121,14 @@ pub enum ResolveError {
     /// ever checked -- not true here, since discovering *this* signature
     /// requires checking this body first).
     SpecReturnTypeRecursion { module: Vec<Ident>, item: Ident },
+    /// A bare, unqualified name matched more than one `core` submodule's
+    /// own exposed top-level item, while resolving core's ambient-prelude
+    /// fallback (`ModuleResolver::ambient_core_candidates`) -- unlike every
+    /// other `ResolveError`, this can only ever be produced by that one
+    /// query. `candidates` is every module that exposes `name`, in
+    /// discovery order. Always recoverable: the fully-qualified path
+    /// (`candidates[i]::name`) is unaffected and still resolves.
+    AmbiguousAmbientName { name: Ident, candidates: Vec<Vec<Ident>> },
 }
 
 fn join(path: &[Ident]) -> String {
@@ -186,6 +194,12 @@ impl fmt::Display for ResolveError {
                 join(module),
                 item.as_ref()
             ),
+            Self::AmbiguousAmbientName { name, candidates } => write!(
+                f,
+                "'{}' is ambiguous: it's exposed by more than one core module ({})",
+                name.as_ref(),
+                candidates.iter().map(|c| join(c)).collect::<Vec<_>>().join(", ")
+            ),
         }
     }
 }
@@ -218,6 +232,22 @@ pub trait ModuleResolver {
         module_path: &[Ident],
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError>;
+
+    /// `core`'s ambient-prelude fallback for a bare name (see
+    /// `docs/10-modules-and-linkage.md`'s "core is a prelude" section) --
+    /// consulted only after ordinary local/import resolution of `name`
+    /// already failed, exactly like the narrower, now-superseded
+    /// `context::ambient_core_path` this replaces. `Ok(None)`: no `core`
+    /// submodule exposes `name` at all (or `accessor` is itself inside
+    /// `core`, which never gets this fallback -- its own submodules still
+    /// need real imports among themselves). `Ok(Some(path))`: exactly one
+    /// does. `Err(AmbiguousAmbientName)`: two or more do -- always
+    /// recoverable by writing the fully-qualified path instead.
+    fn ambient_core_candidates(
+        &mut self,
+        accessor: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<Vec<Ident>>, ResolveError>;
 
     /// Every alias a module's own `import` statements bind, purely for "did
     /// you mean" typo suggestions (`Context::similar_module_alias`) -- cheap

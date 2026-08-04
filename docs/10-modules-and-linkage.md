@@ -88,6 +88,21 @@ about type-checking a specific *item*'s body changed (a generic template,
 say, is still only instantiated on demand) — only which *modules* are
 swept at all is no longer import-graph-driven for the local package.
 
+**`core` gets this same eager treatment too, unconditionally, regardless
+of whether it's the package actually being compiled or a registered
+`--extern`** (`ModuleRoots::core_modules`) — the one deliberate exception
+to "an `--extern` dependency never gets this treatment" above. If `core`
+is registered as an `--extern`, its own directory is eagerly walked the
+same way the local root is, right at `ModuleRoots` construction; if `core`
+*is* the local package (`just build-core`) or happens to live nested
+inside it, `core_modules()` just filters the local inventory already
+built. Either way, the result feeds three separate consumers uniformly,
+with no local/extern branch anywhere downstream: the local build set
+(when `core` is local), `for`-block extension discovery (see "Imports"
+below), and ambient/prelude name resolution (see "`core` as an ambient
+prelude" below). No other `--extern` gets any of this — see that section
+for why `core` specifically earns the exception.
+
 ## Imports
 
 ```
@@ -121,26 +136,70 @@ concrete instantiations are fully (re)compiled locally, since nothing else
 will ever produce that exact instantiation's body (see
 [generics](06-generics.md)).
 
-## Ambient resolution: `Option`/`Iterator`/`ToIterator`, and nothing else
+**`for`-block extension discovery never needs an import at all**, in
+either direction: a spec `for`-attached to some type (`spec SliceImpl<T>
+for [T] { ... }`, see [for-in loops](18-for-in-loops.md) for the iteration
+protocol case) is discovered straight from `core_modules()` — the same
+eager inventory the "Eager local discovery" section above describes —
+never from walking anyone's import list. Only `core` may declare a
+`for`-block at all (`extensions::CORE_MODULE`); every one of its own
+modules is always in scope for this regardless of whether the file that
+declares the `for`-block, or the file that ends up calling the method it
+attaches, imports anything.
 
-Every name in this language needs an explicit `import` to be visible —
-except these three, resolved directly against `core::option`/
-`core::iterator` (`context::ambient_core_path`,
-`compiler/omega-analyzer/src/context.rs`) whenever ordinary local/import
-resolution of a bare, unqualified name doesn't find anything, tried
-*after* everything above, so it can never shadow a real local import.
-This is **not** a general prelude/auto-import mechanism — there's no way
-to add another name to it short of editing that one hardcoded table — it
-exists purely because `for <binding> in <iterator> { }` (see
-[for-in loops](18-for-in-loops.md)) needs to work identically in every
-file, the same way `core`'s `for`-attached extension methods are already
-discovered without requiring an import (this file's "Imports" section
-above; `omega_driver::extensions`). Requiring `import core::iterator::
-{Iterator, ToIterator};`/`import core::option::Option;` in every file that
-implements or uses the iteration protocol was considered and rejected —
-no other language with a `for`-in loop makes users import the iterator
-protocol to use it, and this language has no prelude concept to extend
-in a more general way instead.
+## `core` as an ambient prelude
+
+`core` is not an ordinary `--extern` (or, when it's the package actually
+being compiled, an ordinary local package) — every name it exposes is
+available *everywhere else*, with no `import core;` and no `core::`
+prefix required, as if it were silently, recursively imported into every
+other module. Two independent mechanisms combine to make this true,
+both keyed off the same `core_modules()` inventory:
+
+- **`core::X::Y` is always a valid qualified path**, even with no
+  `import core;` anywhere in the file (`Driver::resolve_import_alias`'s
+  fallback: an unresolved alias named `core` resolves to the `core`
+  module itself, provided `core` is registered at all). `core`'s own
+  files are the one exception — they still need real imports among
+  themselves, the same as any other module, so a file inside `core`
+  referencing another part of `core` unqualified doesn't quietly become
+  self-referential.
+- **A bare, unqualified name** (`GlobalAllocator`, not
+  `core::glue::GlobalAllocator`; `Option<T>`, not `core::option::Option<T>`)
+  resolves against every *exposed* item across all of `core_modules()`
+  (`ModuleResolver::ambient_core_candidates`), tried only *after*
+  ordinary local/import resolution of that name already failed — so a
+  local declaration, or an explicit import, always wins outright; ambient
+  resolution can never shadow either one. `core`'s own files are excluded
+  from this fallback for themselves, same reasoning as above.
+
+This applies uniformly everywhere a bare name can appear — a value
+expression, a type annotation, a generic bound, an `implements` clause —
+not just the `for`-in loop's `Option`/`Iterator`/`ToIterator` protocol
+this mechanism originally existed for. This is a deliberate, considered
+reversal of an earlier, narrower design (a hardcoded 3-name table, with
+its own doc comment explicitly disclaiming "not a general prelude"): once
+every one of `core`'s own modules is eagerly known regardless of
+local/extern status anyway (see above), keeping the ambient set to those
+three specific names stopped being a meaningfully smaller commitment,
+while giving up real, everyday convenience the language could otherwise
+offer.
+
+**Two `core` modules independently exposing the same bare name is a
+real, permanent compile error going forward** — not a hypothetical:
+`AmbiguousAmbientName` names every exposing module and suggests the
+fully-qualified path as the always-available escape hatch. Overloaded
+core functions are deliberately excluded from bare ambient resolution —
+a qualified reference is unaffected, but calling one by its bare name
+alone, relying on ambient resolution to find it, isn't supported.
+
+**Only `core` gets any of this — deliberately, not as a first step
+toward a general "any extern can opt into prelude status" mechanism.**
+It's justified by `core`'s already-privileged status elsewhere (it's the
+only package a `for`-block may live in at all, see above); an ordinary
+third-party `--extern` dependency gets neither eager discovery nor
+ambient bare-name resolution, and still needs an explicit `import` for
+every name it wants visible, exactly as before.
 
 ## Symbol mangling (`omega-mangle`)
 

@@ -8,6 +8,7 @@
 //! lookup: everything above it deals in declared module paths exclusively.
 
 use crate::error::CompileError;
+use crate::extensions::CORE_MODULE;
 use crate::fs_resolve::{self, ModuleLocation, locate_module};
 use crate::ModulePath;
 use indexmap::IndexMap;
@@ -47,6 +48,15 @@ pub(crate) struct ModuleRoots {
     /// module: resolved against that entry's own `dir` instead of the local
     /// tree above.
     externs: IndexMap<Ident, ExternRoot>,
+    /// `core`'s own eager inventory, when `core` is registered as an
+    /// `--extern` -- `Some`, discovered once at construction exactly like
+    /// `local_tree` is, specifically because `core` is always meant to be
+    /// fully available (see `core_modules`'s doc comment); every *other*
+    /// extern deliberately never gets this. `None` when `core` isn't
+    /// registered as an extern at all (either it's the local package
+    /// itself, whose own tree already lives in `local_tree`, or it isn't
+    /// registered for this compilation whatsoever).
+    core_extern_tree: Option<HashMap<ModulePath, Result<ModuleLocation, ResolveError>>>,
 }
 
 impl ModuleRoots {
@@ -81,7 +91,9 @@ impl ModuleRoots {
         }
 
         let local_tree = fs_resolve::discover_tree(&local);
-        Ok(Self { local_tree, externs: registered })
+        let core_extern_tree =
+            registered.get(&Ident(CORE_MODULE.to_string())).map(|core| fs_resolve::discover_tree(&core.dir));
+        Ok(Self { local_tree, externs: registered, core_extern_tree })
     }
 
     /// Whether `path` names an *extern* module -- a pure function of its own
@@ -139,6 +151,39 @@ impl ModuleRoots {
     /// filtering into `ModuleRoots` itself.
     pub fn local_modules(&self) -> impl Iterator<Item = (&ModulePath, &Result<ModuleLocation, ResolveError>)> {
         self.local_tree.iter()
+    }
+
+    /// Every real module (`own_file: Some`) in `core`'s own tree, however
+    /// `core` happens to be registered for *this* compilation -- unlike
+    /// every other package, `core` is always fully, eagerly known, whether
+    /// it's the local package itself (a plain filter over `local_tree`,
+    /// already fully known -- covers both "the local package's own
+    /// identity is literally `core`" and "`core` is an ordinary nested
+    /// module of a bigger local project" uniformly) or a registered
+    /// `--extern` (its own eagerly discovered `core_extern_tree`). Empty if
+    /// `core` isn't registered at all. This is what makes `core` a true,
+    /// always-available prelude (see `docs/10-modules-and-linkage.md`)
+    /// rather than the ordinary "extern stays lazy, one path at a time"
+    /// treatment every other package gets.
+    pub fn core_modules(&self) -> Vec<ModulePath> {
+        match &self.core_extern_tree {
+            Some(tree) => tree
+                .iter()
+                .filter_map(|(path, result)| match result {
+                    Ok(location) if location.own_file.is_some() => Some(path.clone()),
+                    _ => None,
+                })
+                .collect(),
+            None => self
+                .local_tree
+                .iter()
+                .filter(|(path, _)| path.first().map(Ident::as_ref) == Some(CORE_MODULE))
+                .filter_map(|(path, result)| match result {
+                    Ok(location) if location.own_file.is_some() => Some(path.clone()),
+                    _ => None,
+                })
+                .collect(),
+        }
     }
 }
 

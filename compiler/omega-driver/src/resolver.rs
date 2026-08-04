@@ -5,6 +5,7 @@
 //! answered.
 
 use crate::{Driver, ModulePath};
+use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
 use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_analyzer::resolver::{
@@ -137,9 +138,58 @@ impl ModuleResolver for Driver {
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
         let Some((target, reveal)) = self.import_entry(module_path, alias)? else {
+            // No explicit `import` binds this alias -- `core` is always
+            // implicitly available as a qualified-path prefix anyway (see
+            // `docs/10-modules-and-linkage.md`'s "core is a prelude"
+            // section), except from within `core`'s own tree, which still
+            // needs real imports among its own submodules like anything
+            // else. `Item`/`GenericItem` targets never apply here -- an
+            // implicit import always names the whole `core` module, never
+            // one specific item inside it.
+            if alias.as_ref() == crate::extensions::CORE_MODULE
+                && !crate::extensions::is_core_module(module_path)
+                && !self.roots.core_modules().is_empty()
+            {
+                return Ok(Some(ImportTarget::Module(vec![Ident(crate::extensions::CORE_MODULE.to_string())])));
+            }
             return Ok(None);
         };
         self.resolve_alias(module_path, alias, &target, reveal).map(Some)
+    }
+
+    fn ambient_core_candidates(
+        &mut self,
+        accessor: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<Vec<Ident>>, ResolveError> {
+        if crate::extensions::is_core_module(accessor) {
+            return Ok(None);
+        }
+        let mut candidates = Vec::new();
+        for path in self.roots.core_modules() {
+            // Best-effort: a broken core module has its own real error
+            // recorded wherever *it* is actually checked (`core`'s own
+            // build, or whatever local code imports it directly) -- an
+            // unrelated bare-name lookup elsewhere shouldn't also surface
+            // it a second time, so it's just skipped here.
+            if self.ensure_module_indexed(&path).is_err() {
+                continue;
+            }
+            let index = self.modules.index(&path);
+            if index.overloads.contains_key(name) {
+                continue; // scope cut -- see `ModuleResolver::ambient_core_candidates`'s doc comment
+            }
+            let Some(&item_index) = index.items.get(name) else { continue };
+            let item = &self.modules.parsed(&path).hir.items[item_index];
+            if item_visibility(item) == Visibility::Exposed {
+                candidates.push(path.iter().cloned().chain(std::iter::once(name.clone())).collect());
+            }
+        }
+        match candidates.len() {
+            0 => Ok(None),
+            1 => Ok(Some(candidates.pop().unwrap())),
+            _ => Err(ResolveError::AmbiguousAmbientName { name: name.clone(), candidates }),
+        }
     }
 
     fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident> {

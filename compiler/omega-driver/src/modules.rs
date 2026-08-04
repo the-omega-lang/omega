@@ -1,6 +1,9 @@
-//! The module tree: parsing a module's file at most once, indexing its
-//! top-level names and import aliases, and walking the import graph to find
-//! everything a compilation must actually look at.
+//! The module tree: parsing a module's file at most once, and indexing its
+//! top-level names and import aliases. What a compilation actually looks at
+//! is decided elsewhere now -- the local package's own set comes straight
+//! from the filesystem (`Driver::local_module_paths`), and `core`'s own
+//! tree, wherever it's registered, does too (`ModuleRoots::core_modules`) --
+//! this module no longer walks an import graph to find anything.
 
 use crate::error::{CompileError, ImportSite};
 use crate::{Driver, ModulePath};
@@ -11,10 +14,10 @@ use omega_analyzer::annotations::{self, ItemKind};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, Span};
-use omega_hir::{HirGenericParam, HirId, HirImport, HirItem, HirModule, ModuleId};
+use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// One module's parsed content, plus the lazily-built index over its own
@@ -451,83 +454,5 @@ impl Driver {
                 Ok(std::iter::once(path.head.clone()).chain(path.tail.iter().cloned()).collect())
             }
         }
-    }
-
-    /// Which module must become reachable for one `import` statement --
-    /// itself, if it names a real module (a whole-module import), otherwise
-    /// its parent (an item import: only the item's *owning* module needs
-    /// parsing). The same undecidable-from-syntax-alone disambiguation import
-    /// resolution does later, but cheaper: a filesystem check is all "which
-    /// files must be parsed" needs.
-    fn reachable_target(&self, importer: &[Ident], import: &HirImport) -> Result<ModulePath, ResolveError> {
-        let segments = self.import_absolute_path(importer, import.root, &import.path)?;
-        match self.roots.locate(&segments) {
-            Ok(_) => return Ok(segments),
-            // A structural problem with `segments` itself (two filesystem
-            // entries claiming the same name) is real regardless of whether
-            // this is a whole-module or an item import, so it must surface
-            // here rather than be masked by the parent-path fallback below.
-            Err(e @ ResolveError::AmbiguousModule(_)) => return Err(e),
-            Err(_) => {}
-        }
-        if let Some((_, parent)) = segments.split_last()
-            && !parent.is_empty()
-            && self.roots.module_exists(parent)
-        {
-            return Ok(parent.to_vec());
-        }
-        Err(ResolveError::UnknownModule(segments))
-    }
-
-    /// Every module transitively reachable from `entry` via `import`
-    /// statements, parsing each exactly once as it's discovered. Nothing
-    /// outside this set is ever parsed or analyzed this way -- the whole
-    /// point of resolving imports lazily rather than walking the entire
-    /// search tree. Used only for a *secondary* root today
-    /// (`discover_module_tree`, `core`'s own tree for `for`-extension
-    /// discovery) -- the local package's own reachable set no longer comes
-    /// from this walk at all (see `Driver::local_module_paths`): the
-    /// filesystem is the source of truth for what it contains, so nothing
-    /// needs to be *imported* from an entry point to be included, only an
-    /// extern's own tree still genuinely needs on-demand, import-driven
-    /// discovery like this (never eagerly walked wholesale -- see
-    /// `ModuleRoots`'s own doc comment).
-    ///
-    /// `on_failure` turns a failure into the caller's own error type, given
-    /// the importing site that pulled the failing module in.
-    fn walk_import_graph<E>(
-        &mut self,
-        entry: &[Ident],
-        mut on_failure: impl FnMut(&mut Self, &[Ident], ResolveError, Option<ImportSite>) -> E,
-    ) -> Result<Vec<ModulePath>, E> {
-        let mut reachable = vec![entry.to_vec()];
-        let mut worklist: Vec<(ModulePath, Option<ImportSite>)> = vec![(entry.to_vec(), None)];
-        let mut seen: HashSet<ModulePath> = HashSet::from([entry.to_vec()]);
-
-        while let Some((path, importer)) = worklist.pop() {
-            let hir = match self.parse_module(&path) {
-                Ok(hir) => hir,
-                Err(error) => return Err(on_failure(self, &path, error, importer)),
-            };
-            for item in &hir.items {
-                let HirItem::Import(import) = item else { continue };
-                let site = Some((path.clone(), import.span));
-                let target = match self.reachable_target(&path, import) {
-                    Ok(target) => target,
-                    Err(error) => return Err(on_failure(self, &path, error, site)),
-                };
-                if seen.insert(target.clone()) {
-                    reachable.push(target.clone());
-                    worklist.push((target, site));
-                }
-            }
-        }
-        Ok(reachable)
-    }
-
-    /// The reachable set for a secondary root (`core`, see
-    /// `Driver::discover_extensions`) -- same walk, plain `ResolveError`s.
-    pub(crate) fn discover_module_tree(&mut self, entry: &[Ident]) -> Result<Vec<ModulePath>, ResolveError> {
-        self.walk_import_graph(entry, |_, _, error, _| error)
     }
 }

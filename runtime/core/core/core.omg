@@ -1,19 +1,9 @@
-# `core`'s own root file. The filesystem is the source of truth for what a
-# *local* build compiles (see docs/10-modules-and-linkage.md's "Eager local
-# discovery") -- every submodule here is included in `core`'s own build
-# (`just build-core`) whether or not it's imported below. These imports
-# still matter for one, narrower reason: `for`-extension discovery
-# (`Driver::discover_extensions`) walks `core`'s tree via its *own* import
-# graph, from this file, unconditionally -- for a consumer that `--extern`s
-# `core` (the ordinary case), not just when `core` is compiled standalone --
-# so a submodule missing here would have any `for`-block it declares
-# silently invisible to every consumer, regardless of local/extern.
-
-import cmp;
-import default;
-import glue;
-import iterator;
-import numerics;
-import option;
-import slices;
-import strings;
+# `core`'s own root file. `core` is a full ambient prelude for every other
+# package (see docs/10-modules-and-linkage.md) -- its entire tree is always
+# eagerly, filesystem-discovered, whether it's the package actually being
+# compiled or a registered `--extern`, so nothing here needs to `import` a
+# sibling submodule for it to be part of the build, be discoverable for
+# `for`-extension purposes, or be reachable by any consumer. This file has
+# nothing left to declare; it exists only because the compiler still needs
+# a conventionally-named entry file to find (`core.omg`/`core/core.omg`)
+# when `core` itself is compiled standalone (`just build-core`).

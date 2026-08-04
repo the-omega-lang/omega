@@ -541,18 +541,18 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    /// `resolve_item_checked`, plus one extra retry against a short,
-    /// hardcoded list of well-known `core` generic items (`Option`/
-    /// `Iterator`/`ToIterator`) when `absolute` names an unqualified
-    /// single segment that didn't resolve locally -- see `context::
-    /// ambient_core_path`'s doc comment for why this exists and why it's
-    /// deliberately not a general prelude mechanism. `prefix` is the
-    /// original, pre-absolute-path segment list a caller built `absolute`
-    /// from (`generic_prefix_absolute`'s own input) -- needed because
-    /// `absolute` alone can't tell "this was genuinely unqualified" apart
-    /// from "this happens to produce a same-shaped absolute path", so the
-    /// fallback can only be judged safe by whoever still has `prefix`
-    /// around, not by `resolve_item_checked` after the fact.
+    /// `resolve_item_checked`, plus one extra retry against every exposed
+    /// name in `core`'s own tree (see `ModuleResolver::
+    /// ambient_core_candidates`'s doc comment -- `core` is a full ambient
+    /// prelude, not the short, hardcoded table this used to be) when
+    /// `absolute` names an unqualified single segment that didn't resolve
+    /// locally. `prefix` is the original, pre-absolute-path segment list a
+    /// caller built `absolute` from (`generic_prefix_absolute`'s own
+    /// input) -- needed because `absolute` alone can't tell "this was
+    /// genuinely unqualified" apart from "this happens to produce a
+    /// same-shaped absolute path", so the fallback can only be judged safe
+    /// by whoever still has `prefix` around, not by `resolve_item_checked`
+    /// after the fact.
     fn resolve_item_checked_with_ambient_fallback(
         &mut self,
         prefix: &[Ident],
@@ -561,10 +561,12 @@ impl<'r> Analyzer<'r> {
     ) -> Result<ResolvedItem, ResolveError> {
         let result = self.resolve_item_checked(absolute, type_args, true);
         match (prefix, &result) {
-            ([single], Err(ResolveError::UnknownItem { .. })) => match crate::context::ambient_core_path(single) {
-                Some(ambient) => self.resolve_item_checked(&ambient, type_args, true),
-                None => result,
-            },
+            ([single], Err(ResolveError::UnknownItem { .. })) => {
+                match self.resolver.ambient_core_candidates(&self.module_path, single)? {
+                    Some(ambient) => self.resolve_item_checked(&ambient, type_args, true),
+                    None => result,
+                }
+            }
             _ => result,
         }
     }

@@ -92,6 +92,36 @@ new one is found.
 - **No re-export / `pub use`-equivalent.** Matches the language having no
   re-export concept at all today. [visibility.md](07-visibility.md)
 
+## Modules
+
+- **A directory-shaped module named the same as its own entry file
+  (`X/X.omg`) is double-counted by eager filesystem discovery** —
+  `fs_resolve::discover_into` re-scans a directory-shaped module's own
+  children after already recording its `own_file`, and that rescan sees
+  the entry file's name again, indistinguishable from an ordinary sibling
+  submodule; the result is both `X` and a spurious `X::X` pointing at the
+  identical file. Confirmed on the baseline commit, unrelated to any
+  recent module-resolution work — currently silent in practice only
+  because `core.omg` itself (`runtime/core/core/core.omg`, the one
+  real-world case with this exact shape) declares no items, so the
+  duplicate entry has nothing to be ambiguous over. Would surface as a
+  real `AmbiguousAmbientName` (or an outright duplicate-definition error)
+  the moment any directory-shaped module's own entry file declares
+  anything and shares its directory's name.
+  [modules-and-linkage.md](10-modules-and-linkage.md)
+- **A `for`-attached extension method's own internal calls to a sibling
+  extension method on the same type lose visibility when the type is
+  instantiated from a consuming `--extern` package** — e.g.
+  `core::slices`'s `SliceImpl<T>`'s `first`/`last` calling `self.get(...)`
+  internally reports `get` as "not visible here" once `[T]` is actually
+  used (not merely declared) from outside `core`. Reproduces identically
+  on the baseline commit with an explicit `import core;` and no ambient
+  resolution involved at all, so it's unrelated to the ambient-prelude
+  work — a latent bug in how a `for`-block's own accessor context is
+  threaded through when its methods are instantiated across a package
+  boundary. [modules-and-linkage.md](10-modules-and-linkage.md),
+  [specs.md](08-specs.md)
+
 ## Compiler internals
 
 Shape problems in `omega-driver` and `omega-analyzer` that work today but each

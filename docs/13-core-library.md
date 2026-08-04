@@ -9,30 +9,44 @@ an earlier `examples/core` throwaway used only to prove the underlying
 ```
 runtime/core/
   core/
-    core.omg          # real root: imports every submodule, nothing else
+    core.omg          # real root: nothing to declare, see below
     cmp.omg              # core::cmp — Ordering, Eq, Ord
     default.omg              # core::default — Default
-    iterator.omg               # core::iterator — Iterator<T>, ToIterator<T>
-    numerics.omg                # core::numerics — all scalar for-blocks (macros)
-    option.omg                     # core::option — Option<T>
-    slices.omg                        # core::slices — SliceImpl<T> for [T]
-    strings.omg                          # core::strings — StrOps for str
+    glue.omg                   # core::glue — @gap GlobalAllocator
+    iterator.omg                 # core::iterator — Iterator<T>, ToIterator<T>
+    numerics.omg                   # core::numerics — all scalar for-blocks (macros)
+    option.omg                       # core::option — Option<T>
+    slices.omg                          # core::slices — SliceImpl<T> for [T]
+    strings.omg                            # core::strings — StrOps for str
 ```
 
-`core.omg` exists to `import` every sibling submodule -- **not** to make
-the whole package reachable when compiled standalone anymore (the
-filesystem alone already guarantees that, unconditionally, for whichever
-package is being compiled locally -- see
-[modules & linkage](10-modules-and-linkage.md)'s "Eager local discovery").
-What still makes these imports load-bearing is
-[specs](08-specs.md)'s lazy `for`-attachment discovery, which walks
-`core.omg`'s own import graph, from `core`'s own entry, to find every
-extension method in the package -- that discovery is a transitive
-import-graph walk, not a filesystem scan, and it runs identically whether
-`core` is the package being compiled or merely `--extern`-referenced (an
-extern package never gets the eager, filesystem-driven treatment). A
-submodule missing from `core.omg`'s own imports would have any
-`for`-block it declares silently invisible to every consumer.
+`core.omg` has nothing left to declare — it exists only because the
+compiler still needs a conventionally-named entry file to find
+(`core.omg`/`core/core.omg`) when `core` is compiled standalone (`just
+build-core`). It used to need an `import` of every sibling submodule, for
+two reasons, both now gone:
+
+- Making the whole package reachable when compiled standalone — the
+  filesystem alone already guarantees that, unconditionally, for
+  whichever package is being compiled locally (see
+  [modules & linkage](10-modules-and-linkage.md)'s "Eager local
+  discovery").
+- Feeding [specs](08-specs.md)'s `for`-attachment discovery, which used
+  to walk `core.omg`'s own import graph to find every extension method in
+  the package. `core` now gets the same eager, filesystem-driven
+  treatment as the local package being compiled, *regardless* of whether
+  it's local or `--extern`-referenced (`ModuleRoots::core_modules`, see
+  [modules & linkage](10-modules-and-linkage.md)'s "Eager local
+  discovery" and "`core` as an ambient prelude") — no import graph is
+  walked for this anymore, so a submodule missing from `core.omg` can no
+  longer hide a `for`-block from anyone.
+
+That same eager treatment is also what makes every name `core` exposes
+resolvable with no `import core;` at all, anywhere else in a program —
+see [modules & linkage](10-modules-and-linkage.md)'s "`core` as an
+ambient prelude" for the full mechanism. `core`'s own files still need
+ordinary imports among themselves, same as any other module — the
+prelude treatment is specifically for code *outside* `core`.
 
 `core` is built and linked exactly like any other `--extern` dependency —
 its own **ordinary** (non-`for`) items, like `Ordering`'s own methods, are
@@ -89,6 +103,12 @@ side's TU" model (see [specs](08-specs.md) and
   `starts_with`/`ends_with`, `contains` (naive O(n·m) substring search,
   deliberately no skip table, which would need working memory proportional
   to the needle — this layer never does hidden allocation).
+- **`core::glue`** — `@gap exposed spec GlobalAllocator { alloc; free;
+  realloc; }`, the one platform capability the library needs but can't
+  itself provide — see [gaps and glue](21-gaps-and-glue.md). No default
+  implementation ships here; a final application supplies exactly one
+  `@glue` marker implementing it, or leaves it unglued if nothing ever
+  calls it.
 
 ## `Option<T>` finally exists — but `core::slices` still doesn't use it
 

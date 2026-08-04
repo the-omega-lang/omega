@@ -700,6 +700,12 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
             with_label(d, format!("`{}` recursively depends on its own inferred return type", item.as_ref()))
                 .with_help("give this function an explicit, concrete return type instead of 'spec T'")
         }
+        ResolveError::AmbiguousAmbientName { name: _, candidates } => with_label(d, "ambiguous name".to_string())
+            .with_note(format!("exposed by: {}", candidates.iter().map(|c| join(c)).collect::<Vec<_>>().join(", ")))
+            .with_help(format!(
+                "write the fully-qualified path instead, e.g. '{}'",
+                candidates.first().map(|c| join(c)).unwrap_or_default(),
+            )),
     }
 }
 

@@ -519,9 +519,10 @@ impl<'r> Analyzer<'r> {
     /// be re-run here by hand, through the same `check_visibility` choke
     /// point every other in-analyzer visibility check already goes through.
     ///
-    /// `ambient_fallback` retries against `context::ambient_core_path` when
-    /// the primary lookup misses, mirroring `Context::resolve_generic_type`'s
-    /// identical retry for ordinary *type-position* references -- needed by
+    /// `ambient_fallback` retries against `ModuleResolver::
+    /// ambient_core_candidates` when the primary lookup misses, mirroring
+    /// `Context::resolve_generic_type`'s identical retry for ordinary
+    /// *type-position* references -- needed by
     /// `resolve_raw_spec_fn_type`'s `Type::SpecStatic` case (`false` for
     /// `resolve_spec_dependencies` above, unchanged): a `core`-declared
     /// spec's own `spec T` return bound is flattened from an *implementor's*
@@ -565,9 +566,16 @@ impl<'r> Analyzer<'r> {
         let cell = if let Some(cell) = primary {
             cell
         } else if ambient_fallback && path.is_unqualified() {
-            let Some(ambient_path) = crate::context::ambient_core_path(&path.head) else {
-                self.error(id, span, AnalysisErrorKind::UnresolvedType(not_a_spec()));
-                return None;
+            let ambient_path = match self.resolver.ambient_core_candidates(&self.module_path, &path.head) {
+                Ok(Some(ambient_path)) => ambient_path,
+                Ok(None) => {
+                    self.error(id, span, AnalysisErrorKind::UnresolvedType(not_a_spec()));
+                    return None;
+                }
+                Err(e) => {
+                    self.error(id, span, AnalysisErrorKind::ModuleResolution(e));
+                    return None;
+                }
             };
             match self.resolver.spec_declaration(&ambient_path) {
                 Ok(Some(cell)) => cell,
@@ -605,14 +613,16 @@ impl<'r> Analyzer<'r> {
     /// happens here at all, unlike `resolve_spec_reference`). Tries this
     /// module's own implicit absolute path first (`[self.module_path,
     /// name]`, or a real import alias if one exists), then falls back to
-    /// `context::ambient_core_path` -- the same two-step retry `Context::
-    /// resolve_generic_type` already gives every *type-position* reference
-    /// to `Option`/`Iterator`/`ToIterator` (an `implements` clause, a
+    /// `ModuleResolver::ambient_core_candidates` -- the same two-step retry
+    /// `Context::resolve_generic_type` already gives every *type-position*
+    /// reference to a `core`-exposed name (an `implements` clause, a
     /// generic bound); this is the one caller that needs the identical
     /// fallback from a for-in-loop's own value-analysis-time context
-    /// instead, which never goes through `resolve_type` at all. `None` only
-    /// if `core::iterator` itself is missing/broken -- callers degrade to
-    /// "not iterable" rather than a bespoke diagnostic for that.
+    /// instead, which never goes through `resolve_type` at all. `None` for
+    /// anything that isn't a clean single-candidate resolution -- missing,
+    /// broken, *or* ambiguous -- callers degrade to "not iterable" rather
+    /// than a bespoke diagnostic either way, matching this function's
+    /// existing best-effort contract.
     fn resolve_ambient_iterator_spec_cell(&mut self, name: &str) -> Option<Rc<RefCell<ResolvedSpecType>>> {
         let name = Ident(name.to_string());
         let path = Path::from(name.clone());
@@ -621,7 +631,7 @@ impl<'r> Analyzer<'r> {
         {
             return Some(cell);
         }
-        let ambient = crate::context::ambient_core_path(&name)?;
+        let ambient = self.resolver.ambient_core_candidates(&self.module_path, &name).ok().flatten()?;
         self.resolver.spec_declaration(&ambient).ok().flatten()
     }
 

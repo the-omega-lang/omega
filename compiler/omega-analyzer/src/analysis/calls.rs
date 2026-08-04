@@ -796,9 +796,9 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `resolver.generic_static_function_signature(absolute, function_name)`,
-    /// retried against the `core` ambient fallback (see `context::
-    /// ambient_core_path`) when `prefix` is a genuinely unqualified single
-    /// segment and the direct lookup finds nothing there -- the same
+    /// retried against the `core` ambient fallback (see `ModuleResolver::
+    /// ambient_core_candidates`) when `prefix` is a genuinely unqualified
+    /// single segment and the direct lookup finds nothing there -- the same
     /// retry `Analyzer::generic_literal_signature_with_ambient` (literals.rs)
     /// already gives the literal-construction path, needed here for the
     /// identical reason (a bare, unimported ambient generic type's own
@@ -816,7 +816,7 @@ impl<'r> Analyzer<'r> {
             return Some((absolute.to_vec(), sig));
         }
         let [single] = prefix else { return None };
-        let ambient = crate::context::ambient_core_path(single)?;
+        let ambient = self.resolver.ambient_core_candidates(&self.module_path, single).ok().flatten()?;
         let sig = self.resolver.generic_static_function_signature(&ambient, function_name).ok().flatten()?;
         Some((ambient, sig))
     }
