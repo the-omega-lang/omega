@@ -94,25 +94,6 @@ new one is found.
 
 ## Modules
 
-- **A directory-shaped module named the same as its own entry file
-  (`X/X.omg`) is double-counted by eager filesystem discovery** —
-  `fs_resolve::discover_into` re-scans a directory-shaped module's own
-  children after already recording its `own_file`, and that rescan sees
-  the entry file's name again, indistinguishable from an ordinary sibling
-  submodule; the result is both `X` and a spurious `X::X` pointing at the
-  identical file. Confirmed on the baseline commit, unrelated to any
-  recent module-resolution work — currently silent in practice only
-  because `core.omg` itself (`runtime/core/core/core.omg`, the one
-  real-world case with this exact shape) declares no items, so the
-  duplicate entry has nothing to be ambiguous over. Would surface as a
-  real `AmbiguousAmbientName` (or an outright duplicate-definition error)
-  the moment any directory-shaped module's own entry file declares
-  anything and shares its directory's name -- now reachable from *any*
-  registered `--extern` shaped this way, not just `core`, since eager tree
-  discovery (`ModuleRoots::extern_trees`) applies uniformly to every
-  extern, and `Driver::collect_extern_signatures` eagerly resolves every
-  discovered struct/spec regardless of import.
-  [modules-and-linkage.md](10-modules-and-linkage.md)
 - **A `for`-attached extension method's own internal calls to a sibling
   extension method on the same type lose visibility when the type is
   instantiated from a consuming `--extern` package** — e.g.

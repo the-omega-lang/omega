@@ -2,23 +2,27 @@
 //! directory, and every registered `--extern` dependency's own root --
 //! both eagerly, structurally discovered in full at construction (see
 //! [`fs_resolve::discover_tree`]), so every module *path* any extern
-//! contains is already known upfront (`extern_modules`/`core_modules`).
-//! What gets done with a known path still varies by how "eager" its owner
-//! is: the local project's own modules are always fully parsed, signature-
-//! resolved, *and* body-checked (`Driver::local_module_paths`/
-//! `collect_signatures`/`check_bodies`); an extern module's own struct/spec
-//! *signatures* are now eagerly resolved too, whichever extern it belongs
-//! to (`Driver::collect_extern_signatures`) -- but never its body, and
-//! never anything reached only through an ordinary reference (a free
-//! function, an overload, ...), which stays exactly as on-demand as ever
-//! (`ModuleRoots::locate`/`Driver::ensure_item`).
+//! contains is already known upfront (`extern_modules`/`core_modules`),
+//! and finding one (`ModuleRoots::locate`) is always a plain map lookup,
+//! never a live filesystem access, local or extern alike.
+//!
+//! What gets done with a known path's *content* still varies by how
+//! "eager" its owner is: the local project's own modules are always fully
+//! parsed, signature-resolved, *and* body-checked (`Driver::
+//! local_module_paths`/`collect_signatures`/`check_bodies`); an extern
+//! module's own struct/spec *signatures* are now eagerly resolved too,
+//! whichever extern it belongs to (`Driver::collect_extern_signatures`)
+//! -- but never its body, and never anything reached only through an
+//! ordinary reference (a free function, an overload, ...), which stays
+//! exactly as on-demand as ever, parsed and resolved the first time
+//! something actually needs it (`Driver::parse_module`/`ensure_item`).
 //!
 //! This is the *only* place a module path is turned into a filesystem
 //! lookup: everything above it deals in declared module paths exclusively.
 
 use crate::error::CompileError;
 use crate::extensions::CORE_MODULE;
-use crate::fs_resolve::{self, ModuleLocation, locate_module};
+use crate::fs_resolve::{self, ModuleLocation};
 use crate::ModulePath;
 use indexmap::IndexMap;
 use omega_analyzer::resolver::ResolveError;
@@ -33,10 +37,11 @@ use std::path::PathBuf;
 /// there is no separate local alias. `dir` is its own search root -- an
 /// extern's root is just someone else's project root, resolved exactly the
 /// same way the local project's is: its own tree is eagerly *discovered*
-/// (`ModuleRoots::extern_trees`) but only ever *parsed*/*resolved* on
-/// demand -- for an ordinary reference one path at a time
-/// (`ModuleRoots::locate`), for its struct/spec surface eagerly but never
-/// its body (`Driver::collect_extern_signatures`).
+/// (`ModuleRoots::extern_trees`), a path within it is always found via a
+/// plain map lookup (`ModuleRoots::locate`), but its content is only ever
+/// *parsed*/*resolved* on demand -- eagerly for its struct/spec surface
+/// (`Driver::collect_extern_signatures`), lazily for everything else,
+/// never for its body.
 pub struct ExternRoot {
     pub name: Ident,
     pub dir: PathBuf,
@@ -44,12 +49,13 @@ pub struct ExternRoot {
 
 /// Every filesystem root this compilation may resolve a module path
 /// against: the local project's own, and every `--extern`'s -- both
-/// eagerly discovered in full, once, at construction. Turning a discovered
-/// path into actual content still differs: the local tree is fully parsed
-/// and compiled by `Driver::compile`; an extern's is parsed and
-/// signature-resolved for every struct/spec eagerly
+/// eagerly discovered in full, once, at construction, and both found via a
+/// plain map lookup (`ModuleRoots::locate`) from then on. Turning a
+/// discovered path into actual content still differs: the local tree is
+/// fully parsed and compiled by `Driver::compile`; an extern's is parsed
+/// and signature-resolved for every struct/spec eagerly
 /// (`Driver::collect_extern_signatures`), and otherwise still resolved
-/// lazily, on demand, one path at a time (`ModuleRoots::locate`).
+/// lazily, on demand, the first time something actually references it.
 pub(crate) struct ModuleRoots {
     /// Every module reachable under the local project's own root directory,
     /// discovered once, eagerly, at construction
@@ -79,15 +85,36 @@ pub(crate) struct ModuleRoots {
 
 impl ModuleRoots {
     /// `local` is the local project's own root directory, eagerly walked in
-    /// full right here. Fails immediately if two different `--extern`
-    /// directories claim the same declared name -- genuinely ambiguous,
-    /// since that name is a real lookup key (`extern::<name>::...`), unlike
-    /// the local project's own declared identity, which never is (see
-    /// `Driver::import_absolute_path`'s `ProjectRoot` arm: only an extern's
-    /// own name is ever prepended to a path, never the local project's) --
-    /// so a local/extern name collision isn't checked at all; it can't
-    /// actually change how anything resolves.
-    pub fn new(local: PathBuf, externs: Vec<ExternRoot>) -> Result<Self, Vec<CompileError>> {
+    /// full right here; `local_name` is an *explicit* `--name=` override,
+    /// when `omgc` was given one -- deliberately not the same as
+    /// `omgc::main`'s own already-defaulted `declared_name` (basename when
+    /// no override), which still has to distinguish "this package's entry
+    /// matches its own declared identity" from "this is an executable,
+    /// whose entry is conventionally `main.omg` regardless of directory
+    /// name" *before* any relabeling happens -- relabeling the physical
+    /// tree unconditionally would make that distinction impossible to
+    /// recover (an ordinary `main.omg`-shaped executable would get silently
+    /// relabeled to its own directory's basename, permanently hiding the
+    /// `main.omg` fallback `omgc::main` still needs). So: `None` here
+    /// means "leave the discovered tree exactly as found on disk," and
+    /// `omgc::main`'s existing basename-or-`main.omg` probe keeps working
+    /// completely unchanged. An extern's own declared name has no such
+    /// duality (there is no "extern fallback convention" to protect), so
+    /// its relabeling stays unconditional below.
+    ///
+    /// Fails immediately if two different `--extern` directories claim the
+    /// same declared name -- genuinely ambiguous, since that name is a real
+    /// lookup key (`extern::<name>::...`), unlike the local project's own
+    /// declared identity, which never is (see `Driver::
+    /// import_absolute_path`'s `ProjectRoot` arm: only an extern's own name
+    /// is ever prepended to a path, never the local project's) -- so a
+    /// local/extern name collision isn't checked at all; it can't actually
+    /// change how anything resolves.
+    pub fn new(
+        local: PathBuf,
+        local_name: Option<Ident>,
+        externs: Vec<ExternRoot>,
+    ) -> Result<Self, Vec<CompileError>> {
         let mut registered: IndexMap<Ident, ExternRoot> = IndexMap::new();
         let mut errors = Vec::new();
         for root in externs {
@@ -108,9 +135,19 @@ impl ModuleRoots {
             return Err(errors);
         }
 
-        let local_tree = fs_resolve::discover_tree(&local);
-        let extern_trees =
-            registered.iter().map(|(name, root)| (name.clone(), fs_resolve::discover_tree(&root.dir))).collect();
+        let mut local_tree = fs_resolve::discover_tree(&local);
+        if let Some(name) = &local_name {
+            local_tree = fs_resolve::relabel_root(local_tree, name);
+        }
+        // Unconditional here, unlike above: `relabel_root` is already a
+        // no-op whenever an extern's declared name matches its own
+        // on-disk basename (the common case -- `core`, `mathlib`, and
+        // every existing extern), and there's no fallback convention to
+        // protect for an extern the way there is for the local package.
+        let extern_trees = registered
+            .iter()
+            .map(|(name, root)| (name.clone(), fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name)))
+            .collect();
         Ok(Self { local_tree, externs: registered, extern_trees })
     }
 
@@ -133,22 +170,23 @@ impl ModuleRoots {
     }
 
     /// Finds `path`'s own content and children on disk (see
-    /// [`ModuleLocation`]). A local path is answered straight out of the
-    /// eager inventory built at construction -- a plain map lookup, no
+    /// [`ModuleLocation`]). Both a local and an extern path are answered
+    /// straight out of their own eager inventory (`local_tree`/
+    /// `extern_trees`) built at construction -- a plain map lookup, no live
     /// filesystem access, and no possibility of "doesn't exist yet, but
-    /// might once something imports it": the whole point of eager local
-    /// discovery is that this is already a complete, structural fact. An
-    /// extern path is still resolved live, on demand, one path at a time --
-    /// its *existence* is already eagerly known (`extern_trees`), but it's
-    /// never the package being compiled, so a single lookup here still
-    /// just re-derives the same `ModuleLocation` live rather than reading
-    /// the inventory back (see this module's own doc comment).
+    /// might once something imports it": the whole point of eager
+    /// discovery, local or extern, is that this is already a complete,
+    /// structural fact. Extern resolution used to re-derive this live, one
+    /// path at a time, via `fs_resolve::locate_module` -- made redundant by
+    /// `extern_trees` already knowing everything eagerly (a consequence of
+    /// every extern's struct/spec surface now being eagerly resolved too,
+    /// see `Driver::collect_extern_signatures`), and actively wrong once a
+    /// root's declared name can differ from its on-disk basename: a live
+    /// lookup would search for a literal `<declared-name>.omg` on disk,
+    /// which `relabel_root` deliberately no longer guarantees exists.
     pub fn locate(&self, path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
-        if self.is_extern(path) {
-            let root = &self.externs[&path[0]].dir;
-            return locate_module(std::slice::from_ref(root), path);
-        }
-        match self.local_tree.get(path) {
+        let tree = if self.is_extern(path) { &self.extern_trees[&path[0]] } else { &self.local_tree };
+        match tree.get(path) {
             Some(result) => result.clone(),
             None => Err(ResolveError::UnknownModule(path.to_vec())),
         }

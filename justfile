@@ -7,15 +7,21 @@ build-exe: build-core build-plat
     rm target/example || true
     RUST_BACKTRACE=1 cargo build
     ./target/debug/omgc -v examples/extern_lib/ --name=mathlib -o target/mathlib.o
-    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/extern_lib/ --extern=core:runtime/core/ --extern=plat:runtime/plat/ -o target/main.o
+    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/extern_lib/ --extern=core:runtime/core/ --extern=plat:runtime/plat/libc/ -o target/main.o
 
-# `plat` is a plain `--extern` package, not `core` -- it gets no eager-
-# discovery or ambient-prelude privilege of its own. Registering it here is
-# enough for `examples/dev`'s reference to `core::glue::GlobalAllocator` to
-# find its glue (`plat::libc::glue::LibcAllocator`), even though nothing in
+# `runtime/plat/` is a plain directory, not a package -- each subdirectory
+# under it (just `libc/` today) is its own independent, honestly-named
+# package (`runtime/plat/libc/libc.omg`) that presents as the *same*
+# declared identity `plat` purely via `--name=`/`--extern=plat:...`, never
+# by renaming its own files (see docs/22-platform-glue.md). Picking a
+# platform is exactly choosing which directory these two flags point at --
+# there is no compiler-level selection mechanism, this is it. `plat` gets
+# no other privilege `core` has (no eager-discovery/ambient-prelude
+# exemption); registering it is enough for `examples/dev`'s reference to
+# `core::glue::GlobalAllocator` to find its glue, even though nothing in
 # `examples/dev` ever imports `plat` itself.
 build-plat: build-core
-    ./target/debug/omgc -v runtime/plat/ --extern=core:runtime/core/ -o target/plat.o
+    ./target/debug/omgc -v runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat.o
 
 # `omgc` takes a package's own root *directory*, not a file -- it discovers
 # every module under it eagerly (the filesystem is the source of truth for

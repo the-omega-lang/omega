@@ -397,6 +397,50 @@ Also removed: `ResolveError::MacroExpansionFailed`, a variant nothing had
 constructed since macro failures started being reported structurally as
 `CompileError::MacroExpansion`.
 
+## Fixed: `discover_into` double-counted a directory-shaped module named the same as its own entry file
+
+A directory-shaped module's own children live in a directory matching its
+name (`X/X.omg`) — `discover_into` recorded that entry, then recursed
+into `X/` to find its children, and that rescan found `X.omg` again,
+indistinguishable from an ordinary sibling submodule. The result was both
+`X` and a spurious `X::X` pointing at the identical file — silent
+whenever `X` declared nothing (`core.omg` was the one real-world case,
+harmless only for that reason), but a real duplicate-definition/
+`AmbiguousAmbientName` error the moment it declared anything and this
+project's own `--extern` aliasing (see below) needed exactly that shape
+to work. Fixed by threading through which single name to skip on that one
+recursive call — it's already known to be the entry file just recorded
+one level up, never a fresh sibling.
+
+## Aliasing a root's declared identity, independent of its on-disk name
+
+`--name=<name>` (standalone) and `--extern=<name>:<dir>` (as a
+dependency) have always let a root's declared identity differ from its
+directory's own basename at the root itself (`examples/extern_lib/`
+compiles as `mathlib` this way) — what changed is that the alias now
+applies to everything discovered *beneath* the root too
+(`fs_resolve::relabel_root`, applied to `ModuleRoots::local_tree`/
+`extern_trees`), so a directory honestly named `libc`, with real,
+multi-item content of its own, can present in full as a different
+package, e.g. `plat` (see [`plat`](22-platform-glue.md)). For the local
+package specifically, this only applies when `--name=` was given
+*explicitly* — never automatically from a defaulted basename, since that
+would silently break the existing "does the entry match the directory's
+own name, else fall back to the `main.omg` executable convention"
+distinction `omgc` still needs; an extern's own declared name has no such
+duality, so its aliasing is unconditional.
+
+Making lookup agree with this required one more change: `ModuleRoots::
+locate` used to reconstruct a filesystem path directly from a path's
+*declared* segments for every `--extern` reference, live, one path at a
+time — which would search for a literal `plat.omg` on disk regardless of
+what's really there. It now reads the already-discovered, already-
+aliased `extern_trees` inventory instead, a plain map lookup with no live
+filesystem access — simpler than the old live-lookup path (a direct
+consequence of every extern's struct/spec surface already being eagerly
+discovered, see "Eager local discovery" above) and a prerequisite
+for aliasing to work at all beneath the root.
+
 ## Caveats
 
 - **Cross-compilation code *generation* is not shared, only the final

@@ -4,6 +4,53 @@ use omega_parser::prelude::Ident;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// A root directory's own bare, on-disk identity: its basename. This is
+/// only ever the *default* declared identity of a project root -- both the
+/// local package's own root and every `--extern` target may instead be
+/// given an explicit override (`--name=`/`--extern=<name>:<dir>`) that
+/// differs from it, in which case `relabel_root` is what actually makes
+/// that override apply beneath the root, not just at it. `None` for a path
+/// with no usable final component (`/`, `.`, `..`, or one that isn't valid
+/// UTF-8).
+pub fn basename(dir: &Path) -> Option<Ident> {
+    dir.file_name()?.to_str().map(|s| Ident(s.to_string()))
+}
+
+/// Rewrites every path in a freshly discovered tree so it's addressed by
+/// `declared` instead of whatever the root's real on-disk name turned out
+/// to be -- the same translation `--name=`/`--extern=<name>:<dir>` already
+/// apply to the root itself, extended to everything nested beneath it, so
+/// a directory honestly named `libc` can still present as the package
+/// `plat` in full, not just at its own entry. A no-op (returns `tree`
+/// unchanged) when the tree is empty/malformed (no single root segment to
+/// relabel) or already matches `declared`.
+pub fn relabel_root(
+    tree: HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
+    declared: &Ident,
+) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
+    let Some(physical) = tree.keys().find(|path| path.len() == 1).map(|path| path[0].clone()) else {
+        return tree;
+    };
+    if &physical == declared {
+        return tree;
+    }
+    let relabel = |mut path: ModulePath| {
+        if path.first() == Some(&physical) {
+            path[0] = declared.clone();
+        }
+        path
+    };
+    tree.into_iter()
+        .map(|(path, location)| {
+            let location = location.map_err(|error| match error {
+                ResolveError::AmbiguousModule(path) => ResolveError::AmbiguousModule(relabel(path)),
+                other => other,
+            });
+            (relabel(path), location)
+        })
+        .collect()
+}
+
 /// Where a module's own content (if any) and further children (if any) live
 /// on disk. See the module-tree discovery rule this crate implements: a
 /// bare `name.omg` file is a leaf (`children_dir: None`); a directory
@@ -24,8 +71,9 @@ enum SegmentError {
     Ambiguous,
 }
 
-/// Resolves one path segment (`name`) directly inside `dir` -- no recursion,
-/// no search-root fallback (see `locate_module` for that).
+/// Resolves one path segment (`name`) directly inside `dir` -- no
+/// recursion; `discover_into` is the only caller, walking one path
+/// component of the tree at a time.
 fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentError> {
     let file_path = dir.join(format!("{}.omg", name.as_ref()));
     let dir_path = dir.join(name.as_ref());
@@ -44,48 +92,6 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
     }
 }
 
-/// Walks `path` segment by segment starting at `root`, descending into each
-/// segment's `children_dir` in turn -- a path can only continue past a
-/// segment that turned out to be a directory-shaped module (a bare leaf
-/// file, by definition, has no children to descend into).
-fn locate_from(root: &Path, path: &[Ident]) -> Result<ModuleLocation, SegmentError> {
-    let mut current_dir = root.to_path_buf();
-    let mut result = Err(SegmentError::NotFound);
-
-    for (i, segment) in path.iter().enumerate() {
-        let location = resolve_segment(&current_dir, segment)?;
-        if i == path.len() - 1 {
-            result = Ok(location);
-            break;
-        }
-        current_dir = location.children_dir.ok_or(SegmentError::NotFound)?;
-    }
-
-    result
-}
-
-/// Resolves an absolute *on-disk* module path (e.g. `["mymodule", "thing"]`)
-/// against every search root, first match wins. Callers reach this through
-/// [`crate::roots::ModuleRoots`], which decides which roots apply and
-/// translates a declared name into its real on-disk stem first -- nothing
-/// here knows anything about declared identity, externs, or overrides.
-pub fn locate_module(roots: &[PathBuf], path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
-    let mut ambiguous = false;
-    for root in roots {
-        match locate_from(root, path) {
-            Ok(location) => return Ok(location),
-            Err(SegmentError::Ambiguous) => ambiguous = true,
-            Err(SegmentError::NotFound) => {}
-        }
-    }
-
-    if ambiguous {
-        Err(ResolveError::AmbiguousModule(path.to_vec()))
-    } else {
-        Err(ResolveError::UnknownModule(path.to_vec()))
-    }
-}
-
 /// A very small mirror of the lexer's own identifier grammar
 /// (`omega_parser::lexer`'s private `is_ident_start`/`is_ident_continue`) --
 /// enough to tell a real module segment apart from a dotfile or anything
@@ -101,14 +107,14 @@ fn is_module_segment_name(name: &str) -> bool {
 }
 
 /// Recursively discovers every module reachable under `root` -- the eager
-/// inventory backing `ModuleRoots::locate` for whichever package is
-/// actually *being compiled* (never for an `--extern` dependency, which
-/// stays purely on-demand via `locate_module` above -- see the module-level
-/// design this implements). Reuses `resolve_segment` for each name actually
-/// found on disk, so the file-vs-directory decision is made in exactly one
-/// place regardless of whether a path was asked about or discovered.
-/// Metadata-only -- nothing here ever opens a file, only `read_dir`/
-/// `is_file`/`is_dir`, so this stays cheap no matter how large the tree is.
+/// inventory backing `ModuleRoots::locate`, for the local package's own
+/// root and for every registered `--extern`'s root alike (`ModuleRoots::
+/// new` calls this for both). Reuses `resolve_segment` for each name
+/// actually found on disk, so the file-vs-directory decision is made in
+/// exactly one place regardless of whether a path was asked about or
+/// discovered. Metadata-only -- nothing here ever opens a file, only
+/// `read_dir`/`is_file`/`is_dir`, so this stays cheap no matter how large
+/// the tree is.
 ///
 /// A directory entry whose name isn't a syntactically valid module segment
 /// (a dotfile, anything with characters no `Ident` can have) is silently
@@ -121,14 +127,26 @@ fn is_module_segment_name(name: &str) -> bool {
 /// misleading "doesn't exist".
 pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
     let mut out = HashMap::new();
-    discover_into(root, &mut Vec::new(), &mut out);
+    discover_into(root, &mut Vec::new(), &mut out, None);
     out
 }
 
+/// `skip`: the one entry name to ignore in `dir`, when `dir` is itself a
+/// directory-shaped module's own `children_dir` -- that directory's
+/// `<name>.omg` is exactly the `own_file` its *parent* call already
+/// recorded one level up (at `prefix` before `name` was pushed onto it,
+/// see the recursive call below), not a fresh sibling. Without this, a
+/// directory-shaped module named the same as its own entry file
+/// (`X/X.omg`) gets double-counted: this same rescan would find `X.omg`
+/// again and register a spurious `[...prefix, "X"]` pointing at the
+/// identical file `[...prefix]` already has. `None` only at the very top
+/// (`discover_tree`'s own call), where there is no parent to have already
+/// claimed anything.
 fn discover_into(
     dir: &Path,
     prefix: &mut ModulePath,
     out: &mut HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
+    skip: Option<&Ident>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut names: HashSet<Ident> = HashSet::new();
@@ -142,13 +160,16 @@ fn discover_into(
     }
 
     for name in names {
+        if skip.is_some_and(|s| s == &name) {
+            continue;
+        }
         prefix.push(name.clone());
         match resolve_segment(dir, &name) {
             Ok(location) => {
                 let children_dir = location.children_dir.clone();
                 out.insert(prefix.clone(), Ok(location));
                 if let Some(children_dir) = children_dir {
-                    discover_into(&children_dir, prefix, out);
+                    discover_into(&children_dir, prefix, out, Some(&name));
                 }
             }
             // A real, on-disk collision (both `name.omg` and `name/`

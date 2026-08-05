@@ -1,10 +1,10 @@
 use omega_codegen::{BackendKind, CodegenRequest, EmitKind, EmitOutput, OptLevel, Target};
 use omega_diagnostics::{BOLD, CYAN, GREEN, Renderer, paint};
-use omega_driver::{Driver, ExternRoot};
+use omega_driver::{Driver, ExternRoot, basename};
 use omega_parser::highlight::OmegaHighlighter;
 use omega_parser::prelude::Ident;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// `omega-parser`'s grammar is a hand-written recursive-descent parser,
@@ -49,17 +49,6 @@ struct Args {
     backend: BackendKind,
     verbose: bool,
 }
-
-/// A root directory's own *default* declared identity: its basename,
-/// applied to both the local project's root and every `--extern` target
-/// unless explicitly overridden (`--name=`/`--extern=<name>:<dir>`, see
-/// `parse_args`) -- an extern's own root is just someone else's project
-/// root. `None` for a path with no usable final component (`/`, `.`, `..`,
-/// or one that isn't valid UTF-8).
-fn basename(dir: &Path) -> Option<Ident> {
-    dir.file_name()?.to_str().map(|s| Ident(s.to_string()))
-}
-
 
 /// `omgc <entry-file> -o <output-file> [OPTIONS]` -- the entry file is the
 /// only positional argument; `-o` is a separate next-token argument (unlike
@@ -238,7 +227,7 @@ fn run() {
     let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
-    let Some(declared_name) = name.or_else(|| basename(&entry_dir)) else {
+    let Some(declared_name) = name.clone().or_else(|| basename(&entry_dir)) else {
         eprintln!(
             "error: '{}' has no usable directory name (pass --name=<name> explicitly)",
             entry_dir.display()
@@ -250,7 +239,7 @@ fn run() {
         verbose_step(colors, "Compiling", &format!("{} ({target})", entry_dir.display()));
     }
 
-    let mut driver = match Driver::new(entry_dir.clone(), externs) {
+    let mut driver = match Driver::new(entry_dir.clone(), name.clone(), externs) {
         Ok(driver) => driver,
         Err(errors) => {
             for error in &errors {

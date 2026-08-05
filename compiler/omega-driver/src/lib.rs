@@ -36,6 +36,7 @@ mod resolver;
 mod roots;
 
 pub use error::{CompileError, CompiledProgram};
+pub use fs_resolve::basename;
 pub use roots::ExternRoot;
 
 use diagnostics::Diagnostics;
@@ -76,12 +77,15 @@ pub struct Driver {
 
 impl Driver {
     /// `root` is the local project's own root directory, eagerly and fully
-    /// discovered right here (see `roots::ModuleRoots::new`); `externs` is
-    /// every `--extern` the CLI was given, each resolved lazily instead.
-    /// Fails only if two different `--extern`s claim the same declared name.
-    pub fn new(root: PathBuf, externs: Vec<ExternRoot>) -> Result<Self, Vec<CompileError>> {
+    /// discovered right here (see `roots::ModuleRoots::new`); `root_name`
+    /// is an *explicit* `--name=` override, `None` when `omgc` wasn't given
+    /// one (see `ModuleRoots::new`'s doc comment for why that distinction,
+    /// not a plain already-defaulted name, is what this needs); `externs`
+    /// is every `--extern` the CLI was given. Fails only if two different
+    /// `--extern`s claim the same declared name.
+    pub fn new(root: PathBuf, root_name: Option<Ident>, externs: Vec<ExternRoot>) -> Result<Self, Vec<CompileError>> {
         Ok(Self {
-            roots: ModuleRoots::new(root, externs)?,
+            roots: ModuleRoots::new(root, root_name, externs)?,
             modules: ModuleStore::default(),
             diagnostics: Diagnostics::default(),
             items: ItemQueries::default(),
