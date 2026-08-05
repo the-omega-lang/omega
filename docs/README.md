@@ -83,6 +83,10 @@ New to the codebase — read roughly in this order:
     exactly one project-wide implementation gets wired to it, deferring an
     unfilled gap to the linker rather than whole-program reachability
     analysis.
+22. [`plat`: the default platform `@glue`](22-platform-glue.md) — an
+    ordinary `--extern` package, not a special one, that fills `core`'s
+    gaps; today just a single `libc`-backed heap allocator, with no
+    platform-selection mechanism yet.
 
 ## What this is not
 

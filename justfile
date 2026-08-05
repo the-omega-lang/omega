@@ -1,13 +1,21 @@
 run-exec DEBUGGER="": build-asm build-exe
     # ld target/hello.o target/shims.o -o target/example # no libc
-    cc target/main.o target/mathlib.o target/core.o -o target/example   # with libc
+    cc target/main.o target/mathlib.o target/core.o target/plat.o -o target/example   # with libc
     {{DEBUGGER}} ./target/example firstarg secondarg; echo -e "\nexit code: $?"
 
-build-exe: build-core
+build-exe: build-core build-plat
     rm target/example || true
     RUST_BACKTRACE=1 cargo build
     ./target/debug/omgc -v examples/extern_lib/ --name=mathlib -o target/mathlib.o
-    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/extern_lib/ --extern=core:runtime/core/ -o target/main.o
+    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/extern_lib/ --extern=core:runtime/core/ --extern=plat:runtime/plat/ -o target/main.o
+
+# `plat` is a plain `--extern` package, not `core` -- it gets no eager-
+# discovery or ambient-prelude privilege of its own. Registering it here is
+# enough for `examples/dev`'s reference to `core::glue::GlobalAllocator` to
+# find its glue (`plat::libc::glue::LibcAllocator`), even though nothing in
+# `examples/dev` ever imports `plat` itself.
+build-plat: build-core
+    ./target/debug/omgc -v runtime/plat/ --extern=core:runtime/core/ -o target/plat.o
 
 # `omgc` takes a package's own root *directory*, not a file -- it discovers
 # every module under it eagerly (the filesystem is the source of truth for

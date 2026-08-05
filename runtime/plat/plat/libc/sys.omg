@@ -1,0 +1,10 @@
+# Raw, unmangled bindings to the C standard library -- exactly the symbols
+# libc itself exports, no adaptation. `plat::libc`'s own `@glue` marker is
+# what adapts these to `core::glue::GlobalAllocator`'s required shape --
+# nothing here should assume that's the only reason these exist. `internal`
+# (package-wide, not `exposed`): these are `plat`'s own implementation
+# detail, not part of its public surface.
+
+internal extern malloc : (size: usize) => *u8;
+internal extern free : (ptr: *u8) => void;
+internal extern realloc : (ptr: *u8, size: usize) => *u8;

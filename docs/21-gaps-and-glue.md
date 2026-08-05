@@ -228,7 +228,12 @@ RNG's entropy source, a clock source), not just `core`.
 ## `core::glue`
 
 `runtime/core/core/glue.omg` is the one place `core`'s own gaps live —
-currently just `GlobalAllocator`, imported into `core`'s own root
-(`core.omg`) like every other submodule. Building `core` standalone (`just
+currently just `GlobalAllocator`. Building `core` standalone (`just
 build-core`) correctly warns that `GlobalAllocator` has no glue yet — true
 and expected, since no application exists at that point to provide one.
+
+`plat::libc::glue::LibcAllocator` (see [`plat`](22-platform-glue.md)) is
+the reference implementation — a plain `--extern` package, not part of
+`core` itself, backing `GlobalAllocator` with libc's own `malloc`/`free`/
+`realloc`. Registering `--extern=plat:...` is enough for any consuming
+build to pick it up, with no `import` of `plat` required anywhere.
