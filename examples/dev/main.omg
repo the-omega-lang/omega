@@ -731,6 +731,35 @@ main(argc : i32, argv : [*u8]) => i32 {
     gn.next = &gn2;
     printf(<*u8>b"generic linked list: %d -> %d\n\0", gn.value, gn.next.value);
 
+    # `T` deduced from nothing but `DefaultList`'s own declared default --
+    # there is no argument anywhere for ordinary inference to use.
+    dl := DefaultList::new();
+    printf(<*u8>b"default list (T=i32 via default): %d\n\0", dl.value);
+
+    # `A` explicit (`<u64>`), `B` omitted -- defaults to matching `A`, i.e.
+    # `u64`, not to `DefaultPair`'s own declaration order picking anything
+    # else.
+    dp := DefaultPair<u64>::new(1, 2);
+    printf(<*u8>b"default pair (B defaulted to A=u64): %llu, %llu\n\0", dp.a, dp.b);
+
+    # Precedence, worked through explicitly:
+    #  - neither argument has its own explicit type, so `T` falls back to
+    #    its declared default (`u64`) rather than plain inference's own
+    #    untyped-literal default (`i32`).
+    sum_defaulted := add_defaulted(10, 20);
+    printf(<*u8>b"add_defaulted(10, 20) (T=u64 via default): %llu\n\0", sum_defaulted);
+
+    #  - `a`'s own explicit `u32` suffix outranks the default outright, and
+    #    `b`'s bare `20` then adapts to that already-pinned `T`, not to its
+    #    own untyped-literal default.
+    sum_defaulted2 := add_defaulted(10u32, 20);
+    printf(<*u8>b"add_defaulted(10u32, 20) (T=u32 via explicit arg): %u\n\0", sum_defaulted2);
+
+    # `add_defaulted(10, 20u32)` would be a compile error here: `a` pins
+    # `T` to `u64` via the default before `b` is even looked at, so `b`'s
+    # own explicit `u32` then conflicts instead of winning -- explicit only
+    # outranks a default on the argument that actually carries it.
+
     su : usize = 7usize;
     si : isize = -2isize;
     printf(<*u8>b"usize: %llu, isize: %lld\n\0", su, si);
@@ -1353,6 +1382,37 @@ describe_some<T>(o: *Optional<T>) => bool { o.is_some() }
 struct GenericNode<T> {
     exposed value: T;
     exposed next: *GenericNode<T>;
+}
+
+# A default type argument (`T = i32`): a use site may omit `T` entirely,
+# not just its *value* -- `DefaultList::new()` below has no argument to
+# deduce `T` from at all (unlike `GenericPair::new` above), so the default
+# is the only thing that makes it resolvable in the first place.
+struct DefaultList<T = i32> {
+    exposed value: T;
+
+    exposed new() => Self { Self { value = 0; } }
+}
+
+# A later default may reference an earlier parameter in the same list
+# (`B = A`) -- resolved under whatever `A` concretely ends up being at each
+# instantiation, not fixed once for the whole declaration. `A` itself has
+# no default, so it must always be written or otherwise deduced; `B` may
+# be omitted to fall back to matching `A`, or given its own separate type.
+struct DefaultPair<A, B = A> {
+    exposed a: A;
+    exposed b: B;
+
+    exposed new(a: A, b: B) => Self { Self { a = a; b = b; } }
+}
+
+# `T`'s own default participates in ordinary call-argument inference with
+# a fixed precedence: an argument's *explicit* type always wins first, the
+# declared default is used next (before falling back to inference's own
+# untyped-literal default), and inference alone is the last resort. See
+# `main`, below, for what each of the three calls actually deduces.
+add_defaulted<T = u64>(a: T, b: T) => T {
+    a + b
 }
 
 # Called by `main` above despite being declared after it -- proves a
