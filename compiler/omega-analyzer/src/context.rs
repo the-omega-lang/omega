@@ -127,6 +127,7 @@ impl Context {
         global_scope.defined_types.extend([
             // Standard types
             (Ident("void".into()), ResolvedType::Void),
+            (Ident("never".into()), ResolvedType::Never),
             (Ident("bool".into()), ResolvedType::Bool),
             (Ident("char".into()), ResolvedType::Char),
             (Ident("i8".into()), ResolvedType::I8),

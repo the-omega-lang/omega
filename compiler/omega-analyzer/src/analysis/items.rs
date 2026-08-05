@@ -399,7 +399,7 @@ impl<'r> Analyzer<'r> {
 
         let return_type = match return_type_override {
             Some(r#type) => r#type,
-            None => self.resolve_type_or_error(f.id, f.span, &f.return_type, true)?,
+            None => self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true)?,
         };
         let annotations = crate::annotations::resolve(
             self,

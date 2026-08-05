@@ -244,6 +244,7 @@ fn render_path(path: &ManglePath) -> String {
 fn render_type(ty: &MangleType) -> String {
     match ty {
         MangleType::Void => "void".to_string(),
+        MangleType::Never => "never".to_string(),
         MangleType::Bool => "bool".to_string(),
         MangleType::Char => "char".to_string(),
         MangleType::I8 => "i8".to_string(),

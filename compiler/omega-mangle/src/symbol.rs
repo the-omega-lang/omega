@@ -61,6 +61,13 @@ pub enum ManglePath {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MangleType {
     Void,
+    /// `never` -- a distinct tag from `Void` even though both are
+    /// zero-leaf/no-return-value at the codegen level (see
+    /// `ResolvedType::Never`'s doc comment): keeping them structurally
+    /// separate here is what lets a decoded mangled name still read back
+    /// as `never`, not `void`, and avoids ever conflating the two by
+    /// construction rather than by coincidence.
+    Never,
     Bool,
     Char,
     I8,

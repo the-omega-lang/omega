@@ -3,7 +3,7 @@
 ## The type set
 
 ```
-void  bool  char
+void  never  bool  char
 i8 i16 i32 i64 isize
 u8 u16 u32 u64 usize
 f32 f64
@@ -15,6 +15,9 @@ genuinely target-dependent (`codegen.pointer_type()`); every other numeric
 type is a hardcoded width regardless of target, matching this compiler's
 current single-target-assumption reality noted throughout `numeric_kind`/
 `cast_class`'s own doc comments.
+
+`never` isn't a type in the same sense the rest of this list are — see
+"`never`: not a conventional type" below.
 
 ## Codegen representation
 
@@ -28,6 +31,7 @@ real C-ABI aggregate-passing implementation (see the caveat at the bottom).
 | Type | Leaves |
 |---|---|
 | `void` | *(none)* |
+| `never` | *(none)* -- see below |
 | `bool` | `i8` (Cranelift has no boolean type; `0`/`1`) |
 | `char` | `i32` (a decoded scalar, not a byte) |
 | `i8`/`u8` | `i8` |
@@ -43,6 +47,53 @@ real C-ABI aggregate-passing implementation (see the caveat at the bottom).
 | union | one opaque run of `i32`/`i8` chunks sized to the largest member |
 | enum | `[tag][header][dynamic fields][payload]`, each region flattened the same way |
 | `spec *T` (dynamic dispatch) | two pointers |
+
+## `never`: not a conventional type
+
+`never` is a function/method/extern/gap's own declared return type,
+meaning "this doesn't return" (Rust's `!`):
+
+```
+extern exit : (code: i32) => never;
+
+spin_forever() => never {
+    loop {
+        # ...
+    }
+}
+```
+
+It's legal in exactly that one position — a return type — and rejected
+everywhere else a type could be written (a local's type, a struct/union/
+enum field, a parameter, a generic argument): there is no such thing as a
+`never`-typed *value* to store anywhere, only a function position that's
+provably unreachable if reached at all. `x : never;`/`bad(p: never) => void
+{ }` are both compile errors (`'never' is only allowed as a function/
+method's own return type`); `x := exit(1);` compiles (the local's type is
+inferred, not written), but is immediately unreachable code itself, same
+as anything else following a call that never returns.
+
+A body declared `=> never` has to actually diverge — end in a `loop { }`
+with no way out (see [control flow](03-control-flow.md)'s "Loops"), or a
+tail call/`return` reaching a `never`-returning function itself — `foo()
+=> never { }` is rejected exactly like a type mismatch, because that's
+what it is (an empty body's effective type is `void`, not a proof of
+divergence). This falls out of the same machinery that already lets a
+fully-diverging `if`/`else` or a bare `return`/`break`/`continue` satisfy
+*any* expected type (`Analyzer::block_type`'s `None` — "diverges,
+compatible with anything," Rust's `!` in everything but name) — a call to
+a `never`-returning function, and a `loop` with no `break` targeting it,
+are just two more cases that machinery recognizes, not a new, separately-
+threaded type flowing through ordinary coercion. One real consequence of
+that design: the compiler traps (`Unreachable`, a hard runtime fault) if
+a function actually declared `=> never` somehow returns anyway — the
+same backstop LLVM emits after any `noreturn` call, for the same reason
+(an `extern`'s `never` is trusted, not verified, the same as every other
+part of its signature).
+
+See [gaps and glue](21-gaps-and-glue.md) for `never`'s motivating use —
+`exit`-style platform capabilities that genuinely don't return — and
+[control flow](03-control-flow.md) for `loop`, its natural companion.
 
 ## Fat pointers
 

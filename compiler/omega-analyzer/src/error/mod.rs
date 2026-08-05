@@ -104,6 +104,17 @@ pub enum TypeResolutionError {
     /// reaching this variant means a spec name was written where none of
     /// those apply.
     SpecUsedAsValueType(Ident),
+    /// `never` resolved somewhere other than a function/method/extern/gap's
+    /// own declared return type -- a local variable's type, a struct/union/
+    /// enum field, a bare parameter type, and so on. `never` means "this
+    /// position is never reached" (see `ResolvedType::Never`'s doc
+    /// comment); there is no such thing as a `never`-typed value to store
+    /// anywhere, only a proof that a particular return position is
+    /// unreachable. A `(...) => never` *function type* used as, say, a
+    /// parameter's type is unaffected -- this only rejects `never` as the
+    /// resolved type in its own right, never as another type's inner
+    /// return-type position.
+    NeverNotAllowedHere,
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -138,6 +149,9 @@ impl fmt::Display for TypeResolutionError {
             }
             Self::SpecUsedAsValueType(name) => {
                 write!(f, "'{}' is a spec -- it has no size on its own, so it can't be used as a value's type", name.as_ref())
+            }
+            Self::NeverNotAllowedHere => {
+                write!(f, "'never' is only allowed as a function/method's own return type")
             }
         }
     }

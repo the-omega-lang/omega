@@ -32,8 +32,8 @@ use crate::body::{
 use crate::ids::{BlockId, LocalId};
 use omega_analyzer::checked::{
     CheckedBlock, CheckedBreak, CheckedContinue, CheckedDefer, CheckedExpr, CheckedExprNode, CheckedFor, CheckedIf,
-    CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt,
-    CheckedStructLiteralField, CheckedWhile,
+    CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+    CheckedStmt, CheckedStructLiteralField, CheckedWhile,
 };
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -339,6 +339,7 @@ impl FunctionLowerer {
                     self.lower_control_flow_into(expr, self.exit_chain_start, result, result_type);
                     return;
                 }
+                let diverges = expr.r#type == ResolvedType::Never;
                 let value = self.lower_expr(expr);
                 if self.is_current_terminated() {
                     return;
@@ -349,10 +350,21 @@ impl FunctionLowerer {
                     let r#type = value.r#type.clone();
                     self.assign_local(id, span, slot, r#type, value);
                 }
-                self.set_terminator(MirTerminator::Goto(self.exit_chain_start));
+                // `return exit(1);` (a `never`-returning value, unlike a
+                // bare `return;`) has no real value for the exit chain's
+                // own `return_slot` read to find -- `assign_local` above
+                // still runs so the call itself is emitted (it's the RHS
+                // of that assignment), but routing through the *normal*
+                // exit chain afterward would read whatever garbage that
+                // meaningless assignment left behind. Trap instead, same
+                // reasoning as `lower_expr_stmt`'s identical case.
+                self.set_terminator(if diverges { MirTerminator::Unreachable } else { MirTerminator::Goto(self.exit_chain_start) });
             }
             CheckedStmt::While(CheckedWhile { id, condition, body, .. }) => {
                 self.lower_while(id, condition, body);
+            }
+            CheckedStmt::Loop(CheckedLoop { id, body, .. }) => {
+                self.lower_loop(id, body);
             }
             CheckedStmt::For(for_loop) => {
                 let CheckedFor { id, init, condition, post, body, .. } = *for_loop;
@@ -404,6 +416,7 @@ impl FunctionLowerer {
                 // back to the general path, reusing the place already
                 // lowered above rather than lowering it twice (which would
                 // double-evaluate a side-effecting index expression).
+                let diverges = assignment.value.r#type == ResolvedType::Never;
                 let value = Box::new(self.lower_expr(*assignment.value));
                 let node = MirExprNode {
                     id,
@@ -411,17 +424,30 @@ impl FunctionLowerer {
                     r#type,
                     kind: MirExpr::Assignment(MirAssignment { target, value }),
                 };
-                if !self.is_current_terminated() {
-                    self.push_stmt(node);
+                if self.is_current_terminated() {
+                    return;
+                }
+                self.push_stmt(node);
+                // See the general path's identical `diverges` handling
+                // below -- an assignment whose own value never actually
+                // gets produced needs the same trap, not a normal
+                // fallthrough.
+                if diverges {
+                    self.set_terminator(MirTerminator::Unreachable);
                 }
                 return;
             }
             let target = self.lower_place(assignment.target);
+            let diverges = assignment.value.r#type == ResolvedType::Never;
             let value = Box::new(self.lower_expr(*assignment.value));
             let node =
                 MirExprNode { id, span, r#type, kind: MirExpr::Assignment(MirAssignment { target, value }) };
-            if !self.is_current_terminated() {
-                self.push_stmt(node);
+            if self.is_current_terminated() {
+                return;
+            }
+            self.push_stmt(node);
+            if diverges {
+                self.set_terminator(MirTerminator::Unreachable);
             }
             return;
         }
@@ -431,9 +457,25 @@ impl FunctionLowerer {
             return;
         }
 
+        let diverges = r#type == ResolvedType::Never;
         let node = self.lower_expr(CheckedExprNode { id, span, r#type, kind });
-        if !self.is_current_terminated() {
-            self.push_stmt(node);
+        if self.is_current_terminated() {
+            return;
+        }
+        self.push_stmt(node);
+        // A bare call to a `never`-returning function is an ordinary
+        // instruction, not a terminator on its own -- nothing else follows
+        // it in the checked tree (`Analyzer::truncate_unreachable` already
+        // dropped whatever did), so without this the block would be left
+        // un-terminated, or -- worse, if the caller's own fallback logic
+        // routed it into the exit chain regardless -- would read back
+        // whatever garbage happens to sit in an unwritten `return_slot`.
+        // `Unreachable` is exactly the trap this needs: if the callee
+        // somehow *did* return anyway (a lying `extern`), this is where
+        // that gets caught, the same backstop LLVM emits after any
+        // `noreturn` call.
+        if diverges {
+            self.set_terminator(MirTerminator::Unreachable);
         }
     }
 
@@ -461,6 +503,7 @@ impl FunctionLowerer {
                 self.lower_control_flow_into(*tail, self.exit_chain_start, result, result_type);
                 return false;
             }
+            let diverges = tail.r#type == ResolvedType::Never;
             let value = self.lower_expr(*tail);
             if self.is_current_terminated() {
                 return false;
@@ -470,6 +513,14 @@ impl FunctionLowerer {
                 let span = value.span;
                 let r#type = value.r#type.clone();
                 self.assign_local(id, span, slot, r#type, value);
+            }
+            // The function's own tail expression never actually produced
+            // a value -- same reasoning as `lower_stmt`'s `Return` arm:
+            // trap here instead of letting the caller route this into the
+            // exit chain to read `return_slot` back.
+            if diverges {
+                self.set_terminator(MirTerminator::Unreachable);
+                return false;
             }
         }
         true
@@ -486,11 +537,16 @@ impl FunctionLowerer {
             return false;
         }
         if let Some(tail) = block.tail {
+            let diverges = tail.r#type == ResolvedType::Never;
             let node = self.lower_expr(*tail);
             if self.is_current_terminated() {
                 return false;
             }
             self.push_stmt(node);
+            if diverges {
+                self.set_terminator(MirTerminator::Unreachable);
+                return false;
+            }
         }
         true
     }
@@ -569,6 +625,7 @@ impl FunctionLowerer {
             return false;
         }
         if let Some(tail) = block.tail {
+            let diverges = tail.r#type == ResolvedType::Never;
             let value = self.lower_expr(*tail);
             if self.is_current_terminated() {
                 return false;
@@ -580,6 +637,17 @@ impl FunctionLowerer {
                     self.assign_local(id, span, result, result_type, value);
                 }
                 None => self.push_stmt(value),
+            }
+            // This arm's own tail never actually produced the value the
+            // merge block expects -- e.g. `if cond { exit(1) } else { 42
+            // }`, where this is the `exit(1)` arm. Trap here instead of
+            // joining `merge` as if a real value were coming; the
+            // *overall* `if`/`match` still resolves fine as long as some
+            // other arm does reach it (its own type is what the whole
+            // expression ends up typed as).
+            if diverges {
+                self.set_terminator(MirTerminator::Unreachable);
+                return false;
             }
         }
         self.set_terminator(MirTerminator::Goto(merge));
@@ -608,6 +676,32 @@ impl FunctionLowerer {
         self.loop_stack.pop();
         if fell_through {
             self.set_terminator(MirTerminator::Goto(header));
+        }
+
+        self.current = exit;
+    }
+
+    /// `loop { body }` -- the same shape as `lower_while`, minus the
+    /// header/condition-check block: there's no condition to branch on, so
+    /// entry goes straight to `body_blk`, which falls through back to
+    /// itself rather than to a separate header. `exit` is still always
+    /// created, even when nothing in `body` ever `break`s (i.e. it's
+    /// statically unreachable) -- exactly like `while true { }`'s `exit`
+    /// already is today, and for the same reason: it still needs *some*
+    /// terminator (whatever code follows the loop provides one), and MIR
+    /// has no trouble with a block that's simply dead at runtime.
+    fn lower_loop(&mut self, loop_id: HirId, body: CheckedBlock) {
+        let body_blk = self.new_block();
+        let exit = self.new_block();
+
+        self.set_terminator(MirTerminator::Goto(body_blk));
+
+        self.current = body_blk;
+        self.loop_stack.push((loop_id, LoopTargets { break_block: exit, continue_block: body_blk }));
+        let fell_through = self.lower_block_as_stmt(body);
+        self.loop_stack.pop();
+        if fell_through {
+            self.set_terminator(MirTerminator::Goto(body_blk));
         }
 
         self.current = exit;
@@ -650,9 +744,13 @@ impl FunctionLowerer {
 
         self.current = continue_blk;
         if let Some(post) = post {
+            let diverges = post.r#type == ResolvedType::Never;
             let node = self.lower_expr(post);
             if !self.is_current_terminated() {
                 self.push_stmt(node);
+                if diverges {
+                    self.set_terminator(MirTerminator::Unreachable);
+                }
             }
         }
         if !self.is_current_terminated() {
@@ -954,6 +1052,7 @@ fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<(HirId, Span)>) {
             collect_defer_ids_expr(&w.condition, out);
             collect_defer_ids(&w.body, out);
         }
+        CheckedStmt::Loop(l) => collect_defer_ids(&l.body, out),
         CheckedStmt::For(f) => {
             for s in &f.init {
                 collect_defer_ids_stmt(s, out);

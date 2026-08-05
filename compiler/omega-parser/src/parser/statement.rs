@@ -2,8 +2,8 @@ use crate::ast::expression::Expression;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{
     Statement, StatementNode, declaration::DeclarationStmt, defer::DeferStmt,
-    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt, r#return::ReturnStmt,
-    walrus::WalrusStmt, while_stmt::WhileStmt,
+    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt, loop_stmt::LoopStmt,
+    r#return::ReturnStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
@@ -107,6 +107,7 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             None
         }
         TokenKind::While => Some((Statement::While(parse_while(p)?), true)),
+        TokenKind::Loop => Some((Statement::Loop(parse_loop(p)?), true)),
         TokenKind::For => Some((parse_for(p)?, true)),
         TokenKind::Defer => {
             p.advance(); // 'defer'
@@ -224,6 +225,13 @@ fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
     let condition = p.restrict_struct_literals(parse_expression)?;
     let body = parse_codeblock(p)?;
     Some(WhileStmt { condition, body })
+}
+
+/// `loop { ... }` -- no condition to parse at all, unlike `while`.
+fn parse_loop(p: &mut Parser) -> Option<LoopStmt> {
+    p.expect(&TokenKind::Loop, "'loop'");
+    let body = parse_codeblock(p)?;
+    Some(LoopStmt { body })
 }
 
 /// `for init; cond; post { ... }` -- three semicolon-separated clauses, each

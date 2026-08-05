@@ -45,7 +45,7 @@ New to the codebase — read roughly in this order:
 2. [Primitives & representation](01-primitives.md) — the type set, IR
    leaves, fat pointers.
 3. [Variables & mutability](02-variables-and-mutability.md)
-4. [Control flow](03-control-flow.md) — `if`/`while`/`for`, no `&&`/`||`.
+4. [Control flow](03-control-flow.md) — `if`/`while`/`for`/`loop`, no `&&`/`||`.
 5. [Structs & unions](04-structs-and-unions.md)
 6. [Enums & pattern matching](05-enums-and-pattern-matching.md) — header/
    dynamic/body fields, `match`, ranges, refinement.

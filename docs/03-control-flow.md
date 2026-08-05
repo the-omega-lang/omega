@@ -40,19 +40,37 @@ full pattern grammar, exhaustiveness checking, and variant narrowing.
 ```
 while condition { ... }
 
+loop { ... }                    # unconditional -- see below
+
 for mut i := 0; i < 10; i += 1 { ... }
 for ; condition; { ... }        # while-equivalent
 for ;; { ... }                  # infinite
 ```
 
 `for` is C-style — three semicolon-separated clauses, **each independently
-optional**, but **no enclosing parens**. There is no dedicated `loop`
-keyword; an infinite loop is `for ;; { ... }` or `while true { ... }`.
-`for`'s `init` clause reuses the same declaration/walrus statement shapes
-ordinary statements have; the `post` clause sits directly before the body's
-`{` with no separating `;` — an *empty* post clause is disambiguated from
-"the post clause is empty and this `{` starts the body" by peeking for `{`
-first, never attempting to parse an expression there.
+optional**, but **no enclosing parens**. `for`'s `init` clause reuses the
+same declaration/walrus statement shapes ordinary statements have; the
+`post` clause sits directly before the body's `{` with no separating `;`
+— an *empty* post clause is disambiguated from "the post clause is empty
+and this `{` starts the body" by peeking for `{` first, never attempting
+to parse an expression there.
+
+**`loop { ... }` is the one loop form the compiler can *prove* always
+repeats** (unless a `break` targeting it is found anywhere in its own
+body) — unlike `while true { ... }`/`for ;; { ... }`, which are
+*conditional* loops that merely happen to never see their condition turn
+false. That distinction is what makes `loop` able to satisfy a `never`
+return type (see [primitives](01-primitives.md)'s "`never`: not a
+conventional type") and produce real unreachable-code warnings for
+whatever follows it with no way out; `while`/`for` deliberately never get
+this treatment, no matter how the condition is spelled, so a `while true
+{ }`/`while <a compile-time-constant true> { }` gets a `PreferLoop`
+warning suggesting `loop` instead of trying to make `while` smart about
+recognizing it too. The check is purely syntactic (does a `break`
+targeting *this* loop appear anywhere in its body?), not real reachability
+analysis — `loop { if cond { break; } }` is correctly *not* treated as
+provably diverging, even though it happens to loop forever whenever
+`cond` is false.
 
 `break`/`continue` exist as ordinary statements. `defer <statement>;` /
 `defer { ... }` schedules a statement to run when the *enclosing function*

@@ -285,7 +285,7 @@ impl<'r> Analyzer<'r> {
                 let params = self.analyze_all(&f.params, |this, p| {
                     this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
                 });
-                let return_type = self.resolve_type_or_error(f.id, f.span, &f.return_type, true);
+                let return_type = self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true);
                 if let (Some(params), Some(return_type)) = (params, return_type) {
                     gap_functions.push((
                         f.name.clone(),
@@ -698,7 +698,7 @@ impl<'r> Analyzer<'r> {
                     }
                     None => None,
                 },
-                other => this.resolve_type_or_error(id, span, other, true),
+                other => this.resolve_return_type_or_error(id, span, other, true),
             };
             if !ok {
                 return None;

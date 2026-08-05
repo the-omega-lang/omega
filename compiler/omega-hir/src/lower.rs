@@ -4,7 +4,7 @@ use crate::hir::{
     HirCompoundAssign, HirContinue,
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
     HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam,
-    HirIf, HirImport, HirItem, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
+    HirIf, HirImport, HirItem, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
     HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirSpecFunction, HirStmt,
     HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
@@ -125,6 +125,11 @@ impl Lowerer {
                 span,
                 condition: self.lower_expr(&w.condition),
                 body: self.lower_block(&w.body),
+            })],
+            Statement::Loop(l) => vec![HirStmt::Loop(HirLoop {
+                id: self.ids.next(),
+                span,
+                body: self.lower_block(&l.body),
             })],
             Statement::For(f) => {
                 let init = f

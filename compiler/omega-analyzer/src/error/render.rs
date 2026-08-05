@@ -643,6 +643,9 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         TypeResolutionError::SpecUsedAsValueType(name) => d
             .with_label(span, "a spec has no size or representation on its own")
             .with_help(format!("use `spec *{0}`/`spec *mut {0}` for dynamic dispatch, or a generic bound (`T: {0}`)", name.as_ref())),
+        TypeResolutionError::NeverNotAllowedHere => d
+            .with_label(span, "`never` used outside a function's own return type")
+            .with_help("there is no such thing as a `never`-typed value -- only a function/method/extern/gap may declare `=> never`"),
     }
 }
 

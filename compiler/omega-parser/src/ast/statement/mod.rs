@@ -6,6 +6,7 @@ pub mod for_in_stmt;
 pub mod for_stmt;
 pub mod function_definition;
 pub mod import;
+pub mod loop_stmt;
 pub mod macro_definition;
 pub mod r#return;
 pub mod spec;
@@ -19,7 +20,7 @@ use crate::ast::statement::{
     declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
     extern_declaration::ExternDeclarationStmt,
     for_in_stmt::ForInStmt, for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
-    macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
+    loop_stmt::LoopStmt, macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
     r#struct::StructStmt, union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::diagnostics::Span;
@@ -101,6 +102,10 @@ pub enum Statement {
     Continue,
     Walrus(WalrusStmt),
     While(WhileStmt),
+    /// `loop { ... }` -- see `LoopStmt`'s own doc comment for how this
+    /// differs from `While` beyond just missing a condition: it's what
+    /// makes a function's `never` return type provable at all.
+    Loop(LoopStmt),
     /// Boxed since `ForStmt.init` embeds a bare `Statement` -- without the
     /// indirection here, `Statement` would have infinite size.
     For(Box<ForStmt>),

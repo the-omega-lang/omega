@@ -23,7 +23,13 @@ impl AnalysisWarning {
         let d = match &self.kind {
             AnalysisWarningKind::UnreachableCode => d
                 .with_label(self.span, "this can never run")
-                .with_note("it follows something that always diverges (`return`, `break`, or `continue`)"),
+                .with_note(
+                    "it follows something that always diverges (`return`, `break`, `continue`, \
+                     a `loop` with no way out, or a call to a `never`-returning function)",
+                ),
+            AnalysisWarningKind::PreferLoop => d
+                .with_label(self.span, "this condition is always true")
+                .with_help("use `loop { }` instead -- it also lets the compiler prove this always diverges"),
             AnalysisWarningKind::InlineNotEnforced => d
                 .with_label(self.span, "this hint is recorded but not acted on")
                 .with_note("this backend has no function-inlining support yet"),
@@ -100,6 +106,15 @@ pub enum AnalysisWarningKind {
     /// `analyze_block`) rather than risking codegen emitting instructions
     /// into an already-terminated cranelift block.
     UnreachableCode,
+    /// A `while` condition that compile-time-folds to the literal `true`
+    /// (`while true { }`, `while !false { }`, ...) -- purely cosmetic,
+    /// suggesting `loop { }` instead, which reads the same way to a human
+    /// but also gets real, provable-divergence treatment `while` never
+    /// does (see `Analyzer::stmt_diverges`'s `CheckedStmt::Loop` case).
+    /// Deliberately *not* also treated as diverging itself -- only `loop`
+    /// is -- so this stays a pure style nudge, not a second, parallel
+    /// divergence-detection path to keep in sync with the real one.
+    PreferLoop,
     /// A function carries `@inline(always)`/`@inline(never)`, but this
     /// backend has no per-function inlining mechanism to honor it with yet
     /// (see `omega_codegen`) -- `@inline` is purely a hint (per the
@@ -208,6 +223,7 @@ impl AnalysisWarningKind {
     pub fn name(&self) -> &'static str {
         match self {
             Self::UnreachableCode => "unreachable_code",
+            Self::PreferLoop => "prefer_loop",
             Self::InlineNotEnforced => "inline_not_enforced",
             Self::UnusedVariable { .. } => "unused_variable",
             Self::UnusedParameter { .. } => "unused_parameter",
@@ -231,6 +247,7 @@ impl fmt::Display for AnalysisWarningKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnreachableCode => write!(f, "unreachable code"),
+            Self::PreferLoop => write!(f, "this `while` condition is always true"),
             Self::InlineNotEnforced => write!(f, "'@inline' is not enforced by this backend yet"),
             Self::UnusedVariable { name } => write!(f, "unused variable '{}'", name.as_ref()),
             Self::UnusedParameter { name } => write!(f, "unused parameter '{}'", name.as_ref()),

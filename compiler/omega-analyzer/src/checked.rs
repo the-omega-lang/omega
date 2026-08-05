@@ -259,6 +259,7 @@ pub enum CheckedStmt {
     Expression(CheckedExprNode),
     Return(CheckedExprNode),
     While(CheckedWhile),
+    Loop(CheckedLoop),
     /// Boxed: `CheckedFor` alone is by far the largest variant here (it
     /// embeds a whole `CheckedBlock` for its body plus another for `init`'s
     /// contribution), and would otherwise force every `CheckedStmt` -- most
@@ -327,6 +328,23 @@ pub struct CheckedWhile {
     pub span: Span,
     pub condition: CheckedExprNode,
     pub body: CheckedBlock,
+}
+
+/// `loop { body }` -- no condition at all, unlike `CheckedWhile`. `id` is
+/// what `CheckedBreak`/`CheckedContinue.loop_id` refers back to, same as
+/// `CheckedWhile`'s. `has_break` is recorded once, right here, at analysis
+/// time (`Analyzer::analyze_stmt`'s `HirStmt::Loop` arm) -- whether any
+/// `break` anywhere in `body` targets *this* loop specifically (not a
+/// nested one) is exactly what `Analyzer::stmt_diverges` needs to prove a
+/// `loop` with no way out always diverges, and baking it into the checked
+/// node means that check (a plain, static `&CheckedStmt -> bool` function)
+/// never needs analyzer state of its own to answer it.
+#[derive(Debug, Clone)]
+pub struct CheckedLoop {
+    pub id: HirId,
+    pub span: Span,
+    pub body: CheckedBlock,
+    pub has_break: bool,
 }
 
 /// `for init; cond; post { body }` -- unlike the parser's `HirFor`,

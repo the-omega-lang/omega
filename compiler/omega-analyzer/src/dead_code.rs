@@ -113,6 +113,7 @@ fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
             collect_expr(&w.condition, usage);
             collect_block(&w.body, usage);
         }
+        CheckedStmt::Loop(l) => collect_block(&l.body, usage),
         CheckedStmt::For(f) => {
             for s in &f.init {
                 collect_stmt(s, usage);

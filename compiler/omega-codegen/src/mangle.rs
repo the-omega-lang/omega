@@ -42,6 +42,7 @@ fn mangle_type_path(module_path: &[Ident], name: &Ident, type_args: &[ResolvedTy
 fn mangle_type(ty: &ResolvedType) -> MangleType {
     match ty {
         ResolvedType::Void => MangleType::Void,
+        ResolvedType::Never => MangleType::Never,
         ResolvedType::Bool => MangleType::Bool,
         ResolvedType::Char => MangleType::Char,
         ResolvedType::I8 => MangleType::I8,

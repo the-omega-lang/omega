@@ -61,7 +61,10 @@ impl Leaf {
 /// list (a backend's own calling convention).
 pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
     match ty {
-        ResolvedType::Void => vec![],
+        // Same as `Void`: nothing ever materializes a `Never` value to lay
+        // out (see `ResolvedType::Never`'s own doc comment for why), so
+        // there's nothing to flatten.
+        ResolvedType::Void | ResolvedType::Never => vec![],
         // `Bool` is a plain 0/1 byte -- there's no dedicated boolean leaf
         // kind (see `ResolvedType::Bool`'s doc comment).
         ResolvedType::Bool => vec![Leaf::I8],

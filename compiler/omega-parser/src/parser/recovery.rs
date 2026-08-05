@@ -115,6 +115,7 @@ fn starts_statement(kind: &TokenKind) -> bool {
         kind,
         TokenKind::If
             | TokenKind::While
+            | TokenKind::Loop
             | TokenKind::For
             | TokenKind::Struct
             | TokenKind::Union

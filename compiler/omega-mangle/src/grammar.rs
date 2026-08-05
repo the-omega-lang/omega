@@ -45,6 +45,7 @@ pub const VENDOR_SUFFIX_SEP: u8 = b'.';
 pub fn basic_letter(ty: &MangleType) -> Option<u8> {
     Some(match ty {
         MangleType::Void => b'v',
+        MangleType::Never => b'n',
         MangleType::Bool => b'b',
         MangleType::Char => b'c',
         MangleType::I8 => b'a',
@@ -66,6 +67,7 @@ pub fn basic_letter(ty: &MangleType) -> Option<u8> {
 pub fn basic_from_letter(letter: u8) -> Option<MangleType> {
     Some(match letter {
         b'v' => MangleType::Void,
+        b'n' => MangleType::Never,
         b'b' => MangleType::Bool,
         b'c' => MangleType::Char,
         b'a' => MangleType::I8,

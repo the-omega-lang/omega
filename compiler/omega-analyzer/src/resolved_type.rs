@@ -514,6 +514,22 @@ pub enum CastClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedType {
     Void,
+    /// `never` -- a function's own declared return type meaning "this
+    /// function does not return" (`exit(code: i32) => never`). Legal
+    /// *only* in that one position (a function/method/extern/gap's own
+    /// return type; `Context::resolve_type` rejects it everywhere else a
+    /// type gets resolved for storage -- see `AnalysisErrorKind::
+    /// NeverTypeNotAllowed`), and deliberately not threaded through
+    /// `accepts`/general expression-type inference: it only ever needs to
+    /// exist so `=> never` itself resolves, and so a call's looked-up
+    /// return type can *be* `Never` at the one point that matters --
+    /// `Analyzer::expr_diverges` recognizing such a call as diverging. From
+    /// there, the existing `None`-means-diverges mechanism (`Analyzer::
+    /// block_type`) already does everything a real coercing `!` type would
+    /// -- see its own doc comment. No `never`-typed variables follow from
+    /// this by construction: nothing ever needs to *store* a `Never` value,
+    /// only recognize that a position produced one.
+    Never,
     Bool,
     /// A single Unicode scalar value, stored as a 4-byte codepoint -- the
     /// same representation Rust's `char` uses (large enough to hold any
@@ -627,6 +643,7 @@ impl Hash for ResolvedType {
         std::mem::discriminant(self).hash(state);
         match self {
             Self::Void
+            | Self::Never
             | Self::Bool
             | Self::Char
             | Self::I8
@@ -680,6 +697,7 @@ impl std::fmt::Display for ResolvedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Void => write!(f, "void"),
+            Self::Never => write!(f, "never"),
             Self::Bool => write!(f, "bool"),
             Self::Char => write!(f, "char"),
             Self::I8 => write!(f, "i8"),

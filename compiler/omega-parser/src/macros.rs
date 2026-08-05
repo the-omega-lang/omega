@@ -486,6 +486,7 @@ fn expand_statement(
             condition: expand_expr(w.condition, defs, budget)?,
             body: expand_codeblock(w.body, defs, budget)?,
         }),
+        Statement::Loop(l) => Statement::Loop(LoopStmt { body: expand_codeblock(l.body, defs, budget)? }),
         Statement::For(f) => {
             let f = *f;
             Statement::For(Box::new(ForStmt {

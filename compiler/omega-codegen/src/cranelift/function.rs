@@ -35,8 +35,14 @@ impl Codegen {
         // The hidden struct-return pointer is always the first parameter
         // (see `needs_sret`); cranelift itself handles the SysV requirement
         // of also returning that pointer in rax, so the signature declares
-        // no return values at all in this case.
-        if *resolved_fntype.return_type != ResolvedType::Void {
+        // no return values at all in this case. `Never` takes this same
+        // empty-signature path as `Void` -- nothing ever reads a call's
+        // result in a position typed `never` (the callee doesn't return at
+        // all, so there's no return-value ABI to negotiate); explicit here
+        // rather than left to fall out of `cranelift_leaves`/`needs_sret`
+        // both already answering "zero" for it (see `ResolvedType::Never`'s
+        // doc comment) purely as a byproduct of how they're implemented.
+        if *resolved_fntype.return_type != ResolvedType::Void && *resolved_fntype.return_type != ResolvedType::Never {
             if self.needs_sret(&resolved_fntype.return_type) {
                 sig.params
                     .push(AbiParam::special(self.pointer_type(), ArgumentPurpose::StructReturn));

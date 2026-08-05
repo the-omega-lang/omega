@@ -51,7 +51,7 @@ use crate::{
         CheckedEnumConstruct,
         CheckedEnumDef, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
-        CheckedIf, CheckedMatch, CheckedMatchArm,
+        CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm,
         CheckedParam, CheckedPlace, CheckedPlaceRoot,
         CheckedProjection, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
         CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile, CastKind, NumberValue,
@@ -126,6 +126,14 @@ pub struct Analyzer<'r> {
     /// at the start of each `check_function_body` call, same reasoning as
     /// `current_return_type`.
     loop_stack: Vec<HirId>,
+    /// Every loop `HirId` that a `break` targeting it has actually been seen
+    /// for, filled in as each `break` is analyzed (`HirStmt::Break`'s arm in
+    /// `analyze_stmt`) and consulted once, when a `loop { }`'s own body
+    /// finishes analyzing, to decide `CheckedLoop::has_break` -- see its own
+    /// doc comment for why that's recorded on the checked node rather than
+    /// re-derived later. IDs are never reused, so this only ever grows;
+    /// never cleared, unlike `loop_stack`/`current_return_type`.
+    loops_with_break: HashSet<HirId>,
     /// `true` while analyzing a `defer`'s own body (see `HirStmt::Defer`'s
     /// arm in `analyze_stmt`) -- not a stack/counter, since a `defer` nested
     /// inside another defer's body is rejected outright the moment this is
@@ -308,6 +316,7 @@ impl<'r> Analyzer<'r> {
             module_path,
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
+            loops_with_break: HashSet::new(),
             in_defer_body: false,
             suppressed: vec![],
             reveal_stack: vec![],
@@ -583,6 +592,30 @@ impl<'r> Analyzer<'r> {
     /// calls the resolver directly on an unqualified miss), so this is just
     /// a thin error-reporting wrapper around it.
     pub(crate) fn resolve_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
+        self.resolve_type_or_error_checked(id, span, typ, indirect, false)
+    }
+
+    /// The one place a function/method/extern/gap's own declared return
+    /// type is resolved -- identical to `resolve_type_or_error`, except a
+    /// bare `never` is the expected, successful result here instead of a
+    /// mistake (see `TypeResolutionError::NeverNotAllowedHere`'s doc
+    /// comment). Every *other* type position -- a local, a field, a
+    /// parameter, a `(...) => T` function type's own inner return-type
+    /// slot (resolved directly by `Context::resolve_type`, never through
+    /// this wrapper at all) -- goes through the ordinary
+    /// `resolve_type_or_error` instead, which continues to reject it.
+    pub(crate) fn resolve_return_type_or_error(&mut self, id: HirId, span: Span, typ: &Type, indirect: bool) -> Option<ResolvedType> {
+        self.resolve_type_or_error_checked(id, span, typ, indirect, true)
+    }
+
+    fn resolve_type_or_error_checked(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        indirect: bool,
+        allow_never: bool,
+    ) -> Option<ResolvedType> {
         let resolved = self.resolve_type_or_error_raw(id, span, typ, indirect)?;
         // A bare spec name (`ResolvedType::Spec`) is never a valid value
         // type -- see `TypeResolutionError::SpecUsedAsValueType`'s doc
@@ -595,6 +628,10 @@ impl<'r> Analyzer<'r> {
         if let ResolvedType::Spec(spec) = &resolved {
             let name = spec.borrow().name.clone();
             self.error(id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::SpecUsedAsValueType(name)));
+            return None;
+        }
+        if !allow_never && resolved == ResolvedType::Never {
+            self.error(id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::NeverNotAllowedHere));
             return None;
         }
         Some(resolved)

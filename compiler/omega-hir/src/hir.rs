@@ -341,6 +341,7 @@ pub enum HirStmt {
     Return(HirExprNode),
     WalrusDeclaration(HirWalrusDeclaration),
     While(HirWhile),
+    Loop(HirLoop),
     For(HirFor),
     ForIn(HirForIn),
     Break(HirBreak),
@@ -402,6 +403,21 @@ pub struct HirWhile {
     pub id: HirId,
     pub span: Span,
     pub condition: HirExprNode,
+    pub body: HirBlock,
+}
+
+/// `loop { body }` -- see
+/// `omega_parser::ast::statement::loop_stmt::LoopStmt`'s doc comment for
+/// why this exists alongside `HirWhile` rather than being just another
+/// condition shape: `Analyzer::stmt_diverges` can prove this always
+/// repeats (unless a `break` targeting it is found anywhere in `body`),
+/// which is what a `while`-based loop, even `while true { }`, deliberately
+/// cannot give for free. Self-identifying (`id`/`span`) for the same
+/// reason `HirWhile` is.
+#[derive(Debug, Clone)]
+pub struct HirLoop {
+    pub id: HirId,
+    pub span: Span,
     pub body: HirBlock,
 }
 

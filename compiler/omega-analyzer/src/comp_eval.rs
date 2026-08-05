@@ -18,7 +18,7 @@
 
 use crate::checked::{
     CheckedBinaryOp, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFor, CheckedFunctionCall,
-    CheckedFunctionDef, CheckedIf, CheckedMatch, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+    CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
     CheckedStmt, CheckedWhile, CastKind, NumberValue, Storage,
 };
 use crate::resolved_type::{ConstValue, ResolvedType};
@@ -752,6 +752,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 Err(Outcome::Signal(Signal::Return(value)))
             }
             CheckedStmt::While(w) => self.eval_while(w),
+            CheckedStmt::Loop(l) => self.eval_loop(l),
             CheckedStmt::For(f) => self.eval_for(f),
             CheckedStmt::Break(_) => Err(Outcome::Signal(Signal::Break)),
             CheckedStmt::Continue(_) => Err(Outcome::Signal(Signal::Continue)),
@@ -775,6 +776,23 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 _ => return Err(self.err(w.span, CompErrorKind::Unsupported("a non-bool while-condition"))),
             }
             match self.eval_block(&w.body) {
+                Ok(_) => {}
+                Err(Outcome::Signal(Signal::Break)) => return Ok(()),
+                Err(Outcome::Signal(Signal::Continue)) => continue,
+                Err(other) => return Err(other),
+            }
+        }
+    }
+
+    /// `loop { body }` -- see `eval_while`; identical except there's no
+    /// condition to evaluate each iteration, so the only way out is a
+    /// `break` (or exhausting `self.tick`'s own budget, same backstop
+    /// `eval_while`/`eval_for` already rely on for a genuinely unbounded
+    /// `comp`-time loop).
+    fn eval_loop(&mut self, l: &CheckedLoop) -> CompResult<()> {
+        loop {
+            self.tick(l.span)?;
+            match self.eval_block(&l.body) {
                 Ok(_) => {}
                 Err(Outcome::Signal(Signal::Break)) => return Ok(()),
                 Err(Outcome::Signal(Signal::Continue)) => continue,

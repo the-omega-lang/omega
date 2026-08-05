@@ -19,6 +19,7 @@ pub use crate::ast::statement::{
     defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
+    loop_stmt::LoopStmt,
     macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
     r#return::ReturnStmt, spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,
     union::UnionStmt, while_stmt::WhileStmt,

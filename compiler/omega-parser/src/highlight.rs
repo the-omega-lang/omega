@@ -28,6 +28,7 @@ impl Highlighter for OmegaHighlighter {
                 | TokenKind::Union
                 | TokenKind::Spec
                 | TokenKind::While
+                | TokenKind::Loop
                 | TokenKind::For
                 | TokenKind::Break
                 | TokenKind::Continue

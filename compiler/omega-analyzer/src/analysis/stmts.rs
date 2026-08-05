@@ -11,17 +11,29 @@ enum ForInSource {
 }
 
 impl<'r> Analyzer<'r> {
-    /// Whether an expression unconditionally diverges: only an `if`/`else
-    /// if`/`else` can (with a genuine `else`, not an implicit empty one)
-    /// where *every* branch diverges -- everything else either can't
-    /// diverge at all, or (a bare `return`) isn't an expression to begin
-    /// with. Needed because such an `if` still gets a concrete (if
-    /// degenerate, `Void`) `r#type` of its own during analysis -- there's no
-    /// real "never" `ResolvedType` to give it instead -- so whether *it*
-    /// diverges has to be re-derived structurally here rather than read off
-    /// its `r#type`, the same way `stmt_diverges` re-derives it for a bare
-    /// `return` statement.
+    /// Whether an expression unconditionally diverges. Two independent
+    /// cases:
+    ///
+    /// - A call whose resolved type is `ResolvedType::Never` -- ordinary
+    ///   type inference for a function call already sets a call
+    ///   expression's own `r#type` to its callee's return type verbatim,
+    ///   so a call to a `never`-declared function already carries `Never`
+    ///   right there with no extra plumbing; this just has to recognize
+    ///   what that means.
+    /// - An `if`/`else if`/`else` (with a genuine `else`, not an implicit
+    ///   empty one) where *every* branch diverges -- re-derived
+    ///   structurally rather than read off `expr.r#type`, because
+    ///   `analyze_if` still gives such an `if` a concrete (degenerate
+    ///   `Void`) type of its own rather than `Never` (nothing needs it to
+    ///   be `Never`, since this function already re-derives the fact
+    ///   directly).
+    ///
+    /// Everything else either can't diverge at all, or (a bare `return`)
+    /// isn't an expression to begin with.
     pub(super) fn expr_diverges(expr: &CheckedExprNode) -> bool {
+        if expr.r#type == ResolvedType::Never {
+            return true;
+        }
         match &expr.kind {
             CheckedExpr::If(CheckedIf { branches, else_branch }) => {
                 let Some(else_branch) = else_branch else { return false };
@@ -47,6 +59,14 @@ impl<'r> Analyzer<'r> {
         match stmt {
             CheckedStmt::Return(_) | CheckedStmt::Break(_) | CheckedStmt::Continue(_) => true,
             CheckedStmt::Expression(expr) => Self::expr_diverges(expr),
+            // A `loop { }` with no `break` anywhere targeting it (recorded
+            // once, at analysis time -- see `CheckedLoop::has_break`'s doc
+            // comment) always repeats. Purely syntactic, same spirit as
+            // every other case here: `loop { if cond { break; } }` is *not*
+            // recognized as diverging, even though it happens to loop
+            // forever whenever `cond` is false -- conservative and sound,
+            // not a weakness specific to this case.
+            CheckedStmt::Loop(l) => !l.has_break,
             // `defer` never diverges at its own position -- it just marks
             // "reached" and moves on; the deferred body only ever runs later,
             // in the function's epilogue.
@@ -66,6 +86,7 @@ impl<'r> Analyzer<'r> {
             CheckedStmt::Expression(e) => (e.id, e.span),
             CheckedStmt::Return(e) => (e.id, e.span),
             CheckedStmt::While(w) => (w.id, w.span),
+            CheckedStmt::Loop(l) => (l.id, l.span),
             CheckedStmt::For(f) => (f.id, f.span),
             CheckedStmt::Break(b) => (b.id, b.span),
             CheckedStmt::Continue(c) => (c.id, c.span),
@@ -276,7 +297,13 @@ impl<'r> Analyzer<'r> {
                 self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
             }
             HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| {
-                if matches!(e.kind, CheckedExpr::FunctionCall(_)) && e.r#type != ResolvedType::Void {
+                // A `never`-typed call has no return value to discard in
+                // the first place -- it never returns at all, so there's
+                // nothing "unused" about leaving it as a bare statement.
+                if matches!(e.kind, CheckedExpr::FunctionCall(_))
+                    && e.r#type != ResolvedType::Void
+                    && e.r#type != ResolvedType::Never
+                {
                     self.warn(e.id, e.span, AnalysisWarningKind::UnusedReturnValue);
                 }
                 vec![CheckedStmt::Expression(e)]
@@ -322,6 +349,16 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 }
+                // Best-effort: a non-constant condition (references a
+                // variable, calls a function, ...) just isn't a match for
+                // this warning, not a compile error -- unlike
+                // `Analyzer::eval_comp`, which is for an explicit `comp`
+                // expression the author committed to being constant, this
+                // is purely opportunistic, so any `Err` is silently
+                // ignored rather than reported.
+                if let Ok(ConstValue::Bool(true)) = crate::comp_eval::eval(self.resolver, &checked_cond) {
+                    self.warn(w.id, checked_cond.span, AnalysisWarningKind::PreferLoop);
+                }
                 self.loop_stack.push(w.id);
                 let checked_body = self.analyze_block(&w.body, None);
                 self.loop_stack.pop();
@@ -333,10 +370,25 @@ impl<'r> Analyzer<'r> {
                     body: checked_body,
                 })])
             }
+            HirStmt::Loop(l) => {
+                self.loop_stack.push(l.id);
+                let checked_body = self.analyze_block(&l.body, None);
+                self.loop_stack.pop();
+                let checked_body = checked_body?;
+                Some(vec![CheckedStmt::Loop(CheckedLoop {
+                    id: l.id,
+                    span: l.span,
+                    has_break: self.loops_with_break.contains(&l.id),
+                    body: checked_body,
+                })])
+            }
             HirStmt::For(f) => self.analyze_for(f),
             HirStmt::ForIn(f) => self.analyze_for_in(f),
             HirStmt::Break(b) => match self.loop_stack.last() {
-                Some(&loop_id) => Some(vec![CheckedStmt::Break(CheckedBreak { id: b.id, span: b.span, loop_id })]),
+                Some(&loop_id) => {
+                    self.loops_with_break.insert(loop_id);
+                    Some(vec![CheckedStmt::Break(CheckedBreak { id: b.id, span: b.span, loop_id })])
+                }
                 None => {
                     self.error(b.id, b.span, AnalysisErrorKind::BreakOutsideLoop);
                     None
