@@ -398,18 +398,33 @@ fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
     if !p.eat(&TokenKind::Lt) {
         return Some(Vec::new());
     }
-    let mut generics = vec![parse_generic_param(p)?];
+    let mut seen_default = false;
+    let mut generics = vec![parse_generic_param(p, &mut seen_default)?];
     while p.eat(&TokenKind::Comma) {
-        generics.push(parse_generic_param(p)?);
+        generics.push(parse_generic_param(p, &mut seen_default)?);
     }
     p.expect(&TokenKind::Gt, "'>'");
     Some(generics)
 }
 
-fn parse_generic_param(p: &mut Parser) -> Option<GenericParam> {
+/// `seen_default` tracks whether an earlier parameter in this same `<...>`
+/// list already had a default -- once one does, every parameter after it
+/// must too (see `GenericParam`'s doc comment), checked and reported right
+/// here (anchored at this parameter's own name) rather than in a later pass
+/// that would have lost the per-parameter span. Non-fatal: recorded, and
+/// this parameter's `default` (or lack of one) is still returned as
+/// written, matching this parser's general recovery philosophy.
+fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<GenericParam> {
     let ident = p.expect_ident()?;
+    let name_span = p.last_span();
     let bound = if p.eat(&TokenKind::Colon) { Some(crate::parser::r#type::parse_type(p)?) } else { None };
-    Some(GenericParam { ident, bound })
+    let default = if p.eat(&TokenKind::Eq) { Some(crate::parser::r#type::parse_type(p)?) } else { None };
+    if default.is_some() {
+        *seen_default = true;
+    } else if *seen_default {
+        p.error_at(name_span, ParseErrorKind::DefaultGenericParamNotTrailing { name: ident.clone() });
+    }
+    Some(GenericParam { ident, bound, default })
 }
 
 /// `: Spec, Spec, ...` -- the specs a struct/union/enum implements,

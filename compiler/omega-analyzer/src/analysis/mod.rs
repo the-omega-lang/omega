@@ -652,4 +652,146 @@ impl<'r> Analyzer<'r> {
             }
         }
     }
+
+    /// Resolves `typ` with `subst`'s bindings visible as if they were
+    /// already-bound generic parameters, on top of whatever this analyzer's
+    /// own scope already has -- one shared primitive behind two different
+    /// default-generic resolution sites: `ensure_item`'s padding gate (a
+    /// throwaway `Analyzer` already seeded with everything resolved so far
+    /// via `Analyzer::new`, called with `subst` empty), and this analyzer's
+    /// own eager, per-argument precedence resolution in
+    /// `Analyzer::infer_generic_args` (a live analyzer mid-call, where
+    /// `subst` is the partial substitution built up so far and nothing is
+    /// pre-seeded). `pub`, not `pub(crate)`, specifically so
+    /// `omega_driver::items::ensure_item` can call it through
+    /// `Driver::with_analyzer` -- every other type-resolution entry point
+    /// here stays crate-private.
+    pub fn resolve_under_substitution(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        subst: &[(Ident, ResolvedType)],
+    ) -> Option<ResolvedType> {
+        self.context.enter_scope().defined_types.extend(subst.iter().cloned());
+        let result = self.resolve_type_or_error(id, span, typ, false);
+        self.context.leave_scope();
+        result
+    }
+
+    /// Infers `generics` from `params`/`args`, analyzed strictly left to
+    /// right -- the machinery behind "explicit type > declared default >
+    /// inference," the precedence rule a generic function/static-call
+    /// argument follows. Shared by `Analyzer::finish_generic_call`,
+    /// `finish_generic_static_call`, and `probe_literal_type_args`
+    /// (matched by field name there instead of position, but otherwise the
+    /// identical per-slot shape).
+    ///
+    /// Before each argument is analyzed, `expected_for_generic_param`
+    /// substitutes its raw declared type against whatever's already bound
+    /// (from an earlier argument in this same call) or, for a still-unbound
+    /// generic with its own declared default, that default -- giving
+    /// `analyze_expr` a real `expected` a bare literal can adapt to, the
+    /// same "earliest position is the anchor" precedent `if`-branches and
+    /// binary operands already use (see `docs/03-control-flow.md`). The
+    /// argument's own *actual* resolved type -- not the tentative
+    /// `expected` -- is what `unify_generic_type` then permanently pins the
+    /// generic to: an explicit suffix/type on the argument always wins over
+    /// `expected` regardless (see `analyze_number`), so this never needs to
+    /// track "was this pinned by a default" separately from an ordinary
+    /// argument-driven pin. A later argument whose own explicit type
+    /// conflicts with an already-pinned generic is left to the caller's
+    /// own, unchanged final `accepts` loop to reject.
+    ///
+    /// Returns every argument, checked, plus the resulting (possibly
+    /// partial) substitution -- a generic that never appears in any
+    /// parameter type at all (return-type-only, or every generic on a
+    /// zero-arg call) is left unbound here for the caller's own
+    /// `resolve_inferred_type_args` call to either default (if it has one)
+    /// or error on.
+    pub(crate) fn infer_generic_args(
+        &mut self,
+        generics: &[Ident],
+        defaults: &[Option<Type>],
+        params: &[Type],
+        args: &[HirExprNode],
+    ) -> Option<(Vec<CheckedExprNode>, HashMap<Ident, ResolvedType>)> {
+        let mut subst = HashMap::new();
+        let mut checked_args = Vec::with_capacity(args.len());
+        for (raw_type, arg) in params.iter().zip(args) {
+            let expected = self.expected_for_generic_param(arg.id, arg.span, raw_type, generics, defaults, &subst);
+            let checked = self.analyze_expr(arg, expected.as_ref())?;
+            unify_generic_type(generics, raw_type, &checked.r#type, &mut subst);
+            checked_args.push(checked);
+        }
+        Some((checked_args, subst))
+    }
+
+    /// `raw_type` resolved under `subst`, treating any generic in
+    /// `generics` that's unbound in `subst` but has its own declared
+    /// default as if it were already bound to that default (resolved
+    /// recursively under the same growing substitution, so `B = A` can see
+    /// whatever `A` is already bound or defaulted to). `None` -- meaning
+    /// "no hint, fall back to ordinary inference," entirely unchanged --
+    /// whenever `raw_type` references a generic with neither a binding nor
+    /// a default; deliberately checked structurally *before* attempting any
+    /// resolution, so this never mistakes an as-yet-truly-unconstrained
+    /// generic name for an ordinary unresolved type and reports a spurious
+    /// error for it.
+    pub(crate) fn expected_for_generic_param(
+        &mut self,
+        id: HirId,
+        span: Span,
+        raw_type: &Type,
+        generics: &[Ident],
+        defaults: &[Option<Type>],
+        subst: &HashMap<Ident, ResolvedType>,
+    ) -> Option<ResolvedType> {
+        if !Self::generic_refs_resolvable(raw_type, generics, defaults, subst) {
+            return None;
+        }
+        let mut local: Vec<(Ident, ResolvedType)> = subst.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (generic, default) in generics.iter().zip(defaults) {
+            if subst.contains_key(generic) {
+                continue;
+            }
+            let Some(default) = default else { continue };
+            let resolved = self.resolve_under_substitution(id, span, default, &local)?;
+            local.push((generic.clone(), resolved));
+        }
+        self.resolve_under_substitution(id, span, raw_type, &local)
+    }
+
+    /// Whether every generic `raw_type` references (anywhere in its shape)
+    /// is either already bound in `subst` or has its own declared default
+    /// -- the purely structural check `expected_for_generic_param` runs
+    /// before ever attempting real resolution. Mirrors
+    /// `type_references_generics`'s own recursive walk.
+    fn generic_refs_resolvable(
+        raw_type: &Type,
+        generics: &[Ident],
+        defaults: &[Option<Type>],
+        subst: &HashMap<Ident, ResolvedType>,
+    ) -> bool {
+        let name_ok = |name: &Ident| match generics.iter().position(|g| g == name) {
+            Some(i) => subst.contains_key(name) || defaults[i].is_some(),
+            None => true,
+        };
+        match raw_type {
+            Type::Named(path) => !path.is_unqualified() || name_ok(&path.head),
+            Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
+                Self::generic_refs_resolvable(inner, generics, defaults, subst)
+            }
+            Type::Generic(path, args) => {
+                (!path.is_unqualified() || name_ok(&path.head))
+                    && args.iter().all(|a| Self::generic_refs_resolvable(a, generics, defaults, subst))
+            }
+            Type::SpecObject(inner, _) => Self::generic_refs_resolvable(inner, generics, defaults, subst),
+            Type::SpecStatic(inner) => Self::generic_refs_resolvable(inner, generics, defaults, subst),
+            Type::Function(f) => {
+                f.params.iter().all(|(_, p)| Self::generic_refs_resolvable(p, generics, defaults, subst))
+                    && Self::generic_refs_resolvable(&f.return_type, generics, defaults, subst)
+            }
+        }
+    }
 }

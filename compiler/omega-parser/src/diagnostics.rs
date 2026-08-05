@@ -4,6 +4,7 @@
 //! module only owns what a *parser* knows: which grammar rule failed, and
 //! what advice helps fix it.
 
+use crate::ast::identifier::Ident;
 use omega_diagnostics::Diagnostic;
 pub use omega_diagnostics::Span;
 use std::fmt;
@@ -96,6 +97,9 @@ impl ParseError {
             ParseErrorKind::VisibilityNotAllowedHere => d
                 .with_label(self.span, "this item can't carry a visibility modifier")
                 .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, functions, globals, and externs"),
+            ParseErrorKind::DefaultGenericParamNotTrailing { name } => d
+                .with_label(self.span, format!("`{name}` has no default, but an earlier parameter does"))
+                .with_help("once one generic parameter has a default, every parameter after it must too"),
         }
     }
 }
@@ -182,6 +186,13 @@ pub enum ParseErrorKind {
     /// invocation) -- rejected here rather than silently dropped, same
     /// precedent as `AnnotationNotAllowedHere`.
     VisibilityNotAllowedHere,
+    /// A generic parameter with no default followed one that does have one
+    /// (`<T = i32, U>`) -- positional generic arguments make "explicit
+    /// prefix, defaulted suffix" the only unambiguous omission shape, so
+    /// this is rejected right where the full `<...>` list is known, before
+    /// it ever reaches HIR. See `omega_parser::ast::generics::GenericParam`'s
+    /// doc comment.
+    DefaultGenericParamNotTrailing { name: Ident },
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -228,6 +239,9 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::VisibilityNotAllowedHere => {
                 write!(f, "a visibility modifier is not allowed here")
+            }
+            Self::DefaultGenericParamNotTrailing { name } => {
+                write!(f, "generic parameter '{name}' has no default, but an earlier one does")
             }
         }
     }

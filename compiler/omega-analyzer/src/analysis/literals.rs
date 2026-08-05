@@ -571,10 +571,16 @@ impl<'r> Analyzer<'r> {
             return Some(type_args);
         }
         let subst = self.probe_literal_type_args(sig, lit_fields)?;
-        match resolve_inferred_type_args(&sig.generics, &subst) {
+        match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {
             Ok(type_args) => Some(type_args),
             Err(_) => {
-                let missing: Vec<Ident> = sig.generics.iter().filter(|g| !subst.contains_key(g)).cloned().collect();
+                let missing: Vec<Ident> = sig
+                    .generics
+                    .iter()
+                    .zip(&sig.defaults)
+                    .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
+                    .map(|(g, _)| g.clone())
+                    .collect();
                 self.error(
                     node_id,
                     span,
@@ -614,16 +620,23 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Duck-typed unification of `sig`'s raw declared field types against
-    /// `lit_fields`' own values, analyzed bottom-up (`expected = None`) --
-    /// each matched by field name, unmatched/unknown field names simply
-    /// contribute nothing (the real `check_field_initializers` pass reports
-    /// those precisely). Diagnostics from a *successful* probe are
-    /// discarded (same truncate-on-success pattern `Analyzer::
-    /// classify_for_in_source` already uses, `stmts.rs`) since the real
-    /// pass re-derives them; a field whose value itself fails to analyze
-    /// for an unrelated reason keeps its diagnostics and this returns
-    /// `None`, so that real error surfaces directly instead of being
-    /// masked by a confusing "cannot infer" message.
+    /// `lit_fields`' own values -- each matched by field name, unmatched/
+    /// unknown field names simply contribute nothing (the real
+    /// `check_field_initializers` pass reports those precisely). Fields are
+    /// analyzed in the literal's own written order, each against whatever
+    /// `expected_for_generic_param` can derive from the ones already
+    /// checked (an earlier field's own pin, or a still-unbound generic's
+    /// declared default) -- the identical eager precedence
+    /// `Analyzer::infer_generic_args` gives ordinary call arguments,
+    /// applied here since a struct/union/enum literal's fields are the same
+    /// "collect values, then unify" shape a function call's arguments are.
+    /// Diagnostics from a *successful* probe are discarded (same
+    /// truncate-on-success pattern `Analyzer::classify_for_in_source`
+    /// already uses, `stmts.rs`) since the real pass re-derives them; a
+    /// field whose value itself fails to analyze for an unrelated reason
+    /// keeps its diagnostics and this returns `None`, so that real error
+    /// surfaces directly instead of being masked by a confusing "cannot
+    /// infer" message.
     fn probe_literal_type_args(
         &mut self,
         sig: &GenericLiteralSignature,
@@ -635,7 +648,9 @@ impl<'r> Analyzer<'r> {
         let mut ok = true;
         for field in lit_fields {
             let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name) else { continue };
-            match self.analyze_expr(&field.value, None) {
+            let expected =
+                self.expected_for_generic_param(field.value.id, field.value.span, raw_type, &sig.generics, &sig.defaults, &subst);
+            match self.analyze_expr(&field.value, expected.as_ref()) {
                 Some(checked) => unify_generic_type(&sig.generics, raw_type, &checked.r#type, &mut subst),
                 None => ok = false,
             }

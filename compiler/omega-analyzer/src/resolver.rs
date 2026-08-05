@@ -522,6 +522,11 @@ pub type OverloadCandidates = Vec<(HirId, ResolvedFunctionType, Visibility)>;
 #[derive(Debug, Clone)]
 pub struct GenericSignature {
     pub generics: Vec<Ident>,
+    /// Each entry in `generics`' own declared default, parallel by index
+    /// (`None` for a generic with no default) -- feeds
+    /// `Analyzer::infer_generic_args`'s eager, per-argument precedence
+    /// resolution (explicit > default > inference).
+    pub defaults: Vec<Option<Type>>,
     pub params: Vec<Type>,
 }
 
@@ -529,6 +534,8 @@ pub struct GenericSignature {
 #[derive(Debug, Clone)]
 pub struct GenericLiteralSignature {
     pub generics: Vec<Ident>,
+    /// Parallel to `generics`, see `GenericSignature::defaults`.
+    pub defaults: Vec<Option<Type>>,
     /// Raw, unresolved declared field types, in the same order
     /// `Analyzer::analyze_struct_literal`'s own `declared` already uses: a
     /// struct's/union's own `fields`, or an enum variant's `dynamic_fields`
@@ -540,6 +547,11 @@ pub struct GenericLiteralSignature {
 #[derive(Debug, Clone)]
 pub struct GenericStaticFunctionSignature {
     pub owner_generics: Vec<Ident>,
+    /// Parallel to `owner_generics`, see `GenericSignature::defaults`.
+    /// `function_generics` gets no equivalent -- it's never resolved at all
+    /// today (see its own doc comment just below), so a default on one
+    /// would have nothing to plug into.
+    pub owner_defaults: Vec<Option<Type>>,
     /// The function's own declared generics, if any -- almost always
     /// empty. Kept (not silently dropped) so `resolve_generic_static_call`
     /// can make an explicit, honest decision about them (decline, today)

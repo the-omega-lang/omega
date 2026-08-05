@@ -260,6 +260,7 @@ impl ModuleResolver for Driver {
         }
         Ok(Some(GenericSignature {
             generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
+            defaults: f.generics.iter().map(|g| g.default.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))
     }
@@ -302,7 +303,11 @@ impl ModuleResolver for Driver {
         if generics.is_empty() {
             return Ok(None);
         }
-        Ok(Some(GenericLiteralSignature { generics: generics.iter().map(|g| g.ident.clone()).collect(), fields }))
+        Ok(Some(GenericLiteralSignature {
+            generics: generics.iter().map(|g| g.ident.clone()).collect(),
+            defaults: generics.iter().map(|g| g.default.clone()).collect(),
+            fields,
+        }))
     }
 
     fn generic_static_function_signature(
@@ -346,6 +351,7 @@ impl ModuleResolver for Driver {
         };
         Ok(Some(GenericStaticFunctionSignature {
             owner_generics: owner_generics.iter().map(|g| g.ident.clone()).collect(),
+            owner_defaults: owner_generics.iter().map(|g| g.default.clone()).collect(),
             function_generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
         }))

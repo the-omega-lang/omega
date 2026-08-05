@@ -278,7 +278,7 @@ impl Lowerer {
             Type::SpecStatic(bound) => {
                 let fresh = Ident(format!("$Param{next}"));
                 *next += 1;
-                generics.push(HirGenericParam { ident: fresh.clone(), bound: Some((**bound).clone()) });
+                generics.push(HirGenericParam { ident: fresh.clone(), bound: Some((**bound).clone()), default: None });
                 *ty = Type::Named(fresh.into());
             }
             Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
@@ -365,9 +365,12 @@ impl Lowerer {
     }
 
     /// Mechanical clone of a parsed generics list into HIR's own shape --
-    /// bounds stay raw/unresolved, same as everywhere else.
+    /// bounds and defaults stay raw/unresolved, same as everywhere else.
     fn lower_generics(generics: &[GenericParam]) -> Vec<HirGenericParam> {
-        generics.iter().map(|g| HirGenericParam { ident: g.ident.clone(), bound: g.bound.clone() }).collect()
+        generics
+            .iter()
+            .map(|g| HirGenericParam { ident: g.ident.clone(), bound: g.bound.clone(), default: g.default.clone() })
+            .collect()
     }
 
     /// Mechanical clone of a parsed annotation list into HIR's own shape --

@@ -836,21 +836,19 @@ impl<'r> Analyzer<'r> {
         member: &Ident,
         sig: &GenericStaticFunctionSignature,
     ) -> Option<CheckedExprNode> {
-        let mut checked_args = Vec::with_capacity(call.args.len());
-        for arg in &call.args {
-            checked_args.push(self.analyze_expr(arg, None)?);
-        }
+        let (checked_args, subst) =
+            self.infer_generic_args(&sig.owner_generics, &sig.owner_defaults, &sig.params, &call.args)?;
 
-        let mut subst = HashMap::new();
-        for (raw_type, arg) in sig.params.iter().zip(&checked_args) {
-            unify_generic_type(&sig.owner_generics, raw_type, &arg.r#type, &mut subst);
-        }
-
-        let type_args = match resolve_inferred_type_args(&sig.owner_generics, &subst) {
+        let type_args = match resolve_inferred_type_args(&sig.owner_generics, &sig.owner_defaults, &subst) {
             Ok(type_args) => type_args,
             Err(_) => {
-                let missing: Vec<Ident> =
-                    sig.owner_generics.iter().filter(|g| !subst.contains_key(g)).cloned().collect();
+                let missing: Vec<Ident> = sig
+                    .owner_generics
+                    .iter()
+                    .zip(&sig.owner_defaults)
+                    .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
+                    .map(|(g, _)| g.clone())
+                    .collect();
                 self.error(
                     node_id,
                     span,
@@ -1274,17 +1272,9 @@ impl<'r> Analyzer<'r> {
         absolute: &[Ident],
         sig: &GenericSignature,
     ) -> Option<CheckedExprNode> {
-        let mut checked_args = Vec::with_capacity(call.args.len());
-        for arg in &call.args {
-            checked_args.push(self.analyze_expr(arg, None)?);
-        }
+        let (checked_args, subst) = self.infer_generic_args(&sig.generics, &sig.defaults, &sig.params, &call.args)?;
 
-        let mut subst = HashMap::new();
-        for (raw_type, arg) in sig.params.iter().zip(&checked_args) {
-            unify_generic_type(&sig.generics, raw_type, &arg.r#type, &mut subst);
-        }
-
-        let type_args = match resolve_inferred_type_args(&sig.generics, &subst) {
+        let type_args = match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {
             Ok(type_args) => type_args,
             Err(generic) => {
                 self.error(node_id, span, AnalysisErrorKind::UnresolvedGenericParam(generic));

@@ -534,7 +534,19 @@ impl Driver {
         indirect: bool,
         bypass: bool,
     ) -> Result<ResolvedItem, ResolveError> {
-        let key = ItemKey::new(module_path, name, type_args);
+        // `index`/`generic_params` (and, when `type_args` is short, the
+        // padded-with-defaults list) have to be known *before* `ItemKey` is
+        // built: the key's own equality is purely structural over
+        // `type_args`, so two call sites that end up meaning "the same
+        // effective types" -- one spelling every argument out, one omitting
+        // a defaulted trailing one -- must produce the identical key to
+        // share one monomorphized instantiation. This runs even on what
+        // will turn out to be a cache hit; both lookups are cheap, "no
+        // analysis triggered" reads (see their own doc comments).
+        let index = self.local_item_index(module_path, name)?;
+        let generic_params = self.item_generics(module_path, name)?;
+        let type_args = self.pad_generic_defaults(module_path, name, index, &generic_params, type_args)?;
+        let key = ItemKey::new(module_path, name, &type_args);
 
         match self.items.state(&key) {
             Some(QueryState::Done) => {
@@ -545,18 +557,8 @@ impl Driver {
             None => {}
         }
 
-        let index = self.local_item_index(module_path, name)?;
-        let generic_params = self.item_generics(module_path, name)?;
-        if generic_params.len() != type_args.len() {
-            return Err(ResolveError::GenericArgCountMismatch {
-                module: module_path.to_vec(),
-                item: name.clone(),
-                expected: generic_params.len(),
-                found: type_args.len(),
-            });
-        }
         if generic_params.iter().any(|g| g.bound.is_some()) {
-            self.check_generic_bounds(&key, index, &generic_params, type_args)?;
+            self.check_generic_bounds(&key, index, &generic_params, &type_args)?;
         }
 
         let visibility = self.declared_visibility(module_path, name).expect("just indexed by local_item_index");
@@ -578,6 +580,64 @@ impl Driver {
         }
 
         Self::gate_visibility(result?, visibility, &key, accessor_module_path, bypass)
+    }
+
+    /// Pads a short `type_args` up to `generic_params.len()` by resolving
+    /// each missing *trailing* parameter's own declared default, in order --
+    /// each default may itself reference an earlier parameter (`struct
+    /// Pair<A, B = A>`), so it's resolved under the substitution built from
+    /// every parameter already concrete at that point (mirrors
+    /// `check_generic_bounds`'s own substitution-building, just grown
+    /// incrementally instead of all at once). A too-long `type_args`, or a
+    /// missing parameter with no default, is `GenericArgCountMismatch`
+    /// exactly as before this feature existed -- the trailing-only rule
+    /// (enforced at parse time, see `omega_parser`'s
+    /// `DefaultGenericParamNotTrailing`) guarantees there's never a gap
+    /// *before* a still-explicit argument to worry about.
+    fn pad_generic_defaults(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+        index: usize,
+        generic_params: &[HirGenericParam],
+        type_args: &[ResolvedType],
+    ) -> Result<Vec<ResolvedType>, ResolveError> {
+        if type_args.len() >= generic_params.len() {
+            if type_args.len() > generic_params.len() {
+                return Err(ResolveError::GenericArgCountMismatch {
+                    module: module_path.to_vec(),
+                    item: name.clone(),
+                    expected: generic_params.len(),
+                    found: type_args.len(),
+                });
+            }
+            return Ok(type_args.to_vec());
+        }
+
+        let hir = self.modules.hir(module_path);
+        let owner = item_id_span(&hir.items[index]);
+        let mut padded = type_args.to_vec();
+        for param in &generic_params[type_args.len()..] {
+            let Some(default) = &param.default else {
+                return Err(ResolveError::GenericArgCountMismatch {
+                    module: module_path.to_vec(),
+                    item: name.clone(),
+                    expected: generic_params.len(),
+                    found: type_args.len(),
+                });
+            };
+            let substitution: Vec<(Ident, ResolvedType)> =
+                generic_params.iter().map(|g| g.ident.clone()).zip(padded.iter().cloned()).collect();
+            let default = default.clone();
+            let run = self.with_analyzer(module_path, &[], owner, |analyzer| {
+                analyzer.resolve_under_substitution(owner.0, owner.1, &default, &substitution)
+            });
+            match (run.failed, run.result) {
+                (false, Some(resolved)) => padded.push(resolved),
+                _ => return Err(ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() }),
+            }
+        }
+        Ok(padded)
     }
 
     /// Checks every bound generic parameter (`T: Animal`) against the

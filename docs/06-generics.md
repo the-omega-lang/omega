@@ -123,7 +123,86 @@ reference.
 - **A zero-argument static factory inferred from `expected` alone** (e.g.
   a hypothetical `x : List<i32> = List::empty();`) — `analyze_call`'s
   interceptor pipeline doesn't thread an `expected` type through today; a
-  real, separable follow-up if a use case comes up.
+  real, separable follow-up if a use case comes up. A declared **default**
+  (see below) covers the common instance of this gap (`List<T = i32>` lets
+  `List::empty()` work with no `expected` needed at all), but an
+  undefaulted generic with no arguments to infer from is still exactly
+  this unfixed case.
+
+## Default type arguments
+
+```
+struct MyExampleList<T = i32> { value: T; }
+struct Pair<A, B = A> { a: A; b: B; }
+
+my_list := MyExampleList::new();     # T = i32
+p := Pair<u64>::new(1, 2);           # A = u64 (explicit); B = u64 (defaulted to A)
+```
+
+Any generic parameter — struct, enum, union, spec, or function — may
+declare `= Type` after its own name (and bound, if any: `T: Animal =
+Dog`). The default may reference any *earlier* parameter in the same list
+(`B = A` above), resolved under whatever that earlier parameter ends up
+concretely being, but never a later one. **Defaults must be trailing**:
+once one parameter in a list has a default, every parameter after it must
+too (`struct Bad<T = i32, U>` is a dedicated parse-time error,
+`DefaultGenericParamNotTrailing`) — positional (unnamed) generic arguments
+make "explicit prefix, defaulted suffix" the only unambiguous omission
+shape, the same rule Rust and C++ both settled on.
+
+A struct/enum/union's own defaults are resolved by `ensure_item`
+(`compiler/omega-driver/src/items.rs`) — the single choke point every item
+lookup already goes through — the moment a use site's own `type_args` list
+is shorter than the declaration's parameter list: each missing trailing
+parameter's default is resolved under the parameters already concrete at
+that point, and the result is padded onto `type_args` *before* the
+instantiation's cache key is built, so two call sites that end up meaning
+"the same effective types" (one spelling every argument out, one omitting
+a defaulted one) still share one monomorphized instantiation. A fully bare
+name with no `<...>` at all (`MyExampleList` on its own) is exactly this
+same padding starting from zero explicit arguments — it becomes valid
+shorthand automatically the moment every one of a type's generics has a
+default, with no separate mechanism needed.
+
+### Precedence in a function call: explicit > default > inference
+
+```
+add<T = u64>(a: T, b: T) => T { a + b }
+
+sum  := add(10, 20);      # T = u64      (default; neither argument pins it another way)
+sum2 := add(10u32, 20);   # T = u32      (a's own explicit suffix; b then adapts to it)
+sum3 := add(10, 20u32);   # error        (a defaults T to u64; b's own u32 suffix conflicts)
+```
+
+A generic function/static-call's arguments are still analyzed left to
+right (`Analyzer::infer_generic_args`, replacing the old "analyze
+everything, then unify" two-phase shape `finish_generic_call` used to
+have), but now each argument is analyzed *against* whatever's already
+known about its own parameter's generic: an earlier argument's own pin, or
+— if nothing has pinned it yet and the parameter's generic has a declared
+default — that default, threaded in as this argument's `expected` type the
+same way an `if`-branch or a binary operand's own anchor already works
+(see [control flow](03-control-flow.md)). A bare/adaptable literal takes
+the hint; an argument with its own explicit type (a suffix, or an
+already-concretely-typed expression) always ignores `expected` and wins
+outright, exactly as before — which is what makes `sum2`'s `b` adapt to
+`u32` while `sum3`'s `b` instead conflicts with the `u64` `a` already
+locked in, caught by the same, unchanged final argument-type check every
+ordinary call already had. No separate bookkeeping for "was this pinned by
+a default" is needed: whichever way an argument's real type ends up, it's
+what permanently pins the generic.
+
+A generic that never appears in any parameter at all (return-type-only, or
+every generic on a zero-argument call like `MyExampleList::new()` above)
+has nothing to thread `expected` through — it's left unbound by the
+argument loop and picked up by the same struct/enum/union-side default
+padding described above, once the call's owner type is resolved.
+
+Struct/union/enum **literal** construction (`Box { value = 7; }`) gets the
+identical left-to-right, default-aware treatment for its own fields
+(`Analyzer::probe_literal_type_args`) — the same "collect values, then
+unify" shape a call's arguments already have, just matched by field name
+instead of position.
 
 ## Fixed: generic struct/enum methods, and `T`-deduction from them
 

@@ -64,14 +64,16 @@ pub enum HirItem {
 }
 
 /// One `<...>` generic parameter -- a name, plus an optional single spec
-/// bound, kept as a raw, unresolved `Type` (resolved per-instantiation, the
-/// same way every other type reference in HIR is). See
-/// `omega_parser::ast::generics::GenericParam`'s doc comment for why only
-/// one bound is ever carried.
+/// bound and an optional default, both kept as a raw, unresolved `Type`
+/// (resolved per-instantiation, the same way every other type reference in
+/// HIR is). See `omega_parser::ast::generics::GenericParam`'s doc comment
+/// for why only one bound is ever carried, and for `default`'s
+/// trailing-only rule.
 #[derive(Debug, Clone)]
 pub struct HirGenericParam {
     pub ident: Ident,
     pub bound: Option<Type>,
+    pub default: Option<Type>,
 }
 
 /// `import a::b::c;` -- carried raw and unresolved, same philosophy as every

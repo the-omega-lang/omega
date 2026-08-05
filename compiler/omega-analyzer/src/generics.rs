@@ -82,11 +82,24 @@ pub fn unify_generic_type(
 
 /// Turns a completed `unify_generic_type` substitution into `generics`'
 /// own ordered `Vec<ResolvedType>`, or the first generic name that never
-/// got a binding -- the shared tail end of every duck-typed inference site
-/// (a generic function call, a generic struct/enum/union literal, ...):
-/// each has its own reason to know *which* generic came up empty (to shape
-/// its own diagnostic), so this stops at the first miss and hands the name
-/// back rather than picking a wording itself.
+/// got a binding and has no declared default either -- the shared tail end
+/// of every duck-typed inference site (a generic function call, a generic
+/// struct/enum/union literal, ...): each has its own reason to know *which*
+/// generic came up empty (to shape its own diagnostic), so this stops at
+/// the first real miss and hands the name back rather than picking a
+/// wording itself.
+///
+/// An unbound generic that *does* have a declared default is not resolved
+/// here -- it's left for the returned vec to simply be shorter than
+/// `generics`, trusting the caller to hand it on to `ensure_item`'s own
+/// default-padding gate (see `omega_driver::items::ensure_item`), the one
+/// place a default `Type` is actually turned into a `ResolvedType` for
+/// this "no argument ever bound it" case. This is only ever safe because
+/// defaults are enforced trailing-only at parse time
+/// (`omega_parser`'s `DefaultGenericParamNotTrailing`): the first unbound
+/// generic with a default means every generic after it has one too, so
+/// stopping here can never strand a later, still-explicit generic behind
+/// an unfilled gap.
 ///
 /// Every deduced type is widened -- a deduced `T` must never carry a
 /// caller-specific enum-variant refinement (`T = MyEnum`, not `T =
@@ -94,12 +107,18 @@ pub fn unify_generic_type(
 /// variant.
 pub fn resolve_inferred_type_args(
     generics: &[Ident],
+    defaults: &[Option<Type>],
     subst: &HashMap<Ident, ResolvedType>,
 ) -> Result<Vec<ResolvedType>, Ident> {
-    generics
-        .iter()
-        .map(|generic| subst.get(generic).map(ResolvedType::widened).ok_or_else(|| generic.clone()))
-        .collect()
+    let mut type_args = Vec::with_capacity(generics.len());
+    for (generic, default) in generics.iter().zip(defaults) {
+        match subst.get(generic) {
+            Some(resolved) => type_args.push(resolved.widened()),
+            None if default.is_some() => break,
+            None => return Err(generic.clone()),
+        }
+    }
+    Ok(type_args)
 }
 
 /// `concrete`'s own generic type arguments, if it's a struct/enum/union
