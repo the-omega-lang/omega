@@ -41,7 +41,31 @@ pub struct Parser<'a> {
     /// where a `{` can no longer be mistaken for the statement's own body --
     /// the exact rule rustc's parser applies.
     struct_literals_restricted: bool,
+    /// The second half of a `>>` token, once `eat_close_angle`/
+    /// `expect_close_angle` has split one in two -- e.g. closing the outer
+    /// generic of `Foo<Bar<Baz>>`, or a cast's own bracket in
+    /// `<*mut Node<T>>0`. The lexer has no notion of angle-bracket nesting
+    /// (see `TokenKind::Shr`'s own doc comment), so `>>` is always lexed as
+    /// one token regardless of context; splitting it needs somewhere to
+    /// stash the leftover `>` since `tokens` is an immutable borrowed slice
+    /// that can't be spliced in place. `peek`/`peek_at`/`advance` all
+    /// consult this ahead of `tokens[pos]` whenever it's set, so every
+    /// other parsing function keeps working completely unmodified once a
+    /// split has happened -- only ever `TokenKind::Gt`, so just its span
+    /// needs remembering.
+    pending_gt: Option<Span>,
+    /// The span of the most recently consumed token, tracked explicitly
+    /// rather than derived from `tokens[pos - 1]` (as it used to be) --
+    /// once `pending_gt` exists, the "previous token" may be a synthetic
+    /// half of a split `>>`, which has no slot of its own in `tokens`.
+    last_span: Span,
 }
+
+/// The lexer only ever collapses `>` this way as half of a wider token, so
+/// the synthetic `Token` `eat_close_angle` hands back after a split always
+/// carries this exact, dataless kind -- a `'static` constant lets `peek`
+/// return `&TokenKind` for it with no owning storage in `Parser` itself.
+const CLOSE_ANGLE_KIND: TokenKind = TokenKind::Gt;
 
 /// A saved parser position, from `Parser::mark` -- opaque; only meaningful
 /// as an argument back to `Parser::reset` on the same `Parser`.
@@ -49,6 +73,8 @@ pub struct Parser<'a> {
 pub struct Mark {
     pos: usize,
     error_count: usize,
+    pending_gt: Option<Span>,
+    last_span: Span,
 }
 
 impl<'a> Parser<'a> {
@@ -57,7 +83,14 @@ impl<'a> Parser<'a> {
     /// able to sit at that final index forever without going out of bounds.
     pub fn new(tokens: &'a [Token]) -> Self {
         debug_assert!(matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Eof)));
-        Self { tokens, pos: 0, errors: Vec::new(), struct_literals_restricted: false }
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+            struct_literals_restricted: false,
+            pending_gt: None,
+            last_span: Span::new(0, 0),
+        }
     }
 
     /// Whether a struct literal may start at the current position -- see
@@ -92,15 +125,28 @@ impl<'a> Parser<'a> {
     }
 
     pub fn peek(&self) -> &TokenKind {
+        if self.pending_gt.is_some() {
+            return &CLOSE_ANGLE_KIND;
+        }
         &self.tokens[self.pos].kind
     }
 
     pub fn peek_at(&self, n: usize) -> &TokenKind {
+        if self.pending_gt.is_some() {
+            if n == 0 {
+                return &CLOSE_ANGLE_KIND;
+            }
+            let idx = (self.pos + n - 1).min(self.tokens.len() - 1);
+            return &self.tokens[idx].kind;
+        }
         let idx = (self.pos + n).min(self.tokens.len() - 1);
         &self.tokens[idx].kind
     }
 
     pub fn peek_span(&self) -> Span {
+        if let Some(span) = self.pending_gt {
+            return span;
+        }
         self.tokens[self.pos].span
     }
 
@@ -108,7 +154,7 @@ impl<'a> Parser<'a> {
     /// last return value) -- the usual way a parsing function computes its
     /// own overall span once it's finished: `start.to(p.last_span())`.
     pub fn last_span(&self) -> Span {
-        self.tokens[self.pos.saturating_sub(1)].span
+        self.last_span
     }
 
     pub fn is_eof(&self) -> bool {
@@ -121,20 +167,27 @@ impl<'a> Parser<'a> {
     /// keeps observing `Eof` rather than panicking on an out-of-bounds
     /// index.
     pub fn advance(&mut self) -> Token {
+        if let Some(span) = self.pending_gt.take() {
+            self.last_span = span;
+            return Token { kind: TokenKind::Gt, span };
+        }
         let tok = self.tokens[self.pos].clone();
         if !matches!(tok.kind, TokenKind::Eof) {
             self.pos += 1;
+            self.last_span = tok.span;
         }
         tok
     }
 
     pub fn mark(&self) -> Mark {
-        Mark { pos: self.pos, error_count: self.errors.len() }
+        Mark { pos: self.pos, error_count: self.errors.len(), pending_gt: self.pending_gt, last_span: self.last_span }
     }
 
     pub fn reset(&mut self, mark: Mark) {
         self.pos = mark.pos;
         self.errors.truncate(mark.error_count);
+        self.pending_gt = mark.pending_gt;
+        self.last_span = mark.last_span;
     }
 
     /// Does the current token equal `kind` exactly? For payload-bearing
@@ -183,6 +236,42 @@ impl<'a> Parser<'a> {
             ParseErrorKind::Expected { expected, found: self.peek().describe() },
         );
         false
+    }
+
+    /// Consumes one `>` closing an angle-bracket construct (a generic
+    /// argument/parameter list, a cast's own bracket, `sizeof<T>`,
+    /// `raw_slice<T>`) -- unlike a bare `eat(&TokenKind::Gt)`, this also
+    /// splits a `>>` token into two logical `>`s when that's what's
+    /// actually here, so a nested generic's own closing bracket
+    /// (`Foo<Bar<Baz>>`, `<*mut Node<T>>0`) still closes correctly even
+    /// though the lexer, having no notion of angle-bracket nesting, always
+    /// lexes `>>` as one `Shr` token regardless of context. Every
+    /// closing-`>` site in the grammar must go through this (or
+    /// `expect_close_angle`) rather than a bare `Gt` check.
+    pub fn eat_close_angle(&mut self) -> bool {
+        if self.eat(&TokenKind::Gt) {
+            return true;
+        }
+        if matches!(self.peek(), TokenKind::Shr) {
+            let whole = self.peek_span();
+            let mid = whole.start + 1;
+            self.pending_gt = Some(Span::new(mid, whole.end));
+            self.pos += 1;
+            self.last_span = Span::new(whole.start, mid);
+            return true;
+        }
+        false
+    }
+
+    /// Like `eat_close_angle`, but records an `Expected` error (without
+    /// consuming anything) if neither a `>` nor a splittable `>>` is here.
+    pub fn expect_close_angle(&mut self, expected: &'static str) -> bool {
+        if self.eat_close_angle() {
+            true
+        } else {
+            self.error(ParseErrorKind::Expected { expected, found: self.peek().describe() });
+            false
+        }
     }
 
     /// Consumes the current token if it's an `Ident`, returning its name;

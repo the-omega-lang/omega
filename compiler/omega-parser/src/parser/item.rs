@@ -256,7 +256,7 @@ fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
             p.advance(); // 'sizeof'
             p.advance(); // '<'
             let r#type = crate::parser::r#type::parse_type(p)?;
-            p.expect(&TokenKind::Gt, "'>'");
+            p.expect_close_angle("'>'");
             Some(AnnotationArg::KeyValue(ident, AnnotationValue::Sizeof(r#type)))
         }
         TokenKind::Str(_) => {
@@ -403,7 +403,7 @@ fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
     while p.eat(&TokenKind::Comma) {
         generics.push(parse_generic_param(p, &mut seen_default)?);
     }
-    p.expect(&TokenKind::Gt, "'>'");
+    p.expect_close_angle("'>'");
     Some(generics)
 }
 

@@ -251,7 +251,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
 fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
     p.advance(); // '<'
     let target = crate::parser::r#type::parse_type(p)?;
-    p.expect(&TokenKind::Gt, "'>'");
+    p.expect_close_angle("'>'");
     let base = parse_unary(p)?;
     let span = start.to(base.span);
     Some(ExpressionNode { expression: Expression::Cast(Box::new(CastExpr { target, base })), span })
@@ -370,6 +370,61 @@ fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> 
     Some(ExpressionNode { expression: Expression::FunctionCall(FunctionCallExpr { callee: Box::new(callee), args }), span })
 }
 
+/// `{ ... }`/`if ... { ... }`/`match ... { ... }` -- the three block-shaped
+/// primaries, factored out of `parse_primary` so
+/// `parse_statement_leading_expression` below can reach the identical
+/// parsing logic without going through `parse_primary`'s own `match` (and,
+/// critically, without climbing back through any of the postfix/binary
+/// tiers built on top of it). Only ever called once `p.peek()` is already
+/// confirmed to be `LBrace`/`If`/`Match`.
+fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
+    match p.peek() {
+        TokenKind::LBrace => {
+            let cb = parse_codeblock(p)?;
+            let span = start.to(p.last_span());
+            Some(ExpressionNode { expression: Expression::Codeblock(cb), span })
+        }
+        TokenKind::If => {
+            let if_expr = parse_if_expr(p)?;
+            let span = start.to(p.last_span());
+            Some(ExpressionNode { expression: Expression::If(Box::new(if_expr)), span })
+        }
+        TokenKind::Match => {
+            let match_expr = parse_match_expr(p)?;
+            let span = start.to(p.last_span());
+            Some(ExpressionNode { expression: Expression::Match(Box::new(match_expr)), span })
+        }
+        _ => unreachable!("parse_block_shaped_primary called on a non-block-shaped token"),
+    }
+}
+
+/// Like `parse_expression`, but for the one position that isn't just "parse
+/// the full expression grammar": a statement's own leading expression (and
+/// `parse_codeblock`'s speculative tail-value attempt just below, which
+/// parses at that identical leading position). When the very next token
+/// starts a block-shaped primary (`{`, `if`, `match`), *only* that block is
+/// parsed -- postfix/unary/binary/assignment continuation is skipped
+/// entirely, matching Rust's own rule that a block-like expression used in
+/// statement position is never continued as an operand by whatever follows
+/// it. Without this, a bare `if cond { ... }` statement immediately
+/// followed by a new statement starting with `*`/`-`/`&` (all three also
+/// valid *infix* continuations, at the multiplicative/additive/bitand
+/// tiers respectively) gets misread as one expression spanning the
+/// statement boundary -- e.g. `*p = 5;` right after an `if` block folds
+/// into `(if cond {...}) * p = 5`, which then fails semantic analysis with
+/// a confusing "invalid assignment target" instead of parsing as two
+/// separate statements. Explicitly wanting the continuation still works --
+/// write the block in parens, `(if cond {...}) * p`, which recurses into
+/// the ordinary `parse_expression` inside `parse_primary`'s `LParen` arm,
+/// unaffected by any of this.
+pub(crate) fn parse_statement_leading_expression(p: &mut Parser) -> Option<ExpressionNode> {
+    let start = p.peek_span();
+    if matches!(p.peek(), TokenKind::LBrace | TokenKind::If | TokenKind::Match) {
+        return parse_block_shaped_primary(p, start);
+    }
+    parse_expression(p)
+}
+
 /// The atom tier. Order matters and matches the old grammar's `choice`
 /// exactly: `Bool` is tried before `Path` (`true`/`false` are keywords in
 /// this position, not identifiers -- see `lexer::TokenKind`'s doc comment
@@ -388,21 +443,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             // re-wrapped a parenthesized expression's span either.
             Some(inner)
         }
-        TokenKind::LBrace => {
-            let cb = parse_codeblock(p)?;
-            let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::Codeblock(cb), span })
-        }
-        TokenKind::If => {
-            let if_expr = parse_if_expr(p)?;
-            let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::If(Box::new(if_expr)), span })
-        }
-        TokenKind::Match => {
-            let match_expr = parse_match_expr(p)?;
-            let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::Match(Box::new(match_expr)), span })
-        }
+        TokenKind::LBrace | TokenKind::If | TokenKind::Match => parse_block_shaped_primary(p, start),
         TokenKind::LBracket => parse_array_literal(p),
         TokenKind::Number(_) => {
             let TokenKind::Number(n) = p.advance().kind else { unreachable!() };
@@ -442,7 +483,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             p.advance(); // '<'
             let r#type = crate::parser::r#type::parse_type(p)?;
             let close_span = p.peek_span();
-            p.expect(&TokenKind::Gt, "'>'");
+            p.expect_close_angle("'>'");
             let span = start.to(close_span);
             Some(ExpressionNode { expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })), span })
         }
@@ -454,7 +495,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             p.advance(); // 'raw_slice'
             p.advance(); // '<'
             let item_type = crate::parser::r#type::parse_type(p)?;
-            p.expect(&TokenKind::Gt, "'>'");
+            p.expect_close_angle("'>'");
             p.expect(&TokenKind::LParen, "'('");
             let ptr = Box::new(parse_expression(p)?);
             p.expect(&TokenKind::Comma, "','");
@@ -542,7 +583,7 @@ fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type
             break;
         }
     }
-    if !p.eat(&TokenKind::Gt) {
+    if !p.eat_close_angle() {
         p.reset(mark);
         return None;
     }
@@ -904,7 +945,7 @@ pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
                 break None;
             }
             let mark = p.mark();
-            if let Some(expr) = parse_expression(p)
+            if let Some(expr) = parse_statement_leading_expression(p)
                 && p.check(&TokenKind::RBrace)
             {
                 break Some(Box::new(expr));

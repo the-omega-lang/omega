@@ -92,17 +92,9 @@ exposed struct List<T> : ToIterator<T> {
     }
 
     exposed push(*mut self, value: T) => void {
-        # The trailing `;` after this `if` is load-bearing, not style: a
-        # bare block-shaped `if` statement immediately followed by a line
-        # starting with `*`/`-`/`&` is otherwise misparsed as a binary
-        # operator continuing the `if`'s own value into the next line (here,
-        # `(if ... {...}) * self.elem_ptr(...)`), producing a confusing
-        # "invalid assignment target" error -- a real, narrow parser gap,
-        # not something specific to this file. Worked around locally
-        # throughout `std` rather than fixed at the compiler level here.
         if self.count >= self.cap {
             self.reserve(self.count + 1);
-        };
+        }
         *self.elem_ptr(self.count) = value;
         self.count += 1;
     }
@@ -117,19 +109,17 @@ exposed struct List<T> : ToIterator<T> {
     }
 
     exposed get(*self, index: usize, out: *mut T) => bool {
-        # See `push`'s own comment on why this trailing `;` is required.
         if index >= self.count {
             return false;
-        };
+        }
         *out = *self.elem_ptr(index);
         true
     }
 
     exposed set(*mut self, index: usize, value: T) => bool {
-        # See `push`'s own comment on why this trailing `;` is required.
         if index >= self.count {
             return false;
-        };
+        }
         *self.elem_ptr(index) = value;
         true
     }

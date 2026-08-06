@@ -192,15 +192,30 @@ a genuine mismatch it wouldn't have accepted before.
   the concretely-typed operand second) still won't narrow — write
   `some_i64_var > 0` or cast explicitly instead. Not a gap left over from
   the fix above; a deliberate scope match with existing precedent.
-- **A bare, block-shaped `if` statement (no `else`) immediately followed
-  by a new statement starting with `*`/`-`/`&` is misparsed** — the
-  following line's leading operator is read as a binary operator
-  continuing the `if`'s own value into the next statement (e.g. `if cond {
-  ... } \n *ptr = value;` parses as `(if cond {...}) * ptr = value`),
-  producing a confusing "invalid assignment target" error instead of two
-  separate statements. Found repeatedly while writing `std`'s own
-  collections (`List<T>::push`/`get`/`set`, all of which follow a
-  capacity-check `if` with a pointer-deref statement) — worked around
-  locally with an explicit trailing `;` after the `if` block's closing
-  brace, not fixed at the parser level. See
+- **Fixed: a bare, block-shaped `if`/`{ }`/`match` statement immediately
+  followed by a new statement starting with `*`/`-`/`&` used to be
+  misparsed** — the following line's leading operator was read as a
+  binary operator continuing the block's own value into the next
+  statement (e.g. `if cond { ... } \n *ptr = value;` parsed as `(if cond
+  {...}) * ptr = value`), producing a confusing "invalid assignment
+  target" error instead of two separate statements. Found repeatedly
+  while writing `std`'s own collections (`List<T>::push`/`get`/`set`, all
+  of which follow a capacity-check `if` with a pointer-deref statement).
+  Root cause: a statement's leading expression parsed through the same
+  shared precedence-climbing tiers as any other expression, so by the
+  time anything checked whether the result was block-shaped, a following
+  `*`/`-`/`&` (all three also valid infix continuations, at the
+  multiplicative/additive/bitand tiers respectively) had already been
+  folded in. Fixed by giving statement-leading position (and
+  `parse_codeblock`'s own speculative tail-value attempt, which parses at
+  the identical leading position) a dedicated entry point
+  (`parse_statement_leading_expression`,
+  `compiler/omega-parser/src/parser/expression.rs`) that, when the very
+  next token starts `{`/`if`/`match`, parses only that block and returns
+  immediately, skipping the climbing tiers entirely — matching Rust's own
+  rule that a block-like expression in statement position is never
+  continued as an operand by whatever follows it. Explicit continuation
+  still works if genuinely wanted: wrap the block in parens
+  (`(if cond {...}) * ptr`), which recurses into the ordinary expression
+  grammar unaffected by this. See
   [the standard library](23-standard-library.md).

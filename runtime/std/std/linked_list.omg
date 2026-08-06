@@ -19,15 +19,6 @@
 import alloc::alloc;
 import alloc::free;
 
-# `<*mut Node<T> >0`, not `<*mut Node<T>>0` -- another real, narrow parser
-# gap found while writing this file: a cast target ending in a nested
-# generic's own closing `>` immediately followed by the cast's own closing
-# `>` lexes as one `>>` token instead of two, unlike an ordinary generic
-# argument list's own already-handled `>>`-splitting (`Foo<Bar<Baz>>`).
-# The single space is a purely cosmetic, zero-risk workaround; worked
-# around locally throughout this file rather than fixed at the compiler
-# level here.
-
 # Hidden (module-scoped) as a top-level declaration -- fine to reference
 # from `LinkedList<T>`/`LinkedListIterator<T>` below, both in this same
 # file -- but its own fields are `internal`, not hidden: a hidden *field*
@@ -46,17 +37,17 @@ exposed struct LinkedList<T> : ToIterator<T> {
     count: usize;
 
     exposed new() => Self {
-        Self { head = <*mut Node<T> >0; tail = <*mut Node<T> >0; count = 0; }
+        Self { head = <*mut Node<T>>0; tail = <*mut Node<T>>0; count = 0; }
     }
 
     exposed len(*self) => usize { self.count }
     exposed is_empty(*self) => bool { self.count == 0 }
 
     exposed push_back(*mut self, value: T) => void {
-        new_node := <*mut Node<T> >alloc(sizeof<Node<T> >);
+        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>);
         old_tail := self.tail;
-        *new_node = Node<T> { value = value; prev = old_tail; next = <*mut Node<T> >0; };
-        if old_tail == <*mut Node<T> >0 {
+        *new_node = Node<T> { value = value; prev = old_tail; next = <*mut Node<T>>0; };
+        if old_tail == <*mut Node<T>>0 {
             self.head = new_node;
         } else {
             (*old_tail).next = new_node;
@@ -66,10 +57,10 @@ exposed struct LinkedList<T> : ToIterator<T> {
     }
 
     exposed push_front(*mut self, value: T) => void {
-        new_node := <*mut Node<T> >alloc(sizeof<Node<T> >);
+        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>);
         old_head := self.head;
-        *new_node = Node<T> { value = value; prev = <*mut Node<T> >0; next = old_head; };
-        if old_head == <*mut Node<T> >0 {
+        *new_node = Node<T> { value = value; prev = <*mut Node<T>>0; next = old_head; };
+        if old_head == <*mut Node<T>>0 {
             self.tail = new_node;
         } else {
             (*old_head).prev = new_node;
@@ -79,16 +70,16 @@ exposed struct LinkedList<T> : ToIterator<T> {
     }
 
     exposed pop_back(*mut self) => Option<T> {
-        if self.tail == <*mut Node<T> >0 {
+        if self.tail == <*mut Node<T>>0 {
             return Option<T>::None;
         }
         old_tail := self.tail;
         value := (*old_tail).value;
         new_tail := (*old_tail).prev;
-        if new_tail == <*mut Node<T> >0 {
-            self.head = <*mut Node<T> >0;
+        if new_tail == <*mut Node<T>>0 {
+            self.head = <*mut Node<T>>0;
         } else {
-            (*new_tail).next = <*mut Node<T> >0;
+            (*new_tail).next = <*mut Node<T>>0;
         }
         self.tail = new_tail;
         self.count -= 1;
@@ -97,16 +88,16 @@ exposed struct LinkedList<T> : ToIterator<T> {
     }
 
     exposed pop_front(*mut self) => Option<T> {
-        if self.head == <*mut Node<T> >0 {
+        if self.head == <*mut Node<T>>0 {
             return Option<T>::None;
         }
         old_head := self.head;
         value := (*old_head).value;
         new_head := (*old_head).next;
-        if new_head == <*mut Node<T> >0 {
-            self.tail = <*mut Node<T> >0;
+        if new_head == <*mut Node<T>>0 {
+            self.tail = <*mut Node<T>>0;
         } else {
-            (*new_head).prev = <*mut Node<T> >0;
+            (*new_head).prev = <*mut Node<T>>0;
         }
         self.head = new_head;
         self.count -= 1;
@@ -116,13 +107,13 @@ exposed struct LinkedList<T> : ToIterator<T> {
 
     exposed clear(*mut self) => void {
         mut current := self.head;
-        while current != <*mut Node<T> >0 {
+        while current != <*mut Node<T>>0 {
             next := (*current).next;
             free(<*u8>current);
             current = next;
         }
-        self.head = <*mut Node<T> >0;
-        self.tail = <*mut Node<T> >0;
+        self.head = <*mut Node<T>>0;
+        self.tail = <*mut Node<T>>0;
         self.count = 0;
     }
 
@@ -139,7 +130,7 @@ exposed struct LinkedListIterator<T> : Iterator<T> {
     internal current: *mut Node<T>;
 
     exposed next(*mut self) => Option<T> {
-        if self.current == <*mut Node<T> >0 {
+        if self.current == <*mut Node<T>>0 {
             return Option<T>::None;
         }
         value := (*self.current).value;

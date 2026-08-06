@@ -173,7 +173,7 @@ fn parse_named_type(p: &mut Parser) -> Option<Type> {
         while p.eat(&TokenKind::Comma) {
             args.push(parse_type(p)?);
         }
-        p.expect(&TokenKind::Gt, "'>'");
+        p.expect_close_angle("'>'");
         Some(Type::Generic(path, args))
     } else {
         Some(Type::Named(path))

@@ -28,12 +28,6 @@
 import alloc::alloc;
 import alloc::free;
 
-# Every `<T, U> >` (implements clauses, casts) with a deliberate space
-# before the final `>` works around the same real, narrow parser gap
-# `std::linked_list` already documents in its own header comment -- two
-# adjacent closing `>`s from nested generics don't always split the way an
-# ordinary `Foo<Bar<Baz>>` type reference already does.
-
 # Hidden (module-scoped) top-level declaration, `internal` fields -- see
 # `std::linked_list::Node<T>`'s identical doc comment for why the two
 # differ.
@@ -51,7 +45,7 @@ exposed struct KeyValue<K, V> {
     exposed value: V;
 }
 
-exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
+exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V>> {
     buckets: *mut *mut Entry<K, V>;
     bucket_count: usize;
     count: usize;
@@ -62,7 +56,7 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
     # `List<T>::elem_ptr` needs it -- see that file's own doc comment.
     # Static (no `self`) -- pure computation from its own two arguments.
     bucket_slot_in(buckets: *mut *mut Entry<K, V>, idx: usize) => *mut *mut Entry<K, V> {
-        <*mut *mut Entry<K, V> >(<usize>buckets + idx * sizeof<*mut Entry<K, V> >)
+        <*mut *mut Entry<K, V>>(<usize>buckets + idx * sizeof<*mut Entry<K, V>>)
     }
 
     # Allocates `n` bucket slots, all zeroed (null) -- freshly allocated
@@ -71,10 +65,10 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
     # for the same reason `bucket_slot_in` is -- needed before `Self` is
     # even constructed, in `new`.
     alloc_buckets(n: usize) => *mut *mut Entry<K, V> {
-        buckets := <*mut *mut Entry<K, V> >alloc(n * sizeof<*mut Entry<K, V> >);
+        buckets := <*mut *mut Entry<K, V>>alloc(n * sizeof<*mut Entry<K, V>>);
         mut i : usize = 0;
         while i < n {
-            *Self::bucket_slot_in(buckets, i) = <*mut Entry<K, V> >0;
+            *Self::bucket_slot_in(buckets, i) = <*mut Entry<K, V>>0;
             i += 1;
         }
         buckets
@@ -108,7 +102,7 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
         mut b : usize = 0;
         while b < old_bucket_count {
             mut current := *Self::bucket_slot_in(old_buckets, b);
-            while current != <*mut Entry<K, V> >0 {
+            while current != <*mut Entry<K, V>>0 {
                 next := (*current).next;
                 idx := self.bucket_index((*current).key);
                 (*current).next = *self.bucket_slot(idx);
@@ -126,7 +120,7 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
         }
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
-        while current != <*mut Entry<K, V> >0 {
+        while current != <*mut Entry<K, V>>0 {
             if (*current).key.equals(key) {
                 old_value := (*current).value;
                 (*current).value = value;
@@ -134,7 +128,7 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
             }
             current = (*current).next;
         }
-        new_entry := <*mut Entry<K, V> >alloc(sizeof<Entry<K, V> >);
+        new_entry := <*mut Entry<K, V>>alloc(sizeof<Entry<K, V>>);
         *new_entry = Entry<K, V> { key = key; value = value; next = *self.bucket_slot(idx); };
         *self.bucket_slot(idx) = new_entry;
         self.count += 1;
@@ -144,7 +138,7 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
     exposed get(*self, key: K) => Option<V> {
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
-        while current != <*mut Entry<K, V> >0 {
+        while current != <*mut Entry<K, V>>0 {
             if (*current).key.equals(key) {
                 return Option<V>::Some { value = (*current).value; };
             }
@@ -156,7 +150,7 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
     exposed contains_key(*self, key: K) => bool {
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
-        while current != <*mut Entry<K, V> >0 {
+        while current != <*mut Entry<K, V>>0 {
             if (*current).key.equals(key) {
                 return true;
             }
@@ -168,10 +162,10 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
     exposed remove(*mut self, key: K) => Option<V> {
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
-        mut prev := <*mut Entry<K, V> >0;
-        while current != <*mut Entry<K, V> >0 {
+        mut prev := <*mut Entry<K, V>>0;
+        while current != <*mut Entry<K, V>>0 {
             if (*current).key.equals(key) {
-                if prev == <*mut Entry<K, V> >0 {
+                if prev == <*mut Entry<K, V>>0 {
                     *self.bucket_slot(idx) = (*current).next;
                 } else {
                     (*prev).next = (*current).next;
@@ -191,12 +185,12 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
         mut b : usize = 0;
         while b < self.bucket_count {
             mut current := *self.bucket_slot(b);
-            while current != <*mut Entry<K, V> >0 {
+            while current != <*mut Entry<K, V>>0 {
                 next := (*current).next;
                 free(<*u8>current);
                 current = next;
             }
-            *self.bucket_slot(b) = <*mut Entry<K, V> >0;
+            *self.bucket_slot(b) = <*mut Entry<K, V>>0;
             b += 1;
         }
         self.count = 0;
@@ -212,27 +206,27 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V> > {
             buckets = self.buckets;
             bucket_count = self.bucket_count;
             bucket_index = 0;
-            current = <*mut Entry<K, V> >0;
+            current = <*mut Entry<K, V>>0;
         }
     }
 }
 
-exposed struct HashMapIterator<K, V> : Iterator<KeyValue<K, V> > {
+exposed struct HashMapIterator<K, V> : Iterator<KeyValue<K, V>> {
     internal buckets: *mut *mut Entry<K, V>;
     internal bucket_count: usize;
     internal bucket_index: usize;
     internal current: *mut Entry<K, V>;
 
-    exposed next(*mut self) => Option<KeyValue<K, V> > {
-        while self.current == <*mut Entry<K, V> >0 {
+    exposed next(*mut self) => Option<KeyValue<K, V>> {
+        while self.current == <*mut Entry<K, V>>0 {
             if self.bucket_index >= self.bucket_count {
-                return Option<KeyValue<K, V> >::None;
+                return Option<KeyValue<K, V>>::None;
             }
-            self.current = *<*mut *mut Entry<K, V> >(<usize>self.buckets + self.bucket_index * sizeof<*mut Entry<K, V> >);
+            self.current = *<*mut *mut Entry<K, V>>(<usize>self.buckets + self.bucket_index * sizeof<*mut Entry<K, V>>);
             self.bucket_index += 1;
         }
         entry := self.current;
         self.current = (*entry).next;
-        Option<KeyValue<K, V> >::Some { value = KeyValue<K, V> { key = (*entry).key; value = (*entry).value; }; }
+        Option<KeyValue<K, V>>::Some { value = KeyValue<K, V> { key = (*entry).key; value = (*entry).value; }; }
     }
 }

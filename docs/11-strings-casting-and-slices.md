@@ -155,13 +155,22 @@ len)` reuses the already-existing fat→fat `Reinterpret` cast between
   order), and each occurrence is a one-shot construction site, not
   plausibly repeated the way string literals are. A documented
   simplification, not an oversight.
-- **A cast target ending in a nested generic's own closing `>`,
-  immediately followed by the cast's own closing `>`, lexes as one `>>`
-  token instead of two** (e.g. `<*mut Node<T>>0` — unlike an ordinary
-  generic argument list, where a trailing `>>` is already correctly
-  split). Produces a parse error ("expected '>', found '>>'"). Found
-  while writing `std::linked_list`/`std::hash_map`, both of which cast to
-  pointers of their own generic node types; worked around with an
-  explicit space before the cast's closing bracket (`<*mut Node<T> >0`),
-  not fixed at the lexer level. See
+- **Fixed: a closing `>` immediately followed by another closing `>`
+  (from a nested generic, a cast, `sizeof<T>`, or `raw_slice<T>`) used to
+  lex as one `>>` token instead of two.** The bug was broader than any
+  one construct — nested generics inside an ordinary type position
+  (`Bar<Baz<T>>` as a struct field's type) hit it too, not just the cast
+  case (`<*mut Node<T>>0`) that surfaced it while writing
+  `std::linked_list`/`std::hash_map`; every closing-`>` site in the
+  grammar used the same naive single-token check, and nothing anywhere
+  actually split a `>>`. Fixed generally rather than per-site:
+  `Parser::eat_close_angle`/`expect_close_angle`
+  (`compiler/omega-parser/src/parser/mod.rs`) split a `Shr` token in two
+  on demand, stashing the leftover `>` in a `pending_gt` slot that
+  `peek`/`peek_at`/`advance` all consult ahead of the real token stream —
+  so every other parsing function keeps working unmodified once a split
+  has happened. All 7 closing-`>` call sites (generic types, generic
+  parameters, casts, `sizeof<T>`, `raw_slice<T>`, and the speculative
+  `Optional<T>::Some`-style generic-args parse) now go through these
+  instead of a bare `Gt` check. See
   [the standard library](23-standard-library.md).

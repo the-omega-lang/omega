@@ -8,7 +8,7 @@ use crate::ast::statement::{
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
-use crate::parser::expression::{parse_codeblock, parse_expression};
+use crate::parser::expression::{parse_codeblock, parse_expression, parse_statement_leading_expression};
 use crate::parser::{Parser, recovery};
 
 /// One statement, function-body scope. A deliberate cleanup from the old
@@ -128,8 +128,9 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             parse_walrus_or_declaration(p, false, false)
         }
         _ => {
-            let expr = parse_expression(p)?;
-            let block_shaped = matches!(expr.expression, Expression::Codeblock(_) | Expression::If(_));
+            let expr = parse_statement_leading_expression(p)?;
+            let block_shaped =
+                matches!(expr.expression, Expression::Codeblock(_) | Expression::If(_) | Expression::Match(_));
             Some((Statement::Expression(expr), block_shaped))
         }
     }

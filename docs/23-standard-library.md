@@ -193,11 +193,13 @@ other).
 - **No char-decoding iterator on `String`** — `push`/`as_str` only, no
   `chars()`. A natural, separable follow-up, deliberately not bundled in
   here.
-- Two real, narrow parser bugs were found (not fixed) while writing this
-  package — see [known issues](14-known-issues.md)'s `## Parser` section,
-  [control flow](03-control-flow.md), and
-  [strings, casting & slices](11-strings-casting-and-slices.md) for the
-  full writeups and the workarounds used throughout these files.
+- Two real parser bugs were found while writing this package — both now
+  fixed at the compiler level (see the "Fixed" notes in
+  [control flow](03-control-flow.md) and
+  [strings, casting & slices](11-strings-casting-and-slices.md)); the
+  workarounds they originally needed (a trailing `;` after an `if` block,
+  an explicit space before a cast's closing `>`) have been removed from
+  every file in this package.
 - `Result<T, E>` still doesn't exist anywhere in this language. Nothing
   here needed it — every fallible operation above is `Option<T>`, `bool`,
   or an out-pointer/`bool` pair — so it isn't added speculatively; a
