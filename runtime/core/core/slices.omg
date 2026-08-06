@@ -9,6 +9,14 @@
 # layer at all (nothing to call on a target with no libc), so "fails
 # cleanly, inspectable by the caller" is the only available shape for a
 # partial operation. `false` leaves `*out` untouched.
+#
+# Note: unlike `numerics.omg`/`strings.omg`'s own `for $T` blocks, a
+# `for [T]` (slice-pattern) target's own function list does not accept a
+# leading visibility modifier at all -- a real, separate parser limitation
+# confirmed while working on this file, out of scope for the current task.
+# These methods are effectively still only reachable from within `core`
+# itself for now, same as every other `for`-attached method was before
+# this pass.
 
 spec SliceImpl<T> for [T] {
     is_empty(*self) => bool {

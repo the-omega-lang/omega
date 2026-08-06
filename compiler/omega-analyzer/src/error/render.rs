@@ -591,6 +591,12 @@ impl AnalysisErrorKind {
                     "a {kind} must hold at least one field with nonzero size -- use 'marker' to declare a type with no data"
                 ))
             }
+            Self::RawSlicePointerMismatch { item_type, found } => d
+                .with_label(span, format!("this has type `{found}`, expected a pointer to `{item_type}`"))
+                .with_note("`raw_slice<T>`'s first argument must be `*T` or `*mut T` -- the result's own mutability is inherited from it"),
+            Self::RawSliceInvalidLength { found } => {
+                d.with_label(span, format!("`raw_slice`'s length must be `i32`, found `{found}`"))
+            }
         }
     }
 }

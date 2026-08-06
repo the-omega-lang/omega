@@ -362,8 +362,27 @@ impl Codegen {
     pub(super) fn place_storage_address(&mut self, builder: &mut FunctionBuilder, storage: &PlaceStorage) -> Value {
         let ptr_type = self.pointer_type();
         match storage {
-            PlaceStorage::Values(_) => {
-                todo!("taking the address of a function parameter is not yet implemented");
+            // A parameter's own SSA-register-backed values have no address
+            // by construction -- spilled into a fresh stack slot on
+            // demand, the same lazy-materialization `MirPlaceRoot::Expr`/
+            // `MirProjection::UnionField` already use elsewhere in this
+            // file (see their own comments) for the identical reason, so
+            // a parameter's address can be taken (an explicit `&param`, or
+            // the implicit auto-ref a `*self`/`*mut self` method call
+            // needs) like any other in-memory place's. Size computed
+            // directly from the leaf values' own Cranelift IR types,
+            // exactly like `store_scalars` already does, rather than
+            // requiring this function to also take a `ResolvedType` it
+            // doesn't otherwise need; alignment uses `stack_align_shift`'s
+            // own floor (16 bytes) since there's no declared type here to
+            // ask for a real one, and over-aligning a stack slot is always
+            // safe, just occasionally a few bytes wide.
+            PlaceStorage::Values(values) => {
+                let size: u32 = values.iter().map(|v| builder.func.dfg.value_type(*v).bytes()).sum();
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
+                let spilled = PlaceStorage::Slot { slot, offset: 0 };
+                self.store_scalars(builder, &spilled, values);
+                builder.ins().stack_addr(ptr_type, slot, 0)
             }
             PlaceStorage::Slot { slot, offset } => builder.ins().stack_addr(ptr_type, *slot, *offset as i32),
             PlaceStorage::Address { base, offset: 0 } => *base,

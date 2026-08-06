@@ -5,7 +5,7 @@ use crate::hir::{
     HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
     HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam,
     HirIf, HirImport, HirItem, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
-    HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirSpecFunction, HirStmt,
+    HirPlaceRoot, HirProjection, HirRange, HirRawSlice, HirSlice, HirSpecDef, HirSpecFunction, HirStmt,
     HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
@@ -676,6 +676,15 @@ impl Lowerer {
             }
             Expression::Sizeof(sizeof) => {
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Sizeof(sizeof.r#type.clone()) }
+            }
+            Expression::RawSlice(raw_slice) => {
+                let ptr = Box::new(self.lower_expr(&raw_slice.ptr));
+                let len = Box::new(self.lower_expr(&raw_slice.len));
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::RawSlice(HirRawSlice { item_type: raw_slice.item_type.clone(), ptr, len }),
+                }
             }
             Expression::Increment(incr) => {
                 let base = Box::new(self.lower_expr(&incr.base));

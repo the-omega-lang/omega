@@ -293,10 +293,16 @@ impl Context {
         module_path: &[Ident],
     ) -> Result<Vec<Ident>, TypeResolutionError> {
         if path.is_unqualified() {
-            if let Some(ImportTarget::GenericItem(absolute)) =
-                resolver.resolve_import_alias(module_path, &path.head).map_err(TypeResolutionError::ModuleResolution)?
-            {
-                return Ok(absolute);
+            // `ImportTarget::Item`'s own eagerly-resolved snapshot is
+            // deliberately ignored here, same as `resolve_named_type`'s
+            // identical case -- this function's only job is the absolute
+            // *path*; every caller re-resolves through `resolver` itself
+            // afterward (with its own real `indirect`/args), never trusting
+            // a cached snapshot built with someone else's assumptions.
+            match resolver.resolve_import_alias(module_path, &path.head).map_err(TypeResolutionError::ModuleResolution)? {
+                Some(ImportTarget::GenericItem(absolute)) => return Ok(absolute),
+                Some(ImportTarget::Item(absolute, _)) => return Ok(absolute),
+                _ => {}
             }
             Ok(module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect())
         } else {

@@ -5,8 +5,8 @@ use crate::ast::expression::{
     codeblock::CodeblockExpr, comp::CompExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
-    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, reveal::RevealExpr, sizeof::SizeofExpr, slice::SliceExpr,
-    string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
+    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, raw_slice::RawSliceExpr, reveal::RevealExpr,
+    sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 use crate::ast::range::RangeExpr;
 use crate::diagnostics::{ParseErrorKind, Span};
@@ -445,6 +445,24 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             p.expect(&TokenKind::Gt, "'>'");
             let span = start.to(close_span);
             Some(ExpressionNode { expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })), span })
+        }
+        // `raw_slice<Type>(ptr, len)` -- same contextual-keyword shape as
+        // `sizeof<Type>` just above (committed to only when immediately
+        // followed by `<`), plus a fixed two-argument parenthesized list
+        // (unlike `callee(args)`'s own comma-separated, any-length form).
+        TokenKind::Ident(name) if name == "raw_slice" && matches!(p.peek_at(1), TokenKind::Lt) => {
+            p.advance(); // 'raw_slice'
+            p.advance(); // '<'
+            let item_type = crate::parser::r#type::parse_type(p)?;
+            p.expect(&TokenKind::Gt, "'>'");
+            p.expect(&TokenKind::LParen, "'('");
+            let ptr = Box::new(parse_expression(p)?);
+            p.expect(&TokenKind::Comma, "','");
+            let len = Box::new(parse_expression(p)?);
+            let close_span = p.peek_span();
+            p.expect(&TokenKind::RParen, "')'");
+            let span = start.to(close_span);
+            Some(ExpressionNode { expression: Expression::RawSlice(Box::new(RawSliceExpr { item_type, ptr, len })), span })
         }
         TokenKind::Ident(_) => {
             let path = parse_expr_path(p)?;

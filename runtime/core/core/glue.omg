@@ -9,9 +9,17 @@
 # supported yet) and self-less: called through this spec's own qualified
 # name (`core::glue::GlobalAllocator::alloc(...)`), exactly like a marker's
 # static function, never through an instance.
+#
+# `alloc`/`realloc` return `*mut u8`, not `*u8` -- freshly allocated memory
+# is always meant to be written into, and a plain `*u8` can never be cast to
+# a `*mut T` (mutable-target-needs-mutable-source, the same directional rule
+# ordinary pointer coercion enforces), which would make writing into a new
+# allocation impossible for any caller. `free`'s own parameter stays a plain
+# `*u8` -- freeing needs an address, not write access, and a `*mut u8`
+# argument widens to it for free either way.
 @gap
 exposed spec GlobalAllocator {
-    alloc(size: usize) => *u8;
+    alloc(size: usize) => *mut u8;
     free(ptr: *u8) => void;
-    realloc(ptr: *u8, size: usize) => *u8;
+    realloc(ptr: *u8, size: usize) => *mut u8;
 }

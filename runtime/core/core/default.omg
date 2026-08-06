@@ -4,6 +4,8 @@
 # role Rust's `Default` trait plays, useful anywhere generic code needs
 # *some* starting value without caring which type it's working with.
 
-spec Default {
+# `exposed` for the same reason `core::cmp`'s `Eq`/`Ord`/`Ordering` are --
+# see that file's own doc comment.
+exposed spec Default {
     default() => Self;
 }

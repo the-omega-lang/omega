@@ -1,0 +1,7 @@
+# `std`'s own root file -- unlike `core` (see `runtime/core/core/core.omg`),
+# `std` gets no ambient-prelude/eager-discovery privilege of its own: it's
+# an ordinary `--extern` package, the same way `plat` is (see
+# `docs/22-platform-glue.md`), consumed via explicit `import std::list::List;`
+# and friends. This file still has nothing to declare -- it exists only
+# because the compiler needs a conventionally-named entry file to find
+# (`std.omg`/`std/std.omg`) when `std` is compiled standalone.

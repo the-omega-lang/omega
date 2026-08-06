@@ -1,0 +1,149 @@
+# `std::linked_list` -- `LinkedList<T>`, a doubly linked list. Each element
+# is its own individual heap allocation (`Node<T>`), unlike `List<T>`'s one
+# contiguous buffer -- the classic space/locality-for-O(1)-splice tradeoff.
+#
+# Same allocator/cleanup story as `std::list::List<T>`: built on
+# `std::alloc` (see that file's own doc comment for why generic collection
+# methods route allocator calls through it rather than calling
+# `core::glue::GlobalAllocator` directly), no RAII, explicit `free`:
+#
+#   list := LinkedList<i32>::new();
+#   defer list.free();
+#
+# `pop_back`/`pop_front` return `Option<T>` rather than `List<T>`'s out-
+# pointer/`bool` convention -- no existing Omega precedent to match here
+# (unlike `List<T>`, which mirrors `core::slices::SliceImpl<T>`), so this
+# follows Rust's own `VecDeque`/`LinkedList` API shape instead, matching
+# node-chasing's own non-hot-path character.
+
+import alloc::alloc;
+import alloc::free;
+
+# `<*mut Node<T> >0`, not `<*mut Node<T>>0` -- another real, narrow parser
+# gap found while writing this file: a cast target ending in a nested
+# generic's own closing `>` immediately followed by the cast's own closing
+# `>` lexes as one `>>` token instead of two, unlike an ordinary generic
+# argument list's own already-handled `>>`-splitting (`Foo<Bar<Baz>>`).
+# The single space is a purely cosmetic, zero-risk workaround; worked
+# around locally throughout this file rather than fixed at the compiler
+# level here.
+
+# Hidden (module-scoped) as a top-level declaration -- fine to reference
+# from `LinkedList<T>`/`LinkedListIterator<T>` below, both in this same
+# file -- but its own fields are `internal`, not hidden: a hidden *field*
+# is only visible inside its own type's own methods (narrower than "same
+# module"), and both of the other two types here need to read/write these
+# directly.
+struct Node<T> {
+    internal value: T;
+    internal prev: *mut Node<T>;
+    internal next: *mut Node<T>;
+}
+
+exposed struct LinkedList<T> : ToIterator<T> {
+    head: *mut Node<T>;
+    tail: *mut Node<T>;
+    count: usize;
+
+    exposed new() => Self {
+        Self { head = <*mut Node<T> >0; tail = <*mut Node<T> >0; count = 0; }
+    }
+
+    exposed len(*self) => usize { self.count }
+    exposed is_empty(*self) => bool { self.count == 0 }
+
+    exposed push_back(*mut self, value: T) => void {
+        new_node := <*mut Node<T> >alloc(sizeof<Node<T> >);
+        old_tail := self.tail;
+        *new_node = Node<T> { value = value; prev = old_tail; next = <*mut Node<T> >0; };
+        if old_tail == <*mut Node<T> >0 {
+            self.head = new_node;
+        } else {
+            (*old_tail).next = new_node;
+        }
+        self.tail = new_node;
+        self.count += 1;
+    }
+
+    exposed push_front(*mut self, value: T) => void {
+        new_node := <*mut Node<T> >alloc(sizeof<Node<T> >);
+        old_head := self.head;
+        *new_node = Node<T> { value = value; prev = <*mut Node<T> >0; next = old_head; };
+        if old_head == <*mut Node<T> >0 {
+            self.tail = new_node;
+        } else {
+            (*old_head).prev = new_node;
+        }
+        self.head = new_node;
+        self.count += 1;
+    }
+
+    exposed pop_back(*mut self) => Option<T> {
+        if self.tail == <*mut Node<T> >0 {
+            return Option<T>::None;
+        }
+        old_tail := self.tail;
+        value := (*old_tail).value;
+        new_tail := (*old_tail).prev;
+        if new_tail == <*mut Node<T> >0 {
+            self.head = <*mut Node<T> >0;
+        } else {
+            (*new_tail).next = <*mut Node<T> >0;
+        }
+        self.tail = new_tail;
+        self.count -= 1;
+        free(<*u8>old_tail);
+        Option<T>::Some { value = value; }
+    }
+
+    exposed pop_front(*mut self) => Option<T> {
+        if self.head == <*mut Node<T> >0 {
+            return Option<T>::None;
+        }
+        old_head := self.head;
+        value := (*old_head).value;
+        new_head := (*old_head).next;
+        if new_head == <*mut Node<T> >0 {
+            self.tail = <*mut Node<T> >0;
+        } else {
+            (*new_head).prev = <*mut Node<T> >0;
+        }
+        self.head = new_head;
+        self.count -= 1;
+        free(<*u8>old_head);
+        Option<T>::Some { value = value; }
+    }
+
+    exposed clear(*mut self) => void {
+        mut current := self.head;
+        while current != <*mut Node<T> >0 {
+            next := (*current).next;
+            free(<*u8>current);
+            current = next;
+        }
+        self.head = <*mut Node<T> >0;
+        self.tail = <*mut Node<T> >0;
+        self.count = 0;
+    }
+
+    exposed free(*mut self) => void {
+        self.clear();
+    }
+
+    exposed to_iterator(*self) => LinkedListIterator<T> {
+        LinkedListIterator<T> { current = self.head; }
+    }
+}
+
+exposed struct LinkedListIterator<T> : Iterator<T> {
+    internal current: *mut Node<T>;
+
+    exposed next(*mut self) => Option<T> {
+        if self.current == <*mut Node<T> >0 {
+            return Option<T>::None;
+        }
+        value := (*self.current).value;
+        self.current = (*self.current).next;
+        Option<T>::Some { value = value; }
+    }
+}

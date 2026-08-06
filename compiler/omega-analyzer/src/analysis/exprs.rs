@@ -56,6 +56,8 @@ impl<'r> Analyzer<'r> {
                 literal(ResolvedType::USize, CheckedExpr::Sizeof(target_type))
             }
 
+            HirExpr::RawSlice(raw_slice) => self.analyze_raw_slice(id, span, raw_slice),
+
             HirExpr::If(HirIf { branches, else_branch }) => {
                 self.analyze_if(id, span, branches, else_branch.as_ref(), expected)
             }
@@ -920,7 +922,53 @@ impl<'r> Analyzer<'r> {
                 base: Box::new(checked_base),
             }),
         })
-    
+
+    }
+
+    /// `raw_slice<T>(ptr, len)` -- the one way to build a `*[T]`/`*mut [T]`
+    /// from scratch (see `HirExpr::RawSlice`'s doc comment for why nothing
+    /// else in the language can). `ptr` is analyzed with no `expected` (its
+    /// own declared type must already genuinely be a pointer to `T`, the
+    /// same way `analyze_cast`'s `base` keeps its own natural type); `len`
+    /// is analyzed with `expected = Some(I32)` so a bare untyped literal
+    /// adapts, matching `analyze_bound`'s identical treatment of an
+    /// ordinary slice's own `start`/`end` (`places.rs`).
+    fn analyze_raw_slice(&mut self, node_id: HirId, span: Span, raw_slice: &omega_hir::HirRawSlice) -> Option<CheckedExprNode> {
+        let item_type = self.resolve_type_or_error(node_id, span, &raw_slice.item_type, true)?;
+
+        let checked_ptr = self.analyze_expr(&raw_slice.ptr, None)?;
+        let mutable = match &checked_ptr.r#type {
+            ResolvedType::Pointer { pointee, mutable } if **pointee == item_type => *mutable,
+            found => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::RawSlicePointerMismatch { item_type, found: found.clone() },
+                );
+                return None;
+            }
+        };
+
+        let checked_len = self.analyze_expr(&raw_slice.len, Some(&ResolvedType::I32))?;
+        if checked_len.r#type != ResolvedType::I32 {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::RawSliceInvalidLength { found: checked_len.r#type },
+            );
+            return None;
+        }
+
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::Slice { item: Box::new(item_type.clone()), mutable },
+            kind: CheckedExpr::RawSlice(CheckedRawSlice {
+                item_type,
+                ptr: Box::new(checked_ptr),
+                len: Box::new(checked_len),
+            }),
+        })
     }
 
     /// `++base`/`--base`: validates `base` is a place (like `AddressOf`) of

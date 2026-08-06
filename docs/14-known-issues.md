@@ -31,11 +31,25 @@ new one is found.
   non-`comp` `ident := comp value;`) is *not* this gap anymore — both
   are fully implemented, including `mut`. [mir-and-codegen.md](16-mir-and-codegen.md),
   [compile-time-evaluation.md](19-compile-time-evaluation.md)
-- **Taking the address of, or assigning into, a function parameter
-  directly (no deref in between) is `todo!()`** — a parameter is
-  SSA-value-backed with no stack slot of its own unless something forces
-  one (an explicit local copy works around it today).
-  [mir-and-codegen.md](16-mir-and-codegen.md)
+- **Assigning *into* a function parameter directly (no deref in between)
+  is still `todo!()`** — taking a parameter's *address* is fixed (see
+  [mir-and-codegen.md](16-mir-and-codegen.md)'s own "Fixed" note); direct
+  assignment is a separate, still-unfixed code path. An explicit local
+  copy works around it today. [mir-and-codegen.md](16-mir-and-codegen.md)
+
+## Parser
+
+- **A bare, block-shaped `if` statement (no `else`) immediately followed
+  by a new statement starting with `*`/`-`/`&` is misparsed** as a binary
+  operator continuing the `if`'s own value into the next statement. An
+  explicit trailing `;` after the `if` block works around it today.
+  [control-flow.md](03-control-flow.md), [standard-library.md](23-standard-library.md)
+- **A cast target ending in a nested generic's own closing `>`,
+  immediately followed by the cast's own closing `>`, lexes as one `>>`
+  token instead of two** (e.g. `<*mut Node<T>>0`). An explicit space
+  before the cast's closing bracket works around it today.
+  [strings-casting-and-slices.md](11-strings-casting-and-slices.md),
+  [standard-library.md](23-standard-library.md)
 
 ## Types
 

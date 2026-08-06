@@ -1,0 +1,87 @@
+# `std::hash_set` -- `HashSet<T>`, a thin wrapper around
+# `std::hash_map::HashMap<T, Unit>` (`Unit` a real, zero-sized, `marker`-
+# declared placeholder payload) -- the same trick Rust's own real
+# `HashSet<T>` uses internally (`HashSet<T> = HashMap<T, ()>`), and a
+# genuinely free one here too: `Unit` costs nothing in either storage or
+# codegen (see `docs/20-marker-types.md`).
+#
+# `insert`/`remove`/`contains` return plain `bool`, not `Option<T>` --
+# unlike `HashMap<K, V>`, there's no *payload* to hand back beyond
+# presence itself (the caller already holds the value), matching Rust's
+# own real `HashSet` API exactly. Same allocator/cleanup story as every
+# other owning type here:
+#
+#   set := HashSet<i32>::new();
+#   defer set.free();
+
+import hash_map::HashMap;
+import hash_map::HashMapIterator;
+
+marker Unit {}
+
+exposed struct HashSet<T: Hash> : ToIterator<T> {
+    inner: HashMap<T, Unit>;
+
+    exposed new() => Self {
+        Self { inner = HashMap<T, Unit>::new(); }
+    }
+
+    exposed len(*self) => usize { self.inner.len() }
+    exposed is_empty(*self) => bool { self.inner.is_empty() }
+
+    exposed insert(*mut self, value: T) => bool {
+        old := self.inner.insert(value, Unit {});
+        match old {
+            Option::None => {
+                true
+            },
+            Option::Some => {
+                false
+            },
+        }
+    }
+
+    exposed contains(*self, value: T) => bool {
+        self.inner.contains_key(value)
+    }
+
+    exposed remove(*mut self, value: T) => bool {
+        old := self.inner.remove(value);
+        match old {
+            Option::Some => {
+                true
+            },
+            Option::None => {
+                false
+            },
+        }
+    }
+
+    exposed clear(*mut self) => void {
+        self.inner.clear();
+    }
+
+    exposed free(*mut self) => void {
+        self.inner.free();
+    }
+
+    exposed to_iterator(*self) => HashSetIterator<T> {
+        HashSetIterator<T> { inner = self.inner.to_iterator(); }
+    }
+}
+
+exposed struct HashSetIterator<T> : Iterator<T> {
+    internal inner: HashMapIterator<T, Unit>;
+
+    exposed next(*mut self) => Option<T> {
+        kv := self.inner.next();
+        match kv {
+            Option::Some => {
+                Option<T>::Some { value = kv.value.key; }
+            },
+            Option::None => {
+                Option<T>::None
+            },
+        }
+    }
+}

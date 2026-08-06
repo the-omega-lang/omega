@@ -397,6 +397,37 @@ Also removed: `ResolveError::MacroExpansionFailed`, a variant nothing had
 constructed since macro failures started being reported structurally as
 `CompileError::MacroExpansion`.
 
+## Fixed: two bugs found building `std` against `core` as a real `--extern` consumer
+
+Both surfaced only once a *second* real package (`std`) started calling
+into `core`'s primitive methods and instantiating `core`-external generic
+structs — a combination nothing had exercised end-to-end before.
+
+**Unqualified-path resolution silently treated any imported non-generic
+item as if it were declared locally.** `Context::resolve_absolute_item_path`
+only had a match arm for `ImportTarget::GenericItem`; an imported ordinary
+(non-generic) item fell through to the "not imported, must be local"
+branch, which happened to still resolve correctly for *same-package*
+imports (the path it built was accidentally right) but broke for any
+cross-package alias, e.g. `spec Hashable = Hash | Eq;` failing to resolve
+`Eq` with "'Eq' is not a spec". Fixed by adding the missing
+`ImportTarget::Item` arm, mirroring `resolve_named_type`'s own
+already-correct handling of the same case.
+
+**A generic instantiation whose *template* lives in an extern package was
+silently dropped from codegen.** `Driver::compile`'s merge loop matched
+each pending instantiation's module against `modules` — which only ever
+contains the *local* package's own modules — so any generic struct
+declared in `core` (or any extern package) and instantiated by a consumer
+had its instantiation computed, then discarded, never emitted. Invisible
+until something used a generic external struct with no local generic
+struct also present to "absorb" the merge by coincidence; a bare
+`List<i32>::new()` alone was enough to reproduce it as a codegen panic
+(`... was declared as a function before this use`). Fixed by falling back
+to the first local module when no exact match exists — safe because each
+module is lowered independently with no cross-module state, so which
+local module "hosts" an extern instantiation doesn't matter.
+
 ## Fixed: `discover_into` double-counted a directory-shaped module named the same as its own entry file
 
 A directory-shaped module's own children live in a directory matching its

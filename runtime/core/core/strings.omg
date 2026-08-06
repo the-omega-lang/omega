@@ -2,11 +2,15 @@
 # count, not character count -- see `.size` below) fat pointer
 # (`Context::resolve_type`'s `*str`), never null-terminated, so everything
 # here works off `.size` and byte comparisons rather than any terminator
-# scan.
+# scan. `StrOps` itself is `exposed` -- a spec function has no visibility
+# modifier of its own (it always inherits whichever the declaring spec
+# has), so this is what makes every method here ordinary, callable public
+# API rather than an internal detail only reachable from within `core`.
 
 import cmp::Eq;
+import hash::Hash;
 
-spec StrOps : Eq for str {
+exposed spec StrOps : Eq, Hash for str {
     equals(*self, other: Self) => bool {
         if self.size != other.size {
             return false;
@@ -98,5 +102,20 @@ spec StrOps : Eq for str {
             start = start + 1;
         }
         false
+    }
+
+    # FNV-1a -- simple, well-known, and (unlike `core::numerics`' own
+    # `mix64`) a genuinely natural fit for a variable-length byte run: one
+    # multiply-xor per byte, no separate finalization step needed.
+    hash(*self) => u64 {
+        mut h : u64 = 0xcbf29ce484222325u64;
+        bytes := <*[u8]>self;
+        mut i : i32 = 0;
+        while i < self.size {
+            h = h ^ <u64>bytes[i];
+            h = h * 0x100000001b3u64;
+            i = i + 1;
+        }
+        h
     }
 }

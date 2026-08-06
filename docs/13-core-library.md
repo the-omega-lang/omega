@@ -13,6 +13,7 @@ runtime/core/
     cmp.omg              # core::cmp — Ordering, Eq, Ord
     default.omg              # core::default — Default
     glue.omg                   # core::glue — @gap GlobalAllocator
+    hash.omg                     # core::hash — Hash
     iterator.omg                 # core::iterator — Iterator<T>, ToIterator<T>
     numerics.omg                   # core::numerics — all scalar for-blocks (macros)
     option.omg                       # core::option — Option<T>
@@ -68,6 +69,24 @@ side's TU" model (see [specs](08-specs.md) and
   should be.
 - **`core::default`** — `Default { default() => Self; }`. Its own tiny
   file deliberately, for reuse beyond just numerics.
+- **`core::hash`** — `exposed spec Hash { hash(*self) => u64; }`. Lives in
+  `core`, not `std`, because it isn't optional: `for`-attached specs (the
+  only way to give a primitive a method at all) are hardcoded to `core`'s
+  own module tree, and a target type gets exactly one `for` block,
+  globally — so giving `i32`/`str`/etc. a `hash()` method means extending
+  the *existing* `for`-blocks in `numerics.omg`/`strings.omg`, not adding
+  a competing one. Numeric types mix their bits through a SplitMix64-style
+  finalizer (`mix64`, reading `<u64>*self`); floats bit-reinterpret to
+  `u64` first, normalizing `-0.0` to `0.0`'s own bit pattern before mixing
+  (required for "equal values hash equal" — `-0.0 == 0.0` but they don't
+  share a bit pattern). `str` uses a plain FNV-1a byte loop over
+  `as_bytes()`, matching `core::strings`' own existing byte-loop style.
+  `std::hash_map::HashMap<K: Hash, V>`/`std::hash_set::HashSet<T: Hash>`
+  are `Hash`'s only consumers so far — see
+  [the standard library](23-standard-library.md). No random seeding: the
+  default hasher is deterministic, not DoS-resistant, unlike Rust's own
+  SipHash default — fine for a first pass, a real gap if either type ever
+  sees untrusted keys.
 - **`core::option`** — `Option<T> { None, Some { exposed value: T; }; }`.
   Real, ordinary generic enum — see "`Option<T>` finally exists" below for
   why it's here now, and why its variant order (`None` = 0, `Some` = 1) is
@@ -133,6 +152,21 @@ result like an iterator step, which was never going to be `#[inline]`-hot
 the same way `get` is. Picking one uniformly across `core` would have
 been consistency for its own sake at a real ergonomics/performance cost
 somewhere.
+
+## `Eq`/`Ord`/`Ordering`/`Default`/`Hash` are `exposed`, not just declared
+
+A spec function carries no visibility modifier of its own — it always
+inherits its *declaring spec's* own visibility, unlike an ordinary
+struct/enum method, which does carry one. `Eq`, `Ord`, `Ordering`, and
+`Default` all shipped with no modifier (hidden by default), which meant
+every method `core::numerics`/`core::strings` attaches to a primitive via
+these specs — `equals`, `compare`, `min`, `hash`, all of it — was
+unreachable from any package other than `core` itself, cascading into
+"not visible here" errors the moment, say, `42i32.hash()` was called from
+a consumer. Nothing had exercised this path before (`examples/dev/main.omg`
+never called any of these methods), so it was a real, previously-untested
+gap, not a regression — fixed by marking all four specs, plus `Hash`
+itself, `exposed`.
 
 ## No `char` module yet
 

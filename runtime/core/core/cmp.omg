@@ -6,13 +6,23 @@
 # can be comparable for equality alone (most usefully, `f32`/`f64`, where a
 # total order doesn't exist because of `NaN`) without claiming a total
 # order it can't actually provide.
+#
+# All three items here are `exposed` -- not just for direct external
+# reference, but because `core::numerics`/`core::strings`' own `for`-blocks
+# depend on `Eq`/`Ord`/`Ordering` and are only discovered *lazily*, the
+# first time an external caller's own method lookup needs them (see
+# `docs/08-specs.md`'s "for-attached specs" section) -- a hidden spec is
+# only visible within its own declaring module, so leaving these hidden
+# would make e.g. `some_i32.hash()` (which flattens `SignedIntegerOps`'s
+# entire `: Eq, Ord, Default, Hash` dependency list) fail the moment it's
+# called from any module other than `core::numerics` itself.
 
-enum Ordering {
+exposed enum Ordering {
     Less,
     Equal,
     Greater;
 
-    is_lt(*self) => bool {
+    exposed is_lt(*self) => bool {
         match self {
             Ordering::Less => {
                 true
@@ -22,7 +32,7 @@ enum Ordering {
         }
     }
 
-    is_eq(*self) => bool {
+    exposed is_eq(*self) => bool {
         match self {
             Ordering::Equal => {
                 true
@@ -32,7 +42,7 @@ enum Ordering {
         }
     }
 
-    is_gt(*self) => bool {
+    exposed is_gt(*self) => bool {
         match self {
             Ordering::Greater => {
                 true
@@ -42,7 +52,7 @@ enum Ordering {
         }
     }
 
-    reverse(*self) => Ordering {
+    exposed reverse(*self) => Ordering {
         match self {
             Ordering::Less => {
                 Ordering::Greater
@@ -59,7 +69,7 @@ enum Ordering {
     }
 }
 
-spec Eq {
+exposed spec Eq {
     equals(*self, other: Self) => bool;
 
     not_equals(*self, other: Self) => bool {
@@ -74,7 +84,7 @@ spec Eq {
 # them with a more direct definition (see `core::numerics`, which does,
 # purely for speed -- the defaults here are what make the interface usable
 # on their own).
-spec Ord : Eq {
+exposed spec Ord : Eq {
     compare(*self, other: Self) => Ordering;
 
     less_than(*self, other: Self) => bool {

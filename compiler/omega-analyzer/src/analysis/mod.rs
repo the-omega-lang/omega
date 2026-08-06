@@ -52,7 +52,7 @@ use crate::{
         CheckedEnumDef, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm,
-        CheckedParam, CheckedPlace, CheckedPlaceRoot,
+        CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedRawSlice,
         CheckedProjection, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
         CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile, CastKind, NumberValue,
         Storage,

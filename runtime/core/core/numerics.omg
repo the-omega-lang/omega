@@ -4,6 +4,12 @@
 # (`signed_integer`/`unsigned_integer`/`float_ops`) since each has a
 # genuinely different member set -- not just three copies of one template.
 #
+# Each `for`-block spec itself is `exposed` -- a spec function has no
+# visibility modifier of its own (it always inherits whichever the
+# declaring spec has), so this is what makes every method here ordinary,
+# callable public API (`5i32.abs()`, `x.clamp(lo, hi)`, ...) rather than
+# an internal detail only reachable from within `core` itself.
+#
 # Every bare numeric literal compared or combined with `*self` is cast to
 # `Self` explicitly (`<Self>0`, not `0`) -- an untyped literal here would
 # otherwise default to `i32`, which only happens to already match `Self`
@@ -19,9 +25,22 @@ import cmp::Eq;
 import cmp::Ord;
 import cmp::Ordering;
 import default::Default;
+import hash::Hash;
+
+# SplitMix64's own finalizer (public domain, widely used) -- a fixed-cost,
+# well-mixed `u64 -> u64` step, shared by every integer/float `hash` below
+# rather than reimplemented per type. Not itself part of `core::hash`'s own
+# public surface -- purely an implementation detail of this file's own
+# `for`-blocks, so it stays a plain, unmarked (module-hidden) function.
+mix64(x: u64) => u64 {
+    mut z := x + 0x9E3779B97F4A7C15u64;
+    z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
+    z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
+    z ^ (z >> 31u64)
+}
 
 macro signed_integer($T: type) => items {
-    spec SignedIntegerOps : Eq, Ord, Default for $T {
+    exposed spec SignedIntegerOps : Eq, Ord, Default, Hash for $T {
         equals(*self, other: Self) => bool { *self == other }
 
         compare(*self, other: Self) => Ordering {
@@ -76,11 +95,17 @@ macro signed_integer($T: type) => items {
 
         is_negative(*self) => bool { *self < <Self>0 }
         is_positive(*self) => bool { *self > <Self>0 }
+
+        # Sign-extends to `u64` (per this language's own "extend signedness
+        # comes from the source" cast rule) before mixing -- an arbitrary,
+        # but deterministic and type-local, bit pattern is all `Hash`
+        # actually requires.
+        hash(*self) => u64 { mix64(<u64>*self) }
     }
 }
 
 macro unsigned_integer($T: type) => items {
-    spec UnsignedIntegerOps : Eq, Ord, Default for $T {
+    exposed spec UnsignedIntegerOps : Eq, Ord, Default, Hash for $T {
         equals(*self, other: Self) => bool { *self == other }
 
         compare(*self, other: Self) => Ordering {
@@ -126,11 +151,14 @@ macro unsigned_integer($T: type) => items {
         is_power_of_two(*self) => bool {
             if *self == <Self>0 { false } else { (*self & (*self - <Self>1)) == <Self>0 }
         }
+
+        # Zero-extends to `u64` before mixing -- see `SignedIntegerOps::hash`.
+        hash(*self) => u64 { mix64(<u64>*self) }
     }
 }
 
 macro float_ops($T: type) => items {
-    spec FloatOps : Eq, Default for $T {
+    exposed spec FloatOps : Eq, Default, Hash for $T {
         # IEEE 754 equality (`NaN != NaN`, `-0.0 == 0.0`) reflects the type
         # honestly rather than papering over it -- `Ord` is deliberately
         # *not* implemented here at all (see `core::cmp`'s own doc comment
@@ -159,6 +187,35 @@ macro float_ops($T: type) => items {
         # trickery or platform intrinsic: `NaN` is the only value IEEE 754
         # defines as unequal to itself.
         is_nan(*self) => bool { *self != *self }
+
+        # Hashing needs the value's real *bit pattern*, not its (lossy,
+        # rounding) integer value -- there's no direct float<->int bit
+        # reinterpret cast in this language, so this reads it back out
+        # through a pointer-to-pointer cast instead (`self` is already a
+        # `*Self`; retargeting that pointer's own pointee type is always a
+        # pure `Reinterpret`, unlike a float-to-int *value* cast -- see
+        # `docs/11-strings-casting-and-slices.md`'s general pointer-cast
+        # rule). `sizeof<Self> == 4` is a compile-time-constant condition
+        # once `Self` is substituted (generics fully monomorphize), so only
+        # the branch matching this instantiation's own real width is ever
+        # actually reached at runtime -- the other arm's 4-vs-8-byte read
+        # is unreachable code for that concrete type, not a real
+        # out-of-bounds access. `-0.0`/`0.0` are normalized to the same bit
+        # pattern first (`equals` already treats them as equal, per IEEE
+        # 754), which `Hash`'s own "equal values hash equal" contract
+        # requires; `NaN` needs no special handling at all -- it never
+        # equals anything, including itself, so any hash value for it is
+        # trivially consistent with that same contract.
+        hash(*self) => u64 {
+            bits := if *self == <Self>0.0 {
+                0u64
+            } else if sizeof<Self> == 4 {
+                <u64>*<*u32>self
+            } else {
+                *<*u64>self
+            };
+            mix64(bits)
+        }
     }
 }
 

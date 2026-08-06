@@ -17,7 +17,7 @@ use omega_analyzer::resolved_type::{ConstValue, NumericKind, ResolvedFunctionTyp
 use omega_hir::BinaryOp;
 use omega_mir::{
     MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall, MirEnumConstruct, MirExpr,
-    MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
+    MirExprNode, MirFunctionCall, MirRawSlice, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
 };
 
 /// A `ConstValue::Ref(inner)`'s own real type, given the *pointee* type its
@@ -1151,6 +1151,18 @@ impl Codegen {
                 let new_len = builder.ins().isub(end_val, start_val);
 
                 vec![new_ptr, new_len]
+            }
+
+            // `raw_slice<T>(ptr, len)` -- a `Slice`'s runtime shape is
+            // already just `[data pointer, i32 length]` (see `MirExpr::
+            // Slice` above), and `ptr`/`len` are already exactly those two
+            // leaves (analysis guarantees `ptr` is a single-leaf pointer and
+            // `len` a single-leaf `i32`) -- no arithmetic needed at all,
+            // purely a concatenation of two already-computed values.
+            MirExpr::RawSlice(MirRawSlice { ptr, len }) => {
+                let ptr_val = self.process_expr(builder, *ptr)[0];
+                let len_val = self.process_expr(builder, *len)[0];
+                vec![ptr_val, len_val]
             }
 
             MirExpr::Cast(MirCast { kind, target_type, base }) => {

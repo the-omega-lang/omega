@@ -369,6 +369,10 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
+            // No `ConstValue` shape represents a fat pointer built from an
+            // arbitrary runtime address -- unlike `sizeof`, this has no
+            // pointer-width-independent meaning at compile time.
+            CheckedExpr::RawSlice(_) => Err(self.err(node.span, CompErrorKind::Unsupported("raw_slice"))),
         }
     }
 

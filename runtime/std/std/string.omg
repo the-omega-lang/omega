@@ -1,0 +1,89 @@
+# `std::string` -- `String`, an owned, growable, UTF-8 byte buffer. Wraps
+# `std::list::List<u8>` directly (mirroring Rust's own real
+# `struct String { vec: Vec<u8> }`) rather than duplicating growth/
+# allocation logic -- `List<u8>`'s own `push`/`len`/`capacity`/`as_slice`/
+# `free` already are exactly what a byte buffer needs.
+#
+# Same no-RAII, explicit-`free` story as every other owning type in this
+# package:
+#
+#   s := String::new();
+#   defer s.free();
+#
+# Deliberately out of scope this pass: decoding (a `chars()`-style
+# iterator walking variable-width UTF-8 back into `char`s) -- `push`/
+# `push_str`/`as_str`/`len` is enough surface for real use today, and
+# `core` itself shipped `Option<T>` with zero convenience methods in its
+# own first pass for the identical reason (see `docs/13-core-library.md`).
+
+import list::List;
+
+exposed struct String {
+    bytes: List<u8>;
+
+    exposed new() => Self {
+        Self { bytes = List<u8>::new(); }
+    }
+
+    exposed with_capacity(capacity: usize) => Self {
+        Self { bytes = List<u8>::with_capacity(capacity); }
+    }
+
+    # Copies `source`'s own bytes -- this type always owns its storage.
+    exposed from_str(source: *str) => Self {
+        mut s := Self::new();
+        s.push_str(source);
+        s
+    }
+
+    exposed len(*self) => usize { self.bytes.len() }
+    exposed is_empty(*self) => bool { self.bytes.is_empty() }
+
+    exposed push_str(*mut self, s: *str) => void {
+        source_bytes := <*[u8]>s;
+        mut i : i32 = 0;
+        while i < s.size {
+            self.bytes.push(source_bytes[i]);
+            i += 1;
+        }
+    }
+
+    # Encodes `c` as 1-4 UTF-8 bytes by hand -- there's no built-in
+    # encoder in this language yet. Standard algorithm: the codepoint's
+    # own bit width picks the byte count, each continuation byte carries
+    # 6 low bits (`10xxxxxx`), and the lead byte carries however many bits
+    # remain, tagged with the right number of leading 1s.
+    exposed push(*mut self, c: char) => void {
+        cp := <u32>c;
+        if cp < 0x80u32 {
+            self.bytes.push(<u8>cp);
+        } else if cp < 0x800u32 {
+            self.bytes.push(<u8>(0xC0u32 | (cp >> 6u32)));
+            self.bytes.push(<u8>(0x80u32 | (cp & 0x3Fu32)));
+        } else if cp < 0x10000u32 {
+            self.bytes.push(<u8>(0xE0u32 | (cp >> 12u32)));
+            self.bytes.push(<u8>(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
+            self.bytes.push(<u8>(0x80u32 | (cp & 0x3Fu32)));
+        } else {
+            self.bytes.push(<u8>(0xF0u32 | (cp >> 18u32)));
+            self.bytes.push(<u8>(0x80u32 | ((cp >> 12u32) & 0x3Fu32)));
+            self.bytes.push(<u8>(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
+            self.bytes.push(<u8>(0x80u32 | (cp & 0x3Fu32)));
+        }
+    }
+
+    exposed clear(*mut self) => void {
+        self.bytes.clear();
+    }
+
+    # A real, borrowed `*str` view of this string's current contents --
+    # `List<u8>::as_slice`'s own `*[u8]` reinterpreted, the same free
+    # fat-pointer-to-fat-pointer cast `core::strings` itself relies on.
+    exposed as_str(*self) => *str {
+        <*str>self.bytes.as_slice()
+    }
+
+    exposed free(*mut self) => void {
+        self.bytes.free();
+    }
+}

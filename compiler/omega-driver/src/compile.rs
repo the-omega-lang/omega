@@ -56,11 +56,24 @@ impl Driver {
         let (mut modules, mut warnings) = self.check_bodies(&local)?;
 
         // Merged only now that both phases have finished, in the
-        // (deterministic) order instantiations were discovered.
+        // (deterministic) order instantiations were discovered. An
+        // instantiation whose own template is declared in an `--extern`
+        // package (not `local`) has no matching entry in `modules` at all
+        // (that only ever holds the local package's own modules) -- falls
+        // back to the first local module instead of being silently
+        // dropped, since monomorphization means this instantiation's own
+        // body is only ever produced *here*, in the consuming compilation
+        // (see this function's own doc comment: "no other compilation will
+        // ever produce it"). Safe to regroup this way because `modules`'
+        // own grouping is purely organizational -- `lower_program` lowers
+        // each module independently, with no cross-module state, so an
+        // item only needs to be present *somewhere* codegen will see it.
         for (key, body) in &self.items.generic_instantiations {
-            let Some((path, checked_module)) = modules.iter_mut().find(|(path, _)| *path == key.module) else {
-                continue;
-            };
+            let target_index =
+                modules.iter().position(|(path, _)| *path == key.module).unwrap_or(0);
+            let (path, checked_module) = modules
+                .get_mut(target_index)
+                .expect("`local_module_paths` always includes at least the entry module");
             checked_module.items.push(body.item.clone());
             warnings.extend(body.warnings.iter().map(|w| (path.clone(), w.clone())));
         }

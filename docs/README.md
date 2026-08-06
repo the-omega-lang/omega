@@ -87,6 +87,10 @@ New to the codebase — read roughly in this order:
     ordinary `--extern` package, not a special one, that fills `core`'s
     gaps; today just a single `libc`-backed heap allocator, with no
     platform-selection mechanism yet.
+23. [The standard library](23-standard-library.md) — `std`'s own data
+    structures (`List`, `LinkedList`, `String`, `HashMap`, `HashSet`),
+    built the same way on every platform, on top of `core::glue`'s
+    allocator gap alone.
 
 ## What this is not
 

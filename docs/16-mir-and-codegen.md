@@ -254,9 +254,19 @@ layout math.
   *data* (a non-function `extern`) is the one storage gap left, still
   `todo!()` in `update_extern_decl` — its storage lives in another
   translation unit, a genuinely separate question.
-- **Taking the address of, or assigning into, a function parameter
-  directly (no deref in between) is `todo!()`** — also unchanged from
-  before this crate existed. A parameter's leaves are seeded straight from
-  the entry block's own values (see `MirBody::locals`'s doc comment) with
-  no backing stack slot, unlike every other local, so there's no address
-  to hand back yet.
+- **Fixed: taking the address of a function parameter directly** (an
+  explicit `&param`, or the implicit auto-ref a `*self`/`*mut self` method
+  call needs on a by-value parameter, e.g. `key.hash()` where `key: K` is
+  a plain parameter) — found and fixed while building `std`'s own
+  `HashMap<K, V>`, whose `bucket_index` needs exactly this
+  (`key.hash()`). `Codegen::place_storage_address`'s `PlaceStorage::
+  Values` arm now lazily spills the parameter's own SSA leaf values into a
+  fresh stack slot on demand (the identical lazy-materialization
+  `MirPlaceRoot::Expr`/`MirProjection::UnionField` already used elsewhere
+  in the same file), sized directly from the leaves' own Cranelift IR
+  types rather than needing a `ResolvedType` threaded in.
+- **Still `todo!()`: assigning *into* a function parameter directly** (no
+  deref in between) — a different code path
+  (`Codegen::store_scalars`'s identical `PlaceStorage::Values` arm) than
+  the address-of case just above, not fixed by that change. An explicit
+  local copy (`mut p := param;`) still works around it today.

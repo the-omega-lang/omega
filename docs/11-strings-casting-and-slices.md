@@ -103,6 +103,33 @@ recursively-constructed static data blob with a pointer relocation into it
 elements live **inline**, with zero indirection, directly in whatever
 struct/enum storage contains them.
 
+## Building a fat pointer from scratch: `raw_slice<T>`
+
+```
+raw_slice<T>(ptr_expr, len_expr)   # => *[T], or *mut [T] if ptr_expr: *mut T
+```
+
+Every other way of producing a `*[T]`/`*str` starts from an *existing*
+fat pointer or a compile-time-known literal — re-slicing needs a
+`SizedArray`/`Slice`/`Str` base, and casting is fat→fat or fat→thin only
+(never thin→fat, per the caveat above). Neither path can turn a raw data
+pointer plus a runtime-computed length into a slice, which is exactly
+what an owning, heap-backed collection (`std::list::List<T>`,
+`std::string::String`) needs for its own `as_slice`/`as_str`.
+
+`raw_slice<T>` closes that gap as a small, dedicated primitive rather
+than a callable — mirroring `sizeof<Type>`'s own contextual-keyword
+parsing (a soft keyword, disambiguated by an immediately-following `<`),
+since there's no way to express "build a fat pointer from two values" as
+ordinary library code. `ptr_expr` must resolve to `Pointer { pointee, mutable
+}` with `pointee == T`; `len_expr` must resolve to exactly `i32` (matching
+`*[T]`'s own `.length` leaf type); the result's mutability is inherited
+from `ptr_expr`, the same rule ordinary re-slicing already uses.
+
+`*str` construction needs no separate primitive — `<*str>raw_slice<u8>(ptr,
+len)` reuses the already-existing fat→fat `Reinterpret` cast between
+`Slice{U8}` and `Str`.
+
 ## Caveats
 
 - **`*str` is not actually guaranteed valid UTF-8.** The cast family
@@ -128,3 +155,13 @@ struct/enum storage contains them.
   order), and each occurrence is a one-shot construction site, not
   plausibly repeated the way string literals are. A documented
   simplification, not an oversight.
+- **A cast target ending in a nested generic's own closing `>`,
+  immediately followed by the cast's own closing `>`, lexes as one `>>`
+  token instead of two** (e.g. `<*mut Node<T>>0` — unlike an ordinary
+  generic argument list, where a trailing `>>` is already correctly
+  split). Produces a parse error ("expected '>', found '>>'"). Found
+  while writing `std::linked_list`/`std::hash_map`, both of which cast to
+  pointers of their own generic node types; worked around with an
+  explicit space before the cast's closing bracket (`<*mut Node<T> >0`),
+  not fixed at the lexer level. See
+  [the standard library](23-standard-library.md).

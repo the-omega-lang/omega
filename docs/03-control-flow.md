@@ -192,3 +192,15 @@ a genuine mismatch it wouldn't have accepted before.
   the concretely-typed operand second) still won't narrow — write
   `some_i64_var > 0` or cast explicitly instead. Not a gap left over from
   the fix above; a deliberate scope match with existing precedent.
+- **A bare, block-shaped `if` statement (no `else`) immediately followed
+  by a new statement starting with `*`/`-`/`&` is misparsed** — the
+  following line's leading operator is read as a binary operator
+  continuing the `if`'s own value into the next statement (e.g. `if cond {
+  ... } \n *ptr = value;` parses as `(if cond {...}) * ptr = value`),
+  producing a confusing "invalid assignment target" error instead of two
+  separate statements. Found repeatedly while writing `std`'s own
+  collections (`List<T>::push`/`get`/`set`, all of which follow a
+  capacity-check `if` with a pointer-deref statement) — worked around
+  locally with an explicit trailing `;` after the `if` block's closing
+  brace, not fixed at the parser level. See
+  [the standard library](23-standard-library.md).

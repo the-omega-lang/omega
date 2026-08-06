@@ -1,0 +1,32 @@
+# `core::hash` -- a value's own contribution to a hash-based collection's
+# bucket index (`std::hash_map::HashMap`/`std::hash_set::HashSet`).
+# Deliberately its own small file, the same reason `core::default` is:
+# reused wherever hashing matters, not just by the two collections that
+# need it first.
+#
+# The only real contract: two values that compare equal (`cmp::Eq::equals`)
+# must produce the same hash -- the reverse isn't required (a collision
+# between unequal values is always allowed, just ideally rare). Every
+# primitive implementation lives in `numerics.omg`/`strings.omg`'s own
+# existing `for`-blocks (see their own doc comments for why it can't live
+# here instead -- `for`-attachment is restricted to `core`, and a target
+# type gets exactly one `for` block, globally).
+#
+# `HashMap<K: Hash, V>`/`HashSet<T: Hash>` bound only on this -- not a
+# combined `Hash`-and-`Eq` spec, even though a bucket lookup needs both.
+# A generic parameter only ever carries a single formal bound (see
+# `GenericParam`'s own doc comment), and every realistic key type (every
+# `core`-provided primitive, and any user type meant to be hashable at
+# all) already provides `cmp::Eq::equals` as a matter of course, the same
+# structural expectation `Ord`'s own default methods already lean on --
+# so `key.equals(other)` inside `HashMap`'s own body stays duck-typed,
+# unbound, exactly like any other structural call in this language (see
+# `docs/08-specs.md`: "an unbound generic parameter still works purely by
+# duck-typing"). A concrete `K` that doesn't actually implement `Eq`
+# simply fails at that call site once substituted in, the same way it
+# would for any other duck-typed method call -- no separate bound needed
+# to catch it.
+
+exposed spec Hash {
+    hash(*self) => u64;
+}

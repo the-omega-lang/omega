@@ -13,13 +13,13 @@
 # inside a method's own body always resolves through ordinary module-level
 # resolution, never implicitly back to the enclosing method itself.
 
-internal extern malloc : (size: usize) => *u8;
+internal extern malloc : (size: usize) => *mut u8;
 internal extern free : (ptr: *u8) => void;
-internal extern realloc : (ptr: *u8, size: usize) => *u8;
+internal extern realloc : (ptr: *u8, size: usize) => *mut u8;
 
 @glue
 exposed marker LibcAllocator : core::glue::GlobalAllocator {
-    exposed alloc(size: usize) => *u8 {
+    exposed alloc(size: usize) => *mut u8 {
         return malloc(size);
     }
 
@@ -27,7 +27,7 @@ exposed marker LibcAllocator : core::glue::GlobalAllocator {
         free(ptr);
     }
 
-    exposed realloc(ptr: *u8, size: usize) => *u8 {
+    exposed realloc(ptr: *u8, size: usize) => *mut u8 {
         return realloc(ptr, size);
     }
 }

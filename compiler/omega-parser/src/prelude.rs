@@ -7,8 +7,8 @@ pub use crate::ast::expression::{
     field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
     incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
     macro_invocation::MacroInvocationExpr, match_expr::{MatchArm, MatchExpr, Pattern},
-    negate::NegateExpr, number::{NumberBase, NumberExpr}, reveal::RevealExpr, sizeof::SizeofExpr, slice::SliceExpr,
-    string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
+    negate::NegateExpr, number::{NumberBase, NumberExpr}, raw_slice::RawSliceExpr, reveal::RevealExpr,
+    sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{ExprPath, Ident, Path};
