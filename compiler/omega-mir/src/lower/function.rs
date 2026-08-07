@@ -27,7 +27,7 @@
 use crate::body::{
     MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirBlockData, MirBody, MirCast, MirDynamicCall,
     MirEnumConstruct, MirExpr, MirExprNode, MirFieldInit, MirFunctionCall, MirLocalDecl, MirPlace, MirPlaceRoot,
-    MirRawSlice, MirSlice, MirSpecCoerce, MirStructLiteral, MirTerminator, MirUnionConstruct,
+    MirSlice, MirSpecCoerce, MirStructLiteral, MirTerminator, MirUnionConstruct, MirUnsizeSlice,
 };
 use crate::ids::{BlockId, LocalId};
 use omega_analyzer::checked::{
@@ -844,14 +844,14 @@ impl FunctionLowerer {
                 let kind = MirExpr::Cast(MirCast { kind: cast.kind, target_type: cast.target_type, base });
                 MirExprNode { id, span, r#type, kind }
             }
-            CheckedExpr::RawSlice(raw_slice) => {
-                let ptr = Box::new(self.lower_expr(*raw_slice.ptr));
-                let len = Box::new(self.lower_expr(*raw_slice.len));
-                MirExprNode { id, span, r#type, kind: MirExpr::RawSlice(MirRawSlice { ptr, len }) }
-            }
             CheckedExpr::SpecCoerce(coerce) => {
                 let base = Box::new(self.lower_expr(*coerce.base));
                 let kind = MirExpr::SpecCoerce(MirSpecCoerce { base, slots: coerce.slots });
+                MirExprNode { id, span, r#type, kind }
+            }
+            CheckedExpr::UnsizeSlice(unsize) => {
+                let base = Box::new(self.lower_expr(*unsize.base));
+                let kind = MirExpr::UnsizeSlice(MirUnsizeSlice { base, len: unsize.len });
                 MirExprNode { id, span, r#type, kind }
             }
             CheckedExpr::DynamicCall(call) => {
@@ -1150,12 +1150,9 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) 
             }
         }
         CheckedExpr::Cast(cast) => collect_defer_ids_expr(&cast.base, out),
-        CheckedExpr::RawSlice(raw_slice) => {
-            collect_defer_ids_expr(&raw_slice.ptr, out);
-            collect_defer_ids_expr(&raw_slice.len, out);
-        }
         CheckedExpr::UnionConstruct(construct) => collect_defer_ids_expr(&construct.value, out),
         CheckedExpr::SpecCoerce(coerce) => collect_defer_ids_expr(&coerce.base, out),
+        CheckedExpr::UnsizeSlice(unsize) => collect_defer_ids_expr(&unsize.base, out),
         CheckedExpr::DynamicCall(call) => {
             collect_defer_ids_place(&call.base, out);
             for arg in &call.args {

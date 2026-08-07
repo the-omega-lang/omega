@@ -62,6 +62,14 @@ fn mangle_type(ty: &ResolvedType) -> MangleType {
         ResolvedType::Str { mutable } => MangleType::Str(*mutable),
         ResolvedType::Array(inner) => MangleType::Array(Box::new(mangle_type(inner))),
         ResolvedType::SizedArray(inner, len) => MangleType::SizedArray(Box::new(mangle_type(inner)), u64::from(*len)),
+        // Never reached: `UnsizedTail` only ever appears inside a struct's
+        // own `fields` list (see its doc comment), and `Struct` below
+        // mangles by name/module-path/type-args alone, never by recursing
+        // into its fields -- so this function is never actually called
+        // with one.
+        ResolvedType::UnsizedTail(_) => {
+            unreachable!("UnsizedTail only appears in a struct's own field list, which mangling never recurses into")
+        }
         ResolvedType::Function(fn_type) => {
             let (params, ret) = build_signature(fn_type);
             MangleType::Function(params, Box::new(ret), fn_type.is_variadic)

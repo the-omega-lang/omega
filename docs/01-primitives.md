@@ -42,6 +42,7 @@ real C-ABI aggregate-passing implementation (see the caveat at the bottom).
 | `f32` / `f64` | `f32` / `f64` |
 | `*T` / `*mut T` | one thin pointer |
 | `[T]` (decayed array param, e.g. `argv: [*u8]`) | one thin pointer, **no length** |
+| `[T]` (a struct's own *last* field, `UnsizedTail`) | *(none)* -- see below |
 | `[T; N]` (`SizedArray`) | `N` copies of `T`'s own leaves, inline, no indirection |
 | struct | each field's leaves, back to back (+ padding, see `@layout`) |
 | union | one opaque run of `i32`/`i8` chunks sized to the largest member |
@@ -105,10 +106,15 @@ level (no implicit coercion between them):
   read via `.length` (a genuine element count).
   This is *not* the same as `*T` to an array — `Context::resolve_type`
   special-cases `*[T]` specifically so it never becomes `Pointer(Array(T))`.
-  A **bare** `[T]` (no leading `*`) is a different, older, unsized shape:
-  a single thin pointer with no length at all, used only for C-style decayed
-  array parameters (`argv: [*u8]`) — a deliberate, narrower legacy case, not
-  a slice.
+  A **bare** `[T]` (no leading `*`) means one of two genuinely different
+  things depending on *where* it's written: in a function parameter, it's
+  the older, unsized decayed-pointer shape — a single thin pointer with no
+  length at all, used only for C-style decayed array parameters (`argv:
+  [*u8]`); as a struct's own *last* field, it's a zero-leaf tail marker
+  instead — see "`[T]` as a struct's last field" below. Both share the
+  identical source syntax deliberately (the same "there's a run of `T`s
+  here, length unspecified" idea), resolved differently only because the
+  two positions need genuinely different runtime representations.
 - **`*str` (`Str { mutable }`)** — the exact same `[data ptr, i32 byte
   count]` shape as `*[u8]`, but a fully separate nominal type: no implicit
   coercion to/from `Slice`/`Pointer` in either direction, and never
@@ -130,6 +136,68 @@ already compiles to `call_indirect` (there is no direct-call instruction at
 all in this backend), and static data blobs with pointer relocations were
 already one API call away once slices existed — so `spec *T` needed no new
 low-level machinery, only a new 2-leaf type and a vtable-building pass.
+
+## `[T]` as an aggregate field: unsized tails
+
+```
+struct TLVBuffer {
+    type: Type;
+    length: usize;
+    value: [u8];   # real bytes start here, length unknown to the type system
+}
+
+tlv : *TLVBuffer = <*TLVBuffer>some_raw_byte_pointer;
+&tlv.value[0..<tlv.length]     # a real *[u8] slice, no allocation
+tlv.value[3]                    # plain single-element indexing also works
+```
+
+`[T]` as a struct or union field (`ResolvedType::UnsizedTail`) is a
+zero-leaf marker meaning "a run of `T`s starts at this exact memory
+position, of unknown length" — a C flexible-array-member equivalent,
+letting a struct like `TLVBuffer` above describe a header plus a
+variable-length trailing payload that's already sitting in memory (e.g. a
+network message buffer), read with no allocation at all. **Not a special
+case**: it behaves exactly like any other zero-sized field, `marker`
+included — no "must be last" placement rule, because there's nothing
+about it that needs one. It's legal anywhere in a struct or union's field
+list (even more than once — nothing stops two, the same way nothing
+stops two `marker` fields), and a field written *after* one simply starts
+at that same address, since the tail marker itself contributes zero
+bytes; whatever comes after it is the caller's business, exactly as much
+as it already is for an ordinary pointer field. Only enums are out of
+scope — an enum's own variant layout is a larger, separate concern this
+doesn't attempt to solve.
+
+Because it's genuinely zero leaves, `TLVBuffer` above is *not* an unsized
+type the way Rust's own DST-tailed structs are — it has an entirely
+ordinary, fixed `sizeof` (here, `4 + 8 = 12`, `Type` + `usize`; `value`
+contributes nothing to it), can be held by value, returned, etc. exactly
+like any other struct. The tail's only special property is address-based:
+taking `&tlv.value` (or indexing/slicing into it) reads/writes memory
+starting exactly where the struct's own known fields end — the same
+zero-size-field addressing guarantee an ordinary `marker` field already
+has (see [marker types](20-marker-types.md)'s "Addresses" section) — not
+because anything new was built for it, but because a zero-leaf field
+never advances the running byte offset in the first place.
+
+**The corresponding footgun**: copying/returning a `TLVBuffer` *by
+value* silently drops whatever trailing data followed it — the struct's
+own declared size never included it, so an ordinary value copy only ever
+touches the known-size prefix. This is the identical caveat C's flexible
+array members carry, not something the type system tries to prevent
+(the same way a `marker` field being real-but-empty is documented as
+expected behavior, not guarded against). Casting an arbitrary pointer
+onto a `[T]`-tailed struct type (`<*TLVBuffer>some_byte_ptr` above) needs
+no new mechanism either — any pointer already casts to any other pointer
+type today (`ResolvedType::cast_class` treats every `Pointer`, regardless
+of pointee, as a same-width reinterpret).
+
+`ptr[i]`/`&ptr[a..<b]` still don't work on a bare `*T`/`*mut T` the way
+they do on `tlv.value` above — see [strings, casting &
+slices](11-strings-casting-and-slices.md)'s pointer-slicing section for
+why a raw pointer stays deliberately non-array-like everywhere except
+that one range-slicing escape hatch, while `tlv.value` (already a place
+of *marker* type, not a pointer value) gets ordinary indexing for free.
 
 ## `char`, `bool`, and pointer arithmetic
 

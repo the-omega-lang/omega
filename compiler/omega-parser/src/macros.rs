@@ -577,17 +577,6 @@ fn expand_expr(
         // expression position -- see `lexer::TokenKind::Metavar`'s doc
         // comment) -- a plain passthrough, like `Expression::Path` above.
         Expression::Sizeof(sizeof) => Expression::Sizeof(sizeof),
-        // `item_type` passes through unchanged for the same reason
-        // `Sizeof`'s `r#type` does just above; `ptr`/`len` are ordinary
-        // sub-expression positions and recurse like any other.
-        Expression::RawSlice(raw_slice) => {
-            let raw_slice = *raw_slice;
-            Expression::RawSlice(Box::new(RawSliceExpr {
-                item_type: raw_slice.item_type,
-                ptr: expand_expr(*raw_slice.ptr, defs, budget)?.into(),
-                len: expand_expr(*raw_slice.len, defs, budget)?.into(),
-            }))
-        }
         Expression::Increment(incr) => {
             let incr = *incr;
             Expression::Increment(Box::new(IncrementExpr { base: expand_expr(incr.base, defs, budget)? }))

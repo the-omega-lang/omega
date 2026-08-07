@@ -616,17 +616,26 @@ impl<'r> Analyzer<'r> {
             self.error(s.id, s.span, AnalysisErrorKind::GlueOnNonMarker);
         }
 
-        cell.borrow_mut().fields = self.resolve_declared_fields(&s.fields)?;
+        let fields = self.resolve_declared_fields(&s.fields)?;
+        let has_unsized_tail = fields.iter().any(|(_, t, _)| matches!(t, ResolvedType::UnsizedTail(_)));
+        cell.borrow_mut().fields = fields;
 
         let self_type = ResolvedType::Struct(cell.clone());
         // A `marker` is exempt by design (see `ResolvedStructType::
-        // is_marker`'s doc comment); an ordinary struct isn't -- checked
-        // against the type's own full leaf list (`layout::is_zero_sized`),
-        // not just `s.fields.is_empty()`, so this also catches a struct
-        // whose only field is itself zero-sized, and a generic struct that
-        // only becomes zero-sized for one particular instantiation (this
-        // runs once per instantiation, same as everything else here).
-        if !s.is_marker && crate::layout::is_zero_sized(&self_type) {
+        // is_marker`'s doc comment), and so is a struct with an unsized
+        // tail (`has_unsized_tail` above) -- its true runtime footprint is
+        // never actually zero once real trailing data is attached, even
+        // though the tail's own *static* `sizeof` contribution is zero;
+        // `marker` couldn't even be suggested as the fix (a `marker` body
+        // has no field-list grammar reachable at all, see
+        // `docs/20-marker-types.md`). An ordinary struct isn't exempt --
+        // checked against the type's own full leaf list (`layout::
+        // is_zero_sized`), not just `s.fields.is_empty()`, so this also
+        // catches a struct whose only field is itself zero-sized, and a
+        // generic struct that only becomes zero-sized for one particular
+        // instantiation (this runs once per instantiation, same as
+        // everything else here).
+        if !s.is_marker && !has_unsized_tail && crate::layout::is_zero_sized(&self_type) {
             self.error(s.id, s.span, AnalysisErrorKind::ZeroSizedAggregate { name: s.name.clone(), is_union: false });
         }
 
@@ -656,13 +665,19 @@ impl<'r> Analyzer<'r> {
         let annotations = self.item_annotations(u.id, &u.annotations, crate::annotations::ItemKind::Union);
         cell.borrow_mut().suppress = annotations.suppress;
 
-        cell.borrow_mut().fields = self.resolve_declared_fields(&u.fields)?;
+        let fields = self.resolve_declared_fields(&u.fields)?;
+        let has_unsized_tail = fields.iter().any(|(_, t, _)| matches!(t, ResolvedType::UnsizedTail(_)));
+        cell.borrow_mut().fields = fields;
 
         let self_type = ResolvedType::Union(cell.clone());
         // Unions have no `marker` exemption -- see `signature_of_struct`'s
         // identical check for why this uses the full leaf list rather than
-        // `u.fields.is_empty()`.
-        if crate::layout::is_zero_sized(&self_type) {
+        // `u.fields.is_empty()`. They do get the same unsized-tail
+        // exemption a struct does, for the identical reason (see
+        // `ResolvedType::UnsizedTail`'s doc comment) -- `[T]` behaves
+        // exactly like any other zero-sized field here, `marker` included,
+        // with no container-specific special-casing.
+        if !has_unsized_tail && crate::layout::is_zero_sized(&self_type) {
             self.error(u.id, u.span, AnalysisErrorKind::ZeroSizedAggregate { name: u.name.clone(), is_union: true });
         }
 
@@ -681,7 +696,18 @@ impl<'r> Analyzer<'r> {
     }
 
     /// One aggregate's declared fields, in the `(name, type, visibility)`
-    /// shape a cell stores.
+    /// shape a cell stores. A bare `[T]` (`Type::Array`, resolved
+    /// generically to `ResolvedType::Array` -- the ordinary decayed-pointer
+    /// shape, e.g. `argv: [*u8]`) is reinterpreted as `ResolvedType::
+    /// UnsizedTail` here -- see that variant's own doc comment for why this
+    /// can't just be taught to `Context::resolve_type` itself (every other
+    /// use of `[T]`, i.e. anywhere but a struct/union field, genuinely does
+    /// mean the ordinary `Array` shape). No position restriction, in either
+    /// direction: `[T]` behaves exactly like any other zero-sized field
+    /// (a `marker`-typed one included) -- legal anywhere in a struct or
+    /// union's field list, not just last, and legal in *both* aggregate
+    /// kinds uniformly. This is the one and only place that distinction is
+    /// drawn, shared by both `signature_of_struct` and `signature_of_union`.
     fn resolve_declared_fields(
         &mut self,
         fields: &[HirParam],
@@ -691,7 +717,13 @@ impl<'r> Analyzer<'r> {
             fields
                 .iter()
                 .zip(checked)
-                .map(|(declared, checked)| (checked.ident, checked.r#type, declared.visibility))
+                .map(|(declared, checked)| {
+                    let r#type = match checked.r#type {
+                        ResolvedType::Array(item) => ResolvedType::UnsizedTail(item),
+                        other => other,
+                    };
+                    (checked.ident, r#type, declared.visibility)
+                })
                 .collect(),
         )
     }

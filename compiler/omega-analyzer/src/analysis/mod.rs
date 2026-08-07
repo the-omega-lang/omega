@@ -52,10 +52,10 @@ use crate::{
         CheckedEnumDef, CheckedExpr,
         CheckedExprNode, CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef,
         CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm,
-        CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedRawSlice,
+        CheckedParam, CheckedPlace, CheckedPlaceRoot,
         CheckedProjection, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
-        CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile, CastKind, NumberValue,
-        Storage,
+        CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedUnsizeSlice, CheckedWhile,
+        CastKind, NumberValue, Storage,
     },
     context::{Context, ScopeContext, VarBinding},
     error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError},
@@ -400,39 +400,74 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    /// Wraps `value` in `CheckedExpr::SpecCoerce` when `expected` is a
-    /// `SpecObject` and `value`'s own type is a plain pointer to a struct/
-    /// enum/union that implements the target spec -- see
-    /// `CheckedExpr::SpecCoerce`'s doc comment for why this needs an
-    /// explicit node rather than being folded into `ResolvedType::accepts`
-    /// itself. A no-op (returns `value` unchanged) whenever no such
-    /// coercion applies -- including when `expected` already structurally
-    /// `accepts` `value`, or when the spec isn't actually implemented (in
-    /// which case the caller's own ordinary `accepts` check reports the
-    /// mismatch exactly as before, just without this specific "why" -- an
-    /// accepted simplification, not every coercion site needs its own
-    /// bespoke diagnostic) -- the latter also covers a satisfying method
-    /// that exists but isn't visible enough from here, see
-    /// `type_implements_spec`'s `check_method_visibility` doc.
+    /// Wraps `value` in an explicit coercion node whenever `expected` names
+    /// a shape that needs one -- today, `SpecObject` (`*Concrete` -> `spec
+    /// *Spec` dynamic dispatch, see `CheckedExpr::SpecCoerce`'s doc
+    /// comment) and `Slice` (`*[T; N]` -> `*[T]` unsizing, see
+    /// `CheckedExpr::UnsizeSlice`'s). Both are representation-*changing*
+    /// coercions (the value gains a leaf it didn't have), unlike every
+    /// `ResolvedType::accepts` arm, which is representation-*preserving*
+    /// (same leaf count, just a wider label) -- that's why these can't be
+    /// folded into `accepts` itself: `accepts` is called bare, with no
+    /// chance to rewrite the value, at several sites this function is
+    /// never reached from (struct-literal field values, array-literal
+    /// elements, match-arm unification -- see `docs/14-known-issues.md`'s
+    /// "Specs" section for the existing, identical gap `SpecObject`
+    /// already has). Adding a leaf-count-changing `accepts` arm would make
+    /// those uncovered sites accept a value whose checked type never
+    /// actually gets rewritten -- silently wrong leaf counts flowing into
+    /// codegen's positional struct-literal-field flattening, not just a
+    /// missed coercion. So this function -- and only this function -- may
+    /// ever synthesize a new leaf; `accepts` stays exclusively
+    /// representation-preserving, everywhere, unconditionally.
+    ///
+    /// A no-op (returns `value` unchanged) whenever no such coercion
+    /// applies -- including when `expected` already structurally `accepts`
+    /// `value`, or when the specific shape check below fails (in which
+    /// case the caller's own ordinary `accepts` check reports the mismatch
+    /// exactly as before, just without this specific "why" -- an accepted
+    /// simplification, not every coercion site needs its own bespoke
+    /// diagnostic).
     fn coerce_to_expected(&mut self, expected: Option<&ResolvedType>, value: CheckedExprNode) -> CheckedExprNode {
-        let Some(target @ ResolvedType::SpecObject { spec, type_args, mutable: expected_mutable }) = expected else {
-            return value;
-        };
+        let Some(target) = expected else { return value };
         if target.accepts(&value.r#type) {
             return value;
         }
-        let ResolvedType::Pointer { pointee, mutable: value_mutable } = &value.r#type else { return value };
-        if !*value_mutable && *expected_mutable {
-            return value;
-        }
-        let Ok(slots) = self.type_implements_spec(value.id, value.span, pointee, spec, type_args, true) else {
-            return value;
-        };
-        CheckedExprNode {
-            id: value.id,
-            span: value.span,
-            r#type: target.clone(),
-            kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(value), slots }),
+        match target {
+            ResolvedType::SpecObject { spec, type_args, mutable: expected_mutable } => {
+                let ResolvedType::Pointer { pointee, mutable: value_mutable } = &value.r#type else { return value };
+                if !*value_mutable && *expected_mutable {
+                    return value;
+                }
+                let Ok(slots) = self.type_implements_spec(value.id, value.span, pointee, spec, type_args, true)
+                else {
+                    return value;
+                };
+                CheckedExprNode {
+                    id: value.id,
+                    span: value.span,
+                    r#type: target.clone(),
+                    kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(value), slots }),
+                }
+            }
+            ResolvedType::Slice { item: expected_item, mutable: expected_mutable } => {
+                let ResolvedType::Pointer { pointee, mutable: value_mutable } = &value.r#type else { return value };
+                let ResolvedType::SizedArray(found_item, len) = pointee.as_ref() else { return value };
+                if !*value_mutable && *expected_mutable {
+                    return value;
+                }
+                if !expected_item.accepts(found_item) {
+                    return value;
+                }
+                let len = *len;
+                CheckedExprNode {
+                    id: value.id,
+                    span: value.span,
+                    r#type: target.clone(),
+                    kind: CheckedExpr::UnsizeSlice(CheckedUnsizeSlice { base: Box::new(value), len }),
+                }
+            }
+            _ => value,
         }
     }
 

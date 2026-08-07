@@ -387,7 +387,10 @@ what's imported.
   primitives outside the dedicated `for`-attachment mechanism above.
 - **No `is_variadic` support** on spec functions.
 - **Coercion into `spec *T` isn't wired into every expression position** —
-  see the 4-site list above.
+  see the 4-site list above. `Analyzer::coerce_to_expected` gained a
+  second coercion (`*[T; N]` → `*[T]` unsizing) that shares this exact
+  same gap, for the same reason — see [strings, casting &
+  slices](11-strings-casting-and-slices.md)'s "Unsizing coercion" section.
 - A fully degenerate program that never calls *any* `for`-attached method
   anywhere never triggers extension discovery at all, so a malformed
   `for`-spec inside `core` goes unvalidated in that one case — consistent

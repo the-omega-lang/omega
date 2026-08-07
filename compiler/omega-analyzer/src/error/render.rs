@@ -125,7 +125,7 @@ impl AnalysisErrorKind {
                 .with_note("there is no native float bitwise/shift instruction"),
             Self::NotSliceable { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be sliced"))
-                .with_note("only sized arrays (`[T; N]`) and slices (`*[T]`) support `[start..end]`"),
+                .with_note("only sized arrays (`[T; N]`), slices (`*[T]`), strings (`*str`), and raw pointers (`*T`) support `[start..end]`"),
             Self::SliceRequiresAddressOf => d
                 .with_label(span, "a slice expression must be prefixed with `&` or `&mut`")
                 .with_note("write `&base[start..end]` for an immutable slice, or `&mut base[start..end]` for a mutable one"),
@@ -134,6 +134,13 @@ impl AnalysisErrorKind {
                 .with_note("this slice value is immutable, regardless of whether the binding holding it is `mut`"),
             Self::InvalidSliceBound { r#type } => {
                 d.with_label(span, format!("slice bounds must be `i32`, found `{}`", r#type))
+            }
+            Self::MissingSliceEnd => d
+                .with_label(span, "this range has no end bound")
+                .with_note("a raw pointer has no length to default a missing end to -- unlike an array or an existing slice")
+                .with_help("write an explicit end, e.g. `&ptr[start..<end]`"),
+            Self::CompPointerSliceNotSupported => {
+                d.with_label(span, "slicing a 'comp'-bound pointer is not supported")
             }
             Self::EmptyArrayLiteral => d
                 .with_label(span, "cannot infer what `[]` holds")
@@ -590,12 +597,6 @@ impl AnalysisErrorKind {
                 d.with_label(span, format!("`{}` has no sized fields", name.as_ref())).with_help(format!(
                     "a {kind} must hold at least one field with nonzero size -- use 'marker' to declare a type with no data"
                 ))
-            }
-            Self::RawSlicePointerMismatch { item_type, found } => d
-                .with_label(span, format!("this has type `{found}`, expected a pointer to `{item_type}`"))
-                .with_note("`raw_slice<T>`'s first argument must be `*T` or `*mut T` -- the result's own mutability is inherited from it"),
-            Self::RawSliceInvalidLength { found } => {
-                d.with_label(span, format!("`raw_slice`'s length must be `i32`, found `{found}`"))
             }
         }
     }

@@ -239,8 +239,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes one `>` closing an angle-bracket construct (a generic
-    /// argument/parameter list, a cast's own bracket, `sizeof<T>`,
-    /// `raw_slice<T>`) -- unlike a bare `eat(&TokenKind::Gt)`, this also
+    /// argument/parameter list, a cast's own bracket, `sizeof<T>`)
+    /// -- unlike a bare `eat(&TokenKind::Gt)`, this also
     /// splits a `>>` token into two logical `>`s when that's what's
     /// actually here, so a nested generic's own closing bracket
     /// (`Foo<Bar<Baz>>`, `<*mut Node<T>>0`) still closes correctly even

@@ -204,3 +204,10 @@ already accepts an empty payload without complaint.
   `signature_of_union` check in this compiler anchors its error, but
   worth knowing if the message looks like it's pointing at "healthy"
   code when only one particular type argument is actually the problem.
+
+A struct or union's own `[T]` field (`ResolvedType::UnsizedTail`) reuses
+this exact addressing guarantee — see [primitives](01-primitives.md)'s
+"`[T]` as an aggregate field" section — even though it isn't declared
+`marker` itself; only its own zero-leaf-ness matters, not how it got that
+way. It's legal in any field position, exactly like a real `marker`
+field would be — no "last field" restriction.

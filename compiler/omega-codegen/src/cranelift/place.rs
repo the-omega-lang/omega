@@ -159,8 +159,17 @@ impl Codegen {
                         // Inline contiguous storage: index off the storage's
                         // own address, not a pointer value loaded from it --
                         // there is no pointer to load, the elements live
-                        // directly in `current`.
-                        ResolvedType::SizedArray(_, _) => self.place_storage_address(builder, &current),
+                        // directly in `current`. `UnsizedTail` (a struct's
+                        // own `[T]` tail marker) belongs here, not with
+                        // `Array` below, despite sharing its source syntax:
+                        // it's zero leaves, so there's no pointer *value* to
+                        // load at all -- its own address is where the real
+                        // (unknown-length) elements start, the same
+                        // zero-size-field addressing guarantee an ordinary
+                        // `marker` field already has.
+                        ResolvedType::SizedArray(_, _) | ResolvedType::UnsizedTail(_) => {
+                            self.place_storage_address(builder, &current)
+                        }
                         // `Array` (the legacy thin-pointer unsized form,
                         // e.g. `argv`) *is* a pointer value; `Slice`/`Str`'s
                         // first flattened leaf is its data pointer (the
@@ -171,7 +180,7 @@ impl Codegen {
                             self.load_scalars(builder, &current, &current_type)[0]
                         }
                         _ => unreachable!(
-                            "mir body guarantees Index projections only apply to Array/SizedArray/Slice/Str"
+                            "mir body guarantees Index projections only apply to Array/SizedArray/UnsizedTail/Slice/Str"
                         ),
                     };
                     let mut index = self.process_expr(builder, (**index_expr).clone())[0];

@@ -576,6 +576,25 @@ pub enum ResolvedType {
     /// (locals, struct fields, ...) rather than referenced through a
     /// pointer, the same way a `Struct` is.
     SizedArray(Box<ResolvedType>, u32),
+    /// `[T]` written as a struct or union field -- a zero-leaf marker
+    /// meaning "a run of `T` elements starts at this exact memory
+    /// position, of unknown length" (a C flexible-array-member
+    /// equivalent), not a real value of its own the way `SizedArray`/
+    /// `Array` are. Genuinely distinct from `Array` above despite sharing
+    /// the same source syntax (bare `[T]`) -- `Array` is a real, 1-leaf
+    /// thin-pointer *value* (C's decayed array parameters); this is 0
+    /// leaves, and its only meaning is "take my own address, that's where
+    /// the data starts" (`layout::leaves_of`, `Analyzer::analyze_slice`/
+    /// `project_index`). No position restriction: legal anywhere in a
+    /// struct or union's field list, exactly like any other zero-sized
+    /// field (a `marker`-typed one included) -- there's nothing special
+    /// about it beyond being zero leaves, so it gets no special placement
+    /// rule either. Only ever produced by `Analyzer::
+    /// resolve_declared_fields` -- never by `Context::resolve_type`'s
+    /// general `Type::Array` arm, which always produces `Array` -- so this
+    /// can never appear anywhere a struct/union field type doesn't (a
+    /// local, a parameter, a return type, a generic argument, ...).
+    UnsizedTail(Box<ResolvedType>),
     /// `*[T]` (`mutable: false`) or `*mut [T]` (`mutable: true`) -- a fat
     /// pointer: a data pointer plus a length, unlike `Pointer` which is
     /// always a single thin pointer value. Never written as
@@ -673,6 +692,7 @@ impl Hash for ResolvedType {
                 inner.hash(state);
                 size.hash(state);
             }
+            Self::UnsizedTail(inner) => inner.hash(state),
             Self::Struct(cell) => cell.borrow().hash(state),
             Self::Union(cell) => cell.borrow().hash(state),
             Self::Enum { cell, variant } => {
@@ -736,6 +756,7 @@ impl std::fmt::Display for ResolvedType {
             }
             Self::Array(inner) => write!(f, "[{inner}]"),
             Self::SizedArray(inner, size) => write!(f, "[{inner}; {size}]"),
+            Self::UnsizedTail(inner) => write!(f, "[{inner}]"),
             Self::Slice { item, mutable: false } => write!(f, "*[{item}]"),
             Self::Slice { item, mutable: true } => write!(f, "*mut [{item}]"),
             Self::Str { mutable: false } => write!(f, "*str"),

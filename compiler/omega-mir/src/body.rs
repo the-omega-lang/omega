@@ -133,10 +133,10 @@ pub enum MirExpr {
     Slice(MirSlice),
     Cast(MirCast),
     Sizeof(ResolvedType),
-    RawSlice(MirRawSlice),
     UnionConstruct(MirUnionConstruct),
     Const(ConstValue),
     SpecCoerce(MirSpecCoerce),
+    UnsizeSlice(MirUnsizeSlice),
     DynamicCall(MirDynamicCall),
 }
 
@@ -213,16 +213,6 @@ pub struct MirCast {
     pub base: Box<MirExprNode>,
 }
 
-/// See `omega_analyzer::checked::CheckedRawSlice` -- lowered 1:1, `ptr`/
-/// `len` become this value's own two leaves directly at codegen time (no
-/// `item_type` needed here beyond what already produced the node's own
-/// `r#type`, kept for symmetry with `MirCast`/`MirSlice`).
-#[derive(Debug, Clone)]
-pub struct MirRawSlice {
-    pub ptr: Box<MirExprNode>,
-    pub len: Box<MirExprNode>,
-}
-
 /// See `omega_analyzer::checked::CheckedSpecCoerce`, which this is lowered
 /// 1:1 from -- `slots` is already fully resolved (one concrete method's
 /// `decl_id` per vtable slot, in order) by the time this exists, so codegen
@@ -231,6 +221,17 @@ pub struct MirRawSlice {
 pub struct MirSpecCoerce {
     pub base: Box<MirExprNode>,
     pub slots: Vec<HirId>,
+}
+
+/// See `omega_analyzer::checked::CheckedUnsizeSlice`, lowered 1:1 -- `base`
+/// contributes its own single leaf unchanged, `len` (already known at
+/// analysis time) is synthesized as a compile-time-constant second leaf at
+/// codegen, the same "concatenate a real leaf with a synthesized one" shape
+/// `MirSpecCoerce` above already has.
+#[derive(Debug, Clone)]
+pub struct MirUnsizeSlice {
+    pub base: Box<MirExprNode>,
+    pub len: u32,
 }
 
 #[derive(Debug, Clone)]

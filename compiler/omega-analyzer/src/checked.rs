@@ -466,10 +466,6 @@ pub enum CheckedExpr {
     /// (no separate `Checked*` wrapper struct needed, unlike `Cast`, since
     /// there's no `base`/`kind` to go with it).
     Sizeof(ResolvedType),
-    /// `raw_slice<Type>(ptr, len)` -- the node's own `r#type` is always
-    /// `ResolvedType::Slice { item: item_type, mutable }` (mutability
-    /// inherited from `ptr`'s own). See `HirExpr::RawSlice`'s doc comment.
-    RawSlice(CheckedRawSlice),
     /// `Union { field = value; }` -- builds a whole union value by writing
     /// exactly one field; analysis guarantees exactly one initializer was
     /// given (see `AnalysisErrorKind::UnionLiteralMissingField`/
@@ -500,6 +496,17 @@ pub enum CheckedExpr {
     /// codegen reads to know the *concrete* type a vtable is needed for.
     /// See `CheckedSpecCoerce::slots` for the vtable's own contents.
     SpecCoerce(CheckedSpecCoerce),
+    /// An implicit `*[T; N]` -> `*[T]` unsizing coercion (see
+    /// `Analyzer::coerce_to_expected`) -- the other representation-changing
+    /// implicit coercion this language has, alongside `SpecCoerce` above:
+    /// `base`'s own one leaf (a thin pointer to inline, `N`-element
+    /// storage) becomes this value's *first* leaf unchanged, with a second,
+    /// compiler-synthesized leaf (`len`, `N` itself, always known at
+    /// compile time since `SizedArray`'s own size always is) appended after
+    /// it. The node's own `r#type` is always the target `ResolvedType::
+    /// Slice`; `base`'s own `r#type` is always `Pointer { pointee:
+    /// SizedArray(item, len), .. }`.
+    UnsizeSlice(CheckedUnsizeSlice),
     /// `base.method(args)` where `base`'s type is `spec *Spec` -- a
     /// dynamic-dispatch call through a vtable, rather than an ordinary
     /// direct call to a statically-known symbol (`CheckedExpr::
@@ -525,6 +532,13 @@ pub struct CheckedSpecCoerce {
     /// enough to know which one a given slot needs, so codegen is handed
     /// the already-resolved answer instead of a name to match on its own.
     pub slots: Vec<HirId>,
+}
+
+/// See `CheckedExpr::UnsizeSlice`.
+#[derive(Debug, Clone)]
+pub struct CheckedUnsizeSlice {
+    pub base: Box<CheckedExprNode>,
+    pub len: u32,
 }
 
 /// See `CheckedExpr::DynamicCall`. `base` is the `spec *Spec` fat-pointer
@@ -568,17 +582,6 @@ pub struct CheckedCast {
     pub kind: CastKind,
     pub target_type: ResolvedType,
     pub base: Box<CheckedExprNode>,
-}
-
-/// See `CheckedExpr::RawSlice`. `ptr`/`len` become this value's own two
-/// leaves directly (`[ptr's leaf, len's leaf]`) -- the same flat leaf-list
-/// representation every other fat-pointer value already has, so building
-/// one is purely a codegen-time concatenation, no new runtime machinery.
-#[derive(Debug, Clone)]
-pub struct CheckedRawSlice {
-    pub item_type: ResolvedType,
-    pub ptr: Box<CheckedExprNode>,
-    pub len: Box<CheckedExprNode>,
 }
 
 /// Exactly which conversion a cast needs, resolved from either both sides'
@@ -653,9 +656,10 @@ pub struct CheckedArrayLiteral {
     pub elements: Vec<CheckedExprNode>,
 }
 
-/// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`
-/// or `Slice` (never anything else) by the time this is constructed, and
-/// `start`/`end` (when present) are guaranteed `I32`. `item_type` is
+/// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`,
+/// `Slice`, `Str`, `Pointer`, or `UnsizedTail` (never anything else) by the
+/// time this is constructed, and `start`/`end` (when present) are
+/// guaranteed `I32`. `item_type` is
 /// `base`'s element type, carried the same way `CheckedProjection::Index`'s
 /// is, so codegen never has to re-derive it from `base`'s type. `inclusive`
 /// mirrors `omega_hir::HirRange`'s -- when `true` and `end` is present,

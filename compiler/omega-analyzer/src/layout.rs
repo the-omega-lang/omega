@@ -145,6 +145,15 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
             let item_leaves = leaves_of(item_type, pointer_bytes);
             std::iter::repeat_n(item_leaves, *size as usize).flatten().collect()
         }
+        // Zero leaves, deliberately -- see `ResolvedType::UnsizedTail`'s
+        // own doc comment. Its only meaning is "my own address is where
+        // the real (unknown-length) data starts," which falls straight
+        // out of the ordinary zero-size-field addressing guarantee every
+        // `marker` field already has (`docs/20-marker-types.md`): a
+        // zero-leaf field simply never advances the running offset, so
+        // `place_field`'s existing math needs no changes at all for this
+        // to "just work."
+        ResolvedType::UnsizedTail(_) => vec![],
         // A fat pointer: a data pointer plus an `i32` length. See
         // `ResolvedType::Slice`'s doc comment for why this is a distinct
         // variant rather than `Pointer(Array(_))`. `Str` shares the

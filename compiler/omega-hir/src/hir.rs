@@ -562,17 +562,6 @@ pub enum HirExpr {
     /// `sizeof<Type>` -- `Type` carried raw/unresolved, same philosophy as
     /// `Cast`'s `target`; no `base` at all (see `SizeofExpr`'s doc comment).
     Sizeof(Type),
-    /// `raw_slice<Type>(ptr, len)` -- see `RawSliceExpr`'s doc comment.
-    /// `item_type` carried raw/unresolved, same philosophy as `Sizeof`'s.
-    RawSlice(HirRawSlice),
-}
-
-/// See `HirExpr::RawSlice`.
-#[derive(Debug, Clone)]
-pub struct HirRawSlice {
-    pub item_type: Type,
-    pub ptr: Box<HirExprNode>,
-    pub len: Box<HirExprNode>,
 }
 
 /// See `HirExpr::Cast`.

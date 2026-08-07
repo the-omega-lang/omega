@@ -503,6 +503,15 @@ impl<'r> Analyzer<'r> {
         // needed by the `comp`-binding const-promotion path further down,
         // as the `Deref` projection's target type (see there for why).
         let base_type_snapshot = base_type.clone();
+        // A raw pointer -- or a struct's own `[T]` tail marker, see
+        // `ResolvedType::UnsizedTail` -- has no length anywhere, at
+        // compile time or runtime, to default a missing `end` to --
+        // unlike `SizedArray` (its own compile-time `N`) or `Slice`/`Str`
+        // (their own runtime length leaf). Computed as a plain `bool`, not
+        // re-derived from `base_type_snapshot` later, since that gets
+        // moved out in one of the `comp`-binding branches below.
+        let base_lacks_length =
+            matches!(base_type_snapshot, ResolvedType::Pointer { .. } | ResolvedType::UnsizedTail(_));
 
         // The slice's *source* mutability: for inline storage
         // (`SizedArray`), whether the storage being sliced is itself
@@ -521,6 +530,28 @@ impl<'r> Analyzer<'r> {
             ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false, false),
             ResolvedType::Slice { item, mutable } => (*item, mutable, true, false),
             ResolvedType::Str { mutable } => (ResolvedType::U8, mutable, true, true),
+            // A raw pointer: the mutability genuinely lives on the
+            // pointer *value* (matching `Slice`/`Str`'s `true`, not
+            // `SizedArray`'s binding-borne `false`), so `&mut
+            // an_immutable_ptr[a..b]` correctly blames the pointer itself
+            // (`ImmutableSliceSource` below) rather than the binding
+            // holding it. This is what makes `&ptr[start..end]` legal
+            // while `ptr[i]` (plain single-element indexing, a
+            // structurally separate path -- `project_index`) stays
+            // illegal: only this range-slicing path accepts a bare
+            // pointer as a base, and it always produces a real, safely
+            // indexable `Slice` rather than treating the pointer itself
+            // as array-like.
+            ResolvedType::Pointer { pointee, mutable } => (*pointee, mutable, true, false),
+            // A struct's own `[T]` tail marker -- see `ResolvedType::
+            // UnsizedTail`'s doc comment. Exactly the same shape as
+            // `SizedArray` above (inline storage starting at this place's
+            // own address, binding-borne mutability): the marker itself
+            // is zero leaves, so "this place's address" and "where the
+            // tail's elements start" are the same address, for the same
+            // structural reason a `marker` field's own address is already
+            // real and correctly offset (`docs/20-marker-types.md`).
+            ResolvedType::UnsizedTail(item) => (*item, place_mutable, false, false),
             found => {
                 self.error(node_id, span, AnalysisErrorKind::NotSliceable { found });
                 return None;
@@ -538,6 +569,20 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
             self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
+        }
+
+        // A `comp`-bound raw pointer has no established promotion story:
+        // unlike `SizedArray` (promote its address) or `Slice`/`Str`
+        // (already its own two leaves), a `comp` pointer's own `ConstValue`
+        // shape isn't one either of the two branches below already knows
+        // how to handle, and speculatively guessing at one risks silently
+        // building the wrong leaves rather than just rejecting a genuinely
+        // narrow, likely-never-hit combination outright.
+        if base_lacks_length
+            && matches!(checked_base.root, CheckedPlaceRoot::Variable { storage: Storage::Comp, .. })
+        {
+            self.error(node_id, span, AnalysisErrorKind::CompPointerSliceNotSupported);
+            return None;
         }
 
         // `comp_binding[range]` -- const promotion, same as
@@ -608,6 +653,16 @@ impl<'r> Analyzer<'r> {
 
         let checked_start = analyze_bound(self, &range.start)?;
         let checked_end = analyze_bound(self, &range.end)?;
+        // A missing `start` always defaults to `0`, fine for every base
+        // kind -- but a missing `end` only has something to default to
+        // when `base_lacks_length` is `false` (`SizedArray`'s compile-time
+        // `N`, or `Slice`/`Str`'s own runtime length leaf). A raw pointer
+        // has no such fallback anywhere, so `&ptr[a..]` must name its own
+        // end explicitly; `&ptr[a..b]`/`&ptr[..b]` are unaffected.
+        if checked_end.is_none() && base_lacks_length {
+            self.error(node_id, span, AnalysisErrorKind::MissingSliceEnd);
+            return None;
+        }
 
         let result_type = if is_str {
             ResolvedType::Str { mutable: requested_mutable }
@@ -913,7 +968,17 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let checked_index = self.analyze_expr(index, None)?;
         let item_type = match current_type {
-            ResolvedType::Array(item) | ResolvedType::SizedArray(item, _) => *item,
+            // `UnsizedTail` belongs here, not off on its own: this analyzer-
+            // level extraction (just the item type, no mutability change)
+            // is identical for all three -- the real `Array`-vs-`SizedArray`-
+            // vs-`UnsizedTail` distinction only matters at codegen, which
+            // tracks it separately (`place.rs`'s own `Index` projection
+            // match). This is also what makes `tlv.value[i]` (indexing a
+            // `[T]`-typed *place*) legal automatically, with no new
+            // analyzer work: `Pointer` was never in this whitelist, so a
+            // bare pointer *value* still can't be indexed like an array --
+            // only a place already known to be array-shaped can.
+            ResolvedType::Array(item) | ResolvedType::SizedArray(item, _) | ResolvedType::UnsizedTail(item) => *item,
             ResolvedType::Slice { item, mutable: slice_mutable } => {
                 *mutable = slice_mutable;
                 *item

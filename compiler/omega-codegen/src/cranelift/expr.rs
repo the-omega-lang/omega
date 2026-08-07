@@ -17,7 +17,8 @@ use omega_analyzer::resolved_type::{ConstValue, NumericKind, ResolvedFunctionTyp
 use omega_hir::BinaryOp;
 use omega_mir::{
     MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall, MirEnumConstruct, MirExpr,
-    MirExprNode, MirFunctionCall, MirRawSlice, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
+    MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
+    MirUnsizeSlice,
 };
 
 /// A `ConstValue::Ref(inner)`'s own real type, given the *pointee* type its
@@ -788,6 +789,20 @@ impl Codegen {
                 vec![data_ptr, vtable_ptr]
             }
 
+            // `*[T; N]` -> `*[T]`: builds the fat pointer's two leaves --
+            // `base`'s own one leaf (a thin pointer to inline `N`-element
+            // storage) unchanged as the data pointer, plus a compile-time
+            // constant `len` (always known -- `SizedArray`'s own size
+            // always is) as the second. Same "one real leaf, one
+            // synthesized one" shape as `SpecCoerce` just above; no
+            // arithmetic needed, unlike `MirExpr::Slice` below, since
+            // there's no runtime range to evaluate.
+            MirExpr::UnsizeSlice(MirUnsizeSlice { base, len }) => {
+                let data_ptr = self.process_expr(builder, *base)[0];
+                let len_val = builder.ins().iconst(types::I32, len as i64);
+                vec![data_ptr, len_val]
+            }
+
             // `base.method(args)` through a `spec *Spec` value -- loads the
             // function pointer out of `base`'s own vtable leaf at
             // `slot_index * pointer_width` and calls through it, reusing
@@ -1107,7 +1122,16 @@ impl Codegen {
                 // both as its two flattened leaves (identical layout for
                 // both -- re-slicing a `*str` produces another `*str`,
                 // decided by `node.r#type` above this match, not by
-                // anything read here).
+                // anything read here); a raw `Pointer` base has no length at
+                // all, at compile time or runtime -- its own *value* (not
+                // its storage's address, unlike `SizedArray`) is the data
+                // pointer, matching `Slice`/`Str`'s "load the pointer value"
+                // treatment, not `SizedArray`'s "take the storage's own
+                // address" one. `full_len`'s placeholder `0` for `Pointer`
+                // is never actually read: `Analyzer::analyze_slice` requires
+                // an explicit `end` whenever the base has no length to
+                // default to (`MissingSliceEnd`), so `end` below is always
+                // `Some` for this base kind.
                 let (data_ptr, full_len) = match &base_type {
                     ResolvedType::SizedArray(_, size) => {
                         let ptr = self.place_storage_address(builder, &storage);
@@ -1118,7 +1142,22 @@ impl Codegen {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], leaves[1])
                     }
-                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str"),
+                    ResolvedType::Pointer { .. } => {
+                        let leaves = self.load_scalars(builder, &storage, &base_type);
+                        (leaves[0], builder.ins().iconst(types::I32, 0))
+                    }
+                    // A struct's own `[T]` tail marker (see `ResolvedType::
+                    // UnsizedTail`) -- same treatment as `SizedArray`
+                    // (address-of-storage, zero leaves to load), except
+                    // there's no compile-time size to use for `full_len`
+                    // either; the same `MissingSliceEnd` guarantee that
+                    // makes `Pointer`'s placeholder above safe applies here
+                    // too.
+                    ResolvedType::UnsizedTail(_) => {
+                        let ptr = self.place_storage_address(builder, &storage);
+                        (ptr, builder.ins().iconst(types::I32, 0))
+                    }
+                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str/Pointer/UnsizedTail"),
                 };
 
                 let elem_size = layout::total_bytes(&item_type, self.pointer_bytes()) as i64;
@@ -1151,18 +1190,6 @@ impl Codegen {
                 let new_len = builder.ins().isub(end_val, start_val);
 
                 vec![new_ptr, new_len]
-            }
-
-            // `raw_slice<T>(ptr, len)` -- a `Slice`'s runtime shape is
-            // already just `[data pointer, i32 length]` (see `MirExpr::
-            // Slice` above), and `ptr`/`len` are already exactly those two
-            // leaves (analysis guarantees `ptr` is a single-leaf pointer and
-            // `len` a single-leaf `i32`) -- no arithmetic needed at all,
-            // purely a concatenation of two already-computed values.
-            MirExpr::RawSlice(MirRawSlice { ptr, len }) => {
-                let ptr_val = self.process_expr(builder, *ptr)[0];
-                let len_val = self.process_expr(builder, *len)[0];
-                vec![ptr_val, len_val]
             }
 
             MirExpr::Cast(MirCast { kind, target_type, base }) => {
