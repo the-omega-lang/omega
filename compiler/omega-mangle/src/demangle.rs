@@ -159,7 +159,11 @@ fn parse_type(bytes: &[u8], pos: &mut usize) -> Option<MangleType> {
         }
         TAG_ARRAY => {
             *pos += 1;
-            Some(MangleType::Array(Box::new(parse_type(bytes, pos)?)))
+            Some(MangleType::Array(Box::new(parse_type(bytes, pos)?), false))
+        }
+        TAG_ARRAY_MUT => {
+            *pos += 1;
+            Some(MangleType::Array(Box::new(parse_type(bytes, pos)?), true))
         }
         TAG_STR => {
             *pos += 1;
@@ -261,12 +265,13 @@ fn render_type(ty: &MangleType) -> String {
         MangleType::F64 => "f64".to_string(),
         MangleType::Pointer(inner, false) => format!("*{}", render_type(inner)),
         MangleType::Pointer(inner, true) => format!("*mut {}", render_type(inner)),
-        MangleType::Slice(inner, false) => format!("*[{}]", render_type(inner)),
-        MangleType::Slice(inner, true) => format!("*mut [{}]", render_type(inner)),
-        MangleType::Array(inner) => format!("[{}]", render_type(inner)),
+        MangleType::Slice(inner, false) => format!("*[?]{}", render_type(inner)),
+        MangleType::Slice(inner, true) => format!("*mut [?]{}", render_type(inner)),
+        MangleType::Array(inner, false) => format!("*[]{}", render_type(inner)),
+        MangleType::Array(inner, true) => format!("*mut []{}", render_type(inner)),
         MangleType::Str(false) => "*str".to_string(),
         MangleType::Str(true) => "*mut str".to_string(),
-        MangleType::SizedArray(inner, len) => format!("[{}; {len}]", render_type(inner)),
+        MangleType::SizedArray(inner, len) => format!("[{len}]{}", render_type(inner)),
         MangleType::SpecObject(inner, false) => format!("spec *{}", render_type(inner)),
         MangleType::SpecObject(inner, true) => format!("spec *mut {}", render_type(inner)),
         MangleType::Function(params, ret, variadic) => {

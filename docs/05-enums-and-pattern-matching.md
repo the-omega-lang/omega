@@ -31,8 +31,8 @@ Three orthogonal categories, each with a different combination of
 | **body** | inside one variant's own `{ ... }` | ordinary runtime value | that variant only |
 
 Header values are literally compile-time constants baked per-variant (they
-can be a literal, `&[...]` compile-time slice, or a bare `[...; N]`
-compile-time array — see
+can be a literal, `&[...]` compile-time slice, or a bare `[...]`
+compile-time array literal, against a `[N]T`-typed header field — see
 [strings, casting & slices](11-strings-casting-and-slices.md)). An explicit
 tag (`tag: u32`) is optional — if omitted, the compiler assigns one; if
 given, it must lead the header and each variant supplies a unique

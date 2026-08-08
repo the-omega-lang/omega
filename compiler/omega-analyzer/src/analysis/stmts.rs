@@ -187,34 +187,25 @@ impl<'r> Analyzer<'r> {
     /// own initializer, never a `mut`-requiring reassignment, regardless of
     /// whether `ident` was declared `mut`.
     fn analyze_declaration_with_init(&mut self, decl: &HirDeclaration, value: &HirExprNode) -> Option<[CheckedStmt; 2]> {
-        let checked_decl = self.analyze_declaration(decl, Storage::Local)?;
-        let checked_value = self.analyze_expr(value, Some(&checked_decl.r#type))?;
-        let checked_value = self.coerce_to_expected(Some(&checked_decl.r#type), checked_value);
+        let (resolved_type, checked_value) = self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
+        self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), Storage::Local, decl.mutable)?;
+        let checked_decl = CheckedDeclaration {
+            id: decl.id,
+            span: decl.span,
+            ident: decl.ident.clone(),
+            r#type: resolved_type.clone(),
+            mutable: decl.mutable,
+            initial_value: None,
+        };
 
-        if !checked_decl.r#type.accepts(&checked_value.r#type) {
-            self.error(
-                value.id,
-                value.span,
-                AnalysisErrorKind::AssignmentTypeMismatch {
-                    target: checked_decl.r#type.clone(),
-                    value: checked_value.r#type.clone(),
-                },
-            );
-            return None;
-        }
-
-        let declaration = CheckedStmt::Declaration(checked_decl.clone());
+        let declaration = CheckedStmt::Declaration(checked_decl);
         let assignment = CheckedStmt::Expression(CheckedExprNode {
             id: decl.id,
             span: decl.span,
-            r#type: checked_decl.r#type.clone(),
+            r#type: resolved_type.clone(),
             kind: CheckedExpr::Assignment(CheckedAssignment {
                 target: CheckedPlace {
-                    root: CheckedPlaceRoot::Variable {
-                        decl_id: decl.id,
-                        storage: Storage::Local,
-                        r#type: checked_decl.r#type,
-                    },
+                    root: CheckedPlaceRoot::Variable { decl_id: decl.id, storage: Storage::Local, r#type: resolved_type },
                     projections: vec![],
                 },
                 value: Box::new(checked_value),

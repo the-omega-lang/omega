@@ -18,11 +18,12 @@ use std::collections::HashMap;
 /// argument-type-matching loop, once the concrete instantiated signature
 /// actually exists.
 ///
-/// Recurses through `Pointer`/`Array`/`SizedArray`/`Function`/`Generic` to
-/// find a generic parameter nested inside a compound shape (e.g. a
-/// parameter declared `item: *T`, or `item: Pair<T>`), including the same
-/// `*[T]` -> `Slice` special case `Context::resolve_type` applies when
-/// *resolving* (rather than unifying) a type.
+/// Recurses through `Pointer`/`SizedArray`/`Function`/`Generic` to find a
+/// generic parameter nested inside a compound shape (e.g. a parameter
+/// declared `item: *T`, or `item: Pair<T>`), including the same
+/// `*[]T` -> `Array` / `*[?]T` -> `Slice` dedicated productions
+/// `Context::resolve_pointer_type` applies when *resolving* (rather than
+/// unifying) a type.
 pub fn unify_generic_type(
     generics: &[Ident],
     raw: &Type,
@@ -33,21 +34,24 @@ pub fn unify_generic_type(
         (Type::Named(path), _) if path.is_unqualified() && generics.contains(&path.head) => {
             subst.entry(path.head.clone()).or_insert_with(|| concrete.clone());
         }
-        // `*[T]` only ever resolves to `Slice`, never `Pointer` (see
-        // `Context::resolve_type`'s identical special case) -- so a raw
-        // `Pointer(Array(_))` shape only ever unifies against a `Slice`,
+        // `*[]T`/`*[?]T` only ever resolve to `Array`/`Slice`, never a
+        // plain `Pointer` (see `Context::resolve_pointer_type`) -- so these
+        // raw shapes only ever unify against the matching `ResolvedType`,
         // regardless of whether `concrete` actually turns out to be one (a
         // mismatch here is left for the ordinary argument-type check).
-        (Type::Pointer(inner, _), _) if matches!(inner.as_ref(), Type::Array(_)) => {
-            let Type::Array(elem) = inner.as_ref() else { unreachable!() };
-            if let ResolvedType::Slice { item: c, .. } = concrete {
-                unify_generic_type(generics, elem, c, subst);
-            }
+        (Type::Pointer(inner, _), ResolvedType::Array(c, _)) if matches!(inner.as_ref(), Type::UnsizedArray(_)) => {
+            let Type::UnsizedArray(elem) = inner.as_ref() else { unreachable!() };
+            unify_generic_type(generics, elem, c, subst);
+        }
+        (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
+            if matches!(inner.as_ref(), Type::UnknownSizeArray(_)) =>
+        {
+            let Type::UnknownSizeArray(elem) = inner.as_ref() else { unreachable!() };
+            unify_generic_type(generics, elem, c, subst);
         }
         (Type::Pointer(inner, _), ResolvedType::Pointer { pointee: c, .. }) => {
             unify_generic_type(generics, inner, c, subst)
         }
-        (Type::Array(inner), ResolvedType::Array(c)) => unify_generic_type(generics, inner, c, subst),
         (Type::SizedArray(inner, _), ResolvedType::SizedArray(c, _)) => unify_generic_type(generics, inner, c, subst),
         (Type::Function(f), ResolvedType::Function(c)) => {
             for ((_, p), (_, cp)) in f.params.iter().zip(&c.params) {
@@ -139,15 +143,16 @@ fn owner_type_args(concrete: &ResolvedType) -> Option<Vec<ResolvedType>> {
 /// Whether `raw` mentions any name in `generics` anywhere within its shape
 /// -- purely syntactic (no `ResolvedType` involved), used to tell a `for`
 /// clause's *concrete* targets (`for str`, `for u32`) apart from its one
-/// supported *pattern* target (`for [T]`, referencing the spec's own
+/// supported *pattern* target (`for [?]T`, referencing the spec's own
 /// generic parameter -- see `HirSpecDef::target`'s doc comment). Recurses
 /// through the same compound shapes `unify_generic_type` does.
 pub fn type_references_generics(generics: &[Ident], raw: &Type) -> bool {
     match raw {
         Type::Named(path) => path.is_unqualified() && generics.contains(&path.head),
-        Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
-            type_references_generics(generics, inner)
-        }
+        Type::Pointer(inner, _)
+        | Type::UnsizedArray(inner)
+        | Type::UnknownSizeArray(inner)
+        | Type::SizedArray(inner, _) => type_references_generics(generics, inner),
         Type::Generic(path, args) => {
             (path.is_unqualified() && generics.contains(&path.head))
                 || args.iter().any(|a| type_references_generics(generics, a))

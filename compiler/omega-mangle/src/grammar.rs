@@ -28,6 +28,7 @@ pub const TAG_POINTER_MUT: u8 = b'Q';
 pub const TAG_SLICE: u8 = b'S';
 pub const TAG_SLICE_MUT: u8 = b'W';
 pub const TAG_ARRAY: u8 = b'G';
+pub const TAG_ARRAY_MUT: u8 = b'H';
 pub const TAG_SIZED_ARRAY: u8 = b'A';
 pub const TAG_SPEC_OBJECT: u8 = b'D';
 pub const TAG_SPEC_OBJECT_MUT: u8 = b'K';

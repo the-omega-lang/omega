@@ -122,8 +122,12 @@ impl Encoder {
                 self.out.push(TAG_SLICE_MUT as char);
                 self.encode_type(inner);
             }
-            MangleType::Array(inner) => {
+            MangleType::Array(inner, false) => {
                 self.out.push(TAG_ARRAY as char);
+                self.encode_type(inner);
+            }
+            MangleType::Array(inner, true) => {
+                self.out.push(TAG_ARRAY_MUT as char);
                 self.encode_type(inner);
             }
             MangleType::SizedArray(inner, len) => {

@@ -5,14 +5,18 @@ use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, parse_path};
 
-/// `*T` / `[T]` / `[T; N]` / `(params) => T` / `Path` / `Path<T, ...>` --
-/// matches `Type::parser`'s original `choice((pointer, array, function,
-/// named))` dispatch order exactly (no ambiguity between them: each starts
-/// with a distinct token).
+/// `*T` / `[N]T` / `[]T` / `[?]T` / `(params) => T` / `Path` / `Path<T,
+/// ...>` -- matches `Type::parser`'s original `choice((pointer, array,
+/// function, named))` dispatch order exactly (no ambiguity between them:
+/// each starts with a distinct token). Mutability is never parsed here --
+/// it only ever appears right after a leading `*` (`parse_pointer_type`),
+/// so `*[]T`/`*mut []T`/`*[?]T`/`*mut [?]T` all fall out of the ordinary
+/// pointer grammar recursing back into this function for its pointee,
+/// with no special-casing needed in the parser at all.
 pub fn parse_type(p: &mut Parser) -> Option<Type> {
     match p.peek() {
         TokenKind::Star => parse_pointer_type(p),
-        TokenKind::LBracket => parse_array_type(p),
+        TokenKind::LBracket => parse_bracket_type(p),
         TokenKind::LParen => parse_function_type(p),
         TokenKind::Spec => parse_spec_object_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
@@ -64,17 +68,33 @@ fn parse_spec_object_type(p: &mut Parser) -> Option<Type> {
     Some(Type::SpecObject(Box::new(inner), mutable))
 }
 
-fn parse_array_type(p: &mut Parser) -> Option<Type> {
+/// `[]T` / `[?]T` / `[N]T` -- the three bracketed-array shapes,
+/// disambiguated by what immediately follows `[`: a closing `]` right away
+/// means unsized, a `?` means unknown-size, anything else must be a
+/// decimal size. In every case the item type is parsed *last*, after the
+/// closing `]` -- unlike the old `[T; N]` grammar, the size (or its
+/// absence/placeholder) always comes first.
+fn parse_bracket_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '['
-    let inner = parse_type(p)?;
-    let ty = if p.eat(&TokenKind::Semi) {
-        let size = parse_array_size(p)?;
-        Type::SizedArray(Box::new(inner), size)
-    } else {
-        Type::Array(Box::new(inner))
-    };
-    p.expect(&TokenKind::RBracket, "']'");
-    Some(ty)
+    match p.peek() {
+        TokenKind::RBracket => {
+            p.advance();
+            let item = parse_type(p)?;
+            Some(Type::UnsizedArray(Box::new(item)))
+        }
+        TokenKind::Question => {
+            p.advance();
+            p.expect(&TokenKind::RBracket, "']'");
+            let item = parse_type(p)?;
+            Some(Type::UnknownSizeArray(Box::new(item)))
+        }
+        _ => {
+            let size = parse_array_size(p)?;
+            p.expect(&TokenKind::RBracket, "']'");
+            let item = parse_type(p)?;
+            Some(Type::SizedArray(Box::new(item), size))
+        }
+    }
 }
 
 /// A sized array's `N` is kept as raw digit text, matching `NumberExpr`'s

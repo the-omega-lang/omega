@@ -179,7 +179,7 @@ instantiation's body (see [generics](06-generics.md)).
 
 **`for`-block extension discovery never needs an import at all**, in
 either direction: a spec `for`-attached to some type (`spec SliceImpl<T>
-for [T] { ... }`, see [for-in loops](18-for-in-loops.md) for the iteration
+for [?]T { ... }`, see [for-in loops](18-for-in-loops.md) for the iteration
 protocol case) is discovered straight from `core_modules()` — the same
 eager inventory the "Eager local discovery" section above describes —
 never from walking anyone's import list. Only `core` may declare a

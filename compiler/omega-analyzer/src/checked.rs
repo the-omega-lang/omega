@@ -601,8 +601,8 @@ pub enum CastKind {
     /// at all, just not offered. `Unsize` below is the one exception, and
     /// only because its own source type isn't a bare pointer.
     DropLength,
-    /// `<*[T]>ptr` where `ptr: *[T; N]`/`*mut [T; N]` -- widens a thin
-    /// pointer to a compile-time-sized array into a real `*[T]`/`*mut [T]`
+    /// `<*[?]T>ptr` where `ptr: *[N]T`/`*mut [N]T` -- widens a thin pointer
+    /// to a compile-time-sized array into a real `*[?]T`/`*mut [?]T`
     /// slice. `base`'s own single leaf (the data pointer) is kept
     /// unchanged; the second leaf (the length) is synthesized from `N`,
     /// which is always known at compile time -- it's part of `base`'s own

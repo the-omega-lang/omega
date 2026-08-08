@@ -157,7 +157,7 @@ make_sound_with_dynamic_dispatch(&dog);        # &Dog coerces to spec *Animal
 ```
 
 `spec *Animal` is a genuine fat pointer — `[data pointer, vtable pointer]`,
-the same 2-leaf template `*[T]` slices already established. Every Omega
+the same 2-leaf template `*[?]T` slices already established. Every Omega
 call already compiles to `call_indirect` (there is no direct-call
 instruction anywhere in this backend), so the vtable mechanism only needed
 one new piece: a static data blob per resolved vtable-slot list (in
@@ -190,7 +190,7 @@ Unlike every numeric/pointer cast, this one can't be decided by a pure
 width/signedness computation — it has to *prove* something (`expr`'s
 pointee genuinely implements `Spec<Args>`), so `Analyzer::analyze_cast`
 checks it first, as its own family, before ever reaching the ordinary
-`cast_class`-based machinery (mirroring how the `*str`/`*[u8]`/`*[i8]`
+`cast_class`-based machinery (mirroring how the `*str`/`*[?]u8`/`*[?]i8`
 byte-pointer family already gets its own first-checked special case, for
 the identical reason — neither fits the scalar-width model at all). Runs
 the exact same proof `coerce_to_expected` runs for the implicit version of
@@ -207,7 +207,7 @@ vt := obj.vtable;    # always *u8, immutable -- the vtable is read-only rodata
 ```
 
 `.ptr`/`.vtable` read the fat pointer's own two leaves directly, exactly
-like `.length`/`.size` already do for `*[T]`/`*str`'s `[data_ptr, len]`
+like `.length`/`.size` already do for `*[?]T`/`*str`'s `[data_ptr, len]`
 leaves — not real fields (the concrete implementor is erased, so there's
 nothing to look up by name), so they're recognized before the ordinary
 struct-field paths would reject `spec *Spec` outright. `.ptr`'s own
@@ -337,7 +337,7 @@ any other unsupported position gets.
 spec StrOps : Eq for str {
     equals(*self, other: Self) => bool { ... }
 }
-spec SliceImpl<T> for [T] {
+spec SliceImpl<T> for [?]T {
     first(*self) => T { self[0] }
 }
 ```
@@ -354,8 +354,11 @@ construction).
 
 Restricted to **`core` only** (Omega's standard-library module tree — see
 [core library](13-core-library.md)), and only three target shapes: the
-built-in scalar/`bool`/`char`/`void` set, `str`, or the pattern shape `[T]`
-(a spec's own single generic parameter, referencing a slice of it). This
+built-in scalar/`bool`/`char`/`void` set, `str`, or the pattern shape
+`[?]T` (a spec's own single generic parameter, referencing a slice of
+it) — bare, with no leading `*`, the same convention `str` above already
+uses: the target names the *value* type, and each method's own self-mode
+(`*self`/`*mut self`) is what adds the pointer. This
 replaced an earlier, explicitly rolled-back `@ufcs` annotation design — the
 user judged the annotation approach as fighting the language's own syntax;
 reusing ordinary `spec` grammar for the same purpose was simpler and more

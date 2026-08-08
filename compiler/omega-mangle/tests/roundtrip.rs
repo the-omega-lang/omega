@@ -145,7 +145,8 @@ fn wrapped_types() {
         MangleType::Slice(Box::new(MangleType::U8), true),
         MangleType::Str(false),
         MangleType::Str(true),
-        MangleType::Array(Box::new(MangleType::Char)),
+        MangleType::Array(Box::new(MangleType::Char), false),
+        MangleType::Array(Box::new(MangleType::Char), true),
         MangleType::SizedArray(Box::new(MangleType::I32), 17),
         MangleType::SpecObject(Box::new(named(nested(root("mymod"), Namespace::Type, "Animal"))), false),
         MangleType::SpecObject(Box::new(named(nested(root("mymod"), Namespace::Type, "Animal"))), true),
@@ -160,9 +161,9 @@ fn wrapped_types() {
 
 #[test]
 fn str_never_collides_with_slice_u8() {
-    // `*str` and `*[u8]` share an identical runtime shape but must never
+    // `*str` and `*[?]u8` share an identical runtime shape but must never
     // mangle to the same symbol -- otherwise two overloads differing only
-    // in one taking `*str` and the other `*[u8]` would collide.
+    // in one taking `*str` and the other `*[?]u8` would collide.
     let path = nested(root("mymod"), Namespace::Value, "do_thing");
     let str_sym = Symbol {
         path: path.clone(),
@@ -178,7 +179,7 @@ fn str_never_collides_with_slice_u8() {
     let m_slice = assert_round_trips(&slice_sym);
     assert_ne!(m_str, m_slice);
     assert_eq!(demangle(&m_str).unwrap(), "mymod::do_thing(*str) -> void");
-    assert_eq!(demangle(&m_slice).unwrap(), "mymod::do_thing(*[u8]) -> void");
+    assert_eq!(demangle(&m_slice).unwrap(), "mymod::do_thing(*[?]u8) -> void");
 }
 
 #[test]

@@ -564,23 +564,31 @@ pub enum ResolvedType {
     /// binding) can be reassigned to point elsewhere.
     Pointer { pointee: Box<ResolvedType>, mutable: bool },
     Function(ResolvedFunctionType),
-    /// An unsized run of `T`, only ever meaningful as a value type the way
-    /// C's decayed array parameters are (see `argv : [*u8]` in
-    /// `examples/dev/main.omg`): a single thin pointer value, with no length
-    /// carried alongside it. This is *not* what `*[T]` resolves to --
-    /// see `Slice` below, and `Context::resolve_type`'s special case that
+    /// `*[]T` (`mutable: false`) or `*mut []T` (`mutable: true`) -- an
+    /// unsized run of `T`: genuinely just a thin pointer value (one leaf,
+    /// see `layout::leaves_of`) with array-like properties (indexing,
+    /// slicing) -- the same C-decayed-array-parameter shape `argv : *[]*u8`
+    /// in `examples/dev/main.omg` already uses, now a fully general,
+    /// constructible type (see `Analyzer::array_pointer_cast_kind`) rather
+    /// than only ever populated by the OS's own C entry-point convention.
+    /// Mutability is a type-level fact exactly like `Pointer`'s own --
+    /// whether `arr[i] = x` is legal follows this flag, never whatever
+    /// binding holds the value (see `Analyzer::project_index`'s `Array`
+    /// arm). This is *not* what `*[?]T` resolves to -- see `Slice` below,
+    /// and `Context::resolve_pointer_type`'s dedicated production that
     /// produces it.
-    Array(Box<ResolvedType>),
-    /// `[T; N]` -- a sized, inline, contiguous run of exactly `N` `T`s.
+    Array(Box<ResolvedType>, bool),
+    /// `[N]T` -- a sized, inline, contiguous run of exactly `N` `T`s.
     /// Unlike `Array`, this is a genuine value type: it's stored inline
     /// (locals, struct fields, ...) rather than referenced through a
     /// pointer, the same way a `Struct` is.
     SizedArray(Box<ResolvedType>, u32),
-    /// `*[T]` (`mutable: false`) or `*mut [T]` (`mutable: true`) -- a fat
+    /// `*[?]T` (`mutable: false`) or `*mut [?]T` (`mutable: true`) -- a fat
     /// pointer: a data pointer plus a length, unlike `Pointer` which is
     /// always a single thin pointer value. Never written as
-    /// `Pointer(Array(_))`; see `Context::resolve_type`. `mutable` carries
-    /// the same meaning `Pointer::mutable` does, for `slice[i] = value`.
+    /// `Pointer(Array(_))`; see `Context::resolve_pointer_type`. `mutable`
+    /// carries the same meaning `Pointer::mutable` does, for `slice[i] =
+    /// value`.
     Slice { item: Box<ResolvedType>, mutable: bool },
     /// `*str` (`mutable: false`) or `*mut str` (`mutable: true`) -- a
     /// UTF-8 string slice: at runtime, the exact same fat-pointer shape
@@ -658,7 +666,10 @@ impl Hash for ResolvedType {
             | Self::USize
             | Self::F32
             | Self::F64 => {}
-            Self::Array(inner) => inner.hash(state),
+            Self::Array(inner, mutable) => {
+                inner.hash(state);
+                mutable.hash(state);
+            }
             Self::Pointer { pointee, mutable } => {
                 pointee.hash(state);
                 mutable.hash(state);
@@ -734,10 +745,11 @@ impl std::fmt::Display for ResolvedType {
                 }
                 write!(f, ") => {}", fn_type.return_type)
             }
-            Self::Array(inner) => write!(f, "[{inner}]"),
-            Self::SizedArray(inner, size) => write!(f, "[{inner}; {size}]"),
-            Self::Slice { item, mutable: false } => write!(f, "*[{item}]"),
-            Self::Slice { item, mutable: true } => write!(f, "*mut [{item}]"),
+            Self::Array(inner, false) => write!(f, "*[]{inner}"),
+            Self::Array(inner, true) => write!(f, "*mut []{inner}"),
+            Self::SizedArray(inner, size) => write!(f, "[{size}]{inner}"),
+            Self::Slice { item, mutable: false } => write!(f, "*[?]{item}"),
+            Self::Slice { item, mutable: true } => write!(f, "*mut [?]{item}"),
             Self::Str { mutable: false } => write!(f, "*str"),
             Self::Str { mutable: true } => write!(f, "*mut str"),
             // Only the name, never the fields -- a struct may reference
@@ -996,6 +1008,7 @@ impl ResolvedType {
             (Self::Slice { item: expected, mutable: false }, Self::Slice { item: found, .. }) => {
                 expected.accepts(found)
             }
+            (Self::Array(expected, false), Self::Array(found, _)) => expected.accepts(found),
             // No `item` to recurse on, unlike `Slice` above -- and
             // deliberately its own arm, not folded into `Slice`'s: `*str`
             // and `*[u8]` must never accept one another implicitly (see
@@ -1006,10 +1019,10 @@ impl ResolvedType {
     }
 
     /// The `mutable` flag of any pointer-shaped type (`Pointer`/`Slice`/
-    /// `Str`) -- `None` for anything else. Lets a single check (e.g. "a
-    /// cast can't turn an immutable pointer-shaped value into a mutable
-    /// one") apply uniformly across all three instead of being duplicated
-    /// per shape.
+    /// `Str`/`Array`) -- `None` for anything else. Lets a single check
+    /// (e.g. "a cast can't turn an immutable pointer-shaped value into a
+    /// mutable one") apply uniformly across all four instead of being
+    /// duplicated per shape.
     /// The module and declaration this type's own members belong to -- what
     /// a member-visibility check needs. `None` for anything with no
     /// declaration of its own (a primitive, a slice, a pointer): the only
@@ -1038,6 +1051,7 @@ impl ResolvedType {
     pub fn pointer_like_mutable(&self) -> Option<bool> {
         match self {
             Self::Pointer { mutable, .. } | Self::Slice { mutable, .. } | Self::Str { mutable } => Some(*mutable),
+            Self::Array(_, mutable) => Some(*mutable),
             _ => None,
         }
     }

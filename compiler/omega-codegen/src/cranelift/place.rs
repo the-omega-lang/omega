@@ -161,13 +161,13 @@ impl Codegen {
                         // there is no pointer to load, the elements live
                         // directly in `current`.
                         ResolvedType::SizedArray(_, _) => self.place_storage_address(builder, &current),
-                        // `Array` (the legacy thin-pointer unsized form,
-                        // e.g. `argv`) *is* a pointer value; `Slice`/`Str`'s
-                        // first flattened leaf is its data pointer (the
-                        // second, its length, isn't needed for a
-                        // single-element index) -- identical leaf layout,
+                        // `Array` (a plain, unsized-array-shaped thin
+                        // pointer, e.g. `argv`) *is* a pointer value;
+                        // `Slice`/`Str`'s first flattened leaf is its data
+                        // pointer (the second, its length, isn't needed for
+                        // a single-element index) -- identical leaf layout,
                         // so the same one-leaf load works for both.
-                        ResolvedType::Array(_) | ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
+                        ResolvedType::Array(_, _) | ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                             self.load_scalars(builder, &current, &current_type)[0]
                         }
                         _ => unreachable!(

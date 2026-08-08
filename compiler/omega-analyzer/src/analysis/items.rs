@@ -98,21 +98,63 @@ impl<'r> Analyzer<'r> {
         decl: &HirDeclaration,
         value: &HirExprNode,
     ) -> Option<CheckedDeclaration> {
-        let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type, true)?;
+        let (_, checked_value) = self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
+        self.finish_global_binding(decl.id, decl.span, &decl.ident, decl.mutable, value, checked_value)
+    }
+
+    /// Resolves `r#type` and analyzes `value` against it as one unit --
+    /// shared between the local (`analyze_declaration_with_init`, in
+    /// `stmts.rs`) and global (`analyze_global_declaration_with_init`
+    /// above) typed-declaration-with-initializer paths, which otherwise
+    /// differ only in what they do with the result (a local `Assignment`
+    /// statement vs. `finish_global_binding`'s compile-time-known
+    /// requirement).
+    ///
+    /// Handles one shape ordinary `resolve_type` can't: `ident : []T =
+    /// [a, b, c];` (`Type::UnsizedArray`), where the array's real length
+    /// is inferred from `value` itself rather than written in the type --
+    /// reusing `analyze_array_literal`'s own existing behavior of reading
+    /// *only* the item type out of an `expected: Some(&SizedArray(item,
+    /// _))` hint (the placeholder size below is never read) and returning
+    /// the *real* inferred size. Every other `r#type` shape resolves and
+    /// checks exactly as before. `resolve_type_or_error`'s own diagnostic
+    /// (or a dedicated `ArraySizeNotInferable`, if `value` didn't turn out
+    /// to be an array literal after all) is the only error reported here --
+    /// callers propagate `None` without reporting a second one.
+    pub(super) fn resolve_typed_decl_init(
+        &mut self,
+        decl_id: HirId,
+        decl_span: Span,
+        r#type: &Type,
+        value: &HirExprNode,
+    ) -> Option<(ResolvedType, CheckedExprNode)> {
+        if let Type::UnsizedArray(item) = r#type {
+            let item_type = self.resolve_type_or_error(decl_id, decl_span, item, true)?;
+            // Size is a placeholder, never read back -- only the item type
+            // inside is (see `analyze_array_literal`'s own `expected` match).
+            let expected = ResolvedType::SizedArray(Box::new(item_type.clone()), 0);
+            let checked_value = self.analyze_expr(value, Some(&expected))?;
+            let checked_value = self.coerce_to_expected(Some(&expected), checked_value);
+            let ResolvedType::SizedArray(_, size) = &checked_value.r#type else {
+                self.error(value.id, value.span, AnalysisErrorKind::ArraySizeNotInferable);
+                return None;
+            };
+            let resolved_type = ResolvedType::SizedArray(Box::new(item_type), *size);
+            return Some((resolved_type, checked_value));
+        }
+
+        let resolved_type = self.resolve_type_or_error(decl_id, decl_span, r#type, true)?;
         let checked_value = self.analyze_expr(value, Some(&resolved_type))?;
         let checked_value = self.coerce_to_expected(Some(&resolved_type), checked_value);
         if !resolved_type.accepts(&checked_value.r#type) {
             self.error(
                 value.id,
                 value.span,
-                AnalysisErrorKind::AssignmentTypeMismatch {
-                    target: resolved_type,
-                    value: checked_value.r#type,
-                },
+                AnalysisErrorKind::AssignmentTypeMismatch { target: resolved_type, value: checked_value.r#type },
             );
             return None;
         }
-        self.finish_global_binding(decl.id, decl.span, &decl.ident, decl.mutable, value, checked_value)
+        Some((resolved_type, checked_value))
     }
 
     /// The shared tail `analyze_global_walrus` and

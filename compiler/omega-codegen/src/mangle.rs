@@ -60,7 +60,7 @@ fn mangle_type(ty: &ResolvedType) -> MangleType {
         ResolvedType::Pointer { pointee, mutable } => MangleType::Pointer(Box::new(mangle_type(pointee)), *mutable),
         ResolvedType::Slice { item, mutable } => MangleType::Slice(Box::new(mangle_type(item)), *mutable),
         ResolvedType::Str { mutable } => MangleType::Str(*mutable),
-        ResolvedType::Array(inner) => MangleType::Array(Box::new(mangle_type(inner))),
+        ResolvedType::Array(inner, mutable) => MangleType::Array(Box::new(mangle_type(inner)), *mutable),
         ResolvedType::SizedArray(inner, len) => MangleType::SizedArray(Box::new(mangle_type(inner)), u64::from(*len)),
         ResolvedType::Function(fn_type) => {
             let (params, ret) = build_signature(fn_type);

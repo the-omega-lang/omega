@@ -84,7 +84,7 @@ pub enum MangleType {
     F64,
     /// `*T` (`false`) / `*mut T` (`true`)
     Pointer(Box<MangleType>, bool),
-    /// `*[T]` (`false`) / `*mut [T]` (`true`)
+    /// `*[?]T` (`false`) / `*mut [?]T` (`true`)
     Slice(Box<MangleType>, bool),
     /// `*str` (`false`) / `*mut str` (`true`) -- a leaf, unlike `Pointer`/
     /// `Slice`: `str` is always byte-shaped, so there's no inner type to
@@ -95,9 +95,10 @@ pub enum MangleType {
     /// `ResolvedType::Str` being a fully separate variant from `Slice`,
     /// not a structural alias.
     Str(bool),
-    /// `[T]` -- a decayed, unsized array parameter.
-    Array(Box<MangleType>),
-    /// `[T; N]`
+    /// `*[]T` (`false`) / `*mut []T` (`true`) -- an unsized, pointer-shaped
+    /// array.
+    Array(Box<MangleType>, bool),
+    /// `[N]T`
     SizedArray(Box<MangleType>, u64),
     /// `spec *T` (`false`) / `spec *mut T` (`true`) -- the inner type is
     /// always a `Named(Generic(spec_path, type_args))` (or plain

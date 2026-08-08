@@ -115,6 +115,17 @@ pub enum TypeResolutionError {
     /// resolved type in its own right, never as another type's inner
     /// return-type position.
     NeverNotAllowedHere,
+    /// `[]T` reached ordinary type resolution directly -- unsized, and
+    /// nothing here to give it a length. Only legal behind a leading `*`
+    /// (`*[]T`, a pointer-with-array-properties) or as a declaration's own
+    /// type annotation paired with an array-literal initializer, which
+    /// infers the real length (see `Analyzer::resolve_typed_decl_init`).
+    BareUnsizedArray,
+    /// `[?]T` reached ordinary type resolution directly -- unlike `[]T`
+    /// above, there is no standalone-legal case at all: a slice's length
+    /// is only ever known at runtime, nothing to infer here either. Only
+    /// legal behind a leading `*` (`*[?]T`, a slice).
+    BareUnknownSizeArray,
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -152,6 +163,12 @@ impl fmt::Display for TypeResolutionError {
             }
             Self::NeverNotAllowedHere => {
                 write!(f, "'never' is only allowed as a function/method's own return type")
+            }
+            Self::BareUnsizedArray => {
+                write!(f, "'[]T' is not valid on its own")
+            }
+            Self::BareUnknownSizeArray => {
+                write!(f, "'[?]T' is not valid on its own")
             }
         }
     }

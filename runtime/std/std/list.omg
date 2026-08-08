@@ -15,7 +15,7 @@
 # Fallible, possibly-out-of-bounds access follows `core::slices::
 # SliceImpl<T>`'s own out-pointer/`bool` convention (`get`/`pop`/`set`)
 # rather than `Option<T>` -- `List<T>` is the growable version of the same
-# hot-path, no-allocation-on-read concept `*[T]` already is, and should
+# hot-path, no-allocation-on-read concept `*[?]T` already is, and should
 # feel like a drop-in extension of the methods a caller already knows from
 # plain slices.
 
@@ -34,7 +34,7 @@ exposed struct List<T> : ToIterator<T> {
     data: *mut T;
     # Named `count`, not `len` -- a field and a method can't share one name
     # on the same type, and the public accessor is what should get the
-    # short, idiomatic name (`list.len()`, matching `*[T]`'s own `.length`
+    # short, idiomatic name (`list.len()`, matching `*[?]T`'s own `.length`
     # in spirit).
     count: usize;
     cap: usize;
@@ -128,14 +128,16 @@ exposed struct List<T> : ToIterator<T> {
         self.count = 0;
     }
 
-    # A real, borrowed view of this list's current contents -- range-
-    # slicing a raw pointer with an explicit end (`self.count`, cast to
-    # `i32` to match a slice's own `.length` leaf type) is what builds a
-    # runtime-length `*[T]` from a raw pointer + a runtime length in this
-    # language; see docs/11-strings-casting-and-slices.md.
-    exposed as_slice(*self) => *[T] {
+    # A real, borrowed view of this list's current contents -- `self.data`
+    # is a bare `*T`, which no longer supports indexing or slicing on its
+    # own; casting it to `*mut []T` first (an ordinary `Pointer <-> Array`
+    # reinterpret cast) gets back an unsized-array pointer, which range-
+    # slicing with an explicit end (`self.count`, cast to `i32` to match a
+    # slice's own `.length` leaf type) then turns into a real, runtime-
+    # length `*[?]T`; see docs/11-strings-casting-and-slices.md.
+    exposed as_slice(*self) => *[?]T {
         count := <i32>self.count;
-        &self.data[0..<count]
+        &(<*mut []T>self.data)[0..<count]
     }
 
     exposed free(*mut self) => void {

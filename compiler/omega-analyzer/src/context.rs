@@ -374,9 +374,14 @@ impl Context {
             Type::Function(fntyp) => {
                 Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?))
             }
-            Type::Array(item) => {
-                Ok(ResolvedType::Array(Box::new(self.resolve_type(*item, resolver, module_path, true, bypass)?)))
-            }
+            // Always invalid reached directly -- their only legal uses
+            // (behind a leading `*`, or -- for `UnsizedArray` only -- as a
+            // declaration's own type annotation with an inferred length)
+            // are both intercepted *before* they ever reach this dispatch;
+            // see `resolve_pointer_type` and `Analyzer::
+            // resolve_typed_decl_init` respectively.
+            Type::UnsizedArray(_) => Err(TypeResolutionError::BareUnsizedArray),
+            Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
             Type::SizedArray(item, size) => {
                 let size = size.parse::<u32>().map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
                 let item = self.resolve_type(*item, resolver, module_path, indirect, bypass)?;
@@ -552,6 +557,14 @@ impl Context {
     }
 
     /// `*T`, which is not always a thin pointer.
+    /// Dispatches directly on `pointee_type`'s own raw shape -- a real,
+    /// dedicated production per case, rather than resolving the pointee
+    /// generically first and pattern-matching the *result* to override it
+    /// (the "hijack" this function used to be, back when the only two
+    /// possible outcomes were `Pointer` and `Slice`). `*[]T`/`*[?]T` are
+    /// caught before any generic resolution happens at all; every other
+    /// pointee (including `*[N]T`, which needs no special handling
+    /// whatsoever) falls through to ordinary resolution.
     fn resolve_pointer_type(
         &self,
         pointee_type: Type,
@@ -560,34 +573,47 @@ impl Context {
         module_path: &[Ident],
         bypass: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
-        let pointee_type = Box::new(pointee_type);
-        let resolved = {
-            let is_bare_str = matches!(
-                pointee_type.as_ref(),
-                Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str"
-            );
-            if is_bare_str {
-                ResolvedType::Str { mutable }
-            } else {
-                match self.resolve_type(*pointee_type, resolver, module_path, true, bypass)? {
-                    ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
-                    // A pointee that resolves (not through the literal
-                    // `str` syntax above, but indirectly -- e.g. through
-                    // a `for str` extension spec's `Self` substitution,
-                    // see `HirSpecDef::target`) to `Str` gets the same
-                    // treatment as the literal case: re-stamped with
-                    // *this* pointer's own mutability, never
-                    // double-wrapped. `Str` (like `Slice`) is already
-                    // its own fat-pointer value representation -- a
-                    // pointer to one is the same shape, just a
-                    // (possibly) different mutability.
-                    ResolvedType::Str { .. } => ResolvedType::Str { mutable },
-                    other => ResolvedType::Pointer { pointee: Box::new(other), mutable },
+        match pointee_type {
+            Type::UnsizedArray(item) => {
+                let item = self.resolve_type(*item, resolver, module_path, true, bypass)?;
+                Ok(ResolvedType::Array(Box::new(item), mutable))
+            }
+            Type::UnknownSizeArray(item) => {
+                let item = self.resolve_type(*item, resolver, module_path, true, bypass)?;
+                Ok(ResolvedType::Slice { item: Box::new(item), mutable })
+            }
+            Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
+                Ok(ResolvedType::Str { mutable })
+            }
+            // `*self`/`*mut self` always lowers to exactly this raw shape
+            // (see `omega_hir::lower::Lowerer::self_param`'s doc comment)
+            // -- when a `for str`/`for [?]T` extension method's `Self` is
+            // substituted with `Str`/`Array` respectively (see
+            // `flatten_spec_into`'s substitution list and
+            // `methods_attached_to`'s `array_self`), this re-stamps rather
+            // than double-wraps, so `*self` comes out as the real `Str`/
+            // `Slice` receiver instead of a pointer *to* one. Checked as a
+            // raw-syntax peek, mirroring the literal-`str` case just
+            // above -- deliberately **not** applied to any other named
+            // type (an ordinary generic parameter, e.g. `T` in `out: *mut
+            // T`) that might happen to resolve to `Str`/`Array` through
+            // unrelated substitution: `*mut T` with `T = *str` must stay a
+            // genuine pointer-to-a-pointer (`Pointer{pointee: Str}`),
+            // never collapsed into `*mut str` -- confirmed a real bug, not
+            // a hypothetical one, via `core::slices`'s own `SliceImpl<T>::
+            // first(*self, out: *mut T)` called with `T = *str`.
+            Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self" => {
+                match self.resolve_named_type(path, resolver, module_path, true, bypass)? {
+                    ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
+                    ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
+                    resolved => Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable }),
                 }
             }
-        
-        };
-        Ok(resolved)
+            other => {
+                let resolved = self.resolve_type(other, resolver, module_path, true, bypass)?;
+                Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable })
+            }
+        }
     }
 
     /// `spec *Animal`/`spec *mut Animal` -- a dynamic-dispatch spec-object

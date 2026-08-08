@@ -3,7 +3,7 @@ use super::*;
 /// What a `spec Name : Deps for Target { ... }` clause's `Target` resolves
 /// to -- see `HirSpecDef::target`'s doc comment and
 /// `Analyzer::resolve_extension_target`. `Concrete` is fully resolved and
-/// ready to use immediately; `Pattern` (the one supported shape, `[T]`)
+/// ready to use immediately; `Pattern` (the one supported shape, `[?]T`)
 /// defers resolution to a later, per-receiver call
 /// (`Analyzer::resolve_extension_methods`), since there's no single
 /// concrete instantiation to resolve eagerly.
@@ -177,16 +177,27 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Whether `target` is the one supported pattern shape a `for` clause
-    /// may use (`[T]`, referencing the spec's own single generic parameter
-    /// exactly) -- shared between `resolve_extension_target` (which
-    /// classifies a `for` clause) and `resolve_spec_functions` (which
-    /// additionally restricts self-mode for it, see below).
+    /// may use (`[?]T`, referencing the spec's own single generic parameter
+    /// exactly) -- bare, with no leading `*`, exactly the same convention
+    /// `for str { ... }` already uses: the target names the *value* type,
+    /// and a function's own self-mode (`*self`/`*mut self`) is what adds
+    /// the pointer, so `*self` inside a `for [?]T` block reads the same way
+    /// `*self` inside a `for str` block already does -- "a pointer to the
+    /// named target," not a pointer baked into the target spelling itself.
+    /// Every self-mode restriction below still applies identically --
+    /// bare `[?]T` is otherwise always-invalid syntax (`Context::
+    /// resolve_type` rejects it unconditionally), this `for`-target
+    /// position is the one dedicated exception, mirroring `str`'s own
+    /// "never resolvable except via this raw-syntax special case" status.
+    /// Shared between `resolve_extension_target` (which classifies a `for`
+    /// clause) and `resolve_spec_functions` (which additionally restricts
+    /// self-mode for it, see below).
     fn is_slice_extension_target(generics: &[Ident], target: &Type) -> bool {
         generics.len() == 1
             && matches!(
                 target,
-                Type::Array(inner) if matches!(
-                    inner.as_ref(),
+                Type::UnknownSizeArray(item) if matches!(
+                    item.as_ref(),
                     Type::Named(path) if path.is_unqualified() && path.head == generics[0]
                 )
             )
@@ -246,7 +257,7 @@ impl<'r> Analyzer<'r> {
             } else if annotations.gap && f.body.is_some() {
                 self.error(f.id, f.span, AnalysisErrorKind::GapFunctionBodyNotYetSupported { name: f.name.clone() });
             } else if by_value && is_slice_extension {
-                // `for [T]`'s `self` (by value) resolves to
+                // `for [?]T`'s `self` (by value) resolves to
                 // `ResolvedType::Array` -- an unsized, lengthless thin
                 // pointer, not the lengthed `Slice` `*self` gives -- see
                 // `AnalysisErrorKind::ExtensionSelfMustBePointer`'s doc

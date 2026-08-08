@@ -1,7 +1,10 @@
-# `core::slices` -- `*[T]`'s own methods, for *any* element type `T` (see
-# `SliceImpl`'s `for [T]` target -- one instantiation gets generated per
-# concrete `T` a program actually uses, deduplicated across translation
-# units the same way any other generic instantiation is).
+# `core::slices` -- `*[?]T`'s own methods, for *any* element type `T` (see
+# `SliceImpl`'s `for [?]T` target -- bare, no leading `*`, the same
+# convention `strings.omg`'s `for str` already uses: the target names the
+# value type, and each method's own self-mode (`*self`) is what adds the
+# pointer. One instantiation gets generated per concrete `T` a program
+# actually uses, deduplicated across translation units the same way any
+# other generic instantiation is).
 #
 # Every potentially-out-of-bounds read reports success through a returned
 # `bool` and writes the found value through an `out` pointer, rather than
@@ -11,14 +14,14 @@
 # partial operation. `false` leaves `*out` untouched.
 #
 # Note: unlike `numerics.omg`/`strings.omg`'s own `for $T` blocks, a
-# `for [T]` (slice-pattern) target's own function list does not accept a
+# `for [?]T` (slice-pattern) target's own function list does not accept a
 # leading visibility modifier at all -- a real, separate parser limitation
 # confirmed while working on this file, out of scope for the current task.
 # These methods are effectively still only reachable from within `core`
 # itself for now, same as every other `for`-attached method was before
 # this pass.
 
-spec SliceImpl<T> for [T] {
+exposed spec SliceImpl<T> for [?]T {
     is_empty(*self) => bool {
         self.length == 0
     }

@@ -40,7 +40,7 @@ new one is found.
 ## Types
 
 - **`*str` is not actually guaranteed valid UTF-8** — casting between
-  `*str` and `*[u8]`/`*[i8]` is unsound in both directions, no validation.
+  `*str` and `*[?]u8`/`*[?]i8` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
   [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
 - **`char`/pointer arithmetic and `bool` logical-not are fixed; casting an
@@ -98,7 +98,7 @@ new one is found.
   extension method on the same type lose visibility when the type is
   instantiated from a consuming `--extern` package** — e.g.
   `core::slices`'s `SliceImpl<T>`'s `first`/`last` calling `self.get(...)`
-  internally reports `get` as "not visible here" once `[T]` is actually
+  internally reports `get` as "not visible here" once `*[?]T` is actually
   used (not merely declared) from outside `core`. Reproduces identically
   on the baseline commit with an explicit `import core;` and no ambient
   resolution involved at all, so it's unrelated to the ambient-prelude

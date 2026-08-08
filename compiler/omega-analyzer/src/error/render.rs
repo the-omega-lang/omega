@@ -52,7 +52,7 @@ impl AnalysisErrorKind {
                 .with_help(format!("mark the method `exposed`/`internal` on `{base}`, or bypass with `reveal`")),
             Self::NotAnArray { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be indexed"))
-                .with_note("only arrays (`[T; N]`, `[T]`) and slices (`*[T]`) support indexing"),
+                .with_note("only sized arrays (`[N]T`), unsized arrays (`*[]T`), and slices (`*[?]T`) support indexing"),
             Self::WrongArgumentCount { expected, found } => {
                 d.with_label(span, format!("expected {expected} {}, found {found}", plural(*expected, "argument")))
             }
@@ -125,7 +125,7 @@ impl AnalysisErrorKind {
                 .with_note("there is no native float bitwise/shift instruction"),
             Self::NotSliceable { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be sliced"))
-                .with_note("only sized arrays (`[T; N]`), slices (`*[T]`), strings (`*str`), and raw pointers (`*T`) support `[start..end]`"),
+                .with_note("only sized arrays (`[N]T`), unsized arrays (`*[]T`), slices (`*[?]T`), and strings (`*str`) support `[start..end]`"),
             Self::SliceRequiresAddressOf => d
                 .with_label(span, "a slice expression must be prefixed with `&` or `&mut`")
                 .with_note("write `&base[start..end]` for an immutable slice, or `&mut base[start..end]` for a mutable one"),
@@ -137,10 +137,10 @@ impl AnalysisErrorKind {
             }
             Self::MissingSliceEnd => d
                 .with_label(span, "this range has no end bound")
-                .with_note("a raw pointer has no length to default a missing end to -- unlike an array or an existing slice")
-                .with_help("write an explicit end, e.g. `&ptr[start..<end]`"),
+                .with_note("an unsized array (`*[]T`) has no length to default a missing end to -- unlike a sized array or an existing slice")
+                .with_help("write an explicit end, e.g. `&arr[start..<end]`"),
             Self::CompPointerSliceNotSupported => {
-                d.with_label(span, "slicing a 'comp'-bound pointer is not supported")
+                d.with_label(span, "slicing a 'comp'-bound unsized array is not supported")
             }
             Self::EmptyArrayLiteral => d
                 .with_label(span, "cannot infer what `[]` holds")
@@ -148,6 +148,9 @@ impl AnalysisErrorKind {
             Self::ArrayElementTypeMismatch { expected, found } => d
                 .with_label(span, format!("expected `{expected}`, found `{found}`"))
                 .with_note("every element of an array literal must have the first element's type"),
+            Self::ArraySizeNotInferable => d
+                .with_label(span, "cannot infer this array's length")
+                .with_help("an `[]T`-typed declaration's length is inferred from an array-literal initializer"),
             Self::ConstSliceCannotBeMutable => d
                 .with_label(span, "a compile-time slice cannot be mutable")
                 .with_note("compile-time slice data is embedded directly in the binary, like a string literal")
@@ -503,13 +506,13 @@ impl AnalysisErrorKind {
             Self::ExtensionTargetNotAllowed { name } => d
                 .with_label(span, format!("`{}` targets a type `for` doesn't support", name.as_ref()))
                 .with_help(
-                    "`for` may only target one of core's built-in scalar/`str` types, or `[T]` referencing this \
+                    "`for` may only target one of core's built-in scalar/`str` types, or `[?]T` referencing this \
                      spec's own single generic parameter",
                 ),
             Self::ExtensionSelfMustBePointer { name } => d
                 .with_label(span, format!("`{}` receives `self` by value", name.as_ref()))
                 .with_help(
-                    "a `for [T]` function must receive `self` by pointer (`*self`/`*mut self`) -- by value, \
+                    "a `for [?]T` function must receive `self` by pointer (`*self`/`*mut self`) -- by value, \
                      `self` has no length and can't be indexed safely",
                 ),
             Self::DuplicateExtensionTarget { target, previous } => d
@@ -653,6 +656,12 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         TypeResolutionError::NeverNotAllowedHere => d
             .with_label(span, "`never` used outside a function's own return type")
             .with_help("there is no such thing as a `never`-typed value -- only a function/method/extern/gap may declare `=> never`"),
+        TypeResolutionError::BareUnsizedArray => d
+            .with_label(span, "unsized array type used on its own")
+            .with_help("write `*[]T` (a pointer to an unsized array), or use `[]T` only as a declaration's type annotation with an array-literal initializer to infer its length"),
+        TypeResolutionError::BareUnknownSizeArray => d
+            .with_label(span, "unknown-size array type used on its own")
+            .with_help("write `*[?]T` (a slice) instead"),
     }
 }
 
