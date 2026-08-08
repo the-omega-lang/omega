@@ -585,39 +585,34 @@ impl Context {
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
-            other => Ok(match self.resolve_type(other, resolver, module_path, true, bypass)? {
-                // A pointee that resolves (not through the literal `str`
-                // syntax above, but indirectly -- e.g. through a `for str`
-                // extension spec's `Self` substitution, see `HirSpecDef::
-                // target`) to `Str` gets the same treatment as the literal
-                // case: re-stamped with *this* pointer's own mutability,
-                // never double-wrapped. `Str` (like `Slice`) is already its
-                // own fat-pointer value representation -- a pointer to one
-                // is the same shape, just a (possibly) different mutability.
-                ResolvedType::Str { .. } => ResolvedType::Str { mutable },
-                // Same re-stamping for a pointee that resolves to `Array`
-                // -- this is what makes a `for [?]T` extension method's
-                // `*self` come out as the real, lengthed `Slice` receiver
-                // rather than a pointer *to* the `Array` `Self` is
-                // internally substituted with (see `omega_driver::
-                // extensions::methods_attached_to`'s `array_self`).
-                //
-                // Pre-existing, narrow wrinkle carried over unchanged from
-                // before this redesign: this also fires for ordinary
-                // generic code where a type parameter `T` happens to be
-                // bound to `Array` (e.g. `Foo<*[]i32>`) and a signature
-                // inside `Foo` writes `*T` -- that's a genuine pointer *to*
-                // an unsized-array-pointer, which this collapses into a
-                // plain `Slice` instead of double-wrapping it correctly.
-                // No motivating real-world case hits this (an unsized
-                // array pointer used as a generic argument, then
-                // re-pointed-to inside the generic body, is exotic), and
-                // it's no different from the conflation this function
-                // already had before -- flagged here rather than silently
-                // carried forward.
-                ResolvedType::Array(item, _) => ResolvedType::Slice { item, mutable },
-                resolved => ResolvedType::Pointer { pointee: Box::new(resolved), mutable },
-            }),
+            // `*self`/`*mut self` always lowers to exactly this raw shape
+            // (see `omega_hir::lower::Lowerer::self_param`'s doc comment)
+            // -- when a `for str`/`for [?]T` extension method's `Self` is
+            // substituted with `Str`/`Array` respectively (see
+            // `flatten_spec_into`'s substitution list and
+            // `methods_attached_to`'s `array_self`), this re-stamps rather
+            // than double-wraps, so `*self` comes out as the real `Str`/
+            // `Slice` receiver instead of a pointer *to* one. Checked as a
+            // raw-syntax peek, mirroring the literal-`str` case just
+            // above -- deliberately **not** applied to any other named
+            // type (an ordinary generic parameter, e.g. `T` in `out: *mut
+            // T`) that might happen to resolve to `Str`/`Array` through
+            // unrelated substitution: `*mut T` with `T = *str` must stay a
+            // genuine pointer-to-a-pointer (`Pointer{pointee: Str}`),
+            // never collapsed into `*mut str` -- confirmed a real bug, not
+            // a hypothetical one, via `core::slices`'s own `SliceImpl<T>::
+            // first(*self, out: *mut T)` called with `T = *str`.
+            Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self" => {
+                match self.resolve_named_type(path, resolver, module_path, true, bypass)? {
+                    ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
+                    ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
+                    resolved => Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable }),
+                }
+            }
+            other => {
+                let resolved = self.resolve_type(other, resolver, module_path, true, bypass)?;
+                Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable })
+            }
         }
     }
 

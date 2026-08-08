@@ -21,7 +21,7 @@
 # itself for now, same as every other `for`-attached method was before
 # this pass.
 
-spec SliceImpl<T> for [?]T {
+exposed spec SliceImpl<T> for [?]T {
     is_empty(*self) => bool {
         self.length == 0
     }
