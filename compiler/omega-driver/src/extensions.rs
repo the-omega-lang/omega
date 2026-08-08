@@ -221,11 +221,18 @@ impl Driver {
         // Only a slice has a real element type to bind the pattern's `T` to
         // -- callers only ever hand this a primitive/slice/str, already
         // deref'd at most once.
-        let ResolvedType::Slice { item, .. } = receiver else {
+        let ResolvedType::Slice { item, mutable } = receiver else {
             return Ok(Vec::new());
         };
         let element = (**item).clone();
-        Ok(self.resolve_for_block(&module_path, &sp, receiver, ResolvedType::Array(item.clone()), Some(element)))
+        // A pure type-checking substitution fiction (`Self` inside the
+        // `for [T]` block's own body) -- never a real runtime value, never
+        // used as a cache key (that's keyed on `receiver` itself, the real
+        // `Slice`, above). Given the real receiver's own mutability anyway,
+        // for consistency, though nothing downstream currently reads it
+        // back out through this specific path.
+        let array_self = ResolvedType::Array(item.clone(), *mutable);
+        Ok(self.resolve_for_block(&module_path, &sp, receiver, array_self, Some(element)))
     }
 
     /// Checks every extension method body queued for `receiver`, force-

@@ -100,6 +100,9 @@ impl ParseError {
             ParseErrorKind::DefaultGenericParamNotTrailing { name } => d
                 .with_label(self.span, format!("`{name}` has no default, but an earlier parameter does"))
                 .with_help("once one generic parameter has a default, every parameter after it must too"),
+            ParseErrorKind::MutSizedArray => d
+                .with_label(self.span, "'mut' has no effect here")
+                .with_note("a sized array's own mutability comes from wherever it's stored, not the type itself"),
         }
     }
 }
@@ -193,6 +196,11 @@ pub enum ParseErrorKind {
     /// it ever reaches HIR. See `omega_parser::ast::generics::GenericParam`'s
     /// doc comment.
     DefaultGenericParamNotTrailing { name: Ident },
+    /// `[mut T; N]` -- `mut` is only meaningful on the unsized (`[mut T]`)
+    /// form; a sized array's own mutability is whatever binding/field
+    /// stores it, not a property of the type, matching every other inline
+    /// value type (unlike a real pointer).
+    MutSizedArray,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -242,6 +250,9 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::DefaultGenericParamNotTrailing { name } => {
                 write!(f, "generic parameter '{name}' has no default, but an earlier one does")
+            }
+            Self::MutSizedArray => {
+                write!(f, "'mut' is not valid on a sized array -- its mutability comes from wherever it's stored")
             }
         }
     }

@@ -5,14 +5,27 @@ use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, parse_path};
 
-/// `*T` / `[T]` / `[T; N]` / `(params) => T` / `Path` / `Path<T, ...>` --
-/// matches `Type::parser`'s original `choice((pointer, array, function,
-/// named))` dispatch order exactly (no ambiguity between them: each starts
-/// with a distinct token).
+/// `*T` / `[T]` / `mut [T]` / `[T; N]` / `(params) => T` / `Path` /
+/// `Path<T, ...>` -- matches `Type::parser`'s original `choice((pointer,
+/// array, function, named))` dispatch order exactly (no ambiguity between
+/// them: each starts with a distinct token). `mut [T]` is checked first,
+/// ahead of the main dispatch: unlike `*mut T`/`spec *mut Animal`, `[T]`
+/// has no leading sigil of its own for `mut` to attach right after, so it
+/// prefixes the whole `[...]` instead -- a contextual keyword, same
+/// lookahead-based recognition every other `mut` site already uses,
+/// committed to only when immediately followed by `[` (a variable actually
+/// named `mut` used any other way still parses as a plain identifier).
 pub fn parse_type(p: &mut Parser) -> Option<Type> {
+    if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+        && matches!(p.peek_at(1), TokenKind::LBracket)
+    {
+        p.advance(); // 'mut'
+        return parse_array_type(p, true);
+    }
     match p.peek() {
         TokenKind::Star => parse_pointer_type(p),
-        TokenKind::LBracket => parse_array_type(p),
+        TokenKind::LBracket => parse_array_type(p, false),
         TokenKind::LParen => parse_function_type(p),
         TokenKind::Spec => parse_spec_object_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
@@ -64,14 +77,23 @@ fn parse_spec_object_type(p: &mut Parser) -> Option<Type> {
     Some(Type::SpecObject(Box::new(inner), mutable))
 }
 
-fn parse_array_type(p: &mut Parser) -> Option<Type> {
+/// `[T]` / `[T; N]`, with `mutable` already decided by `parse_type`
+/// (`mut` prefixes the whole `[...]`, see its own doc comment) -- only
+/// meaningful for the unsized (`Array`) form: a `[T; N]`'s own mutability
+/// is whatever binding/field stores it, not a property of the type itself
+/// (matching every other inline value type, unlike a real pointer) -- so
+/// `mut [T; N]` is a dedicated error, not a silently-dropped flag.
+fn parse_array_type(p: &mut Parser, mutable: bool) -> Option<Type> {
     p.advance(); // '['
     let inner = parse_type(p)?;
     let ty = if p.eat(&TokenKind::Semi) {
         let size = parse_array_size(p)?;
+        if mutable {
+            p.error(ParseErrorKind::MutSizedArray);
+        }
         Type::SizedArray(Box::new(inner), size)
     } else {
-        Type::Array(Box::new(inner))
+        Type::Array(Box::new(inner), mutable)
     };
     p.expect(&TokenKind::RBracket, "']'");
     Some(ty)

@@ -177,15 +177,18 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Whether `target` is the one supported pattern shape a `for` clause
-    /// may use (`[T]`, referencing the spec's own single generic parameter
-    /// exactly) -- shared between `resolve_extension_target` (which
-    /// classifies a `for` clause) and `resolve_spec_functions` (which
-    /// additionally restricts self-mode for it, see below).
+    /// may use (`[T]`/`[mut T]`, referencing the spec's own single generic
+    /// parameter exactly -- mutability doesn't distinguish two different
+    /// extension-target shapes, so it's ignored here, same as it already is
+    /// in `resolve_spec_functions` below) -- shared between
+    /// `resolve_extension_target` (which classifies a `for` clause) and
+    /// `resolve_spec_functions` (which additionally restricts self-mode for
+    /// it, see below).
     fn is_slice_extension_target(generics: &[Ident], target: &Type) -> bool {
         generics.len() == 1
             && matches!(
                 target,
-                Type::Array(inner) if matches!(
+                Type::Array(inner, _) if matches!(
                     inner.as_ref(),
                     Type::Named(path) if path.is_unqualified() && path.head == generics[0]
                 )

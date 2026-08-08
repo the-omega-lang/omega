@@ -503,13 +503,16 @@ impl<'r> Analyzer<'r> {
         // needed by the `comp`-binding const-promotion path further down,
         // as the `Deref` projection's target type (see there for why).
         let base_type_snapshot = base_type.clone();
-        // A raw pointer has no length anywhere, at compile time or
+        // A raw pointer -- or `[T]` (`Array`), which is itself just a
+        // pointer with array-like properties, see `ResolvedType::Array`'s
+        // own doc comment -- has no length anywhere, at compile time or
         // runtime, to default a missing `end` to -- unlike `SizedArray`
         // (its own compile-time `N`) or `Slice`/`Str` (their own runtime
         // length leaf). Computed as a plain `bool`, not re-derived from
         // `base_type_snapshot` later, since that gets moved out in one of
         // the `comp`-binding branches below.
-        let base_lacks_length = matches!(base_type_snapshot, ResolvedType::Pointer { .. });
+        let base_lacks_length =
+            matches!(base_type_snapshot, ResolvedType::Pointer { .. } | ResolvedType::Array(_, _));
 
         // The slice's *source* mutability: for inline storage
         // (`SizedArray`), whether the storage being sliced is itself
@@ -541,6 +544,11 @@ impl<'r> Analyzer<'r> {
             // indexable `Slice` rather than treating the pointer itself
             // as array-like.
             ResolvedType::Pointer { pointee, mutable } => (*pointee, mutable, true, false),
+            // `[T]` -- exactly the same treatment as `Pointer` just above,
+            // for the same reason: it's genuinely just a pointer value,
+            // mutability lives on it directly, not on whatever binding
+            // holds it.
+            ResolvedType::Array(item, mutable) => (*item, mutable, true, false),
             found => {
                 self.error(node_id, span, AnalysisErrorKind::NotSliceable { found });
                 return None;
@@ -560,8 +568,8 @@ impl<'r> Analyzer<'r> {
             self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
         }
 
-        // A `comp`-bound raw pointer has no established promotion story:
-        // unlike `SizedArray` (promote its address) or `Slice`/`Str`
+        // A `comp`-bound raw pointer or `[T]` has no established promotion
+        // story: unlike `SizedArray` (promote its address) or `Slice`/`Str`
         // (already its own two leaves), a `comp` pointer's own `ConstValue`
         // shape isn't one either of the two branches below already knows
         // how to handle, and speculatively guessing at one risks silently
@@ -957,7 +965,18 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let checked_index = self.analyze_expr(index, None)?;
         let item_type = match current_type {
-            ResolvedType::Array(item) | ResolvedType::SizedArray(item, _) => *item,
+            // `SizedArray` is inline storage -- its writability is
+            // whatever binding/field it's already stored in, so `mutable`
+            // is deliberately left untouched here. `Array`, unlike
+            // `SizedArray`, is a real pointer value with its own
+            // type-level mutability (see `ResolvedType::Array`'s doc
+            // comment) -- so it needs the same treatment `Slice`/`Str`
+            // already get below, not the shared arm `SizedArray` gets.
+            ResolvedType::SizedArray(item, _) => *item,
+            ResolvedType::Array(item, array_mutable) => {
+                *mutable = array_mutable;
+                *item
+            }
             ResolvedType::Slice { item, mutable: slice_mutable } => {
                 *mutable = slice_mutable;
                 *item

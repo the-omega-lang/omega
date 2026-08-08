@@ -374,8 +374,8 @@ impl Context {
             Type::Function(fntyp) => {
                 Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?))
             }
-            Type::Array(item) => {
-                Ok(ResolvedType::Array(Box::new(self.resolve_type(*item, resolver, module_path, true, bypass)?)))
+            Type::Array(item, mutable) => {
+                Ok(ResolvedType::Array(Box::new(self.resolve_type(*item, resolver, module_path, true, bypass)?), mutable))
             }
             Type::SizedArray(item, size) => {
                 let size = size.parse::<u32>().map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
@@ -570,7 +570,14 @@ impl Context {
                 ResolvedType::Str { mutable }
             } else {
                 match self.resolve_type(*pointee_type, resolver, module_path, true, bypass)? {
-                    ResolvedType::Array(item_type) => ResolvedType::Slice { item: item_type, mutable },
+                    // The inner `Array`'s own `mutable` is irrelevant here
+                    // (and, since `*`/`*mut`'s own `mut` is always consumed
+                    // by `parse_pointer_type` first, never actually
+                    // reachable as `true` through this path anyway) --
+                    // `*[T]`/`*mut [T]` always collapses to `Slice` using
+                    // the *pointer's* own mutability, discarding whatever
+                    // the pointee's flag would have been.
+                    ResolvedType::Array(item_type, _) => ResolvedType::Slice { item: item_type, mutable },
                     // A pointee that resolves (not through the literal
                     // `str` syntax above, but indirectly -- e.g. through
                     // a `for str` extension spec's `Self` substitution,

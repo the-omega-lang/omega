@@ -295,19 +295,29 @@ depending on how it fails. Worth fixing before a 32-bit target is added, not
 after — this is the kind of latent assumption that's cheap to fix now and
 expensive to debug once it's live.
 
-### `ResolvedType::Array` (decayed thin-pointer array) has neither implicit coercion nor an explicit cast to/from `Pointer(T)`
+### Fixed: `ResolvedType::Array` (`[T]`) had neither implicit coercion nor an explicit cast to/from `Pointer(T)`
 
-`\[T]` (a bare, unsized decayed-array parameter shape like `argv: \[*u8]`) is
-runtime-identical to a single thin pointer — one leaf, no length (`
-compiler/omega-codegen/src/lib.rs:352`) — the same relationship `\*[u8]` has to `\*str`
-(different nominal types, identical runtime shape, deliberately no implicit
-coercion, but at least an explicit cast exists both ways). `Array` gets neither:
-it's absent from both `cast_class` and `accepts` (`resolved_type.rs`), so
-there's no way — implicit or explicit — to convert between `\[T]` and `\*T` even
-though they're bit-identical at runtme and one is very obviously "the C way to
-spell" the other. This is a narrower, lower-stakes version of the
-fat-pointer-family pattern the rest of the language already handles
-consistently; it just wasn't extended to this one older, legacy shape.
+`[T]` (a bare, unsized array shape, e.g. `argv: [*u8]`) is runtime-identical
+to a single thin pointer — one leaf, no length — the same relationship
+`*[u8]` has to `*str` (different nominal types, identical runtime shape).
+Originally `Array` was absent from both `cast_class` and `accepts`
+(`resolved_type.rs`), so there was no way — implicit or explicit — to
+convert between `[T]` and `*T`, even though they're bit-identical at
+runtime; `[T]` was also missing a `mutable` field entirely, unlike every
+other pointer-shaped type. Fixed generally: `Array` gained a `mutable`
+field (mirroring `Pointer`'s own shape end to end, parser through
+mangling), a `Pointer ↔ Array` cast (`Analyzer::array_pointer_cast_kind`,
+a plain `Reinterpret` — both sides are already one leaf, nothing to
+convert, and deliberately not requiring the pointee to match `T`, the same
+rule an ordinary `*Foo → *Bar` cast already follows), and `Array`
+participation in `pointer_like_mutable`/`accepts` for the same mutable-
+widening every other pointer-shaped type gets. This also surfaced and
+fixed a real, independent bug: `Analyzer::project_index`'s `Array` arm
+never set the resulting place's mutability from the type's own flag,
+so `arr[i] = x`'s legality was inherited from whatever *binding* held
+the value rather than being the type-level fact it now correctly is. See
+[primitives](01-primitives.md)'s "`[T]`: a pointer with array-like
+properties" section.
 
 ## Minor rough edges
 

@@ -1127,11 +1127,16 @@ impl Codegen {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], leaves[1])
                     }
-                    ResolvedType::Pointer { .. } => {
+                    // `Array` (`[T]`) gets identical treatment to `Pointer`
+                    // -- it *is* one, just with array-like properties (see
+                    // `ResolvedType::Array`'s doc comment); same never-read
+                    // placeholder, guaranteed by the same `MissingSliceEnd`
+                    // check.
+                    ResolvedType::Pointer { .. } | ResolvedType::Array(_, _) => {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], builder.ins().iconst(types::I32, 0))
                     }
-                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str/Pointer"),
+                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str/Pointer/Array"),
                 };
 
                 let elem_size = layout::total_bytes(&item_type, self.pointer_bytes()) as i64;

@@ -95,8 +95,9 @@ pub enum MangleType {
     /// `ResolvedType::Str` being a fully separate variant from `Slice`,
     /// not a structural alias.
     Str(bool),
-    /// `[T]` -- a decayed, unsized array parameter.
-    Array(Box<MangleType>),
+    /// `[T]` (`false`) / `mut [T]` (`true`) -- an unsized, pointer-shaped
+    /// array.
+    Array(Box<MangleType>, bool),
     /// `[T; N]`
     SizedArray(Box<MangleType>, u64),
     /// `spec *T` (`false`) / `spec *mut T` (`true`) -- the inner type is

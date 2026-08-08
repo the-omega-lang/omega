@@ -882,6 +882,8 @@ impl<'r> Analyzer<'r> {
             kind
         } else if let Some(kind) = Self::unsize_cast_kind(&checked_base.r#type, &target_type) {
             kind
+        } else if let Some(kind) = Self::array_pointer_cast_kind(&checked_base.r#type, &target_type) {
+            kind
         } else {
             let (Some(source_class), Some(target_class)) =
                 (checked_base.r#type.cast_class(), target_type.cast_class())
@@ -1354,6 +1356,26 @@ impl<'r> Analyzer<'r> {
         let ResolvedType::SizedArray(item, _) = pointee.as_ref() else { return None };
         let ResolvedType::Slice { item: target_item, .. } = target else { return None };
         (item.as_ref() == target_item.as_ref()).then_some(CastKind::Unsize)
+    }
+
+    /// `<[T]>ptr` / `<*T>arr` -- `Pointer` and `Array` are both exactly one
+    /// `Leaf::Ptr` (`layout::leaves_of`), so converting between them is a
+    /// pure `Reinterpret`, no leaf-count change at all -- the same "shapes
+    /// already agree, nothing to convert" case `*str <-> *[u8]` already is.
+    /// Deliberately **not** requiring the pointee/item types to match --
+    /// this mirrors how an ordinary `*Foo -> *Bar` cast doesn't require
+    /// `Foo == Bar` either (every `Pointer`, regardless of pointee, is the
+    /// same `CastClass`): both sides here are just "a thin pointer,"
+    /// reinterpreted freely, matching every existing pointer-to-pointer
+    /// cast's own precedent. Either direction; the unconditional mutable-
+    /// widening check earlier in `analyze_cast` (via `pointer_like_mutable`,
+    /// which already covers `Array`) still applies on top of this.
+    fn array_pointer_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
+        match (source, target) {
+            (ResolvedType::Pointer { .. }, ResolvedType::Array(_, _))
+            | (ResolvedType::Array(_, _), ResolvedType::Pointer { .. }) => Some(CastKind::Reinterpret),
+            _ => None,
+        }
     }
 
     /// A block's own effective type: its tail expression's type, or -- if it

@@ -41,7 +41,7 @@ real C-ABI aggregate-passing implementation (see the caveat at the bottom).
 | `isize`/`usize` | the target's pointer type |
 | `f32` / `f64` | `f32` / `f64` |
 | `*T` / `*mut T` | one thin pointer |
-| `[T]` (decayed array param, e.g. `argv: [*u8]`) | one thin pointer, **no length** |
+| `[T]` / `mut [T]` (`Array`) | one thin pointer, **no length** |
 | `[T; N]` (`SizedArray`) | `N` copies of `T`'s own leaves, inline, no indirection |
 | struct | each field's leaves, back to back (+ padding, see `@layout`) |
 | union | one opaque run of `i32`/`i8` chunks sized to the largest member |
@@ -105,10 +105,8 @@ level (no implicit coercion between them):
   read via `.length` (a genuine element count).
   This is *not* the same as `*T` to an array — `Context::resolve_type`
   special-cases `*[T]` specifically so it never becomes `Pointer(Array(T))`.
-  A **bare** `[T]` (no leading `*`) is a different, older, unsized shape:
-  a single thin pointer with no length at all, used only for C-style decayed
-  array parameters (`argv: [*u8]`) — a deliberate, narrower legacy case, not
-  a slice.
+  A **bare** `[T]` (no leading `*`) is a different, unsized shape — see
+  "`[T]`: a pointer with array-like properties" below.
 - **`*str` (`Str { mutable }`)** — the exact same `[data ptr, i32 byte
   count]` shape as `*[u8]`, but a fully separate nominal type: no implicit
   coercion to/from `Slice`/`Pointer` in either direction, and never
@@ -130,6 +128,70 @@ already compiles to `call_indirect` (there is no direct-call instruction at
 all in this backend), and static data blobs with pointer relocations were
 already one API call away once slices existed — so `spec *T` needed no new
 low-level machinery, only a new 2-leaf type and a vtable-building pass.
+
+## `[T]`: a pointer with array-like properties
+
+```
+sum(argv: [i32], count: usize) => i32 {
+    mut total := 0;
+    mut i : usize = 0;
+    for ; i < count; i += 1 {
+        total += argv[i];      # indexing works directly
+    }
+    return total;
+}
+
+p : *mut i32 = &mut some_local;
+arr := <mut [i32]>p;            # explicit cast, either direction
+s := &arr[0..<count];            # slicing works too, same as a raw pointer
+```
+
+`[T]` (`ResolvedType::Array`) is genuinely just a thin pointer value (one
+leaf, no length) with two added capabilities a bare `*T` doesn't have:
+indexing (`arr[i]`) and range-slicing (`&arr[a..<b]`, building a real,
+bounded `*[T]` the exact same way slicing a raw pointer does — see
+[strings, casting & slices](11-strings-casting-and-slices.md)). Plain
+single-element indexing (`ptr[i]`) still doesn't work on an ordinary `*T`/
+`*mut T` — that line is drawn structurally, not by convention:
+`Analyzer::project_index`'s whitelist never includes a bare `Pointer`, only
+`Array`/`SizedArray`/`Slice`/`Str`.
+
+**Mutability is a type-level fact**, exactly like `*T`/`*mut T` — `[T]`
+(immutable) vs. `mut [T]` (mutable, note `mut` prefixes the whole `[...]`,
+since `[T]` has no leading sigil the way `*T` does to attach `mut` right
+after). Whether `arr[i] = x` is legal follows `[T]`'s own declared
+mutability, never whatever binding happens to hold the value — the same
+directional rule a real pointer already enforces. `mut [T]` widens to `[T]`
+implicitly at ordinary coercion sites, mirroring `*mut T → *T`.
+
+**Constructing one**: `<[T]>some_ptr` / `<*T>some_array` — a plain
+`Reinterpret` cast in either direction (both sides are already exactly one
+leaf, nothing to convert), deliberately **not** requiring the source
+pointee to match `T` — the same rule an ordinary `*Foo → *Bar` cast
+already follows (every pointer is the same `CastClass` regardless of
+pointee). This is what makes the following pattern work, letting a
+`marker` stand in for "there's an array starting exactly here" without any
+dedicated language feature for it:
+
+```
+marker ArrayMarker<T> {
+    exposed as_array(*self) => [T] {
+        <[T]>self
+    }
+}
+
+struct TLVBuffer {
+    exposed kind: i32;
+    exposed length: u16;
+    exposed value: ArrayMarker<u8>;    # zero bytes -- real data starts right here
+}
+```
+
+`ArrayMarker<T>` is an ordinary `marker` (see [marker
+types](20-marker-types.md)) — zero leaves, a real address computed via the
+struct's own field layout, `self: *ArrayMarker<T>` reinterpreted to `[T]`.
+No new `ResolvedType` variant needed for the TLV-tail pattern at all; it
+falls out of `marker` plus this cast.
 
 ## `char`, `bool`, and pointer arithmetic
 

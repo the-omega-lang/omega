@@ -38,8 +38,8 @@ pub fn unify_generic_type(
         // `Pointer(Array(_))` shape only ever unifies against a `Slice`,
         // regardless of whether `concrete` actually turns out to be one (a
         // mismatch here is left for the ordinary argument-type check).
-        (Type::Pointer(inner, _), _) if matches!(inner.as_ref(), Type::Array(_)) => {
-            let Type::Array(elem) = inner.as_ref() else { unreachable!() };
+        (Type::Pointer(inner, _), _) if matches!(inner.as_ref(), Type::Array(_, _)) => {
+            let Type::Array(elem, _) = inner.as_ref() else { unreachable!() };
             if let ResolvedType::Slice { item: c, .. } = concrete {
                 unify_generic_type(generics, elem, c, subst);
             }
@@ -47,7 +47,7 @@ pub fn unify_generic_type(
         (Type::Pointer(inner, _), ResolvedType::Pointer { pointee: c, .. }) => {
             unify_generic_type(generics, inner, c, subst)
         }
-        (Type::Array(inner), ResolvedType::Array(c)) => unify_generic_type(generics, inner, c, subst),
+        (Type::Array(inner, _), ResolvedType::Array(c, _)) => unify_generic_type(generics, inner, c, subst),
         (Type::SizedArray(inner, _), ResolvedType::SizedArray(c, _)) => unify_generic_type(generics, inner, c, subst),
         (Type::Function(f), ResolvedType::Function(c)) => {
             for ((_, p), (_, cp)) in f.params.iter().zip(&c.params) {
@@ -145,7 +145,7 @@ fn owner_type_args(concrete: &ResolvedType) -> Option<Vec<ResolvedType>> {
 pub fn type_references_generics(generics: &[Ident], raw: &Type) -> bool {
     match raw {
         Type::Named(path) => path.is_unqualified() && generics.contains(&path.head),
-        Type::Pointer(inner, _) | Type::Array(inner) | Type::SizedArray(inner, _) => {
+        Type::Pointer(inner, _) | Type::Array(inner, _) | Type::SizedArray(inner, _) => {
             type_references_generics(generics, inner)
         }
         Type::Generic(path, args) => {

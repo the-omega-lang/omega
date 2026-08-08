@@ -153,9 +153,9 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // it's a fully separate `ResolvedType` variant, not a structural
         // alias.
         ResolvedType::Slice { .. } | ResolvedType::Str { .. } => vec![Leaf::Ptr, Leaf::I32],
-        // `Pointer`, `Function`, and the legacy unsized `Array` (see its
-        // doc comment) are all a single thin pointer value.
-        ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_) => vec![Leaf::Ptr],
+        // `Pointer`, `Function`, and the now fully general `Array` (see
+        // its doc comment) are all a single thin pointer value.
+        ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_, _) => vec![Leaf::Ptr],
         // `Spec` is a reference to a spec *definition*, never a runtime
         // value of its own -- it never actually reaches codegen (only
         // `SpecObject`, an actual value type, does); no leaves make sense
