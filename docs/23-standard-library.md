@@ -87,7 +87,7 @@ one per generic collection × instantiation.
   *is* the growable version of that same hot-path, no-allocation-on-read
   concept, and should feel like a drop-in extension of methods a caller
   already knows from a plain `*[T]`. `as_slice` is the first real
-  consumer of `raw_slice<T>` (see
+  consumer of slicing a raw pointer directly (see
   [strings, casting & slices](11-strings-casting-and-slices.md)).
 - **`std::linked_list::LinkedList<T>`** — doubly linked, each element its
   own individual heap allocation (`Node<T>`, `prev`/`next`) — the classic
@@ -106,7 +106,7 @@ one per generic collection × instantiation.
   standard shift/mask encoding, one `self.bytes.push(byte)` per output
   byte. `as_str` is `List<u8>::as_slice()` reinterpret-cast to `*str` —
   the same already-existing fat→fat cast `core::strings` itself relies
-  on, so no second `raw_slice<T>` call is needed. **Deliberately out of
+  on, so no second pointer-slicing call is needed. **Deliberately out of
   scope**: decoding — a `chars()`-style iterator walking variable-width
   UTF-8 back into `char`s. `push`/`push_str`/`as_str`/`len` is enough
   surface for real use today; `core` itself shipped `Option<T>` with zero

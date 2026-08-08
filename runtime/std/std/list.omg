@@ -128,11 +128,14 @@ exposed struct List<T> : ToIterator<T> {
         self.count = 0;
     }
 
-    # A real, borrowed view of this list's current contents -- see
-    # `raw_slice<T>`'s own doc comment for why this is the only way to
-    # build one from a raw pointer + a runtime length in this language.
+    # A real, borrowed view of this list's current contents -- range-
+    # slicing a raw pointer with an explicit end (`self.count`, cast to
+    # `i32` to match a slice's own `.length` leaf type) is what builds a
+    # runtime-length `*[T]` from a raw pointer + a runtime length in this
+    # language; see docs/11-strings-casting-and-slices.md.
     exposed as_slice(*self) => *[T] {
-        raw_slice<T>(<*T>self.data, <i32>self.count)
+        count := <i32>self.count;
+        &self.data[0..<count]
     }
 
     exposed free(*mut self) => void {

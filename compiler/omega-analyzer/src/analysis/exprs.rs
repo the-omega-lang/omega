@@ -56,8 +56,6 @@ impl<'r> Analyzer<'r> {
                 literal(ResolvedType::USize, CheckedExpr::Sizeof(target_type))
             }
 
-            HirExpr::RawSlice(raw_slice) => self.analyze_raw_slice(id, span, raw_slice),
-
             HirExpr::If(HirIf { branches, else_branch }) => {
                 self.analyze_if(id, span, branches, else_branch.as_ref(), expected)
             }
@@ -874,12 +872,15 @@ impl<'r> Analyzer<'r> {
             });
         }
 
-        // The str/byte-slice family (`*str`/`*[u8]`/`*[i8]`) is
-        // tried first: a fat pointer doesn't fit `cast_class`'s
-        // scalar-width model at all (`Str`/`Slice` both return
-        // `None` from it), so this is genuinely separate machinery,
-        // not an extension of the numeric path below.
+        // The str/byte-slice family (`*str`/`*[u8]`/`*[i8]`) and the
+        // sized-array-to-slice widening just below are both tried first:
+        // fat pointers don't fit `cast_class`'s scalar-width model at all
+        // (`Str`/`Slice` both return `None` from it), so both are
+        // genuinely separate machinery, not an extension of the numeric
+        // path below.
         let cast_kind = if let Some(kind) = Self::byte_pointer_cast_kind(&checked_base.r#type, &target_type) {
+            kind
+        } else if let Some(kind) = Self::unsize_cast_kind(&checked_base.r#type, &target_type) {
             kind
         } else {
             let (Some(source_class), Some(target_class)) =
@@ -925,51 +926,6 @@ impl<'r> Analyzer<'r> {
 
     }
 
-    /// `raw_slice<T>(ptr, len)` -- the one way to build a `*[T]`/`*mut [T]`
-    /// from scratch (see `HirExpr::RawSlice`'s doc comment for why nothing
-    /// else in the language can). `ptr` is analyzed with no `expected` (its
-    /// own declared type must already genuinely be a pointer to `T`, the
-    /// same way `analyze_cast`'s `base` keeps its own natural type); `len`
-    /// is analyzed with `expected = Some(I32)` so a bare untyped literal
-    /// adapts, matching `analyze_bound`'s identical treatment of an
-    /// ordinary slice's own `start`/`end` (`places.rs`).
-    fn analyze_raw_slice(&mut self, node_id: HirId, span: Span, raw_slice: &omega_hir::HirRawSlice) -> Option<CheckedExprNode> {
-        let item_type = self.resolve_type_or_error(node_id, span, &raw_slice.item_type, true)?;
-
-        let checked_ptr = self.analyze_expr(&raw_slice.ptr, None)?;
-        let mutable = match &checked_ptr.r#type {
-            ResolvedType::Pointer { pointee, mutable } if **pointee == item_type => *mutable,
-            found => {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::RawSlicePointerMismatch { item_type, found: found.clone() },
-                );
-                return None;
-            }
-        };
-
-        let checked_len = self.analyze_expr(&raw_slice.len, Some(&ResolvedType::I32))?;
-        if checked_len.r#type != ResolvedType::I32 {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::RawSliceInvalidLength { found: checked_len.r#type },
-            );
-            return None;
-        }
-
-        Some(CheckedExprNode {
-            id: node_id,
-            span,
-            r#type: ResolvedType::Slice { item: Box::new(item_type.clone()), mutable },
-            kind: CheckedExpr::RawSlice(CheckedRawSlice {
-                item_type,
-                ptr: Box::new(checked_ptr),
-                len: Box::new(checked_len),
-            }),
-        })
-    }
 
     /// `++base`/`--base`: validates `base` is a place (like `AddressOf`) of
     /// a numeric type, then desugars directly into `base = base <op> 1` --
@@ -1380,6 +1336,24 @@ impl<'r> Analyzer<'r> {
             return Some(CastKind::DropLength);
         }
         None
+    }
+
+    /// `<*[T]>ptr` where `ptr: *[T; N]`/`*mut [T; N]` -- the one thin-to-fat
+    /// cast this language does offer, because unlike a bare pointer, a
+    /// `SizedArray`'s own type already carries its length (`N`); there's
+    /// nothing to fabricate. Genuinely separate machinery from
+    /// `byte_pointer_cast_kind` above (that one's gated on `is_byte_run`,
+    /// `Str`/`Slice{item:U8|I8}` specifically, and this source shape never
+    /// matches it) and from `resolve_cast_kind`'s scalar path below (a
+    /// `Slice` target has no `cast_class` at all). Item type must match
+    /// exactly -- no recursive/implicit narrowing, the same "shapes
+    /// already agree, this just relabels" rule every other `CastKind`
+    /// follows.
+    fn unsize_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
+        let ResolvedType::Pointer { pointee, .. } = source else { return None };
+        let ResolvedType::SizedArray(item, _) = pointee.as_ref() else { return None };
+        let ResolvedType::Slice { item: target_item, .. } = target else { return None };
+        (item.as_ref() == target_item.as_ref()).then_some(CastKind::Unsize)
     }
 
     /// A block's own effective type: its tail expression's type, or -- if it

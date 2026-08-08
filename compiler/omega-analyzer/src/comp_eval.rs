@@ -369,10 +369,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
-            // No `ConstValue` shape represents a fat pointer built from an
-            // arbitrary runtime address -- unlike `sizeof`, this has no
-            // pointer-width-independent meaning at compile time.
-            CheckedExpr::RawSlice(_) => Err(self.err(node.span, CompErrorKind::Unsupported("raw_slice"))),
         }
     }
 
@@ -558,6 +554,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 ConstValue::Slice(elements) => Ok(ConstValue::Ref(Box::new(ConstValue::Array(elements)))),
                 _ => Err(self.err(span, CompErrorKind::Unsupported("a fat-to-thin pointer cast of a non-str/slice comp value"))),
             },
+            // Same reasoning as `DropLength`'s own comp-unsupported case
+            // just above -- no fundamental blocker (`base` is always a
+            // `Pointer` to a `SizedArray`, which `comp` already knows how
+            // to build), just not implemented in this pass.
+            CastKind::Unsize => Err(self.err(span, CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"))),
             _ => {
                 let ConstValue::Number(n) = base else {
                     return Err(self.err(span, CompErrorKind::Unsupported("a numeric cast of a non-numeric comp value")));

@@ -133,7 +133,6 @@ pub enum MirExpr {
     Slice(MirSlice),
     Cast(MirCast),
     Sizeof(ResolvedType),
-    RawSlice(MirRawSlice),
     UnionConstruct(MirUnionConstruct),
     Const(ConstValue),
     SpecCoerce(MirSpecCoerce),
@@ -211,16 +210,6 @@ pub struct MirCast {
     pub kind: CastKind,
     pub target_type: ResolvedType,
     pub base: Box<MirExprNode>,
-}
-
-/// See `omega_analyzer::checked::CheckedRawSlice` -- lowered 1:1, `ptr`/
-/// `len` become this value's own two leaves directly at codegen time (no
-/// `item_type` needed here beyond what already produced the node's own
-/// `r#type`, kept for symmetry with `MirCast`/`MirSlice`).
-#[derive(Debug, Clone)]
-pub struct MirRawSlice {
-    pub ptr: Box<MirExprNode>,
-    pub len: Box<MirExprNode>,
 }
 
 /// See `omega_analyzer::checked::CheckedSpecCoerce`, which this is lowered

@@ -204,10 +204,6 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
             }
         }
         CheckedExpr::Cast(cast) => collect_expr(&cast.base, usage),
-        CheckedExpr::RawSlice(raw_slice) => {
-            collect_expr(&raw_slice.ptr, usage);
-            collect_expr(&raw_slice.len, usage);
-        }
         CheckedExpr::UnionConstruct(construct) => collect_expr(&construct.value, usage),
         CheckedExpr::SpecCoerce(coerce) => collect_expr(&coerce.base, usage),
         CheckedExpr::DynamicCall(call) => {

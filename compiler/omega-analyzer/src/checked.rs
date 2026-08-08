@@ -466,10 +466,6 @@ pub enum CheckedExpr {
     /// (no separate `Checked*` wrapper struct needed, unlike `Cast`, since
     /// there's no `base`/`kind` to go with it).
     Sizeof(ResolvedType),
-    /// `raw_slice<Type>(ptr, len)` -- the node's own `r#type` is always
-    /// `ResolvedType::Slice { item: item_type, mutable }` (mutability
-    /// inherited from `ptr`'s own). See `HirExpr::RawSlice`'s doc comment.
-    RawSlice(CheckedRawSlice),
     /// `Union { field = value; }` -- builds a whole union value by writing
     /// exactly one field; analysis guarantees exactly one initializer was
     /// given (see `AnalysisErrorKind::UnionLiteralMissingField`/
@@ -570,17 +566,6 @@ pub struct CheckedCast {
     pub base: Box<CheckedExprNode>,
 }
 
-/// See `CheckedExpr::RawSlice`. `ptr`/`len` become this value's own two
-/// leaves directly (`[ptr's leaf, len's leaf]`) -- the same flat leaf-list
-/// representation every other fat-pointer value already has, so building
-/// one is purely a codegen-time concatenation, no new runtime machinery.
-#[derive(Debug, Clone)]
-pub struct CheckedRawSlice {
-    pub item_type: ResolvedType,
-    pub ptr: Box<CheckedExprNode>,
-    pub len: Box<CheckedExprNode>,
-}
-
 /// Exactly which conversion a cast needs, resolved from either both sides'
 /// `ResolvedType::cast_class` (the numeric/pointer family) or the
 /// dedicated str/byte-slice family check (`Analyzer::byte_pointer_cast_kind`,
@@ -611,10 +596,22 @@ pub enum CastKind {
     /// The str/byte-slice family's only other cast direction: fat pointer
     /// (`*str`/`*[u8]`/`*[i8]`, `[ptr, len]`) down to a thin one (`*u8`/
     /// `*i8`) -- keeps the pointer leaf, discards the length leaf. There is
-    /// no reverse (thin pointer up to a fat one): that would need a length
-    /// from somewhere a bare pointer can never supply, so it's not a cast
-    /// at all, just not offered.
+    /// no reverse for a *bare* pointer (`*T`/`*mut T`) -- that would need a
+    /// length from somewhere it genuinely doesn't carry, so it's not a cast
+    /// at all, just not offered. `Unsize` below is the one exception, and
+    /// only because its own source type isn't a bare pointer.
     DropLength,
+    /// `<*[T]>ptr` where `ptr: *[T; N]`/`*mut [T; N]` -- widens a thin
+    /// pointer to a compile-time-sized array into a real `*[T]`/`*mut [T]`
+    /// slice. `base`'s own single leaf (the data pointer) is kept
+    /// unchanged; the second leaf (the length) is synthesized from `N`,
+    /// which is always known at compile time -- it's part of `base`'s own
+    /// type (`Pointer { pointee: SizedArray(_, N), .. }`), not fabricated
+    /// out of nothing the way a bare pointer's missing length would be.
+    /// Item type must match exactly (no implicit narrowing, matching every
+    /// other `CastKind`'s "shapes already agree" philosophy) -- checked by
+    /// `Analyzer::unsize_cast_kind`, this variant's only producer.
+    Unsize,
 }
 
 /// See `CheckedExpr::EnumConstruct`.
@@ -653,9 +650,10 @@ pub struct CheckedArrayLiteral {
     pub elements: Vec<CheckedExprNode>,
 }
 
-/// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`
-/// or `Slice` (never anything else) by the time this is constructed, and
-/// `start`/`end` (when present) are guaranteed `I32`. `item_type` is
+/// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`,
+/// `Slice`, `Str`, or `Pointer` (never anything else) by the time this is
+/// constructed, and `start`/`end` (when present) are guaranteed `I32`.
+/// `item_type` is
 /// `base`'s element type, carried the same way `CheckedProjection::Index`'s
 /// is, so codegen never has to re-derive it from `base`'s type. `inclusive`
 /// mirrors `omega_hir::HirRange`'s -- when `true` and `end` is present,

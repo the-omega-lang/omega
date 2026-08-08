@@ -84,6 +84,15 @@ pub enum AnalysisErrorKind {
     ImmutableSliceSource,
     /// A slice's `start`/`end` bound isn't `i32`.
     InvalidSliceBound { r#type: ResolvedType },
+    /// `&ptr[start..]` (an open-ended range) on a raw pointer base --
+    /// unlike `SizedArray`/`Slice`/`Str`, a bare pointer carries no length
+    /// anywhere to default a missing end to.
+    MissingSliceEnd,
+    /// `&comp_ptr_binding[range]` -- a `comp`-bound raw pointer has no
+    /// established const-promotion story (see `Analyzer::analyze_slice`'s
+    /// own comment on this); narrow and likely never hit in practice, but
+    /// rejected explicitly rather than silently mishandled.
+    CompPointerSliceNotSupported,
     /// `[]` -- there's no element to infer the array's item type from.
     EmptyArrayLiteral,
     /// An array literal's elements don't all share the same resolved type
@@ -586,16 +595,6 @@ pub enum AnalysisErrorKind {
     /// to a zero-sized type for one particular instantiation -- not just a
     /// literally empty field list.
     ZeroSizedAggregate { name: Ident, is_union: bool },
-    /// `raw_slice<T>(ptr, len)` where `ptr`'s resolved type isn't a pointer
-    /// to `T` (or `mut T`) -- the one requirement that actually makes the
-    /// construction sound (the result's mutability is inherited from
-    /// `ptr`'s own, so `ptr` must genuinely be a pointer to begin with).
-    RawSlicePointerMismatch { item_type: ResolvedType, found: ResolvedType },
-    /// `raw_slice<T>(ptr, len)` where `len`'s resolved type isn't `i32` --
-    /// matching `*[T]`'s own `.length` leaf type exactly (see
-    /// `InvalidSliceBound`, the identical requirement for an ordinary
-    /// slice's own `start`/`end`).
-    RawSliceInvalidLength { found: ResolvedType },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -681,6 +680,12 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "mismatched types: slice bound must be 'i32', found '{}'", r#type
             ),
+            Self::MissingSliceEnd => {
+                write!(f, "a slice over a raw pointer must have an explicit end bound")
+            }
+            Self::CompPointerSliceNotSupported => {
+                write!(f, "slicing a 'comp'-bound pointer is not supported")
+            }
             Self::EmptyArrayLiteral => {
                 write!(f, "cannot infer the element type of an empty array literal")
             }
@@ -996,13 +1001,6 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ZeroSizedAggregate { name, is_union } => {
                 let kind = if *is_union { "union" } else { "struct" };
                 write!(f, "{kind} '{}' has no sized fields", name.as_ref())
-            }
-            Self::RawSlicePointerMismatch { item_type, found } => write!(
-                f,
-                "mismatched types: 'raw_slice<{item_type}>' expects a pointer to '{item_type}', found '{found}'"
-            ),
-            Self::RawSliceInvalidLength { found } => {
-                write!(f, "mismatched types: 'raw_slice' length must be 'i32', found '{found}'")
             }
         }
     }

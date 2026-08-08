@@ -39,6 +39,7 @@ distinction mattered for something other than a literal syntactic pointer.
 <i64>some_i32
 <*u8>some_str            # DropLength: keep the data pointer, drop the length
 <*str>some_byte_slice     # Reinterpret: both sides already [ptr, len]
+<*[i32]>ptr_to_sized_array  # Unsize: ptr's own [i32; N] carries the length
 ```
 
 Prefix-position, unambiguous (a bare `<` never starts a primary expression
@@ -59,8 +60,22 @@ Fat-pointer casting (`*str`/`*[u8]`) is genuinely separate machinery from
 the scalar cast-kind resolution above (`Slice`/`Str` always return `None`
 from the scalar path): fat→fat is `Reinterpret` (leaves already agree),
 fat→thin (`*u8`/`*i8`) is `DropLength` (keep the data leaf, drop the length
-leaf). There is no reverse (thin→fat) cast — fabricating a length from a
-bare pointer isn't something a cast can do.
+leaf). There is no reverse (thin→fat) cast for a **bare** pointer (`*T`/
+`*mut T`) — fabricating a length from nothing isn't something a cast can
+do. A pointer to a **compile-time-sized array** (`*[T; N]`/`*mut [T; N]`)
+is the one exception: casting it to `*[T]`/`*mut [T]` is `Unsize` — there's
+no length to fabricate, since `N` is already part of the source's own
+type. `base`'s single leaf (the data pointer) passes through unchanged;
+the second leaf is synthesized from `N` directly, always known at compile
+time. Item type must match exactly, same as every other cast kind's own
+"the shapes already agree, this just relabels/reinterprets" rule — no
+narrowing.
+
+```
+mut arr : [i32; 4] = [1, 2, 3, 4];
+p : *mut [i32; 4] = &mut arr;
+s := <*[i32]>p;              # *[i32], length 4
+```
 
 **Printing a `*str` through C's `printf` soundly** needs `%.*s`, not a bare
 `%s` + cast: `printf("%.*s\n", s.size, <*u8>s)` — the byte count consumed
@@ -103,31 +118,36 @@ recursively-constructed static data blob with a pointer relocation into it
 elements live **inline**, with zero indirection, directly in whatever
 struct/enum storage contains them.
 
-## Building a fat pointer from scratch: `raw_slice<T>`
+## Building a fat pointer from scratch: slicing a raw pointer
 
 ```
-raw_slice<T>(ptr_expr, len_expr)   # => *[T], or *mut [T] if ptr_expr: *mut T
+s := &ptr[start..<end]      # => *[T], or *mut [T] if ptr: *mut T
 ```
 
-Every other way of producing a `*[T]`/`*str` starts from an *existing*
-fat pointer or a compile-time-known literal — re-slicing needs a
-`SizedArray`/`Slice`/`Str` base, and casting is fat→fat or fat→thin only
-(never thin→fat, per the caveat above). Neither path can turn a raw data
-pointer plus a runtime-computed length into a slice, which is exactly
-what an owning, heap-backed collection (`std::list::List<T>`,
-`std::string::String`) needs for its own `as_slice`/`as_str`.
+Ordinary re-slicing (`base[range]`) normally needs a `SizedArray`/`Slice`/
+`Str` base — but a raw pointer is *also* a legal re-slicing base:
+`&ptr[start..<end]` (or `&ptr[start...end]`) builds a real `*[T]` directly
+from `ptr`'s own value (the data pointer) and the range (the length),
+which is exactly what an owning, heap-backed collection
+(`std::list::List<T>`, `std::string::String`) needs for its own
+`as_slice`/`as_str` — see `List<T>::as_slice`'s own implementation.
 
-`raw_slice<T>` closes that gap as a small, dedicated primitive rather
-than a callable — mirroring `sizeof<Type>`'s own contextual-keyword
-parsing (a soft keyword, disambiguated by an immediately-following `<`),
-since there's no way to express "build a fat pointer from two values" as
-ordinary library code. `ptr_expr` must resolve to `Pointer { pointee, mutable
-}` with `pointee == T`; `len_expr` must resolve to exactly `i32` (matching
-`*[T]`'s own `.length` leaf type); the result's mutability is inherited
-from `ptr_expr`, the same rule ordinary re-slicing already uses.
+This is deliberately *not* the same as making a pointer indexable like an
+array: plain single-element indexing (`ptr[i]`) on a raw pointer is still
+a compile error (`Analyzer::project_index`'s own whitelist never includes
+a bare `Pointer`) — only this range-slicing path accepts one, and it
+always produces a real, safely indexable `Slice` rather than treating the
+pointer itself as array-like. A range sliced off a raw pointer must have
+an explicit end (`MissingSliceEnd` otherwise) — unlike `SizedArray`/
+`Slice`/`Str`, a bare pointer has no length anywhere to default a missing
+one to; both `start` and `end` are ordinary expressions (no requirement
+that either be a compile-time constant). Mutability follows the pointer's
+own: `*mut T` produces `*mut [T]`, widening to `*[T]` for free at any
+ordinary assignment/argument/return site the same way `*mut T → *T`
+already does.
 
-`*str` construction needs no separate primitive — `<*str>raw_slice<u8>(ptr,
-len)` reuses the already-existing fat→fat `Reinterpret` cast between
+`*str` construction needs no separate primitive — `<*str>&ptr[a..<b]`
+reuses the already-existing fat→fat `Reinterpret` cast between
 `Slice{U8}` and `Str`.
 
 ## Caveats
@@ -156,11 +176,11 @@ len)` reuses the already-existing fat→fat `Reinterpret` cast between
   plausibly repeated the way string literals are. A documented
   simplification, not an oversight.
 - **Fixed: a closing `>` immediately followed by another closing `>`
-  (from a nested generic, a cast, `sizeof<T>`, or `raw_slice<T>`) used to
-  lex as one `>>` token instead of two.** The bug was broader than any
-  one construct — nested generics inside an ordinary type position
-  (`Bar<Baz<T>>` as a struct field's type) hit it too, not just the cast
-  case (`<*mut Node<T>>0`) that surfaced it while writing
+  (from a nested generic, a cast, or `sizeof<T>`) used to lex as one `>>`
+  token instead of two.** The bug was broader than any one construct —
+  nested generics inside an ordinary type position (`Bar<Baz<T>>` as a
+  struct field's type) hit it too, not just the cast case
+  (`<*mut Node<T>>0`) that surfaced it while writing
   `std::linked_list`/`std::hash_map`; every closing-`>` site in the
   grammar used the same naive single-token check, and nothing anywhere
   actually split a `>>`. Fixed generally rather than per-site:
@@ -169,8 +189,16 @@ len)` reuses the already-existing fat→fat `Reinterpret` cast between
   on demand, stashing the leftover `>` in a `pending_gt` slot that
   `peek`/`peek_at`/`advance` all consult ahead of the real token stream —
   so every other parsing function keeps working unmodified once a split
-  has happened. All 7 closing-`>` call sites (generic types, generic
-  parameters, casts, `sizeof<T>`, `raw_slice<T>`, and the speculative
+  has happened. All closing-`>` call sites (generic types, generic
+  parameters, casts, `sizeof<T>`, and the speculative
   `Optional<T>::Some`-style generic-args parse) now go through these
   instead of a bare `Gt` check. See
   [the standard library](23-standard-library.md).
+- **No bare `..` range operator** — only `...` (inclusive) and `..<`
+  (exclusive, and its end is mandatory: `a..<` alone is
+  `ExclusiveRangeMissingEnd`) exist, matching `match`'s own range-pattern
+  grammar exactly (`0...9`, `10..<100`). A cast immediately after `..<`
+  is genuinely ambiguous with the operator itself (`0..<i32>len` lexes as
+  `0` `..<` `i32` `>` `len`, not `0` `..` `<i32>len`) — bind the cast to a
+  local first (`n := <i32>len; &ptr[0..<n]`) rather than writing it
+  inline in the range.
