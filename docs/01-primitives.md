@@ -41,8 +41,8 @@ real C-ABI aggregate-passing implementation (see the caveat at the bottom).
 | `isize`/`usize` | the target's pointer type |
 | `f32` / `f64` | `f32` / `f64` |
 | `*T` / `*mut T` | one thin pointer |
-| `[T]` / `mut [T]` (`Array`) | one thin pointer, **no length** |
-| `[T; N]` (`SizedArray`) | `N` copies of `T`'s own leaves, inline, no indirection |
+| `*[]T` / `*mut []T` (`Array`) | one thin pointer, **no length** |
+| `[N]T` (`SizedArray`) | `N` copies of `T`'s own leaves, inline, no indirection |
 | struct | each field's leaves, back to back (+ padding, see `@layout`) |
 | union | one opaque run of `i32`/`i8` chunks sized to the largest member |
 | enum | `[tag][header][dynamic fields][payload]`, each region flattened the same way |
@@ -101,14 +101,15 @@ Three distinct types share the identical two-leaf runtime shape
 `[data_ptr, len_or_vtable_ptr]`, but are never interchangeable at the type
 level (no implicit coercion between them):
 
-- **`*[T]` (`Slice { item, mutable }`)** — `[data pointer, i32 length]`,
+- **`*[?]T` (`Slice { item, mutable }`)** — `[data pointer, i32 length]`,
   read via `.length` (a genuine element count).
-  This is *not* the same as `*T` to an array — `Context::resolve_type`
-  special-cases `*[T]` specifically so it never becomes `Pointer(Array(T))`.
-  A **bare** `[T]` (no leading `*`) is a different, unsized shape — see
-  "`[T]`: a pointer with array-like properties" below.
+  This is *not* the same as a pointer to an unsized array — `Context::
+  resolve_pointer_type` gives `*[?]T` its own dedicated production so it
+  never becomes `Pointer(Array(T))`. `*[]T` (no `?`) is a different,
+  lengthless shape — see "`*[]T`: a pointer with array-like properties"
+  below.
 - **`*str` (`Str { mutable }`)** — the exact same `[data ptr, i32 byte
-  count]` shape as `*[u8]`, but a fully separate nominal type: no implicit
+  count]` shape as `*[?]u8`, but a fully separate nominal type: no implicit
   coercion to/from `Slice`/`Pointer` in either direction, and never
   null-terminated. Read via `.size`, deliberately *not* `.length` — a
   `*str`'s second leaf is a UTF-8 *byte* count, not a character count, and
@@ -129,10 +130,31 @@ all in this backend), and static data blobs with pointer relocations were
 already one API call away once slices existed — so `spec *T` needed no new
 low-level machinery, only a new 2-leaf type and a vtable-building pass.
 
-## `[T]`: a pointer with array-like properties
+## Array/slice/pointer syntax, all six shapes
 
 ```
-sum(argv: [i32], count: usize) => i32 {
+[N]T     # array of N items, by value (SizedArray)
+*[N]T    # pointer to that -- no special handling, an ordinary Pointer
+[]T      # unsized array -- invalid on its own
+*[]T     # pointer to an unsized array -- indexable, sliceable (Array)
+[?]T     # unknown-(runtime-)size array -- invalid on its own
+*[?]T    # slice -- fat pointer, [data, length] (Slice)
+```
+
+`[N]T` and `*[N]T` need no special handling at all: a sized array is an
+ordinary value type (see "Layout, packing, and `sizeof`" below), and a
+pointer to one is just `Pointer { pointee: SizedArray(T, N), .. }`, the
+same as a pointer to anything else. `[]T` and `[?]T` are never legal
+standalone — `Context::resolve_type` rejects both unconditionally wherever
+written directly, since neither has a length to give a value. `[?]T`'s
+only legal use is behind a leading `*` (`*[?]T`, a slice — see "Fat
+pointers" above). `[]T` has one additional legal use, covered in its own
+section below.
+
+## `*[]T`: a pointer with array-like properties
+
+```
+sum(argv: *[]i32, count: usize) => i32 {
     mut total := 0;
     mut i : usize = 0;
     for ; i < count; i += 1 {
@@ -142,32 +164,34 @@ sum(argv: [i32], count: usize) => i32 {
 }
 
 p : *mut i32 = &mut some_local;
-arr := <mut [i32]>p;            # explicit cast, either direction
-s := &arr[0..<count];            # slicing works too, same as a raw pointer
+arr := <*mut []i32>p;           # explicit cast, either direction
+s := &arr[0..<count];           # slicing works too
 ```
 
-`[T]` (`ResolvedType::Array`) is genuinely just a thin pointer value (one
+`*[]T` (`ResolvedType::Array`) is genuinely just a thin pointer value (one
 leaf, no length) with two added capabilities a bare `*T` doesn't have:
 indexing (`arr[i]`) and range-slicing (`&arr[a..<b]`, building a real,
-bounded `*[T]` the exact same way slicing a raw pointer does — see
-[strings, casting & slices](11-strings-casting-and-slices.md)). Plain
-single-element indexing (`ptr[i]`) still doesn't work on an ordinary `*T`/
-`*mut T` — that line is drawn structurally, not by convention:
-`Analyzer::project_index`'s whitelist never includes a bare `Pointer`, only
-`Array`/`SizedArray`/`Slice`/`Str`.
+bounded `*[?]T`). Plain single-element indexing (`ptr[i]`) and
+range-slicing (`&ptr[a..<b]`) still don't work on an ordinary `*T`/`*mut
+T` — `*T` is strictly a single-value pointer; the only way to get
+array-ness out of one is to cast it to `*[]T` first. That line is drawn
+structurally, not by convention: `Analyzer::project_index`'s whitelist
+never includes a bare `Pointer`, only `Array`/`SizedArray`/`Slice`/`Str`,
+and `Analyzer::analyze_slice`'s base-type match doesn't include `Pointer`
+either.
 
-**Mutability is a type-level fact**, exactly like `*T`/`*mut T` — `[T]`
-(immutable) vs. `mut [T]` (mutable, note `mut` prefixes the whole `[...]`,
-since `[T]` has no leading sigil the way `*T` does to attach `mut` right
-after). Whether `arr[i] = x` is legal follows `[T]`'s own declared
-mutability, never whatever binding happens to hold the value — the same
-directional rule a real pointer already enforces. `mut [T]` widens to `[T]`
-implicitly at ordinary coercion sites, mirroring `*mut T → *T`.
+**Mutability is a type-level fact**, exactly like `*T`/`*mut T` — `*[]T`
+(immutable) vs. `*mut []T` (mutable, the `mut` sits on the pointer sigil,
+same as everywhere else — never inside the brackets). Whether `arr[i] = x`
+is legal follows `*[]T`'s own declared mutability, never whatever binding
+happens to hold the value — the same directional rule a real pointer
+already enforces. `*mut []T` widens to `*[]T` implicitly at ordinary
+coercion sites, mirroring `*mut T → *T`.
 
-**Constructing one**: `<[T]>some_ptr` / `<*T>some_array` — a plain
-`Reinterpret` cast in either direction (both sides are already exactly one
-leaf, nothing to convert), deliberately **not** requiring the source
-pointee to match `T` — the same rule an ordinary `*Foo → *Bar` cast
+**Constructing one**: `<*mut []T>some_ptr` / `<*mut T>some_array` — a
+plain `Reinterpret` cast in either direction (both sides are already
+exactly one leaf, nothing to convert), deliberately **not** requiring the
+source pointee to match `T` — the same rule an ordinary `*Foo → *Bar` cast
 already follows (every pointer is the same `CastClass` regardless of
 pointee). This is what makes the following pattern work, letting a
 `marker` stand in for "there's an array starting exactly here" without any
@@ -175,8 +199,8 @@ dedicated language feature for it:
 
 ```
 marker ArrayMarker<T> {
-    exposed as_array(*self) => [T] {
-        <[T]>self
+    exposed as_array(*self) => *[]T {
+        <*[]T>self
     }
 }
 
@@ -189,9 +213,27 @@ struct TLVBuffer {
 
 `ArrayMarker<T>` is an ordinary `marker` (see [marker
 types](20-marker-types.md)) — zero leaves, a real address computed via the
-struct's own field layout, `self: *ArrayMarker<T>` reinterpreted to `[T]`.
-No new `ResolvedType` variant needed for the TLV-tail pattern at all; it
-falls out of `marker` plus this cast.
+struct's own field layout, `self: *ArrayMarker<T>` reinterpreted to
+`*[]T`. No new `ResolvedType` variant needed for the TLV-tail pattern at
+all; it falls out of `marker` plus this cast.
+
+## `[]T`: inferring an array's length from its initializer
+
+The one legal standalone use of `[]T`: a declaration's own type
+annotation, paired with an array-literal initializer, infers the real
+length from the literal rather than requiring it be written twice:
+
+```
+abc : []i8 = [10, 20, 30];   # OK: i8 is inferred from the type,
+                              # and the size (3) is inferred from the literal
+```
+
+This desugars to an ordinary `[3]i8` declaration — `abc`'s real type is
+exactly what writing `[3]i8` by hand would have produced, just without
+requiring the caller to count elements and keep that count in sync by
+hand. A non-array-literal initializer here (or one whose own element type
+doesn't match) is a compile error (`ArraySizeNotInferable`) — there's
+nothing to infer a length *from* otherwise.
 
 ## `char`, `bool`, and pointer arithmetic
 

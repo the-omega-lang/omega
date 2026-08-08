@@ -86,8 +86,8 @@ one per generic collection × instantiation.
   out-pointer/`bool` convention exactly, rather than `Option<T>` — it
   *is* the growable version of that same hot-path, no-allocation-on-read
   concept, and should feel like a drop-in extension of methods a caller
-  already knows from a plain `*[T]`. `as_slice` is the first real
-  consumer of slicing a raw pointer directly (see
+  already knows from a plain `*[?]T`. `as_slice` is the first real
+  consumer of casting a raw pointer to `*[]T` and then slicing it (see
   [strings, casting & slices](11-strings-casting-and-slices.md)).
 - **`std::linked_list::LinkedList<T>`** — doubly linked, each element its
   own individual heap allocation (`Node<T>`, `prev`/`next`) — the classic

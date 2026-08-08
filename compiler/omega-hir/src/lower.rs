@@ -281,7 +281,10 @@ impl Lowerer {
                 generics.push(HirGenericParam { ident: fresh.clone(), bound: Some((**bound).clone()), default: None });
                 *ty = Type::Named(fresh.into());
             }
-            Type::Pointer(inner, _) | Type::Array(inner, _) | Type::SizedArray(inner, _) => {
+            Type::Pointer(inner, _)
+            | Type::UnsizedArray(inner)
+            | Type::UnknownSizeArray(inner)
+            | Type::SizedArray(inner, _) => {
                 Self::replace_spec_static(inner, next, generics);
             }
             Type::Generic(_, args) => {

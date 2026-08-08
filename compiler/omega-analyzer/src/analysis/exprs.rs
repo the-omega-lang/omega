@@ -38,8 +38,8 @@ impl<'r> Analyzer<'r> {
             HirExpr::String(s) => literal(ResolvedType::Str { mutable: false }, CheckedExpr::String(s.0.clone())),
 
             // `b"..."` -- a raw byte run with a compile-time-known length,
-            // not a null-terminated C string: `*[u8]` (see `Context::
-            // resolve_type`'s `*[T]` case), never `*u8`.
+            // not a null-terminated C string: `*[?]u8` (see `Context::
+            // resolve_pointer_type`'s `UnknownSizeArray` case), never `*u8`.
             HirExpr::ByteString(s) => literal(
                 ResolvedType::Slice { item: Box::new(ResolvedType::U8), mutable: false },
                 CheckedExpr::ByteString(s.0.clone()),
@@ -872,7 +872,7 @@ impl<'r> Analyzer<'r> {
             });
         }
 
-        // The str/byte-slice family (`*str`/`*[u8]`/`*[i8]`) and the
+        // The str/byte-slice family (`*str`/`*[?]u8`/`*[?]i8`) and the
         // sized-array-to-slice widening just below are both tried first:
         // fat pointers don't fit `cast_class`'s scalar-width model at all
         // (`Str`/`Slice` both return `None` from it), so both are
@@ -1340,7 +1340,7 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// `<*[T]>ptr` where `ptr: *[T; N]`/`*mut [T; N]` -- the one thin-to-fat
+    /// `<*[?]T>ptr` where `ptr: *[N]T`/`*mut [N]T` -- the one thin-to-fat
     /// cast this language does offer, because unlike a bare pointer, a
     /// `SizedArray`'s own type already carries its length (`N`); there's
     /// nothing to fabricate. Genuinely separate machinery from
@@ -1358,10 +1358,11 @@ impl<'r> Analyzer<'r> {
         (item.as_ref() == target_item.as_ref()).then_some(CastKind::Unsize)
     }
 
-    /// `<[T]>ptr` / `<*T>arr` -- `Pointer` and `Array` are both exactly one
-    /// `Leaf::Ptr` (`layout::leaves_of`), so converting between them is a
-    /// pure `Reinterpret`, no leaf-count change at all -- the same "shapes
-    /// already agree, nothing to convert" case `*str <-> *[u8]` already is.
+    /// `<*[]T>ptr` / `<*mut T>arr` -- `Pointer` and `Array` are both exactly
+    /// one `Leaf::Ptr` (`layout::leaves_of`), so converting between them is
+    /// a pure `Reinterpret`, no leaf-count change at all -- the same
+    /// "shapes already agree, nothing to convert" case `*str <-> *[?]u8`
+    /// already is.
     /// Deliberately **not** requiring the pointee/item types to match --
     /// this mirrors how an ordinary `*Foo -> *Bar` cast doesn't require
     /// `Foo == Bar` either (every `Pointer`, regardless of pointee, is the

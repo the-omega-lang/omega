@@ -223,7 +223,7 @@ unusable are fixed:
   argument types with no explicit `<T>`) gained a case for a
   generic-struct/enum/union-typed parameter (`p: Pair<T>`) — it unifies
   positionally against the concrete argument's own `type_args`, the same
-  way a plain `*T`/`[T]` parameter's `T` already was. `sum_pair<T>(p:
+  way a plain `*T`/`*[]T` parameter's `T` already was. `sum_pair<T>(p:
   Pair<T>)` called with a `Pair<i32>` now infers `T = i32` correctly.
 
 Net effect: a generic enum is no longer restricted to plain data (bare

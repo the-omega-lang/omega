@@ -70,10 +70,10 @@ to a variant's own body fields or the shared dynamic fields, are unaffected.
 ### Fixed: `\&reveal` silently dropped the bypass through a slice/array-literal position
 
 ```
-struct Box { data: [i32; 4]; }
+struct Box { data: [4]i32; }
 
-peek_whole(b: *Box) => *[i32; 4] { &reveal b.data }         # works
-peek(b: *Box) => *[i32] { &reveal b.data[0...1] }         # fails:
+peek_whole(b: *Box) => *[4]i32 { &reveal b.data }         # works
+peek(b: *Box) => *[?]i32 { &reveal b.data[0...1] }         # fails:
 # error: 'data' on 'Box' is not visible here
 #   = help: mark the field `exposed`/`internal` on `Box`, or bypass with `reveal`
 ```
@@ -295,15 +295,15 @@ depending on how it fails. Worth fixing before a 32-bit target is added, not
 after — this is the kind of latent assumption that's cheap to fix now and
 expensive to debug once it's live.
 
-### Fixed: `ResolvedType::Array` (`[T]`) had neither implicit coercion nor an explicit cast to/from `Pointer(T)`
+### Fixed: `ResolvedType::Array` (`*[]T`) had neither implicit coercion nor an explicit cast to/from `Pointer(T)`
 
-`[T]` (a bare, unsized array shape, e.g. `argv: [*u8]`) is runtime-identical
+`*[]T` (an unsized array pointer, e.g. `argv: *[]*u8`) is runtime-identical
 to a single thin pointer — one leaf, no length — the same relationship
-`*[u8]` has to `*str` (different nominal types, identical runtime shape).
+`*[?]u8` has to `*str` (different nominal types, identical runtime shape).
 Originally `Array` was absent from both `cast_class` and `accepts`
 (`resolved_type.rs`), so there was no way — implicit or explicit — to
-convert between `[T]` and `*T`, even though they're bit-identical at
-runtime; `[T]` was also missing a `mutable` field entirely, unlike every
+convert between `*[]T` and `*T`, even though they're bit-identical at
+runtime; `*[]T` was also missing a `mutable` field entirely, unlike every
 other pointer-shaped type. Fixed generally: `Array` gained a `mutable`
 field (mirroring `Pointer`'s own shape end to end, parser through
 mangling), a `Pointer ↔ Array` cast (`Analyzer::array_pointer_cast_kind`,
@@ -315,9 +315,12 @@ widening every other pointer-shaped type gets. This also surfaced and
 fixed a real, independent bug: `Analyzer::project_index`'s `Array` arm
 never set the resulting place's mutability from the type's own flag,
 so `arr[i] = x`'s legality was inherited from whatever *binding* held
-the value rather than being the type-level fact it now correctly is. See
-[primitives](01-primitives.md)'s "`[T]`: a pointer with array-like
-properties" section.
+the value rather than being the type-level fact it now correctly is.
+(The surface syntax bare `[T]`/`mut [T]` this originally shipped under was
+later replaced by the `*[]T`/`*mut []T` spelling described here, as part
+of the broader array/slice/pointer syntax redesign — see
+[primitives](01-primitives.md)'s "`*[]T`: a pointer with array-like
+properties" section for the current spelling and rules.)
 
 ## Minor rough edges
 
@@ -425,7 +428,7 @@ checking one queued body can queue another for a different receiver).
 Both queue the same `PendingSpecMethod`, both check it with a fresh analyzer
 seeded with the same shape of substitution, and both merge the result into a
 module's item list. The only real difference is that a `for`-attached
-receiver (`i32`, `[T]`) has no declared item to key on, so it also has to
+receiver (`i32`, `*[?]T`) has no declared item to key on, so it also has to
 carry its own module path. One queue keyed by an owner enum
 (`Item(ItemKey) | Receiver(ResolvedType)`) would delete the duplicate
 machine; the `while let` drain shape is the correct one for both.

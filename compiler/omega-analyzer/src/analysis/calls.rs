@@ -359,7 +359,7 @@ impl<'r> Analyzer<'r> {
             }
             // self wants a pointer, the receiver is a `Str`/`Slice` value --
             // both already *are* their own fat-pointer representation (see
-            // `Context::resolve_type`'s `*str`/`*[T]` cases, which a
+            // `Context::resolve_pointer_type`'s `*str`/`*[?]T` cases, which a
             // `for`-attached spec's own `Self` substitution goes through
             // identically), so an `AddressOf` wrapper here would add a
             // genuine extra indirection layer the signature never asked for.

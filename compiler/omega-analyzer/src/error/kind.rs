@@ -84,11 +84,11 @@ pub enum AnalysisErrorKind {
     ImmutableSliceSource,
     /// A slice's `start`/`end` bound isn't `i32`.
     InvalidSliceBound { r#type: ResolvedType },
-    /// `&ptr[start..]` (an open-ended range) on a raw pointer base --
-    /// unlike `SizedArray`/`Slice`/`Str`, a bare pointer carries no length
-    /// anywhere to default a missing end to.
+    /// `&arr[start..]` (an open-ended range) on a `*[]T` base -- unlike
+    /// `SizedArray`/`Slice`/`Str`, it carries no length anywhere to default
+    /// a missing end to.
     MissingSliceEnd,
-    /// `&comp_ptr_binding[range]` -- a `comp`-bound raw pointer has no
+    /// `&comp_arr_binding[range]` -- a `comp`-bound `*[]T` has no
     /// established const-promotion story (see `Analyzer::analyze_slice`'s
     /// own comment on this); narrow and likely never hit in practice, but
     /// rejected explicitly rather than silently mishandled.
@@ -99,6 +99,10 @@ pub enum AnalysisErrorKind {
     /// (the first element's type is what every other element is checked
     /// against).
     ArrayElementTypeMismatch { expected: ResolvedType, found: ResolvedType },
+    /// `ident : []T = value;` where `value` isn't an array literal (or
+    /// analyzed to a different item type than `T`) -- there's nothing to
+    /// infer the real length from.
+    ArraySizeNotInferable,
     /// `&mut [...]` -- a compile-time slice is always immutable, just like
     /// a string literal (see `ConstValue::Slice`).
     ConstSliceCannotBeMutable,
@@ -454,15 +458,15 @@ pub enum AnalysisErrorKind {
     ExtensionOutsideCore { name: Ident },
     /// A `for` clause's target isn't one of `core`'s allowed primitive
     /// scalar/`str` types, or the one supported generic pattern shape
-    /// (`[T]`, referencing the spec's own single generic parameter).
+    /// (`[?]T`, referencing the spec's own single generic parameter).
     ExtensionTargetNotAllowed { name: Ident },
-    /// A `for [T]` spec function declared with by-value `self`/`mut self`
+    /// A `for [?]T` spec function declared with by-value `self`/`mut self`
     /// -- unlike an ordinary primitive scalar target, `self`'s real type
-    /// here (`Self` substituted with the bare `[T]` shape) resolves to
+    /// here (`Self` substituted with the `Array` shape) resolves to
     /// `ResolvedType::Array`, an unsized, lengthless thin pointer with no
     /// way to index safely; `*self`/`*mut self` resolves to the real,
-    /// lengthed `ResolvedType::Slice` instead (see `Context::resolve_type`'s
-    /// `Pointer(Array(_)) -> Slice` case).
+    /// lengthed `ResolvedType::Slice` instead (see `Context::
+    /// resolve_pointer_type`'s `Pointer(Array(_)) -> Slice` re-stamping).
     ExtensionSelfMustBePointer { name: Ident },
     /// Two `for` blocks anywhere in `core`'s module tree target the same
     /// type -- only one `for` block is allowed per target (see
@@ -681,16 +685,19 @@ impl fmt::Display for AnalysisErrorKind {
                 "mismatched types: slice bound must be 'i32', found '{}'", r#type
             ),
             Self::MissingSliceEnd => {
-                write!(f, "a slice over a raw pointer must have an explicit end bound")
+                write!(f, "a slice over an unsized array must have an explicit end bound")
             }
             Self::CompPointerSliceNotSupported => {
-                write!(f, "slicing a 'comp'-bound pointer is not supported")
+                write!(f, "slicing a 'comp'-bound unsized array is not supported")
             }
             Self::EmptyArrayLiteral => {
                 write!(f, "cannot infer the element type of an empty array literal")
             }
             Self::ArrayElementTypeMismatch { .. } => {
                 write!(f, "mismatched types in array literal")
+            }
+            Self::ArraySizeNotInferable => {
+                write!(f, "cannot infer this array's length")
             }
             Self::ConstSliceCannotBeMutable => {
                 write!(f, "a compile-time slice cannot be mutable")
@@ -959,7 +966,7 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "'{}' targets a type 'for' doesn't support", name.as_ref())
             }
             Self::ExtensionSelfMustBePointer { name } => {
-                write!(f, "'for [T]' function '{}' must receive 'self' by pointer", name.as_ref())
+                write!(f, "'for [?]T' function '{}' must receive 'self' by pointer", name.as_ref())
             }
             Self::DuplicateExtensionTarget { target, .. } => {
                 write!(f, "more than one 'for' block targets '{target}'")

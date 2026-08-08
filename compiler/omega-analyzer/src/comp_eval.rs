@@ -535,7 +535,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // needs no per-shape handling here since the `ConstValue` is
             // simply carried through as-is either way.
             CastKind::Reinterpret => Ok(base),
-            // `*str`/`*[T]` (fat, `[ptr, len]`) -> `*u8`/`*T` (thin) --
+            // `*str`/`*[?]T` (fat, `[ptr, len]`) -> `*u8`/`*T` (thin) --
             // keeps the pointer leaf, discards the length, exactly like
             // ordinary (non-`comp`) `DropLength` codegen does. Represented
             // as `&<the raw bytes/elements, as an inline Array>`: `Ref`

@@ -77,7 +77,7 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `.length` on a `*[T]`, or `.size` on a `*str` -- both project to the
+    /// `.length` on a `*[?]T`, or `.size` on a `*str` -- both project to the
     /// exact same `CheckedProjection::SliceLength` marker (`Str` shares
     /// `Slice`'s exact fat-pointer leaf layout, `[ptr, len]`, so it's the
     /// same byte-count read either way), but the *name* a user spells it
@@ -503,16 +503,17 @@ impl<'r> Analyzer<'r> {
         // needed by the `comp`-binding const-promotion path further down,
         // as the `Deref` projection's target type (see there for why).
         let base_type_snapshot = base_type.clone();
-        // A raw pointer -- or `[T]` (`Array`), which is itself just a
-        // pointer with array-like properties, see `ResolvedType::Array`'s
-        // own doc comment -- has no length anywhere, at compile time or
-        // runtime, to default a missing `end` to -- unlike `SizedArray`
-        // (its own compile-time `N`) or `Slice`/`Str` (their own runtime
-        // length leaf). Computed as a plain `bool`, not re-derived from
-        // `base_type_snapshot` later, since that gets moved out in one of
-        // the `comp`-binding branches below.
-        let base_lacks_length =
-            matches!(base_type_snapshot, ResolvedType::Pointer { .. } | ResolvedType::Array(_, _));
+        // `*[]T` (`Array`) -- itself just a pointer value with array-like
+        // properties, see `ResolvedType::Array`'s own doc comment -- has no
+        // length anywhere, at compile time or runtime, to default a
+        // missing `end` to -- unlike `SizedArray` (its own compile-time
+        // `N`) or `Slice`/`Str` (their own runtime length leaf). A plain
+        // `Pointer` never reaches this match at all (see the base-type
+        // match below), so it's not part of this check. Computed as a
+        // plain `bool`, not re-derived from `base_type_snapshot` later,
+        // since that gets moved out in one of the `comp`-binding branches
+        // below.
+        let base_lacks_length = matches!(base_type_snapshot, ResolvedType::Array(_, _));
 
         // The slice's *source* mutability: for inline storage
         // (`SizedArray`), whether the storage being sliced is itself
@@ -531,23 +532,16 @@ impl<'r> Analyzer<'r> {
             ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false, false),
             ResolvedType::Slice { item, mutable } => (*item, mutable, true, false),
             ResolvedType::Str { mutable } => (ResolvedType::U8, mutable, true, true),
-            // A raw pointer: the mutability genuinely lives on the
-            // pointer *value* (matching `Slice`/`Str`'s `true`, not
-            // `SizedArray`'s binding-borne `false`), so `&mut
-            // an_immutable_ptr[a..b]` correctly blames the pointer itself
-            // (`ImmutableSliceSource` below) rather than the binding
-            // holding it. This is what makes `&ptr[start..end]` legal
-            // while `ptr[i]` (plain single-element indexing, a
-            // structurally separate path -- `project_index`) stays
-            // illegal: only this range-slicing path accepts a bare
-            // pointer as a base, and it always produces a real, safely
-            // indexable `Slice` rather than treating the pointer itself
-            // as array-like.
-            ResolvedType::Pointer { pointee, mutable } => (*pointee, mutable, true, false),
-            // `[T]` -- exactly the same treatment as `Pointer` just above,
-            // for the same reason: it's genuinely just a pointer value,
-            // mutability lives on it directly, not on whatever binding
-            // holds it.
+            // `*[]T` -- the mutability genuinely lives on the pointer
+            // *value* (matching `Slice`/`Str`'s `true`, not `SizedArray`'s
+            // binding-borne `false`), so `&mut an_immutable_arr[a..b]`
+            // correctly blames the pointer itself (`ImmutableSliceSource`
+            // below) rather than the binding holding it. A plain `*T`
+            // pointer is *not* matched here -- `*T` is strictly a
+            // single-value pointer, with no indexing or slicing of its
+            // own; the only way to slice through one is to cast it to
+            // `*[]T` first (see `Context::resolve_pointer_type` and
+            // `Analyzer::array_pointer_cast_kind`).
             ResolvedType::Array(item, mutable) => (*item, mutable, true, false),
             found => {
                 self.error(node_id, span, AnalysisErrorKind::NotSliceable { found });
@@ -568,11 +562,11 @@ impl<'r> Analyzer<'r> {
             self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
         }
 
-        // A `comp`-bound raw pointer or `[T]` has no established promotion
-        // story: unlike `SizedArray` (promote its address) or `Slice`/`Str`
-        // (already its own two leaves), a `comp` pointer's own `ConstValue`
-        // shape isn't one either of the two branches below already knows
-        // how to handle, and speculatively guessing at one risks silently
+        // A `comp`-bound `*[]T` has no established promotion story: unlike
+        // `SizedArray` (promote its address) or `Slice`/`Str` (already its
+        // own two leaves), a `comp` array's own `ConstValue` shape isn't
+        // one either of the two branches below already knows how to
+        // handle, and speculatively guessing at one risks silently
         // building the wrong leaves rather than just rejecting a genuinely
         // narrow, likely-never-hit combination outright.
         if base_lacks_length
@@ -653,9 +647,9 @@ impl<'r> Analyzer<'r> {
         // A missing `start` always defaults to `0`, fine for every base
         // kind -- but a missing `end` only has something to default to
         // when `base_lacks_length` is `false` (`SizedArray`'s compile-time
-        // `N`, or `Slice`/`Str`'s own runtime length leaf). A raw pointer
-        // has no such fallback anywhere, so `&ptr[a..]` must name its own
-        // end explicitly; `&ptr[a..<b]`/`&ptr[..<b]` are unaffected.
+        // `N`, or `Slice`/`Str`'s own runtime length leaf). `*[]T` (`Array`)
+        // has no such fallback anywhere, so `&arr[a..]` must name its own
+        // end explicitly; `&arr[a..<b]`/`&arr[..<b]` are unaffected.
         if checked_end.is_none() && base_lacks_length {
             self.error(node_id, span, AnalysisErrorKind::MissingSliceEnd);
             return None;

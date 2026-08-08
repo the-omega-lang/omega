@@ -25,9 +25,9 @@
 //! <type>      = <basic> | <path>
 //!             | "R" <path> <base62>            // MyEnum::Variant (refined enum type)
 //!             | "P" <type> | "Q" <type>        // *T / *mut T
-//!             | "S" <type> | "W" <type>        // *[T] / *mut [T]
-//!             | "G" <type>                     // [T] (decayed array param)
-//!             | "A" <type> <base62>            // [T; N]
+//!             | "S" <type> | "W" <type>        // *[?]T / *mut [?]T (slice)
+//!             | "G" <type>                     // *[]T (unsized array pointer)
+//!             | "A" <type> <base62>            // [N]T
 //!             | "D" <type> | "K" <type>        // spec *T / spec *mut T
 //!             | "T" | "U"                       // *str / *mut str
 //!             | "F" ["V"] {<type>} "E" <type>  // fn(...) -> ...; "V" marks variadic

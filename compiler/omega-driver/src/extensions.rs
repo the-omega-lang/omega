@@ -58,9 +58,9 @@ pub(crate) struct Extensions {
     /// extend the warning scope -- `core`'s internal warnings shouldn't leak
     /// into every downstream compilation that merely uses one of its methods.
     pub module_paths: Vec<ModulePath>,
-    /// The one `[T]`-pattern `for` block, if any -- kept raw, to be resolved
-    /// per-receiver on demand, since there's no single instantiation to
-    /// resolve eagerly the way a concrete target has.
+    /// The one `[?]T`-pattern `for` block, if any -- kept raw, to be
+    /// resolved per-receiver on demand, since there's no single
+    /// instantiation to resolve eagerly the way a concrete target has.
     pattern: Option<(ModulePath, HirSpecDef)>,
     /// Every receiver's already-resolved, flattened method list. Keying on a
     /// `ResolvedType` is sound despite its interior mutability: every cell it
@@ -70,8 +70,8 @@ pub(crate) struct Extensions {
     /// A concrete
     /// target's entry is filled in eagerly by the walk (there's exactly one
     /// possible receiver, ever); a pattern target's entries are filled in
-    /// lazily, one per distinct concrete receiver (`[i32]` and `[u8]` cached
-    /// separately, from the one spec).
+    /// lazily, one per distinct concrete receiver (`*[?]i32` and `*[?]u8`
+    /// cached separately, from the one spec).
     resolved: HashMap<ResolvedType, Vec<(Ident, ResolvedMethod)>>,
     /// Default bodies queued per receiver, not yet checked -- the extension
     /// counterpart of the pending spec methods a struct/enum/union queues.
@@ -85,9 +85,9 @@ impl Driver {
     /// Target { ... }` declared anywhere in it. Memoized.
     ///
     /// A concrete target is fully resolved right here (there's exactly one
-    /// possible receiver for it); the one `[T]`-pattern target found, if any,
-    /// is stashed for per-receiver resolution later. "Only one `for` block
-    /// per target type" is enforced here, once, across the whole tree.
+    /// possible receiver for it); the one `[?]T`-pattern target found, if
+    /// any, is stashed for per-receiver resolution later. "Only one `for`
+    /// block per target type" is enforced here, once, across the whole tree.
     ///
     /// Does nothing (not an error) when `core` isn't registered for this
     /// compilation at all -- `for`-attached methods are simply unavailable,
@@ -137,7 +137,7 @@ impl Driver {
                         }
                     }
                     Some(ExtensionTarget::Pattern) => match pattern_site {
-                        Some(previous) => self.duplicate_target(&module_path, &sp, "[T]", previous),
+                        Some(previous) => self.duplicate_target(&module_path, &sp, "[?]T", previous),
                         None => {
                             pattern_site = Some(sp.span);
                             self.extensions.pattern = Some((module_path.clone(), sp));
@@ -164,12 +164,12 @@ impl Driver {
     /// the flattened list and queueing every default body it brought along.
     ///
     /// `self_type` is what `Self` binds to inside the block, which is *not*
-    /// always `receiver`: for the `[T]` pattern it's the bare `[T]` shape
-    /// (`Array`), so that a `*self` param's existing `Pointer(Array(_)) ->
-    /// Slice` resolution is what turns it back into the real, lengthed
-    /// receiver instead of double-wrapping it. `pattern_binding` is the
-    /// concrete `T` that pattern's element type binds to, `None` for a
-    /// concrete target.
+    /// always `receiver`: for the `[?]T` pattern it's the `Array` shape
+    /// (not `Slice`), so that a `*self` param's existing `Pointer(Array(_))
+    /// -> Slice` re-stamping (`Context::resolve_pointer_type`'s fallback
+    /// arm) is what turns it back into the real, lengthed receiver instead
+    /// of double-wrapping it. `pattern_binding` is the concrete `T` that
+    /// pattern's element type binds to, `None` for a concrete target.
     fn resolve_for_block(
         &mut self,
         module_path: &[Ident],
@@ -226,7 +226,7 @@ impl Driver {
         };
         let element = (**item).clone();
         // A pure type-checking substitution fiction (`Self` inside the
-        // `for [T]` block's own body) -- never a real runtime value, never
+        // `for [?]T` block's own body) -- never a real runtime value, never
         // used as a cache key (that's keyed on `receiver` itself, the real
         // `Slice`, above). Given the real receiver's own mutability anyway,
         // for consistency, though nothing downstream currently reads it

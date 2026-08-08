@@ -130,6 +130,9 @@ pub enum TokenKind {
     /// `@` -- leads an item annotation (`@inline(always)`); see
     /// `parser::item::parse_annotations`.
     At,
+    /// `?` -- marks `[?]T`, an unknown-(runtime-)size array; see
+    /// `parser::r#type::parse_bracket_type`.
+    Question,
 
     // Delimiters -- flat, individual tokens; nesting is the parser's
     // concern, not the lexer's (unlike the old macro-only `Token::Group`).
@@ -213,6 +216,7 @@ impl TokenKind {
             Self::Caret => "'^'".to_string(),
             Self::Tilde => "'~'".to_string(),
             Self::At => "'@'".to_string(),
+            Self::Question => "'?'".to_string(),
             Self::LParen => "'('".to_string(),
             Self::RParen => "')'".to_string(),
             Self::LBracket => "'['".to_string(),
@@ -530,6 +534,7 @@ impl<'a> Lexer<'a> {
             '^' => TokenKind::Caret,
             '~' => TokenKind::Tilde,
             '@' => TokenKind::At,
+            '?' => TokenKind::Question,
             _ => {
                 self.advance();
                 return Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidCharacter(c)));

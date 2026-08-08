@@ -779,9 +779,10 @@ impl<'r> Analyzer<'r> {
         };
         match raw_type {
             Type::Named(path) => !path.is_unqualified() || name_ok(&path.head),
-            Type::Pointer(inner, _) | Type::Array(inner, _) | Type::SizedArray(inner, _) => {
-                Self::generic_refs_resolvable(inner, generics, defaults, subst)
-            }
+            Type::Pointer(inner, _)
+            | Type::UnsizedArray(inner)
+            | Type::UnknownSizeArray(inner)
+            | Type::SizedArray(inner, _) => Self::generic_refs_resolvable(inner, generics, defaults, subst),
             Type::Generic(path, args) => {
                 (!path.is_unqualified() || name_ok(&path.head))
                     && args.iter().all(|a| Self::generic_refs_resolvable(a, generics, defaults, subst))

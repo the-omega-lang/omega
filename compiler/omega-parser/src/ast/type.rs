@@ -22,24 +22,28 @@ pub enum Type {
     /// matching every binding's own default (see `DeclarationStmt::mutable`).
     Pointer(Box<Type>, bool),
     Function(FunctionType),
-    /// `[T]` (immutable, `mutable: false`) or `mut [T]` (`mutable: true`) --
-    /// an unsized run of `T`: genuinely just a thin pointer value with
-    /// array-like properties (indexing, slicing via `&arr[a..b]`), no
-    /// length carried alongside it. `mut` prefixes the whole `[...]`
-    /// (rather than sitting just after a sigil, the way `*mut T` does) --
-    /// `[T]` has no leading sigil of its own to attach it to; see
-    /// `parser::r#type::parse_type`'s own doc comment. Mutability is a
-    /// type-level fact here exactly the way it is for `Pointer` above --
-    /// whether `arr[i] = x` is legal follows `[T]`'s own declared
-    /// mutability, never whatever binding happens to hold the value, the
-    /// same directional rule `*T`/`*mut T` already enforces. `*[T]` is the
-    /// pointer-*to*-this form and is *not* `Pointer(Array(T))` -- see
-    /// `Context::resolve_type`'s special case, which turns that
-    /// combination into `ResolvedType::Slice` (a fat pointer) instead, per
-    /// the language's actual slice design; `[T]` never needs a leading `*`
-    /// to function as a value type, unlike `*T` pointing *at* a `T`.
-    Array(Box<Type>, bool),
-    /// `[T; N]` -- a sized, inline, contiguous run of exactly `N` `T`s. `N`
+    /// `[]T` -- unsized. Standalone, this is always invalid: `Context::
+    /// resolve_type` rejects it unconditionally wherever it's reached
+    /// directly, since there's no length to give it. The only two legal
+    /// uses are behind a leading `*` (`Pointer(UnsizedArray(T), mutable)`,
+    /// which `Context::resolve_pointer_type` turns into `ResolvedType::
+    /// Array` -- genuinely just a thin pointer value with array-like
+    /// properties, indexing and slicing, no length carried alongside it),
+    /// or as a declaration's type annotation paired with an array-literal
+    /// initializer, which infers the real length from it (see
+    /// `Analyzer::resolve_typed_decl_init`). Mutability lives on the
+    /// wrapping `*`/`*mut` sigil, never here -- `[]T` itself has no
+    /// `mutable` flag, matching `SizedArray` below and unlike `Pointer`.
+    UnsizedArray(Box<Type>),
+    /// `[?]T` -- unknown-(runtime-)size. Standalone, this is always
+    /// invalid, with no exception (unlike `UnsizedArray` above, it has no
+    /// inferred-length declaration escape hatch either -- a slice's length
+    /// is only ever known at runtime, nothing to infer at all). The only
+    /// legal use is behind a leading `*` (`Pointer(UnknownSizeArray(T),
+    /// mutable)`, which `Context::resolve_pointer_type` turns into
+    /// `ResolvedType::Slice`, a fat `[data, length]` pointer).
+    UnknownSizeArray(Box<Type>),
+    /// `[N]T` -- a sized, inline, contiguous run of exactly `N` `T`s. `N`
     /// is kept as raw digit text here and parsed/range-checked during type
     /// resolution (`Context::resolve_type`), the same way `NumberExpr`'s
     /// integer literals are kept as text until semantic analysis -- the

@@ -17,7 +17,7 @@ runtime/core/
     iterator.omg                 # core::iterator — Iterator<T>, ToIterator<T>
     numerics.omg                   # core::numerics — all scalar for-blocks (macros)
     option.omg                       # core::option — Option<T>
-    slices.omg                          # core::slices — SliceImpl<T> for [T]
+    slices.omg                          # core::slices — SliceImpl<T> for [?]T
     strings.omg                            # core::strings — StrOps for str
 ```
 
@@ -112,13 +112,13 @@ side's TU" model (see [specs](08-specs.md) and
   fixed, when this was strictly required rather than just harmless/
   explicit; left as-is (still correct, just no longer the only way to
   write it) rather than churned for its own sake.
-- **`core::slices`** — `SliceImpl<T> for [T]`: `is_empty`, and `get`/
+- **`core::slices`** — `SliceImpl<T> for [?]T`: `is_empty`, and `get`/
   `first`/`last` via an `(index, out: *mut T) => bool` pattern (see below
   for why, not `Option<T>`).
 - **`core::strings`** — `StrOps : Eq for str`: `equals` (byte-compare
   loop — two different `*str` pointers are never automatically
   structurally equal), `is_empty`, `as_bytes` (a plain reinterpret-cast,
-  `str`/`*[u8]` share the identical fat-pointer leaf layout),
+  `str`/`*[?]u8` share the identical fat-pointer leaf layout),
   `starts_with`/`ends_with`, `contains` (naive O(n·m) substring search,
   deliberately no skip table, which would need working memory proportional
   to the needle — this layer never does hidden allocation).

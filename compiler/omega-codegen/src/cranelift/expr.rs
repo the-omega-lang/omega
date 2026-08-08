@@ -1107,16 +1107,20 @@ impl Codegen {
                 // both as its two flattened leaves (identical layout for
                 // both -- re-slicing a `*str` produces another `*str`,
                 // decided by `node.r#type` above this match, not by
-                // anything read here); a raw `Pointer` base has no length at
-                // all, at compile time or runtime -- its own *value* (not
-                // its storage's address, unlike `SizedArray`) is the data
+                // anything read here); `Array` (`*[]T`) has no length at
+                // all, at compile time or runtime -- it's genuinely just a
+                // pointer with array-like properties (see `ResolvedType::
+                // Array`'s doc comment), so its own *value* (not its
+                // storage's own address, unlike `SizedArray`) is the data
                 // pointer, matching `Slice`/`Str`'s "load the pointer value"
                 // treatment, not `SizedArray`'s "take the storage's own
-                // address" one. `full_len`'s placeholder `0` for `Pointer`
-                // is never actually read: `Analyzer::analyze_slice` requires
-                // an explicit `end` whenever the base has no length to
-                // default to (`MissingSliceEnd`), so `end` below is always
-                // `Some` for this base kind.
+                // address" one. `full_len`'s placeholder `0` is never
+                // actually read: `Analyzer::analyze_slice` requires an
+                // explicit `end` whenever the base has no length to default
+                // to (`MissingSliceEnd`), so `end` below is always `Some`
+                // for this base kind. A plain `Pointer` never reaches this
+                // match at all -- `analyze_slice` never produces a `MirExpr::
+                // Slice` with one as its base.
                 let (data_ptr, full_len) = match &base_type {
                     ResolvedType::SizedArray(_, size) => {
                         let ptr = self.place_storage_address(builder, &storage);
@@ -1127,16 +1131,11 @@ impl Codegen {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], leaves[1])
                     }
-                    // `Array` (`[T]`) gets identical treatment to `Pointer`
-                    // -- it *is* one, just with array-like properties (see
-                    // `ResolvedType::Array`'s doc comment); same never-read
-                    // placeholder, guaranteed by the same `MissingSliceEnd`
-                    // check.
-                    ResolvedType::Pointer { .. } | ResolvedType::Array(_, _) => {
+                    ResolvedType::Array(_, _) => {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], builder.ins().iconst(types::I32, 0))
                     }
-                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str/Pointer/Array"),
+                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str/Array"),
                 };
 
                 let elem_size = layout::total_bytes(&item_type, self.pointer_bytes()) as i64;
