@@ -37,6 +37,10 @@ iterator { }` — exactly one plain identifier binding, no destructuring
 (this language has none, anywhere — see below for why that mattered more
 than usual here).
 
+A **range-driven** `for i in a..<b { }` shares this same `for <mut>?
+binding in <expr>` grammar but desugars completely differently — see
+"Range-driven `for`" below, after the iteration-protocol's own desugaring.
+
 ## `core::iterator` / `core::option`
 
 ```
@@ -170,6 +174,62 @@ works:
   layout (`core::option::Option`'s variant order — `None` = 0, `Some` = 1
   — is load-bearing here) using the same narrowing primitives `match`'s
   own analysis uses internally, not by generating and re-parsing text.
+
+## Range-driven `for`
+
+```
+for i in 0..<10 { ... }     # exclusive end
+for i in 0..=10 { ... }     # inclusive end
+for i in 10.. { ... }       # open end -- counts up to the element type's own max
+```
+
+`for i in <range> { }` recognizes a *literal* range expression in the
+iterator position (`Expression::Range`/`HirExpr::Range` — see
+[enums & pattern matching](05-enums-and-pattern-matching.md)'s "Ranges")
+and intercepts it in `Analyzer::analyze_for`, *before* `classify_for_in_source`
+ever runs — there is no first-class `Range` value anywhere in this
+language (a range is a purely structural, compile-time concept everywhere
+else too, consumed directly the same way a slice's own `base[range]`
+already is), so this never goes through `ToIterator`/`Iterator` at all.
+Instead it desugars directly into the classic three-clause `for`'s own
+`CheckedFor` shape (`Analyzer::analyze_for`) — reusing that machinery
+unchanged, not a third independent code path in MIR/codegen.
+
+A start is mandatory (`for i in ..b { }`/bare `for i in .. { }` are both
+`ForLoopRangeMissingStart` — unlike a slice's own missing start, there's
+no principled value to begin counting from) and decides the loop
+variable's own type, which must be a real, steppable integer kind
+(`i8`..`i64`/`isize`, `u8`..`u64`/`usize` — `ForLoopRangeElementNotSupported`
+otherwise). `char`/`bool` are deliberately excluded even though both have
+an `integer_domain()` and are legal `match`-range bounds: `bool` has no
+arithmetic at all, and `char + 1` coerces to `u32` (see
+[primitives](01-primitives.md)'s "`char`, `bool`, and pointer arithmetic"),
+so neither can drive this loop's own internal counter without a type
+mismatch. An explicit end's type must match the start's exactly
+(`ForLoopRangeBoundTypeMismatch` otherwise — no implicit conversions here
+either); an open end (`a..`) implicitly uses the element type's own
+`integer_domain().1` (its real maximum).
+
+A private counter (`$i`, never user-visible) drives the loop; the `binding`
+you actually write is a fresh copy taken from it each iteration (`<mut>?
+binding := $i;`), exactly like the iteration-protocol desugaring's own
+`binding := $next.value` above — decoupled from the counter's own
+mutability needs, which this desugaring alone controls. Reassigning
+`binding` inside the loop body (if declared `mut`) never affects the
+loop's own iteration.
+
+**Overflow safety, not left as an afterthought**: an exclusive end
+(`a..<b`) desugars to the obvious `while $i < b { ...; $i += 1; }` shape,
+which is provably safe (`b` is itself always representable, so the last
+value `$i` is ever incremented from is `b - 1`). An inclusive end (`a..=b`,
+and `a..`'s implicit `b = domain.max`) can't safely use that shape — if
+`b` happens to be the element type's own actual maximum, incrementing past
+the last iteration would overflow. That case uses a `$more`-flag shape
+instead, which never computes `b + 1` at all: `$more` is flipped to
+`false` (rather than `$i` incremented) the moment `$i` reaches `b`. Both
+shapes are ordinary, fully-inlined `CheckedFor` init/condition/post
+clauses — no hidden allocation, no runtime overflow check needed because
+none is ever reachable.
 
 ## Caveats
 

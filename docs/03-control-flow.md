@@ -24,16 +24,17 @@ condition-bearing clauses and `match`'s scrutinee.
 
 ```
 match value {
-    Entity::Person { name, .. } => { ... },
-    0...9 => "single digit",
+    0..=9 => "single digit",
     10..<100 => "double digit",
+    .. => "large",
 } else {
     "out of range"
 }
 ```
 
 See [enums & pattern matching](05-enums-and-pattern-matching.md) for the
-full pattern grammar, exhaustiveness checking, and variant narrowing.
+full pattern grammar (including the `..` catch-all arm above), exhaustiveness
+checking, and variant narrowing.
 
 ## Loops
 
@@ -45,6 +46,8 @@ loop { ... }                    # unconditional -- see below
 for mut i := 0; i < 10; i += 1 { ... }
 for ; condition; { ... }        # while-equivalent
 for ;; { ... }                  # infinite
+
+for i in 0..<10 { ... }         # range-driven -- see below
 ```
 
 `for` is C-style — three semicolon-separated clauses, **each independently
@@ -54,6 +57,16 @@ same declaration/walrus statement shapes ordinary statements have; the
 — an *empty* post clause is disambiguated from "the post clause is empty
 and this `{` starts the body" by peeking for `{` first, never attempting
 to parse an expression there.
+
+**A range-driven `for i in a..<b { }`/`a..=b`/`a.. { }`** desugars
+directly into this same three-clause shape (never a real `Range` value —
+see [`for`..`in` loops](18-for-in-loops.md)) — `a` decides the loop
+variable's own type (a real integer type only; `char`/`bool` aren't
+supported, see [enums & pattern matching](05-enums-and-pattern-matching.md)'s
+"Ranges" section), and an omitted start (`for i in ..b { }`/bare `for i
+in .. { }`) is rejected outright rather than defaulting to anything —
+unlike a slice's own missing start, there's no principled value to begin
+counting from.
 
 **`loop { ... }` is the one loop form the compiler can *prove* always
 repeats** (unless a `break` targeting it is found anywhere in its own
@@ -179,7 +192,7 @@ a genuine mismatch it wouldn't have accepted before.
 ## Caveats
 
 - `char` has comparison (`== != < <= > >=`) and can be used as a `match`
-  scrutinee, including ranges (`'A'...'Z'`) — see
+  scrutinee, including ranges (`'A'..='Z'`) — see
   [primitives](01-primitives.md) and
   [enums & pattern matching](05-enums-and-pattern-matching.md). Arithmetic/
   bitwise ops and casts are supported too, but by coercing to `u32` first

@@ -139,12 +139,6 @@ need a breaking change to fix — full writeups in
   individually**, with no backstop — three positions have now been fixed
   one at a time.
 
-Language-level, not internal:
-
-- **A value `match`'s arms must partition the domain exactly** — arms may
-  not overlap, so a trailing `... => x` catch-all is never legal.
-  [design-review.md](17-design-review.md#compiler-architecture)
-
 ## Design debt worth watching
 
 - Every new `Expression`/`HirExpr`/`CheckedExpr` variant needs updates

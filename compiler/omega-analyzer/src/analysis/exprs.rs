@@ -85,6 +85,14 @@ impl<'r> Analyzer<'r> {
                 self.error(id, span, AnalysisErrorKind::SliceRequiresAddressOf);
                 None
             }
+
+            // Reached only when a standalone range didn't get intercepted
+            // by `Analyzer::analyze_for`'s own dedicated handling first --
+            // see `HirExpr::Range`'s doc comment.
+            HirExpr::Range(_) => {
+                self.error(id, span, AnalysisErrorKind::RangeNotAllowedHere);
+                None
+            }
         }
     }
 

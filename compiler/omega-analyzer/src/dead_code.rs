@@ -194,8 +194,10 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
         }
         CheckedExpr::Match(m) => {
             for arm in &m.arms {
-                for cond in &arm.conditions {
-                    collect_expr(cond, usage);
+                for group in &arm.conditions {
+                    for cond in group {
+                        collect_expr(cond, usage);
+                    }
                 }
                 collect_block(&arm.body, usage);
             }

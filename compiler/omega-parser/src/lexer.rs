@@ -67,11 +67,14 @@ pub enum TokenKind {
 
     // Multi-char punctuation, maximal-munch (tried longest-first during
     // lexing so e.g. `...` is never mistaken for `..` followed by `.`).
-    /// `...` -- an inclusive range (`a...b`, `a...`, `...b`, or bare `...`
-    /// for the full domain), any bound optional; also still used, unchanged,
-    /// for variadic function parameters -- the two never collide since a
-    /// variadic `...` only ever appears as the last item of a parameter
-    /// list, a position expressions never occur in. See `ast::range::RangeExpr`.
+    /// `...` -- variadic function-type parameters ONLY (`(s: *u8, ...) =>
+    /// i32`). No longer a range operator at all -- see `DotDotEq`/`DotDot`
+    /// below, and `ast::range::RangeExpr`'s own doc comment for why the
+    /// split. Parsed positionally, in a completely separate grammar
+    /// production (`parser::r#type::parse_function_type`) from every range
+    /// use of `..=`/`..<`/`..`, so there is no actual ambiguity between
+    /// them -- the split is about readability/intent, not resolving a real
+    /// grammar collision.
     DotDotDot,
     ColonColon,
     FatArrow,
@@ -80,12 +83,24 @@ pub enum TokenKind {
     NotEq,
     LtEq,
     GtEq,
+    /// `..=` -- an inclusive-end range (`a..=b`, `..=b`); always requires
+    /// an explicit end (`a..=` alone is a parse error, see
+    /// `parser::expression::parse_range_tail`). Replaces the old `...`
+    /// range spelling -- deliberately a different token from the plain
+    /// `...` used for variadics, so writing one out of habit for the other
+    /// is never silently accepted as the wrong thing.
+    DotDotEq,
     /// `..<` -- an exclusive-end range (`a..<b`, `..<b`); always requires an
     /// explicit end (`a..<` alone is a parse error, see
-    /// `parser::expression::parse_range_tail`). Plain two-dot `..` doesn't
-    /// exist in this grammar at all -- every range is spelled either `...`
-    /// (inclusive) or `..<` (exclusive-end).
+    /// `parser::expression::parse_range_tail`).
     DotDotLt,
+    /// `..` -- an open range with no end at all, ever (`a..`, or bare `..`)
+    /// -- the *only* range spelling that's ever legal with no end written;
+    /// `..=`/`..<` both require one. Its actual bound is inferred entirely
+    /// from context: a slice's own container length, a `match` arm's own
+    /// unmatched remainder, or a range-driven `for` loop's own element
+    /// type domain -- see `ast::range::RangeExpr`'s own doc comment.
+    DotDot,
     PlusPlus,
     MinusMinus,
     /// `<<` -- see `BinaryOp::Shl`.
@@ -183,7 +198,9 @@ impl TokenKind {
             Self::NotEq => "'!='".to_string(),
             Self::LtEq => "'<='".to_string(),
             Self::GtEq => "'>='".to_string(),
+            Self::DotDotEq => "'..='".to_string(),
             Self::DotDotLt => "'..<'".to_string(),
+            Self::DotDot => "'..'".to_string(),
             Self::PlusPlus => "'++'".to_string(),
             Self::MinusMinus => "'--'".to_string(),
             Self::Shl => "'<<'".to_string(),
@@ -259,8 +276,13 @@ const KEYWORDS: &[(&str, TokenKind)] = &[
 /// Tried longest-first so e.g. `...` is never mistaken for `..` + `.`, and
 /// `:=` is never mistaken for `:` + `=`.
 const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
+    // The three-char range/variadic forms must all precede the two-char
+    // `..` below -- maximal-munch here is first-match-wins by list order,
+    // not by length (same convention `<<=`/`<<` below already follows).
     ("...", TokenKind::DotDotDot),
+    ("..=", TokenKind::DotDotEq),
     ("..<", TokenKind::DotDotLt),
+    ("..", TokenKind::DotDot),
     ("::", TokenKind::ColonColon),
     ("=>", TokenKind::FatArrow),
     (":=", TokenKind::ColonEq),

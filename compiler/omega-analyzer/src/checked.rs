@@ -817,15 +817,24 @@ pub struct CheckedMatch {
     pub else_branch: Option<CheckedBlock>,
 }
 
-/// One arm: every condition must hold, in order, for this arm to run (short-
-/// circuiting on the first `false` -- see `emit_match`). A value/enum-variant
-/// pattern has exactly one condition; a range pattern has one per bound
-/// actually present (so up to two) -- there is no boolean AND/OR operator in
-/// this language, so a multi-bound test is nested branching in codegen
-/// rather than one merged boolean expression.
+/// One arm: an OR of AND-groups (disjunctive normal form) -- this arm runs
+/// if *any* group's conditions all hold (short-circuiting within a group on
+/// the first `false`, then falling to the next group -- see `emit_match`).
+/// There is no boolean AND/OR operator anywhere in this language, so both
+/// levels of this are nested branching in codegen, never one merged boolean
+/// expression.
+///
+/// Every arm any *user*-written pattern produces has exactly one group: a
+/// value/enum-variant pattern's group has exactly one condition; a range
+/// pattern's group has one per bound actually present (so up to two).
+/// More than one group is purely a compiler-internal desugaring artifact --
+/// today, only an enum `match`'s `..` catch-all arm (`Analyzer::
+/// analyze_enum_match`) produces one, one group per variant the catch-all
+/// covers, since "any of these N variant tags" has no other way to be
+/// spelled without a real boolean OR. Never surfaces as user syntax.
 #[derive(Debug, Clone)]
 pub struct CheckedMatchArm {
-    pub conditions: Vec<CheckedExprNode>,
+    pub conditions: Vec<Vec<CheckedExprNode>>,
     pub body: CheckedBlock,
 }
 

@@ -142,6 +142,9 @@ impl AnalysisErrorKind {
             Self::CompPointerSliceNotSupported => {
                 d.with_label(span, "slicing a 'comp'-bound unsized array is not supported")
             }
+            Self::RangeNotAllowedHere => d
+                .with_label(span, "a standalone range isn't a value")
+                .with_help("ranges are only meaningful as a `for` loop's own iterator source, e.g. `for i in a..<b { ... }`"),
             Self::EmptyArrayLiteral => d
                 .with_label(span, "cannot infer what `[]` holds")
                 .with_note("an array literal's type comes from its first element"),
@@ -378,6 +381,16 @@ impl AnalysisErrorKind {
             Self::NonExhaustiveMatchValue { gaps, .. } => d
                 .with_label(span, format!("not covered: {}", gaps.join(", ")))
                 .with_help("cover the remaining values, or add an `else` block"),
+            Self::CatchAllRangeNotInferable { .. } => d
+                .with_label(span, "what's left uncovered isn't one contiguous range")
+                .with_note("`..` can only infer a single gap -- split this into explicit ranges, or add an `else` block instead"),
+            Self::CatchAllPatternRedundant => d
+                .with_label(span, "every value is already covered by an earlier arm")
+                .with_help("remove this arm -- there's nothing left for it to match"),
+            Self::MultipleCatchAllPatterns { previous } => d
+                .with_label(span, "a second `..` catch-all arm")
+                .with_secondary_label(*previous, "first `..` arm here")
+                .with_note("only one `..` arm is allowed per `match`"),
             Self::MatchArmTypeMismatch { expected, found } => d
                 .with_label(span, format!("this arm produces `{found}`, but earlier arms produce `{expected}`"))
                 .with_note("every arm of a `match` used as an expression must produce the same type"),
@@ -471,6 +484,15 @@ impl AnalysisErrorKind {
                     "declare `{type} : ToIterator<T>` and implement `to_iterator`, \
                      or `{type} : Iterator<T>` and implement `next` directly"
                 )),
+            Self::ForLoopRangeMissingStart => d
+                .with_label(span, "no principled value to start counting from")
+                .with_help("write an explicit start, e.g. `for i in 0..<10 { ... }`"),
+            Self::ForLoopRangeElementNotSupported { r#type } => d
+                .with_label(span, format!("`{type}` has no `+= 1` step to count with"))
+                .with_note("a range-driven `for` loop needs a real integer type (`i8`..`i64`/`isize`, `u8`..`u64`/`usize`)"),
+            Self::ForLoopRangeBoundTypeMismatch { expected, found } => d
+                .with_label(span, format!("expected `{expected}`, found `{found}`"))
+                .with_note("Omega has no implicit conversions; a range's start and end must have exactly the same type"),
             Self::SpecMethodTooHidden { implementor, spec, function, required, found } => d
                 .with_label(
                     span,

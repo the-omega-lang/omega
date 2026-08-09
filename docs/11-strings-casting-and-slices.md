@@ -206,11 +206,9 @@ between `Slice{U8}` and `Str`.
   `Optional<T>::Some`-style generic-args parse) now go through these
   instead of a bare `Gt` check. See
   [the standard library](23-standard-library.md).
-- **No bare `..` range operator** — only `...` (inclusive) and `..<`
-  (exclusive, and its end is mandatory: `a..<` alone is
-  `ExclusiveRangeMissingEnd`) exist, matching `match`'s own range-pattern
-  grammar exactly (`0...9`, `10..<100`). A cast immediately after `..<`
-  is genuinely ambiguous with the operator itself (`0..<i32>len` lexes as
-  `0` `..<` `i32` `>` `len`, not `0` `..` `<i32>len`) — bind the cast to a
-  local first (`n := <i32>len; &ptr[0..<n]`) rather than writing it
-  inline in the range.
+- A cast immediately after `..<` is genuinely ambiguous with the operator
+  itself (`0..<i32>len` lexes as `0` `..<` `i32` `>` `len`, not `0` `..`
+  `<i32>len`) — bind the cast to a local first (`n := <i32>len;
+  &ptr[0..<n]`) rather than writing it inline in the range. `..=`/`..`
+  don't share this ambiguity (neither ends in a bare `<`), so `0..=<i32>len`
+  parses as written.

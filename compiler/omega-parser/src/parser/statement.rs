@@ -8,7 +8,9 @@ use crate::ast::statement::{
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
-use crate::parser::expression::{parse_codeblock, parse_expression, parse_statement_leading_expression};
+use crate::parser::expression::{
+    parse_codeblock, parse_expression, parse_range_or_expression, parse_statement_leading_expression,
+};
 use crate::parser::{Parser, recovery};
 
 /// One statement, function-body scope. A deliberate cleanup from the old
@@ -318,8 +320,10 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     p.advance(); // 'in' (contextual; `is_for_in_lookahead` already confirmed this token)
 
     // Same body-`{` ambiguity `while`/the classic `for`'s own condition
-    // clause has -- restricted for the same reason.
-    let iterator = p.restrict_struct_literals(parse_expression)?;
+    // clause has -- restricted for the same reason. Also the one place a
+    // standalone range (`10..<20`, `10..`, ...) may appear as an ordinary
+    // expression -- see `parse_range_or_expression`'s own doc comment.
+    let iterator = parse_range_or_expression(p)?;
     let body = parse_codeblock(p)?;
     Some(ForInStmt { mutable, binding, iterator, body })
 }

@@ -73,7 +73,7 @@ use crate::{
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode,
     HirExternDeclaration,
-    HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirPattern, HirParam,
+    HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirPattern, HirParam,
     HirPlace, HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
 };

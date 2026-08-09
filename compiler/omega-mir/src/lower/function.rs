@@ -983,23 +983,40 @@ impl FunctionLowerer {
             };
         };
 
-        if arm.conditions.is_empty() {
+        // An OR of AND-groups (see `CheckedMatchArm`'s own doc comment) --
+        // any group with zero conditions is vacuously true, which makes
+        // the whole arm match unconditionally regardless of any other
+        // group, exactly like the old "conditions is empty" shortcut this
+        // replaces.
+        if arm.conditions.iter().any(|group| group.is_empty()) {
             return self.lower_block_into(arm.body, merge, result, result_type);
         }
 
         let body_blk = self.new_block();
         let fail_blk = self.new_block();
-        let condition_count = arm.conditions.len();
-        for (i, cond) in arm.conditions.into_iter().enumerate() {
-            let cond = self.lower_expr(cond);
-            if self.is_current_terminated() {
-                return false;
+        let group_count = arm.conditions.len();
+        let mut group_entry = self.current;
+        for (g, group) in arm.conditions.into_iter().enumerate() {
+            self.current = group_entry;
+            // Where this group's own AND-chain falls through to once every
+            // condition in it has been tried: the next group's own entry
+            // block, or the arm's overall failure block once every group
+            // has had its turn.
+            let group_fail = if g + 1 == group_count { fail_blk } else { self.new_block() };
+            let condition_count = group.len();
+            for (i, cond) in group.into_iter().enumerate() {
+                let cond = self.lower_expr(cond);
+                if self.is_current_terminated() {
+                    return false;
+                }
+                let true_target = if i + 1 == condition_count { body_blk } else { self.new_block() };
+                self.set_terminator(MirTerminator::Branch { condition: cond, then_block: true_target, else_block: group_fail });
+                self.current = true_target;
             }
-            let true_target = if i + 1 == condition_count { body_blk } else { self.new_block() };
-            self.set_terminator(MirTerminator::Branch { condition: cond, then_block: true_target, else_block: fail_blk });
-            self.current = true_target;
+            group_entry = group_fail;
         }
 
+        self.current = body_blk;
         let body_reached = self.lower_block_into(arm.body, merge, result, result_type.clone());
         self.current = fail_blk;
         let fail_reached = self.lower_match_chain(arms, else_branch, merge, result, result_type);
@@ -1135,8 +1152,10 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) 
         }
         CheckedExpr::Match(m) => {
             for arm in &m.arms {
-                for cond in &arm.conditions {
-                    collect_defer_ids_expr(cond, out);
+                for group in &arm.conditions {
+                    for cond in group {
+                        collect_defer_ids_expr(cond, out);
+                    }
                 }
                 collect_defer_ids(&arm.body, out);
             }
