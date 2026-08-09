@@ -641,17 +641,18 @@ fn expand_expr(
             Expression::Slice(Box::new(SliceExpr { base: expand_expr(s.base, defs, budget)?, range: expand_range(s.range, defs, budget)? }))
         }
         Expression::Match(m) => Expression::Match(Box::new(expand_match(*m, defs, budget)?)),
+        Expression::Range(r) => Expression::Range(Box::new(expand_range(*r, defs, budget)?)),
     };
     Ok(ExpressionNode { expression, span })
 }
 
 fn expand_range(range: RangeExpr, defs: &HashMap<Ident, MacroDefinitionStmt>, budget: &mut u32) -> Result<RangeExpr, MacroError> {
-    Ok(RangeExpr {
-        start: range.start.map(|e| expand_expr(e, defs, budget)).transpose()?,
-        end: range.end.map(|e| expand_expr(e, defs, budget)).transpose()?,
-        inclusive: range.inclusive,
-        span: range.span,
-    })
+    let end = match range.end {
+        RangeEnd::Inclusive(e) => RangeEnd::Inclusive(expand_expr(e, defs, budget)?),
+        RangeEnd::Exclusive(e) => RangeEnd::Exclusive(expand_expr(e, defs, budget)?),
+        RangeEnd::Open => RangeEnd::Open,
+    };
+    Ok(RangeExpr { start: range.start.map(|e| expand_expr(e, defs, budget)).transpose()?, end, span: range.span })
 }
 
 fn expand_match(match_expr: MatchExpr, defs: &HashMap<Ident, MacroDefinitionStmt>, budget: &mut u32) -> Result<MatchExpr, MacroError> {

@@ -88,9 +88,12 @@ impl ParseError {
             ParseErrorKind::SpecAliasCannotDeclareFunctions => d
                 .with_label(self.span, "an alias spec (`= A | B`) can't declare its own functions")
                 .with_help("give this spec a `{ ... }` body instead of `= ...` if it needs functions"),
-            ParseErrorKind::ExclusiveRangeMissingEnd => d
-                .with_label(self.span, "exclusive range has no end bound")
-                .with_help("give it an end (`..<end`), or use an inclusive range instead (`...`)"),
+            ParseErrorKind::RangeMissingEnd => d
+                .with_label(self.span, "this range has no end bound")
+                .with_help("give it an end (`..<end`/`..=end`), or use `..` if you mean an inferred, open-ended range"),
+            ParseErrorKind::OpenRangeHasEnd => d
+                .with_label(self.span, "an open range ('..') can't have an end")
+                .with_help("did you mean `..=end` (inclusive) or `..<end` (exclusive)?"),
             ParseErrorKind::AnnotationNotAllowedHere => d
                 .with_label(self.span, "this item can't carry annotations")
                 .with_help("annotations are only allowed on structs, enums, unions, and functions"),
@@ -171,10 +174,16 @@ pub enum ParseErrorKind {
     /// carry its own function members the way a `spec Name : A, B { ... }`
     /// declaration can.
     SpecAliasCannotDeclareFunctions,
-    /// `..<` with no end bound (`a..<` or bare `..<`) -- unlike `...`, an
-    /// exclusive range's whole point is excluding its end, so an
-    /// open-ended one is meaningless; see `ast::range::RangeExpr`.
-    ExclusiveRangeMissingEnd,
+    /// `..<`/`..=` with no end bound (`a..<`/`a..=`, or bare `..<`/`..=`)
+    /// -- unlike `..`, an inclusive or exclusive range's whole point is a
+    /// specific end, so an open-ended one is meaningless; write bare `..`
+    /// instead if that's really what's meant. See `ast::range::RangeExpr`.
+    RangeMissingEnd,
+    /// `..` immediately followed by something other than the range's own
+    /// terminator (`]` for a slice, `=>` for a match pattern, `{` for a
+    /// range-driven `for` loop's body) -- `..` never takes an end at all;
+    /// this almost always means `..=`/`..<` was meant instead.
+    OpenRangeHasEnd,
     /// One or more `@name(...)` annotations directly above an item that has
     /// nowhere to store them -- only structs, enums, unions, and functions
     /// (top-level or member) carry an `annotations` list at all; annotating
@@ -231,8 +240,11 @@ impl fmt::Display for ParseErrorKind {
             Self::SpecAliasCannotDeclareFunctions => {
                 write!(f, "an alias spec can't declare its own functions")
             }
-            Self::ExclusiveRangeMissingEnd => {
-                write!(f, "an exclusive range ('..<') must have an end bound")
+            Self::RangeMissingEnd => {
+                write!(f, "an inclusive ('..=') or exclusive ('..<') range must have an end bound")
+            }
+            Self::OpenRangeHasEnd => {
+                write!(f, "an open range ('..') can't have an end")
             }
             Self::AnnotationNotAllowedHere => {
                 write!(f, "annotations are only allowed on structs, enums, unions, and functions")

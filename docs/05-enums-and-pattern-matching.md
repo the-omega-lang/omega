@@ -106,7 +106,7 @@ gap this closes and its own remaining caveat.
 message := match matched_num {
     0..<100 => <*u8>b"less than a hundred\0",
     100 => <*u8>b"a hundred\0",
-    101... => <*u8>b"more than a hundred\0",
+    .. => <*u8>b"more than a hundred\0",
 };
 
 kind := match s {
@@ -126,17 +126,19 @@ exhaustive coverage.
 **Exhaustiveness is real and enforced** (`compiler/omega-analyzer/src/
 exhaustiveness.rs`): a sort-by-lo sweep over intervals detects every
 overlap (hard error, no first-match-wins semantics like a plain `if`-chain
-would have) and every gap (error unless `else` covers it). Scoped today to
+would have) and every gap (error unless `else` covers it, or exactly one
+bare `..` catch-all arm does — see "Ranges" below). Scoped today to
 **enums, integers, `bool`, and `char`** (see
 [primitives](01-primitives.md) for `char`'s own domain) — a float
 scrutinee is a clear `UnsupportedMatchScrutinee` diagnostic, not a silent
 gap.
 
 Because overlap is an error, a value `match`'s arms must **partition** the
-domain: there is no trailing catch-all arm (`... => x` overlaps everything
-above it). Use `else` for the "anything else" case — that's exactly what it
-is for. The overlap diagnostic reports the pair in *source* order and says
-so explicitly:
+domain: there is no trailing catch-all arm the way a plain `if`-chain's
+final `else` is — a pattern that overlaps an earlier one is always an
+error, never silently shadowed by first-match-wins. Use `else`, or a bare
+`..` arm, for the "anything else" case. The overlap diagnostic reports the
+pair in *source* order and says so explicitly:
 
 ```
 error: overlapping match arms
@@ -163,37 +165,99 @@ needs every path to supply a value.
 
 ## Ranges
 
-One grammar, shared verbatim by `match` range-patterns and slicing
-(`base[range]`):
+One grammar, shared verbatim by `match` range-patterns, slicing
+(`base[range]`), and — legal only as a range-driven `for` loop's own
+direct iterator source (see [`for`..`in` loops](18-for-in-loops.md)) — a
+standalone range expression:
 
 ```
-...      # fully open
-a...     # [a, MAX]
-...b     # [MIN, b]
-a...b    # [a, b], inclusive
+..=b     # [MIN, b], inclusive end
+a..=b    # [a, b], inclusive end
+..<b     # [MIN, b), exclusive end
 a..<b    # [a, b), exclusive end
-..<b     # [MIN, b)
+..       # fully open; both ends inferred from context
+a..      # [a, inferred]
 ```
 
-There is **no plain two-dot `..`** anywhere in the language — every range
-is unambiguously `...` (inclusive) or `..<` (exclusive-end). `..<` always
-requires an explicit end (`a..<` and bare `..<` alone are parse errors) —
-an open-ended exclusive range has nothing to exclude.
+`..=`/`..<` both always require an explicit end (`a..=`/`a..<`, or bare
+`..=`/`..<`, are all parse errors) — deliberately two different tokens
+from each other and, on purpose, from `...` (still used, unrelated, for
+variadic function parameters): writing `..=` forces a real choice between
+inclusive and exclusive, rather than reaching for a habitual `..`-typo
+that silently means the wrong thing.
+
+`..`, by contrast, is the one spelling that's legal with **no** end at
+all, ever — what it actually means is inferred from whichever position
+consumes it: a slice's own container length (`&arr[5..]` — from index 5
+to the end; bare `&arr[..]` — a full view), or a `match` arm's own
+unmatched remainder (below). Its own start is independently optional from
+its end in every shape above, the same as `..=`/`..<`.
 
 Range bounds work for any type with an `integer_domain()` (see
 [primitives](01-primitives.md)) — including `char`:
 
 ```
 match c {
-    'A'...'Z' => 1,
-    'a'...'z' => 2,
-    '0'...'9' => 3,
+    'A'..='Z' => 1,
+    'a'..='z' => 2,
+    '0'..='9' => 3,
 } else { 0 }
 ```
 
 A `char` range is only ever meaningful as a `match` pattern — `char` has
 no arithmetic, so unlike an integer range there's no sensible notion of
-"step" or iteration over one.
+"step" or iteration over one (and, correspondingly, `char`/`bool` are
+*not* legal range-driven `for`-loop element types even though both have
+an `integer_domain()` — see [`for`..`in` loops](18-for-in-loops.md)).
+
+### The `..` catch-all arm
+
+A bare `..` arm (nothing written on either side) is legal in `match`, and
+means "whatever's left uncovered by every other arm" — inferred, not
+written, and only accepted when that remainder is unambiguous:
+
+```
+match some_integer {
+    ..<0 => { /* negative */ }
+    0 => { /* zero */ }
+    .. => { /* from 1 to the domain's own max -- the one contiguous gap left */ }
+}
+```
+
+This works for an enum `match` too, covering every variant no earlier arm
+named:
+
+```
+match e {
+    MyEnum::First => { ... }
+    .. => { /* every other variant */ }
+}
+```
+
+Unlike `else`, a `..` arm is subject to the same overlap-safety proof as
+every other arm — it isn't an opaque fallback, it's a real, inferred
+interval (or, for an enum, a real set of variants), so a later arm that
+happened to also cover part of it would still be caught as
+`OverlappingMatchArm`. At most one `..` arm is allowed per `match`
+(`MultipleCatchAllPatterns` otherwise — there's only one "everything
+else" to have), and it must actually have something left to cover
+(`CatchAllPatternRedundant` if the other arms are already exhaustive on
+their own). For a numeric/`bool`/`char` match specifically, what's left
+must also reduce to exactly **one** contiguous range — deliberately not
+stretched further than that:
+
+```
+match some_integer {
+    0 => { ... }
+    .. => { ... }   # error: CatchAllRangeNotInferable -- removing `{0}`
+                     # from the domain leaves TWO disjoint ranges (below
+                     # and above zero), not one
+}
+```
+
+An enum `match`'s own `..` has no such contiguity requirement (variant
+tags aren't required to be contiguous, and there's no "range" concept
+for them at all) — any non-empty set of uncovered variants is fine.
 
 ## Caveats
 

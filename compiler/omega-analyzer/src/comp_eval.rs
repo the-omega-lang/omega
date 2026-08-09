@@ -625,18 +625,24 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     }
 
     fn eval_match(&mut self, match_expr: &CheckedMatch, span: Span) -> CompResult<ConstValue> {
-        'arms: for arm in &match_expr.arms {
-            for condition in &arm.conditions {
-                match self.eval_expr(condition)? {
-                    ConstValue::Bool(true) => {}
-                    ConstValue::Bool(false) => continue 'arms,
-                    _ => return Err(self.err(span, CompErrorKind::Unsupported("a non-bool match condition"))),
+        for arm in &match_expr.arms {
+            // An OR of AND-groups (see `CheckedMatchArm`'s own doc comment)
+            // -- this arm runs the moment any one group's conditions all
+            // hold; a group that fails partway just moves on to the next
+            // group, never the next arm.
+            'groups: for group in &arm.conditions {
+                for condition in group {
+                    match self.eval_expr(condition)? {
+                        ConstValue::Bool(true) => {}
+                        ConstValue::Bool(false) => continue 'groups,
+                        _ => return Err(self.err(span, CompErrorKind::Unsupported("a non-bool match condition"))),
+                    }
                 }
+                return match self.eval_block(&arm.body)? {
+                    BlockResult::Value(v) => Ok(v),
+                    BlockResult::Diverged => Ok(ConstValue::Bool(false)),
+                };
             }
-            return match self.eval_block(&arm.body)? {
-                BlockResult::Value(v) => Ok(v),
-                BlockResult::Diverged => Ok(ConstValue::Bool(false)),
-            };
         }
         match &match_expr.else_branch {
             Some(body) => match self.eval_block(body)? {

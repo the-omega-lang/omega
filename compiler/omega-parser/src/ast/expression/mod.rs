@@ -37,6 +37,7 @@ use crate::ast::expression::{
     negate::NegateExpr, number::NumberExpr, reveal::RevealExpr, sizeof::SizeofExpr,
     slice::SliceExpr, string::StringExpr, struct_literal::StructLiteralExpr,
 };
+use crate::ast::range::RangeExpr;
 use crate::diagnostics::Span;
 
 /// The parser only knows syntax, not semantics: `FieldAccess`/`Index`/`Deref`/
@@ -93,6 +94,16 @@ pub enum Expression {
     /// `omega_parser::macros::expand` before HIR lowering ever runs; see
     /// `MacroInvocationExpr`'s doc comment.
     MacroInvocation(MacroInvocationExpr),
+    /// `a..<b` / `a..=b` / `a..` -- a standalone range, legal *only* as a
+    /// range-driven `for` loop's own direct iterator source (`for i in
+    /// 10..<20 { ... }`); rejected everywhere else at analysis time. Never
+    /// produced by the general expression grammar -- only by the
+    /// dedicated `for`-in-iterator parse path (`crate::parser::expression::
+    /// parse_range_or_expression`), so this variant is structurally
+    /// unreachable anywhere but there. See `crate::ast::range::RangeExpr`'s
+    /// doc comment for why this doesn't back a real, general-purpose Range
+    /// value type.
+    Range(Box<RangeExpr>),
 }
 
 #[derive(Debug, Clone)]

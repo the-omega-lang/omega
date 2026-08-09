@@ -552,6 +552,12 @@ pub enum HirExpr {
     /// value's type are all analysis's questions.
     StructLiteral(HirStructLiteral),
     Slice(HirSlice),
+    /// `a..<b`/`a..=b`/`a..` in expression position -- legal only as a
+    /// range-driven `for` loop's own direct iterator source (see
+    /// `omega_parser::ast::expression::Expression::Range`'s doc comment);
+    /// reused unconditionally as `AnalysisErrorKind::RangeNotAllowedHere`
+    /// everywhere else `Analyzer::analyze_expr` reaches this variant.
+    Range(HirRange),
     /// See `HirMatch`'s doc comment.
     Match(HirMatch),
     /// `<Type>base` -- `target` is carried raw and unresolved, same
@@ -608,14 +614,31 @@ pub struct HirSlice {
 }
 
 /// See `omega_parser::ast::range::RangeExpr`'s doc comment for the range
-/// grammar itself -- shared, unchanged, between slicing (`HirSlice`) and
-/// match range-patterns (`HirPattern::Range`).
+/// grammar itself -- shared, unchanged, between slicing (`HirSlice`),
+/// match range-patterns (`HirPattern::Range`), and a standalone range
+/// expression (`HirExpr::Range`). `end`/`inclusive` collapse `RangeExpr`'s
+/// own `RangeEnd` back to this simpler shape at lowering time (`Lowerer::
+/// lower_range`) -- `end: None` uniformly means "no end was written"
+/// (`RangeEnd::Open`), regardless of which of the three positions this
+/// came from; each position's own analysis decides what a missing end
+/// means for it.
 #[derive(Debug, Clone)]
 pub struct HirRange {
     pub start: Option<Box<HirExprNode>>,
     pub end: Option<Box<HirExprNode>>,
     pub inclusive: bool,
     pub span: Span,
+}
+
+impl HirRange {
+    /// Bare `..` -- nothing written on either side. Unambiguous at this
+    /// level: `..=`/`..<` both always require an explicit end (enforced
+    /// at parse time), so this shape is only ever reachable from a
+    /// genuine bare `..`. The one shape `Analyzer::analyze_value_match`/
+    /// `analyze_enum_match` treat as a `match` catch-all arm.
+    pub fn is_catch_all(&self) -> bool {
+        self.start.is_none() && self.end.is_none()
+    }
 }
 
 /// `match scrutinee { pattern => body, ... } else { ... }` -- see

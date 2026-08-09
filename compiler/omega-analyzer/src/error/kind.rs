@@ -93,6 +93,12 @@ pub enum AnalysisErrorKind {
     /// own comment on this); narrow and likely never hit in practice, but
     /// rejected explicitly rather than silently mishandled.
     CompPointerSliceNotSupported,
+    /// A standalone range (`a..<b`/`a..=b`/`a..`) reached ordinary
+    /// expression analysis directly -- legal *only* as a range-driven
+    /// `for` loop's own direct iterator source (`Analyzer::analyze_for`
+    /// intercepts that one shape before ever reaching here); there is no
+    /// general-purpose Range value type to be one anywhere else.
+    RangeNotAllowedHere,
     /// `[]` -- there's no element to infer the array's item type from.
     EmptyArrayLiteral,
     /// An array literal's elements don't all share the same resolved type
@@ -332,6 +338,21 @@ pub enum AnalysisErrorKind {
     /// A numeric/`bool` `match` doesn't cover its scrutinee's whole domain
     /// and has no `else` -- `gaps` describes each uncovered sub-range.
     NonExhaustiveMatchValue { r#type: ResolvedType, gaps: Vec<String> },
+    /// A bare `..` catch-all arm on a numeric/`bool`/`char` match, but
+    /// what's left uncovered by every other arm isn't exactly one
+    /// contiguous range -- `gaps` (always 2 or more here; the zero-gap
+    /// case is `CatchAllPatternRedundant` instead) is how many disjoint
+    /// sub-ranges remain, genuinely ambiguous: `..` can't be stretched
+    /// across a hole. See `RangeExpr::is_catch_all`.
+    CatchAllRangeNotInferable { gaps: usize },
+    /// A bare `..` catch-all arm with nothing left for it to cover -- every
+    /// other arm (numeric/`bool`/`char` range, or enum variant) already
+    /// exhaustively covers the scrutinee on its own.
+    CatchAllPatternRedundant,
+    /// A second bare `..` arm in the same `match` -- there's only one
+    /// "everything else" to have, and no principled way to split it
+    /// between two catch-alls.
+    MultipleCatchAllPatterns { previous: Span },
     /// A `match` arm's (or `else`'s) resolved type doesn't match the others
     /// -- the `match` analogue of `IfBranchTypeMismatch`.
     MatchArmTypeMismatch { expected: ResolvedType, found: ResolvedType },
@@ -443,6 +464,22 @@ pub enum AnalysisErrorKind {
     /// `Analyzer::for_in_source_declares`'s doc comment for why that alone
     /// was never enough).
     ForLoopSourceNotIterable { r#type: ResolvedType },
+    /// `for i in ..b { }` / bare `for i in .. { }` -- a range-driven `for`
+    /// loop with no start has no principled value to begin counting from
+    /// (unlike a slice's own missing start, which unambiguously means 0).
+    ForLoopRangeMissingStart,
+    /// `for i in a..<b { }` where `a`'s own resolved type isn't a real,
+    /// steppable integer kind (`ResolvedType::numeric_kind`'s `Signed`/
+    /// `Unsigned` cases) -- deliberately narrower than a `match`
+    /// scrutinee's own `integer_domain` gate: `bool` has no arithmetic at
+    /// all, and `char + 1` coerces to `u32` (see `01-primitives.md`'s
+    /// "char, bool, and pointer arithmetic"), so neither can drive this
+    /// loop's own internal `$i += 1` without a type mismatch.
+    ForLoopRangeElementNotSupported { r#type: ResolvedType },
+    /// `for i in a..<b { }` where `b`'s resolved type doesn't exactly match
+    /// `a`'s -- this language has no implicit numeric conversions anywhere
+    /// else either.
+    ForLoopRangeBoundTypeMismatch { expected: ResolvedType, found: ResolvedType },
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction { spec: Ident, function: Ident },
@@ -690,6 +727,9 @@ impl fmt::Display for AnalysisErrorKind {
             Self::CompPointerSliceNotSupported => {
                 write!(f, "slicing a 'comp'-bound unsized array is not supported")
             }
+            Self::RangeNotAllowedHere => {
+                write!(f, "a standalone range is only allowed as a 'for' loop's own iterator source")
+            }
             Self::EmptyArrayLiteral => {
                 write!(f, "cannot infer the element type of an empty array literal")
             }
@@ -895,6 +935,11 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NonExhaustiveMatchValue { r#type, .. } => {
                 write!(f, "match on '{type}' does not cover every value")
             }
+            Self::CatchAllRangeNotInferable { gaps } => {
+                write!(f, "'..' can't be inferred: {gaps} disjoint ranges are left uncovered, not one")
+            }
+            Self::CatchAllPatternRedundant => write!(f, "'..' has nothing left to cover"),
+            Self::MultipleCatchAllPatterns { .. } => write!(f, "more than one '..' catch-all arm"),
             Self::MatchArmTypeMismatch { .. } => write!(f, "'match' arms have incompatible types"),
             Self::NotMutableBinding { ident } => write!(f, "cannot mutate '{}': not declared 'mut'", ident.as_ref()),
             Self::NotMutablePointer => write!(f, "cannot mutate through an immutable pointer"),
@@ -945,6 +990,13 @@ impl fmt::Display for AnalysisErrorKind {
             ),
             Self::ForLoopSourceNotIterable { r#type } => {
                 write!(f, "'{type}' does not implement 'ToIterator<T>' or 'Iterator<T>'")
+            }
+            Self::ForLoopRangeMissingStart => write!(f, "this range-driven 'for' loop has no start"),
+            Self::ForLoopRangeElementNotSupported { r#type } => {
+                write!(f, "cannot count over a value of type '{type}'")
+            }
+            Self::ForLoopRangeBoundTypeMismatch { expected, found } => {
+                write!(f, "mismatched types: expected '{expected}', found '{found}'")
             }
             Self::SpecMethodTooHidden { implementor, spec, function, required, found } => write!(
                 f,

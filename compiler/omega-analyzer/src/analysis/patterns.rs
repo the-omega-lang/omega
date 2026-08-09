@@ -179,7 +179,20 @@ impl<'r> Analyzer<'r> {
 
         let mut covered: HashMap<usize, Span> = HashMap::new();
         let mut checked_arms = Vec::with_capacity(m.arms.len());
+        let mut catch_all: Option<&HirMatchArm> = None;
         for arm in &m.arms {
+            if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
+                if let Some(previous) = catch_all {
+                    self.error(
+                        node_id,
+                        arm.pattern.span(),
+                        AnalysisErrorKind::MultipleCatchAllPatterns { previous: previous.pattern.span() },
+                    );
+                    return None;
+                }
+                catch_all = Some(arm);
+                continue; // resolved separately below, once every other arm's own coverage is known
+            }
             let HirPattern::Value(pattern_expr) = &arm.pattern else {
                 self.error(
                     node_id,
@@ -195,22 +208,7 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
 
-            let tag_const = CheckedExprNode {
-                id: node_id,
-                span: arm.pattern.span(),
-                r#type: tag_type.clone(),
-                kind: CheckedExpr::Number(cell.borrow().variants[variant_index].tag),
-            };
-            let condition = CheckedExprNode {
-                id: node_id,
-                span: arm.pattern.span(),
-                r#type: ResolvedType::Bool,
-                kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
-                    op: BinaryOp::Eq,
-                    left: Box::new(tag_read.clone()),
-                    right: Box::new(tag_const),
-                }),
-            };
+            let condition = Self::tag_variant_condition(&tag_read, &tag_type, &cell, variant_index, node_id, arm.pattern.span());
 
             self.context.enter_scope();
             if let Some((ident, decl_id, storage, mutable)) = &narrow_binding {
@@ -224,25 +222,40 @@ impl<'r> Analyzer<'r> {
             let body = self.analyze_match_arm_body(&arm.body);
             self.context.leave_scope();
 
-            checked_arms.push(CheckedMatchArm { conditions: vec![condition], body: body? });
+            checked_arms.push(CheckedMatchArm { conditions: vec![vec![condition]], body: body? });
         }
 
         let variant_count = cell.borrow().variants.len();
+        let missing: Vec<usize> =
+            (0..variant_count).filter(|idx| !covered.contains_key(idx)).collect();
+
+        if let Some(arm) = catch_all {
+            if missing.is_empty() {
+                self.error(node_id, arm.pattern.span(), AnalysisErrorKind::CatchAllPatternRedundant);
+                return None;
+            }
+            // One OR-group per still-uncovered variant -- see
+            // `CheckedMatchArm`'s own doc comment on why this needs DNF at
+            // all (no boolean OR anywhere else in this language). The body
+            // is analyzed exactly once, unnarrowed -- "one of these N
+            // variants" has no type to narrow to, matching how `else`
+            // already works (see `analyze_match`'s own doc comment).
+            let conditions = missing
+                .iter()
+                .map(|&idx| vec![Self::tag_variant_condition(&tag_read, &tag_type, &cell, idx, node_id, arm.pattern.span())])
+                .collect();
+            let body = self.analyze_match_arm_body(&arm.body)?;
+            checked_arms.push(CheckedMatchArm { conditions, body });
+        }
+
         let else_branch = match &m.else_branch {
             Some(b) => Some(self.analyze_block(b, None)?),
-            None if covered.len() < variant_count => {
-                let missing: Vec<Ident> = cell
-                    .borrow()
-                    .variants
-                    .iter()
-                    .enumerate()
-                    .filter(|(idx, _)| !covered.contains_key(idx))
-                    .map(|(_, v)| v.name.clone())
-                    .collect();
+            None if catch_all.is_none() && !missing.is_empty() => {
+                let missing_names = missing.iter().map(|&idx| cell.borrow().variants[idx].name.clone()).collect();
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::NonExhaustiveMatchEnum { r#enum: cell.borrow().name.clone(), missing },
+                    AnalysisErrorKind::NonExhaustiveMatchEnum { r#enum: cell.borrow().name.clone(), missing: missing_names },
                 );
                 return None;
             }
@@ -251,6 +264,35 @@ impl<'r> Analyzer<'r> {
 
         let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
         Some((checked_arms, else_branch, result_type))
+    }
+
+    /// `tag_read == <variant's own constant tag>` -- shared by an ordinary
+    /// enum-variant arm and, once per still-uncovered variant, a `..`
+    /// catch-all arm's own DNF groups (see `analyze_enum_match`).
+    fn tag_variant_condition(
+        tag_read: &CheckedExprNode,
+        tag_type: &ResolvedType,
+        cell: &Rc<RefCell<ResolvedEnumType>>,
+        variant_index: usize,
+        id: HirId,
+        span: Span,
+    ) -> CheckedExprNode {
+        let tag_const = CheckedExprNode {
+            id,
+            span,
+            r#type: tag_type.clone(),
+            kind: CheckedExpr::Number(cell.borrow().variants[variant_index].tag),
+        };
+        CheckedExprNode {
+            id,
+            span,
+            r#type: ResolvedType::Bool,
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op: BinaryOp::Eq,
+                left: Box::new(tag_read.clone()),
+                right: Box::new(tag_const),
+            }),
+        }
     }
 
     /// Resolves a match pattern that must name one of `cell`'s variants
@@ -318,7 +360,14 @@ impl<'r> Analyzer<'r> {
     /// The `analyze_match` case where `scrutinee_type` is an integer type or
     /// `Bool` (`ResolvedType::integer_domain`'s `Some` cases) -- value and
     /// range patterns, checked for full-domain coverage by
-    /// `crate::exhaustiveness`.
+    /// `crate::exhaustiveness`. At most one arm may be a bare `..`
+    /// catch-all (`HirRange::is_catch_all`) -- held aside from the ordinary
+    /// per-arm interval pass below, then resolved to whichever single gap
+    /// the *other* arms leave uncovered (`AnalysisErrorKind::
+    /// CatchAllRangeNotInferable` if that isn't exactly one contiguous
+    /// range), and folded back in before the final coverage check -- which
+    /// then runs exactly the same way whether or not a catch-all was
+    /// present, needing no special-casing of its own.
     fn analyze_value_match(
         &mut self,
         node_id: HirId,
@@ -331,13 +380,55 @@ impl<'r> Analyzer<'r> {
             .integer_domain()
             .expect("caller already confirmed this type has an integer domain");
 
+        let mut catch_all: Option<&HirMatchArm> = None;
+        for arm in &m.arms {
+            if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
+                if let Some(previous) = catch_all {
+                    self.error(
+                        node_id,
+                        arm.pattern.span(),
+                        AnalysisErrorKind::MultipleCatchAllPatterns { previous: previous.pattern.span() },
+                    );
+                    return None;
+                }
+                catch_all = Some(arm);
+            }
+        }
+
         let mut checked_arms = Vec::with_capacity(m.arms.len());
         let mut intervals = Vec::with_capacity(m.arms.len());
         for arm in &m.arms {
+            if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
+                continue; // resolved separately below, once every other arm's interval is known
+            }
             let (lo, hi, conditions) = self.analyze_value_pattern(&arm.pattern, scrutinee_type, scrutinee_read)?;
             intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
             let body = self.analyze_match_arm_body(&arm.body)?;
-            checked_arms.push(CheckedMatchArm { conditions, body });
+            checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
+        }
+
+        if let Some(arm) = catch_all {
+            let gaps = crate::exhaustiveness::check(domain, intervals.clone()).gaps;
+            let (lo, hi) = match gaps[..] {
+                [] => {
+                    self.error(node_id, arm.pattern.span(), AnalysisErrorKind::CatchAllPatternRedundant);
+                    return None;
+                }
+                [one] => one,
+                _ => {
+                    self.error(
+                        node_id,
+                        arm.pattern.span(),
+                        AnalysisErrorKind::CatchAllRangeNotInferable { gaps: gaps.len() },
+                    );
+                    return None;
+                }
+            };
+            let conditions =
+                Self::interval_conditions(scrutinee_read, scrutinee_type, domain, lo, hi, node_id, arm.pattern.span());
+            intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
+            let body = self.analyze_match_arm_body(&arm.body)?;
+            checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
         }
 
         let coverage = crate::exhaustiveness::check(domain, intervals);
@@ -414,6 +505,54 @@ impl<'r> Analyzer<'r> {
                 };
                 Some((lo, hi, conditions))
             }
+        }
+    }
+
+    /// The runtime condition(s) that test a resolved `[lo, hi]` interval
+    /// against `scrutinee_read` -- shared between an ordinary range
+    /// pattern (`analyze_value_pattern`, which reads its bounds straight
+    /// from a source expression) and a catch-all arm's own gap-inferred
+    /// bounds (which have no source expression to build a condition from
+    /// at all). Skips a side whose bound already equals the domain's own
+    /// edge, exactly like an *omitted* bound already does above -- a
+    /// tautological check, safe to skip.
+    fn interval_conditions(
+        scrutinee_read: &CheckedExprNode,
+        scrutinee_type: &ResolvedType,
+        domain: (i128, i128),
+        lo: i128,
+        hi: i128,
+        id: HirId,
+        span: Span,
+    ) -> Vec<CheckedExprNode> {
+        let mut conditions = Vec::new();
+        if lo != domain.0 {
+            let value = Self::i128_to_const_value(scrutinee_type, lo);
+            conditions.push(Self::value_cmp_condition(scrutinee_read, id, span, scrutinee_type, BinaryOp::Ge, value));
+        }
+        if hi != domain.1 {
+            let value = Self::i128_to_const_value(scrutinee_type, hi);
+            conditions.push(Self::value_cmp_condition(scrutinee_read, id, span, scrutinee_type, BinaryOp::Le, value));
+        }
+        conditions
+    }
+
+    /// The reverse of `const_value_as_i128`, for a bound with no source
+    /// expression of its own (a catch-all arm's gap-inferred interval) --
+    /// every other caller of `value_cmp_condition` builds its `ConstValue`
+    /// by evaluating real source (`const_eval_pattern`), which this has no
+    /// equivalent of.
+    pub(super) fn i128_to_const_value(scrutinee_type: &ResolvedType, n: i128) -> ConstValue {
+        match scrutinee_type {
+            ResolvedType::Bool => ConstValue::Bool(n != 0),
+            ResolvedType::Char => {
+                ConstValue::Char(char::from_u32(n as u32).expect("catch-all inference stays within char's own domain"))
+            }
+            _ => match scrutinee_type.numeric_kind() {
+                Some(NumericKind::Signed(_)) => ConstValue::Number(NumberValue::Signed(n as i64)),
+                Some(NumericKind::Unsigned(_)) => ConstValue::Number(NumberValue::Unsigned(n as u64)),
+                _ => unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type"),
+            },
         }
     }
 

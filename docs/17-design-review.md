@@ -73,7 +73,7 @@ to a variant's own body fields or the shared dynamic fields, are unaffected.
 struct Box { data: [4]i32; }
 
 peek_whole(b: *Box) => *[4]i32 { &reveal b.data }         # works
-peek(b: *Box) => *[?]i32 { &reveal b.data[0...1] }         # fails:
+peek(b: *Box) => *[?]i32 { &reveal b.data[0..=1] }         # fails:
 # error: 'data' on 'Box' is not visible here
 #   = help: mark the field `exposed`/`internal` on `Box`, or bypass with `reveal`
 ```
@@ -515,26 +515,37 @@ span" unrepresentable rather than a convention. It is a breaking change to
 `omega-hir` (every node would want to hand one out) and touches every call
 site in analysis, which is why it wasn't folded into a refactor pass.
 
-#### `match` value arms must *partition* the domain — there is no catch-all
+#### Fixed: `match` value arms must *partition* the domain — there was no catch-all
 
-Arms may not overlap at all (by design: no first-match-wins), and this
-interacts badly with the natural way to write a total match:
+Arms may not overlap at all (by design: no first-match-wins), and this used
+to interact badly with the natural way to write a total match:
 
 ```
 match ch {
-    'a'...'z' => 1,
-    '0'...'9' => 2,
-    ...       => 3,        # rejected: overlaps both arms above
+    'a'..='z' => 1,
+    '0'..='9' => 2,
+    ...       => 3,        # (old syntax) rejected: overlaps both arms above
 }
 ```
 
-The only legal totals are exact partitions (`0..<100`, `100`, `101...`), so a
-"everything else" arm can never be written, and adding a new specific arm to
-an existing match means editing a neighbouring arm's bounds to make room. An
-`else` block covers the same need for a *non*-exhaustive match, so the gap is
-narrow -- but the asymmetry (`else` exists, `...` doesn't) is worth a
-decision rather than an accident. The diagnostic now explains the rule
-explicitly (see the fix note below); the rule itself is unchanged.
+The only legal totals were exact partitions (`0..<100`, `100`, `101...`), so
+an "everything else" arm could never be written, and adding a new specific
+arm to an existing match meant editing a neighbouring arm's bounds to make
+room. An `else` block covered the same need for a *non*-exhaustive match,
+but the asymmetry (`else` exists, nothing equivalent for a genuinely
+exhaustive total) was a real gap, not just a style choice.
+
+**Fixed**, as part of the broader range-syntax redesign (`...` retired from
+range syntax entirely, replaced by `..=`/`..<`/a new `..`): a bare `..` arm
+now means exactly "whatever's left uncovered by every other arm," inferred
+rather than written, and — unlike `else` — still subject to the same
+overlap-safety proof every other arm gets (see [enums & pattern
+matching](05-enums-and-pattern-matching.md)'s "The `..` catch-all arm").
+Deliberately conservative: it's only accepted when the remainder is
+*unambiguous* (for a numeric/`bool`/`char` match, exactly one contiguous
+range; for an enum match, any non-empty set of variants) — the example
+above still doesn't have a legal catch-all today, since removing `'a'..='z'`
+and `'0'..='9'` from `char`'s domain leaves several disjoint gaps, not one.
 
 #### `reveal` still has no backstop for the "every position must remember" invariant
 

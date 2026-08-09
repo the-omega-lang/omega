@@ -8,7 +8,7 @@ use crate::ast::expression::{
     match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, reveal::RevealExpr,
     sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
 };
-use crate::ast::range::RangeExpr;
+use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::parse_statement};
@@ -296,13 +296,13 @@ fn parse_postfix(p: &mut Parser) -> Option<ExpressionNode> {
 /// grammar itself, shared verbatim with match patterns.
 fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<ExpressionNode> {
     p.advance(); // '['
-    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+    if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = parse_range_tail(p, None, op_span, &TokenKind::RBracket)?;
         return finish_slice(p, base, range);
     }
     let first = p.allow_struct_literals(parse_expression)?;
-    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+    if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = parse_range_tail(p, Some(first), op_span, &TokenKind::RBracket)?;
         return finish_slice(p, base, range);
@@ -313,32 +313,86 @@ fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<Expressi
     Some(ExpressionNode { expression: Expression::Index(Box::new(IndexExpr { base, index: first })), span })
 }
 
-/// Consumes the range operator at the parser's current position (`...` or
-/// `..<` -- the caller has already confirmed one is here) and parses the
-/// rest of the shared range grammar. `terminator` is whatever token means
-/// "no end bound follows" in the caller's context (`]` for a slice, `=>` for
-/// a match pattern). `..<` always requires an explicit end
-/// (`ExclusiveRangeMissingEnd` otherwise, per `RangeExpr`'s doc comment).
+/// Whether `kind` is one of the three range operators (`..=`/`..<`/`..`) --
+/// shared by every range-recognizing call site so they all stay in sync.
+fn is_range_operator(kind: &TokenKind) -> bool {
+    matches!(kind, TokenKind::DotDotEq | TokenKind::DotDotLt | TokenKind::DotDot)
+}
+
+/// Consumes the range operator at the parser's current position (`..=`,
+/// `..<`, or `..` -- the caller has already confirmed one is here) and
+/// parses the rest of the shared range grammar. `terminator` is whatever
+/// token means "no end bound follows" in the caller's context (`]` for a
+/// slice, `=>` for a match pattern) -- only meaningful for `..=`/`..<`,
+/// since `..` never attempts to parse an end at all. `..=`/`..<` both
+/// always require an explicit end (`RangeMissingEnd` otherwise, per
+/// `RangeExpr`'s doc comment).
 fn parse_range_tail(
     p: &mut Parser,
     start: Option<ExpressionNode>,
     op_span: Span,
     terminator: &TokenKind,
 ) -> Option<RangeExpr> {
-    let inclusive = match p.peek() {
-        TokenKind::DotDotDot => true,
-        TokenKind::DotDotLt => false,
+    let op = p.peek().clone();
+    p.advance();
+    let end = match op {
+        TokenKind::DotDot => {
+            // `..` never takes an end at all -- anything other than the
+            // terminator right after it means the caller almost certainly
+            // meant `..=`/`..<` instead. Caught here, explicitly, rather
+            // than left to silently return an "open" range and strand
+            // whatever follows for the *caller's* caller to choke on with
+            // an unrelated-looking error.
+            if !p.check(terminator) {
+                p.error_at(op_span, ParseErrorKind::OpenRangeHasEnd);
+                return None;
+            }
+            RangeEnd::Open
+        }
+        TokenKind::DotDotEq | TokenKind::DotDotLt => {
+            let end = if p.check(terminator) { None } else { Some(p.allow_struct_literals(parse_expression)?) };
+            match (op, end) {
+                (TokenKind::DotDotEq, Some(e)) => RangeEnd::Inclusive(e),
+                (TokenKind::DotDotLt, Some(e)) => RangeEnd::Exclusive(e),
+                (_, None) => {
+                    p.error_at(op_span, ParseErrorKind::RangeMissingEnd);
+                    return None;
+                }
+                _ => unreachable!(),
+            }
+        }
         _ => unreachable!("caller already confirmed a range operator is here"),
     };
-    p.advance();
-    let end = if p.check(terminator) { None } else { Some(p.allow_struct_literals(parse_expression)?) };
-    if !inclusive && end.is_none() {
-        p.error_at(op_span, ParseErrorKind::ExclusiveRangeMissingEnd);
-        return None;
-    }
     let lo = start.as_ref().map(|s| s.span).unwrap_or(op_span);
-    let hi = end.as_ref().map(|e| e.span).unwrap_or(op_span);
-    Some(RangeExpr { start, end, inclusive, span: lo.to(hi) })
+    let hi = end.end_expr().map(|e| e.span).unwrap_or(op_span);
+    Some(RangeExpr { start, end, span: lo.to(hi) })
+}
+
+/// A range-driven `for` loop's own iterator position (`for i in <here> {
+/// ... }`) -- the *only* place a standalone `Expression::Range` can ever
+/// be constructed; everywhere else in the grammar, `..=`/`..<`/`..` only
+/// ever appear nested inside a slice or a match pattern (both handled by
+/// `parse_range_tail` directly, never through here). Structured exactly
+/// like `parse_index_or_slice`'s own leading-operator-or-expr-then-operator
+/// shape, reusing `parse_range_tail` a third time so the range grammar
+/// itself stays defined in exactly one place; `terminator` is `{`, the
+/// loop body's own opening brace.
+pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode> {
+    if is_range_operator(p.peek()) {
+        let op_span = p.peek_span();
+        let range = parse_range_tail(p, None, op_span, &TokenKind::LBrace)?;
+        let span = range.span;
+        return Some(ExpressionNode { expression: Expression::Range(Box::new(range)), span });
+    }
+    let first = p.restrict_struct_literals(parse_expression)?;
+    if is_range_operator(p.peek()) {
+        let op_span = p.peek_span();
+        let start_span = first.span;
+        let range = parse_range_tail(p, Some(first), op_span, &TokenKind::LBrace)?;
+        let span = start_span.to(range.span);
+        return Some(ExpressionNode { expression: Expression::Range(Box::new(range)), span });
+    }
+    Some(first)
 }
 
 fn finish_slice(p: &mut Parser, base: ExpressionNode, range: RangeExpr) -> Option<ExpressionNode> {
@@ -744,20 +798,22 @@ fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
     Some(MatchArm { pattern, body, span })
 }
 
-/// One pattern: a range (leading `...`/`..<`, or one expression followed by
-/// `...`/`..<`), or else that one expression stands alone as
+/// One pattern: a range (leading `..=`/`..<`/`..`, or one expression
+/// followed by one of those), or else that one expression stands alone as
 /// `Pattern::Value` -- a literal or an `Enum::Variant` path, told apart by
 /// analysis (see `Pattern`'s doc comment), not here. Reuses
 /// `parse_range_tail` verbatim (terminated by `=>` instead of a slice's
-/// `]`), so the range grammar is defined in exactly one place.
+/// `]`), so the range grammar is defined in exactly one place. A bare `..`
+/// range here (`RangeExpr::is_catch_all`) is the match catch-all arm --
+/// see `Analyzer::analyze_match`.
 fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
-    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+    if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = parse_range_tail(p, None, op_span, &TokenKind::FatArrow)?;
         return Some(Pattern::Range(range));
     }
     let value = p.allow_struct_literals(parse_expression)?;
-    if matches!(p.peek(), TokenKind::DotDotDot | TokenKind::DotDotLt) {
+    if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = parse_range_tail(p, Some(value), op_span, &TokenKind::FatArrow)?;
         return Some(Pattern::Range(range));

@@ -242,16 +242,16 @@ if c >= 'A' { if c <= 'Z' { true } else { false } } else { false }
 
 classify(c: char) => *u8 {
     match c {
-        'A'...'Z' => <*u8>b"upper\0",
-        'a'...'z' => <*u8>b"lower\0",
-        '0'...'9' => <*u8>b"digit\0",
+        'A'..='Z' => <*u8>b"upper\0",
+        'a'..='z' => <*u8>b"lower\0",
+        '0'..='9' => <*u8>b"digit\0",
     } else { <*u8>b"other\0" }
 }
 ```
 
 `char` supports the full comparison family (`== != < <= > >=`), ordered by
 raw codepoint, and can be used as a `match` scrutinee — including range
-patterns (`'A'...'Z'`), the same shared range grammar
+patterns (`'A'..='Z'`), the same shared range grammar
 [ranges elsewhere](05-enums-and-pattern-matching.md) use. `char`'s
 `integer_domain()` (what `match` exhaustiveness treats as "the whole
 domain") is `0..=0x10FFFF` (`char::MAX`) — the same real range Rust's

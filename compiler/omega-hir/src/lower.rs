@@ -722,6 +722,10 @@ impl Lowerer {
                 let range = self.lower_range(&s.range);
                 HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Slice(HirSlice { base, range }) }
             }
+            Expression::Range(r) => {
+                let range = self.lower_range(r);
+                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Range(range) }
+            }
             Expression::Match(m) => {
                 let scrutinee = Box::new(self.lower_expr(&m.scrutinee));
                 let arms = m
@@ -747,13 +751,13 @@ impl Lowerer {
         }
     }
 
-    /// See `HirRange`'s doc comment -- shared, structural lowering for both
-    /// `HirSlice` and `HirPattern::Range`.
+    /// See `HirRange`'s doc comment -- shared, structural lowering for
+    /// `HirSlice`, `HirPattern::Range`, and `HirExpr::Range` alike.
     fn lower_range(&mut self, range: &RangeExpr) -> HirRange {
         HirRange {
             start: range.start.as_ref().map(|e| Box::new(self.lower_expr(e))),
-            end: range.end.as_ref().map(|e| Box::new(self.lower_expr(e))),
-            inclusive: range.inclusive,
+            end: range.end.end_expr().map(|e| Box::new(self.lower_expr(e))),
+            inclusive: range.inclusive(),
             span: range.span,
         }
     }

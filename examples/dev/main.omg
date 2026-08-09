@@ -595,14 +595,14 @@ main(argc : i32, argv : *[]*u8) => i32 {
 
     arr : [3]i32 = [1, 2, 3];
     arr2 := [1, 2, 3];
-    mut slice := &arr[1...];
+    mut slice := &arr[1..];
     printf(<*u8>b"array second item: %d\n\0", slice[0]);
     printf(<*u8>b"slice len: %d\n\0", slice.length);
-    slice = &arr[0...];
+    slice = &arr[0..];
     printf(<*u8>b"slice len: %d\n\0", slice.length);
     slice = &arr[0..<2];
     printf(<*u8>b"exclusive-end slice len: %d\n\0", slice.length);
-    slice = &arr[0...1];
+    slice = &arr[0..=1];
     printf(<*u8>b"inclusive-end slice len: %d\n\0", slice.length);
 
     big : i64 = 5_000_000_000i64;
@@ -673,15 +673,16 @@ main(argc : i32, argv : *[]*u8) => i32 {
     printf(<*u8>b"testvar1: %s\n\0", testvar1);
 
     # `match` also works as an ordinary value/range switch, standardized on
-    # the same range grammar slicing uses: `..<` excludes its end, `...`
-    # includes it (or, with no bound, is fully open on that side). These
-    # three patterns cover every `u32` value between them, so no `else` is
-    # needed -- the compiler verifies that coverage itself.
+    # the same range grammar slicing uses: `..<` excludes its end, `..=`
+    # includes it. A bare `..` (no end at all, ever) infers its own bounds
+    # from whatever's left uncovered by the other arms -- here, exactly
+    # `[101, u32::MAX]`, so no `else` is needed -- the compiler verifies
+    # that coverage itself.
     matched_num := 100u32;
     message := match matched_num {
         0..<100 => <*u8>b"less than a hundred\0",
         100 => <*u8>b"a hundred\0",
-        101... => <*u8>b"more than a hundred\0",
+        .. => <*u8>b"more than a hundred\0",
     };
     printf(<*u8>b"match on value: matched_num=%u is %s\n\0", matched_num, message);
 
@@ -1023,8 +1024,8 @@ main(argc : i32, argv : *[]*u8) => i32 {
     # and a mutable slice can both be taken from the same `mut` array, and
     # writing through the mutable one is visible through the array itself.
     mut sliceable := [10, 20, 30];
-    imm_view := &sliceable[0...];
-    mut_view := &mut sliceable[0...];
+    imm_view := &sliceable[0..];
+    mut_view := &mut sliceable[0..];
     mut_view[0] = 99;
     printf(<*u8>b"slice mutability: imm[0]=%d mut[0]=%d array[0]=%d\n\0", imm_view[0], mut_view[0], sliceable[0]);
 
@@ -1044,7 +1045,7 @@ main(argc : i32, argv : *[]*u8) => i32 {
     # (symmetric, no artificial restriction) -- `[i]` yields a raw `u8`,
     # `&s[a..b]` yields another `*str` over the same underlying bytes.
     first_byte := greeting[0];
-    str_tail : *str = &greeting[7...];
+    str_tail : *str = &greeting[7..];
     printf(<*u8>b"str[0]=%d tail.size=%d\n\0", <i32>first_byte, str_tail.size);
 
     # Freely castable to the types you'd expect -- `*u8`/`*i8` drop the
