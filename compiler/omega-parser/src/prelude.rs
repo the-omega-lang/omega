@@ -1,30 +1,60 @@
+pub use crate::SourceModule;
 pub use crate::ast::annotation::{AnnotationArg, AnnotationNode, AnnotationValue};
 pub use crate::ast::expression::{
-    Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
-    assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
-    bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
-    codeblock::CodeblockExpr, comp::CompExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
-    field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
-    incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
-    macro_invocation::MacroInvocationExpr, match_expr::{MatchArm, MatchExpr, Pattern},
-    negate::NegateExpr, number::{NumberBase, NumberExpr}, reveal::RevealExpr,
-    sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
+    Expression, ExpressionNode,
+    address_of::AddressOfExpr,
+    array_literal::ArrayLiteralExpr,
+    assignment::AssignmentExpr,
+    binary_op::{BinaryOp, BinaryOpExpr},
+    bit_not::BitNotExpr,
+    bool_literal::BoolExpr,
+    byte_string::ByteStringExpr,
+    cast::CastExpr,
+    char_literal::CharExpr,
+    codeblock::CodeblockExpr,
+    comp::CompExpr,
+    compound_assign::CompoundAssignExpr,
+    deref::DerefExpr,
+    field_access::FieldAccessExpr,
+    function_call::FunctionCallExpr,
+    if_expr::IfExpr,
+    incr_decr::{DecrementExpr, IncrementExpr},
+    index::IndexExpr,
+    macro_invocation::MacroInvocationExpr,
+    match_expr::{MatchArm, MatchExpr, Pattern},
+    negate::NegateExpr,
+    number::{NumberBase, NumberExpr},
+    reveal::RevealExpr,
+    sizeof::SizeofExpr,
+    slice::SliceExpr,
+    string::StringExpr,
+    struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{ExprPath, Ident, Path};
 pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
-    Item, ItemNode, Statement, StatementNode, declaration::DeclarationStmt,
-    defer::DeferStmt, r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
-    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
-    function_definition::FunctionDefinitionStmt, import::{ImportRoot, ImportStmt},
+    Item, ItemNode, Statement, StatementNode,
+    declaration::DeclarationStmt,
+    defer::DeferStmt,
+    r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
+    extern_declaration::ExternDeclarationStmt,
+    for_in_stmt::ForInStmt,
+    for_stmt::ForStmt,
+    function_definition::FunctionDefinitionStmt,
+    import::{ImportRoot, ImportStmt},
     loop_stmt::LoopStmt,
-    macro_definition::{FragmentKind, MacroDefinitionStmt, MacroOutputKind, MacroParam},
-    r#return::ReturnStmt, spec::{SpecFunctionStmt, SpecStmt}, r#struct::StructStmt,
-    union::UnionStmt, while_stmt::WhileStmt,
+    macro_definition::{
+        FragmentKind, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
+        MacroSignature,
+    },
+    r#return::ReturnStmt,
+    spec::{SpecFunctionStmt, SpecStmt},
+    r#struct::StructStmt,
+    union::UnionStmt,
+    while_stmt::WhileStmt,
 };
 pub use crate::ast::r#type::{FunctionType, Type};
 pub use crate::ast::visibility::Visibility;
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};
-pub use crate::SourceModule;

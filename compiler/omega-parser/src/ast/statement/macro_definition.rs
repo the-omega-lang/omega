@@ -1,27 +1,18 @@
 use crate::ast::identifier::Ident;
+use crate::diagnostics::Span;
 use crate::lexer::Token;
 
 /// What grammar a macro parameter's captured argument must parse as.
-/// Deliberately small (just the two forms the language needs today) rather
-/// than open-ended -- adding another (e.g. `ident`, `stmt`) is a new
+/// Deliberately small (just the forms the language needs today) rather
+/// than open-ended -- adding another (e.g. `stmt`) is a new
 /// `FragmentKind` variant plus one new arm wherever a fragment kind is
-/// validated/re-parsed (`omega_parser::macros::expand_invocation`), not an
+/// validated/re-parsed (`omega_parser::macros::validate_fragment`), not an
 /// architectural change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FragmentKind {
     Expr,
     Type,
-}
-
-/// What a macro invocation expands into, and therefore which grammar
-/// position it's usable in: `Expr` -- an `Expression::MacroInvocation`,
-/// usable anywhere an expression can appear; `Items` -- a
-/// `Item::MacroInvocation`, usable only at module top level,
-/// expanding to zero or more top-level items (structs, functions, ...).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MacroOutputKind {
-    Expr,
-    Items,
+    Ident,
 }
 
 #[derive(Debug, Clone)]
@@ -30,18 +21,46 @@ pub struct MacroParam {
     pub kind: FragmentKind,
 }
 
-/// `macro name($a: expr, $b: type, ...) => expr|items { ... }` -- the body
-/// is captured as a raw token slice, *not* run through the
-/// `Expression`/`Statement`/`Item` parsers here: it legitimately
-/// contains `$name` metavariables (not valid identifiers on their own) and,
-/// for an `Items`-output macro, syntax that only becomes valid once `$name`
-/// is substituted with a concrete identifier (e.g. `struct $name { ... }`).
-/// See `omega_parser::macros` for how a definition's body is later
-/// substituted and re-parsed for real at each invocation site.
+/// Fixed parameters plus the optional, necessarily final variadic parameter.
+#[derive(Debug, Clone)]
+pub struct MacroSignature {
+    pub fixed: Vec<MacroParam>,
+    pub variadic: Option<MacroParam>,
+}
+
+/// One piece of a macro body. A body is a *tree* rather than a flat token
+/// list purely because repetition nests; ordinary bracketed groups do not
+/// (`(`/`)`/... stay individual `Token` pieces, exactly as the lexer
+/// produces them).
+#[derive(Debug, Clone)]
+pub enum MacroBodyPiece {
+    /// Any ordinary token, including a `$name` metavariable.
+    Token(Token),
+    Repetition(MacroRepetition),
+}
+
+/// `$...( sep? ) { body }` -- expands `body` once per variadic argument.
+#[derive(Debug, Clone)]
+pub struct MacroRepetition {
+    /// Emitted between consecutive expansions, never before the first or
+    /// after the last. `None` for `$...(){ ... }`.
+    pub separator: Option<Token>,
+    pub body: Vec<MacroBodyPiece>,
+    pub span: Span,
+}
+
+/// `macro name($a: expr, $b: type...) => { ... }` -- the body is not run
+/// through the `Expression`/`Statement`/`Item` parsers here: it legitimately
+/// contains `$name` metavariables (not valid identifiers on their own) and
+/// syntax that only becomes valid once `$name` is substituted with a
+/// concrete identifier (e.g. `struct $name { ... }`). There is no declared
+/// output kind -- which grammar an expansion is parsed with is decided
+/// entirely by the *invocation's* grammatical position (item, statement, or
+/// expression). See `omega_parser::macros` for how a definition's body is
+/// later substituted and re-parsed for real at each invocation site.
 #[derive(Debug, Clone)]
 pub struct MacroDefinitionStmt {
     pub name: Ident,
-    pub params: Vec<MacroParam>,
-    pub output: MacroOutputKind,
-    pub body: Vec<Token>,
+    pub signature: MacroSignature,
+    pub body: Vec<MacroBodyPiece>,
 }

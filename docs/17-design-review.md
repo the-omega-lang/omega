@@ -188,7 +188,7 @@ arithmetic/bitwise/cast for a real, documented soundness reason (an invalid
 Unicode scalar value could result) — gets its natural comparison operators. `bool`
 , the type that exists purely to be compared and combined, gets none: no `==`,
 no `!=`, no `&`/`|`/`^`, and there is no `!` token in the grammar at all (`!`
-only appears as part of `!=` or macro-invocation `name!(...)`). The asymmetry: `
+only appears as part of `!=` (and is otherwise unallocated). The asymmetry: `
 char` (arguably the type with the most legitimate reason to restrict operators)
 has full comparison; `bool` (the type with the least reason) has none. The
 stated rationale — bitwise operators require `numeric_kind`, and `bool` isn't

@@ -1,20 +1,18 @@
 use crate::hir::{
-    HirAddressOf, HirAssignment, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBinaryOp, HirBlock,
-    HirBreak, HirCast,
-    HirCompoundAssign, HirContinue,
-    HirDeclaration, HirDefer, HirEnumDef, HirEnumVariant, HirExprNode, HirExpr,
-    HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam,
-    HirIf, HirImport, HirItem, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam, HirPattern, HirPlace,
-    HirPlaceRoot, HirProjection, HirRange, HirSlice, HirSpecDef, HirSpecFunction, HirStmt,
-    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
+    HirAddressOf, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirAssignment, HirBinaryOp,
+    HirBlock, HirBreak, HirCast, HirCompoundAssign, HirContinue, HirDeclaration, HirDefer,
+    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFor, HirForIn,
+    HirFunctionCall, HirFunctionDef, HirGenericParam, HirIf, HirImport, HirItem, HirLoop, HirMatch,
+    HirMatchArm, HirModule, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection, HirRange,
+    HirSlice, HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirStructLiteral,
+    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
-    AnnotationArg, AnnotationNode, AnnotationValue, CodeblockExpr, DeclarationStmt, EnumStmt, Expression,
-    ExpressionNode,
-    ExternDeclarationStmt,
-    FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Path, Pattern, RangeExpr, SelfMode, Span,
-    SourceModule, SpecFunctionStmt, SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt, Visibility,
+    AnnotationArg, AnnotationNode, AnnotationValue, CodeblockExpr, DeclarationStmt, EnumStmt,
+    Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt, GenericParam, Ident,
+    Item, ItemNode, Path, Pattern, RangeExpr, SelfMode, SourceModule, Span, SpecFunctionStmt,
+    SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt, Visibility,
 };
 
 /// Lowers a freshly parsed module into HIR. Infallible: everything this does
@@ -25,7 +23,11 @@ pub fn lower_module(module: ModuleId, ast: &SourceModule) -> HirModule {
     let mut lowerer = Lowerer {
         ids: HirIdGen::new(module),
     };
-    let items = ast.nodes.iter().map(|node| lowerer.lower_item(node)).collect();
+    let items = ast
+        .nodes
+        .iter()
+        .map(|node| lowerer.lower_item(node))
+        .collect();
     HirModule { id: module, items }
 }
 
@@ -39,9 +41,10 @@ impl Lowerer {
             Item::Declaration(decl) => {
                 HirItem::Declaration(self.lower_declaration(decl, node.span))
             }
-            Item::DeclarationWithInit(decl, value) => {
-                HirItem::DeclarationWithInit(self.lower_declaration(decl, node.span), self.lower_expr(value))
-            }
+            Item::DeclarationWithInit(decl, value) => HirItem::DeclarationWithInit(
+                self.lower_declaration(decl, node.span),
+                self.lower_expr(value),
+            ),
             Item::Walrus(w) => HirItem::Walrus(HirWalrusDeclaration {
                 id: self.ids.next(),
                 span: node.span,
@@ -102,15 +105,30 @@ impl Lowerer {
             }
             Statement::DeclarationWithInit(decl, value) => {
                 let hir_decl = self.lower_declaration(decl, span);
-                vec![HirStmt::DeclarationWithInit(hir_decl, self.lower_expr(value))]
+                vec![HirStmt::DeclarationWithInit(
+                    hir_decl,
+                    self.lower_expr(value),
+                )]
             }
             Statement::ExternDeclaration(decl) => {
-                vec![HirStmt::ExternDeclaration(self.lower_extern_declaration(decl, span))]
+                vec![HirStmt::ExternDeclaration(
+                    self.lower_extern_declaration(decl, span),
+                )]
             }
             Statement::Expression(expr) => vec![HirStmt::Expression(self.lower_expr(expr))],
+            Statement::MacroInvocation(_) => unreachable!(
+                "statement macro invocations are replaced by their expansion by \
+                 omega_parser::macros::expand before lower_module runs"
+            ),
             Statement::Return(ret) => vec![HirStmt::Return(self.lower_expr(&ret.return_value))],
-            Statement::Break => vec![HirStmt::Break(HirBreak { id: self.ids.next(), span })],
-            Statement::Continue => vec![HirStmt::Continue(HirContinue { id: self.ids.next(), span })],
+            Statement::Break => vec![HirStmt::Break(HirBreak {
+                id: self.ids.next(),
+                span,
+            })],
+            Statement::Continue => vec![HirStmt::Continue(HirContinue {
+                id: self.ids.next(),
+                span,
+            })],
             Statement::Walrus(w) => vec![HirStmt::WalrusDeclaration(HirWalrusDeclaration {
                 id: self.ids.next(),
                 span,
@@ -140,7 +158,14 @@ impl Lowerer {
                 let condition = f.condition.as_ref().map(|c| self.lower_expr(c));
                 let post = f.post.as_ref().map(|p| self.lower_expr(p));
                 let body = self.lower_block(&f.body);
-                vec![HirStmt::For(HirFor { id: self.ids.next(), span, init, condition, post, body })]
+                vec![HirStmt::For(HirFor {
+                    id: self.ids.next(),
+                    span,
+                    init,
+                    condition,
+                    post,
+                    body,
+                })]
             }
             Statement::ForIn(f) => vec![HirStmt::ForIn(HirForIn {
                 id: self.ids.next(),
@@ -155,7 +180,10 @@ impl Lowerer {
                 vec![HirStmt::Defer(HirDefer {
                     id: self.ids.next(),
                     span,
-                    body: HirBlock { stmts: body_stmts, tail: None },
+                    body: HirBlock {
+                        stmts: body_stmts,
+                        tail: None,
+                    },
                 })]
             }
         }
@@ -190,7 +218,11 @@ impl Lowerer {
     /// by bare codeblock expressions, `if`/`else` branches, `while`/`for`
     /// bodies, and function bodies -- all identical in shape.
     fn lower_block(&mut self, block: &CodeblockExpr) -> HirBlock {
-        let stmts = block.statements.iter().flat_map(|s| self.lower_stmt(s)).collect();
+        let stmts = block
+            .statements
+            .iter()
+            .flat_map(|s| self.lower_stmt(s))
+            .collect();
         let tail = block.tail.as_ref().map(|e| Box::new(self.lower_expr(e)));
         HirBlock { stmts, tail }
     }
@@ -278,7 +310,11 @@ impl Lowerer {
             Type::SpecStatic(bound) => {
                 let fresh = Ident(format!("$Param{next}"));
                 *next += 1;
-                generics.push(HirGenericParam { ident: fresh.clone(), bound: Some((**bound).clone()), default: None });
+                generics.push(HirGenericParam {
+                    ident: fresh.clone(),
+                    bound: Some((**bound).clone()),
+                    default: None,
+                });
                 *ty = Type::Named(fresh.into());
             }
             Type::Pointer(inner, _)
@@ -333,7 +369,13 @@ impl Lowerer {
         } else {
             Type::Named(self_type.into())
         };
-        Some(HirParam { id: self.ids.next(), span, ident: Ident("self".to_string()), r#type, visibility: Visibility::default() })
+        Some(HirParam {
+            id: self.ids.next(),
+            span,
+            ident: Ident("self".to_string()),
+            r#type,
+            visibility: Visibility::default(),
+        })
     }
 
     /// Desugars `mut self` (by value) into an implicit `mut self := self;`
@@ -372,7 +414,11 @@ impl Lowerer {
     fn lower_generics(generics: &[GenericParam]) -> Vec<HirGenericParam> {
         generics
             .iter()
-            .map(|g| HirGenericParam { ident: g.ident.clone(), bound: g.bound.clone(), default: g.default.clone() })
+            .map(|g| HirGenericParam {
+                ident: g.ident.clone(),
+                bound: g.bound.clone(),
+                default: g.default.clone(),
+            })
             .collect()
     }
 
@@ -390,13 +436,22 @@ impl Lowerer {
                     .map(|arg| match arg {
                         AnnotationArg::Ident(ident) => HirAnnotationArg::Ident(ident.clone()),
                         AnnotationArg::KeyValue(key, AnnotationValue::IntLiteral(value)) => {
-                            HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::IntLiteral(value.clone()))
+                            HirAnnotationArg::KeyValue(
+                                key.clone(),
+                                HirAnnotationValue::IntLiteral(value.clone()),
+                            )
                         }
                         AnnotationArg::KeyValue(key, AnnotationValue::Sizeof(r#type)) => {
-                            HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::Sizeof(r#type.clone()))
+                            HirAnnotationArg::KeyValue(
+                                key.clone(),
+                                HirAnnotationValue::Sizeof(r#type.clone()),
+                            )
                         }
                         AnnotationArg::KeyValue(key, AnnotationValue::StrLiteral(value)) => {
-                            HirAnnotationArg::KeyValue(key.clone(), HirAnnotationValue::StrLiteral(value.clone()))
+                            HirAnnotationArg::KeyValue(
+                                key.clone(),
+                                HirAnnotationValue::StrLiteral(value.clone()),
+                            )
                         }
                     })
                     .collect(),
@@ -409,7 +464,11 @@ impl Lowerer {
         let id = self.ids.next();
         let generics = Self::lower_generics(&sp.generics);
         let dependencies = sp.dependencies.clone();
-        let functions = sp.functions.iter().map(|f| self.lower_spec_function(f, span)).collect();
+        let functions = sp
+            .functions
+            .iter()
+            .map(|f| self.lower_spec_function(f, span))
+            .collect();
         let target = sp.target.clone();
         let annotations = Self::lower_annotations(&sp.annotations);
 
@@ -530,7 +589,11 @@ impl Lowerer {
                 visibility: h.visibility,
             })
             .collect();
-        let dynamic_fields = e.dynamic_fields.iter().map(|f| self.lower_param(f, span)).collect();
+        let dynamic_fields = e
+            .dynamic_fields
+            .iter()
+            .map(|f| self.lower_param(f, span))
+            .collect();
         let variants = e
             .variants
             .iter()
@@ -539,7 +602,11 @@ impl Lowerer {
                 span: v.span,
                 name: v.ident.clone(),
                 args: v.args.iter().map(|a| self.lower_expr(a)).collect(),
-                fields: v.fields.iter().map(|f| self.lower_param(f, v.span)).collect(),
+                fields: v
+                    .fields
+                    .iter()
+                    .map(|f| self.lower_param(f, v.span))
+                    .collect(),
             })
             .collect();
         let functions = e
@@ -603,7 +670,11 @@ impl Lowerer {
             },
             Expression::Codeblock(cb) => {
                 let block = self.lower_block(cb);
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Codeblock(block) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Codeblock(block),
+                }
             }
             Expression::If(if_expr) => {
                 let branches = if_expr
@@ -615,7 +686,10 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::If(HirIf { branches, else_branch }),
+                    expr: HirExpr::If(HirIf {
+                        branches,
+                        else_branch,
+                    }),
                 }
             }
             Expression::FunctionCall(call) => {
@@ -642,7 +716,11 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::CompoundAssign(HirCompoundAssign { target, op: assign.op, value }),
+                    expr: HirExpr::CompoundAssign(HirCompoundAssign {
+                        target,
+                        op: assign.op,
+                        value,
+                    }),
                 }
             }
             Expression::AddressOf(addr) => {
@@ -650,43 +728,75 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::AddressOf(HirAddressOf { base, mutable: addr.mutable }),
+                    expr: HirExpr::AddressOf(HirAddressOf {
+                        base,
+                        mutable: addr.mutable,
+                    }),
                 }
             }
             Expression::Reveal(reveal) => {
                 let base = Box::new(self.lower_expr(&reveal.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Reveal(base) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Reveal(base),
+                }
             }
             Expression::Comp(comp) => {
                 let base = Box::new(self.lower_expr(&comp.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Comp(base) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Comp(base),
+                }
             }
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Negate(base) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Negate(base),
+                }
             }
             Expression::BitNot(not) => {
                 let base = Box::new(self.lower_expr(&not.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::BitNot(base) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::BitNot(base),
+                }
             }
             Expression::Cast(cast) => {
                 let base = Box::new(self.lower_expr(&cast.base));
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::Cast(HirCast { target: cast.target.clone(), base }),
+                    expr: HirExpr::Cast(HirCast {
+                        target: cast.target.clone(),
+                        base,
+                    }),
                 }
             }
-            Expression::Sizeof(sizeof) => {
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Sizeof(sizeof.r#type.clone()) }
-            }
+            Expression::Sizeof(sizeof) => HirExprNode {
+                id: self.ids.next(),
+                span: node.span,
+                expr: HirExpr::Sizeof(sizeof.r#type.clone()),
+            },
             Expression::Increment(incr) => {
                 let base = Box::new(self.lower_expr(&incr.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Increment(base) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Increment(base),
+                }
             }
             Expression::Decrement(decr) => {
                 let base = Box::new(self.lower_expr(&decr.base));
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Decrement(base) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Decrement(base),
+                }
             }
             Expression::BinaryOp(bin) => {
                 let left = Box::new(self.lower_expr(&bin.left));
@@ -694,12 +804,20 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::BinaryOp(HirBinaryOp { op: bin.op, left, right }),
+                    expr: HirExpr::BinaryOp(HirBinaryOp {
+                        op: bin.op,
+                        left,
+                        right,
+                    }),
                 }
             }
             Expression::ArrayLiteral(lit) => {
                 let elements = lit.elements.iter().map(|e| self.lower_expr(e)).collect();
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::ArrayLiteral(elements) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::ArrayLiteral(elements),
+                }
             }
             Expression::StructLiteral(lit) => {
                 let fields = lit
@@ -714,17 +832,28 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::StructLiteral(HirStructLiteral { path: lit.path.clone(), fields }),
+                    expr: HirExpr::StructLiteral(HirStructLiteral {
+                        path: lit.path.clone(),
+                        fields,
+                    }),
                 }
             }
             Expression::Slice(s) => {
                 let base = self.lower_place_chain(&s.base);
                 let range = self.lower_range(&s.range);
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Slice(HirSlice { base, range }) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Slice(HirSlice { base, range }),
+                }
             }
             Expression::Range(r) => {
                 let range = self.lower_range(r);
-                HirExprNode { id: self.ids.next(), span: node.span, expr: HirExpr::Range(range) }
+                HirExprNode {
+                    id: self.ids.next(),
+                    span: node.span,
+                    expr: HirExpr::Range(range),
+                }
             }
             Expression::Match(m) => {
                 let scrutinee = Box::new(self.lower_expr(&m.scrutinee));
@@ -741,7 +870,11 @@ impl Lowerer {
                 HirExprNode {
                     id: self.ids.next(),
                     span: node.span,
-                    expr: HirExpr::Match(HirMatch { scrutinee, arms, else_branch }),
+                    expr: HirExpr::Match(HirMatch {
+                        scrutinee,
+                        arms,
+                        else_branch,
+                    }),
                 }
             }
             Expression::MacroInvocation(_) => unreachable!(

@@ -24,10 +24,7 @@ pub enum TokenKind {
     /// C-style string.
     ByteStr(String),
     Char(char),
-    /// `$name` -- only meaningful inside a macro definition's body; `$` has
-    /// exactly one use in this grammar, so it's recognized as one atomic
-    /// token rather than a separate `$` punctuation token the parser would
-    /// have to pair up with a following identifier itself.
+    /// `$name` -- a macro metavariable, recognized atomically.
     Metavar(String),
 
     // Keywords. Deliberately *not* included here: `self`/`mut`/`expr`/
@@ -122,7 +119,9 @@ pub enum TokenKind {
     ShrEq,
 
     // Single-char punctuation.
-    Bang,
+    /// `$` as the macro invocation suffix (`name$(...)`) and repetition
+    /// prefix (`$...`); `$name` remains a `Metavar` token.
+    Dollar,
     Percent,
     Amp,
     Star,
@@ -215,7 +214,7 @@ impl TokenKind {
             Self::CaretEq => "'^='".to_string(),
             Self::ShlEq => "'<<='".to_string(),
             Self::ShrEq => "'>>='".to_string(),
-            Self::Bang => "'!'".to_string(),
+            Self::Dollar => "'$'".to_string(),
             Self::Percent => "'%'".to_string(),
             Self::Amp => "'&'".to_string(),
             Self::Star => "'*'".to_string(),
@@ -341,9 +340,19 @@ pub struct Lexed {
 }
 
 pub fn lex(source: &str) -> Lexed {
-    let mut lexer = Lexer { source, pos: 0, tokens: Vec::new(), comments: Vec::new(), errors: Vec::new() };
+    let mut lexer = Lexer {
+        source,
+        pos: 0,
+        tokens: Vec::new(),
+        comments: Vec::new(),
+        errors: Vec::new(),
+    };
     lexer.run();
-    Lexed { tokens: lexer.tokens, comments: lexer.comments, errors: lexer.errors }
+    Lexed {
+        tokens: lexer.tokens,
+        comments: lexer.comments,
+        errors: lexer.errors,
+    }
 }
 
 struct Lexer<'a> {
@@ -388,11 +397,17 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             let Some(c) = self.peek() else { break };
             match self.scan_token(c, start) {
-                Ok(kind) => self.tokens.push(Token { kind, span: self.span_from(start) }),
+                Ok(kind) => self.tokens.push(Token {
+                    kind,
+                    span: self.span_from(start),
+                }),
                 Err(err) => self.errors.push(err),
             }
         }
-        self.tokens.push(Token { kind: TokenKind::Eof, span: Span::new(self.pos, self.pos) });
+        self.tokens.push(Token {
+            kind: TokenKind::Eof,
+            span: Span::new(self.pos, self.pos),
+        });
     }
 
     fn skip_trivia(&mut self) {
@@ -432,7 +447,10 @@ impl<'a> Lexer<'a> {
         loop {
             match self.peek() {
                 None => {
-                    self.errors.push(ParseError::new(self.span_from(start), ParseErrorKind::UnterminatedComment));
+                    self.errors.push(ParseError::new(
+                        self.span_from(start),
+                        ParseErrorKind::UnterminatedComment,
+                    ));
                     self.comments.push(self.span_from(start));
                     return;
                 }
@@ -456,7 +474,11 @@ impl<'a> Lexer<'a> {
 
     fn scan_token(&mut self, c: char, start: usize) -> Result<TokenKind, ParseError> {
         match c {
-            '$' => self.scan_metavar(start),
+            '$' if self.peek_at(1).is_some_and(is_ident_start) => self.scan_metavar(),
+            '$' => {
+                self.advance();
+                Ok(TokenKind::Dollar)
+            }
             '"' => self.scan_string_or_multiline(start),
             // `b"..."` -- checked ahead of the general `is_ident_start`
             // branch below (`'b'` would otherwise just start an ordinary
@@ -516,17 +538,16 @@ impl<'a> Lexer<'a> {
         TokenKind::Ident(text.to_string())
     }
 
-    fn scan_metavar(&mut self, start: usize) -> Result<TokenKind, ParseError> {
+    fn scan_metavar(&mut self) -> Result<TokenKind, ParseError> {
         self.advance(); // '$'
         let name_start = self.pos;
-        if !self.peek().is_some_and(is_ident_start) {
-            return Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidMetavariable));
-        }
         self.advance();
         while self.peek().is_some_and(is_ident_continue) {
             self.advance();
         }
-        Ok(TokenKind::Metavar(self.source[name_start..self.pos].to_string()))
+        Ok(TokenKind::Metavar(
+            self.source[name_start..self.pos].to_string(),
+        ))
     }
 
     fn scan_punct(&mut self, start: usize) -> Result<TokenKind, ParseError> {
@@ -536,9 +557,10 @@ impl<'a> Lexer<'a> {
                 return Ok(kind.clone());
             }
         }
-        let c = self.peek().expect("caller already confirmed a char is here");
+        let c = self
+            .peek()
+            .expect("caller already confirmed a char is here");
         let kind = match c {
-            '!' => TokenKind::Bang,
             '%' => TokenKind::Percent,
             '&' => TokenKind::Amp,
             '*' => TokenKind::Star,
@@ -559,7 +581,10 @@ impl<'a> Lexer<'a> {
             '?' => TokenKind::Question,
             _ => {
                 self.advance();
-                return Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidCharacter(c)));
+                return Err(ParseError::new(
+                    self.span_from(start),
+                    ParseErrorKind::InvalidCharacter(c),
+                ));
             }
         };
         self.advance();
@@ -611,7 +636,12 @@ impl<'a> Lexer<'a> {
 
         let explicit_type = self.scan_number_suffix();
 
-        TokenKind::Number(NumberExpr { base, integer_part, fractional_part, explicit_type })
+        TokenKind::Number(NumberExpr {
+            base,
+            integer_part,
+            fractional_part,
+            explicit_type,
+        })
     }
 
     /// One or more base-`radix` digits, `_` allowed anywhere after the
@@ -644,7 +674,9 @@ impl<'a> Lexer<'a> {
         if self.try_consume_word("isize") {
             return Some(Ident("isize".to_string()));
         }
-        if matches!(self.peek(), Some('i' | 'u' | 'f')) && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
+        if matches!(self.peek(), Some('i' | 'u' | 'f'))
+            && self.peek_at(1).is_some_and(|c| c.is_ascii_digit())
+        {
             let prefix = self.advance().unwrap();
             let mut digits = String::new();
             while self.peek().is_some_and(|c| c.is_ascii_digit()) {
@@ -662,7 +694,10 @@ impl<'a> Lexer<'a> {
     fn try_consume_word(&mut self, word: &str) -> bool {
         if self.starts_with(word) {
             let after = self.pos + word.len();
-            let boundary_ok = self.source[after..].chars().next().is_none_or(|c| !is_ident_continue(c));
+            let boundary_ok = self.source[after..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_ident_continue(c));
             if boundary_ok {
                 self.pos = after;
                 return true;
@@ -686,7 +721,10 @@ impl<'a> Lexer<'a> {
     /// sites (`"..."` and `b"..."`) so `b"""..."""` gets identical
     /// treatment to `"""..."""` rather than silently mis-lexing.
     fn scan_string_or_multiline(&mut self, start: usize) -> Result<TokenKind, ParseError> {
-        let quote_run = self.source[self.pos..].chars().take_while(|&c| c == '"').count();
+        let quote_run = self.source[self.pos..]
+            .chars()
+            .take_while(|&c| c == '"')
+            .count();
         if quote_run < 3 {
             return self.scan_string(start);
         }
@@ -707,7 +745,12 @@ impl<'a> Lexer<'a> {
         let mut content = String::new();
         loop {
             match self.peek() {
-                None => return Err(ParseError::new(self.span_from(start), ParseErrorKind::UnterminatedString)),
+                None => {
+                    return Err(ParseError::new(
+                        self.span_from(start),
+                        ParseErrorKind::UnterminatedString,
+                    ));
+                }
                 Some('"') => {
                     let run_start = self.pos;
                     let mut run = 0usize;
@@ -736,7 +779,12 @@ impl<'a> Lexer<'a> {
         let mut content = String::new();
         loop {
             match self.peek() {
-                None => return Err(ParseError::new(self.span_from(start), ParseErrorKind::UnterminatedString)),
+                None => {
+                    return Err(ParseError::new(
+                        self.span_from(start),
+                        ParseErrorKind::UnterminatedString,
+                    ));
+                }
                 Some('"') => {
                     self.advance();
                     return Ok(TokenKind::Str(content));
@@ -770,7 +818,10 @@ impl<'a> Lexer<'a> {
         let c = match self.peek() {
             None | Some('\'') => {
                 self.recover_char_literal();
-                return Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidCharLiteral));
+                return Err(ParseError::new(
+                    self.span_from(start),
+                    ParseErrorKind::InvalidCharLiteral,
+                ));
             }
             Some('\\') => match self.try_scan_escape(start)? {
                 Some(c) => c,
@@ -789,10 +840,16 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 Ok(TokenKind::Char(c))
             }
-            None => Err(ParseError::new(self.span_from(start), ParseErrorKind::UnterminatedChar)),
+            None => Err(ParseError::new(
+                self.span_from(start),
+                ParseErrorKind::UnterminatedChar,
+            )),
             Some(_) => {
                 self.recover_char_literal();
-                Err(ParseError::new(self.span_from(start), ParseErrorKind::InvalidCharLiteral))
+                Err(ParseError::new(
+                    self.span_from(start),
+                    ParseErrorKind::InvalidCharLiteral,
+                ))
             }
         }
     }
@@ -851,7 +908,10 @@ impl<'a> Lexer<'a> {
         Ok(None)
     }
 
-    fn try_scan_unicode_escape(&mut self, literal_start: usize) -> Result<Option<char>, ParseError> {
+    fn try_scan_unicode_escape(
+        &mut self,
+        literal_start: usize,
+    ) -> Result<Option<char>, ParseError> {
         if self.peek_at(2) != Some('{') {
             return Ok(None); // structural mismatch -- fall back to a literal '\'
         }
@@ -876,7 +936,12 @@ impl<'a> Lexer<'a> {
             .ok()
             .and_then(char::from_u32)
             .map(Some)
-            .ok_or_else(|| ParseError::new(self.span_from(literal_start), ParseErrorKind::InvalidUnicodeEscape(hex)))
+            .ok_or_else(|| {
+                ParseError::new(
+                    self.span_from(literal_start),
+                    ParseErrorKind::InvalidUnicodeEscape(hex),
+                )
+            })
     }
 }
 
@@ -888,7 +953,12 @@ mod multiline_string_tests {
     fn single_str_token(source: &str) -> (TokenKind, Vec<ParseErrorKind>) {
         let lexed = lex(source);
         let errors: Vec<ParseErrorKind> = lexed.errors.into_iter().map(|e| e.kind).collect();
-        assert_eq!(lexed.tokens.len(), 2, "expected exactly one Str token then Eof, got {:?}", lexed.tokens);
+        assert_eq!(
+            lexed.tokens.len(),
+            2,
+            "expected exactly one Str token then Eof, got {:?}",
+            lexed.tokens
+        );
         (lexed.tokens[0].kind.clone(), errors)
     }
 
@@ -929,7 +999,10 @@ mod multiline_string_tests {
         // of 7 inside must not terminate it.
         let source = "\"\"\"\"\"\"\"\"\"middle \"\"\"\"\"\"\" end\"\"\"\"\"\"\"\"\"";
         let (kind, errors) = single_str_token(source);
-        assert_eq!(kind, TokenKind::Str("middle \"\"\"\"\"\"\" end".to_string()));
+        assert_eq!(
+            kind,
+            TokenKind::Str("middle \"\"\"\"\"\"\" end".to_string())
+        );
         assert!(errors.is_empty());
     }
 
@@ -937,20 +1010,29 @@ mod multiline_string_tests {
     fn even_count_delimiter_is_a_dedicated_error_but_still_produces_a_token() {
         let (kind, errors) = single_str_token("\"\"\"\"content\"\"\"\"");
         assert_eq!(kind, TokenKind::Str("content".to_string()));
-        assert_eq!(errors, vec![ParseErrorKind::EvenMultilineStringDelimiter { count: 4 }]);
+        assert_eq!(
+            errors,
+            vec![ParseErrorKind::EvenMultilineStringDelimiter { count: 4 }]
+        );
     }
 
     #[test]
     fn unterminated_multiline_string_errors() {
         let lexed = lex("\"\"\"never closes");
         assert!(matches!(lexed.tokens[0].kind, TokenKind::Eof) || lexed.tokens.len() == 1);
-        assert!(matches!(lexed.errors.last().map(|e| &e.kind), Some(ParseErrorKind::UnterminatedString)));
+        assert!(matches!(
+            lexed.errors.last().map(|e| &e.kind),
+            Some(ParseErrorKind::UnterminatedString)
+        ));
     }
 
     #[test]
     fn byte_string_multiline_works_identically() {
         let lexed = lex("b\"\"\"hello\"\"\"");
-        assert_eq!(lexed.tokens[0].kind, TokenKind::ByteStr("hello".to_string()));
+        assert_eq!(
+            lexed.tokens[0].kind,
+            TokenKind::ByteStr("hello".to_string())
+        );
         assert!(lexed.errors.is_empty());
     }
 }

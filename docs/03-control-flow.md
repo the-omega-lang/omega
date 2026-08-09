@@ -107,7 +107,7 @@ type instead of staying native). This is sound specifically because
 any of those ways is still a valid `bool`.
 
 There is still **no `!` prefix operator in the grammar at all** (`!` only
-ever appears as part of `!=` or macro-invocation syntax `name!(...)`), and
+ever appears as part of `!=`), and
 still no arithmetic/shifts on `bool` (`true + true` has no meaning to fall
 back on) — see [primitives](01-primitives.md)'s caveats for why `!`
 specifically is a bigger addition than it looks (a new grammar token, not

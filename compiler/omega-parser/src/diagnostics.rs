@@ -58,9 +58,6 @@ impl ParseError {
             ParseErrorKind::InvalidCharacter(c) => d
                 .with_label(self.span, "not valid Omega syntax")
                 .with_note(format!("the character is {:?} (U+{:04X})", c, *c as u32)),
-            ParseErrorKind::InvalidMetavariable => d
-                .with_label(self.span, "`$` must be followed by a name")
-                .with_note("`$` has exactly one meaning: a macro metavariable, written `$name`"),
             ParseErrorKind::InvalidUnicodeEscape(_) => d
                 .with_label(self.span, "not a valid Unicode scalar value")
                 .with_note("valid scalar values are U+0000..=U+D7FF and U+E000..=U+10FFFF"),
@@ -103,6 +100,15 @@ impl ParseError {
             ParseErrorKind::DefaultGenericParamNotTrailing { name } => d
                 .with_label(self.span, format!("`{name}` has no default, but an earlier parameter does"))
                 .with_help("once one generic parameter has a default, every parameter after it must too"),
+            ParseErrorKind::MacroInvocationNotAllowedAfterDefer => d
+                .with_label(self.span, "this invocation could expand to several statements")
+                .with_help("write `defer { name$(...); }`"),
+            ParseErrorKind::VariadicMacroParamNotLast => d
+                .with_label(self.span, "a variadic parameter ends the parameter list"),
+            ParseErrorKind::InvalidMacroSeparator => d
+                .with_label(self.span, "a separator is exactly one non-bracket token"),
+            ParseErrorKind::NestedMacroRepetition => d
+                .with_label(self.span, "a repetition cannot contain another repetition"),
         }
     }
 }
@@ -120,7 +126,10 @@ pub enum ParseErrorKind {
     /// most parser call sites -- `expected` is a short, static description
     /// of what the parser was looking for (e.g. `"a type"`, `"';'"`,
     /// `"an expression"`).
-    Expected { expected: &'static str, found: TokenDescription },
+    Expected {
+        expected: &'static str,
+        found: TokenDescription,
+    },
     UnterminatedString,
     UnterminatedChar,
     UnterminatedComment,
@@ -132,14 +141,15 @@ pub enum ParseErrorKind {
     /// token (searching for a closing run of the same `count` regardless)
     /// so a single malformed delimiter doesn't cascade into unrelated
     /// downstream errors.
-    EvenMultilineStringDelimiter { count: usize },
+    EvenMultilineStringDelimiter {
+        count: usize,
+    },
     /// A macro-body/argument capture (`{ ... }`/`( ... )`) never found its
     /// matching close delimiter before EOF.
-    UnterminatedGroup { open: char },
+    UnterminatedGroup {
+        open: char,
+    },
     InvalidCharacter(char),
-    /// A `$` not immediately followed by an identifier -- `$` has exactly
-    /// one meaning in this grammar (a metavariable reference).
-    InvalidMetavariable,
     InvalidUnicodeEscape(String),
     /// An empty character literal (`''`), or one containing more than one
     /// character/escape.
@@ -201,7 +211,13 @@ pub enum ParseErrorKind {
     /// this is rejected right where the full `<...>` list is known, before
     /// it ever reaches HIR. See `omega_parser::ast::generics::GenericParam`'s
     /// doc comment.
-    DefaultGenericParamNotTrailing { name: Ident },
+    DefaultGenericParamNotTrailing {
+        name: Ident,
+    },
+    MacroInvocationNotAllowedAfterDefer,
+    VariadicMacroParamNotLast,
+    InvalidMacroSeparator,
+    NestedMacroRepetition,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -212,27 +228,42 @@ impl fmt::Display for ParseErrorKind {
             Self::UnterminatedChar => write!(f, "unterminated character literal"),
             Self::UnterminatedComment => write!(f, "unterminated comment"),
             Self::EvenMultilineStringDelimiter { count } => {
-                write!(f, "multi-line string delimiter must use an odd number of quotes (found {count})")
+                write!(
+                    f,
+                    "multi-line string delimiter must use an odd number of quotes (found {count})"
+                )
             }
-            Self::UnterminatedGroup { open } => write!(f, "unterminated '{open}' (no matching close found)"),
+            Self::UnterminatedGroup { open } => {
+                write!(f, "unterminated '{open}' (no matching close found)")
+            }
             Self::InvalidCharacter(c) => write!(f, "unexpected character '{c}'"),
-            Self::InvalidMetavariable => write!(f, "expected an identifier after '$'"),
             Self::InvalidUnicodeEscape(hex) => write!(f, "invalid unicode escape '\\u{{{hex}}}'"),
-            Self::InvalidCharLiteral => write!(f, "character literal must contain exactly one character"),
+            Self::InvalidCharLiteral => {
+                write!(f, "character literal must contain exactly one character")
+            }
             Self::StructLiteralNotAllowedHere => {
                 write!(f, "struct literals are not allowed in this position")
             }
             Self::EnumFunctionBeforeSemi => {
-                write!(f, "enum functions must come after the variant list is ended with ';'")
+                write!(
+                    f,
+                    "enum functions must come after the variant list is ended with ';'"
+                )
             }
             Self::EnumNotAllowedHere => {
                 write!(f, "enums can only be declared at the top level of a module")
             }
             Self::StructNotAllowedHere => {
-                write!(f, "structs can only be declared at the top level of a module")
+                write!(
+                    f,
+                    "structs can only be declared at the top level of a module"
+                )
             }
             Self::UnionNotAllowedHere => {
-                write!(f, "unions can only be declared at the top level of a module")
+                write!(
+                    f,
+                    "unions can only be declared at the top level of a module"
+                )
             }
             Self::SpecNotAllowedHere => {
                 write!(f, "specs can only be declared at the top level of a module")
@@ -241,20 +272,45 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "an alias spec can't declare its own functions")
             }
             Self::RangeMissingEnd => {
-                write!(f, "an inclusive ('..=') or exclusive ('..<') range must have an end bound")
+                write!(
+                    f,
+                    "an inclusive ('..=') or exclusive ('..<') range must have an end bound"
+                )
             }
             Self::OpenRangeHasEnd => {
                 write!(f, "an open range ('..') can't have an end")
             }
             Self::AnnotationNotAllowedHere => {
-                write!(f, "annotations are only allowed on structs, enums, unions, and functions")
+                write!(
+                    f,
+                    "annotations are only allowed on structs, enums, unions, and functions"
+                )
             }
             Self::VisibilityNotAllowedHere => {
                 write!(f, "a visibility modifier is not allowed here")
             }
             Self::DefaultGenericParamNotTrailing { name } => {
-                write!(f, "generic parameter '{name}' has no default, but an earlier one does")
+                write!(
+                    f,
+                    "generic parameter '{name}' has no default, but an earlier one does"
+                )
             }
+            Self::MacroInvocationNotAllowedAfterDefer => write!(
+                f,
+                "a macro invocation can expand to more than one statement; write `defer {{ name$(...); }}`"
+            ),
+            Self::VariadicMacroParamNotLast => write!(
+                f,
+                "a variadic macro parameter must be the last one, and a macro can have at most one"
+            ),
+            Self::InvalidMacroSeparator => write!(
+                f,
+                "a macro repetition separator must be a single non-bracket token, e.g. `$...(,){{ ... }}`"
+            ),
+            Self::NestedMacroRepetition => write!(
+                f,
+                "macro repetitions can't nest; a macro has at most one variadic parameter"
+            ),
         }
     }
 }

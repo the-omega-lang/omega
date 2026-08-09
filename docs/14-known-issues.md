@@ -107,6 +107,57 @@ new one is found.
   boundary. [modules-and-linkage.md](10-modules-and-linkage.md),
   [specs.md](08-specs.md)
 
+## Macros
+
+- **A node built from a macro expansion gets a composite span running from
+  the call site to the definition site, and statement position makes it
+  visible in ordinary diagnostics.** Every token keeps its own real
+  originating span (deliberately — there is no render-to-text-and-relex
+  round trip), so a node built from a mix of call-site argument tokens and
+  definition-site body tokens spans both. `expand_expr` hides this for
+  expression position by pinning the invocation's own call-site span back
+  onto the outer node, but a statement-position expansion has no equivalent:
+  the spliced statements and their expressions keep the composite spans the
+  re-parse produced. `just build-exe` on `examples/dev/main.omg`
+  demonstrates it — the `unused return value` warning for
+  `call_each$(puts, ...)` at line 769 renders a label stretching to the
+  macro's own definition at line 1495, ~700 lines of elided snippet for a
+  one-line statement. Not fixed here because the honest fix is a single
+  span policy shared by all three positions (item position has the same
+  latent problem), which is a design decision rather than a local patch:
+  either remap every span in an expansion to the call site (losing the
+  ability to point inside a macro body at all) or give `Span` a notion of
+  expansion provenance so the renderer can show both. Pinning only the
+  top-level statement node would fix the demonstrated case while leaving
+  every nested expression inside an expansion still wrong.
+  [macros.md](12-macros.md)
+- **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
+  documents.** `macros.rs`'s budget is spent one unit per invocation and
+  reports `ExpansionLimitExceeded` at 256, but each expansion costs roughly
+  twenty stack frames (the recursive-descent re-parse plus `expand_expr`'s
+  own very large frame), so `macro a() => { a$() }` aborts on a stack
+  overflow before the budget runs out on a 2 MiB thread stack — it only
+  reports cleanly with `RUST_MIN_STACK` raised. Pre-existing: reproduced
+  identically on the baseline commit with the old `a!()` syntax. Statement
+  position adds a second recursion path (`expand_statements_invocation`)
+  with the same shape. The fix is a *depth* limit rather than (or as well
+  as) a total-expansion budget. [macros.md](12-macros.md)
+- **Duplicate macro parameter names are silently accepted**, e.g.
+  `macro m($a: expr, $a: expr)`; bindings are a `HashMap`, so the later
+  parameter wins and the earlier one becomes unreferenceable. The same
+  applies when a fixed parameter and the variadic share a name, where the
+  variadic's `Many` binding shadows the fixed `One`. Pre-existing (the flat
+  `Vec<MacroParam>` model had it too); the fix is one duplicate check in
+  `parse_macro_signature` plus a `ParseErrorKind` variant.
+  [macros.md](12-macros.md)
+- **A repetition separator is not restricted to tokens that can survive
+  substitution.** `parse_repetition` only rejects brackets and multi-token
+  separators, so `$...($x){ ... }` or `$...($){ ... }` parses, emits the
+  `$name`/`$` token literally, and fails much later with a confusing
+  expansion-site parse error rather than at the definition. Low impact
+  (nobody writes it deliberately), but the diagnostic points at the wrong
+  place. [macros.md](12-macros.md)
+
 ## Compiler internals
 
 Shape problems in `omega-driver` and `omega-analyzer` that work today but each

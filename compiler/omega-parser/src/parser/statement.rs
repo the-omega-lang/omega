@@ -2,15 +2,17 @@ use crate::ast::expression::Expression;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{
     Statement, StatementNode, declaration::DeclarationStmt, defer::DeferStmt,
-    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt, loop_stmt::LoopStmt,
-    r#return::ReturnStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
+    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
+    loop_stmt::LoopStmt, r#return::ReturnStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::expression::{
-    parse_codeblock, parse_expression, parse_range_or_expression, parse_statement_leading_expression,
+    parse_codeblock, parse_expression, parse_range_or_expression,
+    parse_statement_leading_expression,
 };
+use crate::parser::macro_syntax::parse_macro_invocation;
 use crate::parser::{Parser, recovery};
 
 /// One statement, function-body scope. A deliberate cleanup from the old
@@ -74,12 +76,23 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
     // parses (both flags recognized) but is rejected during analysis
     // (`AnalysisErrorKind::MutCompBinding`), not here -- see that type's
     // doc comment for why a `comp` binding can never be `mut`.
-    let mut_offset = if matches!(p.peek(), TokenKind::Ident(name) if name == "mut") { 1 } else { 0 };
-    let comp_offset = if matches!(p.peek_at(mut_offset), TokenKind::Ident(name) if name == "comp") { 1 } else { 0 };
+    let mut_offset = if matches!(p.peek(), TokenKind::Ident(name) if name == "mut") {
+        1
+    } else {
+        0
+    };
+    let comp_offset = if matches!(p.peek_at(mut_offset), TokenKind::Ident(name) if name == "comp") {
+        1
+    } else {
+        0
+    };
     let ident_offset = mut_offset + comp_offset;
     if (mut_offset > 0 || comp_offset > 0)
         && matches!(p.peek_at(ident_offset), TokenKind::Ident(_))
-        && matches!(p.peek_at(ident_offset + 1), TokenKind::ColonEq | TokenKind::Colon)
+        && matches!(
+            p.peek_at(ident_offset + 1),
+            TokenKind::ColonEq | TokenKind::Colon
+        )
     {
         let mutable = mut_offset > 0;
         let comp = comp_offset > 0;
@@ -114,9 +127,21 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
         TokenKind::Defer => {
             p.advance(); // 'defer'
             let (inner, block_shaped) = parse_statement_content(p)?;
-            Some((Statement::Defer(DeferStmt { body: Box::new(inner) }), block_shaped))
+            if matches!(inner, Statement::MacroInvocation(_)) {
+                p.error(ParseErrorKind::MacroInvocationNotAllowedAfterDefer);
+                return None;
+            }
+            Some((
+                Statement::Defer(DeferStmt {
+                    body: Box::new(inner),
+                }),
+                block_shaped,
+            ))
         }
-        TokenKind::Extern => Some((Statement::ExternDeclaration(parse_extern_declaration(p)?), false)),
+        TokenKind::Extern => Some((
+            Statement::ExternDeclaration(parse_extern_declaration(p)?),
+            false,
+        )),
         TokenKind::Return => Some((Statement::Return(parse_return(p)?), false)),
         TokenKind::Break => {
             p.advance();
@@ -126,13 +151,25 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             p.advance();
             Some((Statement::Continue, false))
         }
+        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Dollar) => {
+            let mark = p.mark();
+            let inv = parse_macro_invocation(p)?;
+            if p.check(&TokenKind::Semi) {
+                return Some((Statement::MacroInvocation(inv), false));
+            }
+            p.reset(mark);
+            let expr = parse_statement_leading_expression(p)?;
+            Some((Statement::Expression(expr), false))
+        }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon) => {
             parse_walrus_or_declaration(p, false, false)
         }
         _ => {
             let expr = parse_statement_leading_expression(p)?;
-            let block_shaped =
-                matches!(expr.expression, Expression::Codeblock(_) | Expression::If(_) | Expression::Match(_));
+            let block_shaped = matches!(
+                expr.expression,
+                Expression::Codeblock(_) | Expression::If(_) | Expression::Match(_)
+            );
             Some((Statement::Expression(expr), block_shaped))
         }
     }
@@ -147,7 +184,10 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
 fn reject_local_type_decl(p: &mut Parser, kind: ParseErrorKind) {
     p.error(kind);
     p.advance(); // 'struct'/'enum'
-    while !matches!(p.peek(), TokenKind::LBrace | TokenKind::RBrace | TokenKind::Eof) {
+    while !matches!(
+        p.peek(),
+        TokenKind::LBrace | TokenKind::RBrace | TokenKind::Eof
+    ) {
         p.advance();
     }
     if p.check(&TokenKind::LBrace) {
@@ -162,7 +202,11 @@ fn reject_local_type_decl(p: &mut Parser, kind: ParseErrorKind) {
 /// (the token right after `ident`) is what tells them apart. `comp` is only
 /// supported on the inferred (`:=`) form -- a typed declaration reports a
 /// clean error rather than silently dropping the flag.
-fn parse_walrus_or_declaration(p: &mut Parser, mutable: bool, comp: bool) -> Option<(Statement, bool)> {
+fn parse_walrus_or_declaration(
+    p: &mut Parser,
+    mutable: bool,
+    comp: bool,
+) -> Option<(Statement, bool)> {
     match p.peek_at(1) {
         TokenKind::ColonEq => {
             let mut w = parse_walrus(p)?;
@@ -172,7 +216,10 @@ fn parse_walrus_or_declaration(p: &mut Parser, mutable: bool, comp: bool) -> Opt
         }
         _ => {
             if comp {
-                p.error(ParseErrorKind::Expected { expected: "':=' ('comp' only supports inferred bindings)", found: p.peek_at(1).describe() });
+                p.error(ParseErrorKind::Expected {
+                    expected: "':=' ('comp' only supports inferred bindings)",
+                    found: p.peek_at(1).describe(),
+                });
                 return None;
             }
             let mut decl = parse_declaration(p)?;
@@ -196,13 +243,22 @@ pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::Colon, "':'");
     let r#type = crate::parser::r#type::parse_type(p)?;
-    Some(DeclarationStmt { ident, r#type, mutable: false, visibility: Visibility::default() })
+    Some(DeclarationStmt {
+        ident,
+        r#type,
+        mutable: false,
+        visibility: Visibility::default(),
+    })
 }
 
 pub fn parse_extern_declaration(p: &mut Parser) -> Option<ExternDeclarationStmt> {
     p.expect(&TokenKind::Extern, "'extern'");
     let decl = parse_declaration(p)?;
-    Some(ExternDeclarationStmt { ident: decl.ident, r#type: decl.r#type, visibility: Visibility::default() })
+    Some(ExternDeclarationStmt {
+        ident: decl.ident,
+        r#type: decl.r#type,
+        visibility: Visibility::default(),
+    })
 }
 
 fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {
@@ -217,7 +273,13 @@ fn parse_walrus(p: &mut Parser) -> Option<WalrusStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::ColonEq, "':='");
     let value = parse_expression(p)?;
-    Some(WalrusStmt { ident, value, mutable: false, comp: false, visibility: Visibility::default() })
+    Some(WalrusStmt {
+        ident,
+        value,
+        mutable: false,
+        comp: false,
+        visibility: Visibility::default(),
+    })
 }
 
 fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
@@ -275,15 +337,28 @@ fn parse_for(p: &mut Parser) -> Option<Statement> {
     // clauses (the init clause needs no restriction -- its own `;` always
     // separates it from the body -- but restricting uniformly from here on
     // costs nothing and reads simpler).
-    let condition =
-        if p.check(&TokenKind::Semi) { None } else { p.restrict_struct_literals(parse_expression) };
+    let condition = if p.check(&TokenKind::Semi) {
+        None
+    } else {
+        p.restrict_struct_literals(parse_expression)
+    };
     if !p.expect_terminator(&TokenKind::Semi, "';'") {
         return recover_for_header(p).map(|f| Statement::For(Box::new(f)));
     }
-    let post =
-        if p.check(&TokenKind::LBrace) { None } else { p.restrict_struct_literals(parse_expression) };
-    let Some(body) = parse_codeblock(p) else { return recover_for_header(p).map(|f| Statement::For(Box::new(f))) };
-    Some(Statement::For(Box::new(ForStmt { init, condition, post, body })))
+    let post = if p.check(&TokenKind::LBrace) {
+        None
+    } else {
+        p.restrict_struct_literals(parse_expression)
+    };
+    let Some(body) = parse_codeblock(p) else {
+        return recover_for_header(p).map(|f| Statement::For(Box::new(f)));
+    };
+    Some(Statement::For(Box::new(ForStmt {
+        init,
+        condition,
+        post,
+        body,
+    })))
 }
 
 /// Whether the tokens right after `for` (already consumed) spell a
@@ -295,7 +370,13 @@ fn parse_for(p: &mut Parser) -> Option<Statement> {
 /// outside this one lookahead position, so it stays usable as an ordinary
 /// identifier everywhere else.
 fn is_for_in_lookahead(p: &mut Parser) -> bool {
-    let offset = if let TokenKind::Ident(name) = p.peek() && name == "mut" { 1 } else { 0 };
+    let offset = if let TokenKind::Ident(name) = p.peek()
+        && name == "mut"
+    {
+        1
+    } else {
+        0
+    };
     matches!(p.peek_at(offset), TokenKind::Ident(_))
         && matches!(p.peek_at(offset + 1), TokenKind::Ident(name) if name == "in")
 }
@@ -325,7 +406,12 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     // expression -- see `parse_range_or_expression`'s own doc comment.
     let iterator = parse_range_or_expression(p)?;
     let body = parse_codeblock(p)?;
-    Some(ForInStmt { mutable, binding, iterator, body })
+    Some(ForInStmt {
+        mutable,
+        binding,
+        iterator,
+        body,
+    })
 }
 
 fn parse_for_init(p: &mut Parser) -> Option<Statement> {

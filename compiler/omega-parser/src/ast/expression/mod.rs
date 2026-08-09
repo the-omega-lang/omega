@@ -26,17 +26,36 @@ pub mod slice;
 pub mod string;
 pub mod struct_literal;
 
-use crate::ast::identifier::ExprPath;
 use crate::ast::expression::{
-    address_of::AddressOfExpr, array_literal::ArrayLiteralExpr, assignment::AssignmentExpr,
-    bit_not::BitNotExpr, binary_op::BinaryOpExpr, bool_literal::BoolExpr, byte_string::ByteStringExpr,
-    cast::CastExpr, char_literal::CharExpr, codeblock::CodeblockExpr, comp::CompExpr,
-    compound_assign::CompoundAssignExpr, deref::DerefExpr, field_access::FieldAccessExpr,
-    function_call::FunctionCallExpr, if_expr::IfExpr, incr_decr::{DecrementExpr, IncrementExpr},
-    index::IndexExpr, macro_invocation::MacroInvocationExpr, match_expr::MatchExpr,
-    negate::NegateExpr, number::NumberExpr, reveal::RevealExpr, sizeof::SizeofExpr,
-    slice::SliceExpr, string::StringExpr, struct_literal::StructLiteralExpr,
+    address_of::AddressOfExpr,
+    array_literal::ArrayLiteralExpr,
+    assignment::AssignmentExpr,
+    binary_op::BinaryOpExpr,
+    bit_not::BitNotExpr,
+    bool_literal::BoolExpr,
+    byte_string::ByteStringExpr,
+    cast::CastExpr,
+    char_literal::CharExpr,
+    codeblock::CodeblockExpr,
+    comp::CompExpr,
+    compound_assign::CompoundAssignExpr,
+    deref::DerefExpr,
+    field_access::FieldAccessExpr,
+    function_call::FunctionCallExpr,
+    if_expr::IfExpr,
+    incr_decr::{DecrementExpr, IncrementExpr},
+    index::IndexExpr,
+    macro_invocation::MacroInvocationExpr,
+    match_expr::MatchExpr,
+    negate::NegateExpr,
+    number::NumberExpr,
+    reveal::RevealExpr,
+    sizeof::SizeofExpr,
+    slice::SliceExpr,
+    string::StringExpr,
+    struct_literal::StructLiteralExpr,
 };
+use crate::ast::identifier::ExprPath;
 use crate::ast::range::RangeExpr;
 use crate::diagnostics::Span;
 
@@ -90,7 +109,7 @@ pub enum Expression {
     /// `Name { field = value; ... }` -- see `StructLiteralExpr`'s doc comment.
     StructLiteral(StructLiteralExpr),
     Slice(Box<SliceExpr>),
-    /// `name!(arg, ...)` -- expanded away entirely by
+    /// `name$(arg, ...)` -- expanded away entirely by
     /// `omega_parser::macros::expand` before HIR lowering ever runs; see
     /// `MacroInvocationExpr`'s doc comment.
     MacroInvocation(MacroInvocationExpr),

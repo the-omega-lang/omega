@@ -39,7 +39,7 @@ mix64(x: u64) => u64 {
     z ^ (z >> 31u64)
 }
 
-macro signed_integer($T: type) => items {
+macro signed_integer($T: type) => {
     exposed spec SignedIntegerOps : Eq, Ord, Default, Hash for $T {
         equals(*self, other: Self) => bool { *self == other }
 
@@ -104,7 +104,7 @@ macro signed_integer($T: type) => items {
     }
 }
 
-macro unsigned_integer($T: type) => items {
+macro unsigned_integer($T: type) => {
     exposed spec UnsignedIntegerOps : Eq, Ord, Default, Hash for $T {
         equals(*self, other: Self) => bool { *self == other }
 
@@ -157,7 +157,7 @@ macro unsigned_integer($T: type) => items {
     }
 }
 
-macro float_ops($T: type) => items {
+macro float_ops($T: type) => {
     exposed spec FloatOps : Eq, Default, Hash for $T {
         # IEEE 754 equality (`NaN != NaN`, `-0.0 == 0.0`) reflects the type
         # honestly rather than papering over it -- `Ord` is deliberately
@@ -219,17 +219,17 @@ macro float_ops($T: type) => items {
     }
 }
 
-signed_integer!(i8);
-signed_integer!(i16);
-signed_integer!(i32);
-signed_integer!(i64);
-signed_integer!(isize);
+signed_integer$(i8);
+signed_integer$(i16);
+signed_integer$(i32);
+signed_integer$(i64);
+signed_integer$(isize);
 
-unsigned_integer!(u8);
-unsigned_integer!(u16);
-unsigned_integer!(u32);
-unsigned_integer!(u64);
-unsigned_integer!(usize);
+unsigned_integer$(u8);
+unsigned_integer$(u16);
+unsigned_integer$(u32);
+unsigned_integer$(u64);
+unsigned_integer$(usize);
 
-float_ops!(f32);
-float_ops!(f64);
+float_ops$(f32);
+float_ops$(f64);

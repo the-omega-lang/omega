@@ -1,12 +1,30 @@
 use crate::ast::expression::{
-    Expression, ExpressionNode, address_of::AddressOfExpr, array_literal::ArrayLiteralExpr,
-    assignment::AssignmentExpr, bit_not::BitNotExpr, binary_op::{BinaryOp, BinaryOpExpr},
-    bool_literal::BoolExpr, byte_string::ByteStringExpr, cast::CastExpr, char_literal::CharExpr,
-    codeblock::CodeblockExpr, comp::CompExpr, compound_assign::CompoundAssignExpr, deref::DerefExpr,
-    field_access::FieldAccessExpr, function_call::FunctionCallExpr, if_expr::IfExpr,
-    incr_decr::{DecrementExpr, IncrementExpr}, index::IndexExpr,
-    match_expr::{MatchArm, MatchExpr, Pattern}, negate::NegateExpr, reveal::RevealExpr,
-    sizeof::SizeofExpr, slice::SliceExpr, string::StringExpr, struct_literal::{StructLiteralExpr, StructLiteralField},
+    Expression, ExpressionNode,
+    address_of::AddressOfExpr,
+    array_literal::ArrayLiteralExpr,
+    assignment::AssignmentExpr,
+    binary_op::{BinaryOp, BinaryOpExpr},
+    bit_not::BitNotExpr,
+    bool_literal::BoolExpr,
+    byte_string::ByteStringExpr,
+    cast::CastExpr,
+    char_literal::CharExpr,
+    codeblock::CodeblockExpr,
+    comp::CompExpr,
+    compound_assign::CompoundAssignExpr,
+    deref::DerefExpr,
+    field_access::FieldAccessExpr,
+    function_call::FunctionCallExpr,
+    if_expr::IfExpr,
+    incr_decr::{DecrementExpr, IncrementExpr},
+    index::IndexExpr,
+    match_expr::{MatchArm, MatchExpr, Pattern},
+    negate::NegateExpr,
+    reveal::RevealExpr,
+    sizeof::SizeofExpr,
+    slice::SliceExpr,
+    string::StringExpr,
+    struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::diagnostics::{ParseErrorKind, Span};
@@ -54,8 +72,15 @@ fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
     let value = parse_expression(p)?;
     let span = target.span.to(value.span);
     let expression = match op {
-        None => Expression::Assignment(Box::new(AssignmentExpr { target, value: Box::new(value) })),
-        Some(op) => Expression::CompoundAssign(Box::new(CompoundAssignExpr { target, op, value: Box::new(value) })),
+        None => Expression::Assignment(Box::new(AssignmentExpr {
+            target,
+            value: Box::new(value),
+        })),
+        Some(op) => Expression::CompoundAssign(Box::new(CompoundAssignExpr {
+            target,
+            op,
+            value: Box::new(value),
+        })),
     };
     Some(ExpressionNode { expression, span })
 }
@@ -78,7 +103,10 @@ fn parse_comparison(p: &mut Parser) -> Option<ExpressionNode> {
     p.advance();
     let right = parse_bitor(p)?;
     let span = left.span.to(right.span);
-    Some(ExpressionNode { expression: binary_op_expr(left, op, right), span })
+    Some(ExpressionNode {
+        expression: binary_op_expr(left, op, right),
+        span,
+    })
 }
 
 fn parse_bitor(p: &mut Parser) -> Option<ExpressionNode> {
@@ -87,7 +115,10 @@ fn parse_bitor(p: &mut Parser) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_bitxor(p)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, BinaryOp::BitOr, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, BinaryOp::BitOr, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -98,7 +129,10 @@ fn parse_bitxor(p: &mut Parser) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_bitand(p)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, BinaryOp::BitXor, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, BinaryOp::BitXor, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -112,7 +146,10 @@ fn parse_bitand(p: &mut Parser) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_shift(p)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, BinaryOp::BitAnd, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, BinaryOp::BitAnd, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -128,7 +165,10 @@ fn parse_shift(p: &mut Parser) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_additive(p)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, op, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, op, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -144,7 +184,10 @@ fn parse_additive(p: &mut Parser) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_multiplicative(p)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, op, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, op, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -161,7 +204,10 @@ fn parse_multiplicative(p: &mut Parser) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_unary(p)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, op, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, op, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -233,7 +279,9 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
     let span = start.to(base.span);
     let expression = match prefix {
         Prefix::Deref => Expression::Deref(Box::new(DerefExpr { base })),
-        Prefix::AddressOf { mutable } => Expression::AddressOf(Box::new(AddressOfExpr { base, mutable })),
+        Prefix::AddressOf { mutable } => {
+            Expression::AddressOf(Box::new(AddressOfExpr { base, mutable }))
+        }
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
         Prefix::BitNot => Expression::BitNot(Box::new(BitNotExpr { base })),
         Prefix::Reveal => Expression::Reveal(Box::new(RevealExpr { base })),
@@ -254,7 +302,10 @@ fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
     p.expect_close_angle("'>'");
     let base = parse_unary(p)?;
     let span = start.to(base.span);
-    Some(ExpressionNode { expression: Expression::Cast(Box::new(CastExpr { target, base })), span })
+    Some(ExpressionNode {
+        expression: Expression::Cast(Box::new(CastExpr { target, base })),
+        span,
+    })
 }
 
 /// Binds tightest: `.field`, `[index]`/`[a..b]`, `(args)`, left-associative
@@ -270,7 +321,10 @@ fn parse_postfix(p: &mut Parser) -> Option<ExpressionNode> {
                 let field = p.expect_ident()?;
                 let span = expr.span.to(field_span);
                 expr = ExpressionNode {
-                    expression: Expression::FieldAccess(Box::new(FieldAccessExpr { base: expr, field })),
+                    expression: Expression::FieldAccess(Box::new(FieldAccessExpr {
+                        base: expr,
+                        field,
+                    })),
                     span,
                 };
             }
@@ -310,13 +364,19 @@ fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<Expressi
     let close_span = p.peek_span();
     p.expect(&TokenKind::RBracket, "']'");
     let span = base.span.to(close_span);
-    Some(ExpressionNode { expression: Expression::Index(Box::new(IndexExpr { base, index: first })), span })
+    Some(ExpressionNode {
+        expression: Expression::Index(Box::new(IndexExpr { base, index: first })),
+        span,
+    })
 }
 
 /// Whether `kind` is one of the three range operators (`..=`/`..<`/`..`) --
 /// shared by every range-recognizing call site so they all stay in sync.
 fn is_range_operator(kind: &TokenKind) -> bool {
-    matches!(kind, TokenKind::DotDotEq | TokenKind::DotDotLt | TokenKind::DotDot)
+    matches!(
+        kind,
+        TokenKind::DotDotEq | TokenKind::DotDotLt | TokenKind::DotDot
+    )
 }
 
 /// Consumes the range operator at the parser's current position (`..=`,
@@ -350,7 +410,11 @@ fn parse_range_tail(
             RangeEnd::Open
         }
         TokenKind::DotDotEq | TokenKind::DotDotLt => {
-            let end = if p.check(terminator) { None } else { Some(p.allow_struct_literals(parse_expression)?) };
+            let end = if p.check(terminator) {
+                None
+            } else {
+                Some(p.allow_struct_literals(parse_expression)?)
+            };
             match (op, end) {
                 (TokenKind::DotDotEq, Some(e)) => RangeEnd::Inclusive(e),
                 (TokenKind::DotDotLt, Some(e)) => RangeEnd::Exclusive(e),
@@ -365,7 +429,11 @@ fn parse_range_tail(
     };
     let lo = start.as_ref().map(|s| s.span).unwrap_or(op_span);
     let hi = end.end_expr().map(|e| e.span).unwrap_or(op_span);
-    Some(RangeExpr { start, end, span: lo.to(hi) })
+    Some(RangeExpr {
+        start,
+        end,
+        span: lo.to(hi),
+    })
 }
 
 /// A range-driven `for` loop's own iterator position (`for i in <here> {
@@ -382,7 +450,10 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
         let op_span = p.peek_span();
         let range = parse_range_tail(p, None, op_span, &TokenKind::LBrace)?;
         let span = range.span;
-        return Some(ExpressionNode { expression: Expression::Range(Box::new(range)), span });
+        return Some(ExpressionNode {
+            expression: Expression::Range(Box::new(range)),
+            span,
+        });
     }
     let first = p.restrict_struct_literals(parse_expression)?;
     if is_range_operator(p.peek()) {
@@ -390,7 +461,10 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
         let start_span = first.span;
         let range = parse_range_tail(p, Some(first), op_span, &TokenKind::LBrace)?;
         let span = start_span.to(range.span);
-        return Some(ExpressionNode { expression: Expression::Range(Box::new(range)), span });
+        return Some(ExpressionNode {
+            expression: Expression::Range(Box::new(range)),
+            span,
+        });
     }
     Some(first)
 }
@@ -399,7 +473,10 @@ fn finish_slice(p: &mut Parser, base: ExpressionNode, range: RangeExpr) -> Optio
     let close_span = p.peek_span();
     p.expect(&TokenKind::RBracket, "']'");
     let span = base.span.to(close_span);
-    Some(ExpressionNode { expression: Expression::Slice(Box::new(SliceExpr { base, range })), span })
+    Some(ExpressionNode {
+        expression: Expression::Slice(Box::new(SliceExpr { base, range })),
+        span,
+    })
 }
 
 /// `callee(args)` -- comma-separated, no trailing comma tolerated (matching
@@ -421,7 +498,13 @@ fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> 
     let close_span = p.peek_span();
     p.expect(&TokenKind::RParen, "')'");
     let span = callee.span.to(close_span);
-    Some(ExpressionNode { expression: Expression::FunctionCall(FunctionCallExpr { callee: Box::new(callee), args }), span })
+    Some(ExpressionNode {
+        expression: Expression::FunctionCall(FunctionCallExpr {
+            callee: Box::new(callee),
+            args,
+        }),
+        span,
+    })
 }
 
 /// `{ ... }`/`if ... { ... }`/`match ... { ... }` -- the three block-shaped
@@ -436,17 +519,26 @@ fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionN
         TokenKind::LBrace => {
             let cb = parse_codeblock(p)?;
             let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::Codeblock(cb), span })
+            Some(ExpressionNode {
+                expression: Expression::Codeblock(cb),
+                span,
+            })
         }
         TokenKind::If => {
             let if_expr = parse_if_expr(p)?;
             let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::If(Box::new(if_expr)), span })
+            Some(ExpressionNode {
+                expression: Expression::If(Box::new(if_expr)),
+                span,
+            })
         }
         TokenKind::Match => {
             let match_expr = parse_match_expr(p)?;
             let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::Match(Box::new(match_expr)), span })
+            Some(ExpressionNode {
+                expression: Expression::Match(Box::new(match_expr)),
+                span,
+            })
         }
         _ => unreachable!("parse_block_shaped_primary called on a non-block-shaped token"),
     }
@@ -473,7 +565,10 @@ fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionN
 /// unaffected by any of this.
 pub(crate) fn parse_statement_leading_expression(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
-    if matches!(p.peek(), TokenKind::LBrace | TokenKind::If | TokenKind::Match) {
+    if matches!(
+        p.peek(),
+        TokenKind::LBrace | TokenKind::If | TokenKind::Match
+    ) {
         return parse_block_shaped_primary(p, start);
     }
     parse_expression(p)
@@ -497,36 +592,67 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             // re-wrapped a parenthesized expression's span either.
             Some(inner)
         }
-        TokenKind::LBrace | TokenKind::If | TokenKind::Match => parse_block_shaped_primary(p, start),
+        TokenKind::LBrace | TokenKind::If | TokenKind::Match => {
+            parse_block_shaped_primary(p, start)
+        }
         TokenKind::LBracket => parse_array_literal(p),
         TokenKind::Number(_) => {
-            let TokenKind::Number(n) = p.advance().kind else { unreachable!() };
-            Some(ExpressionNode { expression: Expression::Number(n), span: start })
+            let TokenKind::Number(n) = p.advance().kind else {
+                unreachable!()
+            };
+            Some(ExpressionNode {
+                expression: Expression::Number(n),
+                span: start,
+            })
         }
         TokenKind::Str(_) => {
-            let TokenKind::Str(s) = p.advance().kind else { unreachable!() };
-            Some(ExpressionNode { expression: Expression::String(StringExpr(s)), span: start })
+            let TokenKind::Str(s) = p.advance().kind else {
+                unreachable!()
+            };
+            Some(ExpressionNode {
+                expression: Expression::String(StringExpr(s)),
+                span: start,
+            })
         }
         TokenKind::ByteStr(_) => {
-            let TokenKind::ByteStr(s) = p.advance().kind else { unreachable!() };
-            Some(ExpressionNode { expression: Expression::ByteString(ByteStringExpr(s)), span: start })
+            let TokenKind::ByteStr(s) = p.advance().kind else {
+                unreachable!()
+            };
+            Some(ExpressionNode {
+                expression: Expression::ByteString(ByteStringExpr(s)),
+                span: start,
+            })
         }
         TokenKind::Char(_) => {
-            let TokenKind::Char(c) = p.advance().kind else { unreachable!() };
-            Some(ExpressionNode { expression: Expression::Char(CharExpr(c)), span: start })
+            let TokenKind::Char(c) = p.advance().kind else {
+                unreachable!()
+            };
+            Some(ExpressionNode {
+                expression: Expression::Char(CharExpr(c)),
+                span: start,
+            })
         }
         TokenKind::True => {
             p.advance();
-            Some(ExpressionNode { expression: Expression::Bool(BoolExpr(true)), span: start })
+            Some(ExpressionNode {
+                expression: Expression::Bool(BoolExpr(true)),
+                span: start,
+            })
         }
         TokenKind::False => {
             p.advance();
-            Some(ExpressionNode { expression: Expression::Bool(BoolExpr(false)), span: start })
+            Some(ExpressionNode {
+                expression: Expression::Bool(BoolExpr(false)),
+                span: start,
+            })
         }
-        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Bang) => {
+        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Dollar) => {
             let inv = parse_macro_invocation(p)?;
             let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::MacroInvocation(inv), span })
+            Some(ExpressionNode {
+                expression: Expression::MacroInvocation(inv),
+                span,
+            })
         }
         // `sizeof<Type>` -- `sizeof` is a contextual keyword (see
         // `lexer::TokenKind`'s doc comment), committed to only when
@@ -539,7 +665,10 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             let close_span = p.peek_span();
             p.expect_close_angle("'>'");
             let span = start.to(close_span);
-            Some(ExpressionNode { expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })), span })
+            Some(ExpressionNode {
+                expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })),
+                span,
+            })
         }
         TokenKind::Ident(_) => {
             let path = parse_expr_path(p)?;
@@ -552,10 +681,16 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
                 }
             }
             let span = start.to(p.last_span());
-            Some(ExpressionNode { expression: Expression::Path(path), span })
+            Some(ExpressionNode {
+                expression: Expression::Path(path),
+                span,
+            })
         }
         _ => {
-            p.error(ParseErrorKind::Expected { expected: "an expression", found: p.peek().describe() });
+            p.error(ParseErrorKind::Expected {
+                expected: "an expression",
+                found: p.peek().describe(),
+            });
             None
         }
     }
@@ -577,7 +712,10 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     use crate::ast::identifier::ExprPath;
 
     let head = p.expect_ident()?;
-    let mut path = crate::ast::identifier::Path { head, tail: Vec::new() };
+    let mut path = crate::ast::identifier::Path {
+        head,
+        tail: Vec::new(),
+    };
     let mut generic_args = Vec::new();
     let mut args_at = 0;
 
@@ -597,7 +735,11 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
         path.tail.push(p.expect_ident()?);
     }
 
-    Some(ExprPath { path, generic_args, args_at })
+    Some(ExprPath {
+        path,
+        generic_args,
+        args_at,
+    })
 }
 
 /// The speculative `<Type, ...>` attempt behind `parse_expr_path` -- returns
@@ -700,7 +842,11 @@ fn parse_struct_literal(
         // unambiguous again even if this one sits in condition position.
         let value = p.allow_struct_literals(parse_expression)?;
         p.expect_terminator(&TokenKind::Semi, "';'");
-        fields.push(StructLiteralField { name, name_span, value });
+        fields.push(StructLiteralField {
+            name,
+            name_span,
+            value,
+        });
     }
     if !p.check(&TokenKind::RBrace) {
         p.error(ParseErrorKind::Expected {
@@ -711,7 +857,10 @@ fn parse_struct_literal(
     }
     p.advance(); // '}'
     let span = start.to(p.last_span());
-    Some(ExpressionNode { expression: Expression::StructLiteral(StructLiteralExpr { path, fields }), span })
+    Some(ExpressionNode {
+        expression: Expression::StructLiteral(StructLiteralExpr { path, fields }),
+        span,
+    })
 }
 
 /// `[e1, e2, ...]` -- same "no trailing comma" rule as `parse_call`.
@@ -729,7 +878,10 @@ fn parse_array_literal(p: &mut Parser) -> Option<ExpressionNode> {
     }
     p.expect(&TokenKind::RBracket, "']'");
     let span = start.to(p.last_span());
-    Some(ExpressionNode { expression: Expression::ArrayLiteral(ArrayLiteralExpr { elements }), span })
+    Some(ExpressionNode {
+        expression: Expression::ArrayLiteral(ArrayLiteralExpr { elements }),
+        span,
+    })
 }
 
 /// `if cond { ... } else if cond { ... } else { ... }`.
@@ -749,7 +901,10 @@ fn parse_if_expr(p: &mut Parser) -> Option<IfExpr> {
             break;
         }
     }
-    Some(IfExpr { branches, else_branch })
+    Some(IfExpr {
+        branches,
+        else_branch,
+    })
 }
 
 /// `cond { ... }` -- the leading `if`/`else if` keyword itself is always
@@ -780,9 +935,18 @@ fn parse_match_expr(p: &mut Parser) -> Option<MatchExpr> {
         }
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    let else_branch = if p.eat(&TokenKind::Else) { Some(parse_codeblock(p)?) } else { None };
+    let else_branch = if p.eat(&TokenKind::Else) {
+        Some(parse_codeblock(p)?)
+    } else {
+        None
+    };
     let span = start.to(p.last_span());
-    Some(MatchExpr { scrutinee, arms, else_branch, span })
+    Some(MatchExpr {
+        scrutinee,
+        arms,
+        else_branch,
+        span,
+    })
 }
 
 /// `pattern => body` -- arms are comma-separated with an optional trailing
@@ -795,7 +959,11 @@ fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
     p.expect(&TokenKind::FatArrow, "'=>'");
     let body = p.allow_struct_literals(parse_expression)?;
     let span = start.to(body.span);
-    Some(MatchArm { pattern, body, span })
+    Some(MatchArm {
+        pattern,
+        body,
+        span,
+    })
 }
 
 /// One pattern: a range (leading `..=`/`..<`/`..`, or one expression
@@ -834,13 +1002,19 @@ mod tests {
         let Item::FunctionDefinition(f) = &module.nodes[0].item else {
             panic!("first item must be a function");
         };
-        f.codeblock.statements.iter().map(|s| s.statement.clone()).collect()
+        f.codeblock
+            .statements
+            .iter()
+            .map(|s| s.statement.clone())
+            .collect()
     }
 
     #[test]
     fn struct_literal_parses_with_fields_in_order() {
         let stmts = body_statements("f() => i32 { v := Vec2 { x = 1; y = 2; }; v.x }");
-        let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
+        let Statement::Walrus(w) = &stmts[0] else {
+            panic!("expected a walrus statement")
+        };
         let Expression::StructLiteral(lit) = &w.value.expression else {
             panic!("expected a struct literal value")
         };
@@ -854,7 +1028,9 @@ mod tests {
         // `Optional<u32>::Some { ... }` -- the `::` after `>` proves the
         // generic reading; the literal's path carries the args on segment 0.
         let stmts = body_statements("f() => void { a := Optional<u32>::Some { value = 10; }; }");
-        let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
+        let Statement::Walrus(w) = &stmts[0] else {
+            panic!("expected a walrus statement")
+        };
         let Expression::StructLiteral(lit) = &w.value.expression else {
             panic!("expected a struct literal value")
         };
@@ -870,10 +1046,16 @@ mod tests {
         // stay a comparison -- including the nasty `f(a < b, c > d)` shape,
         // where a C++-style greedy reading would see `a<b, c>(d)`.
         let stmts = body_statements("f() => void { x := a < b; g(a < b, c > d); }");
-        let Statement::Walrus(w) = &stmts[0] else { panic!("expected a walrus statement") };
+        let Statement::Walrus(w) = &stmts[0] else {
+            panic!("expected a walrus statement")
+        };
         assert!(matches!(w.value.expression, Expression::BinaryOp(_)));
-        let Statement::Expression(call) = &stmts[1] else { panic!("expected a call statement") };
-        let Expression::FunctionCall(call) = &call.expression else { panic!("expected a call") };
+        let Statement::Expression(call) = &stmts[1] else {
+            panic!("expected a call statement")
+        };
+        let Expression::FunctionCall(call) = &call.expression else {
+            panic!("expected a call")
+        };
         assert_eq!(call.args.len(), 2);
     }
 
@@ -894,7 +1076,9 @@ mod tests {
             }
         "#;
         let module = SourceModule::parse(source).expect("enum must parse");
-        let Item::Enum(e) = &module.nodes[0].item else { panic!("expected an enum item") };
+        let Item::Enum(e) = &module.nodes[0].item else {
+            panic!("expected an enum item")
+        };
         assert_eq!(e.ident.as_ref(), "MyCoolEnum");
         assert_eq!(e.header.len(), 2);
         assert_eq!(e.header[0].ident.as_ref(), "tag");
@@ -906,17 +1090,24 @@ mod tests {
 
     #[test]
     fn enum_function_without_variant_terminator_reports_dedicated_error() {
-        let errors = SourceModule::parse(
-            "enum E { First, Second do_thing(self) => void { } }",
-        )
-        .expect_err("must not parse");
-        assert!(errors.iter().any(|e| matches!(e.kind, ParseErrorKind::EnumFunctionBeforeSemi)));
+        let errors = SourceModule::parse("enum E { First, Second do_thing(self) => void { } }")
+            .expect_err("must not parse");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, ParseErrorKind::EnumFunctionBeforeSemi))
+        );
     }
 
     #[test]
     fn enum_in_statement_position_reports_dedicated_error() {
-        let errors = SourceModule::parse("f() => void { enum E { A } }").expect_err("must not parse");
-        assert!(errors.iter().any(|e| matches!(e.kind, ParseErrorKind::EnumNotAllowedHere)));
+        let errors =
+            SourceModule::parse("f() => void { enum E { A } }").expect_err("must not parse");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, ParseErrorKind::EnumNotAllowedHere))
+        );
     }
 
     #[test]
@@ -925,9 +1116,14 @@ mod tests {
         // then the body" -- including when the body's first statement is a
         // declaration (`x: i32;`), which is field-initializer-shaped.
         let stmts = body_statements("f() => void { while flag { x: i32; } }");
-        let Statement::While(w) = &stmts[0] else { panic!("expected a while statement") };
+        let Statement::While(w) = &stmts[0] else {
+            panic!("expected a while statement")
+        };
         assert!(matches!(w.condition.expression, Expression::Path(_)));
-        assert!(matches!(w.body.statements[0].statement, Statement::Declaration(_)));
+        assert!(matches!(
+            w.body.statements[0].statement,
+            Statement::Declaration(_)
+        ));
     }
 
     #[test]
@@ -937,7 +1133,10 @@ mod tests {
         let errors = SourceModule::parse("f() => void { if Vec2 { x = 1; }.x > 0 { g(); } }")
             .expect_err("must not parse");
         assert_eq!(errors.len(), 1);
-        assert!(matches!(errors[0].kind, ParseErrorKind::StructLiteralNotAllowedHere));
+        assert!(matches!(
+            errors[0].kind,
+            ParseErrorKind::StructLiteralNotAllowedHere
+        ));
     }
 
     #[test]
@@ -977,24 +1176,32 @@ pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
     // regardless of what position the block itself sits in.
     p.allow_struct_literals(|p| {
         p.expect(&TokenKind::LBrace, "'{'");
-        let mut statements = Vec::new();
-        let tail = loop {
-            if p.check(&TokenKind::RBrace) || p.is_eof() {
-                break None;
-            }
-            let mark = p.mark();
-            if let Some(expr) = parse_statement_leading_expression(p)
-                && p.check(&TokenKind::RBrace)
-            {
-                break Some(Box::new(expr));
-            }
-            p.reset(mark);
-            match parse_statement(p) {
-                Some(stmt) => statements.push(stmt),
-                None => crate::parser::recovery::synchronize_to_statement_boundary(p),
-            }
-        };
+        let cb = parse_block_contents(p)?;
         p.expect(&TokenKind::RBrace, "'}'");
-        Some(CodeblockExpr { statements, tail })
+        Some(cb)
     })
+}
+
+/// Parses a block's statements and optional tail without consuming braces.
+/// This is shared with statement-position macro expansion so substituted
+/// tokens obey exactly the ordinary block grammar.
+pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
+    let mut statements = Vec::new();
+    let tail = loop {
+        if p.check(&TokenKind::RBrace) || p.is_eof() {
+            break None;
+        }
+        let mark = p.mark();
+        if let Some(expr) = parse_statement_leading_expression(p)
+            && (p.check(&TokenKind::RBrace) || p.is_eof())
+        {
+            break Some(Box::new(expr));
+        }
+        p.reset(mark);
+        match parse_statement(p) {
+            Some(stmt) => statements.push(stmt),
+            None => crate::parser::recovery::synchronize_to_statement_boundary(p),
+        }
+    };
+    Some(CodeblockExpr { statements, tail })
 }

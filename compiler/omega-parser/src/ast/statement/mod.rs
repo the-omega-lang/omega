@@ -18,9 +18,9 @@ pub mod while_stmt;
 use crate::ast::expression::{ExpressionNode, macro_invocation::MacroInvocationExpr};
 use crate::ast::statement::{
     declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
-    extern_declaration::ExternDeclarationStmt,
-    for_in_stmt::ForInStmt, for_stmt::ForStmt, function_definition::FunctionDefinitionStmt, import::ImportStmt,
-    loop_stmt::LoopStmt, macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
+    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
+    function_definition::FunctionDefinitionStmt, import::ImportStmt, loop_stmt::LoopStmt,
+    macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
     r#struct::StructStmt, union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::diagnostics::Span;
@@ -68,9 +68,8 @@ pub enum Item {
     /// `omega_parser::macros::expand` before HIR lowering ever runs -- see
     /// `MacroDefinitionStmt`'s doc comment.
     MacroDefinition(MacroDefinitionStmt),
-    /// `name!(arg, ...);` in item position -- only valid for an
-    /// `items`-output macro (see `MacroOutputKind`); the expansion pass
-    /// splices its expansion's items in place of this node.
+    /// `name$(arg, ...);` in item position; the expansion pass splices its
+    /// expansion's items in place of this node.
     MacroInvocation(MacroInvocationExpr),
 }
 
@@ -91,6 +90,9 @@ pub enum Statement {
     DeclarationWithInit(DeclarationStmt, ExpressionNode),
     ExternDeclaration(ExternDeclarationStmt),
     Expression(ExpressionNode),
+    /// `name$(arg, ...);` as a whole statement. Expansion splices its
+    /// resulting statements in place; this never reaches HIR lowering.
+    MacroInvocation(MacroInvocationExpr),
     Return(ReturnStmt),
     /// No label yet (just `break;`/`continue;`) -- analysis already resolves
     /// these against a stack of enclosing loops keyed by identity rather
