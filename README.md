@@ -6,16 +6,19 @@ Rdbo's Omega programming language
 
 ## Development environment
 
-The whole toolchain (Rust, `cc`/`as`/`ld`, `just`, and Claude Code) is packaged
-as a reproducible Alpine Linux container. With Docker installed, that is:
+The whole toolchain (Rust, `cc`/`as`/`ld`, `just`, and the Claude Code, Codex
+and omp agents) is packaged as a reproducible Alpine Linux container. With
+Docker installed, that is:
 
 ```sh
 ./dev.sh            # starts Claude Code in the container
+./dev.sh codex      # or Codex CLI
+./dev.sh omp        # or omp (oh-my-pi)
 ./dev.sh shell      # or just a shell
 ./dev.sh run just build-exe
 ```
 
-Nothing else needs to be installed on the host, and your Claude login, cargo
+Nothing else needs to be installed on the host, and your agent logins, cargo
 cache and build output persist across runs. See [`docker/README.md`](docker/README.md).
 
 ## License

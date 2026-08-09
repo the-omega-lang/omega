@@ -3,11 +3,13 @@
 # Omega development environment.
 #
 # Everything needed to build and hack on Omega -- the pinned Rust toolchain,
-# cc/as/ld, just, Claude Code, and Codex CLI -- lives in an Alpine container
-# defined by docker/Dockerfile. This script is the only entry point you need:
+# cc/as/ld, just, Claude Code, Codex CLI and omp -- lives in an Alpine
+# container defined by docker/Dockerfile. This script is the only entry point
+# you need:
 #
 #   ./dev.sh              start Claude Code inside the container
 #   ./dev.sh codex        start Codex CLI inside the container
+#   ./dev.sh omp          start omp (oh-my-pi) inside the container
 #   ./dev.sh shell        interactive shell inside the container
 #   ./dev.sh run cargo t  run any command inside the container
 #
@@ -42,16 +44,18 @@ ${BOLD}Omega development environment${RESET}
 ${BOLD}Commands${RESET}
   claude [args...]   Start Claude Code in the container. ${DIM}(default)${RESET}
   codex [args...]    Start Codex CLI in the container.
+  omp [args...]      Start omp (oh-my-pi) in the container.
   shell              Open an interactive bash shell in the container.
   run <cmd...>       Run one command in the container, e.g.
                      ${DIM}./dev.sh run cargo test${RESET}
                      ${DIM}./dev.sh run just build-exe${RESET}
   build              Build the image if it is missing or out of date.
   rebuild            Rebuild the image from scratch, pulling a fresh base
-                     image. Use this to pick up a new Claude Code release.
+                     image. Use this to pick up a new release of any of the
+                     three agents.
   down               Remove any leftover containers (volumes are kept).
   clean              Remove containers ${BOLD}and all volumes${RESET}: build cache,
-                     cargo cache, shell history and your Claude Code login.
+                     cargo cache, shell history and your agent logins.
   help               Show this message.
 
 ${BOLD}Version pins${RESET} ${DIM}(override via the environment, then rebuild)${RESET}
@@ -59,6 +63,7 @@ ${BOLD}Version pins${RESET} ${DIM}(override via the environment, then rebuild)${
   RUST_VERSION          ${RUST_VERSION:-1.94.1}
   CLAUDE_CODE_VERSION   ${CLAUDE_CODE_VERSION:-stable}
   CODEX_VERSION         ${CODEX_VERSION:-latest}
+  OMP_VERSION           ${OMP_VERSION:-latest}
 
   ${DIM}e.g. RUST_VERSION=1.95.0 ./dev.sh rebuild${RESET}
 
@@ -114,6 +119,9 @@ case "${command}" in
     codex)
         compose run --rm "${SERVICE}" codex "$@"
         ;;
+    omp)
+        compose run --rm "${SERVICE}" omp "$@"
+        ;;
     shell|sh|bash)
         compose run --rm "${SERVICE}" bash "$@"
         ;;
@@ -133,7 +141,7 @@ case "${command}" in
         ;;
     clean)
         printf 'This deletes the cargo cache, container build output, shell history\n'
-        printf 'and your Claude Code login for this project. Continue? [y/N] '
+        printf 'and your Claude Code, Codex and omp logins for this project. Continue? [y/N] '
         read -r reply || reply=""
         case "${reply}" in
             [yY]|[yY][eE][sS]) compose down --volumes --remove-orphans ;;

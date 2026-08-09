@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# Reproducible Alpine-based development environment for Omega, with Claude Code
-# and Codex CLI preinstalled. Every version that matters is a pinned build
-# argument, so a rebuild of this file on any machine produces the same
-# environment.
+# Reproducible Alpine-based development environment for Omega, with Claude Code,
+# Codex CLI and omp (oh-my-pi) preinstalled. Every version that matters is a
+# pinned build argument, so a rebuild of this file on any machine produces the
+# same environment.
 #
 # The project source is never COPYed in -- it is bind-mounted at /workspace by
 # `docker/compose.yaml`, so the build context stays tiny and edits on the host
@@ -17,10 +17,13 @@ FROM alpine:${ALPINE_VERSION}
 # CLAUDE_CODE_VERSION takes what `claude install` takes: "stable", "latest",
 # or an exact version such as 2.1.220. CODEX_VERSION takes what Codex's own
 # installer takes: "latest" (there is no "stable" channel) or an exact
-# version such as 0.51.0.
+# version such as 0.51.0. OMP_VERSION is "latest" (the newest GitHub release)
+# or an exact release tag, which is what omp's installer means by --ref and so
+# carries the leading "v", e.g. v17.2.12.
 ARG RUST_VERSION=1.94.1
 ARG CLAUDE_CODE_VERSION=stable
 ARG CODEX_VERSION=latest
+ARG OMP_VERSION=latest
 
 # The container user is created with the *host* user's uid/gid so that files
 # written into the bind-mounted repo are owned by you, not by root.
@@ -36,6 +39,10 @@ ARG USER_GID=1000
 #   pinned by this image. Without these, a session would re-download a large
 #   binary into a container whose home directory is discarded on exit.
 #   `./dev.sh rebuild` is the update path for both.
+# omp needs neither knob: it keeps all of its state under ~/.omp already (one
+#   volume covers config, credentials, sessions and blobs), and it only
+#   updates itself when you explicitly run `omp update` -- which, in a
+#   throwaway container, `./dev.sh rebuild` supersedes.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/home/dev/.local/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -56,14 +63,19 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #   * ripgrep -- Claude Code's search backend, and useful on its own.
 #   * just -- the project's task runner.
 #   * rustup -- provides rustup-init, used below to pin the exact toolchain.
-# No Node.js: Claude Code and Codex CLI are both installed below as their
-# native single-file builds.
+#   * libstdc++/libgcc -- omp's prebuilt musl binary links both dynamically,
+#     and stock Alpine ships neither; without them the download succeeds and
+#     the binary dies with relocation errors. build-base pulls them in as a
+#     side effect today, but omp needs them in its own right.
+# No Node.js and no Bun: Claude Code, Codex CLI and omp are all installed below
+# as their native single-file builds.
 RUN apk add --no-cache \
         bash coreutils findutils grep sed diffutils \
         tar xz gzip which less nano \
         ca-certificates curl git openssh-client \
         ripgrep \
         build-base binutils gdb \
+        libstdc++ libgcc \
         just \
         rustup
 
@@ -96,6 +108,7 @@ RUN mkdir -p \
         /workspace/target \
         /home/dev/.claude \
         /home/dev/.codex \
+        /home/dev/.omp \
         /commandhistory \
         "${CARGO_HOME}/registry" \
         "${CARGO_HOME}/git" \
@@ -134,6 +147,23 @@ RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}
 RUN CODEX_RELEASE="${CODEX_VERSION}" CODEX_NON_INTERACTIVE=1 \
         curl -fsSL https://chatgpt.com/codex/install.sh | sh \
     && codex --version
+
+# omp (oh-my-pi), third of the trio. `--binary` is not the installer's default
+# but is what keeps this image free of a Bun toolchain: left to itself the
+# installer builds from source whenever it finds (or can install) Bun. The
+# binary path resolves to omp's linux-musl release asset on Alpine and drops it
+# in ~/.local/bin, already on PATH above, then smoke-tests `omp --version`
+# itself -- so a musl build that cannot start fails this layer rather than the
+# first session. "latest" means the newest release; anything else is passed as
+# --ref, which in binary mode must name an existing release tag.
+RUN set -eux; \
+    if [ "${OMP_VERSION}" = "latest" ]; then \
+        set -- --binary; \
+    else \
+        set -- --binary --ref "${OMP_VERSION}"; \
+    fi; \
+    curl -fsSL https://omp.sh/install | sh -s -- "$@"; \
+    omp --version
 
 WORKDIR /workspace
 
