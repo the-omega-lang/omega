@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # Reproducible Alpine-based development environment for Omega, with Claude Code
-# preinstalled. Every version that matters is a pinned build argument, so a
-# rebuild of this file on any machine produces the same environment.
+# and Codex CLI preinstalled. Every version that matters is a pinned build
+# argument, so a rebuild of this file on any machine produces the same
+# environment.
 #
 # The project source is never COPYed in -- it is bind-mounted at /workspace by
 # `docker/compose.yaml`, so the build context stays tiny and edits on the host
@@ -14,9 +15,12 @@ FROM alpine:${ALPINE_VERSION}
 # Pinned versions. Override on the CLI or via the environment, e.g.
 #   RUST_VERSION=1.95.0 ./dev.sh rebuild
 # CLAUDE_CODE_VERSION takes what `claude install` takes: "stable", "latest",
-# or an exact version such as 2.1.220.
+# or an exact version such as 2.1.220. CODEX_VERSION takes what Codex's own
+# installer takes: "latest" (there is no "stable" channel) or an exact
+# version such as 0.51.0.
 ARG RUST_VERSION=1.94.1
 ARG CLAUDE_CODE_VERSION=stable
+ARG CODEX_VERSION=latest
 
 # The container user is created with the *host* user's uid/gid so that files
 # written into the bind-mounted repo are owned by you, not by root.
@@ -25,17 +29,21 @@ ARG CLAUDE_CODE_VERSION=stable
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-# CLAUDE_CONFIG_DIR: keeps all Claude Code state (config, credentials, history,
-#   todos) inside one directory, so a single named volume persists all of it.
-# DISABLE_AUTOUPDATER: the version is pinned by this image. Without this, a
-#   session would re-download a ~270 MB binary into a container whose home
-#   directory is discarded on exit. `./dev.sh rebuild` is the update path.
+# CLAUDE_CONFIG_DIR / CODEX_HOME: keep all Claude Code / Codex CLI state
+#   (config, credentials, history) inside one directory each, so a single
+#   named volume persists all of it per tool.
+# DISABLE_AUTOUPDATER / CODEX_UPDATE_DISABLED: the version of each tool is
+#   pinned by this image. Without these, a session would re-download a large
+#   binary into a container whose home directory is discarded on exit.
+#   `./dev.sh rebuild` is the update path for both.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/home/dev/.local/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG=C.UTF-8 \
     CLAUDE_CONFIG_DIR=/home/dev/.claude \
     DISABLE_AUTOUPDATER=1 \
+    CODEX_HOME=/home/dev/.codex \
+    CODEX_UPDATE_DISABLED=1 \
     HISTFILE=/commandhistory/.bash_history
 
 # System packages:
@@ -48,7 +56,8 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #   * ripgrep -- Claude Code's search backend, and useful on its own.
 #   * just -- the project's task runner.
 #   * rustup -- provides rustup-init, used below to pin the exact toolchain.
-# No Node.js: Claude Code is installed below as its native single-file build.
+# No Node.js: Claude Code and Codex CLI are both installed below as their
+# native single-file builds.
 RUN apk add --no-cache \
         bash coreutils findutils grep sed diffutils \
         tar xz gzip which less nano \
@@ -86,6 +95,7 @@ RUN mkdir -p \
         /workspace \
         /workspace/target \
         /home/dev/.claude \
+        /home/dev/.codex \
         /commandhistory \
         "${CARGO_HOME}/registry" \
         "${CARGO_HOME}/git" \
@@ -115,6 +125,15 @@ RUN printf '%s\n' \
 # written so that anything the installer appends there survives.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
     && claude --version
+
+# Codex CLI, installed the same way and for the same reason: its own native
+# installer lays down a self-contained Rust binary (musl on this base image)
+# into ~/.local/bin, already on PATH above -- no Node.js involved, same as
+# Claude Code. CODEX_NON_INTERACTIVE skips the installer's PATH-editing
+# prompts (PATH is already correct); CODEX_RELEASE pins the version.
+RUN CODEX_RELEASE="${CODEX_VERSION}" CODEX_NON_INTERACTIVE=1 \
+        curl -fsSL https://chatgpt.com/codex/install.sh | sh \
+    && codex --version
 
 WORKDIR /workspace
 

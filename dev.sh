@@ -3,10 +3,11 @@
 # Omega development environment.
 #
 # Everything needed to build and hack on Omega -- the pinned Rust toolchain,
-# cc/as/ld, just, and Claude Code -- lives in an Alpine container defined by
-# docker/Dockerfile. This script is the only entry point you need:
+# cc/as/ld, just, Claude Code, and Codex CLI -- lives in an Alpine container
+# defined by docker/Dockerfile. This script is the only entry point you need:
 #
 #   ./dev.sh              start Claude Code inside the container
+#   ./dev.sh codex        start Codex CLI inside the container
 #   ./dev.sh shell        interactive shell inside the container
 #   ./dev.sh run cargo t  run any command inside the container
 #
@@ -40,6 +41,7 @@ ${BOLD}Omega development environment${RESET}
 
 ${BOLD}Commands${RESET}
   claude [args...]   Start Claude Code in the container. ${DIM}(default)${RESET}
+  codex [args...]    Start Codex CLI in the container.
   shell              Open an interactive bash shell in the container.
   run <cmd...>       Run one command in the container, e.g.
                      ${DIM}./dev.sh run cargo test${RESET}
@@ -56,6 +58,7 @@ ${BOLD}Version pins${RESET} ${DIM}(override via the environment, then rebuild)${
   ALPINE_VERSION        ${ALPINE_VERSION:-3.23}
   RUST_VERSION          ${RUST_VERSION:-1.94.1}
   CLAUDE_CODE_VERSION   ${CLAUDE_CODE_VERSION:-stable}
+  CODEX_VERSION         ${CODEX_VERSION:-latest}
 
   ${DIM}e.g. RUST_VERSION=1.95.0 ./dev.sh rebuild${RESET}
 
@@ -107,6 +110,9 @@ case "${command}" in
         # `run` builds the image on first use, and --rm keeps things tidy:
         # all state that should survive lives in the named volumes.
         compose run --rm "${SERVICE}" claude "$@"
+        ;;
+    codex)
+        compose run --rm "${SERVICE}" codex "$@"
         ;;
     shell|sh|bash)
         compose run --rm "${SERVICE}" bash "$@"
