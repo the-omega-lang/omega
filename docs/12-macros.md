@@ -96,9 +96,33 @@ once a symbol's full signature is part of its mangled name, genuinely
 distinct declarations cannot collide. This is possible because macro
 expansion has no closures and no per-invocation hygiene scope to disambiguate.
 
+That reasoning covers *declarations*. It does not cover **locals a
+statement-position expansion introduces**, which are spliced into the caller's
+own block and therefore participate in ordinary lexical scoping: an argument
+expression that names a caller variable will bind to a macro-introduced local
+of the same name instead. Wrapping a macro body in `{ }` stops the local from
+*leaking* outward, but it does not stop it from *capturing* inward — the block
+is exactly the scope the argument is substituted into.
+
+There is no mechanism that prevents this, so a macro that must introduce a
+local picks a name a caller is unlikely to write. `core::io`'s print macros use
+an `omega_print_` prefix for precisely this reason; a plainer `out` shadowed
+any caller-supplied `out` passed as an argument, which is a real bug that a
+real program hit (`examples/dev/main.omg` prints a `*str` named `out`).
+
 ## Where it's actually used
 
 `runtime/core/core/numerics.omg` uses three macros
 (`signed_integer`/`unsigned_integer`/`float_ops`) to generate numeric spec
 implementations for every primitive type instead of hand-writing twelve
 near-identical blocks. See [core library](13-core-library.md).
+
+## Cross-file visibility
+
+`macro` accepts the same hidden/default, `internal`, and `exposed`
+visibility modifiers as ordinary items. Invocation resolution is local
+definitions first, explicitly imported macros second, then exposed `core`
+macros as an ambient fallback. Visibility is not transitive: an imported
+module's imports are not re-exported. A nested invocation emitted by a macro
+resolves at the call site; generated imports also arrive too late to add
+macros to that expansion environment.

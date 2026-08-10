@@ -163,3 +163,7 @@ correctly, checked individually at their own real call sites.
   incidentally while verifying a visibility change, but is unrelated to
   visibility itself and has since been fixed — see
   [modules & linkage](10-modules-and-linkage.md).
+
+Macros are ordinary visibility-bearing items: an unmodified macro is
+file-local, `internal macro` is package-visible, and `exposed macro` is
+visible to importers and the ambient `core` prelude.

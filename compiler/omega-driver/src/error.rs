@@ -38,6 +38,8 @@ pub enum CompileError {
     /// this is about two *different* files at once, not one module's own
     /// source -- so it renders headline-only, like `MacroExpansion`.
     DuplicateModuleIdentity { name: Ident, first: PathBuf, second: PathBuf },
+    /// Two `core` modules expose the same ambient macro name.
+    AmbiguousPreludeMacro { name: Ident, first: ModulePath, second: ModulePath },
 }
 
 impl CompileError {
@@ -49,7 +51,7 @@ impl CompileError {
             Self::Parse { module, .. } | Self::MacroExpansion { module, .. } | Self::Analysis { module, .. } => {
                 Some(module)
             }
-            Self::DuplicateModuleIdentity { .. } => None,
+            Self::DuplicateModuleIdentity { .. } | Self::AmbiguousPreludeMacro { .. } => None,
         }
     }
 
@@ -71,6 +73,12 @@ impl CompileError {
                 name.as_ref(),
                 first.display(),
                 second.display(),
+            ))],
+            Self::AmbiguousPreludeMacro { name, first, second } => vec![Diagnostic::error(format!(
+                "exposed macro '{}' is provided by both core modules '{}' and '{}'",
+                name.as_ref(),
+                first.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+                second.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
             ))],
         }
     }

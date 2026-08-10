@@ -1,7 +1,7 @@
 use crate::ast::identifier::Ident;
+use crate::ast::visibility::Visibility;
 use crate::diagnostics::Span;
 use crate::lexer::Token;
-
 /// What grammar a macro parameter's captured argument must parse as.
 /// Deliberately small (just the forms the language needs today) rather
 /// than open-ended -- adding another (e.g. `stmt`) is a new
@@ -58,8 +58,12 @@ pub struct MacroRepetition {
 /// entirely by the *invocation's* grammatical position (item, statement, or
 /// expression). See `omega_parser::macros` for how a definition's body is
 /// later substituted and re-parsed for real at each invocation site.
+/// A macro definition. Its visibility follows the ordinary three-level item
+/// rule: hidden stays file-local, `internal` reaches the package, and
+/// `exposed` reaches all importers and the ambient `core` prelude.
 #[derive(Debug, Clone)]
 pub struct MacroDefinitionStmt {
+    pub visibility: Visibility,
     pub name: Ident,
     pub signature: MacroSignature,
     pub body: Vec<MacroBodyPiece>,

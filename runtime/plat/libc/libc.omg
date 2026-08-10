@@ -16,6 +16,8 @@
 internal extern malloc : (size: usize) => *mut u8;
 internal extern free : (ptr: *u8) => void;
 internal extern realloc : (ptr: *u8, size: usize) => *mut u8;
+internal extern write : (fd: i32, buf: *u8, count: usize) => isize;
+internal extern read : (fd: i32, buf: *mut u8, count: usize) => isize;
 
 @glue
 exposed marker LibcAllocator : core::glue::GlobalAllocator {
@@ -29,5 +31,41 @@ exposed marker LibcAllocator : core::glue::GlobalAllocator {
 
     exposed realloc(ptr: *u8, size: usize) => *mut u8 {
         return realloc(ptr, size);
+    }
+}
+
+# `StandardOutput::write` and `StandardError::write` deliberately have the
+# same method signature. Current glue lowering exports one symbol per marker
+# method, so each stream needs its own marker to preserve both gap symbols.
+@glue
+exposed marker LibcStandardOutput : core::glue::StandardOutput {
+    exposed write(bytes: *[?]u8, written: *mut usize) => bool {
+        count := write(1, <*u8>bytes, <usize>bytes.length);
+        if count < 0isize { false } else {
+            *written = <usize>count;
+            true
+        }
+    }
+}
+
+@glue
+exposed marker LibcStandardError : core::glue::StandardError {
+    exposed write(bytes: *[?]u8, written: *mut usize) => bool {
+        count := write(2, <*u8>bytes, <usize>bytes.length);
+        if count < 0isize { false } else {
+            *written = <usize>count;
+            true
+        }
+    }
+}
+
+@glue
+exposed marker LibcStandardInput : core::glue::StandardInput {
+    exposed read(into: *mut [?]u8, count: *mut usize) => bool {
+        read_count := read(0, <*mut u8>into, <usize>into.length);
+        if read_count < 0isize { false } else {
+            *count = <usize>read_count;
+            true
+        }
     }
 }

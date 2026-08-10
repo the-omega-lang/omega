@@ -23,3 +23,22 @@ exposed spec GlobalAllocator {
     free(ptr: *u8) => void;
     realloc(ptr: *u8, size: usize) => *mut u8;
 }
+
+# Console capabilities stay separate: a platform can provide output without
+# input, and each fallible operation reports through an out-pointer plus a
+# boolean. `true` with a zero input count means end of input; `false` leaves
+# the out-pointer untouched.
+@gap
+exposed spec StandardOutput {
+    write(bytes: *[?]u8, written: *mut usize) => bool;
+}
+
+@gap
+exposed spec StandardError {
+    write(bytes: *[?]u8, written: *mut usize) => bool;
+}
+
+@gap
+exposed spec StandardInput {
+    read(into: *mut [?]u8, count: *mut usize) => bool;
+}

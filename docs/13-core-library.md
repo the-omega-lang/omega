@@ -205,3 +205,10 @@ Everything under [generics](06-generics.md)'s and
 [control flow](03-control-flow.md)'s caveats sections that shaped a scope
 cut here — this file only restates the *consequences* for `core`'s own
 API surface, not the underlying compiler gaps themselves.
+
+`core::io`, `core::fmt`, `core::bools`, and `core::chars` provide console
+I/O, `Display`, boolean formatting, and character formatting. `Display`
+extends the existing numeric and `str` `for` blocks rather than creating
+competing implementations; `core::chars` deliberately covers only Display.
+Outside `core`, `for` remains unavailable for primitive targets; packages may
+use it only for non-primitive declared types.

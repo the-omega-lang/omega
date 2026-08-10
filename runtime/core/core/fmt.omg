@@ -1,0 +1,141 @@
+# `core::fmt` -- allocation-free Display formatting into a caller-owned Writer.
+
+import io::Writer;
+
+exposed spec Display {
+    fmt(*self, out: *mut Writer) => void;
+}
+
+exposed write_uint(out: *mut Writer, value: u64, base: u32) => void {
+    # `[64]u8` below is exactly a `u64` in base 2, the widest legal radix.
+    # Base 0 would divide by zero and base 1 would never terminate, both
+    # running off the end of that array -- so an out-of-range radix writes
+    # nothing rather than corrupting the stack. It is a caller bug either way,
+    # and this layer has no failure channel of its own to report it through
+    # (see docs/24-console-io.md's caveats).
+    radix_ok := if base < 2u32 { false } else { base <= 36u32 };
+    if radix_ok {
+        mut digits: [64]u8;
+        mut n: usize = 0;
+        mut current := value;
+        if current == 0u64 {
+            digits[0] = 48u8;
+            n = 1;
+        } else {
+            while current > 0u64 {
+                digit := <u8>(current % <u64>base);
+                digits[n] = if digit < 10u8 { 48u8 + digit } else { 87u8 + digit };
+                n = n + 1;
+                current = current / <u64>base;
+            }
+        }
+        while n > 0 {
+            n = n - 1;
+            out.write_byte(digits[n]);
+        }
+    }
+}
+
+exposed write_int(out: *mut Writer, value: i64, base: u32) => void {
+    if value < 0i64 {
+        out.write_byte(45u8);
+        write_uint(out, <u64>(-(value + 1i64)) + 1u64, base);
+    } else {
+        write_uint(out, <u64>value, base);
+    }
+}
+
+exposed write_bool(out: *mut Writer, value: bool) => void {
+    if value { out.write_bytes(b"true"); } else { out.write_bytes(b"false"); }
+}
+
+exposed write_char(out: *mut Writer, value: char) => void {
+    code := <u32>value;
+    mut bytes: [4]u8;
+    if code < 128u32 {
+        bytes[0] = <u8>code;
+        out.write_bytes(&bytes[0..<1]);
+    } else if code < 2048u32 {
+        bytes[0] = 192u8 | <u8>(code >> 6u32);
+        bytes[1] = 128u8 | <u8>(code & 63u32);
+        out.write_bytes(&bytes[0..<2]);
+    } else if code < 65536u32 {
+        bytes[0] = 224u8 | <u8>(code >> 12u32);
+        bytes[1] = 128u8 | <u8>((code >> 6u32) & 63u32);
+        bytes[2] = 128u8 | <u8>(code & 63u32);
+        out.write_bytes(&bytes[0..<3]);
+    } else {
+        bytes[0] = 240u8 | <u8>(code >> 18u32);
+        bytes[1] = 128u8 | <u8>((code >> 12u32) & 63u32);
+        bytes[2] = 128u8 | <u8>((code >> 6u32) & 63u32);
+        bytes[3] = 128u8 | <u8>(code & 63u32);
+        out.write_bytes(&bytes[0..<4]);
+    }
+}
+
+exposed write_float(out: *mut Writer, value: f64) => void {
+    bits := *<*u64>&value;
+    exponent := (bits >> 52u64) & 0x7ffu64;
+    mantissa := bits & 0x000fffffffffffffu64;
+    negative := (bits >> 63u64) != 0u64;
+    if exponent == 0x7ffu64 {
+        if mantissa != 0u64 { out.write_bytes(b"nan"); }
+        else if negative { out.write_bytes(b"-inf"); }
+        else { out.write_bytes(b"inf"); }
+    } else {
+        mut magnitude := value;
+        if negative {
+            out.write_byte(45u8);
+            magnitude = -magnitude;
+        }
+        scientific := if magnitude >= 10000000000000000000.0 {
+            true
+        } else if magnitude > 0.0 {
+            magnitude < 0.000001
+        } else {
+            false
+        };
+        if scientific {
+            mut exponent10: i64 = 0;
+            if magnitude >= 10.0 {
+                while magnitude >= 10.0 { magnitude = magnitude / 10.0; exponent10 = exponent10 + 1i64; }
+            } else if magnitude > 0.0 {
+                while magnitude < 1.0 { magnitude = magnitude * 10.0; exponent10 = exponent10 - 1i64; }
+            }
+            write_float_fixed(out, magnitude);
+            out.write_byte(101u8);
+            write_int(out, exponent10, 10u32);
+        } else {
+            write_float_fixed(out, magnitude);
+        }
+    }
+}
+
+write_float_fixed(out: *mut Writer, magnitude: f64) => void {
+    mut rounded := magnitude + 0.0000005;
+    mut place: f64 = 1.0;
+    while place * 10.0 <= rounded {
+        place = place * 10.0;
+    }
+    while place >= 1.0 {
+        mut digit: u8 = 0u8;
+        while rounded >= place {
+            rounded = rounded - place;
+            digit = digit + 1u8;
+        }
+        out.write_byte(48u8 + digit);
+        place = place / 10.0;
+    }
+    out.write_byte(46u8);
+    mut i: u32 = 0u32;
+    while i < 6u32 {
+        rounded = rounded * 10.0;
+        mut digit: u8 = 0u8;
+        while rounded >= 1.0 {
+            rounded = rounded - 1.0;
+            digit = digit + 1u8;
+        }
+        out.write_byte(48u8 + digit);
+        i = i + 1u32;
+    }
+}

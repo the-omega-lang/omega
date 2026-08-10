@@ -154,8 +154,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Spec => Item::Spec(parse_spec_def(p, annotations, visibility)?),
         TokenKind::Macro => {
             reject_annotations(p, &annotations);
-            reject_visibility(p, visibility, visibility_span);
-            Item::MacroDefinition(parse_macro_definition(p)?)
+            Item::MacroDefinition(parse_macro_definition(p, visibility)?)
         }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Dollar) => {
             reject_annotations(p, &annotations);

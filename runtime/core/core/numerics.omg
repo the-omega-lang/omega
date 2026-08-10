@@ -26,6 +26,12 @@ import cmp::Ord;
 import cmp::Ordering;
 import default::Default;
 import hash::Hash;
+import fmt::Display;
+import fmt::write_float;
+import fmt::write_int;
+import fmt::write_uint;
+import io::Writer;
+
 
 # SplitMix64's own finalizer (public domain, widely used) -- a fixed-cost,
 # well-mixed `u64 -> u64` step, shared by every integer/float `hash` below
@@ -40,7 +46,7 @@ mix64(x: u64) => u64 {
 }
 
 macro signed_integer($T: type) => {
-    exposed spec SignedIntegerOps : Eq, Ord, Default, Hash for $T {
+    exposed spec SignedIntegerOps : Eq, Ord, Default, Hash, Display for $T {
         equals(*self, other: Self) => bool { *self == other }
 
         compare(*self, other: Self) => Ordering {
@@ -101,11 +107,15 @@ macro signed_integer($T: type) => {
         # but deterministic and type-local, bit pattern is all `Hash`
         # actually requires.
         hash(*self) => u64 { mix64(<u64>*self) }
+
+        fmt(*self, out: *mut Writer) => void {
+            write_int(out, <i64>*self, 10u32);
+        }
     }
 }
 
 macro unsigned_integer($T: type) => {
-    exposed spec UnsignedIntegerOps : Eq, Ord, Default, Hash for $T {
+    exposed spec UnsignedIntegerOps : Eq, Ord, Default, Hash, Display for $T {
         equals(*self, other: Self) => bool { *self == other }
 
         compare(*self, other: Self) => Ordering {
@@ -154,11 +164,15 @@ macro unsigned_integer($T: type) => {
 
         # Zero-extends to `u64` before mixing -- see `SignedIntegerOps::hash`.
         hash(*self) => u64 { mix64(<u64>*self) }
+
+        fmt(*self, out: *mut Writer) => void {
+            write_uint(out, <u64>*self, 10u32);
+        }
     }
 }
 
 macro float_ops($T: type) => {
-    exposed spec FloatOps : Eq, Default, Hash for $T {
+    exposed spec FloatOps : Eq, Default, Hash, Display for $T {
         # IEEE 754 equality (`NaN != NaN`, `-0.0 == 0.0`) reflects the type
         # honestly rather than papering over it -- `Ord` is deliberately
         # *not* implemented here at all (see `core::cmp`'s own doc comment
@@ -215,6 +229,10 @@ macro float_ops($T: type) => {
                 *<*u64>self
             };
             mix64(bits)
+        }
+
+        fmt(*self, out: *mut Writer) => void {
+            write_float(out, <f64>*self);
         }
     }
 }

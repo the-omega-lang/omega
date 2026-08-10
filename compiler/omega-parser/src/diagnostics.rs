@@ -96,7 +96,7 @@ impl ParseError {
                 .with_help("annotations are only allowed on structs, enums, unions, and functions"),
             ParseErrorKind::VisibilityNotAllowedHere => d
                 .with_label(self.span, "this item can't carry a visibility modifier")
-                .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, functions, globals, and externs"),
+                .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, macros, functions, globals, and externs"),
             ParseErrorKind::DefaultGenericParamNotTrailing { name } => d
                 .with_label(self.span, format!("`{name}` has no default, but an earlier parameter does"))
                 .with_help("once one generic parameter has a default, every parameter after it must too"),

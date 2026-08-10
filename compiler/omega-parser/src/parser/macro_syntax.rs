@@ -3,6 +3,7 @@ use crate::ast::identifier::Ident;
 use crate::ast::statement::macro_definition::{
     FragmentKind, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition, MacroSignature,
 };
+use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::{Token, TokenKind};
 use crate::parser::Parser;
@@ -70,7 +71,10 @@ fn capture_token_run(p: &mut Parser, stop: impl Fn(&TokenKind) -> bool) -> Vec<T
 }
 
 /// `macro name($a: expr, $rest: expr...) => { ... }`.
-pub fn parse_macro_definition(p: &mut Parser) -> Option<MacroDefinitionStmt> {
+pub fn parse_macro_definition(
+    p: &mut Parser,
+    visibility: Visibility,
+) -> Option<MacroDefinitionStmt> {
     p.expect(&TokenKind::Macro, "'macro'");
     let name = p.expect_ident()?;
     p.expect(&TokenKind::LParen, "'('");
@@ -81,6 +85,7 @@ pub fn parse_macro_definition(p: &mut Parser) -> Option<MacroDefinitionStmt> {
     let body = parse_macro_body(p, false)?;
     p.expect(&TokenKind::RBrace, "'}'");
     Some(MacroDefinitionStmt {
+        visibility,
         name,
         signature,
         body,

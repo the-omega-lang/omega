@@ -1,0 +1,12 @@
+# `core::bools` currently provides only Display; classification helpers are a
+# separate concern.
+
+import fmt::Display;
+import fmt::write_bool;
+import io::Writer;
+
+exposed spec BoolOps : Display for bool {
+    fmt(*self, out: *mut Writer) => void {
+        write_bool(out, *self);
+    }
+}

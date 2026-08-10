@@ -481,3 +481,8 @@ for aliasing to work at all beneath the root.
   build cache.
 - Codegen has no real C-ABI aggregate-passing convention — see
   [primitives](01-primitives.md)'s caveat.
+
+Macros participate in ordinary item imports. Exposed macros in `core` are
+also available as the final ambient-prelude resolution fallback; imports bind
+their bare invocation names, so qualified macro invocation syntax is not
+needed.

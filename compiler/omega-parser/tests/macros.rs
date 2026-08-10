@@ -4,9 +4,62 @@ use omega_parser::{
     macros,
     prelude::{Expression, Item, Statement},
 };
+use std::collections::HashMap;
 
 fn expand(source: &str) -> SourceModule {
-    macros::expand(SourceModule::parse(source).unwrap()).unwrap()
+    macros::expand(SourceModule::parse(source).unwrap(), &HashMap::new()).unwrap()
+}
+
+fn macro_definition(source: &str) -> omega_parser::ast::statement::macro_definition::MacroDefinitionStmt {
+    let module = SourceModule::parse(source).unwrap();
+    let Item::MacroDefinition(definition) = module.nodes.into_iter().next().unwrap().item else {
+        panic!("expected macro definition");
+    };
+    definition
+}
+
+#[test]
+fn imported_macro_definitions_merge_and_local_definitions_shadow() {
+    let imported = macro_definition("macro make() => { imported() => void {} }");
+    let mut definitions = HashMap::new();
+    definitions.insert(imported.name.clone(), imported);
+
+    let module = macros::expand(SourceModule::parse("make$();").unwrap(), &definitions).unwrap();
+    assert_eq!(module.nodes.len(), 1);
+
+    let module = macros::expand(
+        SourceModule::parse(
+            "macro make() => { local() => void {} } make$();",
+        )
+        .unwrap(),
+        &definitions,
+    )
+    .unwrap();
+    let Item::FunctionDefinition(function) = &module.nodes[0].item else {
+        panic!("expected expanded function");
+    };
+    assert_eq!(function.ident.0, "local");
+}
+
+#[test]
+fn macro_visibility_and_definition_expansion_are_reported() {
+    use omega_parser::ast::visibility::Visibility;
+
+    let exposed = macro_definition("exposed macro make() => {}");
+    let internal = macro_definition("internal macro make() => {}");
+    assert_eq!(exposed.visibility, Visibility::Exposed);
+    assert_eq!(internal.visibility, Visibility::Internal);
+    assert!(SourceModule::parse("exposed make$();").is_err());
+
+    let error = macros::expand(
+        SourceModule::parse("macro outer() => { macro inner() => {} } outer$();").unwrap(),
+        &HashMap::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        macros::MacroError::MacroDefinitionInExpansion { macro_name } if macro_name.0 == "inner"
+    ));
 }
 
 #[test]
@@ -100,7 +153,7 @@ fn fragment_validation_and_definition_validation_are_precise() {
     )
     .unwrap();
     assert!(
-        macros::expand(parsed)
+        macros::expand(parsed, &HashMap::new())
             .unwrap_err()
             .to_string()
             .contains("does not parse as Ident")
@@ -119,7 +172,7 @@ fn fragment_validation_and_definition_validation_are_precise() {
         ),
     ] {
         let text = match SourceModule::parse(source) {
-            Ok(module) => macros::expand(module).unwrap_err().to_string(),
+            Ok(module) => macros::expand(module, &HashMap::new()).unwrap_err().to_string(),
             Err(errors) => errors.first().map(ToString::to_string).unwrap_or_default(),
         };
         assert!(text.contains(expected), "{text}");
@@ -165,7 +218,7 @@ fn negative_macro_cases_report_the_new_diagnostics() {
         ),
     ] {
         let text = match SourceModule::parse(source) {
-            Ok(module) => macros::expand(module).unwrap_err().to_string(),
+            Ok(module) => macros::expand(module, &HashMap::new()).unwrap_err().to_string(),
             Err(errors) => errors.first().map(ToString::to_string).unwrap_or_default(),
         };
         assert!(text.contains(expected), "{text}");
@@ -179,7 +232,7 @@ fn negative_macro_cases_report_the_new_diagnostics() {
     )
     .unwrap();
     assert!(
-        macros::expand(module)
+        macros::expand(module, &HashMap::new())
             .unwrap_err()
             .to_string()
             .contains("expects at least 1 argument(s)")

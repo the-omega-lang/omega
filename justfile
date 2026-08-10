@@ -41,6 +41,17 @@ build-core:
     RUST_BACKTRACE=1 cargo build
     ./target/debug/omgc -v runtime/core/ -o target/core.o
 
+build-std: build-core
+    ./target/debug/omgc -v runtime/std/ --name=std --extern=core:runtime/core/ -o target/std.o
+
+build-io-demo: build-std build-plat
+    ./target/debug/omgc -v examples/io_demo/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/io_demo.o
+    cc target/io_demo.o target/core.o target/std.o target/plat.o -o target/io_demo
+
+test-io: build-io-demo
+    ./target/io_demo < tests/io_demo.stdin > target/io_demo.stdout
+    diff tests/io_demo.expected target/io_demo.stdout
+
 run-asm: build-asm
     ld target/shims.o -o target/shims
     ./target/shims; echo -e "\nexit code: $?"

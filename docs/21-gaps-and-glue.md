@@ -238,3 +238,8 @@ backing `GlobalAllocator` with libc's own `malloc`/`free`/`realloc`.
 Registering `--extern=plat:runtime/plat/libc/` is enough for any
 consuming build to pick it up, with no `import` of `plat` required
 anywhere.
+
+`core::glue` additionally declares `StandardOutput`, `StandardError`, and
+`StandardInput`. Each uses an out-count plus `bool`, allowing a target to
+provide only the console capability it actually has; successful zero input is
+EOF.

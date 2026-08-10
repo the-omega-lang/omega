@@ -1,0 +1,79 @@
+# End-to-end hosted console I/O smoke test.
+
+import extern::std::io::read_line;
+import extern::std::io::string_writer;
+import extern::std::io::to_string;
+import extern::std::string::String;
+import extern::core::fmt::Display;
+import extern::core::fmt::write_uint;
+
+# A user-defined `Display` is ordinary spec conformance -- `spec ... for` is
+# reserved to `core` and to primitive targets, so it is never the spelling a
+# consumer reaches for.
+struct Pair : Display {
+    exposed value: i32;
+
+    exposed fmt(*self, out: *mut Writer) => void {
+        out.write_str("Pair(");
+        self.value.fmt(out);
+        out.write_byte(41u8);
+    }
+}
+
+main() => i32 {
+    println$("integer=", -42i32, ", unsigned=", 255u8);
+    println$("float=", 1.2345678f64);
+    println$("bool=", true, ", char=", 'é', ", str=", "omega");
+    println$("pair=", Pair { value = 7; });
+    min_i8 := -127i8 - 1i8;
+    min_i16 := -32767i16 - 1i16;
+    min_i32 := -2147483647i32 - 1i32;
+    min_i64 := -9223372036854775807i64 - 1i64;
+    println$(
+        "widths=", min_i8, "|", min_i16, "|", min_i32, "|", min_i64, "|",
+        127i8, "|", 255u8, "|", 65535u16, "|", 4294967295u32, "|", 18446744073709551615u64
+    );
+    nan := 0.0f64 / 0.0f64;
+    inf := 1.0f64 / 0.0f64;
+    negative_inf := -1.0f64 / 0.0f64;
+    println$("special=", nan, "|", inf, "|", negative_inf, "|", 0.0f64, "|", -0.0f64);
+    println$("scientific=", 0.0000001f64, "|", 100000000000000000000.0f64);
+    mut bases: [32]u8;
+    mut base_writer := Writer::stdout_buffered(&mut bases[0..]);
+    write_uint(&mut base_writer, 10u64, 2u32);
+    base_writer.write_byte(32u8);
+    write_uint(&mut base_writer, 255u64, 16u32);
+    mut limited: [1]u8;
+    mut memory_writer := Writer::to_buffer(&mut limited[0..]);
+    memory_writer.write_byte(65u8);
+    memory_writer.write_byte(66u8);
+    println$("overflow=", memory_writer.had_error());
+    base_writer.newline();
+    base_writer.flush();
+    mut buffered: [16]u8;
+    mut writer := Writer::stdout_buffered(&mut buffered[0..]);
+    writer.write_str("buffered");
+    writer.newline();
+    writer.flush();
+    mut rendered := String::new();
+    mut rendered_writer := string_writer(&mut rendered);
+    rendered_writer.write_str("owned");
+    println$("string=", rendered.as_str());
+    mut rendered_from_value := to_string(123i16);
+    println$("to_string=", rendered_from_value.as_str());
+    mut reader := Reader::stdin();
+    mut first := String::new();
+    mut second := String::new();
+    read_line(&mut reader, &mut first);
+    read_line(&mut reader, &mut second);
+    mut fixed: [3]u8;
+    mut fixed_count: usize = 0;
+    println$("truncated=", reader.read_line(&mut fixed[0..], &mut fixed_count));
+    println$("input=", first.as_str(), "|", second.as_str());
+    eprintln$("stderr line");
+    rendered.free();
+    first.free();
+    second.free();
+    rendered_from_value.free();
+    0
+}

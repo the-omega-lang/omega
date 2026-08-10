@@ -57,6 +57,12 @@ new one is found.
   `CheckedExpr`/`MirExpr` variant — left for a dedicated follow-up rather
   than folded into an otherwise analyzer-only change).
   [primitives.md](01-primitives.md), [control-flow.md](03-control-flow.md)
+- **`core::fmt`'s float output is fixed-precision, not round-trip** — six
+  fractional digits, with a scientific fallback below `1e-6` and at or above
+  `1e19` whose normalization loop (repeated multiply/divide by ten) is itself
+  lossy. `nan`/`inf`/`-inf` are exact. A shortest-round-trip formatter
+  (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
+  [console-io.md](24-console-io.md)
 
 ## Specs
 
@@ -86,6 +92,16 @@ new one is found.
 - **No "override" or test-only glue concept** — a second `@glue` for the
   same gap is always a hard error project-wide, with no way to shadow one
   intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
+- **One `@glue` marker cannot implement two gaps that share a function
+  name.** Glue lowering exports one symbol per marker method, so a marker
+  implementing both `StandardOutput` and `StandardError` — whose required
+  function is `write` in both — can only carry one `write` body and silently
+  loses a gap symbol. `plat`'s `libc` platform works around it with one
+  marker per stream (`LibcStandardOutput`/`LibcStandardError`/
+  `LibcStandardInput`). This constrains gap naming project-wide: two gaps a
+  single platform is likely to implement together must not share a function
+  name. [gaps-and-glue.md](21-gaps-and-glue.md),
+  [platform-glue.md](22-platform-glue.md)
 
 ## Visibility
 
@@ -157,6 +173,40 @@ new one is found.
   expansion-site parse error rather than at the definition. Low impact
   (nobody writes it deliberately), but the diagnostic points at the wrong
   place. [macros.md](12-macros.md)
+- **Macro visibility is not transitive.** A module's macro environment is
+  built from its *own* import statements and each target's *own* definitions;
+  an imported module's imports are never followed. This matches the language
+  having no re-export concept, and it is what keeps the pre-pass acyclic, but
+  it means a package cannot curate a macro surface the way it can't curate an
+  item surface. [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+- **A macro body's nested invocations resolve at the call site, not the
+  definition site**, because expansion is textual splicing into the caller's
+  environment. A macro exported from one package therefore cannot call a
+  helper macro that the caller cannot also see, and the resulting
+  `UnknownMacro` names the *inner* macro with no indication that it came from
+  an expansion. The fix is a per-definition home environment carried
+  alongside each `MacroDefinitionStmt`. [macros.md](12-macros.md)
+- **Importing a macro leaves a spurious `unused import` warning.** Macro
+  names are resolved and consumed by the pre-pass in `omega-driver`'s
+  `Driver::macro_env`, entirely before HIR exists, so the ordinary
+  import-usage tracking never observes the use and reports the import as
+  dead. Every cross-package macro import warns today.
+  [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+- **A macro-generated `import` contributes no macros.** Item-position
+  expansion can emit a real `Item::Import`, but macro resolution already ran
+  against the file's hand-written imports by then. Deliberate and documented,
+  not a bug to fix locally — the alternative is expanding to a fixpoint.
+  [macros.md](12-macros.md)
+- **A statement-position expansion's locals capture caller expressions of the
+  same name.** The expansion is spliced into the caller's block, so an
+  argument naming a caller variable binds to a macro-introduced local that
+  shadows it. Wrapping the body in `{ }` prevents the local from leaking out
+  but not from capturing in — that block is the scope the argument lands in.
+  Hit for real: `core::io`'s print macros originally named their writer `out`,
+  which silently shadowed the `*str out` in `examples/dev/main.omg` and made
+  `println$(..., out)` fail with `no field 'fmt' on 'Writer'`. Worked around
+  with an `omega_print_` prefix, which is a convention, not a guarantee. A
+  real fix is gensym or a hygiene scope. [macros.md](12-macros.md)
 
 ## Compiler internals
 
@@ -198,3 +248,25 @@ need a breaking change to fix — full writeups in
   collection, codegen emission) — the compiler catches every miss as a
   hard exhaustiveness error, so nothing is silently skipped, but budget
   for it when adding new expression forms.
+
+## Diagnostics
+
+- **Taking a slice of a local array doesn't count as a use of that array**,
+  so `mut b : [8]u8; s := &mut b[0..]; s[0] = 1u8;` warns `unused variable`
+  for *both* `b` and `s`. Writing through a slice isn't tracked as a read of
+  its base either. Previously obscure; now unavoidable, because
+  `core::io`'s `println$`/`print$`/`eprint$`/`eprintln$` all declare a
+  `mut buf : [256]u8;` in their expansion, so **every print statement emits a
+  spurious `unused variable 'buf'`** — a hello-world program warns. Compounded
+  by the composite-span issue below, the label points past the end of the
+  file. The fix is in the analyzer's use-tracking (a slice/`&mut` of a place
+  is a use of that place), not in `core::io`.
+  [console-io.md](24-console-io.md)
+
+## Control flow
+
+- **A bare `return;` is a parse error**, so a `void` function cannot return
+  early at all — `expected an expression, found ';'`. Every early exit in a
+  `void` body has to be restructured around a sentinel flag, which
+  `core::io::Writer::write_bytes` and `std::io::read_line` both had to do.
+  [control-flow.md](03-control-flow.md)

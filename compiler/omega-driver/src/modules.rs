@@ -15,8 +15,10 @@ use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
+use omega_parser::ast::statement::macro_definition::MacroDefinitionStmt;
+use omega_parser::ast::visibility::Visibility;
 use omega_parser::macros::MacroError;
-use omega_parser::prelude::{Ident, ImportRoot, ParseError, Path, SourceModule};
+use omega_parser::prelude::{Ident, ImportRoot, Item, ParseError, Path, SourceModule};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -94,6 +96,7 @@ pub(crate) struct ImportEntry {
 pub(crate) enum LoadFailure {
     Parse(Vec<ParseError>),
     MacroExpansion(MacroError),
+    Compile(CompileError),
 }
 
 /// Every module this compilation has touched: its HIR (parsed at most once),
@@ -102,6 +105,11 @@ pub(crate) enum LoadFailure {
 #[derive(Default)]
 pub(crate) struct ModuleStore {
     modules: HashMap<ModulePath, ParsedModule>,
+    /// The unexpanded AST for each source module, retained so macro discovery
+    /// and normal compilation parse a file exactly once.
+    asts: HashMap<ModulePath, Rc<SourceModule>>,
+    /// Each module's own raw macro definitions, derived from `asts`.
+    macro_defs: HashMap<ModulePath, Rc<HashMap<Ident, MacroDefinitionStmt>>>,
     /// Recorded the moment a file is read -- before parsing is even
     /// attempted, so a module that fails to parse can still render its own
     /// error snippets. Deliberately not part of `ParsedModule`, which only
@@ -171,6 +179,169 @@ impl ModuleStore {
 }
 
 impl Driver {
+    /// Reads and parses one source module at most once. The retained AST is
+    /// intentionally pre-expansion because macro discovery must see its raw
+    /// imports and definitions.
+    fn ensure_ast(
+        &mut self,
+        path: &[Ident],
+        file: &std::path::Path,
+    ) -> Result<Rc<SourceModule>, ResolveError> {
+        if let Some(ast) = self.modules.asts.get(path) {
+            return Ok(ast.clone());
+        }
+
+        let source = std::fs::read_to_string(file)
+            .map_err(|e| ResolveError::LoadFailed { path: path.to_vec(), message: e.to_string() })?;
+        self.modules.sources.insert(
+            path.to_vec(),
+            Rc::new(SourceFile::new(file.display().to_string(), source.as_str())),
+        );
+        let ast = SourceModule::parse(&source).map_err(|errors| {
+            self.modules.failures.insert(path.to_vec(), LoadFailure::Parse(errors));
+            ResolveError::LoadFailed { path: path.to_vec(), message: "the module has syntax errors".into() }
+        })?;
+        let ast = Rc::new(ast);
+        self.modules.asts.insert(path.to_vec(), ast.clone());
+        Ok(ast)
+    }
+
+    /// The definitions physically declared by one module, read from its raw
+    /// AST without expanding it or traversing its imports.
+    fn module_macros(
+        &mut self,
+        path: &[Ident],
+    ) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, ResolveError> {
+        if let Some(definitions) = self.modules.macro_defs.get(path) {
+            return Ok(definitions.clone());
+        }
+
+        let location = self.roots.locate(path)?;
+        let definitions = match location.own_file {
+            None => HashMap::new(),
+            Some(file) => {
+                let ast = self.ensure_ast(path, &file)?;
+                let mut definitions = HashMap::new();
+                for node in &ast.nodes {
+                    if let Item::MacroDefinition(definition) = &node.item {
+                        definitions.insert(definition.name.clone(), definition.clone());
+                    }
+                }
+                definitions
+            }
+        };
+        let definitions = Rc::new(definitions);
+        self.modules.macro_defs.insert(path.to_vec(), definitions.clone());
+        Ok(definitions)
+    }
+
+    /// Every exposed macro in `core`, collected once for the ambient prelude.
+    fn prelude_macros(
+        &mut self,
+    ) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, CompileError> {
+        if let Some(definitions) = &self.prelude_macros {
+            return Ok(definitions.clone());
+        }
+
+        let mut definitions = HashMap::new();
+        let mut origins: HashMap<Ident, ModulePath> = HashMap::new();
+        for module in self.roots.core_modules() {
+            let module_definitions = match self.module_macros(&module) {
+                Ok(definitions) => definitions,
+                Err(error) => return Err(self.load_failure(&module, error, None)),
+            };
+            for definition in module_definitions.values() {
+                if definition.visibility != Visibility::Exposed {
+                    continue;
+                }
+                if let Some(first) = origins.get(&definition.name) {
+                    return Err(CompileError::AmbiguousPreludeMacro {
+                        name: definition.name.clone(),
+                        first: first.clone(),
+                        second: module,
+                    });
+                }
+                origins.insert(definition.name.clone(), module.clone());
+                definitions.insert(definition.name.clone(), definition.clone());
+            }
+        }
+
+        let definitions = Rc::new(definitions);
+        self.prelude_macros = Some(definitions.clone());
+        Ok(definitions)
+    }
+
+    /// The macros visible to one module before its own expansion: ambient
+    /// exposed `core` macros, then permitted item imports. Its local
+    /// definitions are deliberately merged only by `macros::expand`, where
+    /// they shadow this environment.
+    fn macro_env(
+        &mut self,
+        path: &[Ident],
+        directory_shaped: bool,
+    ) -> Result<HashMap<Ident, MacroDefinitionStmt>, CompileError> {
+        let mut environment = (*self.prelude_macros()?).clone();
+        if path.first().map(Ident::as_ref) == Some("core") {
+            let own = self
+                .module_macros(path)
+                .map_err(|error| CompileError::Resolve { error, importer: None })?;
+            for name in own.keys() {
+                environment.remove(name);
+            }
+        }
+
+        let location = self
+            .roots
+            .locate(path)
+            .map_err(|error| CompileError::Resolve { error, importer: None })?;
+        let imports = match location.own_file {
+            None => vec![],
+            Some(file) => {
+                let ast = self
+                    .ensure_ast(path, &file)
+                    .map_err(|error| CompileError::Resolve { error, importer: None })?;
+                ast.nodes
+                    .iter()
+                    .filter_map(|node| match &node.item {
+                        Item::Import(import) => Some(import.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let base = self.relative_base_for(path, directory_shaped);
+        for import in imports {
+            let absolute = match self.import_absolute_path(path, &base, import.root, &import.path) {
+                Ok(path) => path,
+                // Ordinary import indexing reports this at the original span.
+                Err(_) => continue,
+            };
+            if self.roots.module_exists(&absolute) || absolute.len() < 2 {
+                continue;
+            }
+            let module = absolute[..absolute.len() - 1].to_vec();
+            let name = absolute.last().expect("non-empty import path").clone();
+            if !self.roots.module_exists(&module) {
+                continue;
+            }
+            let definitions = match self.module_macros(&module) {
+                Ok(definitions) => definitions,
+                Err(_) => continue,
+            };
+            let Some(definition) = definitions.get(&name) else {
+                continue;
+            };
+            let visible = definition.visibility == Visibility::Exposed
+                || (definition.visibility == Visibility::Internal
+                    && path.first() == module.first());
+            if visible {
+                environment.entry(name).or_insert_with(|| definition.clone());
+            }
+        }
+        Ok(environment)
+    }
+
     /// Parses (and lowers) `path`'s own file, memoized -- the mechanism behind
     /// "only resolve things that are imported" (a module is parsed on demand,
     /// the first time something needs it) and "never reanalyze a file twice".
@@ -187,20 +358,17 @@ impl Driver {
         let hir = match location.own_file {
             None => HirModule { id, items: vec![] },
             Some(file) => {
-                let source = std::fs::read_to_string(&file)
-                    .map_err(|e| ResolveError::LoadFailed { path: path.to_vec(), message: e.to_string() })?;
-                self.modules
-                    .sources
-                    .insert(path.to_vec(), Rc::new(SourceFile::new(file.display().to_string(), source.as_str())));
-                // Parse/macro failures stash their real, structured errors and
-                // return a `LoadFailed` whose message is only a fallback --
-                // `load_failure` recognizes the stash and reports the
-                // structured form instead.
-                let ast = SourceModule::parse(&source).map_err(|errors| {
-                    self.modules.failures.insert(path.to_vec(), LoadFailure::Parse(errors));
-                    ResolveError::LoadFailed { path: path.to_vec(), message: "the module has syntax errors".into() }
-                })?;
-                let ast = omega_parser::macros::expand(ast).map_err(|e| {
+                let ast = self.ensure_ast(path, &file)?;
+                let macros = self
+                    .macro_env(path, location.children_dir.is_some())
+                    .map_err(|e| {
+                        self.modules.failures.insert(path.to_vec(), LoadFailure::Compile(e));
+                        ResolveError::LoadFailed {
+                            path: path.to_vec(),
+                            message: "building macro environment failed".into(),
+                        }
+                    })?;
+                let ast = omega_parser::macros::expand((*ast).clone(), &macros).map_err(|e| {
                     self.modules.failures.insert(path.to_vec(), LoadFailure::MacroExpansion(e));
                     ResolveError::LoadFailed { path: path.to_vec(), message: "macro expansion failed".into() }
                 })?;
@@ -235,6 +403,7 @@ impl Driver {
             Some(LoadFailure::MacroExpansion(error)) => {
                 CompileError::MacroExpansion { module: module.to_vec(), error }
             }
+            Some(LoadFailure::Compile(error)) => error,
             None => CompileError::Resolve { error, importer },
         }
     }
@@ -308,10 +477,11 @@ impl Driver {
     /// The alias -> import index over a module's own `import` statements.
     fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
+        let base = self.relative_base(path);
         for item in &hir.items {
             let HirItem::Import(import) = item else { continue };
             let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
-            let target = match self.import_absolute_path(path, import.root, &import.path) {
+            let target = match self.import_absolute_path(path, &base, import.root, &import.path) {
                 Ok(target) => target,
                 Err(e) => {
                     self.diagnostics.error(
@@ -406,7 +576,13 @@ impl Driver {
     /// for an already-parsed module (an import can only be resolved for a
     /// module whose own statements are in hand).
     fn relative_base(&self, module_path: &[Ident]) -> ModulePath {
-        if self.modules.parsed(module_path).directory_shaped {
+        self.relative_base_for(module_path, self.modules.parsed(module_path).directory_shaped)
+    }
+
+    /// The pre-parse form of [`Self::relative_base`], taking the location
+    /// metadata directly because the importing module is not in the store yet.
+    fn relative_base_for(&self, module_path: &[Ident], directory_shaped: bool) -> ModulePath {
+        if directory_shaped {
             module_path.to_vec()
         } else {
             module_path[..module_path.len().saturating_sub(1)].to_vec()
@@ -414,18 +590,18 @@ impl Driver {
     }
 
     /// The absolute module path one `import` statement names, given the
-    /// *importing* module's own path -- pure path arithmetic, no recursive
-    /// item resolution and no filesystem access. See `ImportRoot` for what
-    /// each variant means.
+    /// importing module and its already-computed local import base -- pure path
+    /// arithmetic, no recursive item resolution and no filesystem access.
     fn import_absolute_path(
         &self,
         importer: &[Ident],
+        base: &[Ident],
         root: ImportRoot,
         path: &Path,
     ) -> Result<ModulePath, ResolveError> {
         match root {
             ImportRoot::Local => {
-                let mut absolute = self.relative_base(importer);
+                let mut absolute = base.to_vec();
                 absolute.extend(path.segments());
                 Ok(absolute)
             }

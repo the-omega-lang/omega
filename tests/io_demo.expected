@@ -1,0 +1,14 @@
+integer=-42, unsigned=255
+float=1.234568
+bool=true, char=é, str=omega
+pair=Pair(7)
+widths=-128|-32768|-2147483648|-9223372036854775808|127|255|65535|4294967295|18446744073709551615
+special=nan|inf|-inf|0.000000|-0.000000
+scientific=1.000000e-7|1.000000e20
+overflow=true
+1010 ff
+buffered
+string=owned
+to_string=123
+truncated=false
+input=first line|second line

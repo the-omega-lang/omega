@@ -43,10 +43,13 @@ use diagnostics::Diagnostics;
 use extensions::Extensions;
 use items::ItemQueries;
 use modules::ModuleStore;
+use omega_parser::ast::statement::macro_definition::MacroDefinitionStmt;
 use omega_parser::prelude::Ident;
 use resolver::ImportState;
 use roots::ModuleRoots;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 /// An absolute module path, from its package root down (`["core",
 /// "strings"]`). Every cache, diagnostic, and mangled symbol keys off the
@@ -73,6 +76,8 @@ pub struct Driver {
     imports: ImportState,
     /// `for`-spec extension discovery, which sits outside the item query.
     extensions: Extensions,
+    /// Every exposed macro in the ambient `core` prelude, collected once.
+    prelude_macros: Option<Rc<HashMap<Ident, MacroDefinitionStmt>>>,
 }
 
 impl Driver {
@@ -91,6 +96,7 @@ impl Driver {
             items: ItemQueries::default(),
             imports: ImportState::default(),
             extensions: Extensions::default(),
+            prelude_macros: None,
         })
     }
 }

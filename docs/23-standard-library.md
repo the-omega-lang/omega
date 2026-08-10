@@ -205,3 +205,10 @@ other).
   or an out-pointer/`bool` pair — so it isn't added speculatively; a
   likely near-future addition once something genuinely needs a
   payload-bearing error, not before.
+
+`std::io` adds `string_writer`, growable `read_line`, and
+`to_string<T: Display>`. Build it with:
+
+```sh
+just build-std
+```

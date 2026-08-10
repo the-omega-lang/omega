@@ -9,8 +9,11 @@
 
 import cmp::Eq;
 import hash::Hash;
+import fmt::Display;
+import io::Writer;
 
-exposed spec StrOps : Eq, Hash for str {
+
+exposed spec StrOps : Eq, Hash, Display for str {
     equals(*self, other: Self) => bool {
         if self.size != other.size {
             return false;
@@ -117,5 +120,9 @@ exposed spec StrOps : Eq, Hash for str {
             i = i + 1;
         }
         h
+    }
+
+    fmt(*self, out: *mut Writer) => void {
+        out.write_bytes(<*[?]u8>self);
     }
 }

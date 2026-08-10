@@ -81,6 +81,12 @@ pub enum MacroError {
         position: MacroPosition,
         errors: String,
     },
+    /// Reached when an item-position expansion itself produces a definition:
+    /// item reparsing permits `macro`, but definitions are only collected from
+    /// the source module before expansion.
+    MacroDefinitionInExpansion {
+        macro_name: Ident,
+    },
     ExpansionLimitExceeded {
         macro_name: Ident,
     },
@@ -187,6 +193,11 @@ impl fmt::Display for MacroError {
                     macro_name.0
                 )
             }
+            Self::MacroDefinitionInExpansion { macro_name } => write!(
+                f,
+                "macro expansion produced definition '{}' -- macro definitions must appear in source",
+                macro_name.0
+            ),
             Self::ExpansionLimitExceeded { macro_name } => write!(
                 f,
                 "macro expansion did not terminate (exceeded {MAX_EXPANSIONS} expansions) while \
@@ -200,8 +211,13 @@ impl fmt::Display for MacroError {
 /// Expands every macro definition and invocation in `module`, returning a
 /// module that contains only the five ordinary [`Item`] variants
 /// that existed before macros were added.
-pub fn expand(module: SourceModule) -> Result<SourceModule, MacroError> {
-    let (defs, items) = collect_definitions(module.nodes)?;
+pub fn expand(
+    module: SourceModule,
+    imported: &HashMap<Ident, MacroDefinitionStmt>,
+) -> Result<SourceModule, MacroError> {
+    let (own, items) = collect_definitions(module.nodes)?;
+    let mut defs = imported.clone();
+    defs.extend(own);
     for def in defs.values() {
         validate_definition(def)?;
     }
@@ -354,8 +370,10 @@ fn expand_item_list(
                 item: Item::DeclarationWithInit(decl, expand_expr(value, defs, budget)?),
                 span: node.span,
             }),
-            Item::MacroDefinition(_) => {
-                unreachable!("macro definitions were already removed by collect_definitions")
+            Item::MacroDefinition(def) => {
+                return Err(MacroError::MacroDefinitionInExpansion {
+                    macro_name: def.name,
+                });
             }
         }
     }

@@ -101,3 +101,7 @@ link `target/plat.o` alongside `core.o`/`mathlib.o`, even though
 `examples/dev` never imports `plat` (see `examples/dev/main.omg`'s own
 `GlobalAllocator::alloc`/`free` demo, resolved through the ambient `core`
 prelude with no `plat` reference of any kind).
+
+The libc platform adds console glue using `write(2)` for stdout/stderr and
+`read(2)` for stdin. Stdout and stderr use separate markers because current
+glue lowering cannot export two identical `write` methods from one marker.

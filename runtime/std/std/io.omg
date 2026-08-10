@@ -1,0 +1,60 @@
+# `std::io` -- allocation-dependent convenience wrappers over `core::io`.
+
+import string::String;
+
+# Appends through `String`'s own public `push_str` rather than reaching into
+# its byte list: a sink is an ordinary consumer of the type, not a privileged
+# one, and `push_str` already copies a whole run at a time.
+string_sink(ctx: usize, data: *[?]u8) => usize {
+    target := <*mut String>ctx;
+    target.push_str(<*str>data);
+    <usize>data.length
+}
+
+exposed string_writer(value: *mut String) => Writer {
+    mut empty: [0]u8;
+    Writer::to_sink(string_sink, <usize>value, &mut empty[0..])
+}
+
+# `true` once anything was read, including a final line with no trailing
+# newline; `false` only at end of input with nothing consumed, which is what
+# lets a caller loop until the input runs out. The newline is consumed and
+# never appended. Bytes are gathered in fixed-size runs so this needs no
+# access to `String`'s internal storage.
+exposed read_line(reader: *mut Reader, into: *mut String) => bool {
+    mut chunk: [256]u8;
+    mut n: i32 = 0;
+    mut byte: u8 = 0;
+    mut saw_input := false;
+    mut ended_at_newline := false;
+    mut running := true;
+    while running {
+        if reader.read_byte(&mut byte) {
+            saw_input = true;
+            if byte == 10u8 {
+                ended_at_newline = true;
+                running = false;
+            } else {
+                chunk[n] = byte;
+                n = n + 1;
+                if n == 256 {
+                    into.push_str(<*str>&chunk[0..<n]);
+                    n = 0;
+                }
+            }
+        } else {
+            running = false;
+        }
+    }
+    if n > 0 {
+        into.push_str(<*str>&chunk[0..<n]);
+    }
+    if ended_at_newline { true } else { saw_input }
+}
+
+exposed to_string<T: Display>(value: T) => String {
+    mut result := String::new();
+    mut out := string_writer(&mut result);
+    value.fmt(&mut out);
+    result
+}

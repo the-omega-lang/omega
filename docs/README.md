@@ -100,3 +100,5 @@ inline per topic; the fuller blow-by-blow (including false starts and
 rolled-back designs like the `@ufcs` annotation predecessor to
 [for-attached specs](08-specs.md)) lives in this repo's own commit history,
 where design conversations are recorded verbatim.
+
+- [24. Console I/O](24-console-io.md)
