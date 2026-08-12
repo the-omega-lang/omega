@@ -317,10 +317,9 @@ impl<'r> Analyzer<'r> {
     /// `Self`).
     /// Also resolves `sp.annotations` -- folded in here, not a separate
     /// function, because this is the one
-    /// place both of a spec's two possible resolution paths (an ordinary
-    /// declaration, via `omega_driver::Driver::resolve_spec_declaration`,
-    /// and a `for`-attached one, via `Analyzer::resolve_extension_methods`)
-    /// already converge on exactly once -- see those two callers.
+    /// place a spec's declaration resolution (`omega_driver::Driver::
+    /// resolve_spec_declaration`) converges on exactly once -- see that
+    /// caller.
     pub fn resolve_spec_functions(
         &mut self,
         sp: &HirSpecDef,
@@ -351,6 +350,28 @@ impl<'r> Analyzer<'r> {
                 );
                 continue;
             }
+            if f.is_variadic {
+                // Rejected at the spec's own declaration for the same reason
+                // by-value `self` is, just below: nothing downstream could
+                // ever satisfy it. Omega has no variadic function
+                // *definitions* at all -- only `extern` declarations may be
+                // variadic, for C interop -- so neither a `compose` block nor
+                // a spec default can supply a matching body, and every
+                // implementor would get a bare `MissingSpecFunction` naming a
+                // function it has no syntax to write.
+                //
+                // The `is_variadic` plumbing behind this (HIR,
+                // `RawSpecFunctionSig`, the resolved `ResolvedFunctionType`)
+                // is complete and correct; only this guard stands between it
+                // and working. Delete it the day variadic definitions exist.
+                self.error(
+                    f.id,
+                    f.span,
+                    AnalysisErrorKind::VariadicSpecFunctionUnsatisfiable {
+                        name: f.name.clone(),
+                    },
+                );
+            }
             let by_value = matches!(
                 f.self_mode,
                 Some(SelfMode::Value) | Some(SelfMode::MutValue)
@@ -362,9 +383,7 @@ impl<'r> Analyzer<'r> {
                 // rejected here, unconditionally, rather than only where a
                 // `spec *T` coercion actually happens (a spec used only for
                 // static bounds today could gain one anywhere else in the
-                // program later). A `for`-attached spec is exempt: it has
-                // no name, so it can never appear in `spec *T` position at
-                // all.
+                // program later).
                 self.error(
                     f.id,
                     f.span,
@@ -808,6 +827,23 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Every spec reachable from `spec` through `dependencies`, by id,
+    /// including `spec` itself. Ids only: this is a membership test, so the
+    /// per-dependency type arguments (raw at a declaration, see
+    /// `ResolvedSpecType::dependencies`) never need resolving here.
+    fn transitive_dependency_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut HashSet<HirId>) {
+        let (id, dependencies) = {
+            let spec = spec.borrow();
+            (spec.id, spec.dependencies.clone())
+        };
+        if !out.insert(id) {
+            return;
+        }
+        for (dependency, _) in dependencies {
+            Self::transitive_dependency_ids(&dependency, out);
+        }
+    }
+
     pub(super) fn type_implements_spec(
         &mut self,
         id: HirId,
@@ -823,12 +859,66 @@ impl<'r> Analyzer<'r> {
                 .iter()
                 .map(|(_, method)| method.decl_id)
                 .collect()),
-            Ok(None) => Err(self
-                .flatten_spec(id, span, spec, spec_type_args, ty)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|requirement| requirement.name)
-                .collect()),
+            // No entry registered under this exact spec. That does *not* mean
+            // `ty` fails to implement it: an **aggregate** spec -- a pure
+            // alias (`spec MySpec = Dummy | Mammal`), or any spec whose own
+            // requirements are all supplied by its dependencies -- is
+            // satisfied by composing its *members*, and nobody ever writes
+            // `compose Wolf : MySpec` for one. `transitive_spec_dependencies`
+            // registers derived entries walking *downward* (a compose's spec
+            // to that spec's dependencies), which is the wrong direction for
+            // this: `MySpec` depends on `Mammal`, not the reverse.
+            //
+            // So satisfy it the only way that is decidable here -- map
+            // `spec`'s own flattened requirements onto the methods `ty`'s
+            // registry entries already provide. Restricted to entries whose
+            // spec lies in `spec`'s transitive dependencies, so an unrelated
+            // compose that happens to share a signature can never contribute:
+            // this is conformance, not method lookup, and it must not become
+            // a second way for a foreign spec's method to count.
+            //
+            // The resulting order is `flatten_spec`'s, which is also the
+            // vtable slot order (see `CheckedSpecCoerce::slots`).
+            Ok(None) => {
+                let Some(requirements) = self.flatten_spec(id, span, spec, spec_type_args, ty)
+                else {
+                    return Err(vec![]);
+                };
+                let mut permitted = HashSet::new();
+                Self::transitive_dependency_ids(spec, &mut permitted);
+                let candidates = match self.resolver.composes_for_type(ty) {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
+                        return Err(vec![]);
+                    }
+                };
+                let available: Vec<(Ident, ResolvedMethod)> = candidates
+                    .into_iter()
+                    .filter(|entry| permitted.contains(&entry.spec.borrow().id))
+                    .flat_map(|entry| entry.methods)
+                    .collect();
+
+                let mut slots = Vec::with_capacity(requirements.len());
+                let mut missing = Vec::new();
+                for requirement in &requirements {
+                    let found = available.iter().position(|(name, method)| {
+                        *name == requirement.name
+                            && self.fn_satisfies_requirement(
+                                id,
+                                span,
+                                &method.fn_type,
+                                &requirement.fn_type,
+                                &requirement.return_type_bound,
+                            )
+                    });
+                    match found {
+                        Some(index) => slots.push(available[index].1.decl_id),
+                        None => missing.push(requirement.name.clone()),
+                    }
+                }
+                if missing.is_empty() { Ok(slots) } else { Err(missing) }
+            }
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
                 Err(vec![])
@@ -842,7 +932,7 @@ impl<'r> Analyzer<'r> {
     /// as `flatten_spec`, rather than walked by the driver as plain syntax.
     /// Each returned method list is restricted to that dependency's own
     /// flattened requirements, ready to become a derived registry entry.
-    pub fn compose_dependency_closure(
+    pub fn transitive_spec_dependencies(
         &mut self,
         id: HirId,
         span: Span,
@@ -852,9 +942,9 @@ impl<'r> Analyzer<'r> {
         direct_methods: &[(Ident, ResolvedMethod)],
     ) -> Option<Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>, Vec<(Ident, ResolvedMethod)>)>>
     {
-        let mut closure = Vec::new();
+        let mut transitive = Vec::new();
         let mut visited = HashSet::new();
-        self.compose_dependency_closure_into(
+        self.transitive_spec_dependencies_into(
             id,
             span,
             target,
@@ -862,12 +952,12 @@ impl<'r> Analyzer<'r> {
             spec_args,
             direct_methods,
             &mut visited,
-            &mut closure,
+            &mut transitive,
         )?;
-        Some(closure)
+        Some(transitive)
     }
 
-    fn compose_dependency_closure_into(
+    fn transitive_spec_dependencies_into(
         &mut self,
         id: HirId,
         span: Span,
@@ -902,19 +992,49 @@ impl<'r> Analyzer<'r> {
             }
 
             let requirements = self.flatten_spec(id, span, &dependency, &args, target)?;
-            let methods = requirements
-                .iter()
-                .filter_map(|requirement| {
-                    direct_methods
-                        .iter()
-                        .find(|(name, method)| {
-                            *name == requirement.name && method.fn_type == requirement.fn_type
-                        })
-                        .cloned()
-                })
-                .collect();
-            out.push((dependency.clone(), args.clone(), methods));
-            self.compose_dependency_closure_into(
+            // Every requirement must be matched, in `flatten_spec`'s order --
+            // that order *is* the vtable slot order, so a short list would
+            // silently misalign slots rather than fail. `filter_map` used to
+            // drop unmatched entries and register the remainder; a derived
+            // entry with fewer methods than its spec requires is worse than
+            // no derived entry at all, because `type_implements_spec` maps
+            // whatever it finds straight to slots.
+            //
+            // Matched with `fn_satisfies_requirement`, not `fn_type ==`: a
+            // `=> spec Bound<...>` requirement is satisfied by any concrete
+            // return type implementing the bound (see
+            // `FlattenedSpecFn::return_type_bound`), which exact equality
+            // rejects outright.
+            let mut methods = Vec::with_capacity(requirements.len());
+            let mut complete = true;
+            for requirement in &requirements {
+                let found = direct_methods.iter().position(|(name, method)| {
+                    *name == requirement.name
+                        && self.fn_satisfies_requirement(
+                            id,
+                            span,
+                            &method.fn_type,
+                            &requirement.fn_type,
+                            &requirement.return_type_bound,
+                        )
+                });
+                match found {
+                    Some(index) => methods.push(direct_methods[index].clone()),
+                    None => {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+            // Not an error: the direct compose was already checked against
+            // its own spec, so an unmatched dependency requirement means this
+            // dependency simply is not fully covered here. Registering
+            // nothing lets `type_implements_spec`'s own transitive-dependency search answer
+            // instead, with the full picture.
+            if complete {
+                out.push((dependency.clone(), args.clone(), methods));
+            }
+            self.transitive_spec_dependencies_into(
                 id,
                 span,
                 target,

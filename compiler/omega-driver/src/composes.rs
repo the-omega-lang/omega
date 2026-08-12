@@ -318,6 +318,23 @@ impl Driver {
                             AnalysisErrorKind::BlanketComposeNotYetSupported { parameter },
                         ),
                     );
+                } else if !Self::template_target_is_matchable(&compose.target) {
+                    // Same reasoning as the blanket case just above, for a
+                    // different shape: a *generic* compose never reaches
+                    // `resolve_compose_target` (only concrete instantiations
+                    // do), so a target `match_compose_target` cannot bind --
+                    // `compose<T> *T : Spec`, `compose<T> [4]T : Spec` --
+                    // would register as a template that nothing can ever
+                    // match and vanish without a word. Rejected here, with
+                    // the same diagnostic the concrete path already gives.
+                    self.diagnostics.error(
+                        module,
+                        AnalysisError::new(
+                            compose.id,
+                            compose.span,
+                            AnalysisErrorKind::ComposeTargetNotAType,
+                        ),
+                    );
                 } else {
                     self.composes.templates.push(ComposeTemplate {
                         module: module.clone(),
@@ -326,6 +343,17 @@ impl Driver {
                 }
             }
         }
+    }
+
+    /// Whether a *generic* compose's raw target is a shape
+    /// `match_compose_target` can actually bind: a named generic type
+    /// (`List<T>`) or a slice pattern (`[?]T`). Anything else registers a
+    /// template no concrete type will ever match, so it is rejected at
+    /// declaration instead. Kept deliberately in step with
+    /// `match_compose_target`'s own arms — the two must agree or a legal
+    /// target gets refused, or an unmatchable one slips through again.
+    fn template_target_is_matchable(target: &Type) -> bool {
+        matches!(target, Type::Generic(..) | Type::UnknownSizeArray(_))
     }
 
     fn instantiate_compose(
@@ -394,6 +422,21 @@ impl Driver {
         if !self.check_compose_orphan(&entry) || self.reject_duplicate_compose(&entry) {
             return None;
         }
+        // A directly-written compose supersedes any derived entry standing in
+        // for the same `(target, spec, args)`. Without this, declaring
+        // `compose Foo : Derived` before `compose Foo : Base` left the derived
+        // stand-in ahead of the explicit block in `entries`, so `Base::b(&f)`
+        // silently called *Derived*'s body while the hand-written one was
+        // emitted and never reached -- wrong code, no diagnostic. This is not
+        // a `DuplicateCompose`: the author wrote exactly one `Base` block, and
+        // it is the one that must win.
+        let spec_id = entry.spec.borrow().id;
+        self.composes.entries.retain(|existing| {
+            !(existing.derived
+                && existing.target == entry.target
+                && existing.spec.borrow().id == spec_id
+                && existing.spec_args == entry.spec_args)
+        });
         self.composes.entries.push(entry.clone());
         self.register_derived_composes(&entry);
         Some(entry)
@@ -405,7 +448,7 @@ impl Driver {
             &entry.substitution,
             (entry.id, entry.span),
             |analyzer| {
-                analyzer.compose_dependency_closure(
+                analyzer.transitive_spec_dependencies(
                     entry.id,
                     entry.span,
                     &entry.target,
@@ -416,10 +459,10 @@ impl Driver {
             },
         );
         self.diagnostics.record_warnings(&entry.module, run.warnings);
-        let Some(closure) = run.result else {
+        let Some(transitive) = run.result else {
             return;
         };
-        for (spec, spec_args, methods) in closure {
+        for (spec, spec_args, methods) in transitive {
             if self.composes.entries.iter().any(|existing| {
                 existing.target == entry.target
                     && existing.spec.borrow().id == spec.borrow().id
@@ -509,11 +552,23 @@ impl Driver {
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedType],
     ) -> Option<ComposeEntry> {
-        if let Some(entry) = self.composes.entries.iter().find(|entry| {
+        // Directly-written blocks first, derived stand-ins only as a fallback:
+        // registration order must never decide which body a call reaches (see
+        // `instantiate_compose`'s supersede step). Belt-and-braces alongside
+        // that removal, since a derived entry can also be registered *after* a
+        // direct one by a later compose's own dependency walk.
+        let matches = |entry: &&ComposeEntry| {
             entry.target == target.lookup_key()
                 && entry.spec.borrow().id == spec.borrow().id
                 && entry.spec_args == spec_args
-        }) {
+        };
+        if let Some(entry) = self
+            .composes
+            .entries
+            .iter()
+            .find(|entry| !entry.derived && matches(entry))
+            .or_else(|| self.composes.entries.iter().find(matches))
+        {
             return Some(entry.clone());
         }
         let templates = self.composes.templates.clone();
@@ -530,6 +585,58 @@ impl Driver {
             }
         }
         None
+    }
+
+    /// Every spec reachable from `spec` through `dependencies`, by id,
+    /// including `spec` itself. Ids only -- a membership test needs no
+    /// per-dependency type arguments (which are raw at a declaration; see
+    /// `ResolvedSpecType::dependencies`). Mirrors
+    /// `Analyzer::transitive_dependency_ids`, which does the same walk for
+    /// conformance; both must agree or a bound would admit a method that
+    /// conformance rejects.
+    fn transitive_dependency_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut Vec<HirId>) {
+        let (id, dependencies) = {
+            let spec = spec.borrow();
+            (spec.id, spec.dependencies.clone())
+        };
+        if out.contains(&id) {
+            return;
+        }
+        out.push(id);
+        for (dependency, _) in dependencies {
+            Self::transitive_dependency_ids(&dependency, out);
+        }
+    }
+
+    /// What a `T: Spec` bound puts into the analyzer's bound context: the
+    /// declared bound itself, plus every compose already registered on
+    /// `concrete` whose spec lies in `spec`'s transitive dependencies.
+    ///
+    /// The transitive part is what makes an **aggregate** bound work at all. A
+    /// pure alias (`spec MySpec = Dummy | Mammal`) is never itself composed,
+    /// so `(concrete, MySpec)` has no entry and a receiver call under
+    /// `T: MySpec` would find nothing -- even though `compose Wolf : Mammal`
+    /// already registered every method the alias names.
+    ///
+    /// Restricted to those, never "every compose on the type": seeding
+    /// the latter is what previously let `x.secret()` resolve under
+    /// `T: Speak` merely because someone wrote `compose Dog : Secret`, which
+    /// voids the guarantee `compose` exists to provide.
+    pub(crate) fn bound_context_for(
+        &mut self,
+        concrete: &ResolvedType,
+        spec: Rc<RefCell<ResolvedSpecType>>,
+        spec_args: Vec<ResolvedType>,
+    ) -> Vec<(ResolvedType, Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
+        let mut permitted = Vec::new();
+        Self::transitive_dependency_ids(&spec, &mut permitted);
+        let mut seeds = vec![(concrete.clone(), spec, spec_args)];
+        for entry in self.composes_for_type(concrete) {
+            if permitted.contains(&entry.spec.borrow().id) {
+                seeds.push((entry.target, entry.spec, entry.spec_args));
+            }
+        }
+        seeds
     }
 
     pub(crate) fn composes_for_type(&mut self, target: &ResolvedType) -> Vec<ComposeEntry> {

@@ -493,6 +493,13 @@ impl AnalysisErrorKind {
                     ),
                 )
                 .with_help("write an element annotation, for example `for item : u8 in source { ... }`"),
+            Self::ForLoopElementTypeMismatch { expected, available } => d
+                .with_label(span, format!("no `ToIterator<{expected}>` for this source"))
+                .with_help(format!(
+                    "it composes `ToIterator` at: {} -- annotate the binding with one of those, or add \
+                     `compose <source> : ToIterator<{expected}>`",
+                    available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                )),
             Self::ForLoopRangeMissingStart => d
                 .with_label(span, "no principled value to start counting from")
                 .with_help("write an explicit start, e.g. `for i in 0..<10 { ... }`"),
@@ -512,6 +519,12 @@ impl AnalysisErrorKind {
                     "spec functions must receive `self` by pointer (`*self`/`*mut self`) -- `spec *T` dynamic \
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
+                ),
+            Self::VariadicSpecFunctionUnsatisfiable { name } => d
+                .with_label(span, format!("`{}` is declared variadic", name.as_ref()))
+                .with_help(
+                    "Omega has no variadic function definitions -- only `extern` declarations may be \
+                     variadic -- so no `compose` block or spec default could ever supply a matching body",
                 ),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))

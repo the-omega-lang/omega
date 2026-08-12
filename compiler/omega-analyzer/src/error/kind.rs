@@ -690,6 +690,16 @@ pub enum AnalysisErrorKind {
     AmbiguousForLoopElementType {
         candidates: Vec<ResolvedType>,
     },
+    /// `for x : u64 in source { }` where `source` composes `ToIterator<T>`,
+    /// but never at `u64`. Distinct from
+    /// [`Self::AmbiguousForLoopElementType`]: that one means "too many to
+    /// choose from", this one means "the one you named isn't there" -- which
+    /// previously rendered as an ambiguity over an *empty* candidate list,
+    /// naming neither the requested type nor the available ones.
+    ForLoopElementTypeMismatch {
+        expected: ResolvedType,
+        available: Vec<ResolvedType>,
+    },
     /// `for i in ..b { }` / bare `for i in .. { }` -- a range-driven `for`
     /// loop with no start has no principled value to begin counting from
     /// (unlike a slice's own missing start, which unambiguously means 0).
@@ -724,6 +734,18 @@ pub enum AnalysisErrorKind {
     /// or reconstruct a full by-value copy of the concrete type. A spec
     /// function's self must always be `*self`/`*mut self`.
     SpecSelfMustBePointer {
+        name: Ident,
+    },
+    /// A spec function declared variadic (`f(*self, ...)`) -- rejected at the
+    /// spec's own definition, for the same "nothing downstream could satisfy
+    /// it" reason as [`Self::SpecSelfMustBePointer`]. Omega has no variadic
+    /// function *definitions*; only `extern` declarations may be variadic, so
+    /// neither a `compose` block nor a spec default can supply a body with a
+    /// matching signature, and every implementor would fail with a bare
+    /// `MissingSpecFunction` naming a function it has no syntax to write.
+    /// Lift this the day variadic definitions exist -- the `is_variadic`
+    /// plumbing behind it is already complete.
+    VariadicSpecFunctionUnsatisfiable {
         name: Ident,
     },
     // -- annotations --
@@ -1417,6 +1439,11 @@ impl fmt::Display for AnalysisErrorKind {
                 "for-loop source has ambiguous element type: {}",
                 candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
             ),
+            Self::ForLoopElementTypeMismatch { expected, available } => write!(
+                f,
+                "for-loop source produces no '{expected}' elements (it produces: {})",
+                available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            ),
             Self::ForLoopRangeMissingStart => {
                 write!(f, "this range-driven 'for' loop has no start")
             }
@@ -1441,6 +1468,13 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(
                     f,
                     "spec function '{}' must receive 'self' by pointer",
+                    name.as_ref()
+                )
+            }
+            Self::VariadicSpecFunctionUnsatisfiable { name } => {
+                write!(
+                    f,
+                    "spec function '{}' is variadic, which no implementor could satisfy",
                     name.as_ref()
                 )
             }

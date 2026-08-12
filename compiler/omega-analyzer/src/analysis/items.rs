@@ -732,13 +732,27 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         self.context.enter_scope();
-        let signatures = self.analyze_all(functions, |this, f| {
-            let return_type_override = match &f.return_type {
-                Type::SpecStatic(bound) => Some(this.infer_body_return_type(f, bound)?),
-                _ => None,
-            };
-            this.collect_function_signature(f, return_type_override)
-        });
+        // `return_type_override: None`, unconditionally: a method whose
+        // return type is a bare `spec T` still gets
+        // `SpecStaticNotAllowedHere`, exactly as a free function did before
+        // `resolve_spec_return_function` existed.
+        //
+        // Inferring it here is *reachable* -- `infer_body_return_type` runs
+        // fine -- but not *correct*. It would check the method's body during
+        // the signature phase, while this very loop is still building the
+        // list that becomes the cell's `functions`: the owning type's method
+        // table is empty at that moment, so the body can see `Self`'s fields
+        // but none of its sibling methods, failing with `no field 'helper' on
+        // 'Zoo'` in either declaration order. A partially-populated cell
+        // reaching user code is a worse outcome than the missing feature.
+        //
+        // Doing this properly needs the inversion `resolve_spec_return_function`
+        // performs for a free function -- signature resolution deferred until
+        // after a throwaway body pass -- extended to run *after* the owning
+        // aggregate's other method signatures are known. That is a phase
+        // change in `compute_aggregate`, not a local override here.
+        let signatures =
+            self.analyze_all(functions, |this, f| this.collect_function_signature(f, None));
         self.context.leave_scope();
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);

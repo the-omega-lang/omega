@@ -103,16 +103,9 @@ impl Codegen {
                             &f.fn_type(),
                         ))
                     }
-                    (ManglingMode::Enabled, None, Some(target)) => {
-                        let owner = Ident(target.to_string());
-                        mangle::encode(&mangle::method_symbol(
-                            path,
-                            &owner,
-                            &[],
-                            &f.name,
-                            &f.fn_type(),
-                        ))
-                    }
+                    (ManglingMode::Enabled, None, Some(target)) => mangle::encode(
+                        &mangle::primitive_method_symbol(target, &f.name, &f.fn_type()),
+                    ),
                     (ManglingMode::Enabled, None, None) => mangle::encode(
                         &mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()),
                     ),

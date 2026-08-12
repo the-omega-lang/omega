@@ -442,9 +442,16 @@ side effect of adding methods.
   `mangle::vtable_symbol`.
 - **Only `core` can add inherent methods to primitives.** Any package allowed
   by the orphan rule can compose a spec with a concrete target.
-- Spec functions may declare a final `...`, preserved in their resolved
-  function type — but no call site consults it yet, and a compose block
-  cannot declare `...`, so a variadic requirement is not implementable or
-  callable. See [known-issues.md](14-known-issues.md).
+- **A spec function may not be variadic.** `f(*self, ...)` is rejected at the
+  spec's own declaration (`VariadicSpecFunctionUnsatisfiable`): Omega has no
+  variadic function *definitions* — only `extern` declarations may be
+  variadic — so no `compose` block or spec default could ever supply a
+  matching body. The plumbing behind it is complete; the guard lifts when
+  variadic definitions exist. See [known-issues.md](14-known-issues.md).
+- **A `spec T` return type is not inferred on a method**, only on a plain
+  top-level function — a method gets `SpecStaticNotAllowedHere`. A compose
+  method satisfying a `=> spec Bound<...>` requirement declares its own
+  *concrete* return type (`std::list`'s `to_iterator(*self) =>
+  ListIterator<T>`), which is checked against the bound.
 - Generic primitive and compose templates are instantiated lazily for the
   concrete target types a compilation uses.

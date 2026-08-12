@@ -600,8 +600,8 @@ impl<'r> Analyzer<'r> {
             return Some((only, None));
         }
 
-        // Struct/union/enum have a real declared name; a primitive extension
-        // target (reachable here only when a `for`-attached self-less
+        // Struct/union/enum have a real declared name; a primitive target
+        // (reachable here only when a self-less `primitive`/`compose`
         // function shares a name with an instance call) has none, so its own
         // `Display` (`"u32"`, `"*[i32]"`, ...) stands in.
         let r#struct = match receiver_type.autoderef() {
@@ -630,9 +630,9 @@ impl<'r> Analyzer<'r> {
         receiver_type: &ResolvedType,
         method: &ResolvedMethod,
     ) -> Option<()> {
-        // A primitive receiver's own methods can only come from a
-        // `for`-attached spec, which is always `Exposed` -- the check below
-        // is then trivially true whatever owner is passed.
+        // A primitive receiver's own methods come from a `primitive` block
+        // or a `compose`; neither has a declaring owner of its own, so the
+        // check below is trivially true whatever owner is passed.
         let (module_path, owner_id) = receiver_type
             .autoderef()
             .declaring_owner()
@@ -719,9 +719,9 @@ impl<'r> Analyzer<'r> {
             }
             // self wants a pointer, the receiver is a `Str`/`Slice` value --
             // both already *are* their own fat-pointer representation (see
-            // `Context::resolve_pointer_type`'s `*str`/`*[?]T` cases, which a
-            // `for`-attached spec's own `Self` substitution goes through
-            // identically), so an `AddressOf` wrapper here would add a
+            // `Context::resolve_pointer_type`'s `*str`/`*[?]T` cases, which
+            // a `primitive`/`compose` block's own `Self` substitution goes
+            // through identically), so an `AddressOf` wrapper here would add a
             // genuine extra indirection layer the signature never asked for.
             // Re-stamped with `self_mode`'s own mutability instead, mirroring
             // that same resolution rule on the call-site side.

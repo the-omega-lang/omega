@@ -1038,6 +1038,13 @@ impl<'r> Analyzer<'r> {
             let expected_element = f.binding_type.as_ref().and_then(|raw| {
                 self.resolve_type_or_error(f.id, f.span, raw, true)
             });
+            // Kept before filtering: both failure paths below report what the
+            // source *does* offer, which is the only actionable part of
+            // either message.
+            let available: Vec<ResolvedType> = to_iterator
+                .iter()
+                .filter_map(|compose| compose.spec_args.first().cloned())
+                .collect();
             let candidates: Vec<_> = to_iterator
                 .into_iter()
                 .filter(|compose| {
@@ -1053,16 +1060,23 @@ impl<'r> Analyzer<'r> {
                     (compose.target, compose.spec, compose.spec_args),
                 ));
             }
-            self.error(
-                f.id,
-                f.span,
-                AnalysisErrorKind::AmbiguousForLoopElementType {
-                    candidates: candidates
-                        .iter()
-                        .filter_map(|compose| compose.spec_args.first().cloned())
-                        .collect(),
+            // Zero candidates is only reachable *with* an annotation (an
+            // unannotated loop filters nothing), and it is a mismatch, not an
+            // ambiguity -- reporting it as "ambiguous" printed an empty
+            // candidate list, naming neither what was asked for nor what
+            // exists.
+            let kind = match expected_element {
+                Some(expected) if candidates.is_empty() => {
+                    AnalysisErrorKind::ForLoopElementTypeMismatch {
+                        expected,
+                        available,
+                    }
+                }
+                _ => AnalysisErrorKind::AmbiguousForLoopElementType {
+                    candidates: available,
                 },
-            );
+            };
+            self.error(f.id, f.span, kind);
             return None;
         }
         if self.for_in_source_declares(&checked.r#type, "Iterator") {

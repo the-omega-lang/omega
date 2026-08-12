@@ -752,7 +752,7 @@ impl Driver {
             }
             match run.result {
                 Some(Ok((spec, spec_args))) => {
-                    resolved_bounds.push((concrete.clone(), spec, spec_args));
+                    resolved_bounds.extend(self.bound_context_for(concrete, spec, spec_args));
                 }
                 Some(Err((spec, missing))) => {
                     return Err(ResolveError::SpecNotImplemented {

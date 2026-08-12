@@ -604,6 +604,16 @@ impl Context {
                 match self.resolve_named_type(path, resolver, module_path, true, bypass)? {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
+                    // `Self` already *being* the slice is the shape a
+                    // `compose [?]u8 : Spec` binds (the registry's own target
+                    // type), as opposed to the `Array` stand-in a `primitive
+                    // <T> [?]T` block substitutes. Both must re-stamp to the
+                    // real lengthed receiver rather than wrap: without this
+                    // arm `*self` came out as `**[?]u8`, and the compose's
+                    // signature disagreed with the requirement `flatten_spec`
+                    // built from the same `Self`, so no slice compose could
+                    // ever be called.
+                    ResolvedType::Slice { item, .. } => Ok(ResolvedType::Slice { item, mutable }),
                     resolved => Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable }),
                 }
             }

@@ -16,7 +16,6 @@ use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
-use omega_parser::prelude::Ident;
 
 impl Codegen {
     /// Whether `return_type` is returned through a hidden `StructReturn`
@@ -277,11 +276,8 @@ impl Codegen {
                     method_name,
                 },
             ) => {
-                let owner = Ident(target.to_string());
-                mangle::encode(&mangle::method_symbol(
-                    &extern_fn.module_path,
-                    &owner,
-                    &[],
+                mangle::encode(&mangle::primitive_method_symbol(
+                    target,
                     method_name,
                     &extern_fn.fn_type,
                 ))

@@ -1108,9 +1108,10 @@ impl ResolvedType {
     /// duplicated per shape.
     /// The module and declaration this type's own members belong to -- what
     /// a member-visibility check needs. `None` for anything with no
-    /// declaration of its own (a primitive, a slice, a pointer): the only
-    /// members those ever have come from a `for`-attached spec, which are
-    /// always `Exposed` and so never need one.
+    /// declaration of its own (a primitive, a slice, a pointer): their
+    /// members come from a `primitive` block or a `compose`, whose
+    /// visibility is the declaring spec's rather than the target's, so no
+    /// owner is needed.
     pub fn declaring_owner(&self) -> Option<(Vec<Ident>, HirId)> {
         match self {
             Self::Struct(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),

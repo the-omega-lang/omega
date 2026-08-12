@@ -230,6 +230,50 @@ pub(crate) fn glued_symbol(
     ))
 }
 
+/// A `primitive` block method's symbol, rooted at the target type itself.
+///
+/// Deliberately carries **no module path**, unlike an ordinary
+/// `method_symbol`. A primitive's target has no declaring module of its own
+/// — `core::strings` is merely where someone wrote the block — and exactly
+/// one `primitive` block may exist per target program-wide, so the target
+/// alone is already a unique owner. Including the module would make the
+/// symbol depend on which `core` submodule the declaration happens to sit
+/// in, so moving `primitive str` between files would silently break every
+/// consumer's link.
+///
+/// This is also what retires the `Ident(target.to_string())` fallback these
+/// two call sites used: `ResolvedType`'s `Display` put `*str`, `*[?]u8` and
+/// (with a space) `*mut [?]u8` straight into symbol names, leaving the
+/// `[A-Za-z0-9_]` set the rest of the scheme deliberately stays inside — see
+/// `vtable_symbol`'s own note on RFC 2603's vendor-suffix production.
+pub(crate) fn primitive_method_symbol(
+    target: &ResolvedType,
+    method_name: &Ident,
+    fn_type: &ResolvedFunctionType,
+) -> Symbol {
+    let path = ManglePath::Nested(
+        Box::new(target_owner_path(target)),
+        Namespace::Value,
+        method_name.as_ref().to_string(),
+    );
+    let (params, ret) = build_signature(fn_type);
+    Symbol {
+        path,
+        signature: Some((params, ret)),
+        vendor_suffix: None,
+    }
+}
+
+/// The path a compose/primitive target is nested under: a named type keeps
+/// its own module-qualified path, a structural one (`i32`, `str`, `[?]T`)
+/// is encoded through the ordinary `MangleType` grammar.
+fn target_owner_path(target: &ResolvedType) -> ManglePath {
+    match mangle_type(target) {
+        MangleType::Named(path, _) => path,
+        target => ManglePath::Type(Box::new(target)),
+    }
+}
+
 pub(crate) fn compose_method_symbol(
     target: &ResolvedType,
     spec_name: &Ident,
@@ -237,10 +281,7 @@ pub(crate) fn compose_method_symbol(
     method_name: &Ident,
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
-    let target_path = match mangle_type(target) {
-        MangleType::Named(path, _) => path,
-        target => ManglePath::Type(Box::new(target)),
-    };
+    let target_path = target_owner_path(target);
     let spec = ManglePath::Nested(
         Box::new(target_path),
         Namespace::Type,
