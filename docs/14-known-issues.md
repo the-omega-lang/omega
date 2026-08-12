@@ -64,6 +64,95 @@ new one is found.
   (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
   [console-io.md](24-console-io.md)
 
+## Composition (`compose` / `primitive`)
+
+- **The bound context is widened to every compose on the concrete type**,
+  which voids the coherence guarantee `compose` exists to provide.
+  `Driver::check_generic_bounds` (`omega-driver/src/items.rs`, the
+  `Some(Ok(..))` arm) seeds the analyzer with the declared bound *plus*
+  `composes_for_type(concrete)` — every compose anyone attached to that
+  type. So inside `f<T: Speak>(x: *T)` at `T = Dog`, `x.secret()` resolves
+  whenever some package wrote `compose Dog : Secret`, even though `Secret`
+  was never bounded on. `analyze_for_in` (`omega-analyzer/src/analysis/
+  stmts.rs`, both `composes_for_type` calls) does the same thing, narrowly,
+  around its synthesized `to_iterator`/`next` calls.
+
+  This is the case the plan's own risk list said to *flag rather than
+  widen*, and it was not fixed here because removing the widening alone
+  breaks a legitimate program: a **spec-alias or spec-dependency bound
+  never reaches the composes that satisfy it**. `spec MySpec = Dummy |
+  Mammal` with `compose Wolf : Mammal` seeds the bound context with
+  `(Wolf, MySpec)`, and there is no compose entry under that key —
+  `examples/dev/main.omg:514`'s `accepts_myspec<T: MySpec>` stops
+  compiling. Conformance itself still succeeds, because
+  `type_implements_spec`'s fallback arm signature-matches the flattened
+  requirements against every compose on the type; only the *bound context*
+  has no way to follow the same path.
+
+  Resolving this means deciding how a bound expands into compose entries:
+  the natural answer is the bound spec's transitive `dependencies` closure
+  (`ResolvedSpecType::dependencies`, which is also how an alias is
+  represented), seeded once in `check_generic_bounds`. The complication is
+  that a dependency carries **raw, unresolved type arguments** by design
+  (`spec Foo<T> : Bar<T>` — see `dependencies`' doc comment), so the
+  closure needs `flatten_spec_into`'s deferred argument resolution rather
+  than a plain walk. That is a design decision the plan did not make, which
+  is why it is recorded here rather than guessed at.
+
+  The narrower half of the same hole *was* fixed: an aggregate's own
+  inherent method bodies no longer get every compose on the type
+  (`omega-driver/src/bodies.rs`), which was a fourth seeding point the plan
+  never listed.
+
+- **A generic-target compose instantiated at two different `T` collides in
+  codegen.** `compose<T> Box<T> : S` used at both `Box<i32>` and `Box<u8>`
+  panics the compiler with cranelift's `DuplicateDefinition`. Each
+  instantiation is correctly registered as its own `ComposeEntry` with its
+  own target, and the two mangle to distinct symbols
+  (`...Box<i32>::S::g` / `...Box<u8>::S::g`), but both bodies inherit
+  `decl_id` from the *template's* HIR function and carry no `type_args` of
+  their own, and `Codegen::declare_function_def` keys `self.functions` on
+  exactly that `decl_id` — so the second declaration overwrites the first's
+  `FuncId` and both defines land on one function.
+
+  This is the plan's own "generic target instantiated at two different `T`"
+  test case; it has no test today. Fixing it means giving each compose
+  instantiation its own identity through checked/MIR/codegen the way a
+  generic function's `type_args` already do — either by minting a fresh
+  `decl_id` per instantiation in `check_compose_block` (which also changes
+  what `type_implements_spec` hands back as vtable slots) or by carrying
+  the target's type arguments in `CheckedFunctionDef` and keying on the
+  pair. Both are pipeline-wide, so neither is a local fix.
+
+  Until then, a generic-target compose is safe only when a single program
+  instantiates it at one `T`. `std::list`'s `compose<T> List<T> :
+  ToIterator<T>` is within that limit today.
+
+- **`core` declares its spec-satisfying methods as inherent `primitive`
+  methods**, with the compose blocks left empty (`primitive bool { exposed
+  fmt(...) }` plus `compose bool : Display {}`; likewise every `numerics`
+  macro, `strings`, `chars`). `check_compose_block` satisfies a requirement
+  from the target's inherent methods when the compose body doesn't supply
+  it, which is what makes this work. The consequence is that the plan's
+  headline example — `42.fmt(w)` being rejected in favour of
+  `Display::fmt(42, w)` — is **not** true for any primitive: `fmt`,
+  `equals`, `compare`, `hash` and `default` are all inherent on every
+  scalar, so they resolve on a bare receiver with no bound in sight. It is
+  not unsound (`core` owns those types and may declare inherent methods on
+  them), but it permanently occupies those names in each primitive's own
+  namespace and means the negative case the plan wanted asserted cannot be
+  written against `Display`. Deciding whether the bodies belong in the
+  `compose` blocks instead is a migration, not a compiler change.
+
+- **`ComposeTargetNotAType` is defined but never constructed**
+  (`omega-analyzer/src/error/kind.rs`), with a rendered label and message
+  that no input can reach.
+
+- **Six code comments still describe `for`-attached specs** as a live
+  mechanism (`analysis/specs.rs:319` and `:362`, `analysis/calls.rs:604`,
+  `:634`, `:723`, `resolved_type.rs:1085`); `specs.rs:319` names
+  `Analyzer::resolve_extension_methods`, which this change deleted.
+
 ## Specs
 
 - **Coercion into `spec *T` isn't wired into every expression position**
@@ -248,6 +337,35 @@ need a breaking change to fix — full writeups in
 
 ## Diagnostics
 
+- **A `*mut self` requirement against an rvalue receiver reports
+  `NotMutablePointer`, and the invariant that made that correct no longer
+  holds.** `Bump::bump(make())`, where `bump(*mut self)` and `make()` returns
+  by value, is correctly *rejected* — the mutation would land in a temporary
+  that is immediately discarded — but the message is `cannot mutate through
+  an immutable pointer`, naming a pointer that does not appear in the source
+  and that no added `mut` can fix.
+
+  `Analyzer::require_mutable_place` (`analysis/places.rs`) picks between
+  `NotMutableBinding` and `NotMutablePointer` by asking whether the checked
+  place has a `Deref` projection, falling through to `NotMutablePointer` for
+  any root that isn't an unqualified path. Its own doc comment states the
+  assumption that justified that fallback: "a non-place root, e.g. a
+  freshly-constructed value, is never itself the *cause* of immutability --
+  something dereferenced along the way always is." **That is no longer
+  true.** Spec-qualified calls now wrap a non-place receiver in
+  `HirPlaceRoot::Expr` so it can be adapted at all (see
+  `Analyzer::adapt_self_argument`), producing a place with a non-path root
+  and *no* `Deref` projection — the exact shape the assumption excluded.
+
+  Pre-existing in the sense that a receiver-position call on an rvalue
+  reaches the same arm, but newly *reachable* in ordinary code: a
+  spec-qualified call is the normal way to invoke a composed method, and its
+  receiver is an ordinary argument expression that anyone may write as a call
+  or a literal. The fix is a third `AnalysisErrorKind` for the not-a-place
+  case — "`*mut self` needs a place to mutate; bind the value to a `mut`
+  local first" — selected in `require_mutable_place` before the
+  `through_pointer` test, plus a correction to that doc comment.
+  [specs.md](08-specs.md)
 - **Taking a slice of a local array doesn't count as a use of that array**,
   so `mut b : [8]u8; s := &mut b[0..]; s[0] = 1u8;` warns `unused variable`
   for *both* `b` and `s`. Writing through a slice isn't tracked as a read of

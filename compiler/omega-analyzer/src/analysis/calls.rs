@@ -216,10 +216,27 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
-        let Some(first_checked) = self.analyze_expr(first, None) else {
+        // The receiver is resolved as a *place*, exactly once, before any
+        // composition is selected -- `compose_for` needs its type, and
+        // `adapt_self_argument` below needs the place itself. An argument
+        // that is not already a place (a literal, a struct expression, a
+        // call result) is wrapped in `HirPlaceRoot::Expr`, the same shape
+        // `synthesize_method_call` builds for an arbitrary receiver, so
+        // `Display::fmt(42, w)` auto-refs identically to `(42).fmt(w)`
+        // rather than being handed to a `*self` parameter unadapted.
+        let receiver_place = match &Self::strip_reveal(first).1.expr {
+            HirExpr::Place(place) => place.clone(),
+            _ => HirPlace {
+                root: HirPlaceRoot::Expr(Box::new(first.clone())),
+                projections: vec![],
+            },
+        };
+        let Some((checked_receiver, receiver_type, receiver_mutable)) =
+            self.analyze_place(first.id, first.span, &receiver_place, None)
+        else {
             return Intercepted::Claimed(None);
         };
-        let target = first_checked.r#type.autoderef().clone();
+        let target = receiver_type.autoderef().clone();
         let compose_methods = match self.resolver.compose_for(&target, &spec, &spec_args) {
             Ok(Some(compose)) => compose.methods,
             Ok(None)
@@ -296,28 +313,19 @@ impl<'r> Analyzer<'r> {
             }
             let mut checked_args = Vec::with_capacity(call.args.len());
             let mut ok = true;
-            let adapted_first = if let HirExpr::Place(place) = &Self::strip_reveal(first).1.expr {
-                let (checked, r#type, mutable) =
-                    match self.analyze_place(first.id, first.span, place, None) {
-                        Some(resolved) => resolved,
-                        None => return Intercepted::Claimed(None),
-                    };
-                let receiver = Receiver {
-                    place: place.clone(),
-                    checked,
-                    r#type,
-                    mutable,
-                };
-                match self.adapt_self_argument(
-                    &call.callee,
-                    receiver,
-                    method.fn_type.self_mode.expect("filtered above"),
-                ) {
-                    Some(adapted) => adapted,
-                    None => return Intercepted::Claimed(None),
-                }
-            } else {
-                first_checked.clone()
+            let receiver = Receiver {
+                place: receiver_place.clone(),
+                checked: checked_receiver.clone(),
+                r#type: receiver_type.clone(),
+                mutable: receiver_mutable,
+            };
+            let adapted_first = match self.adapt_self_argument(
+                &call.callee,
+                receiver,
+                method.fn_type.self_mode.expect("filtered above"),
+            ) {
+                Some(adapted) => adapted,
+                None => return Intercepted::Claimed(None),
             };
             for (index, (arg, (_, expected))) in
                 call.args.iter().zip(&method.fn_type.params).enumerate()

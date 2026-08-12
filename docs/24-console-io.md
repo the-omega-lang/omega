@@ -82,3 +82,11 @@ see `examples/io_demo/main.omg`. Primitive inherent methods live in core-only
 `primitive` blocks; their `Display` conformances are separate compose blocks.
 For any compose, either the target type or the spec must belong to the current
 package.
+
+The four print macros expand each argument to `Display::fmt($args, ...)`, the
+spec-qualified form, not `($args).fmt(...)`: a composed method is only
+reachable through its spec, and the expansion site has no bound to reach it
+through. `Display` needs no import at the call site — an unqualified spec name
+resolves ambiently from `core`, the same way the rest of core's prelude does.
+The receiver is adapted to `fmt`'s `*self` exactly as a method call would
+adapt it, so an argument that is a literal or a temporary works unchanged.

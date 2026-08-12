@@ -1404,18 +1404,18 @@ impl<'r> Analyzer<'r> {
         &mut self,
         pending: &PendingSpecMethod,
     ) -> Option<CheckedFunctionDef> {
-        // A spec-satisfying default method effectively becomes part of its
-        // implementor's own definition -- same field-access rights as any
-        // of that type's own hand-written methods (see `Analyzer::
-        // current_owner`'s doc comment). `Self` was already seeded into
-        // this `Analyzer`'s own scope by `Analyzer::new` (from `pending`'s
-        // own substitution, via `omega_driver::Driver::
-        // check_pending_spec_methods`) -- looked back up here rather than
-        // threaded as a separate parameter, since it's already the single
-        // source of truth for what `Self` resolves to in this pending
-        // method's own body. `None` (no case matched) for a primitive
-        // `Self` (a `for`-attached spec target) -- primitives have no
-        // fields to protect this way at all.
+        // `current_owner` is deliberately *not* set here: a default body is
+        // the spec's own code, not the implementor's, so it gets no
+        // hidden-field access to whatever `Self` turns out to be. Under
+        // `compose` that matters concretely -- `Self` may be a type in a
+        // different package entirely, which the spec's author has never
+        // seen. A default body that needs a field must go through a method
+        // the spec itself declares.
+        //
+        // `Self` was already seeded into this `Analyzer`'s own scope by
+        // `Analyzer::new_in` (from `pending`'s own substitution, via
+        // `omega_driver::Driver::check_compose_bodies`), so it needs no
+        // separate parameter here.
         let body = pending
             .raw
             .default_body

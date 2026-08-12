@@ -304,6 +304,20 @@ impl Driver {
             for compose in declarations {
                 if compose.generics.is_empty() {
                     self.instantiate_compose(module, &compose, &[]);
+                } else if let Some(parameter) = Self::blanket_parameter(&compose) {
+                    // Registering this as a template would be worse than
+                    // useless: `match_compose_target` can never bind it, so
+                    // the compose would be silently dropped and the only
+                    // diagnostic anyone ever saw would be a
+                    // `SpecNotImplemented` at some unrelated use site.
+                    self.diagnostics.error(
+                        module,
+                        AnalysisError::new(
+                            compose.id,
+                            compose.span,
+                            AnalysisErrorKind::BlanketComposeNotYetSupported { parameter },
+                        ),
+                    );
                 } else {
                     self.composes.templates.push(ComposeTemplate {
                         module: module.clone(),
@@ -329,6 +343,20 @@ impl Driver {
         self.diagnostics
             .record_warnings(module, target_run.warnings);
         let target = target_run.result?;
+        // Instantiating one template twice at the same target is not a
+        // duplicate compose -- `composes_for_type` re-walks every matching
+        // template on each call, so without this the *second* lookup for a
+        // generic target would report `DuplicateCompose` against the entry
+        // the first lookup registered. Keyed on the declaration's own id, so
+        // two genuinely distinct `compose` blocks still collide below.
+        if let Some(existing) = self
+            .composes
+            .entries
+            .iter()
+            .find(|existing| existing.id == compose.id && existing.target == target)
+        {
+            return Some(existing.clone());
+        }
         let mut method_substitution = substitution.to_vec();
         method_substitution.push((Ident("Self".to_string()), target.clone()));
         let inherent = self.inherent_methods(&target);
@@ -468,6 +496,57 @@ impl Driver {
             .filter(|entry| entry.target == *target)
             .cloned()
             .collect()
+    }
+
+    /// The first of `compose`'s own generic parameters that its *target*
+    /// does not pin down -- either because the target is that parameter
+    /// (`compose<T: Numeric> T : Sum`, which would apply to every type) or
+    /// because the parameter appears nowhere in the target at all
+    /// (`compose<T, U: Foo> List<T> : Bar`, whose `U` nothing can ever
+    /// bind). Both are blanket composes, deliberately out of scope for now;
+    /// a target that uses every parameter (`compose<T> List<T> :
+    /// ToIterator<T>`) is not one, and is fully supported.
+    fn blanket_parameter(compose: &HirComposeDef) -> Option<Ident> {
+        if let Type::Named(path) = &compose.target
+            && path.is_unqualified()
+            && let Some(generic) = compose
+                .generics
+                .iter()
+                .find(|generic| generic.ident == path.head)
+        {
+            return Some(generic.ident.clone());
+        }
+        let mut mentioned = Vec::new();
+        Self::collect_type_idents(&compose.target, &mut mentioned);
+        compose
+            .generics
+            .iter()
+            .find(|generic| !mentioned.contains(&generic.ident))
+            .map(|generic| generic.ident.clone())
+    }
+
+    /// Every unqualified identifier a raw `Type` mentions, in source order.
+    /// Only used to ask whether a generic parameter occurs in a compose
+    /// target, so a qualified path (which can never *be* a parameter) is
+    /// deliberately not contributed.
+    fn collect_type_idents(r#type: &Type, out: &mut Vec<Ident>) {
+        match r#type {
+            Type::Named(path) => {
+                if path.is_unqualified() {
+                    out.push(path.head.clone());
+                }
+            }
+            Type::Pointer(inner, _)
+            | Type::UnsizedArray(inner)
+            | Type::UnknownSizeArray(inner)
+            | Type::SizedArray(inner, _) => Self::collect_type_idents(inner, out),
+            Type::Generic(_, args) => {
+                for arg in args {
+                    Self::collect_type_idents(arg, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn match_compose_target(

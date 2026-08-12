@@ -297,17 +297,17 @@ impl Driver {
         let mut substitution = Self::substitution(generics, &key.type_args);
         substitution.push((Ident("Self".to_string()), self_type.clone()));
 
-        let mut bounds = self
+        // An aggregate's own generic bounds only. A type's *inherent*
+        // methods are not a compose body, so nothing composed onto this
+        // type belongs in their scope -- see `check_compose_bodies`, which
+        // seeds a compose body with the one spec it composes, and
+        // `check_generic_bounds`, which seeds exactly the declared bound.
+        let bounds = self
             .items
             .generic_bounds
             .get(key)
             .cloned()
             .unwrap_or_default();
-        bounds.extend(
-            self.composes_for_type(&self_type)
-                .into_iter()
-                .map(|entry| (entry.target, entry.spec, entry.spec_args)),
-        );
         let run = self.with_analyzer_in(&key.module, &substitution, &bounds, owner, check);
         run.result.map(|checked| CheckedBody {
             item: checked.assemble(key.type_args.clone()),

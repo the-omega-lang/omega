@@ -86,6 +86,51 @@ or explicitly as `Animal::make_sound(&dog)`. A composed static function is
 called as `Target::function(...)`; two compositions providing the same static
 call are diagnosed as ambiguous.
 
+### Receiver adaptation in a spec-qualified call
+
+`Spec::function(receiver, args...)` adapts `receiver` to the function's
+declared self-mode with exactly the same rule `receiver.function(args...)`
+uses (`Analyzer::adapt_self_argument`), so all four of these are legal and
+mean the same thing:
+
+```
+Speak::speak(&dog)      # already a pointer -- reused, re-stamped
+Speak::speak(dog)       # a place -- address taken
+Speak::speak(p)         # p : *Dog -- reused
+Speak::speak(make())    # an rvalue -- see the cost note below
+```
+
+The adaptation is **type-directed, not a uniform `&`**. Given `fmt(*self,
+out: *mut Writer)`, what `*self` actually means depends on what `Self` is:
+
+| receiver | `*self` resolves to | what the call passes |
+|---|---|---|
+| `n : i32` | `*i32` | `&n` |
+| `"hi"` (`*str`) | `Str` | the fat pointer itself, **no `&`** |
+| `&buf[0..]` (`*[?]u8`) | `Slice` | the fat pointer itself, **no `&`** |
+| `p : *i32` | `*i32` | `p` |
+
+`str` and `[?]T` *are* their own pointer representation, so `Self`
+substitution re-stamps `*self` rather than wrapping it (see
+`Context::resolve_pointer_type`) — writing `&"hi"` by hand would produce a
+pointer to a pointer. This is precisely why `core::io`'s print macros can
+spell `Display::fmt($args, &mut omega_print_out)` at all: a macro cannot know
+which of these shapes its argument is, so the adaptation has to happen in the
+compiler rather than in the macro body.
+
+**Cost.** A receiver that is not a place — a literal, an arithmetic
+expression, a call result — is materialized into a stack temporary whose
+address is then taken. `Display::fmt(42, &mut w)` compiles to "store 42 into a
+slot, pass the slot's address," not to anything cheaper. This is the one place
+in a spec-qualified call where the source text does not show the whole cost.
+It is not specific to `compose`: a receiver-position call on an rvalue
+(`(1 + 2).fmt(&mut w)`) has always done the same thing, through the same code
+path.
+
+A `*mut self` requirement against an rvalue receiver is rejected rather than
+silently writing into the discarded temporary — see
+[known-issues.md](14-known-issues.md) for the diagnostic's current wording.
+
 ### Implementing the same generic spec more than once
 
 ```
