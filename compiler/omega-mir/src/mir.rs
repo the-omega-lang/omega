@@ -8,7 +8,7 @@
 
 use crate::body::MirBody;
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
-use omega_analyzer::checked::CheckedParam;
+use omega_analyzer::checked::{CheckedParam, ComposeOwner};
 use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::ModuleId;
 use omega_parser::prelude::{Ident, SelfMode, Span};
@@ -73,7 +73,8 @@ pub struct MirFunctionDef {
     pub return_type: ResolvedType,
     pub inline: Option<InlineMode>,
     pub mangling: ManglingMode,
-    pub extension_target: Option<ResolvedType>,
+    pub compose_owner: Option<ComposeOwner>,
+    pub primitive_target: Option<ResolvedType>,
     pub body: MirBody,
 }
 
@@ -82,7 +83,11 @@ impl MirFunctionDef {
     /// a call/definition signature from this, never from `body` directly.
     pub fn fn_type(&self) -> ResolvedFunctionType {
         ResolvedFunctionType {
-            params: self.params.iter().map(|p| (p.ident.clone(), p.r#type.clone())).collect(),
+            params: self
+                .params
+                .iter()
+                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
             self_mode: self.self_mode,

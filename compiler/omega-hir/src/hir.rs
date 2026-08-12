@@ -6,8 +6,8 @@ use crate::ids::HirId;
 // match on those.
 pub use omega_parser::prelude::{BinaryOp, ImportRoot};
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, SelfMode, Span, StringExpr, Type,
-    Visibility,
+    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, SelfMode, Span, StringExpr,
+    Type, Visibility,
 };
 
 /// A lowered `@name(args)` annotation -- mechanical clone of `omega_parser`'s
@@ -62,6 +62,8 @@ pub enum HirItem {
     Spec(HirSpecDef),
     Gap(HirGapDef),
     Glue(HirGlueDef),
+    Compose(HirComposeDef),
+    Primitive(HirPrimitiveDef),
     Import(HirImport),
 }
 
@@ -201,9 +203,6 @@ pub struct HirStructDef {
     /// `omega_parser::ast::statement::r#struct::StructStmt::generics`'s
     /// doc comment.
     pub generics: Vec<HirGenericParam>,
-    /// The specs this struct implements -- see `HirSpecDef`'s doc comment
-    /// and `Analyzer::signature_of_struct`'s implements-clause resolution.
-    pub implements: Vec<Type>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
     /// See `omega_parser::ast::statement::r#struct::StructStmt::is_marker`.
@@ -225,8 +224,6 @@ pub struct HirUnionDef {
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
-    /// See `HirStructDef::implements`'s doc comment.
-    pub implements: Vec<Type>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
 }
@@ -249,8 +246,6 @@ pub struct HirEnumDef {
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic enum.
     pub generics: Vec<HirGenericParam>,
-    /// See `HirStructDef::implements`'s doc comment.
-    pub implements: Vec<Type>,
     /// The raw header entries, in source order -- a first entry named `tag`
     /// is the explicit tag; the rest are the shared header fields.
     pub header: Vec<HirParam>,
@@ -291,17 +286,12 @@ pub struct HirEnumVariant {
 pub struct HirSpecDef {
     pub id: HirId,
     pub span: Span,
-    /// See `omega_parser::ast::statement::spec::SpecStmt::visibility` --
-    /// meaningless when `target.is_some()`, same caveat as there.
+    /// See `omega_parser::ast::statement::spec::SpecStmt::visibility`.
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub dependencies: Vec<Type>,
     pub functions: Vec<HirSpecFunction>,
-    /// `Some` for `spec Name : Deps for Target { ... }` -- see
-    /// `SpecStmt::target`'s doc comment. `name` is never registered as a
-    /// lookup-able name anywhere once this is set (see `item_name`).
-    pub target: Option<Type>,
     /// See `SpecStmt::is_alias`'s doc comment.
     pub is_alias: bool,
     /// See `SpecStmt::annotations`'s doc comment.
@@ -352,6 +342,25 @@ pub struct HirGlueDef {
     pub id: HirId,
     pub span: Span,
     pub gap: Path,
+    pub functions: Vec<HirFunctionDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirComposeDef {
+    pub id: HirId,
+    pub span: Span,
+    pub generics: Vec<HirGenericParam>,
+    pub target: Type,
+    pub spec: Type,
+    pub functions: Vec<HirFunctionDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirPrimitiveDef {
+    pub id: HirId,
+    pub span: Span,
+    pub generics: Vec<HirGenericParam>,
+    pub target: Type,
     pub functions: Vec<HirFunctionDef>,
 }
 

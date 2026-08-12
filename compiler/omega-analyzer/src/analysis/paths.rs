@@ -1,8 +1,17 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    pub fn resolve_gap_path(&mut self, id: HirId, span: Span, path: &Path) -> Option<std::rc::Rc<crate::resolved_type::ResolvedGap>> {
-        let absolute = match self.context.resolve_absolute_item_path(&mut *self.resolver, path, &self.module_path) {
+    pub fn resolve_gap_path(
+        &mut self,
+        id: HirId,
+        span: Span,
+        path: &Path,
+    ) -> Option<std::rc::Rc<crate::resolved_type::ResolvedGap>> {
+        let absolute = match self.context.resolve_absolute_item_path(
+            &mut *self.resolver,
+            path,
+            &self.module_path,
+        ) {
             Ok(absolute) => absolute,
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
@@ -12,9 +21,16 @@ impl<'r> Analyzer<'r> {
         match self.resolve_item_checked(&absolute, &[], true) {
             Ok(ResolvedItem::Gap(gap)) => Some(gap),
             Ok(_) => {
-                self.error(id, span, AnalysisErrorKind::GlueTargetNotGap {
-                    target: absolute.last().cloned().expect("an absolute path has a name"),
-                });
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::GlueTargetNotGap {
+                        target: absolute
+                            .last()
+                            .cloned()
+                            .expect("an absolute path has a name"),
+                    },
+                );
                 None
             }
             Err(error) => {
@@ -32,7 +48,10 @@ impl<'r> Analyzer<'r> {
     /// used to be populated eagerly, for a module's *entire* import list,
     /// before any item in it was ever touched -- see `Analyzer::new`'s doc
     /// comment for why that was a real false-cycle bug, not just eagerness.
-    pub(super) fn resolve_alias(&mut self, alias: &Ident) -> Result<Option<ImportTarget>, ResolveError> {
+    pub(super) fn resolve_alias(
+        &mut self,
+        alias: &Ident,
+    ) -> Result<Option<ImportTarget>, ResolveError> {
         self.resolver.resolve_import_alias(&self.module_path, alias)
     }
 
@@ -43,7 +62,12 @@ impl<'r> Analyzer<'r> {
     /// already pushed and the caller should give up immediately (`?`);
     /// `Some(None)` means `alias` isn't an import at all, the caller's own
     /// fallback applies.
-    pub(super) fn resolve_alias_or_error(&mut self, node_id: HirId, span: Span, alias: &Ident) -> Option<Option<ImportTarget>> {
+    pub(super) fn resolve_alias_or_error(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        alias: &Ident,
+    ) -> Option<Option<ImportTarget>> {
         match self.resolve_alias(alias) {
             Ok(target) => Some(target),
             Err(e) => {
@@ -62,7 +86,10 @@ impl<'r> Analyzer<'r> {
     /// place that knows a module's whole alias set up front, since
     /// resolving what each one actually *means* is lazy now.
     pub(super) fn similar_import_alias(&mut self, target: &Ident) -> Option<Ident> {
-        best_match(target, self.resolver.import_alias_names(&self.module_path).iter())
+        best_match(
+            target,
+            self.resolver.import_alias_names(&self.module_path).iter(),
+        )
     }
 
     /// Resolves `absolute` (already a full `[module_path.., name]`, whether
@@ -96,12 +123,17 @@ impl<'r> Analyzer<'r> {
         // unconditionally ambiguous, reported with every candidate listed
         // and no winner.
         if let Some((name, module_path)) = absolute.split_last()
-            && let Ok(Some(candidates)) = self.resolver.function_overload_signatures(module_path, name)
+            && let Ok(Some(candidates)) = self
+                .resolver
+                .function_overload_signatures(module_path, name)
         {
-            let signatures: Vec<(HirId, ResolvedFunctionType)> =
-                candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
+            let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
+                .iter()
+                .map(|(id, fn_type, _)| (*id, fn_type.clone()))
+                .collect();
             if let Some(ResolvedType::Function(expected_fn)) = expected
-                && let Some((decl_id, fn_type)) = Self::unique_overload_signature_match(expected_fn, &signatures)
+                && let Some((decl_id, fn_type)) =
+                    Self::unique_overload_signature_match(expected_fn, &signatures)
             {
                 // Same post-winner visibility check as `resolve_overloaded_
                 // call`'s identical situation -- structural signature
@@ -124,7 +156,11 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 let r#type = ResolvedType::Function(fn_type);
-                let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
+                let root = CheckedPlaceRoot::Variable {
+                    decl_id,
+                    storage: Storage::Function,
+                    r#type: r#type.clone(),
+                };
                 return Some((root, r#type, false));
             }
             self.error(
@@ -138,8 +174,17 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         match self.resolve_item_checked(&absolute, &[], true) {
-            Ok(ResolvedItem::Value { r#type, storage, decl_id, mutable }) => {
-                let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+            Ok(ResolvedItem::Value {
+                r#type,
+                storage,
+                decl_id,
+                mutable,
+            }) => {
+                let root = CheckedPlaceRoot::Variable {
+                    decl_id,
+                    storage,
+                    r#type: r#type.clone(),
+                };
                 Some((root, r#type, mutable))
             }
             Ok(ResolvedItem::Type(_)) => {
@@ -156,9 +201,14 @@ impl<'r> Analyzer<'r> {
                 // top-level values (functions/globals/externs) -- only the
                 // resolver holds a module-wide name list.
                 let similar = self.context.similar_variable_name(&name).or_else(|| {
-                    self.resolver.similar_item_name(&self.module_path, &name, ItemNamespace::Value)
+                    self.resolver
+                        .similar_item_name(&self.module_path, &name, ItemNamespace::Value)
                 });
-                self.error(node_id, span, AnalysisErrorKind::UndefinedVariable { name, similar });
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UndefinedVariable { name, similar },
+                );
                 None
             }
             // `mymodule::MyStruct::do_thing` -- the "module" that failed to
@@ -180,7 +230,9 @@ impl<'r> Analyzer<'r> {
                         self.error(
                             node_id,
                             span,
-                            AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(missing)),
+                            AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(
+                                missing,
+                            )),
                         );
                         None
                     }
@@ -213,7 +265,11 @@ impl<'r> Analyzer<'r> {
                 && fn_type.self_mode == expected.self_mode
                 && fn_type.return_type == expected.return_type
                 && fn_type.params.len() == expected.params.len()
-                && fn_type.params.iter().zip(&expected.params).all(|((_, a), (_, b))| a == b)
+                && fn_type
+                    .params
+                    .iter()
+                    .zip(&expected.params)
+                    .all(|((_, a), (_, b))| a == b)
         });
         let first = matches.next()?;
         if matches.next().is_some() {
@@ -243,7 +299,12 @@ impl<'r> Analyzer<'r> {
         // on a `for str` extension spec need this one narrow carve-out to
         // even reach `resolve_type_member` at all.
         if path.head.as_ref() == "str" {
-            return self.resolve_type_member(node_id, span, &ResolvedType::Str { mutable: false }, &path.tail);
+            return self.resolve_type_member(
+                node_id,
+                span,
+                &ResolvedType::Str { mutable: false },
+                &path.tail,
+            );
         }
         if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
             return self.resolve_type_member(node_id, span, &head_type, &path.tail);
@@ -261,8 +322,15 @@ impl<'r> Analyzer<'r> {
             return self.resolve_gap_member(node_id, span, &gap, &path.tail);
         }
         let absolute: Vec<Ident> = match alias {
-            Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => absolute,
-            _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+            Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => {
+                absolute
+            }
+            _ => self
+                .module_path
+                .iter()
+                .cloned()
+                .chain(std::iter::once(path.head.clone()))
+                .collect(),
         };
         // A bare reference to a generic enum's unit variant (`Option::
         // None`, no `{ }` at all -- so no field values to unify against,
@@ -270,19 +338,42 @@ impl<'r> Analyzer<'r> {
         // (surrounding-context) type -- see `infer_literal_type_args`,
         // called here with no fields.
         let variant = path.tail.first();
-        let result = match self.generic_literal_signature_with_ambient(std::slice::from_ref(&path.head), &absolute, variant) {
+        let result = match self.generic_literal_signature_with_ambient(
+            std::slice::from_ref(&path.head),
+            &absolute,
+            variant,
+        ) {
             Some((real_absolute, sig)) => {
-                let type_args = self.infer_literal_type_args(node_id, span, &real_absolute, &sig, &[], expected)?;
-                self.resolve_item_checked_with_ambient_fallback(std::slice::from_ref(&path.head), &real_absolute, &type_args)
+                let type_args = self.infer_literal_type_args(
+                    node_id,
+                    span,
+                    &real_absolute,
+                    &sig,
+                    &[],
+                    expected,
+                )?;
+                self.resolve_item_checked_with_ambient_fallback(
+                    std::slice::from_ref(&path.head),
+                    &real_absolute,
+                    &type_args,
+                )
             }
-            None => self.resolve_item_checked_with_ambient_fallback(std::slice::from_ref(&path.head), &absolute, &[]),
+            None => self.resolve_item_checked_with_ambient_fallback(
+                std::slice::from_ref(&path.head),
+                &absolute,
+                &[],
+            ),
         };
         let kind = match result {
             Ok(ResolvedItem::Type(t)) => {
                 return self.resolve_type_member(node_id, span, &t, &path.tail);
             }
-            Ok(ResolvedItem::Gap(gap)) => return self.resolve_gap_member(node_id, span, &gap, &path.tail),
-            Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: path.head.clone() },
+            Ok(ResolvedItem::Gap(gap)) => {
+                return self.resolve_gap_member(node_id, span, &gap, &path.tail);
+            }
+            Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule {
+                name: path.head.clone(),
+            },
             // The head names nothing at all -- an unimported module, or a
             // typo of a struct/module that does exist; suggest whichever
             // actually does.
@@ -290,7 +381,11 @@ impl<'r> Analyzer<'r> {
                 name: path.head.clone(),
                 similar_module: self.similar_import_alias(&path.head),
                 similar_type: self.context.similar_type_name(&path.head).or_else(|| {
-                    self.resolver.similar_item_name(&self.module_path, &path.head, ItemNamespace::Type)
+                    self.resolver.similar_item_name(
+                        &self.module_path,
+                        &path.head,
+                        ItemNamespace::Type,
+                    )
                 }),
             },
             // The head *does* name something here (a failed item, an
@@ -321,7 +416,9 @@ impl<'r> Analyzer<'r> {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::GenericPathTooDeep { r#type: segments[expr_path.args_at].clone() },
+                AnalysisErrorKind::GenericPathTooDeep {
+                    r#type: segments[expr_path.args_at].clone(),
+                },
             );
             return None;
         }
@@ -335,15 +432,26 @@ impl<'r> Analyzer<'r> {
                 None
             }
             Ok(ResolvedItem::Type(t)) => self.resolve_type_member(node_id, span, &t, rest),
-            Ok(ResolvedItem::Value { r#type, storage, decl_id, mutable: _ }) if rest.is_empty() => {
-                let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+            Ok(ResolvedItem::Value {
+                r#type,
+                storage,
+                decl_id,
+                mutable: _,
+            }) if rest.is_empty() => {
+                let root = CheckedPlaceRoot::Variable {
+                    decl_id,
+                    storage,
+                    r#type: r#type.clone(),
+                };
                 Some((root, r#type))
             }
             Ok(ResolvedItem::Value { .. }) => {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::NotAModule { name: segments[expr_path.args_at].clone() },
+                    AnalysisErrorKind::NotAModule {
+                        name: segments[expr_path.args_at].clone(),
+                    },
                 );
                 None
             }
@@ -361,7 +469,12 @@ impl<'r> Analyzer<'r> {
     /// Resolves an `ExprPath`'s written `<T, ...>` arguments -- always
     /// indirect, same reasoning as `Type::Generic`'s argument resolution in
     /// `Context::resolve_type`.
-    pub(super) fn resolve_generic_arg_list(&mut self, node_id: HirId, span: Span, expr_path: &ExprPath) -> Option<Vec<ResolvedType>> {
+    pub(super) fn resolve_generic_arg_list(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        expr_path: &ExprPath,
+    ) -> Option<Vec<ResolvedType>> {
         self.analyze_all(&expr_path.generic_args, |this, arg| {
             this.resolve_type_or_error(node_id, span, arg, true)
         })
@@ -371,18 +484,37 @@ impl<'r> Analyzer<'r> {
     /// *prefix* (`Optional` in `Optional<u32>::Some`, `mymodule::List` in
     /// `mymodule::List<u8>::new`) -- the same alias-vs-own-module priority
     /// `Context::resolve_absolute_item_path` applies to type positions.
-    pub(super) fn generic_prefix_absolute(&mut self, node_id: HirId, span: Span, prefix: &[Ident]) -> Option<Vec<Ident>> {
+    pub(super) fn generic_prefix_absolute(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        prefix: &[Ident],
+    ) -> Option<Vec<Ident>> {
         if let [single] = prefix {
-            if let Some(ImportTarget::GenericItem(absolute)) = self.resolve_alias_or_error(node_id, span, single)? {
+            if let Some(ImportTarget::GenericItem(absolute)) =
+                self.resolve_alias_or_error(node_id, span, single)?
+            {
                 return Some(absolute);
             }
-            return Some(self.module_path.iter().cloned().chain(std::iter::once(single.clone())).collect());
+            return Some(
+                self.module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(single.clone()))
+                    .collect(),
+            );
         }
-        let path = omega_parser::prelude::Path { head: prefix[0].clone(), tail: prefix[1..].to_vec() };
+        let path = omega_parser::prelude::Path {
+            head: prefix[0].clone(),
+            tail: prefix[1..].to_vec(),
+        };
         match self.resolve_alias_or_error(node_id, span, &path.head)? {
-            Some(ImportTarget::Module(target)) => {
-                Some(target.into_iter().chain(path.tail.iter().cloned()).collect())
-            }
+            Some(ImportTarget::Module(target)) => Some(
+                target
+                    .into_iter()
+                    .chain(path.tail.iter().cloned())
+                    .collect(),
+            ),
             _ => {
                 let similar_module = self.similar_import_alias(&path.head);
                 self.error(
@@ -407,15 +539,26 @@ impl<'r> Analyzer<'r> {
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         if rest.len() != 1 {
-            self.error(node_id, span, AnalysisErrorKind::NotAModule { name: gap.name.clone() });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NotAModule {
+                    name: gap.name.clone(),
+                },
+            );
             return None;
         }
         let member = &rest[0];
         let Some((_, function)) = gap.functions.iter().find(|(name, _)| name == member) else {
-            self.error(node_id, span, AnalysisErrorKind::NoSuchStructFunction {
-                r#struct: gap.name.clone(), function: member.clone(),
-                similar: best_match(member, gap.functions.iter().map(|(name, _)| name)),
-            });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchStructFunction {
+                    r#struct: gap.name.clone(),
+                    function: member.clone(),
+                    similar: best_match(member, gap.functions.iter().map(|(name, _)| name)),
+                },
+            );
             return None;
         };
         let r#type = ResolvedType::Function(function.fn_type.clone());
@@ -447,100 +590,174 @@ impl<'r> Analyzer<'r> {
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         let member = &rest[0];
-        let (type_name, method, missing_member_error, owner_module_path, owner_id) = match r#type {
-            ResolvedType::Struct(cell) => {
-                let struct_type = cell.borrow();
-                let method = struct_type
-                    .functions
-                    .iter()
-                    .find(|(name, _)| name == member)
-                    .map(|(_, method)| method.clone());
-                let similar = match method {
-                    Some(_) => None,
-                    None => best_match(member, struct_type.functions.iter().map(|(name, _)| name)),
-                };
-                let missing = AnalysisErrorKind::NoSuchStructFunction {
-                    r#struct: struct_type.name.clone(),
-                    function: member.clone(),
-                    similar,
-                };
-                (struct_type.name.clone(), method, missing, struct_type.module_path.clone(), struct_type.id)
-            }
-            ResolvedType::Union(cell) => {
-                let union_type = cell.borrow();
-                let method = union_type
-                    .functions
-                    .iter()
-                    .find(|(name, _)| name == member)
-                    .map(|(_, method)| method.clone());
-                let similar = match method {
-                    Some(_) => None,
-                    None => best_match(member, union_type.functions.iter().map(|(name, _)| name)),
-                };
-                let missing = AnalysisErrorKind::NoSuchStructFunction {
-                    r#struct: union_type.name.clone(),
-                    function: member.clone(),
-                    similar,
-                };
-                (union_type.name.clone(), method, missing, union_type.module_path.clone(), union_type.id)
-            }
-            ResolvedType::Enum { cell, .. } => {
-                // A variant wins over a same-named function -- analysis of
-                // the definition would ideally forbid the collision, but
-                // resolution still needs a deterministic order.
-                let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
-                if let Some((variant_index, variant)) = found {
-                    return self.resolve_unit_variant(node_id, span, cell, variant_index, &variant, rest);
+        let (type_name, mut method, missing_member_error, mut owner_module_path, mut owner_id) =
+            match r#type {
+                ResolvedType::Struct(cell) => {
+                    let struct_type = cell.borrow();
+                    let method = struct_type
+                        .functions
+                        .iter()
+                        .find(|(name, _)| name == member)
+                        .map(|(_, method)| method.clone());
+                    let similar = match method {
+                        Some(_) => None,
+                        None => {
+                            best_match(member, struct_type.functions.iter().map(|(name, _)| name))
+                        }
+                    };
+                    let missing = AnalysisErrorKind::NoSuchStructFunction {
+                        r#struct: struct_type.name.clone(),
+                        function: member.clone(),
+                        similar,
+                    };
+                    (
+                        struct_type.name.clone(),
+                        method,
+                        missing,
+                        struct_type.module_path.clone(),
+                        struct_type.id,
+                    )
                 }
-                let e = cell.borrow();
-                let method = e
-                    .functions
-                    .iter()
-                    .find(|(name, _)| name == member)
-                    .map(|(_, method)| method.clone());
-                let missing = AnalysisErrorKind::NoSuchEnumMember {
-                    r#enum: e.name.clone(),
-                    name: member.clone(),
-                    similar_variant: best_match(member, e.variants.iter().map(|v| &v.name)),
-                    similar_function: best_match(member, e.functions.iter().map(|(name, _)| name)),
-                };
-                (e.name.clone(), method, missing, e.module_path.clone(), e.id)
-            }
-            // A primitive (or `Slice`/`Str`) has no static members of its
-            // own, unless a `for`-attached spec in `core` gave it some (see
-            // `HirSpecDef::target`'s doc comment) -- a self-less function
-            // reaches call sites this way (`str::from_bytes_unchecked(...)`);
-            // an instance one goes through `find_methods` instead.
-            other => {
-                let methods = match self.resolver.extension_methods(other) {
-                    Ok(methods) => methods,
-                    Err(err) => {
-                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                ResolvedType::Union(cell) => {
+                    let union_type = cell.borrow();
+                    let method = union_type
+                        .functions
+                        .iter()
+                        .find(|(name, _)| name == member)
+                        .map(|(_, method)| method.clone());
+                    let similar = match method {
+                        Some(_) => None,
+                        None => {
+                            best_match(member, union_type.functions.iter().map(|(name, _)| name))
+                        }
+                    };
+                    let missing = AnalysisErrorKind::NoSuchStructFunction {
+                        r#struct: union_type.name.clone(),
+                        function: member.clone(),
+                        similar,
+                    };
+                    (
+                        union_type.name.clone(),
+                        method,
+                        missing,
+                        union_type.module_path.clone(),
+                        union_type.id,
+                    )
+                }
+                ResolvedType::Enum { cell, .. } => {
+                    // A variant wins over a same-named function -- analysis of
+                    // the definition would ideally forbid the collision, but
+                    // resolution still needs a deterministic order.
+                    let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
+                    if let Some((variant_index, variant)) = found {
+                        return self.resolve_unit_variant(
+                            node_id,
+                            span,
+                            cell,
+                            variant_index,
+                            &variant,
+                            rest,
+                        );
+                    }
+                    let e = cell.borrow();
+                    let method = e
+                        .functions
+                        .iter()
+                        .find(|(name, _)| name == member)
+                        .map(|(_, method)| method.clone());
+                    let missing = AnalysisErrorKind::NoSuchEnumMember {
+                        r#enum: e.name.clone(),
+                        name: member.clone(),
+                        similar_variant: best_match(member, e.variants.iter().map(|v| &v.name)),
+                        similar_function: best_match(
+                            member,
+                            e.functions.iter().map(|(name, _)| name),
+                        ),
+                    };
+                    (e.name.clone(), method, missing, e.module_path.clone(), e.id)
+                }
+                // Built-in static functions come from core's `primitive`
+                // registry; instance functions go through `find_methods`.
+                other => {
+                    let methods = match self.resolver.primitive_methods(other) {
+                        Ok(methods) => methods,
+                        Err(err) => {
+                            self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                            return None;
+                        }
+                    };
+                    if methods.is_empty() {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::StaticAccessOnNonStruct {
+                                found: other.clone(),
+                            },
+                        );
                         return None;
                     }
-                };
-                if methods.is_empty() {
-                    self.error(node_id, span, AnalysisErrorKind::StaticAccessOnNonStruct { found: other.clone() });
+                    let type_name = Ident(other.to_string());
+                    let method = methods
+                        .iter()
+                        .find(|(name, _)| name == member)
+                        .map(|(_, m)| m.clone());
+                    let similar = match method {
+                        Some(_) => None,
+                        None => best_match(member, methods.iter().map(|(name, _)| name)),
+                    };
+                    let missing = AnalysisErrorKind::NoSuchStructFunction {
+                        r#struct: type_name.clone(),
+                        function: member.clone(),
+                        similar,
+                    };
+                    // Built-ins have no declaring item cell, so the empty
+                    // path/`node_id` stand in as the visibility owner.
+                    (type_name, method, missing, Vec::new(), node_id)
+                }
+            };
+
+        if method.is_none() {
+            let composes = match self.resolver.composes_for_type(r#type) {
+                Ok(composes) => composes,
+                Err(err) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
                     return None;
                 }
-                let type_name = Ident(other.to_string());
-                let method = methods.iter().find(|(name, _)| name == member).map(|(_, m)| m.clone());
-                let similar = match method {
-                    Some(_) => None,
-                    None => best_match(member, methods.iter().map(|(name, _)| name)),
-                };
-                let missing = AnalysisErrorKind::NoSuchStructFunction {
-                    r#struct: type_name.clone(),
-                    function: member.clone(),
-                    similar,
-                };
-                // A primitive extension method is always `Exposed` (see
-                // `resolve_extension_methods`) -- the empty path/`node_id`
-                // placeholder here are never actually consulted by
-                // `check_member_visibility` (only reached for `Hidden`).
-                (type_name, method, missing, Vec::new(), node_id)
+            };
+            let candidates: Vec<_> = composes
+                .iter()
+                .flat_map(|compose| {
+                    compose
+                        .methods
+                        .iter()
+                        .filter(|(name, method)| {
+                            name == member && method.fn_type.self_mode.is_none()
+                        })
+                        .map(move |(_, method)| (compose, method.clone()))
+                })
+                .collect();
+            if candidates.len() > 1 {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::AmbiguousComposedStatic {
+                        target: r#type.to_string(),
+                        function: member.clone(),
+                        specs: candidates
+                            .iter()
+                            .map(|(compose, _)| compose.spec.borrow().name.clone())
+                            .collect(),
+                    },
+                );
+                return None;
             }
-        };
+            if let Some((compose, composed_method)) = candidates.into_iter().next() {
+                let spec = compose.spec.borrow();
+                owner_module_path = spec.module_path.clone();
+                owner_id = spec.id;
+                method = Some(composed_method);
+            }
+        }
 
         let Some(method) = method else {
             self.error(node_id, span, missing_member_error);
@@ -550,7 +767,10 @@ impl<'r> Analyzer<'r> {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::StructPathTooDeep { r#struct: type_name, function: member.clone() },
+                AnalysisErrorKind::StructPathTooDeep {
+                    r#struct: type_name,
+                    function: member.clone(),
+                },
             );
             return None;
         }
@@ -558,7 +778,10 @@ impl<'r> Analyzer<'r> {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::MethodNotVisible { method: member.clone(), base: r#type.clone() },
+                AnalysisErrorKind::MethodNotVisible {
+                    method: member.clone(),
+                    base: r#type.clone(),
+                },
             );
             return None;
         }
@@ -598,10 +821,21 @@ impl<'r> Analyzer<'r> {
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         if rest.len() > 1 {
-            self.error(node_id, span, AnalysisErrorKind::GenericPathTooDeep { r#type: variant.name.clone() });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::GenericPathTooDeep {
+                    r#type: variant.name.clone(),
+                },
+            );
             return None;
         }
-        let dynamic_field_names: Vec<Ident> = cell.borrow().dynamic_fields.iter().map(|(n, _, _)| n.clone()).collect();
+        let dynamic_field_names: Vec<Ident> = cell
+            .borrow()
+            .dynamic_fields
+            .iter()
+            .map(|(n, _, _)| n.clone())
+            .collect();
         if !dynamic_field_names.is_empty() || !variant.fields.is_empty() {
             let fields = dynamic_field_names
                 .into_iter()
@@ -618,12 +852,18 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        let r#type = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
+        let r#type = ResolvedType::Enum {
+            cell: cell.clone(),
+            variant: Some(variant_index),
+        };
         let construct = CheckedExprNode {
             id: node_id,
             span,
             r#type: r#type.clone(),
-            kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields: vec![] }),
+            kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct {
+                variant_index,
+                fields: vec![],
+            }),
         };
         Some((CheckedPlaceRoot::Expr(Box::new(construct)), r#type))
     }

@@ -119,21 +119,6 @@ new one is found.
 - **No re-export / `pub use`-equivalent.** Matches the language having no
   re-export concept at all today. [visibility.md](07-visibility.md)
 
-## Modules
-
-- **A `for`-attached extension method's own internal calls to a sibling
-  extension method on the same type lose visibility when the type is
-  instantiated from a consuming `--extern` package** — e.g.
-  `core::slices`'s `SliceImpl<T>`'s `first`/`last` calling `self.get(...)`
-  internally reports `get` as "not visible here" once `*[?]T` is actually
-  used (not merely declared) from outside `core`. Reproduces identically
-  on the baseline commit with an explicit `import core;` and no ambient
-  resolution involved at all, so it's unrelated to the ambient-prelude
-  work — a latent bug in how a `for`-block's own accessor context is
-  threaded through when its methods are instantiated across a package
-  boundary. [modules-and-linkage.md](10-modules-and-linkage.md),
-  [specs.md](08-specs.md)
-
 ## Macros
 
 - **A node built from a macro expansion gets a composite span running from
@@ -236,8 +221,9 @@ need a breaking change to fix — full writeups in
   signature with an empty substitution list.
 - **Two independent pending-spec-method queues** that differ only in
   whether the owner has a declared item to key on.
-- **`core` is hardcoded as the only place a `for` block may be declared**,
-  so no third-party package can ship extension methods.
+- **`core` is the only package allowed to declare `primitive` blocks**, so
+  third-party packages cannot add inherent methods to built-in types. They
+  can compose specs under the target-or-spec-local orphan rule.
 - **`ResolveError::Cycle` carries a chain it never populates** — it always
   prints one module, so the rendered message implies a cycle it never
   shows.

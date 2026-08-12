@@ -61,7 +61,20 @@ pub enum ExternFunctionKind {
     /// A struct/enum/union method -- `type_name` is the owning type's own
     /// name (needed alongside `module_path` for the mangled method symbol,
     /// which is shaped differently from a free function's).
-    Method { type_name: Ident, method_name: Ident },
+    Method {
+        type_name: Ident,
+        method_name: Ident,
+    },
+    Primitive {
+        target: ResolvedType,
+        method_name: Ident,
+    },
+    Compose {
+        target: ResolvedType,
+        spec_name: Ident,
+        spec_args: Vec<ResolvedType>,
+        method_name: Ident,
+    },
 }
 
 /// Where a resolved variable reference's value physically lives. Attached
@@ -183,18 +196,20 @@ pub struct CheckedFunctionDef {
     /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
     /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
     pub mangling: crate::annotations::ManglingMode,
-    /// `Some` for a method attached via `spec Name : Deps for Target { ... }`
-    /// (see `HirSpecDef::target`'s doc comment) -- the resolved target type,
-    /// carried purely for mangling: unlike a struct/enum/union method (which
-    /// lives in its owner's own `.functions` field and is mangled from a
-    /// dedicated `declare_item` arm), this function still travels through
-    /// the ordinary `CheckedItem::FunctionDefinition` path, so it needs its
-    /// own way to say "I have an owner" -- `omega_codegen`'s `declare_item`
-    /// mangles via `mangle::method_symbol` (using this as the owner) instead
-    /// of `mangle::free_function_symbol` when this is `Some`, avoiding a
-    /// mangled-symbol collision with an unrelated, same-named ordinary
-    /// function.
-    pub extension_target: Option<ResolvedType>,
+    /// `Some` for a function defined by a `compose Target : Spec` block.
+    /// Carries the target and spec identity used for deterministic symbol
+    /// mangling; compose functions otherwise travel through the ordinary
+    /// `CheckedItem::FunctionDefinition` path.
+    pub compose_owner: Option<ComposeOwner>,
+    pub primitive_target: Option<ResolvedType>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComposeOwner {
+    pub target: ResolvedType,
+    pub spec_module_path: Vec<Ident>,
+    pub spec_name: Ident,
+    pub spec_args: Vec<ResolvedType>,
 }
 
 impl CheckedFunctionDef {
@@ -517,7 +532,7 @@ pub struct CheckedSpecCoerce {
     /// re-derived by codegen. This matters now that two different concrete
     /// methods can share a name (an implementor satisfying the same generic
     /// spec at two different type arguments via two overloads, see
-    /// `Analyzer::resolve_implements_clause`): a bare name is no longer
+    /// composition checking): a bare name is no longer
     /// enough to know which one a given slot needs, so codegen is handed
     /// the already-resolved answer instead of a name to match on its own.
     pub slots: Vec<HirId>,
@@ -584,13 +599,19 @@ pub enum CastKind {
     /// str/byte-slice family (`*str`/`*[u8]`/`*[i8]`, all `[ptr, len]`):
     /// both leaves, unchanged -- e.g. `<*[u8]>a_str_slice`.
     Reinterpret,
-    IntExtend { signed: bool },
+    IntExtend {
+        signed: bool,
+    },
     IntTruncate,
-    IntToFloat { signed: bool },
+    IntToFloat {
+        signed: bool,
+    },
     /// Saturating, not trapping (`fcvt_to_*_sat`, not `fcvt_to_*`) --
     /// matches Rust's own `as` behavior; a numeric cast shouldn't be a
     /// surprise trap source over an out-of-range or NaN value.
-    FloatToInt { signed: bool },
+    FloatToInt {
+        signed: bool,
+    },
     FloatExtend,
     FloatTruncate,
     /// The str/byte-slice family's only other cast direction: fat pointer
@@ -705,9 +726,7 @@ pub enum CheckedProjection {
     /// `*expr` (explicit), or a seamless one-level pointer-to-struct
     /// autoderef inserted by analysis before a `FieldAccess` projection --
     /// `r#type` is the pointee type.
-    Deref {
-        r#type: ResolvedType,
-    },
+    Deref { r#type: ResolvedType },
     /// `slice.length` or `str.size` -- reads the second leaf of a `Slice`'s
     /// or `Str`'s shared fat-pointer layout. A dedicated projection rather
     /// than a `FieldAccess` variant, since neither is a `Struct` and neither
@@ -722,9 +741,7 @@ pub enum CheckedProjection {
     /// already relies on), as an opaque `*u8`/`*mut u8`. `mutable` mirrors
     /// the spec object's own `mutable` flag -- see
     /// `Analyzer::project_spec_object_field`.
-    SpecObjectPtr {
-        mutable: bool,
-    },
+    SpecObjectPtr { mutable: bool },
     /// `spec_obj.vtable` -- reads the second (vtable) leaf of the same fat
     /// pointer, always as an immutable `*u8`: the vtable itself is always
     /// compiler-generated, content-deduplicated read-only rodata (see
@@ -732,9 +749,7 @@ pub enum CheckedProjection {
     SpecObjectVtable,
     /// `value.tag` on an enum -- reads the tag, which every enum value has
     /// (implicit-tag enums included). `r#type` is the enum's tag type.
-    EnumTag {
-        r#type: ResolvedType,
-    },
+    EnumTag { r#type: ResolvedType },
     /// A shared header field on an enum value -- present on every variant,
     /// so no static variant knowledge is required. `index` is the field's
     /// position in `ResolvedEnumType::header`; `field` is its name, carried

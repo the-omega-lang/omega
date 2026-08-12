@@ -30,8 +30,8 @@ list). A literal must set every field exactly once; there is no partial
 initialization or `..Default::default()`-style spread.
 
 **Structs support single-generic-parameter-list generics**
-(`struct MyNode<T> { value: T; next: *MyNode<T>; }`) and can implement
-[specs](08-specs.md) via `struct S : Spec1, Spec2 { ... }`.
+(`struct MyNode<T> { value: T; next: *MyNode<T>; }`). They conform to
+[specs](08-specs.md) through separate `compose S : Spec { ... }` blocks.
 
 ## Unions
 

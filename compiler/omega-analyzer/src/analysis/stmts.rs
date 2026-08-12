@@ -6,7 +6,7 @@ use super::*;
 /// directly (the source *is* already an iterator; `f.iterator`'s own
 /// already-checked value becomes `$iter` verbatim, no method call at all).
 enum ForInSource {
-    ToIterator,
+    ToIterator(CheckedExprNode),
     DirectIterator(CheckedExprNode),
 }
 
@@ -35,8 +35,13 @@ impl<'r> Analyzer<'r> {
             return true;
         }
         match &expr.kind {
-            CheckedExpr::If(CheckedIf { branches, else_branch }) => {
-                let Some(else_branch) = else_branch else { return false };
+            CheckedExpr::If(CheckedIf {
+                branches,
+                else_branch,
+            }) => {
+                let Some(else_branch) = else_branch else {
+                    return false;
+                };
                 branches.iter().all(|(_, b)| Self::block_type(b).is_none())
                     && Self::block_type(else_branch).is_none()
             }
@@ -139,7 +144,11 @@ impl<'r> Analyzer<'r> {
                 };
                 self.warn(binding.decl_id, binding.span, kind);
             } else if binding.mutable && !binding.written {
-                self.warn(binding.decl_id, binding.span, AnalysisWarningKind::UnnecessaryMut { name: name.clone() });
+                self.warn(
+                    binding.decl_id,
+                    binding.span,
+                    AnalysisWarningKind::UnnecessaryMut { name: name.clone() },
+                );
             }
         }
     }
@@ -152,7 +161,11 @@ impl<'r> Analyzer<'r> {
     /// `expected` is threaded *only* into the block's own tail expression
     /// (see `analyze_expr`'s doc comment) -- ordinary statements never have
     /// an outer expected type of their own.
-    pub(super) fn analyze_block(&mut self, block: &HirBlock, expected: Option<&ResolvedType>) -> Option<CheckedBlock> {
+    pub(super) fn analyze_block(
+        &mut self,
+        block: &HirBlock,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedBlock> {
         self.context.enter_scope();
         let checked_stmts = self.analyze_stmts(&block.stmts);
         let checked_tail = block.tail.as_ref().map(|e| self.analyze_expr(e, expected));
@@ -186,9 +199,21 @@ impl<'r> Analyzer<'r> {
     /// `HirExpr::Assignment` arm's mutability check: it's the declaration's
     /// own initializer, never a `mut`-requiring reassignment, regardless of
     /// whether `ident` was declared `mut`.
-    fn analyze_declaration_with_init(&mut self, decl: &HirDeclaration, value: &HirExprNode) -> Option<[CheckedStmt; 2]> {
-        let (resolved_type, checked_value) = self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
-        self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), Storage::Local, decl.mutable)?;
+    fn analyze_declaration_with_init(
+        &mut self,
+        decl: &HirDeclaration,
+        value: &HirExprNode,
+    ) -> Option<[CheckedStmt; 2]> {
+        let (resolved_type, checked_value) =
+            self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
+        self.declare_binding(
+            decl.id,
+            decl.span,
+            &decl.ident,
+            resolved_type.clone(),
+            Storage::Local,
+            decl.mutable,
+        )?;
         let checked_decl = CheckedDeclaration {
             id: decl.id,
             span: decl.span,
@@ -205,7 +230,11 @@ impl<'r> Analyzer<'r> {
             r#type: resolved_type.clone(),
             kind: CheckedExpr::Assignment(CheckedAssignment {
                 target: CheckedPlace {
-                    root: CheckedPlaceRoot::Variable { decl_id: decl.id, storage: Storage::Local, r#type: resolved_type },
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: decl.id,
+                        storage: Storage::Local,
+                        r#type: resolved_type,
+                    },
                     projections: vec![],
                 },
                 value: Box::new(checked_value),
@@ -242,7 +271,14 @@ impl<'r> Analyzer<'r> {
             return Some(vec![]);
         }
 
-        self.declare_binding(w.id, w.span, &w.ident, r#type.clone(), Storage::Local, w.mutable)?;
+        self.declare_binding(
+            w.id,
+            w.span,
+            &w.ident,
+            r#type.clone(),
+            Storage::Local,
+            w.mutable,
+        )?;
 
         let declaration = CheckedStmt::Declaration(CheckedDeclaration {
             id: w.id,
@@ -262,7 +298,11 @@ impl<'r> Analyzer<'r> {
             r#type: r#type.clone(),
             kind: CheckedExpr::Assignment(CheckedAssignment {
                 target: CheckedPlace {
-                    root: CheckedPlaceRoot::Variable { decl_id: w.id, storage: Storage::Local, r#type },
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: w.id,
+                        storage: Storage::Local,
+                        r#type,
+                    },
                     projections: vec![],
                 },
                 value: Box::new(checked_value),
@@ -278,15 +318,15 @@ impl<'r> Analyzer<'r> {
     /// `analyze_all` fold.
     fn analyze_stmt(&mut self, stmt: &HirStmt) -> Option<Vec<CheckedStmt>> {
         match stmt {
-            HirStmt::Declaration(decl) => {
-                self.analyze_declaration(decl, Storage::Local).map(|d| vec![CheckedStmt::Declaration(d)])
-            }
-            HirStmt::DeclarationWithInit(decl, value) => {
-                self.analyze_declaration_with_init(decl, value).map(Vec::from)
-            }
-            HirStmt::ExternDeclaration(decl) => {
-                self.analyze_extern_decl(decl).map(|d| vec![CheckedStmt::ExternDeclaration(d)])
-            }
+            HirStmt::Declaration(decl) => self
+                .analyze_declaration(decl, Storage::Local)
+                .map(|d| vec![CheckedStmt::Declaration(d)]),
+            HirStmt::DeclarationWithInit(decl, value) => self
+                .analyze_declaration_with_init(decl, value)
+                .map(Vec::from),
+            HirStmt::ExternDeclaration(decl) => self
+                .analyze_extern_decl(decl)
+                .map(|d| vec![CheckedStmt::ExternDeclaration(d)]),
             HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| {
                 // A `never`-typed call has no return value to discard in
                 // the first place -- it never returns at all, so there's
@@ -310,7 +350,8 @@ impl<'r> Analyzer<'r> {
                 // a candidate instead.
                 if self.inferring_return_type {
                     let checked = self.analyze_expr(expr, None)?;
-                    self.inferred_return_candidates.push((expr.span, checked.r#type.clone()));
+                    self.inferred_return_candidates
+                        .push((expr.span, checked.r#type.clone()));
                     return Some(vec![CheckedStmt::Return(checked)]);
                 }
                 let return_type = self.current_return_type.clone();
@@ -336,7 +377,9 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         w.id,
                         checked_cond.span,
-                        AnalysisErrorKind::NonBoolCondition { r#type: checked_cond.r#type },
+                        AnalysisErrorKind::NonBoolCondition {
+                            r#type: checked_cond.r#type,
+                        },
                     );
                     return None;
                 }
@@ -347,7 +390,9 @@ impl<'r> Analyzer<'r> {
                 // expression the author committed to being constant, this
                 // is purely opportunistic, so any `Err` is silently
                 // ignored rather than reported.
-                if let Ok(ConstValue::Bool(true)) = crate::comp_eval::eval(self.resolver, &checked_cond) {
+                if let Ok(ConstValue::Bool(true)) =
+                    crate::comp_eval::eval(self.resolver, &checked_cond)
+                {
                     self.warn(w.id, checked_cond.span, AnalysisWarningKind::PreferLoop);
                 }
                 self.loop_stack.push(w.id);
@@ -378,7 +423,11 @@ impl<'r> Analyzer<'r> {
             HirStmt::Break(b) => match self.loop_stack.last() {
                 Some(&loop_id) => {
                     self.loops_with_break.insert(loop_id);
-                    Some(vec![CheckedStmt::Break(CheckedBreak { id: b.id, span: b.span, loop_id })])
+                    Some(vec![CheckedStmt::Break(CheckedBreak {
+                        id: b.id,
+                        span: b.span,
+                        loop_id,
+                    })])
                 }
                 None => {
                     self.error(b.id, b.span, AnalysisErrorKind::BreakOutsideLoop);
@@ -386,9 +435,11 @@ impl<'r> Analyzer<'r> {
                 }
             },
             HirStmt::Continue(c) => match self.loop_stack.last() {
-                Some(&loop_id) => {
-                    Some(vec![CheckedStmt::Continue(CheckedContinue { id: c.id, span: c.span, loop_id })])
-                }
+                Some(&loop_id) => Some(vec![CheckedStmt::Continue(CheckedContinue {
+                    id: c.id,
+                    span: c.span,
+                    loop_id,
+                })]),
                 None => {
                     self.error(c.id, c.span, AnalysisErrorKind::ContinueOutsideLoop);
                     None
@@ -407,7 +458,11 @@ impl<'r> Analyzer<'r> {
                 let body = self.analyze_block(&d.body, None);
                 self.in_defer_body = previous_in_defer_body;
                 let body = body?;
-                Some(vec![CheckedStmt::Defer(CheckedDefer { id: d.id, span: d.span, body })])
+                Some(vec![CheckedStmt::Defer(CheckedDefer {
+                    id: d.id,
+                    span: d.span,
+                    body,
+                })])
             }
         }
     }
@@ -431,7 +486,11 @@ impl<'r> Analyzer<'r> {
         let checked_condition = match &f.condition {
             Some(c) => match self.analyze_expr(c, None) {
                 Some(cc) if cc.r#type != ResolvedType::Bool => {
-                    self.error(f.id, cc.span, AnalysisErrorKind::NonBoolCondition { r#type: cc.r#type });
+                    self.error(
+                        f.id,
+                        cc.span,
+                        AnalysisErrorKind::NonBoolCondition { r#type: cc.r#type },
+                    );
                     ok = false;
                     None
                 }
@@ -521,8 +580,8 @@ impl<'r> Analyzer<'r> {
     ///
     /// Real, nominal conformance -- **not** duck-typed -- is checked first,
     /// via `classify_for_in_source`: a type that merely happens to have a
-    /// same-shaped `to_iterator`/`next` method, without ever declaring `:
-    /// ToIterator<T>`/`: Iterator<T>`, is rejected with
+    /// same-shaped `to_iterator`/`next` method, without a matching compose
+    /// declaration for `ToIterator<T>`/`Iterator<T>`, is rejected with
     /// `ForLoopSourceNotIterable` instead of silently accepted the way this
     /// desugaring originally worked (`synthesize_method_call` resolves a
     /// method purely by name/shape, with no notion of a declared spec at
@@ -552,8 +611,22 @@ impl<'r> Analyzer<'r> {
         self.context.enter_scope();
 
         let iter_init = match self.classify_for_in_source(f) {
-            Some(ForInSource::ToIterator) => {
-                self.synthesize_method_call(HirPlaceRoot::Expr(Box::new(f.iterator.clone())), "to_iterator", f.span)
+            Some(ForInSource::ToIterator(checked)) => {
+                let old_bounds = self.bounds.len();
+                if let Ok(composes) = self.resolver.composes_for_type(&checked.r#type) {
+                    self.bounds.extend(
+                        composes
+                            .into_iter()
+                            .map(|compose| (compose.target, compose.spec, compose.spec_args)),
+                    );
+                }
+                let result = self.synthesize_method_call(
+                    HirPlaceRoot::Expr(Box::new(f.iterator.clone())),
+                    "to_iterator",
+                    f.span,
+                );
+                self.bounds.truncate(old_bounds);
+                result
             }
             Some(ForInSource::DirectIterator(checked)) => Some(checked),
             None => None,
@@ -572,11 +645,28 @@ impl<'r> Analyzer<'r> {
             // `iter_type` is itself already a `spec *mut Iterator<T>`
             // dynamic-dispatch handle -- the pointer *value* still never
             // gets reassigned, this only affects whether one could be.
-            self.declare_binding(iter_id, f.span, &Ident("$iter".to_string()), iter_type.clone(), Storage::Local, true);
+            self.declare_binding(
+                iter_id,
+                f.span,
+                &Ident("$iter".to_string()),
+                iter_type.clone(),
+                Storage::Local,
+                true,
+            );
             let (iter_decl, iter_assign) =
-                Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type, iter_init);
+                Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type.clone(), iter_init);
 
-            let while_stmt = self.analyze_for_in_loop(f)?;
+            let old_bounds = self.bounds.len();
+            if let Ok(composes) = self.resolver.composes_for_type(&iter_type) {
+                self.bounds.extend(
+                    composes
+                        .into_iter()
+                        .map(|compose| (compose.target, compose.spec, compose.spec_args)),
+                );
+            }
+            let while_stmt = self.analyze_for_in_loop(f);
+            self.bounds.truncate(old_bounds);
+            let while_stmt = while_stmt?;
             Some(vec![iter_decl, iter_assign, while_stmt])
         });
 
@@ -615,7 +705,11 @@ impl<'r> Analyzer<'r> {
     /// the moment `$i` reaches `b`.
     fn analyze_for_in_range(&mut self, f: &HirForIn, range: &HirRange) -> Option<Vec<CheckedStmt>> {
         let Some(start) = &range.start else {
-            self.error(f.id, range.span, AnalysisErrorKind::ForLoopRangeMissingStart);
+            self.error(
+                f.id,
+                range.span,
+                AnalysisErrorKind::ForLoopRangeMissingStart,
+            );
             return None;
         };
 
@@ -623,11 +717,22 @@ impl<'r> Analyzer<'r> {
         let result = (|| {
             let checked_start = self.analyze_expr(start, None)?;
             let element_type = checked_start.r#type.clone();
-            if !matches!(element_type.numeric_kind(), Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))) {
-                self.error(f.id, start.span, AnalysisErrorKind::ForLoopRangeElementNotSupported { r#type: element_type });
+            if !matches!(
+                element_type.numeric_kind(),
+                Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
+            ) {
+                self.error(
+                    f.id,
+                    start.span,
+                    AnalysisErrorKind::ForLoopRangeElementNotSupported {
+                        r#type: element_type,
+                    },
+                );
                 return None;
             }
-            let domain = element_type.integer_domain().expect("a numeric_kind type always has an integer_domain");
+            let domain = element_type
+                .integer_domain()
+                .expect("a numeric_kind type always has an integer_domain");
 
             let checked_end = match &range.end {
                 Some(e) => {
@@ -649,40 +754,100 @@ impl<'r> Analyzer<'r> {
             };
 
             let i_id = self.resolver.fresh_synthetic_id();
-            self.declare_binding(i_id, f.span, &Ident("$i".to_string()), element_type.clone(), Storage::Local, true);
-            let (i_decl, i_assign) = Self::synthetic_declaration(i_id, f.span, "$i", element_type.clone(), checked_start);
+            self.declare_binding(
+                i_id,
+                f.span,
+                &Ident("$i".to_string()),
+                element_type.clone(),
+                Storage::Local,
+                true,
+            );
+            let (i_decl, i_assign) = Self::synthetic_declaration(
+                i_id,
+                f.span,
+                "$i",
+                element_type.clone(),
+                checked_start,
+            );
             let i_place = || CheckedPlace {
-                root: CheckedPlaceRoot::Variable { decl_id: i_id, storage: Storage::Local, r#type: element_type.clone() },
+                root: CheckedPlaceRoot::Variable {
+                    decl_id: i_id,
+                    storage: Storage::Local,
+                    r#type: element_type.clone(),
+                },
                 projections: vec![],
             };
-            let i_read =
-                || CheckedExprNode { id: i_id, span: f.span, r#type: element_type.clone(), kind: CheckedExpr::Place(i_place()) };
+            let i_read = || CheckedExprNode {
+                id: i_id,
+                span: f.span,
+                r#type: element_type.clone(),
+                kind: CheckedExpr::Place(i_place()),
+            };
 
             let mut init = vec![i_decl, i_assign];
             let (condition, post) = if range.inclusive {
                 let more_id = self.resolver.fresh_synthetic_id();
-                let initial_more = Self::binop(f.id, f.span, BinaryOp::Le, ResolvedType::Bool, i_read(), checked_end.clone());
-                self.declare_binding(more_id, f.span, &Ident("$more".to_string()), ResolvedType::Bool, Storage::Local, true);
-                let (more_decl, more_assign) =
-                    Self::synthetic_declaration(more_id, f.span, "$more", ResolvedType::Bool, initial_more);
+                let initial_more = Self::binop(
+                    f.id,
+                    f.span,
+                    BinaryOp::Le,
+                    ResolvedType::Bool,
+                    i_read(),
+                    checked_end.clone(),
+                );
+                self.declare_binding(
+                    more_id,
+                    f.span,
+                    &Ident("$more".to_string()),
+                    ResolvedType::Bool,
+                    Storage::Local,
+                    true,
+                );
+                let (more_decl, more_assign) = Self::synthetic_declaration(
+                    more_id,
+                    f.span,
+                    "$more",
+                    ResolvedType::Bool,
+                    initial_more,
+                );
                 init.push(more_decl);
                 init.push(more_assign);
 
                 let more_place = CheckedPlace {
-                    root: CheckedPlaceRoot::Variable { decl_id: more_id, storage: Storage::Local, r#type: ResolvedType::Bool },
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: more_id,
+                        storage: Storage::Local,
+                        r#type: ResolvedType::Bool,
+                    },
                     projections: vec![],
                 };
-                let condition =
-                    CheckedExprNode { id: more_id, span: f.span, r#type: ResolvedType::Bool, kind: CheckedExpr::Place(more_place.clone()) };
+                let condition = CheckedExprNode {
+                    id: more_id,
+                    span: f.span,
+                    r#type: ResolvedType::Bool,
+                    kind: CheckedExpr::Place(more_place.clone()),
+                };
 
-                let at_end = Self::binop(f.id, f.span, BinaryOp::Eq, ResolvedType::Bool, i_read(), checked_end);
+                let at_end = Self::binop(
+                    f.id,
+                    f.span,
+                    BinaryOp::Eq,
+                    ResolvedType::Bool,
+                    i_read(),
+                    checked_end,
+                );
                 let stop = CheckedExprNode {
                     id: f.id,
                     span: f.span,
                     r#type: ResolvedType::Bool,
                     kind: CheckedExpr::Assignment(CheckedAssignment {
                         target: more_place,
-                        value: Box::new(CheckedExprNode { id: f.id, span: f.span, r#type: ResolvedType::Bool, kind: CheckedExpr::Bool(false) }),
+                        value: Box::new(CheckedExprNode {
+                            id: f.id,
+                            span: f.span,
+                            r#type: ResolvedType::Bool,
+                            kind: CheckedExpr::Bool(false),
+                        }),
                     }),
                 };
                 let one = Self::number_literal(f.id, f.span, &element_type, 1);
@@ -692,7 +857,14 @@ impl<'r> Analyzer<'r> {
                     r#type: element_type.clone(),
                     kind: CheckedExpr::Assignment(CheckedAssignment {
                         target: i_place(),
-                        value: Box::new(Self::binop(f.id, f.span, BinaryOp::Add, element_type.clone(), i_read(), one)),
+                        value: Box::new(Self::binop(
+                            f.id,
+                            f.span,
+                            BinaryOp::Add,
+                            element_type.clone(),
+                            i_read(),
+                            one,
+                        )),
                     }),
                 };
                 let post = CheckedExprNode {
@@ -700,13 +872,29 @@ impl<'r> Analyzer<'r> {
                     span: f.span,
                     r#type: ResolvedType::Void,
                     kind: CheckedExpr::If(CheckedIf {
-                        branches: vec![(at_end, CheckedBlock { stmts: vec![CheckedStmt::Expression(stop)], tail: None })],
-                        else_branch: Some(CheckedBlock { stmts: vec![CheckedStmt::Expression(advance)], tail: None }),
+                        branches: vec![(
+                            at_end,
+                            CheckedBlock {
+                                stmts: vec![CheckedStmt::Expression(stop)],
+                                tail: None,
+                            },
+                        )],
+                        else_branch: Some(CheckedBlock {
+                            stmts: vec![CheckedStmt::Expression(advance)],
+                            tail: None,
+                        }),
                     }),
                 };
                 (condition, Some(post))
             } else {
-                let condition = Self::binop(f.id, f.span, BinaryOp::Lt, ResolvedType::Bool, i_read(), checked_end);
+                let condition = Self::binop(
+                    f.id,
+                    f.span,
+                    BinaryOp::Lt,
+                    ResolvedType::Bool,
+                    i_read(),
+                    checked_end,
+                );
                 let one = Self::number_literal(f.id, f.span, &element_type, 1);
                 let advance = CheckedExprNode {
                     id: f.id,
@@ -714,16 +902,35 @@ impl<'r> Analyzer<'r> {
                     r#type: element_type.clone(),
                     kind: CheckedExpr::Assignment(CheckedAssignment {
                         target: i_place(),
-                        value: Box::new(Self::binop(f.id, f.span, BinaryOp::Add, element_type.clone(), i_read(), one)),
+                        value: Box::new(Self::binop(
+                            f.id,
+                            f.span,
+                            BinaryOp::Add,
+                            element_type.clone(),
+                            i_read(),
+                            one,
+                        )),
                     }),
                 };
                 (condition, Some(advance))
             };
 
             self.context.enter_scope();
-            self.declare_binding(f.id, f.span, &f.binding, element_type.clone(), Storage::Local, f.mutable);
-            let (binding_decl, binding_assign) =
-                Self::synthetic_declaration(f.id, f.span, f.binding.as_ref(), element_type.clone(), i_read());
+            self.declare_binding(
+                f.id,
+                f.span,
+                &f.binding,
+                element_type.clone(),
+                Storage::Local,
+                f.mutable,
+            );
+            let (binding_decl, binding_assign) = Self::synthetic_declaration(
+                f.id,
+                f.span,
+                f.binding.as_ref(),
+                element_type.clone(),
+                i_read(),
+            );
 
             self.loop_stack.push(f.id);
             let user_stmts = self.analyze_stmts(&f.body.stmts);
@@ -737,9 +944,19 @@ impl<'r> Analyzer<'r> {
 
             let mut stmts = vec![binding_decl, binding_assign];
             stmts.extend(user_stmts?);
-            let body = CheckedBlock { stmts, tail: user_tail };
+            let body = CheckedBlock {
+                stmts,
+                tail: user_tail,
+            };
 
-            Some(vec![CheckedStmt::For(Box::new(CheckedFor { id: f.id, span: f.span, init, condition, post, body }))])
+            Some(vec![CheckedStmt::For(Box::new(CheckedFor {
+                id: f.id,
+                span: f.span,
+                init,
+                condition,
+                post,
+                body,
+            }))])
         })();
 
         let scope = self.context.leave_scope();
@@ -750,19 +967,47 @@ impl<'r> Analyzer<'r> {
     /// `left op right`, `op`'s own result type (`bool` for comparisons,
     /// the operand type for arithmetic) supplied by the caller -- shared
     /// by every hand-built condition/step this file synthesizes.
-    fn binop(id: HirId, span: Span, op: BinaryOp, r#type: ResolvedType, left: CheckedExprNode, right: CheckedExprNode) -> CheckedExprNode {
-        CheckedExprNode { id, span, r#type, kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(left), right: Box::new(right) }) }
+    fn binop(
+        id: HirId,
+        span: Span,
+        op: BinaryOp,
+        r#type: ResolvedType,
+        left: CheckedExprNode,
+        right: CheckedExprNode,
+    ) -> CheckedExprNode {
+        CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            }),
+        }
     }
 
     /// A numeric literal of exactly `element_type`'s own signedness/width
     /// -- reuses `Analyzer::i128_to_const_value`, the same conversion a
     /// `match` catch-all's own gap-inferred bound (which likewise has no
     /// source expression of its own) already relies on.
-    fn number_literal(id: HirId, span: Span, element_type: &ResolvedType, n: i128) -> CheckedExprNode {
+    fn number_literal(
+        id: HirId,
+        span: Span,
+        element_type: &ResolvedType,
+        n: i128,
+    ) -> CheckedExprNode {
         let ConstValue::Number(value) = Self::i128_to_const_value(element_type, n) else {
-            unreachable!("ForLoopRangeElementNotSupported already rejected every non-numeric element type")
+            unreachable!(
+                "ForLoopRangeElementNotSupported already rejected every non-numeric element type"
+            )
         };
-        CheckedExprNode { id, span, r#type: element_type.clone(), kind: CheckedExpr::Number(value) }
+        CheckedExprNode {
+            id,
+            span,
+            r#type: element_type.clone(),
+            kind: CheckedExpr::Number(value),
+        }
     }
 
     /// Probes `f.iterator`'s own type once (single analysis -- reused
@@ -792,12 +1037,18 @@ impl<'r> Analyzer<'r> {
         self.warnings.truncate(warnings_before);
 
         if self.for_in_source_declares(&checked.r#type, "ToIterator") {
-            return Some(ForInSource::ToIterator);
+            return Some(ForInSource::ToIterator(checked));
         }
         if self.for_in_source_declares(&checked.r#type, "Iterator") {
             return Some(ForInSource::DirectIterator(checked));
         }
-        self.error(f.id, f.span, AnalysisErrorKind::ForLoopSourceNotIterable { r#type: checked.r#type });
+        self.error(
+            f.id,
+            f.span,
+            AnalysisErrorKind::ForLoopSourceNotIterable {
+                r#type: checked.r#type,
+            },
+        );
         None
     }
 
@@ -817,14 +1068,24 @@ impl<'r> Analyzer<'r> {
         let body = next.and_then(|next| {
             let next_id = self.resolver.fresh_synthetic_id();
             let next_type = next.r#type.clone();
-            let ResolvedType::Enum { cell: option_cell, .. } = next_type.clone() else {
+            let ResolvedType::Enum {
+                cell: option_cell, ..
+            } = next_type.clone()
+            else {
                 // `core::iterator::Iterator::next` is declared to return
                 // `Option<T>` (an ordinary enum), never a `spec *T` or
                 // anything else -- if this doesn't hold, `core::iterator`
                 // itself was edited inconsistently with this function.
                 unreachable!("Iterator::next's declared return type is always an Option<T> enum");
             };
-            self.declare_binding(next_id, f.span, &Ident("$next".to_string()), next_type.clone(), Storage::Local, false);
+            self.declare_binding(
+                next_id,
+                f.span,
+                &Ident("$next".to_string()),
+                next_type.clone(),
+                Storage::Local,
+                false,
+            );
             let (next_decl, next_assign) =
                 Self::synthetic_declaration(next_id, f.span, "$next", next_type.clone(), next);
 
@@ -842,12 +1103,17 @@ impl<'r> Analyzer<'r> {
                 span: f.span,
                 r#type: tag_type.clone(),
                 kind: CheckedExpr::Place(CheckedPlace {
-                    root: CheckedPlaceRoot::Variable { decl_id: next_id, storage: Storage::Local, r#type: next_type },
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: next_id,
+                        storage: Storage::Local,
+                        r#type: next_type,
+                    },
                     projections: tag_projections,
                 }),
             };
 
-            let none_arm = self.for_in_none_arm(f, while_id, next_id, &option_cell, &tag_type, &tag_read);
+            let none_arm =
+                self.for_in_none_arm(f, while_id, next_id, &option_cell, &tag_type, &tag_read);
             let some_arm = self.for_in_some_arm(f, next_id, &option_cell, &tag_type, tag_read);
 
             let match_expr = CheckedStmt::Expression(CheckedExprNode {
@@ -858,10 +1124,16 @@ impl<'r> Analyzer<'r> {
                 // own result type is a don't-care placeholder, the same
                 // way a `while`/`for` body's own tail value already is.
                 r#type: ResolvedType::Void,
-                kind: CheckedExpr::Match(CheckedMatch { arms: vec![none_arm?, some_arm?], else_branch: None }),
+                kind: CheckedExpr::Match(CheckedMatch {
+                    arms: vec![none_arm?, some_arm?],
+                    else_branch: None,
+                }),
             });
 
-            Some(CheckedBlock { stmts: vec![next_decl, next_assign, match_expr], tail: None })
+            Some(CheckedBlock {
+                stmts: vec![next_decl, next_assign, match_expr],
+                tail: None,
+            })
         });
 
         self.context.leave_scope();
@@ -870,7 +1142,12 @@ impl<'r> Analyzer<'r> {
         Some(CheckedStmt::While(CheckedWhile {
             id: while_id,
             span: f.span,
-            condition: CheckedExprNode { id: while_id, span: f.span, r#type: ResolvedType::Bool, kind: CheckedExpr::Bool(true) },
+            condition: CheckedExprNode {
+                id: while_id,
+                span: f.span,
+                r#type: ResolvedType::Bool,
+                kind: CheckedExpr::Bool(true),
+            },
             body: body?,
         }))
     }
@@ -886,8 +1163,18 @@ impl<'r> Analyzer<'r> {
         tag_read: &CheckedExprNode,
     ) -> Option<CheckedMatchArm> {
         self.context.enter_scope();
-        let refined = ResolvedType::Enum { cell: option_cell.clone(), variant: Some(0) };
-        self.declare_narrowed_binding(next_id, f.span, &Ident("$next".to_string()), refined, Storage::Local, false);
+        let refined = ResolvedType::Enum {
+            cell: option_cell.clone(),
+            variant: Some(0),
+        };
+        self.declare_narrowed_binding(
+            next_id,
+            f.span,
+            &Ident("$next".to_string()),
+            refined,
+            Storage::Local,
+            false,
+        );
         let body = CheckedBlock {
             stmts: vec![CheckedStmt::Break(CheckedBreak {
                 id: self.resolver.fresh_synthetic_id(),
@@ -899,8 +1186,12 @@ impl<'r> Analyzer<'r> {
         let scope = self.context.leave_scope();
         self.warn_unused_bindings(scope, false);
 
-        let condition = Self::tag_equals(f, tag_type, tag_read, option_cell.borrow().variants[0].tag);
-        Some(CheckedMatchArm { conditions: vec![vec![condition]], body })
+        let condition =
+            Self::tag_equals(f, tag_type, tag_read, option_cell.borrow().variants[0].tag);
+        Some(CheckedMatchArm {
+            conditions: vec![vec![condition]],
+            body,
+        })
     }
 
     /// `Option::Some => { <mut>? binding := $next.value; ...body... }`.
@@ -913,8 +1204,18 @@ impl<'r> Analyzer<'r> {
         tag_read: CheckedExprNode,
     ) -> Option<CheckedMatchArm> {
         self.context.enter_scope();
-        let refined = ResolvedType::Enum { cell: option_cell.clone(), variant: Some(1) };
-        self.declare_narrowed_binding(next_id, f.span, &Ident("$next".to_string()), refined.clone(), Storage::Local, false);
+        let refined = ResolvedType::Enum {
+            cell: option_cell.clone(),
+            variant: Some(1),
+        };
+        self.declare_narrowed_binding(
+            next_id,
+            f.span,
+            &Ident("$next".to_string()),
+            refined.clone(),
+            Storage::Local,
+            false,
+        );
 
         let result = (|| {
             let mut value_projections = Vec::new();
@@ -931,14 +1232,30 @@ impl<'r> Analyzer<'r> {
                 span: f.span,
                 r#type: value_type.clone(),
                 kind: CheckedExpr::Place(CheckedPlace {
-                    root: CheckedPlaceRoot::Variable { decl_id: next_id, storage: Storage::Local, r#type: refined },
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: next_id,
+                        storage: Storage::Local,
+                        r#type: refined,
+                    },
                     projections: value_projections,
                 }),
             };
 
-            self.declare_binding(f.id, f.span, &f.binding, value_type.clone(), Storage::Local, f.mutable);
-            let (binding_decl, binding_assign) =
-                Self::synthetic_declaration(f.id, f.span, f.binding.as_ref(), value_type, value_read);
+            self.declare_binding(
+                f.id,
+                f.span,
+                &f.binding,
+                value_type.clone(),
+                Storage::Local,
+                f.mutable,
+            );
+            let (binding_decl, binding_assign) = Self::synthetic_declaration(
+                f.id,
+                f.span,
+                f.binding.as_ref(),
+                value_type,
+                value_read,
+            );
 
             let user_stmts = self.analyze_stmts(&f.body.stmts)?;
             let user_tail = match &f.body.tail {
@@ -948,25 +1265,46 @@ impl<'r> Analyzer<'r> {
 
             let mut stmts = vec![binding_decl, binding_assign];
             stmts.extend(user_stmts);
-            Some(CheckedBlock { stmts, tail: user_tail })
+            Some(CheckedBlock {
+                stmts,
+                tail: user_tail,
+            })
         })();
 
         let scope = self.context.leave_scope();
         self.warn_unused_bindings(scope, false);
 
-        let condition = Self::tag_equals(f, tag_type, &tag_read, option_cell.borrow().variants[1].tag);
-        Some(CheckedMatchArm { conditions: vec![vec![condition]], body: result? })
+        let condition =
+            Self::tag_equals(f, tag_type, &tag_read, option_cell.borrow().variants[1].tag);
+        Some(CheckedMatchArm {
+            conditions: vec![vec![condition]],
+            body: result?,
+        })
     }
 
     /// `tag_read == <variant's own constant tag>` -- shared by both of
     /// `analyze_for_in`'s hand-built match arms.
-    fn tag_equals(f: &HirForIn, tag_type: &ResolvedType, tag_read: &CheckedExprNode, tag: NumberValue) -> CheckedExprNode {
-        let tag_const = CheckedExprNode { id: f.id, span: f.span, r#type: tag_type.clone(), kind: CheckedExpr::Number(tag) };
+    fn tag_equals(
+        f: &HirForIn,
+        tag_type: &ResolvedType,
+        tag_read: &CheckedExprNode,
+        tag: NumberValue,
+    ) -> CheckedExprNode {
+        let tag_const = CheckedExprNode {
+            id: f.id,
+            span: f.span,
+            r#type: tag_type.clone(),
+            kind: CheckedExpr::Number(tag),
+        };
         CheckedExprNode {
             id: f.id,
             span: f.span,
             r#type: ResolvedType::Bool,
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op: BinaryOp::Eq, left: Box::new(tag_read.clone()), right: Box::new(tag_const) }),
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op: BinaryOp::Eq,
+                left: Box::new(tag_read.clone()),
+                right: Box::new(tag_const),
+            }),
         }
     }
 
@@ -980,16 +1318,27 @@ impl<'r> Analyzer<'r> {
     /// `HirPlaceRoot::Path` for a receiver that's a synthetic local
     /// already declared by name (`$iter`) -- see `HirPlaceRoot`'s own doc
     /// comment for why those are the only two shapes a place root has.
-    fn synthesize_method_call(&mut self, root: HirPlaceRoot, method: &str, span: Span) -> Option<CheckedExprNode> {
+    fn synthesize_method_call(
+        &mut self,
+        root: HirPlaceRoot,
+        method: &str,
+        span: Span,
+    ) -> Option<CheckedExprNode> {
         let callee = HirExprNode {
             id: self.resolver.fresh_synthetic_id(),
             span,
-            expr: HirExpr::Place(HirPlace { root, projections: vec![HirProjection::FieldAccess(Ident(method.to_string()))] }),
+            expr: HirExpr::Place(HirPlace {
+                root,
+                projections: vec![HirProjection::FieldAccess(Ident(method.to_string()))],
+            }),
         };
         let call = HirExprNode {
             id: self.resolver.fresh_synthetic_id(),
             span,
-            expr: HirExpr::FunctionCall(HirFunctionCall { callee: Box::new(callee), args: vec![] }),
+            expr: HirExpr::FunctionCall(HirFunctionCall {
+                callee: Box::new(callee),
+                args: vec![],
+            }),
         };
         self.analyze_expr(&call, None)
     }
@@ -1021,7 +1370,14 @@ impl<'r> Analyzer<'r> {
             span,
             r#type: r#type.clone(),
             kind: CheckedExpr::Assignment(CheckedAssignment {
-                target: CheckedPlace { root: CheckedPlaceRoot::Variable { decl_id: id, storage: Storage::Local, r#type }, projections: vec![] },
+                target: CheckedPlace {
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: id,
+                        storage: Storage::Local,
+                        r#type,
+                    },
+                    projections: vec![],
+                },
                 value: Box::new(value),
             }),
         });

@@ -7,10 +7,13 @@
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
-use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
+use omega_analyzer::resolved_type::{
+    ConstValue, ResolvedCompose, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
+    ResolvedType,
+};
 use omega_analyzer::resolver::{
-    GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget, ItemNamespace,
-    ModuleResolver, ResolveError, ResolvedItem,
+    GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
+    ItemNamespace, ModuleResolver, ResolveError, ResolvedItem,
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
@@ -66,13 +69,19 @@ impl Driver {
         let key = (module_path.to_vec(), alias.clone());
         match self.imports.resolved.get(&key) {
             Some(AliasState::Done(result)) => return result.clone(),
-            Some(AliasState::InProgress) => return Err(ResolveError::Cycle(vec![module_path.to_vec()])),
+            Some(AliasState::InProgress) => {
+                return Err(ResolveError::Cycle(vec![module_path.to_vec()]));
+            }
             None => {}
         }
 
-        self.imports.resolved.insert(key.clone(), AliasState::InProgress);
+        self.imports
+            .resolved
+            .insert(key.clone(), AliasState::InProgress);
         let result = self.resolve_import_target(module_path, target, reveal);
-        self.imports.resolved.insert(key, AliasState::Done(result.clone()));
+        self.imports
+            .resolved
+            .insert(key, AliasState::Done(result.clone()));
         result
     }
 
@@ -118,7 +127,11 @@ impl Driver {
 
     /// One import alias's own structural facts, or `None` when the module
     /// binds no such alias.
-    fn import_entry(&mut self, module_path: &[Ident], alias: &Ident) -> Result<Option<(ModulePath, bool)>, ResolveError> {
+    fn import_entry(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<(ModulePath, bool)>, ResolveError> {
         self.ensure_module_indexed(module_path)?;
         let Some(import) = self.modules.index(module_path).imports.get(alias) else {
             return Ok(None);
@@ -146,15 +159,18 @@ impl ModuleResolver for Driver {
             // else. `Item`/`GenericItem` targets never apply here -- an
             // implicit import always names the whole `core` module, never
             // one specific item inside it.
-            if alias.as_ref() == crate::extensions::CORE_MODULE
-                && !crate::extensions::is_core_module(module_path)
+            if alias.as_ref() == crate::roots::CORE_MODULE
+                && !crate::roots::is_core_module(module_path)
                 && !self.roots.core_modules().is_empty()
             {
-                return Ok(Some(ImportTarget::Module(vec![Ident(crate::extensions::CORE_MODULE.to_string())])));
+                return Ok(Some(ImportTarget::Module(vec![Ident(
+                    crate::roots::CORE_MODULE.to_string(),
+                )])));
             }
             return Ok(None);
         };
-        self.resolve_alias(module_path, alias, &target, reveal).map(Some)
+        self.resolve_alias(module_path, alias, &target, reveal)
+            .map(Some)
     }
 
     fn ambient_core_candidates(
@@ -162,7 +178,7 @@ impl ModuleResolver for Driver {
         accessor: &[Ident],
         name: &Ident,
     ) -> Result<Option<Vec<Ident>>, ResolveError> {
-        if crate::extensions::is_core_module(accessor) {
+        if crate::roots::is_core_module(accessor) {
             return Ok(None);
         }
         let mut candidates = Vec::new();
@@ -179,16 +195,26 @@ impl ModuleResolver for Driver {
             if index.overloads.contains_key(name) {
                 continue; // scope cut -- see `ModuleResolver::ambient_core_candidates`'s doc comment
             }
-            let Some(&item_index) = index.items.get(name) else { continue };
+            let Some(&item_index) = index.items.get(name) else {
+                continue;
+            };
             let item = &self.modules.parsed(&path).hir.items[item_index];
             if item_visibility(item) == Visibility::Exposed {
-                candidates.push(path.iter().cloned().chain(std::iter::once(name.clone())).collect());
+                candidates.push(
+                    path.iter()
+                        .cloned()
+                        .chain(std::iter::once(name.clone()))
+                        .collect(),
+                );
             }
         }
         match candidates.len() {
             0 => Ok(None),
             1 => Ok(Some(candidates.pop().unwrap())),
-            _ => Err(ResolveError::AmbiguousAmbientName { name: name.clone(), candidates }),
+            _ => Err(ResolveError::AmbiguousAmbientName {
+                name: name.clone(),
+                candidates,
+            }),
         }
     }
 
@@ -198,7 +224,12 @@ impl ModuleResolver for Driver {
         if self.ensure_module_indexed(module_path).is_err() {
             return vec![];
         }
-        self.modules.index(module_path).imports.keys().cloned().collect()
+        self.modules
+            .index(module_path)
+            .imports
+            .keys()
+            .cloned()
+            .collect()
     }
 
     fn raw_import_absolute_path(
@@ -220,7 +251,14 @@ impl ModuleResolver for Driver {
         let Some((item_name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
-        self.ensure_item(accessor_module_path, module_path, item_name, type_args, indirect, bypass)
+        self.ensure_item(
+            accessor_module_path,
+            module_path,
+            item_name,
+            type_args,
+            indirect,
+            bypass,
+        )
     }
 
     /// Answered from the *declaration* rather than from any resolution cache:
@@ -230,9 +268,13 @@ impl ModuleResolver for Driver {
     /// resolve at all -- erring toward not claiming a bypass was unnecessary,
     /// rather than risking a wrong `UnnecessaryReveal` warning.
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
-        let Some((item_name, module_path)) = absolute_path.split_last() else { return false };
+        let Some((item_name, module_path)) = absolute_path.split_last() else {
+            return false;
+        };
         self.declared_visibility(module_path, item_name)
-            .is_some_and(|visibility| Self::visibility_allows(visibility, module_path, accessor_module_path))
+            .is_some_and(|visibility| {
+                Self::visibility_allows(visibility, module_path, accessor_module_path)
+            })
     }
 
     fn fresh_synthetic_id(&mut self) -> HirId {
@@ -252,7 +294,8 @@ impl ModuleResolver for Driver {
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
-        let HirItem::FunctionDefinition(f) = &self.modules.parsed(module_path).hir.items[index] else {
+        let HirItem::FunctionDefinition(f) = &self.modules.parsed(module_path).hir.items[index]
+        else {
             return Ok(None);
         };
         if f.generics.is_empty() {
@@ -279,13 +322,22 @@ impl ModuleResolver for Driver {
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
-        let (generics, fields) = match (&self.modules.parsed(module_path).hir.items[index], variant) {
-            (HirItem::Struct(s), None) => {
-                (&s.generics, s.fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect())
-            }
-            (HirItem::Union(u), None) => {
-                (&u.generics, u.fields.iter().map(|f| (f.ident.clone(), f.r#type.clone())).collect())
-            }
+        let (generics, fields) = match (&self.modules.parsed(module_path).hir.items[index], variant)
+        {
+            (HirItem::Struct(s), None) => (
+                &s.generics,
+                s.fields
+                    .iter()
+                    .map(|f| (f.ident.clone(), f.r#type.clone()))
+                    .collect(),
+            ),
+            (HirItem::Union(u), None) => (
+                &u.generics,
+                u.fields
+                    .iter()
+                    .map(|f| (f.ident.clone(), f.r#type.clone()))
+                    .collect(),
+            ),
             (HirItem::Enum(e), Some(variant_name)) => {
                 let Some(v) = e.variants.iter().find(|v| &v.name == variant_name) else {
                     return Ok(None);
@@ -341,7 +393,9 @@ impl ModuleResolver for Driver {
         // with owner-generic inference at once is deliberately out of
         // scope (see `Analyzer::resolve_generic_static_call`'s doc
         // comment), so this must not silently pick a first match.
-        let mut matches = functions.iter().filter(|f| &f.name == function_name && f.self_mode.is_none());
+        let mut matches = functions
+            .iter()
+            .filter(|f| &f.name == function_name && f.self_mode.is_none());
         let f = matches.next();
         if matches.next().is_some() {
             return Ok(None);
@@ -387,7 +441,11 @@ impl ModuleResolver for Driver {
             let HirItem::FunctionDefinition(f) = &hir.items[index] else {
                 unreachable!("only a function is ever recorded as an overload candidate");
             };
-            candidates.push((f.id, self.ensure_overload_signature(module_path, index)?, f.visibility));
+            candidates.push((
+                f.id,
+                self.ensure_overload_signature(module_path, index)?,
+                f.visibility,
+            ));
         }
         Ok(Some(candidates))
     }
@@ -418,14 +476,51 @@ impl ModuleResolver for Driver {
                 | HirItem::DeclarationWithInit(..)
                 | HirItem::Walrus(_)
                 | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
-                HirItem::Glue(_) | HirItem::Import(_) => false,
+                HirItem::Glue(_)
+                | HirItem::Compose(_)
+                | HirItem::Primitive(_)
+                | HirItem::Import(_) => false,
             })
             .map(|(name, _)| name);
         best_match(target, candidates)
     }
 
-    fn extension_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError> {
-        self.methods_attached_to(receiver)
+    fn primitive_methods(
+        &mut self,
+        receiver: &ResolvedType,
+    ) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError> {
+        Ok(Driver::primitive_methods(self, receiver))
+    }
+
+    fn compose_for(
+        &mut self,
+        target: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+    ) -> Result<Option<ResolvedCompose>, ResolveError> {
+        Ok(
+            Driver::compose_for(self, target, spec, spec_args).map(|entry| ResolvedCompose {
+                target: entry.target,
+                spec: entry.spec,
+                spec_args: entry.spec_args,
+                methods: entry.methods,
+            }),
+        )
+    }
+
+    fn composes_for_type(
+        &mut self,
+        target: &ResolvedType,
+    ) -> Result<Vec<ResolvedCompose>, ResolveError> {
+        Ok(Driver::composes_for_type(self, target)
+            .into_iter()
+            .map(|entry| ResolvedCompose {
+                target: entry.target,
+                spec: entry.spec,
+                spec_args: entry.spec_args,
+                methods: entry.methods,
+            })
+            .collect())
     }
 
     /// `decl_id`'s owning item, found via `items.decl_id_owner` (populated
@@ -440,13 +535,19 @@ impl ModuleResolver for Driver {
     /// `Storage::Function` place's `decl_id`, which `compute_item` always
     /// records identity for) -- treated as `Ok(None)` rather than a panic
     /// regardless, since nothing here can prove that guard holds.
-    fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+    fn resolve_function_body(
+        &mut self,
+        decl_id: HirId,
+    ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
         let Some(key) = self.items.decl_id_owner.get(&decl_id).cloned() else {
             return Ok(None);
         };
         let index = self.local_item_index(&key.module, &key.name)?;
         let Some(body) = self.ensure_item_body(&key, index) else {
-            return Err(ResolveError::ItemFailed { module: key.module, item: key.name });
+            return Err(ResolveError::ItemFailed {
+                module: key.module,
+                item: key.name,
+            });
         };
         Ok(match body.item {
             // The ordinary case: `key` names the free function directly,

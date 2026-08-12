@@ -140,44 +140,15 @@ match/early-return. Worth reconsidering independent of anything else in this
 file — this is the single most-reached-for capability ("is this true and that
 true") in ordinary code, and today's only answer scales badly.
 
-### "Nominal, not structural" bound-checking is actually structural whenever a spec has no default methods
+### Fixed: spec conformance is nominal
 
-`06-generics.md` and `08-specs.md` both say, near-verbatim, "Nominal, not
-structural — `T: Animal` requires an explicit `struct S : Animal` declaration." `
-07-visibility.md:126`, written about a different bug in a different section,
-already says the opposite in passing: "a `T: Animal` bound is a **structural fact**
-about `T`." Both can't be the stated design; tracing the actual check shows the
-second one is what the code does.
-
-`check_generic_bound` → `type_implements_spec` (`analysis.rs:1328-1359`) never
-looks at the concrete type's own `: Spec1, Spec2` declaration list. It walks the
-spec's *flattened requirement list* and, for each required signature, calls `
-find_methods` on the concrete type and compares `fn_type`. `find_methods` scans `
-ResolvedStructType::functions` — a flat `Vec<(Ident, ResolvedMethod)>` where
-hand-written methods and spec-synthesized defaults are merged and
-indistinguishable. So:
-
-```
-exposed spec Animal { kind(*self) => i32; }        # single required fn, no default
-
-struct Dog { exposed kind(*self) => i32 { 1 } }    # no ": Animal" anywhere
-
-process<T: Animal>(v: T) => i32 { v.kind() }
-process(Dog{});                                    # accepted — structurally, not nominally
-```
-The "nominal" framing only becomes true in practice once a spec has *at least
-one default method* — those only ever land on a type's method list via `
-resolve_implements_clause`'s actual processing of a real `: Spec` declaration,
-so a spec that's all-required-no-defaults is checked in a way that's
-indistinguishable from an unbound generic's own duck-typing. The same `
-type_implements_spec` path also backs `spec \*T` dynamic-dispatch coercion, so
-this isn't just a generic-bound curiosity — it's the same gap wherever a spec
-is used as a constraint rather than a `: Spec`\-declared interface. Not urgent
-(nothing is unsound here — an accidental structural match is still a real,
-complete implementation), but the documentation's claim is simply false for a
-common spec shape, and worth either fixing the check to actually consult the
-declaration list, or fixing the docs to admit the real rule ("nominal once a
-spec has a default; structural otherwise").
+Conformance now has its own registry, populated only by
+`compose Target : Spec { ... }`. Generic bounds, spec-object coercions, and
+`for .. in` classification consult that registry before selecting methods, so
+a structurally identical type without a compose declaration no longer
+satisfies a spec accidentally. Composed instance methods also stay out of
+ordinary concrete method scope; they are available through a bound or an
+explicit `Spec::method(receiver, ...)` call.
 
 ## Design inconsistencies worth a second look
 
@@ -240,9 +211,11 @@ just `continue`s, keeping whichever was flattened first:
 ```
 exposed spec Left  { greet(*self) => i32 { 1 } }
 exposed spec Right { greet(*self) => i32 { 2 } }
+spec BothDefaults = Left | Right;
 
-struct Both : Left, Right {}
-# Both{}.greet() silently returns 1 (Left's default) -- no ConflictingSpecFunctions,
+struct Both { value: i32; }
+compose Both : BothDefaults {}
+# BothDefaults::greet(&both) silently returns 1 (Left's default) -- no ConflictingSpecFunctions,
 # no ambiguity error, no diagnostic of any kind
 ```
 `ConflictingSpecFunctions` only fires on an actual type mismatch, never on a
@@ -416,39 +389,19 @@ at least one trait method collapse into the ordinary path — and generic
 overloads become possible rather than structurally excluded. Breaking:
 changes the resolver trait's surface and every cache key shape.
 
-#### Two independent "pending body" queues that differ only in whether the owner has a declared item
+#### Fixed: one composition-owned pending-default path
 
-A spec default method with no override is checked *after* its implementor's
-signature, in a second pass. There are two entirely separate machines for
-this: one keyed by the implementor's `ItemKey`, drained inside that
-implementor's own body check; and one keyed by the receiver's `ResolvedType`,
-drained by its own `while let` loop after both phases finish (because
-checking one queued body can queue another for a different receiver).
+Spec defaults are now queued only by a compose entry and checked in the
+compose body's second phase with the same target/spec bounds as explicit
+compose functions. Aggregate item queries no longer own a parallel pending
+default queue.
 
-Both queue the same `PendingSpecMethod`, both check it with a fresh analyzer
-seeded with the same shape of substitution, and both merge the result into a
-module's item list. The only real difference is that a `for`-attached
-receiver (`i32`, `*[?]T`) has no declared item to key on, so it also has to
-carry its own module path. One queue keyed by an owner enum
-(`Item(ItemKey) | Receiver(ResolvedType)`) would delete the duplicate
-machine; the `while let` drain shape is the correct one for both.
+#### Fixed: primitive methods and spec conformance are separate
 
-#### `core` is hardcoded as the one and only extension root
-
-`for`-attached methods are found by walking the import graph of the module
-literally named `core`, and declaring a `for` block anywhere else is a hard
-error (`ExtensionOutsideCore`). Consequences worth deciding on deliberately
-rather than inheriting:
-
-- no third-party package can ship extension methods, ever;
-- a local module legitimately named `core` (or any package built with
-  `--name=core`) silently *becomes* the extension root;
-- the "at most one `for` block per target type" rule is enforced across one
-  tree, so it would not survive a second root without being re-thought.
-
-A declared capability (`--extension-root=<name>`, repeatable, or a per-package
-manifest bit) would replace the literal, with the one-block-per-target rule
-enforced across all registered roots at once.
+Core-only `primitive` blocks add inherent methods to built-in targets, while
+ordinary `compose Target : Spec` blocks register nominal conformance under a
+target-or-spec-local orphan rule. This removes anonymous extension specs and
+the former global one-extension-block-per-target coupling.
 
 #### `ResolveError::Cycle` carries a chain it never populates
 
@@ -487,7 +440,7 @@ confusion unrepresentable and cut the cloning. Breaking across crates: the
 Which findings surface depends on which of three lists a module lands in, with
 four different outcomes: errors from a local module surface; errors from an
 extern module are dropped; errors from `core`'s tree surface (it's added to
-the error scope explicitly, so a broken `for` block still reports); warnings
+the error scope explicitly, so a broken primitive block still reports); warnings
 from `core` are dropped (deliberately — its unused imports shouldn't leak into
 every downstream build); warnings from other externs never exist because their
 bodies are never checked.
@@ -588,4 +541,3 @@ operand position, is the structural fix.
 |`(HirId, Span)` threaded as two parameters everywhere|architecture|source read, whole-crate restructure|
 |value-`match` arms must partition the domain, no catch-all|design gap|real compile|
 |`reveal`'s "every position must remember" invariant has no backstop|latent bug class|real compile (third occurrence fixed)|
-

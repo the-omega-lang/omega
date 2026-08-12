@@ -1,8 +1,6 @@
-# `core::slices` -- `*[?]T`'s own methods, for *any* element type `T` (see
-# `SliceImpl`'s `for [?]T` target -- bare, no leading `*`, the same
-# convention `strings.omg`'s `for str` already uses: the target names the
-# value type, and each method's own self-mode (`*self`) is what adds the
-# pointer. One instantiation gets generated per concrete `T` a program
+# `core::slices` -- `*[?]T`'s own methods, for any element type `T`.
+# The primitive target is bare (`[?]T`, no leading `*`); each function's
+# self mode supplies the pointer. One instantiation is generated per concrete `T` a program
 # actually uses, deduplicated across translation units the same way any
 # other generic instantiation is).
 #
@@ -12,21 +10,13 @@
 # layer at all (nothing to call on a target with no libc), so "fails
 # cleanly, inspectable by the caller" is the only available shape for a
 # partial operation. `false` leaves `*out` untouched.
-#
-# Note: unlike `numerics.omg`/`strings.omg`'s own `for $T` blocks, a
-# `for [?]T` (slice-pattern) target's own function list does not accept a
-# leading visibility modifier at all -- a real, separate parser limitation
-# confirmed while working on this file, out of scope for the current task.
-# These methods are effectively still only reachable from within `core`
-# itself for now, same as every other `for`-attached method was before
-# this pass.
 
-exposed spec SliceImpl<T> for [?]T {
-    is_empty(*self) => bool {
+primitive<T> [?]T {
+    exposed is_empty(*self) => bool {
         self.length == 0
     }
 
-    get(*self, index: i32, out: *mut T) => bool {
+    exposed get(*self, index: i32, out: *mut T) => bool {
         if index < 0 {
             false
         } else if index >= self.length {
@@ -37,11 +27,11 @@ exposed spec SliceImpl<T> for [?]T {
         }
     }
 
-    first(*self, out: *mut T) => bool {
+    exposed first(*self, out: *mut T) => bool {
         self.get(0, out)
     }
 
-    last(*self, out: *mut T) => bool {
+    exposed last(*self, out: *mut T) => bool {
         self.get(self.length - 1, out)
     }
 }

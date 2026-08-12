@@ -6,10 +6,11 @@ grammar at each invocation site to determine what that template must mean.
 
 ```
 macro signed_integer($T: type) => {
-    spec SignedIntegerOps : Eq, Ord, Default for $T {
-        equals(*self, other: Self) => bool { *self == other }
+    primitive $T {
+        exposed equals(*self, other: Self) => bool { *self == other }
         ...
     }
+    compose $T : Eq {}
 }
 
 signed_integer$(i8);
@@ -114,8 +115,8 @@ real program hit (`examples/dev/main.omg` prints a `*str` named `out`).
 
 `runtime/core/core/numerics.omg` uses three macros
 (`signed_integer`/`unsigned_integer`/`float_ops`) to generate numeric spec
-implementations for every primitive type instead of hand-writing twelve
-near-identical blocks. See [core library](13-core-library.md).
+method and conformance declarations for every primitive type instead of
+hand-writing twelve near-identical groups. See [core library](13-core-library.md).
 
 ## Cross-file visibility
 

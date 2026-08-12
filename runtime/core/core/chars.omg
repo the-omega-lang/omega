@@ -4,8 +4,10 @@ import fmt::Display;
 import fmt::write_char;
 import io::Writer;
 
-exposed spec CharOps : Display for char {
-    fmt(*self, out: *mut Writer) => void {
+primitive char {
+    exposed fmt(*self, out: *mut Writer) => void {
         write_char(out, *self);
     }
 }
+
+compose char : Display {}

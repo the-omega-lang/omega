@@ -587,10 +587,8 @@ impl Context {
             }
             // `*self`/`*mut self` always lowers to exactly this raw shape
             // (see `omega_hir::lower::Lowerer::self_param`'s doc comment)
-            // -- when a `for str`/`for [?]T` extension method's `Self` is
-            // substituted with `Str`/`Array` respectively (see
-            // `flatten_spec_into`'s substitution list and
-            // `methods_attached_to`'s `array_self`), this re-stamps rather
+            // -- when a `primitive str`/`primitive<T> [?]T` method's `Self`
+            // is substituted with `Str`/`Array`, this re-stamps rather
             // than double-wraps, so `*self` comes out as the real `Str`/
             // `Slice` receiver instead of a pointer *to* one. Checked as a
             // raw-syntax peek, mirroring the literal-`str` case just

@@ -7,13 +7,13 @@
 
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
-use omega_analyzer::analysis::{Analyzer, PendingSpecMethod, item_id_span, item_visibility};
+use omega_analyzer::analysis::{Analyzer, item_id_span, item_visibility};
 use omega_analyzer::annotations::ResolvedAnnotations;
 use omega_analyzer::checked::{CheckedItem, Storage};
 use omega_analyzer::error::AnalysisWarning;
 use omega_analyzer::resolved_type::{
-    ResolvedEnumType, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType,
-    ResolvedUnionType,
+    ResolvedBound, ResolvedEnumType, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
+    ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_diagnostics::Span;
@@ -38,7 +38,11 @@ pub(crate) struct ItemKey {
 
 impl ItemKey {
     pub fn new(module: &[Ident], name: &Ident, type_args: &[ResolvedType]) -> Self {
-        Self { module: module.to_vec(), name: name.clone(), type_args: type_args.to_vec() }
+        Self {
+            module: module.to_vec(),
+            name: name.clone(),
+            type_args: type_args.to_vec(),
+        }
     }
 
     /// Whether this key addresses a *specific instantiation* of a generic
@@ -51,7 +55,10 @@ impl ItemKey {
     }
 
     fn failed(&self) -> ResolveError {
-        ResolveError::ItemFailed { module: self.module.clone(), item: self.name.clone() }
+        ResolveError::ItemFailed {
+            module: self.module.clone(),
+            item: self.name.clone(),
+        }
     }
 }
 
@@ -97,7 +104,10 @@ pub(crate) struct GlueSignature {
 
 impl CheckedBody {
     pub fn clone_of(&self) -> Self {
-        Self { item: self.item.clone(), warnings: self.warnings.clone() }
+        Self {
+            item: self.item.clone(),
+            warnings: self.warnings.clone(),
+        }
     }
 }
 
@@ -138,7 +148,6 @@ impl TypeCells {
                     functions: vec![],
                     layout: Default::default(),
                     suppress: vec![],
-                    implemented_specs: vec![],
                     is_marker: false,
                 }))
             })
@@ -164,7 +173,6 @@ impl TypeCells {
                     functions: vec![],
                     layout: Default::default(),
                     suppress: vec![],
-                    implemented_specs: vec![],
                 }))
             })
             .clone()
@@ -183,7 +191,6 @@ impl TypeCells {
                     fields: vec![],
                     functions: vec![],
                     suppress: vec![],
-                    implemented_specs: vec![],
                 }))
             })
             .clone()
@@ -192,15 +199,24 @@ impl TypeCells {
     /// `key`'s already-created struct cell. Phase 2 only ever asks for a cell
     /// phase 1 built, so a miss is a driver bug.
     pub fn expect_struct(&self, key: &ItemKey) -> Rc<RefCell<ResolvedStructType>> {
-        self.structs.get(key).expect("cell was created when the signature resolved").clone()
+        self.structs
+            .get(key)
+            .expect("cell was created when the signature resolved")
+            .clone()
     }
 
     pub fn expect_enum(&self, key: &ItemKey) -> Rc<RefCell<ResolvedEnumType>> {
-        self.enums.get(key).expect("cell was created when the signature resolved").clone()
+        self.enums
+            .get(key)
+            .expect("cell was created when the signature resolved")
+            .clone()
     }
 
     pub fn expect_union(&self, key: &ItemKey) -> Rc<RefCell<ResolvedUnionType>> {
-        self.unions.get(key).expect("cell was created when the signature resolved").clone()
+        self.unions
+            .get(key)
+            .expect("cell was created when the signature resolved")
+            .clone()
     }
 
     /// `key`'s existing cell as a type, whichever of the three kinds it is --
@@ -210,9 +226,14 @@ impl TypeCells {
             return Some(ResolvedType::Struct(cell.clone()));
         }
         if let Some(cell) = self.enums.get(key) {
-            return Some(ResolvedType::Enum { cell: cell.clone(), variant: None });
+            return Some(ResolvedType::Enum {
+                cell: cell.clone(),
+                variant: None,
+            });
         }
-        self.unions.get(key).map(|cell| ResolvedType::Union(cell.clone()))
+        self.unions
+            .get(key)
+            .map(|cell| ResolvedType::Union(cell.clone()))
     }
 
     pub fn structs(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedStructType>>)> {
@@ -233,8 +254,16 @@ impl TypeCells {
         self.structs
             .iter()
             .map(|(key, cell)| (key, cell.borrow().functions.clone()))
-            .chain(self.enums.iter().map(|(key, cell)| (key, cell.borrow().functions.clone())))
-            .chain(self.unions.iter().map(|(key, cell)| (key, cell.borrow().functions.clone())))
+            .chain(
+                self.enums
+                    .iter()
+                    .map(|(key, cell)| (key, cell.borrow().functions.clone())),
+            )
+            .chain(
+                self.unions
+                    .iter()
+                    .map(|(key, cell)| (key, cell.borrow().functions.clone())),
+            )
     }
 }
 
@@ -281,10 +310,10 @@ pub(crate) struct ItemQueries {
     /// nothing may assume this map is complete any earlier. `IndexMap` for
     /// deterministic (discovery-order) merging.
     pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
-    /// Every spec-default-method instantiation an implementor's `implements`
-    /// clause needed (no own override), queued during phase 1 and drained
-    /// during phase 2, once that implementor's own body is checked.
-    pub pending_spec_methods: HashMap<ItemKey, Vec<PendingSpecMethod>>,
+    /// The concrete compose contexts established by this instantiation's
+    /// generic bounds. Body analysis consults only these entries for
+    /// instance-method syntax supplied by a composition.
+    pub generic_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
     /// Counter behind every synthetic `HirId`. Always paired with
     /// `SYNTHETIC_MODULE`, a module id the lowerer never produces, so these
     /// can never collide with a real per-file id.
@@ -367,7 +396,10 @@ impl ItemQueries {
     /// own: a generic instantiation's identity, or a spec-default method
     /// instantiated for a concrete implementor.
     pub fn fresh_synthetic_id(&mut self) -> HirId {
-        let id = HirId { module: SYNTHETIC_MODULE, local: self.next_synthetic_id };
+        let id = HirId {
+            module: SYNTHETIC_MODULE,
+            local: self.next_synthetic_id,
+        };
         self.next_synthetic_id += 1;
         id
     }
@@ -379,7 +411,11 @@ impl ItemQueries {
     /// it, so `List<u32>` and `List<i64>` are guaranteed genuinely distinct
     /// types/symbols with no risk of drift between the two phases.
     pub fn identity_for(&mut self, key: &ItemKey, declared: HirId) -> HirId {
-        let id = if key.is_instantiation() { self.fresh_synthetic_id() } else { declared };
+        let id = if key.is_instantiation() {
+            self.fresh_synthetic_id()
+        } else {
+            declared
+        };
         self.decl_id_owner.insert(id, key.clone());
         id
     }
@@ -390,7 +426,10 @@ impl ItemQueries {
         key: &ItemKey,
         declared: impl IntoIterator<Item = HirId>,
     ) -> Vec<HirId> {
-        declared.into_iter().map(|id| self.identity_for(key, id)).collect()
+        declared
+            .into_iter()
+            .map(|id| self.identity_for(key, id))
+            .collect()
     }
 
     /// Whether `key` is already resolved, still being resolved, or untouched.
@@ -410,13 +449,21 @@ impl ItemQueries {
     pub fn finish(&mut self, key: &ItemKey, visibility: Visibility, item: Option<&ResolvedItem>) {
         self.state.insert(key.clone(), QueryState::Done);
         if let Some(item) = item {
-            self.resolved.insert(key.clone(), ResolvedEntry { visibility, item: item.clone() });
+            self.resolved.insert(
+                key.clone(),
+                ResolvedEntry {
+                    visibility,
+                    item: item.clone(),
+                },
+            );
         }
     }
 
     /// A finished query's outcome -- `None` when it finished by failing.
     pub fn finished(&self, key: &ItemKey) -> Option<(Visibility, ResolvedItem)> {
-        self.resolved.get(key).map(|entry| (entry.visibility, entry.item.clone()))
+        self.resolved
+            .get(key)
+            .map(|entry| (entry.visibility, entry.item.clone()))
     }
 
     pub fn spec_cell(&self, key: &SpecKey) -> Option<Rc<RefCell<ResolvedSpecType>>> {
@@ -444,7 +491,11 @@ impl ItemQueries {
     /// One item's already-resolved signature. Phase 2 only runs after phase 1
     /// produced it, so a miss is a driver bug.
     pub fn expect_resolved(&self, key: &ItemKey) -> &ResolvedItem {
-        &self.resolved.get(key).expect("every signature is resolved before its body is checked").item
+        &self
+            .resolved
+            .get(key)
+            .expect("every signature is resolved before its body is checked")
+            .item
     }
 
     /// Every resolved item's key paired with its signature -- the whole-cache
@@ -459,7 +510,11 @@ impl Driver {
     /// `declaring`/`accessor` are absolute module paths. `Internal` is
     /// package-wide (same root segment), Rust `pub(crate)`-style, rather than
     /// the narrower "declaring module and its descendants only".
-    pub(crate) fn visibility_allows(visibility: Visibility, declaring: &[Ident], accessor: &[Ident]) -> bool {
+    pub(crate) fn visibility_allows(
+        visibility: Visibility,
+        declaring: &[Ident],
+        accessor: &[Ident],
+    ) -> bool {
         match visibility {
             Visibility::Exposed => true,
             Visibility::Internal => declaring.first() == accessor.first(),
@@ -470,9 +525,18 @@ impl Driver {
     /// One item's declared visibility, read straight off its HIR -- the
     /// property of a *declaration*, so it's identical for every instantiation
     /// of a generic template and needs no resolution to answer.
-    pub(crate) fn declared_visibility(&mut self, module_path: &[Ident], name: &Ident) -> Option<Visibility> {
+    pub(crate) fn declared_visibility(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Option<Visibility> {
         let index = self.local_item_index(module_path, name).ok()?;
-        self.modules.parsed(module_path).hir.items.get(index).map(item_visibility)
+        self.modules
+            .parsed(module_path)
+            .hir
+            .items
+            .get(index)
+            .map(item_visibility)
     }
 
     /// Gates a resolved item behind its own declared visibility. `bypass`
@@ -488,7 +552,10 @@ impl Driver {
         if bypass || Self::visibility_allows(visibility, &key.module, accessor) {
             Ok(item)
         } else {
-            Err(ResolveError::NotVisible { module: key.module.clone(), item: key.name.clone() })
+            Err(ResolveError::NotVisible {
+                module: key.module.clone(),
+                item: key.name.clone(),
+            })
         }
     }
 
@@ -499,7 +566,11 @@ impl Driver {
     /// cycle: a by-value reference closes an infinite-size type, and an
     /// *import* (always indirect, whatever it names) looping back on an
     /// in-progress non-type item is a real mutual item-import cycle.
-    fn in_progress_result(&self, key: &ItemKey, indirect: bool) -> Result<ResolvedItem, ResolveError> {
+    fn in_progress_result(
+        &self,
+        key: &ItemKey,
+        indirect: bool,
+    ) -> Result<ResolvedItem, ResolveError> {
         if !indirect {
             return Err(ResolveError::RecursiveTypeWithoutIndirection {
                 module: key.module.clone(),
@@ -538,12 +609,15 @@ impl Driver {
         // analysis triggered" reads (see their own doc comments).
         let index = self.local_item_index(module_path, name)?;
         let generic_params = self.item_generics(module_path, name)?;
-        let type_args = self.pad_generic_defaults(module_path, name, index, &generic_params, type_args)?;
+        let type_args =
+            self.pad_generic_defaults(module_path, name, index, &generic_params, type_args)?;
         let key = ItemKey::new(module_path, name, &type_args);
 
         match self.items.state(&key) {
             Some(QueryState::Done) => {
-                let Some((visibility, item)) = self.items.finished(&key) else { return Err(key.failed()) };
+                let Some((visibility, item)) = self.items.finished(&key) else {
+                    return Err(key.failed());
+                };
                 return Self::gate_visibility(item, visibility, &key, accessor_module_path, bypass);
             }
             Some(QueryState::InProgress) => return self.in_progress_result(&key, indirect),
@@ -554,7 +628,9 @@ impl Driver {
             self.check_generic_bounds(&key, index, &generic_params, &type_args)?;
         }
 
-        let visibility = self.declared_visibility(module_path, name).expect("just indexed by local_item_index");
+        let visibility = self
+            .declared_visibility(module_path, name)
+            .expect("just indexed by local_item_index");
         let generics: Vec<Ident> = generic_params.iter().map(|g| g.ident.clone()).collect();
 
         self.items.begin(&key);
@@ -619,15 +695,23 @@ impl Driver {
                     found: type_args.len(),
                 });
             };
-            let substitution: Vec<(Ident, ResolvedType)> =
-                generic_params.iter().map(|g| g.ident.clone()).zip(padded.iter().cloned()).collect();
+            let substitution: Vec<(Ident, ResolvedType)> = generic_params
+                .iter()
+                .map(|g| g.ident.clone())
+                .zip(padded.iter().cloned())
+                .collect();
             let default = default.clone();
             let run = self.with_analyzer(module_path, &[], owner, |analyzer| {
                 analyzer.resolve_under_substitution(owner.0, owner.1, &default, &substitution)
             });
             match (run.failed, run.result) {
                 (false, Some(resolved)) => padded.push(resolved),
-                _ => return Err(ResolveError::ItemFailed { module: module_path.to_vec(), item: name.clone() }),
+                _ => {
+                    return Err(ResolveError::ItemFailed {
+                        module: module_path.to_vec(),
+                        item: name.clone(),
+                    });
+                }
             }
         }
         Ok(padded)
@@ -649,33 +733,65 @@ impl Driver {
     ) -> Result<(), ResolveError> {
         let hir = self.modules.hir(&key.module);
         let owner = item_id_span(&hir.items[index]);
-        let substitution: Vec<(Ident, ResolvedType)> =
-            generic_params.iter().map(|g| g.ident.clone()).zip(type_args.iter().cloned()).collect();
+        let substitution: Vec<(Ident, ResolvedType)> = generic_params
+            .iter()
+            .map(|g| g.ident.clone())
+            .zip(type_args.iter().cloned())
+            .collect();
+        let mut resolved_bounds = Vec::new();
 
         for (param, concrete) in generic_params.iter().zip(type_args) {
-            let Some(bound) = param.bound.clone() else { continue };
+            let Some(bound) = param.bound.clone() else {
+                continue;
+            };
             let run = self.with_analyzer(&key.module, &substitution, owner, |analyzer| {
                 analyzer.check_generic_bound(owner.0, owner.1, &bound, concrete)
             });
             if run.failed {
                 return Err(key.failed());
             }
-            if let Some(Err((spec, missing))) = run.result {
-                return Err(ResolveError::SpecNotImplemented { type_name: concrete.to_string(), spec, missing });
+            match run.result {
+                Some(Ok((spec, spec_args))) => {
+                    resolved_bounds.push((concrete.clone(), spec, spec_args));
+                    resolved_bounds.extend(
+                        self.composes_for_type(concrete)
+                            .into_iter()
+                            .map(|entry| (entry.target, entry.spec, entry.spec_args)),
+                    );
+                }
+                Some(Err((spec, missing))) => {
+                    return Err(ResolveError::SpecNotImplemented {
+                        type_name: concrete.to_string(),
+                        spec,
+                        missing,
+                    });
+                }
+                None => {}
             }
         }
+        self.items
+            .generic_bounds
+            .insert(key.clone(), resolved_bounds);
         Ok(())
     }
 
     /// Resolves one item's signature -- the work `ensure_item` defers to the
     /// first time a name is requested. Each kind gets its own throwaway
     /// `Analyzer`, seeded with the instantiation's substitution.
-    fn compute_item(&mut self, key: &ItemKey, index: usize, generics: &[Ident]) -> Result<ResolvedItem, ResolveError> {
+    fn compute_item(
+        &mut self,
+        key: &ItemKey,
+        index: usize,
+        generics: &[Ident],
+    ) -> Result<ResolvedItem, ResolveError> {
         let hir = self.modules.hir(&key.module);
         let item = &hir.items[index];
         let module = &key.module;
-        let substitution: Vec<(Ident, ResolvedType)> =
-            generics.iter().cloned().zip(key.type_args.iter().cloned()).collect();
+        let substitution: Vec<(Ident, ResolvedType)> = generics
+            .iter()
+            .cloned()
+            .zip(key.type_args.iter().cloned())
+            .collect();
 
         let resolved = match item {
             HirItem::Declaration(decl) => self
@@ -702,7 +818,12 @@ impl Driver {
                     if let Some(v) = c.initial_value {
                         self.items.global_initial_values.insert(c.id, v);
                     }
-                    ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id, mutable: c.mutable }
+                    ResolvedItem::Value {
+                        r#type: c.r#type,
+                        storage: Storage::Global,
+                        decl_id: c.id,
+                        mutable: c.mutable,
+                    }
                 }),
 
             // A top-level binding, `comp` or not -- evaluated right here,
@@ -728,22 +849,38 @@ impl Driver {
             // `analyze_global_walrus` builds the identical `CheckedDeclaration`
             // shape `analyze_declaration` does, just with `initial_value: Some`.
             HirItem::Walrus(w) if w.comp => self
-                .analyze(module, &substitution, (w.id, w.span), |a| a.analyze_comp_declaration(w))
+                .analyze(module, &substitution, (w.id, w.span), |a| {
+                    a.analyze_comp_declaration(w)
+                })
                 .map(|(r#type, value)| {
                     self.items.comp_values.insert(w.id, value);
-                    ResolvedItem::Value { r#type, storage: Storage::Comp, decl_id: w.id, mutable: false }
+                    ResolvedItem::Value {
+                        r#type,
+                        storage: Storage::Comp,
+                        decl_id: w.id,
+                        mutable: false,
+                    }
                 }),
             HirItem::Walrus(w) => self
-                .analyze(module, &substitution, (w.id, w.span), |a| a.analyze_global_walrus(w))
+                .analyze(module, &substitution, (w.id, w.span), |a| {
+                    a.analyze_global_walrus(w)
+                })
                 .map(|c| {
                     if let Some(value) = c.initial_value {
                         self.items.global_initial_values.insert(c.id, value);
                     }
-                    ResolvedItem::Value { r#type: c.r#type, storage: Storage::Global, decl_id: c.id, mutable: c.mutable }
+                    ResolvedItem::Value {
+                        r#type: c.r#type,
+                        storage: Storage::Global,
+                        decl_id: c.id,
+                        mutable: c.mutable,
+                    }
                 }),
 
             HirItem::ExternDeclaration(decl) => self
-                .analyze(module, &substitution, (decl.id, decl.span), |a| a.analyze_extern_decl(decl))
+                .analyze(module, &substitution, (decl.id, decl.span), |a| {
+                    a.analyze_extern_decl(decl)
+                })
                 .map(|c| {
                     let storage = match c.r#type {
                         ResolvedType::Function(_) => Storage::Function,
@@ -751,7 +888,12 @@ impl Driver {
                     };
                     // `extern` declarations are always immutable for now --
                     // see `Analyzer::analyze_extern_decl`'s own doc comment.
-                    ResolvedItem::Value { r#type: c.r#type, storage, decl_id: c.id, mutable: false }
+                    ResolvedItem::Value {
+                        r#type: c.r#type,
+                        storage,
+                        decl_id: c.id,
+                        mutable: false,
+                    }
                 }),
 
             HirItem::FunctionDefinition(f) => {
@@ -759,53 +901,81 @@ impl Driver {
                 if let Type::SpecStatic(bound) = &f.return_type {
                     self.resolve_spec_return_function(key, f, id, bound, module, &substitution)?
                 } else {
-                    self.analyze(module, &substitution, (f.id, f.span), |a| a.collect_function_signature(f, None)).map(
-                        |(fn_type, annotations)| {
-                            self.items.function_annotations.insert(id, annotations);
-                            ResolvedItem::Value {
-                                r#type: ResolvedType::Function(fn_type),
-                                storage: Storage::Function,
-                                decl_id: id,
-                                mutable: false,
-                            }
-                        },
-                    )
+                    self.analyze(module, &substitution, (f.id, f.span), |a| {
+                        a.collect_function_signature(f, None)
+                    })
+                    .map(|(fn_type, annotations)| {
+                        self.items.function_annotations.insert(id, annotations);
+                        ResolvedItem::Value {
+                            r#type: ResolvedType::Function(fn_type),
+                            storage: Storage::Function,
+                            decl_id: id,
+                            mutable: false,
+                        }
+                    })
                 }
             }
 
             HirItem::Struct(s) => {
                 let id = self.items.identity_for(key, s.id);
                 let cell = self.items.cells.struct_cell(key, id);
-                let method_ids = self.items.method_identities(key, s.functions.iter().map(|f| f.id));
+                let method_ids = self
+                    .items
+                    .method_identities(key, s.functions.iter().map(|f| f.id));
                 let self_type = ResolvedType::Struct(cell.clone());
-                self.compute_aggregate(key, (s.id, s.span), &substitution, self_type, method_ids, |a, ids| {
-                    a.signature_of_struct(s, &cell, ids)
-                })
+                self.compute_aggregate(
+                    key,
+                    (s.id, s.span),
+                    &substitution,
+                    self_type,
+                    method_ids,
+                    |a, ids| a.signature_of_struct(s, &cell, ids),
+                )
             }
 
             HirItem::Enum(e) => {
                 let id = self.items.identity_for(key, e.id);
                 let cell = self.items.cells.enum_cell(key, id);
-                let method_ids = self.items.method_identities(key, e.functions.iter().map(|f| f.id));
-                let self_type = ResolvedType::Enum { cell: cell.clone(), variant: None };
-                self.compute_aggregate(key, (e.id, e.span), &substitution, self_type, method_ids, |a, ids| {
-                    a.signature_of_enum(e, &cell, ids)
-                })
+                let method_ids = self
+                    .items
+                    .method_identities(key, e.functions.iter().map(|f| f.id));
+                let self_type = ResolvedType::Enum {
+                    cell: cell.clone(),
+                    variant: None,
+                };
+                self.compute_aggregate(
+                    key,
+                    (e.id, e.span),
+                    &substitution,
+                    self_type,
+                    method_ids,
+                    |a, ids| a.signature_of_enum(e, &cell, ids),
+                )
             }
 
             HirItem::Union(u) => {
                 let id = self.items.identity_for(key, u.id);
                 let cell = self.items.cells.union_cell(key, id);
-                let method_ids = self.items.method_identities(key, u.functions.iter().map(|f| f.id));
+                let method_ids = self
+                    .items
+                    .method_identities(key, u.functions.iter().map(|f| f.id));
                 let self_type = ResolvedType::Union(cell.clone());
-                self.compute_aggregate(key, (u.id, u.span), &substitution, self_type, method_ids, |a, ids| {
-                    a.signature_of_union(u, &cell, ids)
-                })
+                self.compute_aggregate(
+                    key,
+                    (u.id, u.span),
+                    &substitution,
+                    self_type,
+                    method_ids,
+                    |a, ids| a.signature_of_union(u, &cell, ids),
+                )
             }
 
             HirItem::Gap(gap) => {
                 let id = self.items.identity_for(key, gap.id);
-                self.analyze(module, &substitution, (gap.id, gap.span), |a| a.signature_of_gap(gap)).map(|mut gap| {
+                self.analyze(module, &substitution, (gap.id, gap.span), |a| {
+                    a.signature_of_gap(gap)
+                })
+                .map(|mut gap| {
                     gap.id = id;
                     let gap = Rc::new(gap);
                     self.items.gaps.insert(key.clone(), gap.clone());
@@ -819,11 +989,15 @@ impl Driver {
             // only to serve the ordinary, already-arg-count-validated
             // reference path.
             HirItem::Spec(_) => {
-                let absolute: Vec<Ident> = module.iter().cloned().chain([key.name.clone()]).collect();
-                self.resolve_spec_declaration(&absolute)?.map(|cell| ResolvedItem::Type(ResolvedType::Spec(cell)))
+                let absolute: Vec<Ident> =
+                    module.iter().cloned().chain([key.name.clone()]).collect();
+                self.resolve_spec_declaration(&absolute)?
+                    .map(|cell| ResolvedItem::Type(ResolvedType::Spec(cell)))
             }
 
-            HirItem::Glue(_) => unreachable!("glues have no item key"),
+            HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) => {
+                unreachable!("unnamed blocks have no item key")
+            }
             HirItem::Import(_) => unreachable!("imports are never indexed into a module's items"),
         };
 
@@ -831,8 +1005,7 @@ impl Driver {
     }
 
     /// The shared spine of `compute_item`'s struct/enum/union arms: bind
-    /// `Self` to the cell, resolve the signature, and queue whatever
-    /// spec-default methods the `implements` clause left for phase 2.
+    /// `Self` to the cell and resolve the signature.
     ///
     /// The cell is created by the caller *before* this runs, so a self- or
     /// mutually-referencing pointer field hit during field resolution finds
@@ -844,14 +1017,14 @@ impl Driver {
         substitution: &[(Ident, ResolvedType)],
         self_type: ResolvedType,
         method_ids: Vec<HirId>,
-        signature: impl FnOnce(&mut Analyzer, &[HirId]) -> Option<Vec<PendingSpecMethod>>,
+        signature: impl FnOnce(&mut Analyzer, &[HirId]) -> Option<()>,
     ) -> Option<ResolvedItem> {
         let mut substitution = substitution.to_vec();
         substitution.push((Ident("Self".to_string()), self_type.clone()));
 
-        let pending =
-            self.analyze(&key.module, &substitution, owner, |analyzer| signature(analyzer, &method_ids))?;
-        self.items.pending_spec_methods.insert(key.clone(), pending);
+        self.analyze(&key.module, &substitution, owner, |analyzer| {
+            signature(analyzer, &method_ids)
+        })?;
         Some(ResolvedItem::Type(self_type))
     }
 
@@ -876,11 +1049,17 @@ impl Driver {
             Some(QueryState::Done) => {
                 return match self.items.spec_cell(&key) {
                     Some(cell) => Ok(Some(cell)),
-                    None => Err(ResolveError::ItemFailed { module: key.0, item: key.1 }),
+                    None => Err(ResolveError::ItemFailed {
+                        module: key.0,
+                        item: key.1,
+                    }),
                 };
             }
             Some(QueryState::InProgress) => {
-                return Err(ResolveError::SpecDependencyCycle { module: key.0, spec: key.1 });
+                return Err(ResolveError::SpecDependencyCycle {
+                    module: key.0,
+                    spec: key.1,
+                });
             }
             None => {}
         }
@@ -899,13 +1078,19 @@ impl Driver {
         // `resolve_spec_functions` is fully deferred, so neither needs `Self`
         // or this spec's own generics bound to anything concrete yet.
         let run = self.with_analyzer(module_path, &[], (sp.id, sp.span), |analyzer| {
-            (analyzer.resolve_spec_dependencies(&sp), analyzer.resolve_spec_functions(&sp))
+            (
+                analyzer.resolve_spec_dependencies(&sp),
+                analyzer.resolve_spec_functions(&sp),
+            )
         });
         self.diagnostics.record_warnings(module_path, run.warnings);
 
         if run.failed {
             self.items.finish_spec(&key, None);
-            return Err(ResolveError::ItemFailed { module: key.0, item: key.1 });
+            return Err(ResolveError::ItemFailed {
+                module: key.0,
+                item: key.1,
+            });
         }
         let (dependencies, (functions, annotations)) = run.result;
         // See `ResolvedSpecType::is_object_safe`'s doc comment: computed
@@ -913,8 +1098,12 @@ impl Driver {
         // fully resolved (a dependency's own cell is always `Done` -- and
         // so already carries its own `is_object_safe` -- by the time it's
         // sitting in this list).
-        let is_object_safe = functions.iter().all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))
-            && dependencies.iter().all(|(dep, _)| dep.borrow().is_object_safe);
+        let is_object_safe = functions
+            .iter()
+            .all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))
+            && dependencies
+                .iter()
+                .all(|(dep, _)| dep.borrow().is_object_safe);
         let cell = Rc::new(RefCell::new(ResolvedSpecType {
             id: sp.id,
             name: sp.name.clone(),
@@ -962,21 +1151,32 @@ impl Driver {
         substitution: &[(Ident, ResolvedType)],
     ) -> Result<Option<ResolvedItem>, ResolveError> {
         if self.items.spec_return_inference_stack.contains(key) {
-            return Err(ResolveError::SpecReturnTypeRecursion { module: key.module.clone(), item: key.name.clone() });
+            return Err(ResolveError::SpecReturnTypeRecursion {
+                module: key.module.clone(),
+                item: key.name.clone(),
+            });
         }
         self.items.spec_return_inference_stack.push(key.clone());
-        let inferred = self.analyze(module, substitution, (f.id, f.span), |a| a.infer_body_return_type(f, bound));
+        let inferred = self.analyze(module, substitution, (f.id, f.span), |a| {
+            a.infer_body_return_type(f, bound)
+        });
         self.items.spec_return_inference_stack.pop();
 
         let Some(return_type) = inferred else {
             return Ok(None);
         };
 
-        let checked =
-            self.analyze(module, substitution, (f.id, f.span), |a| a.collect_function_signature(f, Some(return_type)));
+        let checked = self.analyze(module, substitution, (f.id, f.span), |a| {
+            a.collect_function_signature(f, Some(return_type))
+        });
         Ok(checked.map(|(fn_type, annotations)| {
             self.items.function_annotations.insert(id, annotations);
-            ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage: Storage::Function, decl_id: id, mutable: false }
+            ResolvedItem::Value {
+                r#type: ResolvedType::Function(fn_type),
+                storage: Storage::Function,
+                decl_id: id,
+                mutable: false,
+            }
         }))
     }
 }

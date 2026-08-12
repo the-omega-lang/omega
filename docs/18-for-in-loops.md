@@ -1,11 +1,13 @@
 # `for` .. `in` loops
 
 ```
-struct MyCustomStringIterator : Iterator<char> {
+struct MyCustomStringIterator {
     exposed current: *u8;
     exposed last: *u8;
+}
 
-    exposed next(*mut self) => Option<char> {
+compose MyCustomStringIterator : Iterator<char> {
+    next(*mut self) => Option<char> {
         if self.current == self.last {
             return Option<char>::None;
         }
@@ -15,11 +17,13 @@ struct MyCustomStringIterator : Iterator<char> {
     }
 }
 
-struct MyCustomString : ToIterator<char> {
+struct MyCustomString {
     exposed ptr: *u8;
     exposed len: usize;
+}
 
-    exposed to_iterator(*self) => MyCustomStringIterator {
+compose MyCustomString : ToIterator<char> {
+    to_iterator(*self) => MyCustomStringIterator {
         MyCustomStringIterator { current = self.ptr; last = <*u8>(self.ptr + self.len); }
     }
 }
@@ -80,10 +84,9 @@ dynamic-dispatch fat pointer — so:
 
 ## Real, nominal conformance
 
-`for x in y` only compiles when `y`'s type *nominally* declares `:
-ToIterator<T>` **or** `: Iterator<T>` directly — checked directly against
-the type's own declared `implements` clause
-(`Analyzer::for_in_source_declares`), not merely "does a method named
+`for x in y` only compiles when `y`'s type is nominally composed with
+`ToIterator<T>` **or** `Iterator<T>` — checked against the compose registry,
+not merely "does a method named
 `to_iterator`/`next` happen to resolve," which was this feature's one
 significant gap in an earlier iteration. A type with a same-shaped
 `to_iterator`/`next` pair but neither declaration is rejected with a
@@ -91,10 +94,12 @@ dedicated `ForLoopSourceNotIterable` diagnostic rather than silently
 accepted or failing with a confusing, unrelated error.
 
 ```
-struct Counter : Iterator<i32> {
+struct Counter {
     exposed value: i32;
     exposed limit: i32;
-    exposed next(*mut self) => Option<i32> {
+}
+compose Counter : Iterator<i32> {
+    next(*mut self) => Option<i32> {
         if self.value >= self.limit { return Option<i32>::None; }
         v := self.value;
         self.value += 1;
@@ -236,8 +241,8 @@ none is ever reachable.
 - **`*str`/`*[?]T` don't implement `ToIterator` yet.** `for c in
   some_str { }` needs a hand-written wrapper struct today (as in the
   example above). Wiring the built-ins up is a natural follow-up using the
-  exact same `for`-attachment mechanism `core::strings`/`core::slices`
-  already use (see [specs](08-specs.md)) — not done as part of this
+  the same generic compose mechanism collections use (see
+  [specs](08-specs.md)) — not done as part of this
   feature, to keep its own scope to the language mechanism and the two
   specs it depends on.
 - **`Option<T>` itself has no convenience methods** (`is_some`,

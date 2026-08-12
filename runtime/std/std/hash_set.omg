@@ -19,8 +19,8 @@ import hash_map::HashMapIterator;
 
 marker Unit {}
 
-exposed struct HashSet<T: Hash> : ToIterator<T> {
-    inner: HashMap<T, Unit>;
+exposed struct HashSet<T: Hash> {
+    internal inner: HashMap<T, Unit>;
 
     exposed new() => Self {
         Self { inner = HashMap<T, Unit>::new(); }
@@ -65,15 +65,21 @@ exposed struct HashSet<T: Hash> : ToIterator<T> {
         self.inner.free();
     }
 
-    exposed to_iterator(*self) => HashSetIterator<T> {
+}
+
+compose<T: Hash> HashSet<T> : ToIterator<T> {
+    to_iterator(*self) => HashSetIterator<T> {
         HashSetIterator<T> { inner = self.inner.to_iterator(); }
     }
 }
 
-exposed struct HashSetIterator<T> : Iterator<T> {
+exposed struct HashSetIterator<T> {
     internal inner: HashMapIterator<T, Unit>;
 
-    exposed next(*mut self) => Option<T> {
+}
+
+compose<T> HashSetIterator<T> : Iterator<T> {
+    next(*mut self) => Option<T> {
         kv := self.inner.next();
         match kv {
             Option::Some => {

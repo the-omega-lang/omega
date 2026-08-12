@@ -134,7 +134,9 @@ impl ModuleStore {
     /// a path that parsed it first (an item index, a reachability walk), so a
     /// miss is a driver bug, not a user error.
     pub fn parsed(&self, path: &[Ident]) -> &ParsedModule {
-        self.modules.get(path).expect("module was parsed before this point")
+        self.modules
+            .get(path)
+            .expect("module was parsed before this point")
     }
 
     pub fn hir(&self, path: &[Ident]) -> Rc<HirModule> {
@@ -144,15 +146,25 @@ impl ModuleStore {
     /// A module's index, which is present for every module anything has
     /// looked a name up in (see `Driver::ensure_module_indexed`).
     pub fn index(&self, path: &[Ident]) -> &ModuleIndex {
-        self.parsed(path).index.as_ref().expect("module was indexed before this point")
+        self.parsed(path)
+            .index
+            .as_ref()
+            .expect("module was indexed before this point")
     }
 
     pub fn set_index(&mut self, path: &[Ident], index: ModuleIndex) {
-        self.modules.get_mut(path).expect("module was parsed before this point").index = Some(index);
+        self.modules
+            .get_mut(path)
+            .expect("module was parsed before this point")
+            .index = Some(index);
     }
 
     pub fn set_imports(&mut self, path: &[Ident], imports: IndexMap<Ident, ImportEntry>) {
-        self.modules.get_mut(path).expect("module was indexed before this point").index.as_mut()
+        self.modules
+            .get_mut(path)
+            .expect("module was indexed before this point")
+            .index
+            .as_mut()
             .expect("module was indexed before this point")
             .imports = imports;
     }
@@ -191,15 +203,22 @@ impl Driver {
             return Ok(ast.clone());
         }
 
-        let source = std::fs::read_to_string(file)
-            .map_err(|e| ResolveError::LoadFailed { path: path.to_vec(), message: e.to_string() })?;
+        let source = std::fs::read_to_string(file).map_err(|e| ResolveError::LoadFailed {
+            path: path.to_vec(),
+            message: e.to_string(),
+        })?;
         self.modules.sources.insert(
             path.to_vec(),
             Rc::new(SourceFile::new(file.display().to_string(), source.as_str())),
         );
         let ast = SourceModule::parse(&source).map_err(|errors| {
-            self.modules.failures.insert(path.to_vec(), LoadFailure::Parse(errors));
-            ResolveError::LoadFailed { path: path.to_vec(), message: "the module has syntax errors".into() }
+            self.modules
+                .failures
+                .insert(path.to_vec(), LoadFailure::Parse(errors));
+            ResolveError::LoadFailed {
+                path: path.to_vec(),
+                message: "the module has syntax errors".into(),
+            }
         })?;
         let ast = Rc::new(ast);
         self.modules.asts.insert(path.to_vec(), ast.clone());
@@ -231,14 +250,14 @@ impl Driver {
             }
         };
         let definitions = Rc::new(definitions);
-        self.modules.macro_defs.insert(path.to_vec(), definitions.clone());
+        self.modules
+            .macro_defs
+            .insert(path.to_vec(), definitions.clone());
         Ok(definitions)
     }
 
     /// Every exposed macro in `core`, collected once for the ambient prelude.
-    fn prelude_macros(
-        &mut self,
-    ) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, CompileError> {
+    fn prelude_macros(&mut self) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, CompileError> {
         if let Some(definitions) = &self.prelude_macros {
             return Ok(definitions.clone());
         }
@@ -284,7 +303,10 @@ impl Driver {
         if path.first().map(Ident::as_ref) == Some("core") {
             let own = self
                 .module_macros(path)
-                .map_err(|error| CompileError::Resolve { error, importer: None })?;
+                .map_err(|error| CompileError::Resolve {
+                    error,
+                    importer: None,
+                })?;
             for name in own.keys() {
                 environment.remove(name);
             }
@@ -293,13 +315,19 @@ impl Driver {
         let location = self
             .roots
             .locate(path)
-            .map_err(|error| CompileError::Resolve { error, importer: None })?;
+            .map_err(|error| CompileError::Resolve {
+                error,
+                importer: None,
+            })?;
         let imports = match location.own_file {
             None => vec![],
             Some(file) => {
                 let ast = self
                     .ensure_ast(path, &file)
-                    .map_err(|error| CompileError::Resolve { error, importer: None })?;
+                    .map_err(|error| CompileError::Resolve {
+                        error,
+                        importer: None,
+                    })?;
                 ast.nodes
                     .iter()
                     .filter_map(|node| match &node.item {
@@ -336,7 +364,9 @@ impl Driver {
                 || (definition.visibility == Visibility::Internal
                     && path.first() == module.first());
             if visible {
-                environment.entry(name).or_insert_with(|| definition.clone());
+                environment
+                    .entry(name)
+                    .or_insert_with(|| definition.clone());
             }
         }
         Ok(environment)
@@ -362,15 +392,22 @@ impl Driver {
                 let macros = self
                     .macro_env(path, location.children_dir.is_some())
                     .map_err(|e| {
-                        self.modules.failures.insert(path.to_vec(), LoadFailure::Compile(e));
+                        self.modules
+                            .failures
+                            .insert(path.to_vec(), LoadFailure::Compile(e));
                         ResolveError::LoadFailed {
                             path: path.to_vec(),
                             message: "building macro environment failed".into(),
                         }
                     })?;
                 let ast = omega_parser::macros::expand((*ast).clone(), &macros).map_err(|e| {
-                    self.modules.failures.insert(path.to_vec(), LoadFailure::MacroExpansion(e));
-                    ResolveError::LoadFailed { path: path.to_vec(), message: "macro expansion failed".into() }
+                    self.modules
+                        .failures
+                        .insert(path.to_vec(), LoadFailure::MacroExpansion(e));
+                    ResolveError::LoadFailed {
+                        path: path.to_vec(),
+                        message: "macro expansion failed".into(),
+                    }
                 })?;
                 omega_hir::lower_module(id, &ast)
             }
@@ -399,10 +436,14 @@ impl Driver {
         importer: Option<ImportSite>,
     ) -> CompileError {
         match self.modules.take_failure(module) {
-            Some(LoadFailure::Parse(errors)) => CompileError::Parse { module: module.to_vec(), errors },
-            Some(LoadFailure::MacroExpansion(error)) => {
-                CompileError::MacroExpansion { module: module.to_vec(), error }
-            }
+            Some(LoadFailure::Parse(errors)) => CompileError::Parse {
+                module: module.to_vec(),
+                errors,
+            },
+            Some(LoadFailure::MacroExpansion(error)) => CompileError::MacroExpansion {
+                module: module.to_vec(),
+                error,
+            },
             Some(LoadFailure::Compile(error)) => error,
             None => CompileError::Resolve { error, importer },
         }
@@ -429,7 +470,14 @@ impl Driver {
         // the module indexed here makes that re-entry return immediately
         // (finding no aliases, so the caller falls back to "not an alias")
         // instead of recursing forever.
-        self.modules.set_index(path, ModuleIndex { items, overloads, imports: IndexMap::new() });
+        self.modules.set_index(
+            path,
+            ModuleIndex {
+                items,
+                overloads,
+                imports: IndexMap::new(),
+            },
+        );
         let imports = self.index_imports(path, &hir);
         self.modules.set_imports(path, imports);
         Ok(())
@@ -447,7 +495,9 @@ impl Driver {
         let is_function = |i: usize| matches!(&hir.items[i], HirItem::FunctionDefinition(_));
 
         for (i, item) in hir.items.iter().enumerate() {
-            let Some(name) = item_name(item) else { continue };
+            let Some(name) = item_name(item) else {
+                continue;
+            };
             let first_index = match items.entry(name.clone()) {
                 Entry::Vacant(entry) => {
                     entry.insert(i);
@@ -461,13 +511,23 @@ impl Driver {
                 // once every candidate's signature is resolved (see
                 // `Driver::check_overload_duplicates`) -- nothing here has
                 // access to param types yet.
-                overloads.entry(name).or_insert_with(|| vec![first_index]).push(i);
+                overloads
+                    .entry(name)
+                    .or_insert_with(|| vec![first_index])
+                    .push(i);
             } else {
                 let (id, span) = item_id_span(item);
                 let (_, previous) = item_id_span(&hir.items[first_index]);
                 self.diagnostics.error(
                     path,
-                    AnalysisError::new(id, span, AnalysisErrorKind::Redeclaration { name, previous: Some(previous) }),
+                    AnalysisError::new(
+                        id,
+                        span,
+                        AnalysisErrorKind::Redeclaration {
+                            name,
+                            previous: Some(previous),
+                        },
+                    ),
                 );
             }
         }
@@ -479,14 +539,25 @@ impl Driver {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
         let base = self.relative_base(path);
         for item in &hir.items {
-            let HirItem::Import(import) = item else { continue };
-            let alias = import.path.tail.last().cloned().unwrap_or_else(|| import.path.head.clone());
+            let HirItem::Import(import) = item else {
+                continue;
+            };
+            let alias = import
+                .path
+                .tail
+                .last()
+                .cloned()
+                .unwrap_or_else(|| import.path.head.clone());
             let target = match self.import_absolute_path(path, &base, import.root, &import.path) {
                 Ok(target) => target,
                 Err(e) => {
                     self.diagnostics.error(
                         path,
-                        AnalysisError::new(import.id, import.span, AnalysisErrorKind::ModuleResolution(e)),
+                        AnalysisError::new(
+                            import.id,
+                            import.span,
+                            AnalysisErrorKind::ModuleResolution(e),
+                        ),
                     );
                     continue;
                 }
@@ -495,10 +566,17 @@ impl Driver {
             // (`ItemKind::Import`); anything else records its own
             // `AnnotationNotApplicable`.
             let annotations = import.annotations.clone();
-            let suppress = self
-                .analyze(path, &[], (import.id, import.span), |analyzer| {
-                    annotations::resolve(analyzer, import.id, &annotations, ItemKind::Import, false, false).suppress
-                });
+            let suppress = self.analyze(path, &[], (import.id, import.span), |analyzer| {
+                annotations::resolve(
+                    analyzer,
+                    import.id,
+                    &annotations,
+                    ItemKind::Import,
+                    false,
+                    false,
+                )
+                .suppress
+            });
 
             match imports.entry(alias) {
                 Entry::Occupied(existing) => {
@@ -509,7 +587,10 @@ impl Driver {
                         AnalysisError::new(
                             import.id,
                             import.span,
-                            AnalysisErrorKind::Redeclaration { name, previous: Some(previous) },
+                            AnalysisErrorKind::Redeclaration {
+                                name,
+                                previous: Some(previous),
+                            },
                         ),
                     );
                 }
@@ -529,14 +610,21 @@ impl Driver {
 
     /// Module `path`'s item `name`'s position in its own `HirModule::items`
     /// -- indexes the module first if needed.
-    pub(crate) fn local_item_index(&mut self, module_path: &[Ident], name: &Ident) -> Result<usize, ResolveError> {
+    pub(crate) fn local_item_index(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<usize, ResolveError> {
         self.ensure_module_indexed(module_path)?;
         self.modules
             .index(module_path)
             .items
             .get(name)
             .copied()
-            .ok_or_else(|| ResolveError::UnknownItem { module: module_path.to_vec(), item: name.clone() })
+            .ok_or_else(|| ResolveError::UnknownItem {
+                module: module_path.to_vec(),
+                item: name.clone(),
+            })
     }
 
     /// An item's own declared generic parameters (empty = non-generic), with
@@ -562,13 +650,19 @@ impl Driver {
             | HirItem::DeclarationWithInit(..)
             | HirItem::ExternDeclaration(_)
             | HirItem::Walrus(_) => vec![],
-            HirItem::Glue(_) | HirItem::Import(_) => unreachable!("unnamed items are never indexed into a module's items"),
+            HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) | HirItem::Import(_) => {
+                unreachable!("unnamed items are never indexed into a module's items")
+            }
         })
     }
 
     /// Whether an item is a *generic template* -- one that has no concrete
     /// signature or body of its own until some use site instantiates it.
-    pub(crate) fn is_generic_template(&mut self, module_path: &[Ident], name: &Ident) -> Result<bool, ResolveError> {
+    pub(crate) fn is_generic_template(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<bool, ResolveError> {
         Ok(!self.item_generics(module_path, name)?.is_empty())
     }
 
@@ -577,7 +671,10 @@ impl Driver {
     /// for an already-parsed module (an import can only be resolved for a
     /// module whose own statements are in hand).
     fn relative_base(&self, module_path: &[Ident]) -> ModulePath {
-        self.relative_base_for(module_path, self.modules.parsed(module_path).directory_shaped)
+        self.relative_base_for(
+            module_path,
+            self.modules.parsed(module_path).directory_shaped,
+        )
     }
 
     /// The pre-parse form of [`Self::relative_base`], taking the location
@@ -628,7 +725,9 @@ impl Driver {
                 if !self.roots.has_extern(&path.head) {
                     return Err(ResolveError::UnknownExtern(path.head.clone()));
                 }
-                Ok(std::iter::once(path.head.clone()).chain(path.tail.iter().cloned()).collect())
+                Ok(std::iter::once(path.head.clone())
+                    .chain(path.tail.iter().cloned())
+                    .collect())
             }
         }
     }

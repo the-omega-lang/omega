@@ -18,46 +18,84 @@ impl EnumHeader {
 }
 
 impl<'r> Analyzer<'r> {
-    pub fn signature_of_gap(&mut self, gap: &omega_hir::HirGapDef) -> Option<crate::resolved_type::ResolvedGap> {
+    pub fn signature_of_gap(
+        &mut self,
+        gap: &omega_hir::HirGapDef,
+    ) -> Option<crate::resolved_type::ResolvedGap> {
         let mut functions = Vec::with_capacity(gap.functions.len());
         let mut seen = HashMap::new();
         let mut ok = true;
         for function in &gap.functions {
             if let Some(previous) = seen.insert(function.name.clone(), function.span) {
-                self.error(function.id, function.span, AnalysisErrorKind::Redeclaration {
-                    name: function.name.clone(), previous: Some(previous),
-                });
+                self.error(
+                    function.id,
+                    function.span,
+                    AnalysisErrorKind::Redeclaration {
+                        name: function.name.clone(),
+                        previous: Some(previous),
+                    },
+                );
                 ok = false;
                 continue;
             }
             let mut params = Vec::with_capacity(function.params.len());
             for param in &function.params {
-                let Some(r#type) = self.resolve_type_or_error(param.id, param.span, &param.r#type, true) else {
+                let Some(r#type) =
+                    self.resolve_type_or_error(param.id, param.span, &param.r#type, true)
+                else {
                     ok = false;
                     continue;
                 };
                 params.push((param.ident.clone(), r#type));
             }
-            let Some(return_type) = self.resolve_return_type_or_error(function.id, function.span, &function.return_type, true) else {
+            let Some(return_type) = self.resolve_return_type_or_error(
+                function.id,
+                function.span,
+                &function.return_type,
+                true,
+            ) else {
                 ok = false;
                 continue;
             };
-            functions.push((function.name.clone(), crate::resolved_type::GapFunction {
-                decl_id: function.id,
-                span: function.span,
-                fn_type: ResolvedFunctionType { params, return_type: Box::new(return_type), is_variadic: false, self_mode: None },
-            }));
+            functions.push((
+                function.name.clone(),
+                crate::resolved_type::GapFunction {
+                    decl_id: function.id,
+                    span: function.span,
+                    fn_type: ResolvedFunctionType {
+                        params,
+                        return_type: Box::new(return_type),
+                        is_variadic: false,
+                        self_mode: None,
+                    },
+                },
+            ));
         }
         ok.then_some(crate::resolved_type::ResolvedGap {
-            id: gap.id, name: gap.name.clone(), module_path: self.module_path.clone(), span: gap.span, functions,
+            id: gap.id,
+            name: gap.name.clone(),
+            module_path: self.module_path.clone(),
+            span: gap.span,
+            functions,
         })
     }
-    pub fn analyze_declaration(&mut self, decl: &HirDeclaration, storage: Storage) -> Option<CheckedDeclaration> {
+    pub fn analyze_declaration(
+        &mut self,
+        decl: &HirDeclaration,
+        storage: Storage,
+    ) -> Option<CheckedDeclaration> {
         // A global's type is never itself embedded inline into another
         // type's layout (it isn't a struct field), so it can never be part
         // of an infinite-size cycle -- always indirect.
         let resolved_type = self.resolve_type_or_error(decl.id, decl.span, &decl.r#type, true)?;
-        self.declare_binding(decl.id, decl.span, &decl.ident, resolved_type.clone(), storage, decl.mutable)?;
+        self.declare_binding(
+            decl.id,
+            decl.span,
+            &decl.ident,
+            resolved_type.clone(),
+            storage,
+            decl.mutable,
+        )?;
         Some(CheckedDeclaration {
             id: decl.id,
             span: decl.span,
@@ -87,7 +125,10 @@ impl<'r> Analyzer<'r> {
     /// "evaluate at compile time" (unlike `analyze_global_walrus` below,
     /// where that explicitness is exactly what's needed to tell a
     /// genuinely-runtime initializer apart from a compile-time-known one).
-    pub fn analyze_comp_declaration(&mut self, w: &HirWalrusDeclaration) -> Option<(ResolvedType, ConstValue)> {
+    pub fn analyze_comp_declaration(
+        &mut self,
+        w: &HirWalrusDeclaration,
+    ) -> Option<(ResolvedType, ConstValue)> {
         if w.mutable {
             self.error(w.id, w.span, AnalysisErrorKind::MutCompBinding);
             return None;
@@ -112,7 +153,10 @@ impl<'r> Analyzer<'r> {
     /// strictly more general, and it's the same signal every other
     /// compile-time-known-or-not distinction in this compiler already
     /// uses.
-    pub fn analyze_global_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<CheckedDeclaration> {
+    pub fn analyze_global_walrus(
+        &mut self,
+        w: &HirWalrusDeclaration,
+    ) -> Option<CheckedDeclaration> {
         let checked = self.analyze_expr(&w.value, None)?;
         self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, &w.value, checked)
     }
@@ -132,8 +176,16 @@ impl<'r> Analyzer<'r> {
         decl: &HirDeclaration,
         value: &HirExprNode,
     ) -> Option<CheckedDeclaration> {
-        let (_, checked_value) = self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
-        self.finish_global_binding(decl.id, decl.span, &decl.ident, decl.mutable, value, checked_value)
+        let (_, checked_value) =
+            self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
+        self.finish_global_binding(
+            decl.id,
+            decl.span,
+            &decl.ident,
+            decl.mutable,
+            value,
+            checked_value,
+        )
     }
 
     /// Resolves `r#type` and analyzes `value` against it as one unit --
@@ -170,7 +222,11 @@ impl<'r> Analyzer<'r> {
             let checked_value = self.analyze_expr(value, Some(&expected))?;
             let checked_value = self.coerce_to_expected(Some(&expected), checked_value);
             let ResolvedType::SizedArray(_, size) = &checked_value.r#type else {
-                self.error(value.id, value.span, AnalysisErrorKind::ArraySizeNotInferable);
+                self.error(
+                    value.id,
+                    value.span,
+                    AnalysisErrorKind::ArraySizeNotInferable,
+                );
                 return None;
             };
             let resolved_type = ResolvedType::SizedArray(Box::new(item_type), *size);
@@ -184,7 +240,10 @@ impl<'r> Analyzer<'r> {
             self.error(
                 value.id,
                 value.span,
-                AnalysisErrorKind::AssignmentTypeMismatch { target: resolved_type, value: checked_value.r#type },
+                AnalysisErrorKind::AssignmentTypeMismatch {
+                    target: resolved_type,
+                    value: checked_value.r#type,
+                },
             );
             return None;
         }
@@ -222,7 +281,14 @@ impl<'r> Analyzer<'r> {
             _ => self.recognize_top_level_literal(raw_value, &r#type)?,
         };
         self.declare_binding(id, span, ident, r#type.clone(), Storage::Global, mutable)?;
-        Some(CheckedDeclaration { id, span, ident: ident.clone(), r#type, mutable, initial_value: Some(const_value) })
+        Some(CheckedDeclaration {
+            id,
+            span,
+            ident: ident.clone(),
+            r#type,
+            mutable,
+            initial_value: Some(const_value),
+        })
     }
 
     /// Whether `expr`'s *raw* HIR shape is a literal this compiler already
@@ -248,15 +314,23 @@ impl<'r> Analyzer<'r> {
     /// one via `const_number`, or `TopLevelValueNotComp` for anything
     /// else), so `finish_global_binding` can propagate `None` via `?`
     /// without risking a second, redundant diagnostic on top.
-    fn recognize_top_level_literal(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+    fn recognize_top_level_literal(
+        &mut self,
+        expr: &HirExprNode,
+        expected: &ResolvedType,
+    ) -> Option<ConstValue> {
         let not_comp = |this: &mut Self| {
             this.error(expr.id, expr.span, AnalysisErrorKind::TopLevelValueNotComp);
             None
         };
         match &expr.expr {
-            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Number(n) => self
+                .const_number(expr.id, expr.span, n, expected, false)
+                .map(ConstValue::Number),
             HirExpr::Negate(inner) => match &inner.expr {
-                HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number),
+                HirExpr::Number(n) => self
+                    .const_number(expr.id, expr.span, n, expected, true)
+                    .map(ConstValue::Number),
                 _ => not_comp(self),
             },
             HirExpr::String(s) => match expected {
@@ -286,9 +360,15 @@ impl<'r> Analyzer<'r> {
             // rule -- a bare `[...]` is never treated as one, and `&mut
             // [...]` isn't recognized here at all (falls through to
             // `not_comp`, same as any other unrecognized shape).
-            HirExpr::AddressOf(HirAddressOf { base, mutable: false }) => match &base.expr {
+            HirExpr::AddressOf(HirAddressOf {
+                base,
+                mutable: false,
+            }) => match &base.expr {
                 HirExpr::ArrayLiteral(elements) => match expected {
-                    ResolvedType::Slice { item, mutable: false } => {
+                    ResolvedType::Slice {
+                        item,
+                        mutable: false,
+                    } => {
                         let mut values = Vec::with_capacity(elements.len());
                         for element in elements {
                             values.push(self.recognize_top_level_literal(element, item)?);
@@ -303,8 +383,16 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    pub fn analyze_extern_decl(&mut self, extern_decl: &HirExternDeclaration) -> Option<CheckedExternDeclaration> {
-        let resolved_type = self.resolve_type_or_error(extern_decl.id, extern_decl.span, &extern_decl.r#type, true)?;
+    pub fn analyze_extern_decl(
+        &mut self,
+        extern_decl: &HirExternDeclaration,
+    ) -> Option<CheckedExternDeclaration> {
+        let resolved_type = self.resolve_type_or_error(
+            extern_decl.id,
+            extern_decl.span,
+            &extern_decl.r#type,
+            true,
+        )?;
         // An extern of function type imports a callable symbol; anything
         // else is extern *data*, whose storage isn't decided yet (see
         // `Storage::Global`'s doc comment).
@@ -339,7 +427,8 @@ impl<'r> Analyzer<'r> {
         // inline inside anything -- a method taking its own struct type by
         // value (`fn combine(self, other: Self) -> Self`) is completely
         // ordinary and must not be flagged as a layout cycle.
-        let resolved_type = self.resolve_type_or_error(param.id, param.span, &param.r#type, true)?;
+        let resolved_type =
+            self.resolve_type_or_error(param.id, param.span, &param.r#type, true)?;
         // Parameters (including `self`) are always immutable bindings --
         // `mut` is never recognized in parameter position at all (see
         // `omega_parser::parser::item::parse_declaration_list`); a
@@ -347,7 +436,14 @@ impl<'r> Analyzer<'r> {
         // (`mut x := param;`). `self`'s own *pointee* mutability (`mut
         // self` vs `self`) is a separate, `ResolvedType::Pointer` concern,
         // already baked into `resolved_type` here.
-        self.declare_binding(param.id, param.span, &param.ident, resolved_type.clone(), Storage::Parameter, false)?;
+        self.declare_binding(
+            param.id,
+            param.span,
+            &param.ident,
+            resolved_type.clone(),
+            Storage::Parameter,
+            false,
+        )?;
         Some(CheckedParam {
             id: param.id,
             span: param.span,
@@ -367,14 +463,18 @@ impl<'r> Analyzer<'r> {
                 this.error(
                     field.id,
                     field.span,
-                    AnalysisErrorKind::Redeclaration { name: field.ident.clone(), previous: Some(previous) },
+                    AnalysisErrorKind::Redeclaration {
+                        name: field.ident.clone(),
+                        previous: Some(previous),
+                    },
                 );
                 return None;
             }
             // A field is the one context that genuinely lays its type out
             // inline -- this is the case `RecursiveTypeWithoutIndirection`
             // exists to catch, so it's the only caller passing `false`.
-            let resolved_type = this.resolve_type_or_error(field.id, field.span, &field.r#type, false)?;
+            let resolved_type =
+                this.resolve_type_or_error(field.id, field.span, &field.r#type, false)?;
             Some(CheckedParam {
                 id: field.id,
                 span: field.span,
@@ -401,7 +501,14 @@ impl<'r> Analyzer<'r> {
             None => Some(()),
             Some(found) if return_type.accepts(&found) => Some(()),
             Some(found) => {
-                self.error(id, span, AnalysisErrorKind::ReturnTypeMismatch { expected: return_type.clone(), found });
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::ReturnTypeMismatch {
+                        expected: return_type.clone(),
+                        found,
+                    },
+                );
                 None
             }
         }
@@ -457,18 +564,32 @@ impl<'r> Analyzer<'r> {
         &mut self,
         f: &HirFunctionDef,
         return_type_override: Option<ResolvedType>,
-    ) -> Option<(ResolvedFunctionType, crate::annotations::ResolvedAnnotations)> {
+    ) -> Option<(
+        ResolvedFunctionType,
+        crate::annotations::ResolvedAnnotations,
+    )> {
         // Param/return types are a function's signature, never inline data --
         // always indirect (see `analyze_param`'s identical reasoning).
         let params = self.analyze_all(&f.params, |this, p| {
-            this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
+            this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
+                .map(|t| (p.ident.clone(), t))
         })?;
 
         for (p, (_, r#type)) in f.params.iter().zip(params.iter()) {
-            if matches!(r#type, ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }) {
+            if matches!(
+                r#type,
+                ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }
+            ) {
                 let size = crate::annotations::estimate_type_size(r#type);
                 if size > crate::annotations::LARGE_STRUCT_BY_VALUE_THRESHOLD {
-                    self.warn(p.id, p.span, AnalysisWarningKind::LargeStructByValue { r#type: r#type.clone(), size });
+                    self.warn(
+                        p.id,
+                        p.span,
+                        AnalysisWarningKind::LargeStructByValue {
+                            r#type: r#type.clone(),
+                            size,
+                        },
+                    );
                 }
             }
         }
@@ -511,10 +632,13 @@ impl<'r> Analyzer<'r> {
     /// syntax to pick "receives self by value" vs. "by pointer", so self's
     /// own mode can never be the sole thing distinguishing two overloads
     /// (see `AnalysisErrorKind::AmbiguousSelfOverload`).
-    fn check_overload_duplicates(
+    pub fn check_overload_duplicates(
         &mut self,
         functions: &[HirFunctionDef],
-        signatures: &[(ResolvedFunctionType, crate::annotations::ResolvedAnnotations)],
+        signatures: &[(
+            ResolvedFunctionType,
+            crate::annotations::ResolvedAnnotations,
+        )],
     ) {
         for i in 1..functions.len() {
             for j in 0..i {
@@ -522,7 +646,11 @@ impl<'r> Analyzer<'r> {
                     continue;
                 }
                 let (sig_i, sig_j) = (&signatures[i].0, &signatures[j].0);
-                let same_params = sig_i.params.iter().map(|(_, t)| t).eq(sig_j.params.iter().map(|(_, t)| t));
+                let same_params = sig_i
+                    .params
+                    .iter()
+                    .map(|(_, t)| t)
+                    .eq(sig_j.params.iter().map(|(_, t)| t));
                 if same_params {
                     self.error(
                         functions[i].id,
@@ -535,7 +663,10 @@ impl<'r> Analyzer<'r> {
                     break;
                 }
                 if sig_i.self_mode.is_some() && sig_j.self_mode.is_some() {
-                    let same_rest = sig_i.params[1..].iter().map(|(_, t)| t).eq(sig_j.params[1..].iter().map(|(_, t)| t));
+                    let same_rest = sig_i.params[1..]
+                        .iter()
+                        .map(|(_, t)| t)
+                        .eq(sig_j.params[1..].iter().map(|(_, t)| t));
                     if same_rest {
                         self.error(
                             functions[i].id,
@@ -589,7 +720,7 @@ impl<'r> Analyzer<'r> {
 
     /// The tail every aggregate's signature shares: resolve each declared
     /// method's own signature, reject two that no call could tell apart,
-    /// then fold in whatever the `implements` clause additionally requires.
+    /// and store only those inherent declarations on the type itself.
     /// `method_ids` are the identities the driver already decided for this
     /// instantiation (see `ModuleResolver::fresh_synthetic_id`).
     ///
@@ -597,13 +728,9 @@ impl<'r> Analyzer<'r> {
     /// spec-default body still owed a phase-2 check.
     fn collect_methods(
         &mut self,
-        owner: (HirId, Span),
-        name: &Ident,
         functions: &[omega_hir::HirFunctionDef],
-        implements: &[Type],
         method_ids: &[HirId],
-        self_type: &ResolvedType,
-    ) -> Option<SpecMethods> {
+    ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         self.context.enter_scope();
         // A struct/enum/union method never yet supports `spec T` return-type
         // body inference (`return_type_override: None`, unconditionally) --
@@ -613,7 +740,9 @@ impl<'r> Analyzer<'r> {
         // `HirFunctionDefinition` arm); a method whose return type is bare
         // `spec T` gets the same `SpecStaticNotAllowedHere` rejection any
         // other unsupported position does.
-        let signatures = self.analyze_all(functions, |this, f| this.collect_function_signature(f, None));
+        let signatures = self.analyze_all(functions, |this, f| {
+            this.collect_function_signature(f, None)
+        });
         self.context.leave_scope();
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
@@ -623,16 +752,20 @@ impl<'r> Analyzer<'r> {
             .zip(signatures)
             .zip(method_ids)
             .map(|((f, (fn_type, annotations)), &decl_id)| {
-                (f.name.clone(), ResolvedMethod { decl_id, fn_type, visibility: f.visibility, annotations })
+                (
+                    f.name.clone(),
+                    ResolvedMethod {
+                        decl_id,
+                        fn_type,
+                        visibility: f.visibility,
+                        annotations,
+                        source: None,
+                    },
+                )
             })
             .collect();
 
-        let (from_specs, pending, implemented_specs) =
-            self.resolve_implements_clause(owner.0, owner.1, name, implements, &own, self_type);
-
-        let mut all = own;
-        all.extend(from_specs);
-        Some((all, pending, implemented_specs))
+        Some(own)
     }
 
     /// A struct's fields and methods. `None` means this struct's signature
@@ -642,8 +775,9 @@ impl<'r> Analyzer<'r> {
         s: &HirStructDef,
         cell: &Rc<RefCell<ResolvedStructType>>,
         method_ids: &[HirId],
-    ) -> Option<Vec<PendingSpecMethod>> {
-        let annotations = self.item_annotations(s.id, &s.annotations, crate::annotations::ItemKind::Struct);
+    ) -> Option<()> {
+        let annotations =
+            self.item_annotations(s.id, &s.annotations, crate::annotations::ItemKind::Struct);
         cell.borrow_mut().layout = annotations.layout;
         cell.borrow_mut().suppress = annotations.suppress;
         cell.borrow_mut().is_marker = s.is_marker;
@@ -659,20 +793,19 @@ impl<'r> Analyzer<'r> {
         // only becomes zero-sized for one particular instantiation (this
         // runs once per instantiation, same as everything else here).
         if !s.is_marker && crate::layout::is_zero_sized(&self_type) {
-            self.error(s.id, s.span, AnalysisErrorKind::ZeroSizedAggregate { name: s.name.clone(), is_union: false });
+            self.error(
+                s.id,
+                s.span,
+                AnalysisErrorKind::ZeroSizedAggregate {
+                    name: s.name.clone(),
+                    is_union: false,
+                },
+            );
         }
 
-        let (functions, pending, implemented_specs) = self.collect_methods(
-            (s.id, s.span),
-            &s.name,
-            &s.functions,
-            &s.implements,
-            method_ids,
-            &self_type,
-        )?;
+        let functions = self.collect_methods(&s.functions, method_ids)?;
         cell.borrow_mut().functions = functions;
-        cell.borrow_mut().implemented_specs = implemented_specs;
-        Some(pending)
+        Some(())
     }
 
     /// A union's fields and methods -- identical to a struct's apart from
@@ -683,8 +816,9 @@ impl<'r> Analyzer<'r> {
         u: &HirUnionDef,
         cell: &Rc<RefCell<ResolvedUnionType>>,
         method_ids: &[HirId],
-    ) -> Option<Vec<PendingSpecMethod>> {
-        let annotations = self.item_annotations(u.id, &u.annotations, crate::annotations::ItemKind::Union);
+    ) -> Option<()> {
+        let annotations =
+            self.item_annotations(u.id, &u.annotations, crate::annotations::ItemKind::Union);
         cell.borrow_mut().suppress = annotations.suppress;
 
         cell.borrow_mut().fields = self.resolve_declared_fields(&u.fields)?;
@@ -694,20 +828,19 @@ impl<'r> Analyzer<'r> {
         // identical check for why this uses the full leaf list rather than
         // `u.fields.is_empty()`.
         if crate::layout::is_zero_sized(&self_type) {
-            self.error(u.id, u.span, AnalysisErrorKind::ZeroSizedAggregate { name: u.name.clone(), is_union: true });
+            self.error(
+                u.id,
+                u.span,
+                AnalysisErrorKind::ZeroSizedAggregate {
+                    name: u.name.clone(),
+                    is_union: true,
+                },
+            );
         }
 
-        let (functions, pending, implemented_specs) = self.collect_methods(
-            (u.id, u.span),
-            &u.name,
-            &u.functions,
-            &u.implements,
-            method_ids,
-            &self_type,
-        )?;
+        let functions = self.collect_methods(&u.functions, method_ids)?;
         cell.borrow_mut().functions = functions;
-        cell.borrow_mut().implemented_specs = implemented_specs;
-        Some(pending)
+        Some(())
     }
 
     /// One aggregate's declared fields, in the `(name, type, visibility)`
@@ -751,14 +884,19 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     field.id,
                     field.span,
-                    AnalysisErrorKind::EnumFieldNameCollision { field: field.ident.clone(), variant: None },
+                    AnalysisErrorKind::EnumFieldNameCollision {
+                        field: field.ident.clone(),
+                        variant: None,
+                    },
                 );
                 ok = false;
                 continue;
             }
             // Header fields are laid out inline in every enum value -- the
             // same `indirect = false` a struct field passes.
-            let Some(resolved) = self.resolve_type_or_error(field.id, field.span, &field.r#type, false) else {
+            let Some(resolved) =
+                self.resolve_type_or_error(field.id, field.span, &field.r#type, false)
+            else {
                 ok = false;
                 continue;
             };
@@ -793,8 +931,15 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         let tag_type = self.resolve_type_or_error(field.id, field.span, &field.r#type, true)?;
-        if !matches!(tag_type.numeric_kind(), Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))) {
-            self.error(field.id, field.span, AnalysisErrorKind::EnumTagNotInteger { found: tag_type });
+        if !matches!(
+            tag_type.numeric_kind(),
+            Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
+        ) {
+            self.error(
+                field.id,
+                field.span,
+                AnalysisErrorKind::EnumTagNotInteger { found: tag_type },
+            );
             return None;
         }
         Some(tag_type)
@@ -818,7 +963,10 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     field.id,
                     field.span,
-                    AnalysisErrorKind::EnumFieldNameCollision { field: field.ident.clone(), variant: None },
+                    AnalysisErrorKind::EnumFieldNameCollision {
+                        field: field.ident.clone(),
+                        variant: None,
+                    },
                 );
                 ok = false;
                 continue;
@@ -826,7 +974,9 @@ impl<'r> Analyzer<'r> {
             seen.insert(field.ident.clone(), field.span);
             // Laid out inline in every enum value, exactly like a header
             // field -- the same `indirect = false` a struct field passes.
-            let Some(resolved) = self.resolve_type_or_error(field.id, field.span, &field.r#type, false) else {
+            let Some(resolved) =
+                self.resolve_type_or_error(field.id, field.span, &field.r#type, false)
+            else {
                 ok = false;
                 continue;
             };
@@ -854,7 +1004,10 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     variant.id,
                     variant.span,
-                    AnalysisErrorKind::Redeclaration { name: variant.name.clone(), previous: Some(previous) },
+                    AnalysisErrorKind::Redeclaration {
+                        name: variant.name.clone(),
+                        previous: Some(previous),
+                    },
                 );
                 ok = false;
                 continue;
@@ -904,19 +1057,29 @@ impl<'r> Analyzer<'r> {
             // One constant per header field, positionally.
             let mut header_values = Vec::with_capacity(header.fields.len());
             let mut variant_ok = true;
-            for ((_, field_type, _), arg) in header.fields.iter().zip(&variant.args[header.has_tag as usize..]) {
+            for ((_, field_type, _), arg) in header
+                .fields
+                .iter()
+                .zip(&variant.args[header.has_tag as usize..])
+            {
                 match self.const_eval(arg, field_type) {
                     Some(value) => header_values.push(value),
                     None => variant_ok = false,
                 }
             }
 
-            let fields = self.resolve_variant_fields(variant, header, dynamic_fields, &mut variant_ok);
+            let fields =
+                self.resolve_variant_fields(variant, header, dynamic_fields, &mut variant_ok);
             if !variant_ok {
                 ok = false;
                 continue;
             }
-            variants.push(ResolvedEnumVariant { name: variant.name.clone(), tag, header_values, fields });
+            variants.push(ResolvedEnumVariant {
+                name: variant.name.clone(),
+                tag,
+                header_values,
+                fields,
+            });
         }
 
         ok.then_some(variants)
@@ -955,8 +1118,10 @@ impl<'r> Analyzer<'r> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for field in &variant.fields {
-            let shadows_shared =
-                header.claims(&field.ident) || dynamic_fields.iter().any(|(name, _, _)| *name == field.ident);
+            let shadows_shared = header.claims(&field.ident)
+                || dynamic_fields
+                    .iter()
+                    .any(|(name, _, _)| *name == field.ident);
             if shadows_shared {
                 self.error(
                     field.id,
@@ -973,14 +1138,19 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     field.id,
                     field.span,
-                    AnalysisErrorKind::Redeclaration { name: field.ident.clone(), previous: Some(previous) },
+                    AnalysisErrorKind::Redeclaration {
+                        name: field.ident.clone(),
+                        previous: Some(previous),
+                    },
                 );
                 *ok = false;
                 continue;
             }
             // A body field is inline layout, exactly like a struct field --
             // the one context that catches by-value recursion.
-            let Some(resolved) = self.resolve_type_or_error(field.id, field.span, &field.r#type, false) else {
+            let Some(resolved) =
+                self.resolve_type_or_error(field.id, field.span, &field.r#type, false)
+            else {
                 *ok = false;
                 continue;
             };
@@ -1002,7 +1172,10 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     function.id,
                     function.span,
-                    AnalysisErrorKind::Redeclaration { name: function.name.clone(), previous: Some(*previous) },
+                    AnalysisErrorKind::Redeclaration {
+                        name: function.name.clone(),
+                        previous: Some(*previous),
+                    },
                 );
                 ok = false;
             }
@@ -1016,8 +1189,9 @@ impl<'r> Analyzer<'r> {
         e: &HirEnumDef,
         cell: &Rc<RefCell<ResolvedEnumType>>,
         method_ids: &[HirId],
-    ) -> Option<Vec<PendingSpecMethod>> {
-        let annotations = self.item_annotations(e.id, &e.annotations, crate::annotations::ItemKind::Enum);
+    ) -> Option<()> {
+        let annotations =
+            self.item_annotations(e.id, &e.annotations, crate::annotations::ItemKind::Enum);
         cell.borrow_mut().layout = annotations.layout;
         cell.borrow_mut().suppress = annotations.suppress;
 
@@ -1038,18 +1212,9 @@ impl<'r> Analyzer<'r> {
             resolved.variants = variants;
         }
 
-        let self_type = ResolvedType::Enum { cell: cell.clone(), variant: None };
-        let (functions, pending, implemented_specs) = self.collect_methods(
-            (e.id, e.span),
-            &e.name,
-            &e.functions,
-            &e.implements,
-            method_ids,
-            &self_type,
-        )?;
+        let functions = self.collect_methods(&e.functions, method_ids)?;
         cell.borrow_mut().functions = functions;
-        cell.borrow_mut().implemented_specs = implemented_specs;
-        Some(pending)
+        Some(())
     }
 
     /// Checks a top-level enum's function *bodies* only -- the counterpart
@@ -1098,7 +1263,11 @@ impl<'r> Analyzer<'r> {
     /// and keeps them only on failure, since a second, real pass
     /// (`check_function_body`, once this concrete type is known) is what
     /// actually gets cached and used everywhere.
-    pub fn infer_body_return_type(&mut self, f: &HirFunctionDef, bound: &Type) -> Option<ResolvedType> {
+    pub fn infer_body_return_type(
+        &mut self,
+        f: &HirFunctionDef,
+        bound: &Type,
+    ) -> Option<ResolvedType> {
         self.context.enter_scope();
         self.analyze_all(&f.params, Self::analyze_param);
 
@@ -1120,7 +1289,13 @@ impl<'r> Analyzer<'r> {
 
         let mut candidates = std::mem::take(&mut self.inferred_return_candidates);
         if candidates.is_empty() {
-            self.error(f.id, f.span, AnalysisErrorKind::SpecReturnTypeUnconstrained { function: f.name.clone() });
+            self.error(
+                f.id,
+                f.span,
+                AnalysisErrorKind::SpecReturnTypeUnconstrained {
+                    function: f.name.clone(),
+                },
+            );
             return None;
         }
         let (_, first) = candidates.remove(0);
@@ -1142,12 +1317,17 @@ impl<'r> Analyzer<'r> {
             // `bound` itself failed to resolve -- already an ordinary
             // recorded error (see `check_generic_bound`'s own doc comment).
             None => None,
-            Some(Ok(())) => Some(first),
+            Some(Ok(_)) => Some(first),
             Some(Err((spec, missing))) => {
                 self.error(
                     f.id,
                     f.span,
-                    AnalysisErrorKind::SpecReturnTypeNotSatisfied { function: f.name.clone(), r#type: first, spec, missing },
+                    AnalysisErrorKind::SpecReturnTypeNotSatisfied {
+                        function: f.name.clone(),
+                        r#type: first,
+                        spec,
+                        missing,
+                    },
                 );
                 None
             }
@@ -1204,7 +1384,8 @@ impl<'r> Analyzer<'r> {
             body,
             inline: annotations.inline,
             mangling: annotations.mangling.clone(),
-            extension_target: None,
+            compose_owner: None,
+            primitive_target: None,
         })
     }
 
@@ -1219,7 +1400,10 @@ impl<'r> Analyzer<'r> {
     /// (`Self` + the owning spec's own generics) -- the implementor's own
     /// generics are never relevant here, since the spec's HIR can't
     /// reference a name it doesn't know about.
-    pub fn check_pending_spec_method(&mut self, pending: &PendingSpecMethod) -> Option<CheckedFunctionDef> {
+    pub fn check_pending_spec_method(
+        &mut self,
+        pending: &PendingSpecMethod,
+    ) -> Option<CheckedFunctionDef> {
         // A spec-satisfying default method effectively becomes part of its
         // implementor's own definition -- same field-access rights as any
         // of that type's own hand-written methods (see `Analyzer::
@@ -1232,17 +1416,11 @@ impl<'r> Analyzer<'r> {
         // method's own body. `None` (no case matched) for a primitive
         // `Self` (a `for`-attached spec target) -- primitives have no
         // fields to protect this way at all.
-        self.current_owner = match self.context.find_defined_type(&Ident("Self".to_string())) {
-            Some(ResolvedType::Struct(cell)) => Some(cell.borrow().id),
-            Some(ResolvedType::Union(cell)) => Some(cell.borrow().id),
-            Some(ResolvedType::Enum { cell, .. }) => Some(cell.borrow().id),
-            _ => None,
-        };
         let body = pending
             .raw
             .default_body
             .clone()
-            .expect("only ever queued (resolve_implements_clause) when a default body exists");
+            .expect("only ever queued by composition when a default body exists");
         let synthetic = HirFunctionDef {
             id: pending.raw.decl_id,
             span: pending.raw.span,
@@ -1288,7 +1466,8 @@ impl<'r> Analyzer<'r> {
         let mut checked = Vec::with_capacity(functions.len());
         let mut ok = true;
         for (f, (_, method)) in functions.iter().zip(methods) {
-            match self.check_function_body(f, &method.fn_type, method.decl_id, &method.annotations) {
+            match self.check_function_body(f, &method.fn_type, method.decl_id, &method.annotations)
+            {
                 Some(body) => checked.push(body),
                 // Every method is checked even after one fails, so a broken
                 // method never hides its siblings' own errors.
@@ -1302,7 +1481,10 @@ impl<'r> Analyzer<'r> {
 
     /// One aggregate's checked field list, pairing each declared field with
     /// the type the signature phase already resolved for it.
-    fn checked_fields(declared: &[HirParam], resolved: &[(Ident, ResolvedType, Visibility)]) -> Vec<CheckedParam> {
+    fn checked_fields(
+        declared: &[HirParam],
+        resolved: &[(Ident, ResolvedType, Visibility)],
+    ) -> Vec<CheckedParam> {
         declared
             .iter()
             .zip(resolved)
@@ -1326,10 +1508,21 @@ impl<'r> Analyzer<'r> {
         let (fields, methods, suppress) = {
             let resolved = cell.borrow();
             self.current_owner = Some(resolved.id);
-            (Self::checked_fields(&s.fields, &resolved.fields), resolved.functions.clone(), resolved.suppress.clone())
+            (
+                Self::checked_fields(&s.fields, &resolved.fields),
+                resolved.functions.clone(),
+                resolved.suppress.clone(),
+            )
         };
         let functions = self.check_method_bodies(&s.functions, &methods, &suppress)?;
-        Some(CheckedStructDef { id: s.id, span: s.span, name: s.name.clone(), type_args: vec![], fields, functions })
+        Some(CheckedStructDef {
+            id: s.id,
+            span: s.span,
+            name: s.name.clone(),
+            type_args: vec![],
+            fields,
+            functions,
+        })
     }
 
     /// A union's bodies -- identical contract to `check_struct_body`.
@@ -1341,22 +1534,43 @@ impl<'r> Analyzer<'r> {
         let (fields, methods, suppress) = {
             let resolved = cell.borrow();
             self.current_owner = Some(resolved.id);
-            (Self::checked_fields(&u.fields, &resolved.fields), resolved.functions.clone(), resolved.suppress.clone())
+            (
+                Self::checked_fields(&u.fields, &resolved.fields),
+                resolved.functions.clone(),
+                resolved.suppress.clone(),
+            )
         };
         let functions = self.check_method_bodies(&u.functions, &methods, &suppress)?;
-        Some(CheckedUnionDef { id: u.id, span: u.span, name: u.name.clone(), type_args: vec![], fields, functions })
+        Some(CheckedUnionDef {
+            id: u.id,
+            span: u.span,
+            name: u.name.clone(),
+            type_args: vec![],
+            fields,
+            functions,
+        })
     }
 
     /// An enum's bodies. Unlike a struct or union, an enum's fields and
     /// variants carry no checked form of their own at all -- their values
     /// were fully evaluated during `signature_of_enum`.
-    pub fn check_enum_body(&mut self, e: &HirEnumDef, cell: &Rc<RefCell<ResolvedEnumType>>) -> Option<CheckedEnumDef> {
+    pub fn check_enum_body(
+        &mut self,
+        e: &HirEnumDef,
+        cell: &Rc<RefCell<ResolvedEnumType>>,
+    ) -> Option<CheckedEnumDef> {
         let (methods, suppress) = {
             let resolved = cell.borrow();
             self.current_owner = Some(resolved.id);
             (resolved.functions.clone(), resolved.suppress.clone())
         };
         let functions = self.check_method_bodies(&e.functions, &methods, &suppress)?;
-        Some(CheckedEnumDef { id: e.id, span: e.span, name: e.name.clone(), type_args: vec![], functions })
+        Some(CheckedEnumDef {
+            id: e.id,
+            span: e.span,
+            name: e.name.clone(),
+            type_args: vec![],
+            functions,
+        })
     }
 }

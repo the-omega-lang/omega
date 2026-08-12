@@ -7,13 +7,14 @@ import extern::std::string::String;
 import extern::core::fmt::Display;
 import extern::core::fmt::write_uint;
 
-# A user-defined `Display` is ordinary spec conformance -- `spec ... for` is
-# reserved to `core` and to primitive targets, so it is never the spelling a
-# consumer reaches for.
-struct Pair : Display {
+# A user-defined `Display` conformance is an explicit composition. The type
+# declaration itself owns only Pair's representation and inherent methods.
+struct Pair {
     exposed value: i32;
+}
 
-    exposed fmt(*self, out: *mut Writer) => void {
+compose Pair : Display {
+    fmt(*self, out: *mut Writer) => void {
         out.write_str("Pair(");
         self.value.fmt(out);
         out.write_byte(41u8);

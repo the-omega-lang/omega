@@ -353,14 +353,42 @@ fn expand_item_list(
                 item: Item::Spec(expand_spec_def(sp, defs, budget)?),
                 span: node.span,
             }),
-            Item::Gap(gap) => result.push(ItemNode { item: Item::Gap(gap), span: node.span }),
+            Item::Gap(gap) => result.push(ItemNode {
+                item: Item::Gap(gap),
+                span: node.span,
+            }),
             Item::Glue(mut glue) => {
                 glue.functions = glue
                     .functions
                     .into_iter()
                     .map(|f| expand_function_def(f, defs, budget))
                     .collect::<Result<_, _>>()?;
-                result.push(ItemNode { item: Item::Glue(glue), span: node.span });
+                result.push(ItemNode {
+                    item: Item::Glue(glue),
+                    span: node.span,
+                });
+            }
+            Item::Compose(mut compose) => {
+                compose.functions = compose
+                    .functions
+                    .into_iter()
+                    .map(|f| expand_function_def(f, defs, budget))
+                    .collect::<Result<_, _>>()?;
+                result.push(ItemNode {
+                    item: Item::Compose(compose),
+                    span: node.span,
+                });
+            }
+            Item::Primitive(mut primitive) => {
+                primitive.functions = primitive
+                    .functions
+                    .into_iter()
+                    .map(|f| expand_function_def(f, defs, budget))
+                    .collect::<Result<_, _>>()?;
+                result.push(ItemNode {
+                    item: Item::Primitive(primitive),
+                    span: node.span,
+                });
             }
             other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
                 result.push(ItemNode {

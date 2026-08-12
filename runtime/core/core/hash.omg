@@ -7,10 +7,9 @@
 # The only real contract: two values that compare equal (`cmp::Eq::equals`)
 # must produce the same hash -- the reverse isn't required (a collision
 # between unequal values is always allowed, just ideally rare). Every
-# primitive implementation lives in `numerics.omg`/`strings.omg`'s own
-# existing `for`-blocks (see their own doc comments for why it can't live
-# here instead -- `for`-attachment is restricted to `core`, and a target
-# type gets exactly one `for` block, globally).
+# primitive implementation lives in the core-only `primitive` blocks in
+# `numerics.omg`/`strings.omg`; separate compose blocks register `Hash`
+# conformance for those targets.
 #
 # `HashMap<K: Hash, V>`/`HashSet<T: Hash>` bound only on this -- not a
 # combined `Hash`-and-`Eq` spec, even though a bucket lookup needs both.

@@ -1,11 +1,12 @@
 use crate::hir::{
     HirAddressOf, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirAssignment, HirBinaryOp,
-    HirBlock, HirBreak, HirCast, HirCompoundAssign, HirContinue, HirDeclaration, HirDefer,
-    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFor, HirForIn,
-    HirFunctionCall, HirFunctionDef, HirGenericParam, HirIf, HirImport, HirItem, HirLoop, HirMatch,
-    HirMatchArm, HirModule, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection, HirRange,
-    HirSlice, HirSpecDef, HirSpecFunction, HirGapDef, HirGapFunction, HirGlueDef, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
+    HirBlock, HirBreak, HirCast, HirComposeDef, HirCompoundAssign, HirContinue, HirDeclaration,
+    HirDefer, HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFor,
+    HirForIn, HirFunctionCall, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam,
+    HirGlueDef, HirIf, HirImport, HirItem, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam,
+    HirPattern, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirProjection, HirRange, HirSlice,
+    HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField,
+    HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
@@ -65,16 +66,57 @@ impl Lowerer {
             Item::Union(u) => HirItem::Union(self.lower_union_def(u, node.span)),
             Item::Spec(sp) => HirItem::Spec(self.lower_spec_def(sp, node.span)),
             Item::Gap(gap) => HirItem::Gap(HirGapDef {
-                id: self.ids.next(), span: node.span, name: gap.ident.clone(),
-                functions: gap.functions.iter().map(|f| HirGapFunction {
-                    id: self.ids.next(), span: node.span, name: f.ident.clone(),
-                    params: f.params.iter().map(|p| self.lower_param(p, node.span)).collect(),
-                    return_type: f.return_type.clone(),
-                }).collect(),
+                id: self.ids.next(),
+                span: node.span,
+                name: gap.ident.clone(),
+                functions: gap
+                    .functions
+                    .iter()
+                    .map(|f| HirGapFunction {
+                        id: self.ids.next(),
+                        span: node.span,
+                        name: f.ident.clone(),
+                        params: f
+                            .params
+                            .iter()
+                            .map(|p| self.lower_param(p, node.span))
+                            .collect(),
+                        return_type: f.return_type.clone(),
+                    })
+                    .collect(),
             }),
             Item::Glue(glue) => HirItem::Glue(HirGlueDef {
-                id: self.ids.next(), span: node.span, gap: glue.gap.clone(),
-                functions: glue.functions.iter().map(|f| self.lower_function_def(f, node.span, false)).collect(),
+                id: self.ids.next(),
+                span: node.span,
+                gap: glue.gap.clone(),
+                functions: glue
+                    .functions
+                    .iter()
+                    .map(|f| self.lower_function_def(f, node.span, false))
+                    .collect(),
+            }),
+            Item::Compose(compose) => HirItem::Compose(HirComposeDef {
+                id: self.ids.next(),
+                span: node.span,
+                generics: Self::lower_generics(&compose.generics),
+                target: compose.target.clone(),
+                spec: compose.spec.clone(),
+                functions: compose
+                    .functions
+                    .iter()
+                    .map(|f| self.lower_function_def(f, node.span, true))
+                    .collect(),
+            }),
+            Item::Primitive(primitive) => HirItem::Primitive(HirPrimitiveDef {
+                id: self.ids.next(),
+                span: node.span,
+                generics: Self::lower_generics(&primitive.generics),
+                target: primitive.target.clone(),
+                functions: primitive
+                    .functions
+                    .iter()
+                    .map(|f| self.lower_function_def(f, node.span, true))
+                    .collect(),
             }),
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
@@ -481,7 +523,6 @@ impl Lowerer {
             .iter()
             .map(|f| self.lower_spec_function(f, span))
             .collect();
-        let target = sp.target.clone();
         let annotations = Self::lower_annotations(&sp.annotations);
 
         HirSpecDef {
@@ -492,7 +533,6 @@ impl Lowerer {
             generics,
             dependencies,
             functions,
-            target,
             is_alias: sp.is_alias,
             annotations,
         }
@@ -549,7 +589,6 @@ impl Lowerer {
             visibility: s.visibility,
             name: s.ident.clone(),
             generics: Self::lower_generics(&s.generics),
-            implements: s.implements.clone(),
             fields,
             functions,
             is_marker: s.is_marker,
@@ -574,7 +613,6 @@ impl Lowerer {
             visibility: u.visibility,
             name: u.ident.clone(),
             generics: Self::lower_generics(&u.generics),
-            implements: u.implements.clone(),
             fields,
             functions,
         }
@@ -634,7 +672,6 @@ impl Lowerer {
             visibility: e.visibility,
             name: e.ident.clone(),
             generics: Self::lower_generics(&e.generics),
-            implements: e.implements.clone(),
             header,
             dynamic_fields,
             variants,

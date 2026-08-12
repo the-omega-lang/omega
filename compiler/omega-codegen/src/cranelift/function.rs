@@ -7,13 +7,16 @@ use super::leaf::IntoCraneliftLeaves;
 use crate::mangle;
 use cranelift::codegen;
 use cranelift::codegen::ir::ArgumentPurpose;
-use cranelift::prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, Signature, StackSlotData, StackSlotKind, isa};
+use cranelift::prelude::{
+    AbiParam, FunctionBuilder, FunctionBuilderContext, Signature, StackSlotData, StackSlotKind, isa,
+};
 use cranelift_module::{FuncId, Linkage, Module};
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
+use omega_parser::prelude::Ident;
 
 impl Codegen {
     /// Whether `return_type` is returned through a hidden `StructReturn`
@@ -42,10 +45,14 @@ impl Codegen {
         // rather than left to fall out of `cranelift_leaves`/`needs_sret`
         // both already answering "zero" for it (see `ResolvedType::Never`'s
         // doc comment) purely as a byproduct of how they're implemented.
-        if *resolved_fntype.return_type != ResolvedType::Void && *resolved_fntype.return_type != ResolvedType::Never {
+        if *resolved_fntype.return_type != ResolvedType::Void
+            && *resolved_fntype.return_type != ResolvedType::Never
+        {
             if self.needs_sret(&resolved_fntype.return_type) {
-                sig.params
-                    .push(AbiParam::special(self.pointer_type(), ArgumentPurpose::StructReturn));
+                sig.params.push(AbiParam::special(
+                    self.pointer_type(),
+                    ArgumentPurpose::StructReturn,
+                ));
             } else {
                 for leaf in resolved_fntype.return_type.cranelift_leaves(self) {
                     sig.returns.push(AbiParam::new(leaf));
@@ -53,7 +60,10 @@ impl Codegen {
             }
         }
 
-        let ir_params = resolved_fntype.params.iter().flat_map(|(_, ty)| ty.cranelift_leaves(self));
+        let ir_params = resolved_fntype
+            .params
+            .iter()
+            .flat_map(|(_, ty)| ty.cranelift_leaves(self));
         for param in ir_params {
             sig.params.push(AbiParam::new(param));
         }
@@ -88,16 +98,28 @@ impl Codegen {
                 // identical way, via `mangle::glued_symbol`.
                 let symbol = match &extern_decl.mangling {
                     ManglingMode::Disabled => extern_decl.ident.0.clone(),
-                    ManglingMode::Glued { spec_module_path, spec_name, function_name } => {
-                        mangle::glued_symbol(spec_module_path, spec_name, function_name, &resolved_fntype)
-                    }
+                    ManglingMode::Glued {
+                        spec_module_path,
+                        spec_name,
+                        function_name,
+                    } => mangle::glued_symbol(
+                        spec_module_path,
+                        spec_name,
+                        function_name,
+                        &resolved_fntype,
+                    ),
                     ManglingMode::Enabled | ManglingMode::Forced(_) => {
-                        unreachable!("'@mangling' is rejected on 'extern' declarations at parse time")
+                        unreachable!(
+                            "'@mangling' is rejected on 'extern' declarations at parse time"
+                        )
                     }
                 };
                 let sig = self.make_function_sig(resolved_fntype);
 
-                let function_id = self.module.declare_function(&symbol, Linkage::Import, &sig).unwrap();
+                let function_id = self
+                    .module
+                    .declare_function(&symbol, Linkage::Import, &sig)
+                    .unwrap();
 
                 self.functions.insert(extern_decl.id, function_id);
             }
@@ -134,7 +156,12 @@ impl Codegen {
     /// `Import` as identity, so pre-declaring as `Import` and immediately
     /// re-declaring with the real linkage -- what this used to do -- is
     /// provably the same as just declaring with `linkage` directly).
-    pub(super) fn declare_function_def(&mut self, function_def: &MirFunctionDef, symbol: String, linkage: Linkage) -> FuncId {
+    pub(super) fn declare_function_def(
+        &mut self,
+        function_def: &MirFunctionDef,
+        symbol: String,
+        linkage: Linkage,
+    ) -> FuncId {
         let sig = self.function_signature(function_def);
 
         if let Some(&existing_id) = self.declared_symbols.get(&symbol)
@@ -156,14 +183,20 @@ impl Codegen {
             // set (see `Codegen::generate`), so reusing the first
             // definition's `FuncId` for this one is harmless -- it only
             // has to survive long enough to let this pass finish.
-            let existing_function_id =
-                *self.functions.get(&existing_id).expect("a declared symbol's owner is always already in `functions`");
+            let existing_function_id = *self
+                .functions
+                .get(&existing_id)
+                .expect("a declared symbol's owner is always already in `functions`");
             self.functions.insert(function_def.id, existing_function_id);
             return existing_function_id;
         }
-        self.declared_symbols.insert(symbol.clone(), function_def.id);
+        self.declared_symbols
+            .insert(symbol.clone(), function_def.id);
 
-        let function_id = self.module.declare_function(&symbol, linkage, &sig).unwrap();
+        let function_id = self
+            .module
+            .declare_function(&symbol, linkage, &sig)
+            .unwrap();
 
         self.functions.insert(function_def.id, function_id);
         function_id
@@ -187,30 +220,94 @@ impl Codegen {
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
         let mangled = match (&extern_fn.mangling, &extern_fn.kind) {
             (ManglingMode::Forced(name), _) => name.clone(),
-            (ManglingMode::Glued { spec_module_path, spec_name, function_name }, _) => {
-                mangle::glued_symbol(spec_module_path, spec_name, function_name, &extern_fn.fn_type)
-            }
+            (
+                ManglingMode::Glued {
+                    spec_module_path,
+                    spec_name,
+                    function_name,
+                },
+                _,
+            ) => mangle::glued_symbol(
+                spec_module_path,
+                spec_name,
+                function_name,
+                &extern_fn.fn_type,
+            ),
             (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
             // `@mangling(disabled)` is rejected on methods at analysis time
             // -- an extern method's own declaration went through the exact
             // same check, so this combination can't actually occur.
-            (ManglingMode::Disabled, ExternFunctionKind::Method { .. }) => {
+            (
+                ManglingMode::Disabled,
+                ExternFunctionKind::Method { .. }
+                | ExternFunctionKind::Primitive { .. }
+                | ExternFunctionKind::Compose { .. },
+            ) => {
                 unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
             }
             // `collect_extern_functions` only ever surfaces non-generic
             // extern items (a generic reached through `--extern` is always
             // fully recompiled locally instead), so there's no owner/free
             // generic-args data to pass here -- always `&[]`.
-            (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => mangle::encode(
-                &mangle::free_function_symbol(&extern_fn.module_path, name, &[], &extern_fn.fn_type),
-            ),
-            (ManglingMode::Enabled, ExternFunctionKind::Method { type_name, method_name }) => mangle::encode(
-                &mangle::method_symbol(&extern_fn.module_path, type_name, &[], method_name, &extern_fn.fn_type),
-            ),
+            (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
+                mangle::encode(&mangle::free_function_symbol(
+                    &extern_fn.module_path,
+                    name,
+                    &[],
+                    &extern_fn.fn_type,
+                ))
+            }
+            (
+                ManglingMode::Enabled,
+                ExternFunctionKind::Method {
+                    type_name,
+                    method_name,
+                },
+            ) => mangle::encode(&mangle::method_symbol(
+                &extern_fn.module_path,
+                type_name,
+                &[],
+                method_name,
+                &extern_fn.fn_type,
+            )),
+            (
+                ManglingMode::Enabled,
+                ExternFunctionKind::Primitive {
+                    target,
+                    method_name,
+                },
+            ) => {
+                let owner = Ident(target.to_string());
+                mangle::encode(&mangle::method_symbol(
+                    &extern_fn.module_path,
+                    &owner,
+                    &[],
+                    method_name,
+                    &extern_fn.fn_type,
+                ))
+            }
+            (
+                ManglingMode::Enabled,
+                ExternFunctionKind::Compose {
+                    target,
+                    spec_name,
+                    spec_args,
+                    method_name,
+                },
+            ) => mangle::encode(&mangle::compose_method_symbol(
+                target,
+                spec_name,
+                spec_args,
+                method_name,
+                &extern_fn.fn_type,
+            )),
         };
         let sig = self.make_function_sig(extern_fn.fn_type.clone());
 
-        let function_id = self.module.declare_function(&mangled, Linkage::Import, &sig).unwrap();
+        let function_id = self
+            .module
+            .declare_function(&mangled, Linkage::Import, &sig)
+            .unwrap();
         self.functions.insert(extern_fn.decl_id, function_id);
     }
 
@@ -245,7 +342,9 @@ impl Codegen {
             .get(&function_def.id)
             .expect("declared for every item, across every module, before any body is defined");
         let sig = self.function_signature(&function_def);
-        let MirFunctionDef { return_type, body, .. } = function_def;
+        let MirFunctionDef {
+            return_type, body, ..
+        } = function_def;
 
         // Move `ctx` out of `self` for the duration of the build so the rest of
         // this function can still freely borrow `self` (e.g. `.cranelift_leaves(&self)`,
@@ -272,13 +371,22 @@ impl Codegen {
         // zero-sized) -- a zero-size stack slot is already relied on
         // elsewhere (an all-zero-leaf struct/`marker` local) and costs
         // nothing to create.
-        let non_param_types: Vec<ResolvedType> =
-            body.locals[body.arg_count..].iter().map(|local| local.r#type.clone()).collect();
+        let non_param_types: Vec<ResolvedType> = body.locals[body.arg_count..]
+            .iter()
+            .map(|local| local.r#type.clone())
+            .collect();
         let frame = layout::locals_layout(&non_param_types, self.pointer_bytes());
-        let max_align = non_param_types.iter().map(|ty| layout::type_alignment(ty)).max().unwrap_or(1);
+        let max_align = non_param_types
+            .iter()
+            .map(|ty| layout::type_alignment(ty))
+            .max()
+            .unwrap_or(1);
         let shift = layout::stack_align_shift(max_align);
-        self.frame_slot =
-            Some(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, frame.packed_end, shift)));
+        self.frame_slot = Some(builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            frame.packed_end,
+            shift,
+        )));
         let mut local_offsets = vec![0u32; body.locals.len()];
         local_offsets[body.arg_count..].copy_from_slice(&frame.byte_offsets);
         self.local_offsets = local_offsets;
@@ -332,7 +440,9 @@ impl Codegen {
         }
 
         if let Err(err) = codegen::verify_function(builder.func, self.isa.as_ref()) {
-            panic!("cranelift verifier rejected generated IR for a function (internal codegen bug): {err:?}");
+            panic!(
+                "cranelift verifier rejected generated IR for a function (internal codegen bug): {err:?}"
+            );
         }
 
         builder.finalize();
@@ -346,13 +456,30 @@ impl Codegen {
         // consume the IR that produced it.
         match self.emit {
             crate::EmitKind::Ir => {
-                let name = self.module.declarations().get_function_decl(function_id).name.clone().unwrap_or_default();
-                self.captured_text.push_str(&format!("; {name}\n{}\n\n", ctx.func));
+                let name = self
+                    .module
+                    .declarations()
+                    .get_function_decl(function_id)
+                    .name
+                    .clone()
+                    .unwrap_or_default();
+                self.captured_text
+                    .push_str(&format!("; {name}\n{}\n\n", ctx.func));
             }
             crate::EmitKind::Asm => {
-                let name = self.module.declarations().get_function_decl(function_id).name.clone().unwrap_or_default();
-                let vcode = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
-                self.captured_text.push_str(&format!("; {name}\n{vcode}\n\n"));
+                let name = self
+                    .module
+                    .declarations()
+                    .get_function_decl(function_id)
+                    .name
+                    .clone()
+                    .unwrap_or_default();
+                let vcode = ctx
+                    .compiled_code()
+                    .and_then(|c| c.vcode.clone())
+                    .unwrap_or_default();
+                self.captured_text
+                    .push_str(&format!("; {name}\n{vcode}\n\n"));
             }
             crate::EmitKind::Obj => {}
         }
@@ -379,7 +506,11 @@ impl Codegen {
             MirTerminator::Goto(target) => {
                 builder.ins().jump(cranelift_blocks[target.0 as usize], &[]);
             }
-            MirTerminator::Branch { condition, then_block, else_block } => {
+            MirTerminator::Branch {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 let cond_value = self.process_expr(builder, condition)[0];
                 builder.ins().brif(
                     cond_value,
@@ -390,7 +521,9 @@ impl Codegen {
                 );
             }
             MirTerminator::Return(value) => {
-                let leaves = value.map(|v| self.process_expr(builder, v)).unwrap_or_default();
+                let leaves = value
+                    .map(|v| self.process_expr(builder, v))
+                    .unwrap_or_default();
                 // With a StructReturn pointer, the value leaves are stored
                 // through it and the signature declares no return values
                 // (cranelift itself returns the pointer in rax per the
@@ -400,7 +533,10 @@ impl Codegen {
                     Some(pointer) => {
                         self.store_scalars(
                             builder,
-                            &super::place::PlaceStorage::Address { base: pointer, offset: 0 },
+                            &super::place::PlaceStorage::Address {
+                                base: pointer,
+                                offset: 0,
+                            },
                             &leaves,
                         );
                         builder.ins().return_(&[]);

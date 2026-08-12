@@ -39,7 +39,28 @@ pub struct ResolvedMethod {
     /// this field's only reader outside `check_struct_body`/`check_enum_body`/
     /// `check_union_body`.
     pub annotations: crate::annotations::ResolvedAnnotations,
+    pub source: Option<ComposeSource>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeSource {
+    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec_args: Vec<ResolvedType>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedCompose {
+    pub target: ResolvedType,
+    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec_args: Vec<ResolvedType>,
+    pub methods: Vec<(Ident, ResolvedMethod)>,
+}
+
+pub type ResolvedBound = (
+    ResolvedType,
+    Rc<RefCell<ResolvedSpecType>>,
+    Vec<ResolvedType>,
+);
 
 /// A struct's fields and methods, shared behind `ResolvedType::Struct`'s
 /// `Rc<RefCell<_>>` so that a self-referencing field (`next: *Node`, the
@@ -86,26 +107,12 @@ pub struct ResolvedStructType {
     /// `Analyzer::check_struct_body` can just read it back without risking
     /// re-emitting the same annotation errors a second time.
     pub suppress: Vec<Ident>,
-    /// Every spec this type's own `implements` clause *nominally* names,
-    /// each already resolved to its cell + concrete type arguments (see
-    /// `Analyzer::resolve_implements_clause`, this field's only writer) --
-    /// deliberately **not** derivable from `functions` alone: a method
-    /// merely *shaped* like a spec requirement (same name, same signature)
-    /// is not the same fact as this type having actually declared `:
-    /// Spec<Args>`, and nothing else records that distinction anywhere
-    /// (`ResolvedMethod` carries no "which requirement (if any) this
-    /// satisfies" provenance). `Analyzer::analyze_for_in` is this field's
-    /// reader: real nominal `ToIterator<T>` conformance has to be checked
-    /// against *this*, not against `type_implements_spec` (which is
-    /// structural -- see its own doc comment -- and would happily accept a
-    /// type that merely duck-types the right method shapes).
-    pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     /// `true` for a `marker` declaration -- see
     /// `omega_parser::ast::statement::r#struct::StructStmt::is_marker`. The
     /// *only* thing this changes anywhere in the analyzer/codegen: it's
     /// what exempts this cell from the "a struct must have at least one
     /// sized field" check (`Analyzer::signature_of_struct`) -- everything
-    /// else (implements-clause resolution, method dispatch, generics,
+    /// else (composition checking, method dispatch, generics,
     /// dead-code tracking, spec/vtable coercion, layout) already works
     /// unmodified for a zero-field struct, which is deliberately why
     /// `marker` reuses this type wholesale instead of being a separate
@@ -156,8 +163,6 @@ pub struct ResolvedUnionType {
     /// See `ResolvedStructType::suppress`'s doc comment. Unions don't
     /// support `@layout` yet -- only `@suppress` applies here.
     pub suppress: Vec<Ident>,
-    /// See `ResolvedStructType::implemented_specs`'s doc comment.
-    pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
 }
 
 impl PartialEq for ResolvedUnionType {
@@ -218,8 +223,6 @@ pub struct ResolvedEnumType {
     pub layout: crate::annotations::Layout,
     /// See `ResolvedStructType::suppress`'s doc comment.
     pub suppress: Vec<Ident>,
-    /// See `ResolvedStructType::implemented_specs`'s doc comment.
-    pub implemented_specs: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
 }
 
 /// One resolved variant: its unique tag value, its per-variant header
@@ -245,7 +248,10 @@ impl ResolvedEnumType {
     /// The variant named `name`, with its index -- the shape both variant
     /// construction and body-field lookup want.
     pub fn variant(&self, name: &Ident) -> Option<(usize, &ResolvedEnumVariant)> {
-        self.variants.iter().enumerate().find(|(_, v)| &v.name == name)
+        self.variants
+            .iter()
+            .enumerate()
+            .find(|(_, v)| &v.name == name)
     }
 }
 
@@ -270,7 +276,7 @@ impl Hash for ResolvedEnumType {
 /// is (see its doc comment) -- though a spec is never self-referential the
 /// way a struct field can be, so the placeholder-then-patch dance doesn't
 /// apply here; it's still behind a cell purely so every reference to "this
-/// spec" (an implements clause, a generic bound, a spec-object type) shares
+/// spec" (a compose declaration, a generic bound, a spec-object type) shares
 /// one identity to compare/hash against, exactly like a struct reference
 /// does.
 ///
@@ -293,7 +299,7 @@ pub struct ResolvedSpecType {
     /// *inherits* this same visibility (see `FlattenedSpecFn::visibility`'s
     /// doc comment) -- an implementor's own method satisfying one of them
     /// must be at least this permissive, checked in
-    /// `Analyzer::resolve_implements_clause`.
+    /// compose conformance checking.
     pub visibility: Visibility,
     pub generics: Vec<Ident>,
     /// See `ResolvedStructType::module_path`'s doc comment.
@@ -355,7 +361,7 @@ impl Hash for ResolvedSpecType {
 /// generic-referencing) type can't be resolved to a concrete
 /// `ResolvedType` until a concrete implementor is known, so resolution is
 /// deferred to that point (see `Analyzer::signature_of_struct`'s
-/// implements-clause handling) rather than attempted here, at the spec's
+/// composition handling) rather than attempted here, at the spec's
 /// own definition.
 #[derive(Debug, Clone)]
 pub struct RawSpecFunctionSig {
@@ -458,7 +464,10 @@ pub enum ConstValue {
     },
     /// A whole union value, built by `comp` evaluation -- mirrors
     /// `CheckedUnionConstruct`: exactly one field written, at `field_index`.
-    Union { field_index: usize, value: Box<ConstValue> },
+    Union {
+        field_index: usize,
+        value: Box<ConstValue>,
+    },
     /// The address of another piece of `comp`-evaluated data (`&<place>`
     /// where `<place>` itself evaluated cleanly) -- generalizes what `Str`/
     /// `Slice` above already do ad hoc (both are secretly "pointer to a
@@ -545,7 +554,10 @@ pub enum ResolvedType {
     /// default, like every binding (`VarBinding::mutable`). This is a
     /// *type*-level fact, unrelated to whether the pointer *itself* (as a
     /// binding) can be reassigned to point elsewhere.
-    Pointer { pointee: Box<ResolvedType>, mutable: bool },
+    Pointer {
+        pointee: Box<ResolvedType>,
+        mutable: bool,
+    },
     Function(ResolvedFunctionType),
     /// `*[]T` (`mutable: false`) or `*mut []T` (`mutable: true`) -- an
     /// unsized run of `T`: genuinely just a thin pointer value (one leaf,
@@ -572,7 +584,10 @@ pub enum ResolvedType {
     /// `Pointer(Array(_))`; see `Context::resolve_pointer_type`. `mutable`
     /// carries the same meaning `Pointer::mutable` does, for `slice[i] =
     /// value`.
-    Slice { item: Box<ResolvedType>, mutable: bool },
+    Slice {
+        item: Box<ResolvedType>,
+        mutable: bool,
+    },
     /// `*str` (`mutable: false`) or `*mut str` (`mutable: true`) -- a
     /// UTF-8 string slice: at runtime, the exact same fat-pointer shape
     /// `Slice { item: U8, .. }` has (`[data_ptr, len]`, no null
@@ -585,7 +600,9 @@ pub enum ResolvedType {
     /// this variant via the raw-pointee special case in
     /// `Context::resolve_type`'s `Type::Pointer` arm; any other use falls
     /// through to the ordinary "unrecognized type name" diagnostic.
-    Str { mutable: bool },
+    Str {
+        mutable: bool,
+    },
     Struct(Rc<RefCell<ResolvedStructType>>),
     /// A C/Rust-style union value -- see `ResolvedUnionType`'s doc comment.
     Union(Rc<RefCell<ResolvedUnionType>>),
@@ -601,8 +618,8 @@ pub enum ResolvedType {
         cell: Rc<RefCell<ResolvedEnumType>>,
         variant: Option<usize>,
     },
-    /// A reference to a spec *definition* -- what an implements clause
-    /// (`struct Dog : Animal`), a generic bound (`T: Animal`), or a
+    /// A reference to a spec *definition* -- what a compose declaration
+    /// (`compose Dog : Animal`), a generic bound (`T: Animal`), or a
     /// spec-object type's pointee (`spec *Animal`) resolves the name
     /// `Animal` to. Never itself the type of a runtime value -- a `spec
     /// *Animal` *value*'s type is `SpecObject` below, not this.
@@ -674,7 +691,11 @@ impl Hash for ResolvedType {
                 variant.hash(state);
             }
             Self::Spec(cell) => cell.borrow().hash(state),
-            Self::SpecObject { spec, type_args, mutable } => {
+            Self::SpecObject {
+                spec,
+                type_args,
+                mutable,
+            } => {
                 spec.borrow().hash(state);
                 type_args.hash(state);
                 mutable.hash(state);
@@ -706,8 +727,14 @@ impl std::fmt::Display for ResolvedType {
             Self::USize => write!(f, "usize"),
             Self::F32 => write!(f, "f32"),
             Self::F64 => write!(f, "f64"),
-            Self::Pointer { pointee, mutable: false } => write!(f, "*{pointee}"),
-            Self::Pointer { pointee, mutable: true } => write!(f, "*mut {pointee}"),
+            Self::Pointer {
+                pointee,
+                mutable: false,
+            } => write!(f, "*{pointee}"),
+            Self::Pointer {
+                pointee,
+                mutable: true,
+            } => write!(f, "*mut {pointee}"),
             Self::Function(fn_type) => {
                 write!(f, "(")?;
                 for (i, (name, param)) in fn_type.params.iter().enumerate() {
@@ -731,8 +758,14 @@ impl std::fmt::Display for ResolvedType {
             Self::Array(inner, false) => write!(f, "*[]{inner}"),
             Self::Array(inner, true) => write!(f, "*mut []{inner}"),
             Self::SizedArray(inner, size) => write!(f, "[{size}]{inner}"),
-            Self::Slice { item, mutable: false } => write!(f, "*[?]{item}"),
-            Self::Slice { item, mutable: true } => write!(f, "*mut [?]{item}"),
+            Self::Slice {
+                item,
+                mutable: false,
+            } => write!(f, "*[?]{item}"),
+            Self::Slice {
+                item,
+                mutable: true,
+            } => write!(f, "*mut [?]{item}"),
             Self::Str { mutable: false } => write!(f, "*str"),
             Self::Str { mutable: true } => write!(f, "*mut str"),
             // Only the name, never the fields -- a struct may reference
@@ -752,7 +785,11 @@ impl std::fmt::Display for ResolvedType {
                 Ok(())
             }
             Self::Spec(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
-            Self::SpecObject { spec, type_args, mutable } => {
+            Self::SpecObject {
+                spec,
+                type_args,
+                mutable,
+            } => {
                 write!(f, "spec *{}", if *mutable { "mut " } else { "" })?;
                 write!(f, "{}", spec.borrow().name.as_ref())?;
                 if !type_args.is_empty() {
@@ -877,15 +914,30 @@ impl ResolvedType {
     pub fn cast_class(&self) -> Option<CastClass> {
         if let Some(kind) = self.numeric_kind() {
             return Some(match kind {
-                NumericKind::Signed(width) => CastClass::Int { width, signed: true },
-                NumericKind::Unsigned(width) => CastClass::Int { width, signed: false },
+                NumericKind::Signed(width) => CastClass::Int {
+                    width,
+                    signed: true,
+                },
+                NumericKind::Unsigned(width) => CastClass::Int {
+                    width,
+                    signed: false,
+                },
                 NumericKind::Float(width) => CastClass::Float { width },
             });
         }
         match self {
-            Self::Pointer { .. } => Some(CastClass::Int { width: 64, signed: false }),
-            Self::Char => Some(CastClass::Int { width: 32, signed: false }),
-            Self::Bool => Some(CastClass::Int { width: 8, signed: false }),
+            Self::Pointer { .. } => Some(CastClass::Int {
+                width: 64,
+                signed: false,
+            }),
+            Self::Char => Some(CastClass::Int {
+                width: 32,
+                signed: false,
+            }),
+            Self::Bool => Some(CastClass::Int {
+                width: 8,
+                signed: false,
+            }),
             _ => None,
         }
     }
@@ -936,7 +988,13 @@ impl ResolvedType {
     /// of a value's type (nothing written down in source can nest one).
     pub fn widened(&self) -> ResolvedType {
         match self {
-            Self::Enum { cell, variant: Some(_) } => Self::Enum { cell: cell.clone(), variant: None },
+            Self::Enum {
+                cell,
+                variant: Some(_),
+            } => Self::Enum {
+                cell: cell.clone(),
+                variant: None,
+            },
             other => other.clone(),
         }
     }
@@ -982,15 +1040,30 @@ impl ResolvedType {
             return true;
         }
         match (self, value) {
-            (Self::Enum { cell: expected, variant: None }, Self::Enum { cell: found, variant: Some(_) }) => {
-                expected.borrow().id == found.borrow().id
-            }
-            (Self::Pointer { pointee: expected, mutable: false }, Self::Pointer { pointee: found, .. }) => {
-                expected.accepts(found)
-            }
-            (Self::Slice { item: expected, mutable: false }, Self::Slice { item: found, .. }) => {
-                expected.accepts(found)
-            }
+            (
+                Self::Enum {
+                    cell: expected,
+                    variant: None,
+                },
+                Self::Enum {
+                    cell: found,
+                    variant: Some(_),
+                },
+            ) => expected.borrow().id == found.borrow().id,
+            (
+                Self::Pointer {
+                    pointee: expected,
+                    mutable: false,
+                },
+                Self::Pointer { pointee: found, .. },
+            ) => expected.accepts(found),
+            (
+                Self::Slice {
+                    item: expected,
+                    mutable: false,
+                },
+                Self::Slice { item: found, .. },
+            ) => expected.accepts(found),
             (Self::Array(expected, false), Self::Array(found, _)) => expected.accepts(found),
             // No `item` to recurse on, unlike `Slice` above -- and
             // deliberately its own arm, not folded into `Slice`'s: `*str`
@@ -1033,7 +1106,9 @@ impl ResolvedType {
 
     pub fn pointer_like_mutable(&self) -> Option<bool> {
         match self {
-            Self::Pointer { mutable, .. } | Self::Slice { mutable, .. } | Self::Str { mutable } => Some(*mutable),
+            Self::Pointer { mutable, .. } | Self::Slice { mutable, .. } | Self::Str { mutable } => {
+                Some(*mutable)
+            }
             Self::Array(_, mutable) => Some(*mutable),
             _ => None,
         }

@@ -95,11 +95,9 @@ to "an `--extern` dependency never gets this treatment" above. If `core`
 is registered as an `--extern`, its own directory is eagerly walked the
 same way the local root is, right at `ModuleRoots` construction; if `core`
 *is* the local package (`just build-core`) or happens to live nested
-inside it, `core_modules()` just filters the local inventory already
-built. Either way, the result feeds three separate consumers uniformly,
-with no local/extern branch anywhere downstream: the local build set
-(when `core` is local), `for`-block extension discovery (see "Imports"
-below), and ambient/prelude name resolution (see "`core` as an ambient
+inside it, `core_modules()` just filters the local inventory already built.
+Either way, the result feeds the local build set (when `core` is local),
+primitive/compose registration, and ambient/prelude name resolution (see "`core` as an ambient
 prelude" below). No other `--extern` gets *this* — see that section
 for why `core` specifically earns the exception.
 
@@ -132,11 +130,11 @@ compile — there is no incremental build to cache it against yet (see
 [known issues](14-known-issues.md)) — and it also means a broken,
 wholly unrelated struct or spec anywhere in *any* registered extern can
 now fail a build that never references it, the same way it already could
-for `core`'s own `for`-block tree. Deliberately not a general "every
+for `core`'s own primitive/compose declarations. Deliberately not a general "every
 extern behaves exactly like the local package" change, though: unlike
 `core` (see "`core` as an ambient prelude" below), an ordinary extern
-still gets no ambient/prelude name resolution and no `for`-block
-discovery — only this one, narrowly-scoped struct/spec signature sweep.
+still gets no ambient/prelude name resolution — only this narrowly-scoped
+signature and unnamed-declaration sweep.
 
 ## Imports
 
@@ -166,7 +164,7 @@ across modules is (mostly — see caveat below) still correctly rejected.
 **Extern modules are scanned, not compiled.** An extern module's ordinary
 items resolve lazily, exactly like a generic instantiation, only when a
 local item actually references one — never body-checked. The one
-exception, besides `core`'s ambient/`for`-block treatment above, is every
+exception, besides `core`'s ambient primitive treatment above, is every
 struct's and spec's own *signature*, now eagerly resolved regardless of
 reference too (see "Eager local discovery" above) — purely so `gap`/
 `glue` tracking sees the whole picture; nothing about ordinary name
@@ -177,16 +175,12 @@ to lazy *body* resolution: its concrete instantiations are fully
 (re)compiled locally, since nothing else will ever produce that exact
 instantiation's body (see [generics](06-generics.md)).
 
-**`for`-block extension discovery never needs an import at all**, in
-either direction: a spec `for`-attached to some type (`spec SliceImpl<T>
-for [?]T { ... }`, see [for-in loops](18-for-in-loops.md) for the iteration
-protocol case) is discovered straight from `core_modules()` — the same
-eager inventory the "Eager local discovery" section above describes —
-never from walking anyone's import list. Only `core` may declare a
-`for`-block at all (`extensions::CORE_MODULE`); every one of its own
-modules is always in scope for this regardless of whether the file that
-declares the `for`-block, or the file that ends up calling the method it
-attaches, imports anything.
+**Primitive and compose declarations never need an import merely to be
+registered.** They are discovered from the same eager package inventory as
+named signatures. Only `core` may declare `primitive` blocks; compose blocks
+in any package are admitted by the target-or-spec-local orphan rule. Imports
+still control which spec names can be written at a declaration or qualified
+call site.
 
 ## `core` as an ambient prelude
 
@@ -215,7 +209,7 @@ both keyed off the same `core_modules()` inventory:
   from this fallback for themselves, same reasoning as above.
 
 This applies uniformly everywhere a bare name can appear — a value
-expression, a type annotation, a generic bound, an `implements` clause —
+expression, a type annotation, a generic bound, or a compose declaration —
 not just the `for`-in loop's `Option`/`Iterator`/`ToIterator` protocol
 this mechanism originally existed for. This is a deliberate, considered
 reversal of an earlier, narrower design (a hardcoded 3-name table, with
@@ -237,7 +231,7 @@ alone, relying on ambient resolution to find it, isn't supported.
 **Only `core` gets any of this — deliberately, not as a first step
 toward a general "any extern can opt into prelude status" mechanism.**
 It's justified by `core`'s already-privileged status elsewhere (it's the
-only package a `for`-block may live in at all, see above); an ordinary
+only package a `primitive` block may live in); an ordinary
 third-party `--extern` dependency gets neither eager discovery nor
 ambient bare-name resolution, and still needs an explicit `import` for
 every name it wants visible, exactly as before.
@@ -351,10 +345,8 @@ unmodified source, produced byte-different diagnostic output and
 byte-different object files (`cmp`/`nm -p`-confirmed differing function
 declaration order) before each fix, and byte-identical output across
 15+ consecutive fresh runs after -- including for two sites (the pending
-extension queue and `defined_types`) whose nondeterminism doesn't
-manifest in this project's own current source at all (nothing here
-currently leaves a `for`-attached spec default pending across multiple
-receivers, or ties two declared names at the same edit-distance from a
+composition queue and `defined_types`) whose nondeterminism doesn't
+manifest in this project's own current source at all (nothing here ties two declared names at the same edit-distance from a
 typo) and needed a dedicated repro to prove real, not just theorized.
 
 ## Fixed: driver restructure, and two bugs it exposed
@@ -365,7 +357,7 @@ ids, directory-shape flags, sources, parse failures, macro failures, item
 indices, overload indices, import aliases, errors, warnings). It is now eight
 focused modules, and the state is grouped by concern: where modules come from
 on disk, what has been parsed and indexed, what has been resolved, what each
-import means, what `for` blocks were found, and where findings accumulate.
+import means, what primitive/compose blocks were found, and where findings accumulate.
 The item query itself is unchanged in behavior — same two phases, same
 per-item granularity, same cycle guard — and every object file this project
 builds is byte-for-byte identical before and after.

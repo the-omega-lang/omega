@@ -1,3 +1,4 @@
+pub mod compose;
 pub mod declaration;
 pub mod defer;
 pub mod r#enum;
@@ -10,6 +11,7 @@ pub mod glue;
 pub mod import;
 pub mod loop_stmt;
 pub mod macro_definition;
+pub mod primitive;
 pub mod r#return;
 pub mod spec;
 pub mod r#struct;
@@ -19,12 +21,12 @@ pub mod while_stmt;
 
 use crate::ast::expression::{ExpressionNode, macro_invocation::MacroInvocationExpr};
 use crate::ast::statement::{
-    declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
+    compose::ComposeStmt, declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
     extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
-    function_definition::FunctionDefinitionStmt, import::ImportStmt, loop_stmt::LoopStmt,
-    gap::GapStmt, glue::GlueStmt,
-    macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
-    r#struct::StructStmt, union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
+    function_definition::FunctionDefinitionStmt, gap::GapStmt, glue::GlueStmt, import::ImportStmt,
+    loop_stmt::LoopStmt, macro_definition::MacroDefinitionStmt, primitive::PrimitiveStmt,
+    r#return::ReturnStmt, spec::SpecStmt, r#struct::StructStmt, union::UnionStmt,
+    walrus::WalrusStmt, while_stmt::WhileStmt,
 };
 use crate::diagnostics::Span;
 
@@ -58,6 +60,8 @@ pub enum Item {
     Spec(SpecStmt),
     Gap(GapStmt),
     Glue(GlueStmt),
+    Compose(ComposeStmt),
+    Primitive(PrimitiveStmt),
     /// `[comp] ident := value;` -- top-level walrus, type always inferred
     /// from `value`. `comp` (see `WalrusStmt::comp`) decides whether this
     /// gets real storage or is substituted everywhere with no storage at

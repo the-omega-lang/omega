@@ -1,5 +1,8 @@
 use crate::checked::Storage;
-use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedGap, ResolvedMethod, ResolvedSpecType, ResolvedType};
+use crate::resolved_type::{
+    ConstValue, ResolvedCompose, ResolvedFunctionType, ResolvedGap, ResolvedMethod,
+    ResolvedSpecType, ResolvedType,
+};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
@@ -15,7 +18,12 @@ use std::rc::Rc;
 #[derive(Debug, Clone)]
 pub enum ResolvedItem {
     Type(ResolvedType),
-    Value { r#type: ResolvedType, storage: Storage, decl_id: HirId, mutable: bool },
+    Value {
+        r#type: ResolvedType,
+        storage: Storage,
+        decl_id: HirId,
+        mutable: bool,
+    },
     Gap(Rc<ResolvedGap>),
 }
 
@@ -62,8 +70,14 @@ pub enum ResolveError {
     /// `import extern::name::...;` where `name` wasn't registered via
     /// `--extern=name:path` on the command line.
     UnknownExtern(Ident),
-    UnknownItem { module: Vec<Ident>, item: Ident },
-    NotVisible { module: Vec<Ident>, item: Ident },
+    UnknownItem {
+        module: Vec<Ident>,
+        item: Ident,
+    },
+    NotVisible {
+        module: Vec<Ident>,
+        item: Ident,
+    },
     /// A module's signature transitively requires its own, still-in-progress
     /// signature (e.g. two structs in different modules referencing each
     /// other by value) -- `path` is the cycle, in the order it was
@@ -74,7 +88,10 @@ pub enum ResolveError {
     AmbiguousModule(Vec<Ident>),
     /// `path` resolved to a real file, but reading or parsing it failed --
     /// an I/O error, or a syntax error in the imported file itself.
-    LoadFailed { path: Vec<Ident>, message: String },
+    LoadFailed {
+        path: Vec<Ident>,
+        message: String,
+    },
     /// `item` (in `module`) is a struct that includes itself, directly or
     /// through one or more other structs -- possibly in other modules --
     /// entirely by value, with no pointer anywhere along the cycle. Such a
@@ -84,25 +101,40 @@ pub enum ResolveError {
     /// granularity `Cycle` above for -- see its doc comment for why a
     /// *pointer* reference to something still being resolved is never an
     /// error, only a direct, by-value one.
-    RecursiveTypeWithoutIndirection { module: Vec<Ident>, item: Ident },
+    RecursiveTypeWithoutIndirection {
+        module: Vec<Ident>,
+        item: Ident,
+    },
     /// `item` (in `module`) failed its own signature/body analysis -- the
     /// real diagnostics were already recorded against that module elsewhere
     /// (see `omega_driver`'s per-module diagnostic sink); this is just a
     /// lightweight marker so a *reference* to the failed item can itself
     /// fail cleanly, without duplicating or re-deriving the underlying
     /// error here.
-    ItemFailed { module: Vec<Ident>, item: Ident },
+    ItemFailed {
+        module: Vec<Ident>,
+        item: Ident,
+    },
     /// `item` (in `module`) declares `expected` generic parameters, but was
     /// referenced with `found` type arguments -- covers both a generic item
     /// referenced with no arguments at all (a bare `Type::Named`, `found:
     /// 0`) and a `Type::Generic`/instantiation with the wrong count.
-    GenericArgCountMismatch { module: Vec<Ident>, item: Ident, expected: usize, found: usize },
+    GenericArgCountMismatch {
+        module: Vec<Ident>,
+        item: Ident,
+        expected: usize,
+        found: usize,
+    },
     /// A bound generic (`T: Animal`) was instantiated with a concrete type
     /// that doesn't nominally implement `spec` -- `missing` names every
     /// spec function the type doesn't provide (own or default). Also used
     /// for a `spec *Animal` coercion from a concrete pointer whose pointee
     /// doesn't implement the spec.
-    SpecNotImplemented { type_name: String, spec: Ident, missing: Vec<Ident> },
+    SpecNotImplemented {
+        type_name: String,
+        spec: Ident,
+        missing: Vec<Ident>,
+    },
     /// `spec` (in `module`) transitively depends on itself through one or
     /// more other specs' own dependency lists (`spec A : B; spec B : A;`)
     /// -- the spec-declaration analog of `RecursiveTypeWithoutIndirection`
@@ -110,7 +142,10 @@ pub enum ResolveError {
     /// `ensure_item` entirely (see its own doc comment) and so has no
     /// module-level `Cycle` guard to fall back on; it keeps its own,
     /// narrower cycle guard instead.
-    SpecDependencyCycle { module: Vec<Ident>, spec: Ident },
+    SpecDependencyCycle {
+        module: Vec<Ident>,
+        spec: Ident,
+    },
     /// `item` (in `module`) is a `spec T`-returning function whose own
     /// return-type inference (see `omega_driver::Driver::
     /// resolve_spec_return_function`) transitively calls back into itself
@@ -121,7 +156,10 @@ pub enum ResolveError {
     /// signature is always `Done` before any body, including its own, is
     /// ever checked -- not true here, since discovering *this* signature
     /// requires checking this body first).
-    SpecReturnTypeRecursion { module: Vec<Ident>, item: Ident },
+    SpecReturnTypeRecursion {
+        module: Vec<Ident>,
+        item: Ident,
+    },
     /// A bare, unqualified name matched more than one `core` submodule's
     /// own exposed top-level item, while resolving core's ambient-prelude
     /// fallback (`ModuleResolver::ambient_core_candidates`) -- unlike every
@@ -129,11 +167,17 @@ pub enum ResolveError {
     /// query. `candidates` is every module that exposes `name`, in
     /// discovery order. Always recoverable: the fully-qualified path
     /// (`candidates[i]::name`) is unaffected and still resolves.
-    AmbiguousAmbientName { name: Ident, candidates: Vec<Vec<Ident>> },
+    AmbiguousAmbientName {
+        name: Ident,
+        candidates: Vec<Vec<Ident>>,
+    },
 }
 
 fn join(path: &[Ident]) -> String {
-    path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
+    path.iter()
+        .map(|i| i.as_ref())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 impl fmt::Display for ResolveError {
@@ -147,15 +191,28 @@ impl fmt::Display for ResolveError {
                 name.as_ref()
             ),
             Self::UnknownItem { module, item } => {
-                write!(f, "cannot find '{}' in module '{}'", item.as_ref(), join(module))
+                write!(
+                    f,
+                    "cannot find '{}' in module '{}'",
+                    item.as_ref(),
+                    join(module)
+                )
             }
             Self::NotVisible { module, item } => {
-                write!(f, "'{}::{}' is not visible here", join(module), item.as_ref())
+                write!(
+                    f,
+                    "'{}::{}' is not visible here",
+                    join(module),
+                    item.as_ref()
+                )
             }
             Self::Cycle(path) => write!(
                 f,
                 "cyclic module dependency: {}",
-                path.iter().map(|p| join(p)).collect::<Vec<_>>().join(" -> ")
+                path.iter()
+                    .map(|p| join(p))
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
             ),
             Self::AmbiguousModule(path) => write!(
                 f,
@@ -172,22 +229,45 @@ impl fmt::Display for ResolveError {
                 item.as_ref()
             ),
             Self::ItemFailed { module, item } => {
-                write!(f, "cannot use '{}::{}' because of its own error", join(module), item.as_ref())
+                write!(
+                    f,
+                    "cannot use '{}::{}' because of its own error",
+                    join(module),
+                    item.as_ref()
+                )
             }
-            Self::GenericArgCountMismatch { module, item, expected, found } => write!(
+            Self::GenericArgCountMismatch {
+                module,
+                item,
+                expected,
+                found,
+            } => write!(
                 f,
                 "'{}::{}' expects {expected} type argument(s), found {found}",
                 join(module),
                 item.as_ref()
             ),
-            Self::SpecNotImplemented { type_name, spec, missing } => write!(
+            Self::SpecNotImplemented {
+                type_name,
+                spec,
+                missing,
+            } => write!(
                 f,
                 "'{type_name}' does not implement spec '{}' (missing: {})",
                 spec.as_ref(),
-                missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
+                missing
+                    .iter()
+                    .map(Ident::as_ref)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::SpecDependencyCycle { module, spec } => {
-                write!(f, "spec '{}::{}' depends on itself", join(module), spec.as_ref())
+                write!(
+                    f,
+                    "spec '{}::{}' depends on itself",
+                    join(module),
+                    spec.as_ref()
+                )
             }
             Self::SpecReturnTypeRecursion { module, item } => write!(
                 f,
@@ -199,7 +279,11 @@ impl fmt::Display for ResolveError {
                 f,
                 "'{}' is ambiguous: it's exposed by more than one core module ({})",
                 name.as_ref(),
-                candidates.iter().map(|c| join(c)).collect::<Vec<_>>().join(", ")
+                candidates
+                    .iter()
+                    .map(|c| join(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -405,11 +489,10 @@ pub trait ModuleResolver {
         name: &Ident,
     ) -> Result<Option<OverloadCandidates>, ResolveError>;
 
-
     /// Mints a fresh `HirId` with no corresponding HIR node of its own --
     /// used for a spec-default method instantiated for a concrete
     /// implementor that didn't override it (see
-    /// `Analyzer::signature_of_struct`'s implements-clause resolution),
+    /// aggregate signature resolution),
     /// exactly the same minting `omega_driver::Driver::compute_item`
     /// already does internally for a generic instantiation's own identity,
     /// surfaced here so `Analyzer` (which has no minting of its own) can
@@ -441,7 +524,7 @@ pub trait ModuleResolver {
     /// anything concrete, and a spec's cell content never actually varies
     /// by type arguments in the first place -- `flatten_spec` always
     /// receives its concrete args explicitly from whichever call site is
-    /// doing the flattening (a bound's own `<i32>`, an implements clause's
+    /// doing the flattening (a bound's own `<i32>`, a compose declaration's
     /// own args), never derived from the cell's own stored state. `Ok(None)`
     /// for anything that isn't a spec -- including a name that doesn't
     /// resolve at all -- deferring that diagnosis to the ordinary
@@ -456,18 +539,25 @@ pub trait ModuleResolver {
         absolute_path: &[Ident],
     ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError>;
 
-    /// `receiver`'s attached methods, if any -- see `spec Name : Deps for
-    /// Target { ... }` (`HirSpecDef::target`'s doc comment). At most one
-    /// `for` block may target any given type, so this is always either
-    /// empty or one spec's worth of (already flattened with its own `:
-    /// Deps`) methods. Discovers `core`'s module tree lazily, on first
-    /// call, then stays memoized -- this is the *only* way a `for`-spec's
-    /// methods are ever reached; there is no name to `import`, so this
-    /// never goes through `resolve_import_alias`. Errors surface the same
-    /// way `resolve_item` does: recorded against `core` itself and folded
-    /// into whatever this compilation already reports, never silently
-    /// dropped.
-    fn extension_methods(&mut self, receiver: &ResolvedType) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError>;
+    /// `receiver`'s inherent primitive methods, if any. Only `core` can
+    /// declare these, via `primitive Target { ... }`; generic slice blocks
+    /// are instantiated lazily for concrete element types.
+    fn primitive_methods(
+        &mut self,
+        receiver: &ResolvedType,
+    ) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError>;
+
+    fn compose_for(
+        &mut self,
+        target: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+    ) -> Result<Option<ResolvedCompose>, ResolveError>;
+
+    fn composes_for_type(
+        &mut self,
+        target: &ResolvedType,
+    ) -> Result<Vec<ResolvedCompose>, ResolveError>;
 
     /// A `comp` evaluation's one hook into the driver (see
     /// `crate::comp_eval::CompFunctionResolver`, which this trait re-exposes
@@ -488,7 +578,10 @@ pub trait ModuleResolver {
     /// `Err` (a genuine resolution failure) so a `comp` evaluation can
     /// report the precise "calling an extern" reason instead of a generic
     /// failure.
-    fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<crate::checked::CheckedFunctionDef>, ResolveError>;
+    fn resolve_function_body(
+        &mut self,
+        decl_id: HirId,
+    ) -> Result<Option<crate::checked::CheckedFunctionDef>, ResolveError>;
 
     /// A top-level `comp` binding's already-evaluated value, found by its
     /// own `decl_id` -- the cross-item counterpart of `Context::
@@ -560,4 +653,3 @@ pub struct GenericStaticFunctionSignature {
     pub function_generics: Vec<Ident>,
     pub params: Vec<Type>,
 }
-

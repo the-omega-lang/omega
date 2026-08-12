@@ -13,8 +13,8 @@ import fmt::Display;
 import io::Writer;
 
 
-exposed spec StrOps : Eq, Hash, Display for str {
-    equals(*self, other: Self) => bool {
+primitive str {
+    exposed equals(*self, other: Self) => bool {
         if self.size != other.size {
             return false;
         }
@@ -30,18 +30,18 @@ exposed spec StrOps : Eq, Hash, Display for str {
         true
     }
 
-    is_empty(*self) => bool {
+    exposed is_empty(*self) => bool {
         self.size == 0
     }
 
     # A plain reinterpretation, not a copy -- `*str` and `*[?]u8` share the
     # exact same fat-pointer leaf layout (data pointer + byte count --
     # `*str`'s `.size` and `*[?]u8`'s `.length` read the identical leaf).
-    as_bytes(*self) => *[?]u8 {
+    exposed as_bytes(*self) => *[?]u8 {
         <*[?]u8>self
     }
 
-    starts_with(*self, prefix: Self) => bool {
+    exposed starts_with(*self, prefix: Self) => bool {
         if prefix.size > self.size {
             return false;
         }
@@ -57,7 +57,7 @@ exposed spec StrOps : Eq, Hash, Display for str {
         true
     }
 
-    ends_with(*self, suffix: Self) => bool {
+    exposed ends_with(*self, suffix: Self) => bool {
         if suffix.size > self.size {
             return false;
         }
@@ -80,7 +80,7 @@ exposed spec StrOps : Eq, Hash, Display for str {
     # never does. Fine for the short, mostly-literal needles this is
     # actually used with; a caller with real throughput needs is expected
     # to bring their own algorithm, not lean on this one.
-    contains(*self, needle: Self) => bool {
+    exposed contains(*self, needle: Self) => bool {
         if needle.size == 0 {
             return true;
         }
@@ -110,7 +110,7 @@ exposed spec StrOps : Eq, Hash, Display for str {
     # FNV-1a -- simple, well-known, and (unlike `core::numerics`' own
     # `mix64`) a genuinely natural fit for a variable-length byte run: one
     # multiply-xor per byte, no separate finalization step needed.
-    hash(*self) => u64 {
+    exposed hash(*self) => u64 {
         mut h : u64 = 0xcbf29ce484222325u64;
         bytes := <*[?]u8>self;
         mut i : i32 = 0;
@@ -122,7 +122,11 @@ exposed spec StrOps : Eq, Hash, Display for str {
         h
     }
 
-    fmt(*self, out: *mut Writer) => void {
+    exposed fmt(*self, out: *mut Writer) => void {
         out.write_bytes(<*[?]u8>self);
     }
 }
+
+compose str : Eq {}
+compose str : Hash {}
+compose str : Display {}

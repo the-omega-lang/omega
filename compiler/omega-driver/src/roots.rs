@@ -21,9 +21,13 @@
 //! lookup: everything above it deals in declared module paths exclusively.
 
 use crate::error::CompileError;
-use crate::extensions::CORE_MODULE;
-use crate::fs_resolve::{self, ModuleLocation};
+pub(crate) const CORE_MODULE: &str = "core";
+
+pub(crate) fn is_core_module(path: &[Ident]) -> bool {
+    path.first().map(Ident::as_ref) == Some(CORE_MODULE)
+}
 use crate::ModulePath;
+use crate::fs_resolve::{self, ModuleLocation};
 use indexmap::IndexMap;
 use omega_analyzer::resolver::ResolveError;
 use omega_parser::prelude::Ident;
@@ -77,7 +81,7 @@ pub(crate) struct ModuleRoots {
     /// eagerly resolved, not just `core`'s). `core_modules` reads its own
     /// entry out of this same map rather than getting a separate field --
     /// `core` needed eager *tree discovery* even before every other extern
-    /// did (for ambient bare-name resolution and `for`-block discovery,
+    /// did (for ambient bare-name resolution and primitive discovery,
     /// both still `core`-exclusive), but the discovery mechanism itself has
     /// no reason to stay special-cased once every extern gets it anyway.
     extern_trees: IndexMap<Ident, HashMap<ModulePath, Result<ModuleLocation, ResolveError>>>,
@@ -146,9 +150,18 @@ impl ModuleRoots {
         // protect for an extern the way there is for the local package.
         let extern_trees = registered
             .iter()
-            .map(|(name, root)| (name.clone(), fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name)))
+            .map(|(name, root)| {
+                (
+                    name.clone(),
+                    fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name),
+                )
+            })
             .collect();
-        Ok(Self { local_tree, externs: registered, extern_trees })
+        Ok(Self {
+            local_tree,
+            externs: registered,
+            extern_trees,
+        })
     }
 
     /// Whether `path` names an *extern* module -- a pure function of its own
@@ -159,7 +172,8 @@ impl ModuleRoots {
     /// extern module keeps that same segment leading (relative/root-rooted
     /// imports only ever extend a path, never replace its prefix).
     pub fn is_extern(&self, path: &[Ident]) -> bool {
-        path.first().is_some_and(|head| self.externs.contains_key(head))
+        path.first()
+            .is_some_and(|head| self.externs.contains_key(head))
     }
 
     /// Whether `name` was registered via `--extern` at all -- what
@@ -185,7 +199,11 @@ impl ModuleRoots {
     /// lookup would search for a literal `<declared-name>.omg` on disk,
     /// which `relabel_root` deliberately no longer guarantees exists.
     pub fn locate(&self, path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
-        let tree = if self.is_extern(path) { &self.extern_trees[&path[0]] } else { &self.local_tree };
+        let tree = if self.is_extern(path) {
+            &self.extern_trees[&path[0]]
+        } else {
+            &self.local_tree
+        };
         match tree.get(path) {
             Some(result) => result.clone(),
             None => Err(ResolveError::UnknownModule(path.to_vec())),
@@ -207,14 +225,18 @@ impl ModuleRoots {
     /// accessor here -- the same division of labor `structs()`/`spec_cells()`
     /// already follow elsewhere in this codebase -- rather than baking that
     /// filtering into `ModuleRoots` itself.
-    pub fn local_modules(&self) -> impl Iterator<Item = (&ModulePath, &Result<ModuleLocation, ResolveError>)> {
+    pub fn local_modules(
+        &self,
+    ) -> impl Iterator<Item = (&ModulePath, &Result<ModuleLocation, ResolveError>)> {
         self.local_tree.iter()
     }
 
     /// Every real module (`own_file: Some`) in a tree -- the shared filter
     /// `core_modules`/`extern_modules` both apply, kept as one place rather
     /// than duplicated across them.
-    fn real_modules(tree: &HashMap<ModulePath, Result<ModuleLocation, ResolveError>>) -> Vec<ModulePath> {
+    fn real_modules(
+        tree: &HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
+    ) -> Vec<ModulePath> {
         tree.iter()
             .filter_map(|(path, result)| match result {
                 Ok(location) if location.own_file.is_some() => Some(path.clone()),
@@ -232,7 +254,7 @@ impl ModuleRoots {
     /// project" uniformly) or a registered `--extern` (its own entry in
     /// `extern_trees`). Empty if `core` isn't registered at all. This is
     /// what makes `core` a true, always-available prelude (see
-    /// `docs/10-modules-and-linkage.md`), and the one package `for`-blocks
+    /// `docs/10-modules-and-linkage.md`), and the one package `primitive` blocks
     /// may live in -- both still exclusive to `core`, unlike the eager
     /// *tree discovery* `extern_trees` itself now gives every extern.
     pub fn core_modules(&self) -> Vec<ModulePath> {
@@ -253,7 +275,10 @@ impl ModuleRoots {
     /// through here -- it already gets full signature *and* body treatment
     /// via `local_module_paths`/`collect_signatures`.
     pub fn extern_modules(&self) -> Vec<ModulePath> {
-        self.extern_trees.values().flat_map(Self::real_modules).collect()
+        self.extern_trees
+            .values()
+            .flat_map(Self::real_modules)
+            .collect()
     }
 }
 

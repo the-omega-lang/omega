@@ -18,10 +18,21 @@ impl<'r> Analyzer<'r> {
     /// Every form with any real work of its own gets a named method below;
     /// the arms that stay inline here are the ones whose whole analysis *is*
     /// "this literal has this type".
-    pub(super) fn analyze_expr(&mut self, node: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    pub(super) fn analyze_expr(
+        &mut self,
+        node: &HirExprNode,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         let id = node.id;
         let span = node.span;
-        let literal = |r#type, kind| Some(CheckedExprNode { id, span, r#type, kind });
+        let literal = |r#type, kind| {
+            Some(CheckedExprNode {
+                id,
+                span,
+                r#type,
+                kind,
+            })
+        };
 
         match &node.expr {
             HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected),
@@ -35,13 +46,19 @@ impl<'r> Analyzer<'r> {
             // compile-time-known length and no null terminator (see
             // `ResolvedType::Str`). Its bytes are raw UTF-8, not decoded
             // characters, unlike `*char`. Immutable, like every literal.
-            HirExpr::String(s) => literal(ResolvedType::Str { mutable: false }, CheckedExpr::String(s.0.clone())),
+            HirExpr::String(s) => literal(
+                ResolvedType::Str { mutable: false },
+                CheckedExpr::String(s.0.clone()),
+            ),
 
             // `b"..."` -- a raw byte run with a compile-time-known length,
             // not a null-terminated C string: `*[?]u8` (see `Context::
             // resolve_pointer_type`'s `UnknownSizeArray` case), never `*u8`.
             HirExpr::ByteString(s) => literal(
-                ResolvedType::Slice { item: Box::new(ResolvedType::U8), mutable: false },
+                ResolvedType::Slice {
+                    item: Box::new(ResolvedType::U8),
+                    mutable: false,
+                },
                 CheckedExpr::ByteString(s.0.clone()),
             ),
 
@@ -56,9 +73,10 @@ impl<'r> Analyzer<'r> {
                 literal(ResolvedType::USize, CheckedExpr::Sizeof(target_type))
             }
 
-            HirExpr::If(HirIf { branches, else_branch }) => {
-                self.analyze_if(id, span, branches, else_branch.as_ref(), expected)
-            }
+            HirExpr::If(HirIf {
+                branches,
+                else_branch,
+            }) => self.analyze_if(id, span, branches, else_branch.as_ref(), expected),
             HirExpr::FunctionCall(call) => self.analyze_call(id, span, call),
             HirExpr::Assignment(assignment) => self.analyze_assignment(id, span, assignment),
             HirExpr::CompoundAssign(HirCompoundAssign { target, op, value }) => {
@@ -72,7 +90,9 @@ impl<'r> Analyzer<'r> {
             HirExpr::Increment(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Add),
             HirExpr::Decrement(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Sub),
             HirExpr::BinaryOp(bin) => self.analyze_binary_expr(id, span, bin, expected),
-            HirExpr::ArrayLiteral(elements) => self.analyze_array_literal(id, span, elements, expected),
+            HirExpr::ArrayLiteral(elements) => {
+                self.analyze_array_literal(id, span, elements, expected)
+            }
             HirExpr::StructLiteral(lit) => self.analyze_struct_literal(id, span, lit, expected),
             HirExpr::Match(m) => self.analyze_match(id, span, m),
             HirExpr::Cast(HirCast { target, base }) => self.analyze_cast(id, span, target, base),
@@ -101,7 +121,13 @@ impl<'r> Analyzer<'r> {
     /// `require_mutable_place`'s `mark_written` for the write side), while a
     /// compound assignment's or increment's synthesized read component
     /// desugars to a `HirExpr::Place` and arrives back here.
-    fn analyze_place_read(&mut self, id: HirId, span: Span, place: &HirPlace, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    fn analyze_place_read(
+        &mut self,
+        id: HirId,
+        span: Span,
+        place: &HirPlace,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         let (checked_place, r#type, _mutable) = self.analyze_place(id, span, place, expected)?;
         // This is the one place an ordinary *read* of a place
         // happens (an assignment's own target is resolved
@@ -119,11 +145,25 @@ impl<'r> Analyzer<'r> {
         // doc comment). Any projections (`comp_struct.field`, `comp_arr[i]`,
         // ...) are applied directly against the already-known `ConstValue`
         // -- see `apply_comp_projection`.
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_place.root {
+        if let CheckedPlaceRoot::Variable {
+            storage: Storage::Comp,
+            ..
+        } = checked_place.root
+        {
             let value = self.resolve_comp_place(id, span, &checked_place)?;
-            return Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Const(value) });
+            return Some(CheckedExprNode {
+                id,
+                span,
+                r#type,
+                kind: CheckedExpr::Const(value),
+            });
         }
-        Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Place(checked_place) })
+        Some(CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind: CheckedExpr::Place(checked_place),
+        })
     }
 
     /// Resolves a `Storage::Comp` place root's already-known value and
@@ -145,7 +185,12 @@ impl<'r> Analyzer<'r> {
         span: Span,
         checked_place: &CheckedPlace,
     ) -> Option<ConstValue> {
-        let CheckedPlaceRoot::Variable { decl_id, storage: Storage::Comp, .. } = checked_place.root else {
+        let CheckedPlaceRoot::Variable {
+            decl_id,
+            storage: Storage::Comp,
+            ..
+        } = checked_place.root
+        else {
             unreachable!("resolve_comp_place is only ever called on a Storage::Comp place root");
         };
         crate::dead_code::collect_place(checked_place, &mut self.field_usage);
@@ -187,7 +232,14 @@ impl<'r> Analyzer<'r> {
         proj: &CheckedProjection,
     ) -> Option<ConstValue> {
         let unsupported = |this: &mut Self, reason: &str| -> Option<ConstValue> {
-            this.error(id, span, AnalysisErrorKind::CompEvalFailed { reason: reason.into(), trace: vec![] });
+            this.error(
+                id,
+                span,
+                AnalysisErrorKind::CompEvalFailed {
+                    reason: reason.into(),
+                    trace: vec![],
+                },
+            );
             None
         };
         match proj {
@@ -211,8 +263,12 @@ impl<'r> Analyzer<'r> {
                 }
             }
             CheckedProjection::SliceLength => match value {
-                ConstValue::Slice(v) | ConstValue::Array(v) => Some(ConstValue::Number(NumberValue::Unsigned(v.len() as u64))),
-                ConstValue::Str(s) => Some(ConstValue::Number(NumberValue::Unsigned(s.len() as u64))),
+                ConstValue::Slice(v) | ConstValue::Array(v) => {
+                    Some(ConstValue::Number(NumberValue::Unsigned(v.len() as u64)))
+                }
+                ConstValue::Str(s) => {
+                    Some(ConstValue::Number(NumberValue::Unsigned(s.len() as u64)))
+                }
                 _ => unsupported(self, "length of a non-slice/str comp value"),
             },
             CheckedProjection::EnumTag { .. } => match value {
@@ -233,23 +289,29 @@ impl<'r> Analyzer<'r> {
             },
             CheckedProjection::UnionField { index, .. } => match value {
                 ConstValue::Union { field_index, value } if field_index == *index => Some(*value),
-                ConstValue::Union { .. } => unsupported(self, "reading a union through its inactive field"),
+                ConstValue::Union { .. } => {
+                    unsupported(self, "reading a union through its inactive field")
+                }
                 _ => unsupported(self, "field access on a non-union comp value"),
             },
             // No real memory for a `comp` value to dereference through --
             // the interpreter's own `Deref` handling has the identical
             // restriction (see `comp_eval::Interpreter::read_projection`),
             // for the identical reason.
-            CheckedProjection::Deref { .. } => {
-                unsupported(self, "dereferencing a pointer inside a 'comp' binding projection isn't supported yet")
-            }
+            CheckedProjection::Deref { .. } => unsupported(
+                self,
+                "dereferencing a pointer inside a 'comp' binding projection isn't supported yet",
+            ),
             // A `spec *Self` value has no `ConstValue` shape at all --
             // dynamic dispatch isn't comp-evaluable in the first place (see
             // `docs/19-compile-time-evaluation.md`'s "What it can't (yet)"),
             // so `.ptr`/`.vtable` can never actually see a real base value
             // here; reject uniformly rather than reach the fallback panic.
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
-                unsupported(self, "accessing a spec object's pointer/vtable inside a 'comp' evaluation isn't supported")
+                unsupported(
+                    self,
+                    "accessing a spec object's pointer/vtable inside a 'comp' evaluation isn't supported",
+                )
             }
         }
     }
@@ -258,7 +320,13 @@ impl<'r> Analyzer<'r> {
     /// analyzing `base` alone would (this node's own `id`/`span` are
     /// discarded in favor of `base`'s), with a `reveal_stack` frame pushed
     /// around it. See `check_visibility`/`reveal_stack`.
-    fn analyze_reveal(&mut self, id: HirId, span: Span, inner: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    fn analyze_reveal(
+        &mut self,
+        id: HirId,
+        span: Span,
+        inner: &HirExprNode,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         self.reveal_stack.push(false);
         let result = self.analyze_expr(inner, expected);
         let load_bearing = self.reveal_stack.pop().expect("just pushed above");
@@ -266,7 +334,6 @@ impl<'r> Analyzer<'r> {
             self.warn(id, span, AnalysisWarningKind::UnnecessaryReveal);
         }
         result
-
     }
 
     /// `comp base` -- evaluates `base` at compile time (see
@@ -279,11 +346,22 @@ impl<'r> Analyzer<'r> {
     /// `CheckedExpr::Const`, exactly like an ordinary literal, so nothing
     /// downstream of analysis (MIR lowering, codegen) ever needs to know a
     /// value came from `comp` at all.
-    fn analyze_comp(&mut self, id: HirId, span: Span, inner: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    fn analyze_comp(
+        &mut self,
+        id: HirId,
+        span: Span,
+        inner: &HirExprNode,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         let checked = self.analyze_expr(inner, expected)?;
         let r#type = checked.r#type.clone();
         let value = self.eval_comp(id, &checked)?;
-        Some(CheckedExprNode { id, span, r#type, kind: CheckedExpr::Const(value) })
+        Some(CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind: CheckedExpr::Const(value),
+        })
     }
 
     /// Interprets an already-checked `expr` at compile time, reporting a
@@ -308,7 +386,11 @@ impl<'r> Analyzer<'r> {
     /// regardless of whether interpretation below actually succeeds: the
     /// access is real in the source either way, and a failed evaluation
     /// already hard-errors the compile on its own.
-    pub(super) fn eval_comp(&mut self, id: HirId, expr: &CheckedExprNode) -> Option<crate::resolved_type::ConstValue> {
+    pub(super) fn eval_comp(
+        &mut self,
+        id: HirId,
+        expr: &CheckedExprNode,
+    ) -> Option<crate::resolved_type::ConstValue> {
         crate::dead_code::collect_expr(expr, &mut self.field_usage);
         match crate::comp_eval::eval(self.resolver, expr) {
             Ok(value) => Some(value),
@@ -316,7 +398,10 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     id,
                     err.span,
-                    AnalysisErrorKind::CompEvalFailed { reason: err.kind.to_string(), trace: err.trace },
+                    AnalysisErrorKind::CompEvalFailed {
+                        reason: err.kind.to_string(),
+                        trace: err.trace,
+                    },
                 );
                 None
             }
@@ -360,7 +445,9 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     node_id,
                     checked_cond.span,
-                    AnalysisErrorKind::NonBoolCondition { r#type: checked_cond.r#type },
+                    AnalysisErrorKind::NonBoolCondition {
+                        r#type: checked_cond.r#type,
+                    },
                 );
                 return None;
             }
@@ -376,9 +463,9 @@ impl<'r> Analyzer<'r> {
             if has_else && i == 0 {
                 anchor = Some(match expected {
                     Some(t) => t.clone(),
-                    None => {
-                        Self::block_type(&checked_block).map(|t| t.widened()).unwrap_or(ResolvedType::Void)
-                    }
+                    None => Self::block_type(&checked_block)
+                        .map(|t| t.widened())
+                        .unwrap_or(ResolvedType::Void),
                 });
             }
             checked_blocks.push(checked_block);
@@ -395,15 +482,22 @@ impl<'r> Analyzer<'r> {
         // (non-diverging) type among the branches and the `else`,
         // if any -- diverging branches (ending in `return`) are
         // wildcards, exempt from the check below.
-        let branch_kinds: Vec<Option<ResolvedType>> =
-            checked_branches.iter().map(|(_, b)| Self::block_type(b)).collect();
+        let branch_kinds: Vec<Option<ResolvedType>> = checked_branches
+            .iter()
+            .map(|(_, b)| Self::block_type(b))
+            .collect();
         let else_kind: Option<Option<ResolvedType>> = checked_else.as_ref().map(Self::block_type);
 
         // Widened: branches producing *different variants* of one
         // enum (`if c { E::A } else { E::B }`) still agree on the
         // enum itself, which is then the whole `if`'s type.
         let result_type = match &else_kind {
-            Some(k) => branch_kinds.iter().cloned().chain(std::iter::once(k.clone())).flatten().next(),
+            Some(k) => branch_kinds
+                .iter()
+                .cloned()
+                .chain(std::iter::once(k.clone()))
+                .flatten()
+                .next(),
             None => None,
         }
         .map(|t| t.widened())
@@ -416,7 +510,14 @@ impl<'r> Analyzer<'r> {
             .flatten()
             .find(|t| !result_type.accepts(t));
         if let Some(found) = mismatch {
-            self.error(node_id, span, AnalysisErrorKind::IfBranchTypeMismatch { expected: result_type, found });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::IfBranchTypeMismatch {
+                    expected: result_type,
+                    found,
+                },
+            );
             return None;
         }
 
@@ -424,16 +525,24 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: result_type,
-            kind: CheckedExpr::If(CheckedIf { branches: checked_branches, else_branch: checked_else }),
+            kind: CheckedExpr::If(CheckedIf {
+                branches: checked_branches,
+                else_branch: checked_else,
+            }),
         })
-    
     }
 
     /// An ordinary call, after the four interceptors (overloaded,
     /// overloaded-static, generic, generic-static) have each declined it.
-    fn analyze_call(&mut self, node_id: HirId, span: Span, call: &HirFunctionCall) -> Option<CheckedExprNode> {
+    fn analyze_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+    ) -> Option<CheckedExprNode> {
         // Tried in priority order; the first to claim the call answers it.
-        let interceptors: [Interceptor<'r>; 4] = [
+        let interceptors: [Interceptor<'r>; 5] = [
+            Self::resolve_spec_qualified_call,
             Self::resolve_overloaded_call,
             Self::resolve_overloaded_static_call,
             Self::resolve_generic_call,
@@ -445,11 +554,15 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        let ResolvedCallee { callee, fn_type, implicit_self, checked_args } =
-            match self.resolve_callee(&call.callee, &call.args)? {
-                CalleeResolution::Dynamic(result) => return result,
-                CalleeResolution::Ordinary(resolved) => resolved,
-            };
+        let ResolvedCallee {
+            callee,
+            fn_type,
+            implicit_self,
+            checked_args,
+        } = match self.resolve_callee(&call.callee, &call.args)? {
+            CalleeResolution::Dynamic(result) => return result,
+            CalleeResolution::Ordinary(resolved) => resolved,
+        };
 
         let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
         args.extend(implicit_self);
@@ -483,8 +596,8 @@ impl<'r> Analyzer<'r> {
                         return None;
                     }
 
-                    let expected_type =
-                        (param_index < fn_type.params.len()).then(|| &fn_type.params[param_index].1);
+                    let expected_type = (param_index < fn_type.params.len())
+                        .then(|| &fn_type.params[param_index].1);
                     let checked_arg = self.analyze_expr(arg, expected_type)?;
                     let checked_arg = self.coerce_to_expected(expected_type, checked_arg);
 
@@ -512,13 +625,21 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: return_type,
-            kind: CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee), fn_type, args }),
+            kind: CheckedExpr::FunctionCall(CheckedFunctionCall {
+                callee: Box::new(callee),
+                fn_type,
+                args,
+            }),
         })
-    
     }
 
     /// `target = value`.
-    fn analyze_assignment(&mut self, node_id: HirId, span: Span, assignment: &omega_hir::HirAssignment) -> Option<CheckedExprNode> {
+    fn analyze_assignment(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        assignment: &omega_hir::HirAssignment,
+    ) -> Option<CheckedExprNode> {
         let (was_reveal, target) = Self::strip_reveal(&assignment.target);
         let HirExpr::Place(place) = &target.expr else {
             self.error(node_id, span, AnalysisErrorKind::AssignmentTargetNotAPlace);
@@ -530,12 +651,10 @@ impl<'r> Analyzer<'r> {
         // a.b = c;`) never reaches `analyze_expr`'s own `HirExpr::
         // Reveal` arm at all (it wraps only `target`, never the whole
         // `Assignment`).
-        let (checked_target, target_type, target_mutable) = self.with_reveal_bypass(
-            was_reveal,
-            node_id,
-            span,
-            |this| this.analyze_place(target.id, target.span, place, None),
-        )?;
+        let (checked_target, target_type, target_mutable) =
+            self.with_reveal_bypass(was_reveal, node_id, span, |this| {
+                this.analyze_place(target.id, target.span, place, None)
+            })?;
         self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
         // Resolved *before* the value, unlike almost everywhere else
@@ -571,7 +690,6 @@ impl<'r> Analyzer<'r> {
                 value: Box::new(checked_value),
             }),
         })
-    
     }
 
     /// `&base`/`&mut base`, including the two shapes that aren't pointers
@@ -592,7 +710,11 @@ impl<'r> Analyzer<'r> {
         // a stripped `reveal` has to keep its bypass at *every* operand
         // position, not just the one that happens to reach `analyze_place`
         // directly.
-        if let HirExpr::Slice(HirSlice { base: slice_base, range }) = &base.expr {
+        if let HirExpr::Slice(HirSlice {
+            base: slice_base,
+            range,
+        }) = &base.expr
+        {
             return self.with_reveal_bypass(was_reveal, node_id, span, |this| {
                 this.analyze_slice(node_id, span, slice_base, range, mutable)
             });
@@ -610,12 +732,10 @@ impl<'r> Analyzer<'r> {
         };
         // See `Analyzer::strip_reveal`'s doc comment -- same
         // reasoning as `HirExpr::Assignment`'s arm.
-        let (checked_place, place_type, place_mutable) = self.with_reveal_bypass(
-            was_reveal,
-            node_id,
-            span,
-            |this| this.analyze_place(base.id, base.span, place, None),
-        )?;
+        let (checked_place, place_type, place_mutable) =
+            self.with_reveal_bypass(was_reveal, node_id, span, |this| {
+                this.analyze_place(base.id, base.span, place, None)
+            })?;
         // `&comp_binding` -- `&mut` on one is impossible (a `comp` binding
         // is never `mutable`, so `require_mutable_place` below rejects it
         // with the same diagnostic any other immutable binding's `&mut`
@@ -631,12 +751,19 @@ impl<'r> Analyzer<'r> {
         // into a real, addressable rodata blob is already-proven machinery,
         // just triggered from a new call site.
         if !mutable {
-            if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_place.root {
+            if let CheckedPlaceRoot::Variable {
+                storage: Storage::Comp,
+                ..
+            } = checked_place.root
+            {
                 let value = self.resolve_comp_place(node_id, span, &checked_place)?;
                 return Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::Pointer { pointee: Box::new(place_type), mutable: false },
+                    r#type: ResolvedType::Pointer {
+                        pointee: Box::new(place_type),
+                        mutable: false,
+                    },
                     kind: CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
                 });
             }
@@ -673,26 +800,42 @@ impl<'r> Analyzer<'r> {
             // a different variant once the arm ends -- so that case
             // still widens, exactly as before this distinction
             // existed (see `VarBinding::narrowed`).
-            let narrowed_shadow = self
-                .narrowable_place(place)
-                .is_some_and(|(ident, ..)| self.context.find_variable(&ident).is_some_and(|b| b.narrowed));
-            if narrowed_shadow { place_type.widened() } else { place_type }
+            let narrowed_shadow = self.narrowable_place(place).is_some_and(|(ident, ..)| {
+                self.context
+                    .find_variable(&ident)
+                    .is_some_and(|b| b.narrowed)
+            });
+            if narrowed_shadow {
+                place_type.widened()
+            } else {
+                place_type
+            }
         };
 
         Some(CheckedExprNode {
             id: node_id,
             span,
-            r#type: ResolvedType::Pointer { pointee: Box::new(pointee_type), mutable },
-            kind: CheckedExpr::AddressOf(CheckedAddressOf { place: checked_place }),
+            r#type: ResolvedType::Pointer {
+                pointee: Box::new(pointee_type),
+                mutable,
+            },
+            kind: CheckedExpr::AddressOf(CheckedAddressOf {
+                place: checked_place,
+            }),
         })
-    
     }
 
     /// Unary `-`. `expected` passes straight through: negation is
     /// transparent to its own result type, so this node's own type context
     /// is exactly right for `base` too (notably, `-100` is exactly as
     /// adaptable as `100`).
-    fn analyze_negate(&mut self, node_id: HirId, span: Span, base: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    fn analyze_negate(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        base: &HirExprNode,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         // `expected` passes straight through -- `Negate` is
         // transparent to its own result type (it's always exactly
         // `base`'s type, see below), so whatever type context this
@@ -708,7 +851,13 @@ impl<'r> Analyzer<'r> {
             Some(NumericKind::Signed(_)) | Some(NumericKind::Float(_))
         );
         if !negatable {
-            self.error(node_id, span, AnalysisErrorKind::InvalidNegateOperand { r#type: checked_base.r#type });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidNegateOperand {
+                    r#type: checked_base.r#type,
+                },
+            );
             return None;
         }
 
@@ -719,7 +868,6 @@ impl<'r> Analyzer<'r> {
             r#type,
             kind: CheckedExpr::Negate(Box::new(checked_base)),
         })
-    
     }
 
     /// Unary `~`, transparent to its own result type exactly like
@@ -730,16 +878,30 @@ impl<'r> Analyzer<'r> {
     /// `& | ^` (native on `bool`, see `analyze_binary_op`), bitwise-NOT of
     /// `bool`'s `0`/`1` representation doesn't stay within `{0,1}` (`~0u8 ==
     /// 255`), so there is no sound native meaning for it to have.
-    fn analyze_bit_not(&mut self, node_id: HirId, span: Span, base: &HirExprNode, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    fn analyze_bit_not(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        base: &HirExprNode,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         // `expected` passes straight through, same reasoning as
         // `Negate`'s arm just above -- `~` is transparent to its own
         // result type.
         let checked_base = self.analyze_expr(base, expected)?;
         let checked_base = Self::coerce_for_unary_op(checked_base);
-        let bitnotable =
-            matches!(checked_base.r#type.numeric_kind(), Some(NumericKind::Signed(_) | NumericKind::Unsigned(_)));
+        let bitnotable = matches!(
+            checked_base.r#type.numeric_kind(),
+            Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
+        );
         if !bitnotable {
-            self.error(node_id, span, AnalysisErrorKind::InvalidBitNotOperand { r#type: checked_base.r#type });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidBitNotOperand {
+                    r#type: checked_base.r#type,
+                },
+            );
             return None;
         }
 
@@ -750,12 +912,17 @@ impl<'r> Analyzer<'r> {
             r#type,
             kind: CheckedExpr::BitNot(Box::new(checked_base)),
         })
-    
     }
 
     /// Resolves both operands, then checks the operator itself (see
     /// `analyze_binary_op`).
-    fn analyze_binary_expr(&mut self, node_id: HirId, span: Span, bin: &omega_hir::HirBinaryOp, expected: Option<&ResolvedType>) -> Option<CheckedExprNode> {
+    fn analyze_binary_expr(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        bin: &omega_hir::HirBinaryOp,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
         // Two composed inference rules, mirroring precedent that
         // already exists elsewhere rather than inventing a new
         // philosophy: (1) the outer `expected` this node itself
@@ -780,7 +947,11 @@ impl<'r> Analyzer<'r> {
         // equality on the results, so this can only turn a
         // previously-failing narrowing case into a working one, never
         // weaken a real mismatch.
-        let operand_expected = if bin.op.is_comparison() { None } else { expected };
+        let operand_expected = if bin.op.is_comparison() {
+            None
+        } else {
+            expected
+        };
         let checked_left = self.analyze_expr(&bin.left, operand_expected)?;
         // For a non-comparison op, anchor to what `left` will *become*
         // (`arithmetic_repr`), not what it currently is -- otherwise
@@ -798,11 +969,16 @@ impl<'r> Analyzer<'r> {
         }
         let checked_right = self.analyze_expr(&bin.right, operand_expected.or(Some(&left_type)))?;
         self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
-    
     }
 
     /// `<Target>base`.
-    fn analyze_cast(&mut self, node_id: HirId, span: Span, target: &Type, base: &HirExprNode) -> Option<CheckedExprNode> {
+    fn analyze_cast(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: &Type,
+        base: &HirExprNode,
+    ) -> Option<CheckedExprNode> {
         let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
         // `base` keeps its own natural (default, unsuffixed-literal)
         // type -- the cast's target is an explicit instruction to
@@ -844,12 +1020,24 @@ impl<'r> Analyzer<'r> {
         // explicit casting was previously the one direction that never
         // worked at all (only 4 implicit-coercion sites did; see
         // `docs/08-specs.md`'s "Coercion into `spec *T`" caveat).
-        if let ResolvedType::SpecObject { spec, type_args, mutable } = &target_type {
-            let ResolvedType::Pointer { pointee, mutable: base_mutable } = &checked_base.r#type else {
+        if let ResolvedType::SpecObject {
+            spec,
+            type_args,
+            mutable,
+        } = &target_type
+        {
+            let ResolvedType::Pointer {
+                pointee,
+                mutable: base_mutable,
+            } = &checked_base.r#type
+            else {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::InvalidCast { from: checked_base.r#type.clone(), to: target_type.clone() },
+                    AnalysisErrorKind::InvalidCast {
+                        from: checked_base.r#type.clone(),
+                        to: target_type.clone(),
+                    },
                 );
                 return None;
             };
@@ -857,18 +1045,26 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::CastToMutablePointer { from: checked_base.r#type.clone(), to: target_type.clone() },
+                    AnalysisErrorKind::CastToMutablePointer {
+                        from: checked_base.r#type.clone(),
+                        to: target_type.clone(),
+                    },
                 );
                 return None;
             }
             let pointee = (**pointee).clone();
             let spec = spec.clone();
             let type_args = type_args.clone();
-            let Ok(slots) = self.type_implements_spec(node_id, span, &pointee, &spec, &type_args, true) else {
+            let Ok(slots) =
+                self.type_implements_spec(node_id, span, &pointee, &spec, &type_args, true)
+            else {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::InvalidCast { from: checked_base.r#type.clone(), to: target_type.clone() },
+                    AnalysisErrorKind::InvalidCast {
+                        from: checked_base.r#type.clone(),
+                        to: target_type.clone(),
+                    },
                 );
                 return None;
             };
@@ -876,7 +1072,10 @@ impl<'r> Analyzer<'r> {
                 id: node_id,
                 span,
                 r#type: target_type.clone(),
-                kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce { base: Box::new(checked_base), slots }),
+                kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce {
+                    base: Box::new(checked_base),
+                    slots,
+                }),
             });
         }
 
@@ -886,11 +1085,14 @@ impl<'r> Analyzer<'r> {
         // (`Str`/`Slice` both return `None` from it), so both are
         // genuinely separate machinery, not an extension of the numeric
         // path below.
-        let cast_kind = if let Some(kind) = Self::byte_pointer_cast_kind(&checked_base.r#type, &target_type) {
+        let cast_kind = if let Some(kind) =
+            Self::byte_pointer_cast_kind(&checked_base.r#type, &target_type)
+        {
             kind
         } else if let Some(kind) = Self::unsize_cast_kind(&checked_base.r#type, &target_type) {
             kind
-        } else if let Some(kind) = Self::array_pointer_cast_kind(&checked_base.r#type, &target_type) {
+        } else if let Some(kind) = Self::array_pointer_cast_kind(&checked_base.r#type, &target_type)
+        {
             kind
         } else {
             let (Some(source_class), Some(target_class)) =
@@ -920,7 +1122,13 @@ impl<'r> Analyzer<'r> {
             Self::resolve_cast_kind(source_class, target_class)
         };
         if cast_kind == CastKind::Reinterpret && checked_base.r#type == target_type {
-            self.warn(node_id, span, AnalysisWarningKind::NoOpCast { r#type: target_type.clone() });
+            self.warn(
+                node_id,
+                span,
+                AnalysisWarningKind::NoOpCast {
+                    r#type: target_type.clone(),
+                },
+            );
         }
 
         Some(CheckedExprNode {
@@ -933,9 +1141,7 @@ impl<'r> Analyzer<'r> {
                 base: Box::new(checked_base),
             }),
         })
-
     }
-
 
     /// `++base`/`--base`: validates `base` is a place (like `AddressOf`) of
     /// a numeric type, then desugars directly into `base = base <op> 1` --
@@ -947,7 +1153,13 @@ impl<'r> Analyzer<'r> {
     /// would then fail `BinaryOp`'s "operands must match exactly" rule for
     /// every other numeric type) -- analysis already knows `base`'s exact
     /// type here, so it can build a same-typed constant directly.
-    fn analyze_incr_decr(&mut self, node_id: HirId, span: Span, base: &HirExprNode, op: BinaryOp) -> Option<CheckedExprNode> {
+    fn analyze_incr_decr(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        base: &HirExprNode,
+        op: BinaryOp,
+    ) -> Option<CheckedExprNode> {
         let (was_reveal, base) = Self::strip_reveal(base);
         let HirExpr::Place(place) = &base.expr else {
             self.error(node_id, span, AnalysisErrorKind::IncrementTargetNotAPlace);
@@ -956,11 +1168,17 @@ impl<'r> Analyzer<'r> {
         // See `Analyzer::strip_reveal`'s doc comment -- same reasoning as
         // `HirExpr::Assignment`'s arm.
         let (checked_place, place_type, mutable) =
-            self.with_reveal_bypass(was_reveal, node_id, span, |this| this.analyze_place(base.id, base.span, place, None))?;
+            self.with_reveal_bypass(was_reveal, node_id, span, |this| {
+                this.analyze_place(base.id, base.span, place, None)
+            })?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let Some(kind) = place_type.numeric_kind() else {
-            self.error(node_id, span, AnalysisErrorKind::InvalidIncrementOperand { r#type: place_type });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidIncrementOperand { r#type: place_type },
+            );
             return None;
         };
 
@@ -969,7 +1187,12 @@ impl<'r> Analyzer<'r> {
             NumericKind::Unsigned(_) => NumberValue::Unsigned(1),
             NumericKind::Float(_) => NumberValue::Float(1.0),
         };
-        let one_node = CheckedExprNode { id: node_id, span, r#type: place_type.clone(), kind: CheckedExpr::Number(one) };
+        let one_node = CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: place_type.clone(),
+            kind: CheckedExpr::Number(one),
+        };
         let place_read = CheckedExprNode {
             id: node_id,
             span,
@@ -980,14 +1203,21 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: place_type.clone(),
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(place_read), right: Box::new(one_node) }),
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op,
+                left: Box::new(place_read),
+                right: Box::new(one_node),
+            }),
         };
 
         Some(CheckedExprNode {
             id: node_id,
             span,
             r#type: place_type,
-            kind: CheckedExpr::Assignment(CheckedAssignment { target: checked_place, value: Box::new(sum) }),
+            kind: CheckedExpr::Assignment(CheckedAssignment {
+                target: checked_place,
+                value: Box::new(sum),
+            }),
         })
     }
 
@@ -1036,13 +1266,20 @@ impl<'r> Analyzer<'r> {
                 || (operand.r#type == ResolvedType::Bool
                     && matches!(
                         op,
-                        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor
+                        BinaryOp::Eq
+                            | BinaryOp::Ne
+                            | BinaryOp::BitAnd
+                            | BinaryOp::BitOr
+                            | BinaryOp::BitXor
                     ));
             if !is_valid {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::InvalidBinaryOperand { op, r#type: operand.r#type.clone() },
+                    AnalysisErrorKind::InvalidBinaryOperand {
+                        op,
+                        r#type: operand.r#type.clone(),
+                    },
                 );
                 return None;
             }
@@ -1068,7 +1305,12 @@ impl<'r> Analyzer<'r> {
         // No native float remainder instruction (see
         // `AnalysisErrorKind::FloatRemainder`'s doc comment) --
         // matching C, which requires `fmod`/`fmodf` instead of `%`.
-        if op == BinaryOp::Rem && matches!(checked_left.r#type.numeric_kind(), Some(NumericKind::Float(_))) {
+        if op == BinaryOp::Rem
+            && matches!(
+                checked_left.r#type.numeric_kind(),
+                Some(NumericKind::Float(_))
+            )
+        {
             self.error(node_id, span, AnalysisErrorKind::FloatRemainder);
             return None;
         }
@@ -1076,26 +1318,44 @@ impl<'r> Analyzer<'r> {
         // No native float bitwise/shift instructions either -- same
         // reasoning as `Rem` just above, just for a whole family of ops
         // instead of one.
-        if matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr)
-            && matches!(checked_left.r#type.numeric_kind(), Some(NumericKind::Float(_)))
-        {
+        if matches!(
+            op,
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr
+        ) && matches!(
+            checked_left.r#type.numeric_kind(),
+            Some(NumericKind::Float(_))
+        ) {
             self.error(node_id, span, AnalysisErrorKind::FloatBitwiseOperand);
             return None;
         }
 
         if op.is_comparison() {
-            self.check_always_true_false_comparison(node_id, span, op, &checked_left, &checked_right);
+            self.check_always_true_false_comparison(
+                node_id,
+                span,
+                op,
+                &checked_left,
+                &checked_right,
+            );
         }
 
         // A comparison always produces `bool`, regardless of the
         // (still-numeric, still-matching) operand type; an
         // arithmetic op's result is that same operand type.
-        let r#type = if op.is_comparison() { ResolvedType::Bool } else { checked_left.r#type.clone() };
+        let r#type = if op.is_comparison() {
+            ResolvedType::Bool
+        } else {
+            checked_left.r#type.clone()
+        };
         Some(CheckedExprNode {
             id: node_id,
             span,
             r#type,
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(checked_left), right: Box::new(checked_right) }),
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op,
+                left: Box::new(checked_left),
+                right: Box::new(checked_right),
+            }),
         })
     }
 
@@ -1140,14 +1400,23 @@ impl<'r> Analyzer<'r> {
     /// `repr` is always itself numeric (every `arithmetic_repr` value is),
     /// so both `cast_class` calls below are infallible.
     fn coerce_to(operand: CheckedExprNode, repr: ResolvedType) -> CheckedExprNode {
-        let source_class = operand.r#type.cast_class().expect("arithmetic_repr's source always has a cast_class");
-        let target_class = repr.cast_class().expect("an arithmetic_repr target is always numeric");
+        let source_class = operand
+            .r#type
+            .cast_class()
+            .expect("arithmetic_repr's source always has a cast_class");
+        let target_class = repr
+            .cast_class()
+            .expect("an arithmetic_repr target is always numeric");
         let kind = Self::resolve_cast_kind(source_class, target_class);
         CheckedExprNode {
             id: operand.id,
             span: operand.span,
             r#type: repr.clone(),
-            kind: CheckedExpr::Cast(CheckedCast { kind, target_type: repr, base: Box::new(operand) }),
+            kind: CheckedExpr::Cast(CheckedCast {
+                kind,
+                target_type: repr,
+                base: Box::new(operand),
+            }),
         }
     }
 
@@ -1181,13 +1450,16 @@ impl<'r> Analyzer<'r> {
         left: &CheckedExprNode,
         right: &CheckedExprNode,
     ) {
-        let Some((lo, hi)) = left.r#type.integer_domain() else { return };
-
-        let (literal, literal_on_right) = match (Self::literal_i128(left), Self::literal_i128(right)) {
-            (Some(l), None) => (l, false),
-            (None, Some(r)) => (r, true),
-            _ => return,
+        let Some((lo, hi)) = left.r#type.integer_domain() else {
+            return;
         };
+
+        let (literal, literal_on_right) =
+            match (Self::literal_i128(left), Self::literal_i128(right)) {
+                (Some(l), None) => (l, false),
+                (None, Some(r)) => (r, true),
+                _ => return,
+            };
 
         // `x op literal` if `literal_on_right`, else `literal op x` --
         // each arm picks the bound that pins the result to `true`, then
@@ -1195,20 +1467,36 @@ impl<'r> Analyzer<'r> {
         // depends on `x`'s runtime value.
         let fixed = if literal_on_right {
             match op {
-                BinaryOp::Lt => (hi < literal).then_some(true).or((lo >= literal).then_some(false)),
-                BinaryOp::Le => (hi <= literal).then_some(true).or((lo > literal).then_some(false)),
-                BinaryOp::Gt => (lo > literal).then_some(true).or((hi <= literal).then_some(false)),
-                BinaryOp::Ge => (lo >= literal).then_some(true).or((hi < literal).then_some(false)),
+                BinaryOp::Lt => (hi < literal)
+                    .then_some(true)
+                    .or((lo >= literal).then_some(false)),
+                BinaryOp::Le => (hi <= literal)
+                    .then_some(true)
+                    .or((lo > literal).then_some(false)),
+                BinaryOp::Gt => (lo > literal)
+                    .then_some(true)
+                    .or((hi <= literal).then_some(false)),
+                BinaryOp::Ge => (lo >= literal)
+                    .then_some(true)
+                    .or((hi < literal).then_some(false)),
                 BinaryOp::Eq => (literal < lo || literal > hi).then_some(false),
                 BinaryOp::Ne => (literal < lo || literal > hi).then_some(true),
                 _ => None,
             }
         } else {
             match op {
-                BinaryOp::Lt => (literal < lo).then_some(true).or((literal >= hi).then_some(false)),
-                BinaryOp::Le => (literal <= lo).then_some(true).or((literal > hi).then_some(false)),
-                BinaryOp::Gt => (literal > hi).then_some(true).or((literal <= lo).then_some(false)),
-                BinaryOp::Ge => (literal >= hi).then_some(true).or((literal < lo).then_some(false)),
+                BinaryOp::Lt => (literal < lo)
+                    .then_some(true)
+                    .or((literal >= hi).then_some(false)),
+                BinaryOp::Le => (literal <= lo)
+                    .then_some(true)
+                    .or((literal > hi).then_some(false)),
+                BinaryOp::Gt => (literal > hi)
+                    .then_some(true)
+                    .or((literal <= lo).then_some(false)),
+                BinaryOp::Ge => (literal >= hi)
+                    .then_some(true)
+                    .or((literal < lo).then_some(false)),
                 BinaryOp::Eq => (literal < lo || literal > hi).then_some(false),
                 BinaryOp::Ne => (literal < lo || literal > hi).then_some(true),
                 _ => None,
@@ -1216,7 +1504,11 @@ impl<'r> Analyzer<'r> {
         };
 
         if let Some(result) = fixed {
-            self.warn(node_id, span, AnalysisWarningKind::AlwaysTrueFalseComparison { result });
+            self.warn(
+                node_id,
+                span,
+                AnalysisWarningKind::AlwaysTrueFalseComparison { result },
+            );
         }
     }
 
@@ -1240,17 +1532,19 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         let (was_reveal, target) = Self::strip_reveal(target);
         let HirExpr::Place(place) = &target.expr else {
-            self.error(node_id, span, AnalysisErrorKind::CompoundAssignTargetNotAPlace);
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CompoundAssignTargetNotAPlace,
+            );
             return None;
         };
         // See `Analyzer::strip_reveal`'s doc comment -- same reasoning as
         // `HirExpr::Assignment`'s arm.
-        let (checked_place, place_type, mutable) = self.with_reveal_bypass(
-            was_reveal,
-            node_id,
-            span,
-            |this| this.analyze_place(target.id, target.span, place, None),
-        )?;
+        let (checked_place, place_type, mutable) =
+            self.with_reveal_bypass(was_reveal, node_id, span, |this| {
+                this.analyze_place(target.id, target.span, place, None)
+            })?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let checked_value = self.analyze_expr(value, Some(&place_type))?;
@@ -1266,7 +1560,10 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: place_type,
-            kind: CheckedExpr::Assignment(CheckedAssignment { target: checked_place, value: Box::new(combined) }),
+            kind: CheckedExpr::Assignment(CheckedAssignment {
+                target: checked_place,
+                value: Box::new(combined),
+            }),
         })
     }
 
@@ -1306,8 +1603,12 @@ impl<'r> Analyzer<'r> {
                     CastKind::IntTruncate
                 }
             }
-            (CastClass::Int { signed, .. }, CastClass::Float { .. }) => CastKind::IntToFloat { signed },
-            (CastClass::Float { .. }, CastClass::Int { signed, .. }) => CastKind::FloatToInt { signed },
+            (CastClass::Int { signed, .. }, CastClass::Float { .. }) => {
+                CastKind::IntToFloat { signed }
+            }
+            (CastClass::Float { .. }, CastClass::Int { signed, .. }) => {
+                CastKind::FloatToInt { signed }
+            }
             (CastClass::Float { width: sw }, CastClass::Float { width: tw }) => {
                 if sw == tw {
                     CastKind::Reinterpret
@@ -1360,9 +1661,18 @@ impl<'r> Analyzer<'r> {
     /// already agree, this just relabels" rule every other `CastKind`
     /// follows.
     fn unsize_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
-        let ResolvedType::Pointer { pointee, .. } = source else { return None };
-        let ResolvedType::SizedArray(item, _) = pointee.as_ref() else { return None };
-        let ResolvedType::Slice { item: target_item, .. } = target else { return None };
+        let ResolvedType::Pointer { pointee, .. } = source else {
+            return None;
+        };
+        let ResolvedType::SizedArray(item, _) = pointee.as_ref() else {
+            return None;
+        };
+        let ResolvedType::Slice {
+            item: target_item, ..
+        } = target
+        else {
+            return None;
+        };
         (item.as_ref() == target_item.as_ref()).then_some(CastKind::Unsize)
     }
 
@@ -1382,7 +1692,9 @@ impl<'r> Analyzer<'r> {
     fn array_pointer_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
         match (source, target) {
             (ResolvedType::Pointer { .. }, ResolvedType::Array(_, _))
-            | (ResolvedType::Array(_, _), ResolvedType::Pointer { .. }) => Some(CastKind::Reinterpret),
+            | (ResolvedType::Array(_, _), ResolvedType::Pointer { .. }) => {
+                Some(CastKind::Reinterpret)
+            }
             _ => None,
         }
     }

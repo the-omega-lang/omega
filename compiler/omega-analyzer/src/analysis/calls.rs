@@ -15,7 +15,8 @@ pub(super) enum Intercepted {
 /// One call-shape interceptor: peeks at a call and either claims it or
 /// declines. Written as a function pointer so the interceptors can be listed
 /// in priority order at the call site.
-pub(super) type Interceptor<'r> = fn(&mut Analyzer<'r>, HirId, Span, &HirFunctionCall) -> Intercepted;
+pub(super) type Interceptor<'r> =
+    fn(&mut Analyzer<'r>, HirId, Span, &HirFunctionCall) -> Intercepted;
 
 /// A member call's receiver (`base` in `base.method(args)`), resolved once:
 /// the place it came from -- needed to check writability and to de-assume a
@@ -74,7 +75,9 @@ impl<'r> Analyzer<'r> {
     /// An absolute item path split into the item's own name and its owning
     /// module -- `None` only for an empty path, which no caller can produce.
     fn split_item_path(absolute: &[Ident]) -> Option<(Ident, Vec<Ident>)> {
-        absolute.split_last().map(|(name, module)| (name.clone(), module.to_vec()))
+        absolute
+            .split_last()
+            .map(|(name, module)| (name.clone(), module.to_vec()))
     }
 
     /// The plain path a call's callee names, or `None` when this call isn't
@@ -83,11 +86,15 @@ impl<'r> Analyzer<'r> {
     /// generic arguments (which already pin their own instantiation, so
     /// nothing here needs to deduce one).
     fn callee_path(call: &HirFunctionCall) -> Option<&Path> {
-        let HirExpr::Place(place) = &Self::strip_reveal(&call.callee).1.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_reveal(&call.callee).1.expr else {
+            return None;
+        };
         if !place.projections.is_empty() {
             return None;
         }
-        let HirPlaceRoot::Path(expr_path) = &place.root else { return None };
+        let HirPlaceRoot::Path(expr_path) = &place.root else {
+            return None;
+        };
         expr_path.plain()
     }
 
@@ -111,7 +118,11 @@ impl<'r> Analyzer<'r> {
             span: callee_site.span,
             r#type: function.clone(),
             kind: CheckedExpr::Place(CheckedPlace {
-                root: CheckedPlaceRoot::Variable { decl_id, storage, r#type: function },
+                root: CheckedPlaceRoot::Variable {
+                    decl_id,
+                    storage,
+                    r#type: function,
+                },
                 projections: vec![],
             }),
         };
@@ -119,8 +130,242 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: (*fn_type.return_type).clone(),
-            kind: CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee), fn_type, args }),
+            kind: CheckedExpr::FunctionCall(CheckedFunctionCall {
+                callee: Box::new(callee),
+                fn_type,
+                args,
+            }),
         }
+    }
+
+    /// `Spec::method(receiver, ...)` is the explicit escape hatch for a
+    /// composed instance method outside a bound context. The first argument
+    /// selects the target composition; the resulting call is an ordinary
+    /// direct call to that composition's symbol.
+    pub(super) fn resolve_spec_qualified_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+    ) -> Intercepted {
+        let HirExpr::Place(callee_place) = &Self::strip_reveal(&call.callee).1.expr else {
+            return Intercepted::Declined;
+        };
+        if !callee_place.projections.is_empty() {
+            return Intercepted::Declined;
+        }
+        let HirPlaceRoot::Path(expr_path) = &callee_place.root else {
+            return Intercepted::Declined;
+        };
+        let path = &expr_path.path;
+        let segments = path.segments();
+        let Some((method_name, spec_segments)) = segments.split_last() else {
+            return Intercepted::Declined;
+        };
+        if spec_segments.is_empty() {
+            return Intercepted::Declined;
+        }
+        if !expr_path.generic_args.is_empty() && expr_path.args_at + 1 != spec_segments.len() {
+            return Intercepted::Declined;
+        }
+        let spec_path = Path {
+            head: spec_segments[0].clone(),
+            tail: spec_segments[1..].to_vec(),
+        };
+        let absolute = match self.context.resolve_absolute_item_path(
+            &mut *self.resolver,
+            &spec_path,
+            &self.module_path,
+        ) {
+            Ok(absolute) => absolute,
+            Err(_) => return Intercepted::Declined,
+        };
+        let spec = match self.resolver.spec_declaration(&absolute) {
+            Ok(Some(spec)) => spec,
+            _ if spec_path.is_unqualified() => {
+                let ambient = match self
+                    .resolver
+                    .ambient_core_candidates(&self.module_path, &spec_path.head)
+                {
+                    Ok(Some(ambient)) => ambient,
+                    _ => return Intercepted::Declined,
+                };
+                match self.resolver.spec_declaration(&ambient) {
+                    Ok(Some(spec)) => spec,
+                    _ => return Intercepted::Declined,
+                }
+            }
+            _ => return Intercepted::Declined,
+        };
+        let spec_args = if expr_path.generic_args.is_empty() {
+            Vec::new()
+        } else {
+            let Some(args) = self.resolve_generic_arg_list(node_id, span, expr_path) else {
+                return Intercepted::Claimed(None);
+            };
+            args
+        };
+        let Some(first) = call.args.first() else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::WrongArgumentCount {
+                    expected: 1,
+                    found: 0,
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        let Some(first_checked) = self.analyze_expr(first, None) else {
+            return Intercepted::Claimed(None);
+        };
+        let target = first_checked.r#type.autoderef().clone();
+        let compose_methods = match self.resolver.compose_for(&target, &spec, &spec_args) {
+            Ok(Some(compose)) => compose.methods,
+            Ok(None)
+                if self
+                    .type_implements_spec(node_id, span, &target, &spec, &spec_args, false)
+                    .is_ok() =>
+            {
+                match self.resolver.composes_for_type(&target) {
+                    Ok(composes) => composes
+                        .into_iter()
+                        .flat_map(|compose| compose.methods)
+                        .collect(),
+                    Err(err) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                        return Intercepted::Claimed(None);
+                    }
+                }
+            }
+            Ok(None) => {
+                let missing = spec
+                    .borrow()
+                    .functions
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+                        type_name: target.to_string(),
+                        spec: spec.borrow().name.clone(),
+                        missing,
+                    }),
+                );
+                return Intercepted::Claimed(None);
+            }
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                return Intercepted::Claimed(None);
+            }
+        };
+        let candidates: Vec<_> = compose_methods
+            .into_iter()
+            .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_some())
+            .map(|(_, method)| method)
+            .collect();
+        if candidates.is_empty() {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                },
+            );
+            return Intercepted::Claimed(None);
+        }
+        let signatures: Vec<_> = candidates
+            .iter()
+            .map(|method| (method.decl_id, method.fn_type.clone()))
+            .collect();
+        let (winner, checked_args) = if candidates.len() == 1 {
+            let method = &candidates[0];
+            if call.args.len() != method.fn_type.params.len() {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::WrongArgumentCount {
+                        expected: method.fn_type.params.len(),
+                        found: call.args.len(),
+                    },
+                );
+                return Intercepted::Claimed(None);
+            }
+            let mut checked_args = Vec::with_capacity(call.args.len());
+            let mut ok = true;
+            let adapted_first = if let HirExpr::Place(place) = &Self::strip_reveal(first).1.expr {
+                let (checked, r#type, mutable) =
+                    match self.analyze_place(first.id, first.span, place, None) {
+                        Some(resolved) => resolved,
+                        None => return Intercepted::Claimed(None),
+                    };
+                let receiver = Receiver {
+                    place: place.clone(),
+                    checked,
+                    r#type,
+                    mutable,
+                };
+                match self.adapt_self_argument(
+                    &call.callee,
+                    receiver,
+                    method.fn_type.self_mode.expect("filtered above"),
+                ) {
+                    Some(adapted) => adapted,
+                    None => return Intercepted::Claimed(None),
+                }
+            } else {
+                first_checked.clone()
+            };
+            for (index, (arg, (_, expected))) in
+                call.args.iter().zip(&method.fn_type.params).enumerate()
+            {
+                let checked = if index == 0 {
+                    adapted_first.clone()
+                } else if let Some(checked) = self.analyze_expr(arg, Some(expected)) {
+                    checked
+                } else {
+                    ok = false;
+                    continue;
+                };
+                let checked = self.coerce_to_expected(Some(expected), checked);
+                if !expected.accepts(&checked.r#type) {
+                    self.error(
+                        arg.id,
+                        arg.span,
+                        AnalysisErrorKind::ArgumentTypeMismatch {
+                            expected: expected.clone(),
+                            found: checked.r#type.clone(),
+                        },
+                    );
+                    ok = false;
+                }
+                checked_args.push(checked);
+            }
+            if !ok {
+                return Intercepted::Claimed(None);
+            }
+            (0, checked_args)
+        } else {
+            let Some((winner, checked_args)) =
+                self.resolve_overload(node_id, span, method_name, &signatures, &call.args)
+            else {
+                return Intercepted::Claimed(None);
+            };
+            (winner, checked_args)
+        };
+        let method = candidates[winner].clone();
+        Intercepted::Claimed(Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            method.decl_id,
+            Storage::Function,
+            method.fn_type,
+            checked_args,
+        )))
     }
 
     /// What a call's callee expression resolves to.
@@ -130,7 +375,11 @@ impl<'r> Analyzer<'r> {
     /// is a `spec *Spec` value -- a dynamically dispatched spec function.
     /// Everything else is an ordinary expression whose type must be a
     /// function.
-    pub(super) fn resolve_callee(&mut self, callee: &HirExprNode, args: &[HirExprNode]) -> Option<CalleeResolution> {
+    pub(super) fn resolve_callee(
+        &mut self,
+        callee: &HirExprNode,
+        args: &[HirExprNode],
+    ) -> Option<CalleeResolution> {
         // `reveal` is fully transparent, so every use of `callee` below
         // (including its own `id`/`span`) sees through it. `was_reveal` feeds
         // `with_reveal_bypass` at this path's own visibility checks -- there
@@ -156,30 +405,97 @@ impl<'r> Analyzer<'r> {
             }));
         };
 
-        let base_place =
-            HirPlace { root: place.root.clone(), projections: place.projections[..place.projections.len() - 1].to_vec() };
-        let (checked, r#type, mutable) = self.analyze_place(callee.id, callee.span, &base_place, None)?;
-        let receiver = Receiver { place: base_place, checked, r#type, mutable };
+        let base_place = HirPlace {
+            root: place.root.clone(),
+            projections: place.projections[..place.projections.len() - 1].to_vec(),
+        };
+        let (checked, r#type, mutable) =
+            self.analyze_place(callee.id, callee.span, &base_place, None)?;
+        let receiver = Receiver {
+            place: base_place,
+            checked,
+            r#type,
+            mutable,
+        };
 
         // Dynamic dispatch: the receiver is a `spec *Spec` value, not a
         // concrete type, so `field` is looked up in the spec's own flattened
         // function list -- there is no concrete `functions` list to consult,
         // the implementor is erased.
-        if let ResolvedType::SpecObject { spec, type_args, .. } = &receiver.r#type {
+        if let ResolvedType::SpecObject {
+            spec, type_args, ..
+        } = &receiver.r#type
+        {
             let (spec, type_args) = (spec.clone(), type_args.clone());
-            return Some(CalleeResolution::Dynamic(self.finish_dynamic_dispatch_call(
-                callee.id,
-                callee.span,
-                receiver.checked,
-                &spec,
-                &type_args,
-                field,
-                args,
-            )));
+            return Some(CalleeResolution::Dynamic(
+                self.finish_dynamic_dispatch_call(
+                    callee.id,
+                    callee.span,
+                    receiver.checked,
+                    &spec,
+                    &type_args,
+                    field,
+                    args,
+                ),
+            ));
         }
 
         let methods = self.find_methods(callee.id, callee.span, &receiver.r#type, field);
         if methods.is_empty() {
+            let receiver_type = receiver.r#type.autoderef();
+            let field_shadows = match receiver_type {
+                ResolvedType::Struct(cell) => cell
+                    .borrow()
+                    .fields
+                    .iter()
+                    .any(|(name, _, _)| name == field),
+                ResolvedType::Union(cell) => cell
+                    .borrow()
+                    .fields
+                    .iter()
+                    .any(|(name, _, _)| name == field),
+                ResolvedType::Enum { cell, variant } => {
+                    let e = cell.borrow();
+                    field.as_ref() == "tag"
+                        || e.header.iter().any(|(name, _, _)| name == field)
+                        || variant.is_some_and(|i| {
+                            e.variants[i]
+                                .fields
+                                .iter()
+                                .any(|(name, _, _)| name == field)
+                        })
+                }
+                _ => false,
+            };
+            if !field_shadows {
+                match self.resolver.composes_for_type(receiver_type) {
+                    Ok(composes) => {
+                        if let Some(compose) = composes.iter().find(|compose| {
+                            compose.methods.iter().any(|(name, method)| {
+                                name == field && method.fn_type.self_mode.is_some()
+                            })
+                        }) {
+                            self.error(
+                                callee.id,
+                                callee.span,
+                                AnalysisErrorKind::MethodNotInScope {
+                                    method: field.clone(),
+                                    spec: compose.spec.borrow().name.clone(),
+                                },
+                            );
+                            return None;
+                        }
+                    }
+                    Err(err) => {
+                        self.error(
+                            callee.id,
+                            callee.span,
+                            AnalysisErrorKind::ModuleResolution(err),
+                        );
+                        return None;
+                    }
+                }
+            }
             return self.resolve_field_callee(callee, was_reveal, field, receiver);
         }
         self.resolve_method_callee(callee, was_reveal, field, receiver, methods, args)
@@ -197,14 +513,17 @@ impl<'r> Analyzer<'r> {
         methods: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<CalleeResolution> {
-        let (method, checked_args) = self.pick_method(callee, field, &receiver.r#type, methods, args)?;
+        let (method, checked_args) =
+            self.pick_method(callee, field, &receiver.r#type, methods, args)?;
         self.require_method_visible(callee, was_reveal, field, &receiver.r#type, &method)?;
 
         // `self`'s own declared mode (`self`/`mut self`/`*self`/`*mut self`)
         // is read straight off the resolved signature, never
         // reverse-engineered from `params[0]`'s type shape.
-        let self_mode =
-            method.fn_type.self_mode.expect("a method resolved through find_methods always has a self mode");
+        let self_mode = method
+            .fn_type
+            .self_mode
+            .expect("a method resolved through find_methods always has a self mode");
         let self_arg = self.adapt_self_argument(callee, receiver, self_mode)?;
 
         let fn_type = ResolvedType::Function(method.fn_type.clone());
@@ -246,8 +565,10 @@ impl<'r> Analyzer<'r> {
         methods: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<(ResolvedMethod, Option<Vec<CheckedExprNode>>)> {
-        let members: Vec<ResolvedMethod> =
-            methods.into_iter().filter(|m| m.fn_type.self_mode.is_some()).collect();
+        let members: Vec<ResolvedMethod> = methods
+            .into_iter()
+            .filter(|m| m.fn_type.self_mode.is_some())
+            .collect();
 
         if members.len() > 1 {
             // Scored without each candidate's own synthesized `self` param:
@@ -263,7 +584,8 @@ impl<'r> Analyzer<'r> {
                     (m.decl_id, sans_self)
                 })
                 .collect();
-            let (winner, checked) = self.resolve_overload(callee.id, callee.span, field, &candidates, args)?;
+            let (winner, checked) =
+                self.resolve_overload(callee.id, callee.span, field, &candidates, args)?;
             return Some((members[winner].clone(), Some(checked)));
         }
         if let Some(only) = members.into_iter().next() {
@@ -283,7 +605,10 @@ impl<'r> Analyzer<'r> {
         self.error(
             callee.id,
             callee.span,
-            AnalysisErrorKind::StaticFunctionOnInstance { r#struct, function: field.clone() },
+            AnalysisErrorKind::StaticFunctionOnInstance {
+                r#struct,
+                function: field.clone(),
+            },
         );
         None
     }
@@ -300,8 +625,10 @@ impl<'r> Analyzer<'r> {
         // A primitive receiver's own methods can only come from a
         // `for`-attached spec, which is always `Exposed` -- the check below
         // is then trivially true whatever owner is passed.
-        let (module_path, owner_id) =
-            receiver_type.autoderef().declaring_owner().unwrap_or_else(|| (Vec::new(), callee.id));
+        let (module_path, owner_id) = receiver_type
+            .autoderef()
+            .declaring_owner()
+            .unwrap_or_else(|| (Vec::new(), callee.id));
         let visible = self
             .with_reveal_bypass(was_reveal, callee.id, callee.span, |this| {
                 Some(this.check_member_visibility(method.visibility, &module_path, owner_id))
@@ -313,7 +640,10 @@ impl<'r> Analyzer<'r> {
         self.error(
             callee.id,
             callee.span,
-            AnalysisErrorKind::MethodNotVisible { method: field.clone(), base: receiver_type.clone() },
+            AnalysisErrorKind::MethodNotVisible {
+                method: field.clone(),
+                base: receiver_type.clone(),
+            },
         );
         None
     }
@@ -331,7 +661,12 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         let (id, span) = (callee.id, callee.span);
         let wants_mutable = self_mode.is_mutable();
-        let Receiver { place, checked, r#type, mutable } = receiver;
+        let Receiver {
+            place,
+            checked,
+            r#type,
+            mutable,
+        } = receiver;
 
         // `comp_binding.method(...)` -- resolved separately, before any of
         // the ordinary arms below run: every one of them builds a
@@ -340,21 +675,38 @@ impl<'r> Analyzer<'r> {
         // `Storage::Comp`'s own doc comment). See
         // `adapt_comp_self_argument`'s own doc comment for the substituted
         // counterpart.
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked.root {
+        if let CheckedPlaceRoot::Variable {
+            storage: Storage::Comp,
+            ..
+        } = checked.root
+        {
             return self.adapt_comp_self_argument(id, span, checked, r#type, self_mode);
         }
 
-        let node = |r#type, kind| CheckedExprNode { id, span, r#type, kind };
+        let node = |r#type, kind| CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        };
         match (&r#type, self_mode.is_pointer()) {
             // self wants a pointer, the receiver already is one -- reuse it,
             // coerced to exactly the pointer shape self expects. That is what
             // a seamless deref would have produced anyway, so there is no
             // need to materialize a deref-then-address-of round trip just to
             // get the same pointer value back.
-            (ResolvedType::Pointer { pointee, mutable: pointer_mutable }, true) => {
+            (
+                ResolvedType::Pointer {
+                    pointee,
+                    mutable: pointer_mutable,
+                },
+                true,
+            ) => {
                 self.require_mutable_pointer(id, span, wants_mutable, *pointer_mutable)?;
-                let pointer =
-                    ResolvedType::Pointer { pointee: Box::new(pointee.widened()), mutable: wants_mutable };
+                let pointer = ResolvedType::Pointer {
+                    pointee: Box::new(pointee.widened()),
+                    mutable: wants_mutable,
+                };
                 Some(node(pointer, CheckedExpr::Place(checked)))
             }
             // self wants a pointer, the receiver is a `Str`/`Slice` value --
@@ -365,13 +717,32 @@ impl<'r> Analyzer<'r> {
             // genuine extra indirection layer the signature never asked for.
             // Re-stamped with `self_mode`'s own mutability instead, mirroring
             // that same resolution rule on the call-site side.
-            (ResolvedType::Str { mutable: base_mutable }, true) => {
+            (
+                ResolvedType::Str {
+                    mutable: base_mutable,
+                },
+                true,
+            ) => {
                 self.require_mutable_pointer(id, span, wants_mutable, *base_mutable)?;
-                Some(node(ResolvedType::Str { mutable: wants_mutable }, CheckedExpr::Place(checked)))
+                Some(node(
+                    ResolvedType::Str {
+                        mutable: wants_mutable,
+                    },
+                    CheckedExpr::Place(checked),
+                ))
             }
-            (ResolvedType::Slice { item, mutable: base_mutable }, true) => {
+            (
+                ResolvedType::Slice {
+                    item,
+                    mutable: base_mutable,
+                },
+                true,
+            ) => {
                 self.require_mutable_pointer(id, span, wants_mutable, *base_mutable)?;
-                let slice = ResolvedType::Slice { item: item.clone(), mutable: wants_mutable };
+                let slice = ResolvedType::Slice {
+                    item: item.clone(),
+                    mutable: wants_mutable,
+                };
                 Some(node(slice, CheckedExpr::Place(checked)))
             }
             // self wants a pointer, the receiver is a plain value -- auto-ref
@@ -388,8 +759,14 @@ impl<'r> Analyzer<'r> {
                 // Widened for the same reason an explicit `&`/`&mut` widens:
                 // a method's `self` is `*Self`/`*mut Self`, never
                 // `*Self::Variant`.
-                let pointer = ResolvedType::Pointer { pointee: Box::new(r#type.widened()), mutable: wants_mutable };
-                Some(node(pointer, CheckedExpr::AddressOf(CheckedAddressOf { place: checked })))
+                let pointer = ResolvedType::Pointer {
+                    pointee: Box::new(r#type.widened()),
+                    mutable: wants_mutable,
+                };
+                Some(node(
+                    pointer,
+                    CheckedExpr::AddressOf(CheckedAddressOf { place: checked }),
+                ))
             }
             // self wants a value, the receiver is a pointer -- auto-deref and
             // copy. No mutability check: reading through any pointer to
@@ -397,7 +774,9 @@ impl<'r> Analyzer<'r> {
             (ResolvedType::Pointer { pointee, .. }, false) => {
                 let pointee = pointee.widened();
                 let mut place = checked;
-                place.projections.push(CheckedProjection::Deref { r#type: pointee.clone() });
+                place.projections.push(CheckedProjection::Deref {
+                    r#type: pointee.clone(),
+                });
                 Some(node(pointee, CheckedExpr::Place(place)))
             }
             // self wants a value and the receiver already is one -- passed
@@ -444,7 +823,12 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         let value = self.resolve_comp_place(id, span, &checked)?;
-        let node = |r#type, kind| CheckedExprNode { id, span, r#type, kind };
+        let node = |r#type, kind| CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        };
         match (&r#type, self_mode.is_pointer()) {
             // self wants a pointer, the receiver is already one -- only
             // reachable via `&<place>` *inside* an earlier `comp`
@@ -452,22 +836,37 @@ impl<'r> Analyzer<'r> {
             // reused as-is, widened to exactly the pointer shape self
             // expects.
             (ResolvedType::Pointer { pointee, .. }, true) => {
-                let pointer = ResolvedType::Pointer { pointee: Box::new(pointee.widened()), mutable: false };
+                let pointer = ResolvedType::Pointer {
+                    pointee: Box::new(pointee.widened()),
+                    mutable: false,
+                };
                 Some(node(pointer, CheckedExpr::Const(value)))
             }
             // self wants a pointer, the receiver is a `Str`/`Slice` value
             // -- already its own fat-pointer representation, exactly like
             // the ordinary path's identical arms, so used as-is.
-            (ResolvedType::Str { .. }, true) => Some(node(ResolvedType::Str { mutable: false }, CheckedExpr::Const(value))),
+            (ResolvedType::Str { .. }, true) => Some(node(
+                ResolvedType::Str { mutable: false },
+                CheckedExpr::Const(value),
+            )),
             (ResolvedType::Slice { item, .. }, true) => {
-                let slice = ResolvedType::Slice { item: item.clone(), mutable: false };
+                let slice = ResolvedType::Slice {
+                    item: item.clone(),
+                    mutable: false,
+                };
                 Some(node(slice, CheckedExpr::Const(value)))
             }
             // self wants a pointer, the receiver is a plain value -- const
             // promotion (see `analyze_address_of`'s identical case).
             (_, true) => {
-                let pointer = ResolvedType::Pointer { pointee: Box::new(r#type.widened()), mutable: false };
-                Some(node(pointer, CheckedExpr::Const(ConstValue::Ref(Box::new(value)))))
+                let pointer = ResolvedType::Pointer {
+                    pointee: Box::new(r#type.widened()),
+                    mutable: false,
+                };
+                Some(node(
+                    pointer,
+                    CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
+                ))
             }
             // self wants a value, the receiver is a pointer -- auto-deref:
             // unwrap the one `ConstValue::Ref` layer `&<place>` *inside*
@@ -489,7 +888,13 @@ impl<'r> Analyzer<'r> {
 
     /// A `mut self` call needs a receiver that is writable *through the
     /// pointer it already is* -- an immutable pointer can never supply one.
-    fn require_mutable_pointer(&mut self, id: HirId, span: Span, wants_mutable: bool, is_mutable: bool) -> Option<()> {
+    fn require_mutable_pointer(
+        &mut self,
+        id: HirId,
+        span: Span,
+        wants_mutable: bool,
+        is_mutable: bool,
+    ) -> Option<()> {
         if wants_mutable && !is_mutable {
             self.error(id, span, AnalysisErrorKind::NotMutablePointer);
             return None;
@@ -516,21 +921,37 @@ impl<'r> Analyzer<'r> {
         // `Analyzer::adapt_self_argument`'s own `Storage::Comp` handling).
         // Caught here, not in `resolve_callee`, so a comp-binding *method*
         // call isn't dragged down by the same restriction.
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = receiver.checked.root {
+        if let CheckedPlaceRoot::Variable {
+            storage: Storage::Comp,
+            ..
+        } = receiver.checked.root
+        {
             self.error(
                 callee.id,
                 callee.span,
                 AnalysisErrorKind::CompEvalFailed {
-                    reason: "calling a function stored in a 'comp' binding's field isn't supported yet".into(),
+                    reason:
+                        "calling a function stored in a 'comp' binding's field isn't supported yet"
+                            .into(),
                     trace: vec![],
                 },
             );
             return None;
         }
-        let CheckedPlace { root, mut projections } = receiver.checked;
+        let CheckedPlace {
+            root,
+            mut projections,
+        } = receiver.checked;
         let base_type = receiver.r#type;
         let field_type = self.with_reveal_bypass(was_reveal, callee.id, callee.span, |this| {
-            this.resolve_field_projection(callee.id, callee.span, &mut projections, &base_type, field, &mut false)
+            this.resolve_field_projection(
+                callee.id,
+                callee.span,
+                &mut projections,
+                &base_type,
+                field,
+                &mut false,
+            )
         })?;
         let checked = CheckedExprNode {
             id: callee.id,
@@ -548,7 +969,12 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Only a function can be called.
-    fn require_callable(&mut self, id: HirId, span: Span, r#type: ResolvedType) -> Option<ResolvedFunctionType> {
+    fn require_callable(
+        &mut self,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+    ) -> Option<ResolvedFunctionType> {
         match r#type {
             ResolvedType::Function(fn_type) => Some(fn_type),
             _ => {
@@ -588,7 +1014,14 @@ impl<'r> Analyzer<'r> {
         let flattened = self.flatten_spec(id, span, spec, type_args, &self_placeholder)?;
         let Some(slot_index) = flattened.iter().position(|f| &f.name == field) else {
             let spec_name = spec.borrow().name.clone();
-            self.error(id, span, AnalysisErrorKind::NoSuchSpecFunction { spec: spec_name, function: field.clone() });
+            self.error(
+                id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction {
+                    spec: spec_name,
+                    function: field.clone(),
+                },
+            );
             return None;
         };
         let fn_type = flattened[slot_index].fn_type.clone();
@@ -601,7 +1034,10 @@ impl<'r> Analyzer<'r> {
             self.error(
                 id,
                 span,
-                AnalysisErrorKind::WrongArgumentCount { expected: param_types.len(), found: args.len() },
+                AnalysisErrorKind::WrongArgumentCount {
+                    expected: param_types.len(),
+                    found: args.len(),
+                },
             );
             return None;
         }
@@ -636,7 +1072,12 @@ impl<'r> Analyzer<'r> {
             id,
             span,
             r#type: (*fn_type.return_type).clone(),
-            kind: CheckedExpr::DynamicCall(CheckedDynamicCall { base, slot_index, fn_type, args: checked_args }),
+            kind: CheckedExpr::DynamicCall(CheckedDynamicCall {
+                base,
+                slot_index,
+                fn_type,
+                args: checked_args,
+            }),
         })
     }
 
@@ -663,8 +1104,12 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else { return Intercepted::Declined };
-        let [member] = path.tail.as_slice() else { return Intercepted::Declined };
+        let Some(path) = Self::callee_path(call) else {
+            return Intercepted::Declined;
+        };
+        let [member] = path.tail.as_slice() else {
+            return Intercepted::Declined;
+        };
 
         // A module alias wins over a type interpretation whenever both
         // could apply -- the same priority `resolve_type_qualified_value`
@@ -684,8 +1129,12 @@ impl<'r> Analyzer<'r> {
         } else if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             t
         } else {
-            let absolute: Vec<Ident> =
-                self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect();
+            let absolute: Vec<Ident> = self
+                .module_path
+                .iter()
+                .cloned()
+                .chain(std::iter::once(path.head.clone()))
+                .collect();
             match self.resolve_item_checked(&absolute, &[], true) {
                 Ok(ResolvedItem::Type(t)) => t,
                 _ => return Intercepted::Declined,
@@ -707,9 +1156,13 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         }
 
-        let candidates: Vec<(HirId, ResolvedFunctionType)> =
-            statics.iter().map(|m| (m.decl_id, m.fn_type.clone())).collect();
-        let Some((winner, args)) = self.resolve_overload(node_id, span, member, &candidates, &call.args) else {
+        let candidates: Vec<(HirId, ResolvedFunctionType)> = statics
+            .iter()
+            .map(|m| (m.decl_id, m.fn_type.clone()))
+            .collect();
+        let Some((winner, args)) =
+            self.resolve_overload(node_id, span, member, &candidates, &call.args)
+        else {
             return Intercepted::Claimed(None);
         };
         let (decl_id, fn_type) = candidates[winner].clone();
@@ -718,17 +1171,30 @@ impl<'r> Analyzer<'r> {
         // resolution picks it -- exactly like the single-candidate path
         // (`resolve_type_member`) already does; `resolve_overload` itself
         // has no notion of visibility, only signature fit.
-        let (owner_module_path, owner_id) = r#type.declaring_owner().unwrap_or_else(|| (Vec::new(), node_id));
+        let (owner_module_path, owner_id) = r#type
+            .declaring_owner()
+            .unwrap_or_else(|| (Vec::new(), node_id));
         if !self.check_member_visibility(statics[winner].visibility, &owner_module_path, owner_id) {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::MethodNotVisible { method: member.clone(), base: r#type.clone() },
+                AnalysisErrorKind::MethodNotVisible {
+                    method: member.clone(),
+                    base: r#type.clone(),
+                },
             );
             return Intercepted::Claimed(None);
         }
 
-        Intercepted::Claimed(Some(self.checked_call(node_id, span, &call.callee, decl_id, Storage::Function, fn_type, args)))
+        Intercepted::Claimed(Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            decl_id,
+            Storage::Function,
+            fn_type,
+            args,
+        )))
     }
 
     /// If `call`'s callee is `Owner::function(args)` where `Owner` is a
@@ -756,8 +1222,12 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else { return Intercepted::Declined };
-        let [member] = path.tail.as_slice() else { return Intercepted::Declined };
+        let Some(path) = Self::callee_path(call) else {
+            return Intercepted::Declined;
+        };
+        let [member] = path.tail.as_slice() else {
+            return Intercepted::Declined;
+        };
         if self.context.find_defined_type(&path.head).is_some() {
             return Intercepted::Declined;
         }
@@ -768,9 +1238,16 @@ impl<'r> Analyzer<'r> {
         // ends up actually needing this same alias to surface it.
         let alias = self.resolve_alias(&path.head).ok().flatten();
         let absolute: Vec<Ident> = match &alias {
-            Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::GenericItem(absolute)) => absolute.clone(),
+            Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::GenericItem(absolute)) => {
+                absolute.clone()
+            }
             Some(ImportTarget::Module(_)) => return Intercepted::Declined,
-            None => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+            None => self
+                .module_path
+                .iter()
+                .cloned()
+                .chain(std::iter::once(path.head.clone()))
+                .collect(),
         };
 
         let Some((real_absolute, sig)) = self.generic_static_function_signature_with_ambient(
@@ -812,12 +1289,23 @@ impl<'r> Analyzer<'r> {
         absolute: &[Ident],
         function_name: &Ident,
     ) -> Option<(Vec<Ident>, GenericStaticFunctionSignature)> {
-        if let Ok(Some(sig)) = self.resolver.generic_static_function_signature(absolute, function_name) {
+        if let Ok(Some(sig)) = self
+            .resolver
+            .generic_static_function_signature(absolute, function_name)
+        {
             return Some((absolute.to_vec(), sig));
         }
         let [single] = prefix else { return None };
-        let ambient = self.resolver.ambient_core_candidates(&self.module_path, single).ok().flatten()?;
-        let sig = self.resolver.generic_static_function_signature(&ambient, function_name).ok().flatten()?;
+        let ambient = self
+            .resolver
+            .ambient_core_candidates(&self.module_path, single)
+            .ok()
+            .flatten()?;
+        let sig = self
+            .resolver
+            .generic_static_function_signature(&ambient, function_name)
+            .ok()
+            .flatten()?;
         Some((ambient, sig))
     }
 
@@ -836,32 +1324,44 @@ impl<'r> Analyzer<'r> {
         member: &Ident,
         sig: &GenericStaticFunctionSignature,
     ) -> Option<CheckedExprNode> {
-        let (checked_args, subst) =
-            self.infer_generic_args(&sig.owner_generics, &sig.owner_defaults, &sig.params, &call.args)?;
+        let (checked_args, subst) = self.infer_generic_args(
+            &sig.owner_generics,
+            &sig.owner_defaults,
+            &sig.params,
+            &call.args,
+        )?;
 
-        let type_args = match resolve_inferred_type_args(&sig.owner_generics, &sig.owner_defaults, &subst) {
-            Ok(type_args) => type_args,
-            Err(_) => {
-                let missing: Vec<Ident> = sig
-                    .owner_generics
-                    .iter()
-                    .zip(&sig.owner_defaults)
-                    .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
-                    .map(|(g, _)| g.clone())
-                    .collect();
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::UnresolvedLiteralGeneric {
-                        r#type: owner_absolute.last().cloned().expect("an absolute path always has a last segment"),
-                        generics: missing,
-                    },
-                );
-                return None;
-            }
-        };
+        let type_args =
+            match resolve_inferred_type_args(&sig.owner_generics, &sig.owner_defaults, &subst) {
+                Ok(type_args) => type_args,
+                Err(_) => {
+                    let missing: Vec<Ident> = sig
+                        .owner_generics
+                        .iter()
+                        .zip(&sig.owner_defaults)
+                        .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
+                        .map(|(g, _)| g.clone())
+                        .collect();
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedLiteralGeneric {
+                            r#type: owner_absolute
+                                .last()
+                                .cloned()
+                                .expect("an absolute path always has a last segment"),
+                            generics: missing,
+                        },
+                    );
+                    return None;
+                }
+            };
 
-        let owner_type = match self.resolve_item_checked_with_ambient_fallback(prefix, owner_absolute, &type_args) {
+        let owner_type = match self.resolve_item_checked_with_ambient_fallback(
+            prefix,
+            owner_absolute,
+            &type_args,
+        ) {
             Ok(ResolvedItem::Type(t)) => t,
             Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                 self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
@@ -877,7 +1377,9 @@ impl<'r> Analyzer<'r> {
             ResolvedType::Struct(cell) => cell.borrow().functions.clone(),
             ResolvedType::Union(cell) => cell.borrow().functions.clone(),
             ResolvedType::Enum { cell, .. } => cell.borrow().functions.clone(),
-            _ => unreachable!("generic_static_function_signature only ever matches Struct/Union/Enum"),
+            _ => unreachable!(
+                "generic_static_function_signature only ever matches Struct/Union/Enum"
+            ),
         };
         let method = all_methods
             .into_iter()
@@ -885,22 +1387,32 @@ impl<'r> Analyzer<'r> {
             .map(|(_, m)| m)
             .expect("generic_static_function_signature confirmed this static function exists");
 
-        let (owner_module_path, owner_id) = owner_type.declaring_owner().unwrap_or_else(|| (Vec::new(), node_id));
+        let (owner_module_path, owner_id) = owner_type
+            .declaring_owner()
+            .unwrap_or_else(|| (Vec::new(), node_id));
         if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id) {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::MethodNotVisible { method: member.clone(), base: owner_type.clone() },
+                AnalysisErrorKind::MethodNotVisible {
+                    method: member.clone(),
+                    base: owner_type.clone(),
+                },
             );
             return None;
         }
 
-        let ResolvedMethod { decl_id, fn_type, .. } = method;
+        let ResolvedMethod {
+            decl_id, fn_type, ..
+        } = method;
         if checked_args.len() != fn_type.params.len() && !fn_type.is_variadic {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::WrongArgumentCount { expected: fn_type.params.len(), found: checked_args.len() },
+                AnalysisErrorKind::WrongArgumentCount {
+                    expected: fn_type.params.len(),
+                    found: checked_args.len(),
+                },
             );
             return None;
         }
@@ -918,7 +1430,15 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        Some(self.checked_call(node_id, span, &call.callee, decl_id, Storage::Function, fn_type, checked_args))
+        Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            decl_id,
+            Storage::Function,
+            fn_type,
+            checked_args,
+        ))
     }
 
     /// If `ident` -- used unqualified, whether it's declared in this module
@@ -951,11 +1471,17 @@ impl<'r> Analyzer<'r> {
         &mut self,
         ident: &Ident,
     ) -> Option<(Vec<Ident>, OverloadCandidates)> {
-        let (absolute, is_alias, import_reveal) = match self.resolver.raw_import_absolute_path(&self.module_path, ident)
+        let (absolute, is_alias, import_reveal) = match self
+            .resolver
+            .raw_import_absolute_path(&self.module_path, ident)
         {
             Ok(Some((absolute, reveal))) => (absolute, true, reveal),
             Ok(None) => (
-                self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect(),
+                self.module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(ident.clone()))
+                    .collect(),
                 false,
                 false,
             ),
@@ -965,11 +1491,17 @@ impl<'r> Analyzer<'r> {
             Err(_) => return None,
         };
         let (name, module_path) = absolute.split_last()?;
-        let raw_candidates = self.resolver.function_overload_signatures(module_path, name).ok().flatten()?;
+        let raw_candidates = self
+            .resolver
+            .function_overload_signatures(module_path, name)
+            .ok()
+            .flatten()?;
         let candidates = if is_alias && !import_reveal {
             raw_candidates
                 .into_iter()
-                .filter(|(_, _, visibility)| Self::visibility_allows(*visibility, module_path, &self.module_path))
+                .filter(|(_, _, visibility)| {
+                    Self::visibility_allows(*visibility, module_path, &self.module_path)
+                })
                 .collect()
         } else {
             raw_candidates
@@ -994,7 +1526,9 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else { return Intercepted::Declined };
+        let Some(path) = Self::callee_path(call) else {
+            return Intercepted::Declined;
+        };
 
         if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
             return Intercepted::Declined;
@@ -1010,7 +1544,9 @@ impl<'r> Analyzer<'r> {
         // visibility).
         let (name, module_path, candidates, needs_visibility_check): (Ident, Vec<Ident>, _, bool) =
             if path.is_unqualified() {
-                let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(&path.head) else {
+                let Some((absolute, candidates)) =
+                    self.resolve_bare_overload_candidates(&path.head)
+                else {
                     return Intercepted::Declined;
                 };
                 let Some((name, module_path)) = Self::split_item_path(&absolute) else {
@@ -1019,13 +1555,19 @@ impl<'r> Analyzer<'r> {
                 (name, module_path, candidates, false)
             } else {
                 let absolute: Vec<Ident> = match self.resolve_alias(&path.head).ok().flatten() {
-                    Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
+                    Some(ImportTarget::Module(target)) => target
+                        .into_iter()
+                        .chain(path.tail.iter().cloned())
+                        .collect(),
                     _ => return Intercepted::Declined,
                 };
                 let Some((name, module_path)) = Self::split_item_path(&absolute) else {
                     return Intercepted::Declined;
                 };
-                let candidates = match self.resolver.function_overload_signatures(&module_path, &name) {
+                let candidates = match self
+                    .resolver
+                    .function_overload_signatures(&module_path, &name)
+                {
                     Ok(Some(candidates)) => candidates,
                     Ok(None) => return Intercepted::Declined,
                     Err(e) => {
@@ -1036,10 +1578,14 @@ impl<'r> Analyzer<'r> {
                 (name, module_path, candidates, true)
             };
 
-        let signatures: Vec<(HirId, ResolvedFunctionType)> =
-            candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
+        let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
+            .iter()
+            .map(|(id, fn_type, _)| (*id, fn_type.clone()))
+            .collect();
 
-        let Some((winner, args)) = self.resolve_overload(node_id, span, &name, &signatures, &call.args) else {
+        let Some((winner, args)) =
+            self.resolve_overload(node_id, span, &name, &signatures, &call.args)
+        else {
             return Intercepted::Claimed(None);
         };
         let (decl_id, fn_type, visibility) = candidates[winner].clone();
@@ -1064,7 +1610,15 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Claimed(None);
         }
 
-        Intercepted::Claimed(Some(self.checked_call(node_id, span, &call.callee, decl_id, Storage::Function, fn_type, args)))
+        Intercepted::Claimed(Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            decl_id,
+            Storage::Function,
+            fn_type,
+            args,
+        )))
     }
 
     /// Resolves a call against 2+ same-named candidates by argument type --
@@ -1102,7 +1656,11 @@ impl<'r> Analyzer<'r> {
     ) -> Option<(usize, Vec<CheckedExprNode>)> {
         let mut fixed: Vec<Option<CheckedExprNode>> = Vec::with_capacity(args.len());
         for arg in args {
-            fixed.push(if Self::adaptable_literal(arg) { None } else { Some(self.analyze_expr(arg, None)?) });
+            fixed.push(if Self::adaptable_literal(arg) {
+                None
+            } else {
+                Some(self.analyze_expr(arg, None)?)
+            });
         }
 
         let mut viable: Vec<(usize, u32)> = Vec::new();
@@ -1112,7 +1670,9 @@ impl<'r> Analyzer<'r> {
             }
             let mut score = 0u32;
             let mut ok = true;
-            for ((_, param_type), (arg, fixed_arg)) in fn_type.params.iter().zip(args.iter().zip(&fixed)) {
+            for ((_, param_type), (arg, fixed_arg)) in
+                fn_type.params.iter().zip(args.iter().zip(&fixed))
+            {
                 match fixed_arg {
                     Some(checked) => {
                         if !param_type.accepts(&checked.r#type) {
@@ -1146,7 +1706,11 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         };
-        let winners: Vec<usize> = viable.iter().filter(|&&(_, s)| s == min_score).map(|&(i, _)| i).collect();
+        let winners: Vec<usize> = viable
+            .iter()
+            .filter(|&&(_, s)| s == min_score)
+            .map(|&(i, _)| i)
+            .collect();
         let winner = match winners.as_slice() {
             [only] => *only,
             _ => {
@@ -1200,7 +1764,11 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         parse_number_literal(n, target_kind).ok()?;
-        let default = if n.fractional_part.is_some() { ResolvedType::F64 } else { ResolvedType::I32 };
+        let default = if n.fractional_part.is_some() {
+            ResolvedType::F64
+        } else {
+            ResolvedType::I32
+        };
         Some(*target == default)
     }
 
@@ -1233,7 +1801,9 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else { return Intercepted::Declined };
+        let Some(path) = Self::callee_path(call) else {
+            return Intercepted::Declined;
+        };
 
         if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
             return Intercepted::Declined;
@@ -1242,11 +1812,19 @@ impl<'r> Analyzer<'r> {
         let absolute: Vec<Ident> = if path.is_unqualified() {
             match self.resolve_alias(&path.head).ok().flatten() {
                 Some(ImportTarget::GenericItem(absolute)) => absolute,
-                _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+                _ => self
+                    .module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(path.head.clone()))
+                    .collect(),
             }
         } else {
             match self.resolve_alias(&path.head).ok().flatten() {
-                Some(ImportTarget::Module(target)) => target.into_iter().chain(path.tail.iter().cloned()).collect(),
+                Some(ImportTarget::Module(target)) => target
+                    .into_iter()
+                    .chain(path.tail.iter().cloned())
+                    .collect(),
                 _ => return Intercepted::Declined,
             }
         };
@@ -1272,35 +1850,47 @@ impl<'r> Analyzer<'r> {
         absolute: &[Ident],
         sig: &GenericSignature,
     ) -> Option<CheckedExprNode> {
-        let (checked_args, subst) = self.infer_generic_args(&sig.generics, &sig.defaults, &sig.params, &call.args)?;
+        let (checked_args, subst) =
+            self.infer_generic_args(&sig.generics, &sig.defaults, &sig.params, &call.args)?;
 
         let type_args = match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {
             Ok(type_args) => type_args,
             Err(generic) => {
-                self.error(node_id, span, AnalysisErrorKind::UnresolvedGenericParam(generic));
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UnresolvedGenericParam(generic),
+                );
                 return None;
             }
         };
 
-        let (fn_type, storage, decl_id) = match self.resolve_item_checked(absolute, &type_args, true) {
-            Ok(ResolvedItem::Value { r#type: ResolvedType::Function(fn_type), storage, decl_id, mutable: _ }) => {
-                (fn_type, storage, decl_id)
-            }
-            Ok(_) => {
-                self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
-                return None;
-            }
-            Err(e) => {
-                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
-                return None;
-            }
-        };
+        let (fn_type, storage, decl_id) =
+            match self.resolve_item_checked(absolute, &type_args, true) {
+                Ok(ResolvedItem::Value {
+                    r#type: ResolvedType::Function(fn_type),
+                    storage,
+                    decl_id,
+                    mutable: _,
+                }) => (fn_type, storage, decl_id),
+                Ok(_) => {
+                    self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
+                    return None;
+                }
+                Err(e) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
+                    return None;
+                }
+            };
 
         if checked_args.len() != fn_type.params.len() && !fn_type.is_variadic {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::WrongArgumentCount { expected: fn_type.params.len(), found: checked_args.len() },
+                AnalysisErrorKind::WrongArgumentCount {
+                    expected: fn_type.params.len(),
+                    found: checked_args.len(),
+                },
             );
             return None;
         }
@@ -1318,6 +1908,14 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        Some(self.checked_call(node_id, span, &call.callee, decl_id, storage, fn_type, checked_args))
+        Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            decl_id,
+            storage,
+            fn_type,
+            checked_args,
+        ))
     }
 }

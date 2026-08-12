@@ -5,8 +5,10 @@ import fmt::Display;
 import fmt::write_bool;
 import io::Writer;
 
-exposed spec BoolOps : Display for bool {
-    fmt(*self, out: *mut Writer) => void {
+primitive bool {
+    exposed fmt(*self, out: *mut Writer) => void {
         write_bool(out, *self);
     }
 }
+
+compose bool : Display {}

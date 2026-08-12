@@ -1,10 +1,10 @@
 use crate::ast::annotation::AnnotationNode;
+use crate::ast::expression::codeblock::CodeblockExpr;
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::Ident;
-use crate::ast::r#type::Type;
 use crate::ast::self_mode::SelfMode;
 use crate::ast::statement::declaration::DeclarationStmt;
-use crate::ast::expression::codeblock::CodeblockExpr;
+use crate::ast::r#type::Type;
 use crate::ast::visibility::Visibility;
 
 /// A `spec` -- a function-only interface/trait, in one of two surface
@@ -34,25 +34,14 @@ use crate::ast::visibility::Visibility;
 /// two parser-level entry points purely for the clearer `=`/`:` syntax the
 /// user sees; see `parser::item::parse_spec_def`.
 ///
-/// The declaration form may also carry a trailing `for TargetType` clause
-/// (`target`, `None` unless written) -- this both defines the spec *and*
-/// immediately, anonymously implements it for `TargetType`: the spec's own
-/// `ident` is never registered as a name anywhere once `target` is set (see
-/// `omega_driver`'s `item_name`), so two unrelated `for` blocks may reuse
-/// the same `ident` with no conflict. Only legal on the declaration form --
-/// the alias form has no body to attach and never sets this field.
 #[derive(Debug, Clone)]
 pub struct SpecStmt {
     pub ident: Ident,
-    /// `exposed`/`internal`/(default `Hidden`) -- meaningless when
-    /// `target.is_some()` (a `for`-attached spec is never registered under
-    /// its own name at all, see `target`'s own doc comment), but parsed
-    /// uniformly regardless, for grammar consistency.
+    /// `exposed`/`internal`/(default `Hidden`).
     pub visibility: Visibility,
     pub generics: Vec<GenericParam>,
     pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,
-    pub target: Option<Type>,
     /// `true` for the `=`/`|`-separated alias form (`spec Alias = A | B;`),
     /// `false` for the ordinary `:`/`{}` declaration form -- both are
     /// carried in this same struct shape (see the type's own doc comment),
@@ -79,9 +68,7 @@ pub struct SpecFunctionStmt {
     /// (`SelfMode::Pointer`/`MutPointer`) for an ordinary spec function --
     /// by-value self is rejected during spec signature resolution (see
     /// `Analyzer::resolve_spec_functions`), since it can't survive `spec
-    /// *T` dynamic dispatch's `Self`-erasure. A `SpecStmt` with a `target`
-    /// is exempt (it can never be named for `spec *T`, so this can't apply)
-    /// -- see the same function's `is_extension` bypass.
+    /// *T` dynamic dispatch's `Self`-erasure.
     pub self_mode: Option<SelfMode>,
     pub params: Vec<DeclarationStmt>,
     pub return_type: Type,

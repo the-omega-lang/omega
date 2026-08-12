@@ -2,7 +2,8 @@
 
 Omega's interface/trait system: function-only contracts, static dispatch
 through generic bounds, dynamic dispatch through fat trait-object pointers,
-and — separately — a way to attach methods to primitives.
+explicit composition, and a core-only way to attach inherent methods to
+primitive types.
 
 ## Declaration, dependencies, defaults
 
@@ -56,18 +57,34 @@ to a bare data pointer with no size information to copy a value from.
 ## Implementing
 
 ```
-struct Dog : Animal {
+struct Dog {
     exposed id: i32;
-    exposed kind(*self) => AnimalKind { AnimalKind::Dog }
-    exposed make_sound(*self) => *u8 { <*u8>b"woof woof\0" }
+}
+
+compose Dog : Animal {
+    kind(*self) => AnimalKind { AnimalKind::Dog }
+    make_sound(*self) => *str { "woof woof" }
 }
 ```
 
-`struct/enum/union : Spec1, Spec2 { ... }` — every required function
-without a matching own-signature method, that has no default either, is
-`MissingSpecFunction`. An implementor's satisfying method must also meet
-the spec's own visibility floor — see
-[visibility](07-visibility.md)'s inheritance + minimum-permissiveness rule.
+`compose Target : Spec { ... }` is the only conformance declaration. The
+block must contain exactly the spec requirements it implements: a missing
+required function is `MissingSpecFunction`, and an extra function is
+`ComposeExtraFunction`. A matching inherent method may satisfy a requirement,
+and a spec default supplies an omitted method with a body. A compose method
+has no visibility modifier; it inherits the requirement's visibility.
+
+Composition is nominal and non-blanket. The target must be a concrete type;
+generic composition may pattern-match a declared generic target such as
+`compose<T> List<T> : ToIterator<T>`. The declaration is legal when either
+the target type or the spec belongs to the current package. A second compose
+for the same `(target, spec, spec arguments)` is rejected.
+
+Composed instance methods do not become globally callable as ordinary
+inherent methods. They are available through a generic bound (`T: Animal`),
+or explicitly as `Animal::make_sound(&dog)`. A composed static function is
+called as `Target::function(...)`; two compositions providing the same static
+call are diagnosed as ambiguous.
 
 ### Implementing the same generic spec more than once
 
@@ -76,15 +93,19 @@ spec Consumer<T> {
     consume(*self, value: T) => i32;
 }
 
-struct Multi : Consumer<i32>, Consumer<*u8> {
-    exposed consume(*self, value: i32) => i32 { value + 1 }
-    exposed consume(*self, value: *u8) => i32 { puts(value) }
+struct Multi {}
+
+compose Multi : Consumer<i32> {
+    consume(*self, value: i32) => i32 { value + 1 }
+}
+compose Multi : Consumer<*u8> {
+    consume(*self, value: *u8) => i32 { puts(value) }
 }
 ```
 
 Supported: a type may implement the same generic spec at different type
-arguments, satisfied by ordinary overloading. Every requirement — across
-every `implements`-clause entry, not just within one — is matched against
+arguments, with a separate compose block for each instantiation. Every
+requirement is matched against
 the implementor's own methods by **exact `(name, signature)`**, never by
 name alone: `Consumer<i32>`'s `consume(*self, value: i32)` and
 `Consumer<*u8>`'s `consume(*self, value: *u8)` are two independent
@@ -133,15 +154,12 @@ make_sound_with_static_dispatch<T: Animal>(animal: *T) => void {
 ```
 
 Because Omega's generics fully monomorphize (see [generics](06-generics.md)),
-static dispatch needed **zero new codegen** — once a concrete type's method
-list is fully populated with every spec-required method (own override or
-spec-default instantiation), `animal.make_sound()` inside the bound generic
-body resolves through the exact same `find_methods` lookup any ordinary
-method call already uses. All of static dispatch reduces to (1) correctly
-populating that list and (2) a bound-satisfaction check for a better error
-than a bare "no such method." Nominal, not structural — `T: Animal`
-requires a real `: Animal` declaration; an unbound generic parameter still
-works by pure duck-typing as before.
+static dispatch uses the composed method selected for the concrete
+instantiation. `animal.make_sound()` is in scope because `T: Animal`; the
+same call on a concrete unbound `Dog` is intentionally rejected with
+`MethodNotInScope`, and can be written `Animal::make_sound(animal)` instead.
+Nominal, not structural — `T: Animal` requires a real compose declaration;
+an unbound generic parameter still works by pure duck-typing as before.
 
 `T: SpecAlias` (`accepts_myspec<T: MySpec>`) requires everything every
 spec the alias expands to demands, all at once.
@@ -331,47 +349,30 @@ collection path (`compute_aggregate`/`collect_methods`); a `spec T` return
 type there is rejected with the same `SpecStaticNotAllowedHere` diagnostic
 any other unsupported position gets.
 
-## `for`-attached specs: giving primitives methods
+## Primitive methods
 
 ```
-spec StrOps : Eq for str {
-    equals(*self, other: Self) => bool { ... }
+primitive str {
+    exposed is_empty(*self) => bool { self.length == 0 }
 }
-spec SliceImpl<T> for [?]T {
-    first(*self) => T { self[0] }
+primitive<T> [?]T {
+    exposed first(*self, out: *mut T) => bool { ... }
 }
 ```
 
-`spec Name : Deps for Target { ... }` both defines and immediately,
-anonymously implements a spec for a primitive `Target` in one statement —
-this is the *only* way to give a scalar/`str`/slice type its own methods.
-`Name` is never registered anywhere (two unrelated `for` blocks may reuse
-the same name with zero conflict) — the identity that matters is
-`(spec, target)`, and **exactly one `for` block per target type is allowed,
-enforced globally**, which is what eliminates any cross-spec merge/conflict
-question for a receiver entirely (a receiver matches at most one spec by
-construction).
+`primitive Target { ... }` defines inherent methods for compiler-provided
+types that cannot contain their own declaration bodies. It is restricted to
+the `core` package and to scalar, `bool`, `char`, `str`, and generic slice
+targets; `void` is not a valid target. Exactly one primitive block may target
+each concrete type. Functions carry ordinary visibility modifiers and are
+called like inherent methods.
 
-Restricted to **`core` only** (Omega's standard-library module tree — see
-[core library](13-core-library.md)), and only three target shapes: the
-built-in scalar/`bool`/`char`/`void` set, `str`, or the pattern shape
-`[?]T` (a spec's own single generic parameter, referencing a slice of
-it) — bare, with no leading `*`, the same convention `str` above already
-uses: the target names the *value* type, and each method's own self-mode
-(`*self`/`*mut self`) is what adds the pointer. This
-replaced an earlier, explicitly rolled-back `@ufcs` annotation design — the
-user judged the annotation approach as fighting the language's own syntax;
-reusing ordinary `spec` grammar for the same purpose was simpler and more
-consistent.
-
-Extension methods are discovered **lazily**, the first time any primitive
-method lookup needs them, by walking `core`'s own `import` graph
-transitively from its root (reusing the same worklist the compiler's
-ordinary reachability sweep is built from) — not a filesystem directory
-walk. There is no ambient-import mechanism for these methods at all (unlike
-the rejected `@ufcs` design): since the spec name is unregisterable, calls
-resolve purely through the ordinary method-lookup fallback, independent of
-what's imported.
+Primitive methods and spec conformance are deliberately separate. Core adds
+conformance with ordinary empty or method-bearing compose blocks, for example
+`compose str : Eq {}` when the primitive block already supplies the matching
+`equals` implementation. This keeps specs named and independently composable
+instead of inventing an anonymous interface as a side effect of adding
+methods.
 
 ## Caveats
 
@@ -386,16 +387,10 @@ what's imported.
   `(concrete, spec, spec type args)` though (`decl_id`s aren't meaningful
   across separately-compiled translation units) — see
   `mangle::vtable_symbol`.
-- **Spec implementation is struct/enum/union only** for ordinary specs — no
-  primitives outside the dedicated `for`-attachment mechanism above.
+- **Only `core` can add inherent methods to primitives.** Any package allowed
+  by the orphan rule can compose a spec with a concrete target.
 - **No `is_variadic` support** on spec functions.
 - **Coercion into `spec *T` isn't wired into every expression position** —
   see the 4-site list above.
-- A fully degenerate program that never calls *any* `for`-attached method
-  anywhere never triggers extension discovery at all, so a malformed
-  `for`-spec inside `core` goes unvalidated in that one case — consistent
-  with this compiler's general "only what's referenced gets analyzed"
-  philosophy, not a regression specific to this feature.
-- See [visibility](07-visibility.md) for the dynamic-dispatch visibility
-  gap this system's `Hidden`-method owner-scoping opened and how it was
-  closed.
+- Generic primitive and compose templates are instantiated lazily for the
+  concrete target types a compilation uses.

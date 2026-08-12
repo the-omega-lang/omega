@@ -76,11 +76,9 @@ There is no implicit flush at program exit. A caller-owned buffered writer
 must be flushed. Macro bodies resolve nested macro calls at the invocation
 site.
 
-A user-defined type implements `Display` through ordinary spec conformance,
-`struct Pair : Display { exposed fmt(*self, out: *mut Writer) => void { ... } }`
-— see `examples/io_demo/main.omg`. `spec ... for` is **not** the spelling to
-reach for: it exists solely to give *primitive* types methods, it is confined
-to the module tree rooted at `core`, and every primitive's `Display` therefore
-lives in `core::numerics`/`core::strings`/`core::chars`/`core::bools` by
-extending the one `for`-block that type already has. No package can attach
-behaviour to another package's types.
+A user-defined type implements `Display` with
+`compose Pair : Display { fmt(*self, out: *mut Writer) => void { ... } }` —
+see `examples/io_demo/main.omg`. Primitive inherent methods live in core-only
+`primitive` blocks; their `Display` conformances are separate compose blocks.
+For any compose, either the target type or the spec must belong to the current
+package.

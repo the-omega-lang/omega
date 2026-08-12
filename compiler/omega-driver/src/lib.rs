@@ -20,15 +20,14 @@
 //!   throwaway per-item `Analyzer` is ever run.
 //! - [`items`] -- the item query itself (phase 1: signatures).
 //! - [`bodies`] -- phase 2, reading phase 1's results back.
-//! - [`extensions`] -- `for`-spec methods, which no item query can reach.
 //! - [`compile`] -- the two-phase whole-program sweep.
 //! - [`resolver`] -- the `ModuleResolver` implementation the analyzer sees.
 
 mod bodies;
 pub(crate) mod compile;
+mod composes;
 mod diagnostics;
 mod error;
-mod extensions;
 mod fs_resolve;
 mod items;
 mod modules;
@@ -39,8 +38,9 @@ pub use error::{CompileError, CompiledProgram};
 pub use fs_resolve::basename;
 pub use roots::ExternRoot;
 
+use composes::Composes;
+use composes::Primitives;
 use diagnostics::Diagnostics;
-use extensions::Extensions;
 use items::ItemQueries;
 use modules::ModuleStore;
 use omega_parser::ast::statement::macro_definition::MacroDefinitionStmt;
@@ -74,8 +74,9 @@ pub struct Driver {
     items: ItemQueries,
     /// Import aliases: what each resolves to, and which were ever used.
     imports: ImportState,
-    /// `for`-spec extension discovery, which sits outside the item query.
-    extensions: Extensions,
+    /// Primitive and compose declarations, which sit outside named-item queries.
+    primitives: Primitives,
+    composes: Composes,
     /// Every exposed macro in the ambient `core` prelude, collected once.
     prelude_macros: Option<Rc<HashMap<Ident, MacroDefinitionStmt>>>,
 }
@@ -88,14 +89,19 @@ impl Driver {
     /// not a plain already-defaulted name, is what this needs); `externs`
     /// is every `--extern` the CLI was given. Fails only if two different
     /// `--extern`s claim the same declared name.
-    pub fn new(root: PathBuf, root_name: Option<Ident>, externs: Vec<ExternRoot>) -> Result<Self, Vec<CompileError>> {
+    pub fn new(
+        root: PathBuf,
+        root_name: Option<Ident>,
+        externs: Vec<ExternRoot>,
+    ) -> Result<Self, Vec<CompileError>> {
         Ok(Self {
             roots: ModuleRoots::new(root, root_name, externs)?,
             modules: ModuleStore::default(),
             diagnostics: Diagnostics::default(),
             items: ItemQueries::default(),
             imports: ImportState::default(),
-            extensions: Extensions::default(),
+            primitives: Primitives::default(),
+            composes: Composes::default(),
             prelude_macros: None,
         })
     }

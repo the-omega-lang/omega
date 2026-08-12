@@ -3,7 +3,7 @@
 # Bound only on `K: Hash` -- a generic parameter only ever carries one
 # formal bound (see `GenericParam`'s own doc comment), and every realistic
 # key type already provides `cmp::Eq::equals` structurally (every `core`
-# primitive does, via its own `for`-block), so key comparison inside this
+# primitive does, via its core primitive block), so key comparison inside this
 # file's own bodies stays duck-typed/unbound, exactly like any other
 # structural call in this language -- see `core::hash`'s own doc comment
 # for the full reasoning.
@@ -45,10 +45,10 @@ exposed struct KeyValue<K, V> {
     exposed value: V;
 }
 
-exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V>> {
-    buckets: *mut *mut Entry<K, V>;
-    bucket_count: usize;
-    count: usize;
+exposed struct HashMap<K: Hash, V> {
+    internal buckets: *mut *mut Entry<K, V>;
+    internal bucket_count: usize;
+    internal count: usize;
 
     # `idx`'s own bucket-slot address, within an arbitrary bucket array
     # (not necessarily `self.buckets` -- `resize` needs this for both the
@@ -201,7 +201,10 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V>> {
         free(<*u8>self.buckets);
     }
 
-    exposed to_iterator(*self) => HashMapIterator<K, V> {
+}
+
+compose<K: Hash, V> HashMap<K, V> : ToIterator<KeyValue<K, V>> {
+    to_iterator(*self) => HashMapIterator<K, V> {
         HashMapIterator<K, V> {
             buckets = self.buckets;
             bucket_count = self.bucket_count;
@@ -211,13 +214,16 @@ exposed struct HashMap<K: Hash, V> : ToIterator<KeyValue<K, V>> {
     }
 }
 
-exposed struct HashMapIterator<K, V> : Iterator<KeyValue<K, V>> {
+exposed struct HashMapIterator<K, V> {
     internal buckets: *mut *mut Entry<K, V>;
     internal bucket_count: usize;
     internal bucket_index: usize;
     internal current: *mut Entry<K, V>;
 
-    exposed next(*mut self) => Option<KeyValue<K, V>> {
+}
+
+compose<K, V> HashMapIterator<K, V> : Iterator<KeyValue<K, V>> {
+    next(*mut self) => Option<KeyValue<K, V>> {
         while self.current == <*mut Entry<K, V>>0 {
             if self.bucket_index >= self.bucket_count {
                 return Option<KeyValue<K, V>>::None;

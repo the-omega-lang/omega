@@ -36,6 +36,7 @@ pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode,
+    compose::ComposeStmt,
     declaration::DeclarationStmt,
     defer::DeferStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
@@ -49,6 +50,7 @@ pub use crate::ast::statement::{
         FragmentKind, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
         MacroSignature,
     },
+    primitive::PrimitiveStmt,
     r#return::ReturnStmt,
     spec::{SpecFunctionStmt, SpecStmt},
     r#struct::StructStmt,

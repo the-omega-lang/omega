@@ -143,6 +143,6 @@ rustc's `` `#[warn(...)]` on by default `` convention.
 - `sizeof<Type>` inside an annotation argument is primitive-only; the
   ordinary expression form has no such restriction.
 - A fifth annotation, `@ufcs`, was explicitly designed and then not
-  pursued this way at all — see [specs](08-specs.md)'s `for`-attachment
-  mechanism, which replaced the idea entirely rather than shipping
+  pursued this way at all — see [specs](08-specs.md)'s primitive and compose
+  declarations, which replaced the idea entirely rather than shipping
   alongside it.

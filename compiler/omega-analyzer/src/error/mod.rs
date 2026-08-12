@@ -15,18 +15,21 @@ mod render;
 mod warning;
 
 pub use kind::AnalysisErrorKind;
-pub use warning::{AnalysisWarning, AnalysisWarningKind};
 pub use render::resolve_error_diagnostic;
+pub use warning::{AnalysisWarning, AnalysisWarningKind};
 
 use crate::resolved_type::{NumericKind, ResolvedFunctionType, ResolvedType};
 use crate::resolver::ResolveError;
 use omega_diagnostics::Diagnostic;
 use omega_hir::HirId;
-use omega_parser::prelude::{BinaryOp, Ident, Span, Visibility};
+use omega_parser::prelude::{BinaryOp, Ident, Span};
 use std::fmt;
 
 fn join(path: &[Ident]) -> String {
-    path.iter().map(|i| i.as_ref()).collect::<Vec<_>>().join("::")
+    path.iter()
+        .map(|i| i.as_ref())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 /// Renders a possibly-generic name for a diagnostic -- `"Name"` when
@@ -42,7 +45,11 @@ fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
     if type_args.is_empty() {
         return name.as_ref().to_string();
     }
-    let args = type_args.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    let args = type_args
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("{}<{}>", name.as_ref(), args)
 }
 
@@ -70,7 +77,11 @@ pub enum TypeResolutionError {
     /// `Enum::Name` in *type* position (e.g. `x: *Entity::Name`) where
     /// `Name` isn't one of `Enum`'s variants -- the type-position mirror of
     /// `AnalysisErrorKind::NoSuchEnumMember`.
-    NoSuchVariantForType { r#enum: Ident, name: Ident, similar: Option<Ident> },
+    NoSuchVariantForType {
+        r#enum: Ident,
+        name: Ident,
+        similar: Option<Ident>,
+    },
     /// `spec *Foo`/`spec *mut Foo` where `Foo` resolved to something other
     /// than a spec (a struct, a primitive, ...) -- a dynamic-dispatch
     /// pointer's pointee must always be a spec.
@@ -99,7 +110,7 @@ pub enum TypeResolutionError {
     /// "never itself the type of a runtime value") -- only `spec *Foo`
     /// (dynamic dispatch, a fat pointer) or a generic bound (`T: Foo`) give
     /// it one. Every legitimate producer of a bare `ResolvedType::Spec`
-    /// (an implements clause, a generic bound, `spec *Foo`'s own pointee)
+    /// (a compose declaration, a generic bound, `spec *Foo`'s own pointee)
     /// resolves it through a dedicated path that never reaches this check;
     /// reaching this variant means a spec name was written where none of
     /// those apply.
@@ -143,7 +154,12 @@ impl fmt::Display for TypeResolutionError {
             Self::ModuleResolution(e) => write!(f, "{e}"),
             Self::NotAType(path) => write!(f, "'{}' is a value, not a type", join(path)),
             Self::NoSuchVariantForType { r#enum, name, .. } => {
-                write!(f, "no variant '{}' on enum '{}'", name.as_ref(), r#enum.as_ref())
+                write!(
+                    f,
+                    "no variant '{}' on enum '{}'",
+                    name.as_ref(),
+                    r#enum.as_ref()
+                )
             }
             Self::NotASpec(name) => write!(f, "'{}' is not a spec", name.as_ref()),
             Self::SpecNotObjectSafe(name) => {
@@ -156,13 +172,24 @@ impl fmt::Display for TypeResolutionError {
                 )
             }
             Self::SpecStaticNotAllowedHere(name) => {
-                write!(f, "'spec {}' is only allowed as a parameter type or a function's own return type", name.as_ref())
+                write!(
+                    f,
+                    "'spec {}' is only allowed as a parameter type or a function's own return type",
+                    name.as_ref()
+                )
             }
             Self::SpecUsedAsValueType(name) => {
-                write!(f, "'{}' is a spec -- it has no size on its own, so it can't be used as a value's type", name.as_ref())
+                write!(
+                    f,
+                    "'{}' is a spec -- it has no size on its own, so it can't be used as a value's type",
+                    name.as_ref()
+                )
             }
             Self::NeverNotAllowedHere => {
-                write!(f, "'never' is only allowed as a function/method's own return type")
+                write!(
+                    f,
+                    "'never' is only allowed as a function/method's own return type"
+                )
             }
             Self::BareUnsizedArray => {
                 write!(f, "'[]T' is not valid on its own")
@@ -210,7 +237,11 @@ impl fmt::Display for AnalysisError {
 impl std::error::Error for AnalysisError {}
 
 fn plural(n: usize, word: &str) -> String {
-    if n == 1 { word.to_string() } else { format!("{word}s") }
+    if n == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
 }
 
 /// `'a'` / `'a' and 'b'` / `'a', 'b', and 'c'` -- the bare listing

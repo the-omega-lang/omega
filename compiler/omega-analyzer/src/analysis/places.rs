@@ -41,9 +41,14 @@ impl<'r> Analyzer<'r> {
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
         let base = match current_type {
-            ResolvedType::Pointer { pointee, mutable: pointer_mutable } => {
+            ResolvedType::Pointer {
+                pointee,
+                mutable: pointer_mutable,
+            } => {
                 *mutable = *pointer_mutable;
-                projections.push(CheckedProjection::Deref { r#type: (**pointee).clone() });
+                projections.push(CheckedProjection::Deref {
+                    r#type: (**pointee).clone(),
+                });
                 (**pointee).clone()
             }
             other => other.clone(),
@@ -127,11 +132,17 @@ impl<'r> Analyzer<'r> {
         match field.as_ref() {
             "ptr" => {
                 projections.push(CheckedProjection::SpecObjectPtr { mutable });
-                Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable })
+                Some(ResolvedType::Pointer {
+                    pointee: Box::new(ResolvedType::U8),
+                    mutable,
+                })
             }
             "vtable" => {
                 projections.push(CheckedProjection::SpecObjectVtable);
-                Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false })
+                Some(ResolvedType::Pointer {
+                    pointee: Box::new(ResolvedType::U8),
+                    mutable: false,
+                })
             }
             _ => {
                 self.no_such_field(node_id, span, field, base);
@@ -174,36 +185,79 @@ impl<'r> Analyzer<'r> {
     /// order: the tag (which has no declared visibility of its own), then
     /// the header, the shared dynamic fields, and finally the known
     /// variant's own body fields.
-    fn find_enum_member(e: &ResolvedEnumType, variant: Option<usize>, field: &Ident) -> Option<EnumMember> {
-        let owner = |visibility| MemberOwner { visibility, module_path: e.module_path.clone(), id: e.id };
+    fn find_enum_member(
+        e: &ResolvedEnumType,
+        variant: Option<usize>,
+        field: &Ident,
+    ) -> Option<EnumMember> {
+        let owner = |visibility| MemberOwner {
+            visibility,
+            module_path: e.module_path.clone(),
+            id: e.id,
+        };
 
         if field.as_ref() == "tag" {
             let r#type = e.tag_type.clone();
-            let projection = CheckedProjection::EnumTag { r#type: r#type.clone() };
-            return Some(EnumMember { r#type, projection, owner: None });
+            let projection = CheckedProjection::EnumTag {
+                r#type: r#type.clone(),
+            };
+            return Some(EnumMember {
+                r#type,
+                projection,
+                owner: None,
+            });
         }
         if let Some((index, r#type, visibility)) = Self::find_field(&e.header, field) {
-            let projection =
-                CheckedProjection::EnumHeader { field: field.clone(), index, r#type: r#type.clone() };
-            return Some(EnumMember { r#type, projection, owner: Some(owner(visibility)) });
+            let projection = CheckedProjection::EnumHeader {
+                field: field.clone(),
+                index,
+                r#type: r#type.clone(),
+            };
+            return Some(EnumMember {
+                r#type,
+                projection,
+                owner: Some(owner(visibility)),
+            });
         }
         if let Some((index, r#type, visibility)) = Self::find_field(&e.dynamic_fields, field) {
-            let projection =
-                CheckedProjection::EnumDynamicField { field: field.clone(), index, r#type: r#type.clone() };
-            return Some(EnumMember { r#type, projection, owner: Some(owner(visibility)) });
+            let projection = CheckedProjection::EnumDynamicField {
+                field: field.clone(),
+                index,
+                r#type: r#type.clone(),
+            };
+            return Some(EnumMember {
+                r#type,
+                projection,
+                owner: Some(owner(visibility)),
+            });
         }
         let current = variant?;
-        let (field_index, r#type, visibility) = Self::find_field(&e.variants[current].fields, field)?;
-        let projection =
-            CheckedProjection::EnumBody { variant_index: current, field_index, r#type: r#type.clone() };
-        Some(EnumMember { r#type, projection, owner: Some(owner(visibility)) })
+        let (field_index, r#type, visibility) =
+            Self::find_field(&e.variants[current].fields, field)?;
+        let projection = CheckedProjection::EnumBody {
+            variant_index: current,
+            field_index,
+            r#type: r#type.clone(),
+        };
+        Some(EnumMember {
+            r#type,
+            projection,
+            owner: Some(owner(visibility)),
+        })
     }
 
     /// Why `field` isn't reachable on this enum value: it belongs to another
     /// variant, it belongs to a variant this value's isn't known to be, or
     /// no variant declares it at all.
-    fn no_such_enum_field(e: &ResolvedEnumType, variant: Option<usize>, field: &Ident) -> AnalysisErrorKind {
-        let declaring = e.variants.iter().find(|v| v.fields.iter().any(|(name, _, _)| name == field));
+    fn no_such_enum_field(
+        e: &ResolvedEnumType,
+        variant: Option<usize>,
+        field: &Ident,
+    ) -> AnalysisErrorKind {
+        let declaring = e
+            .variants
+            .iter()
+            .find(|v| v.fields.iter().any(|(name, _, _)| name == field));
         match (declaring, variant) {
             (Some(declaring), Some(current)) => AnalysisErrorKind::EnumFieldWrongVariant {
                 field: field.clone(),
@@ -223,7 +277,11 @@ impl<'r> Analyzer<'r> {
                 let candidates = std::iter::once(&tag)
                     .chain(e.header.iter().map(|(name, _, _)| name))
                     .chain(e.dynamic_fields.iter().map(|(name, _, _)| name))
-                    .chain(variant.iter().flat_map(|&i| e.variants[i].fields.iter().map(|(name, _, _)| name)));
+                    .chain(
+                        variant
+                            .iter()
+                            .flat_map(|&i| e.variants[i].fields.iter().map(|(name, _, _)| name)),
+                    );
                 AnalysisErrorKind::NoSuchEnumField {
                     field: field.clone(),
                     r#enum: e.name.clone(),
@@ -244,15 +302,27 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let (found, owner_module, owner_id) = {
             let u = cell.borrow();
-            (Self::find_field(&u.fields, field), u.module_path.clone(), u.id)
+            (
+                Self::find_field(&u.fields, field),
+                u.module_path.clone(),
+                u.id,
+            )
         };
         let Some((index, r#type, visibility)) = found else {
             self.no_such_field(node_id, span, field, base);
             return None;
         };
-        let owner = MemberOwner { visibility, module_path: owner_module, id: owner_id };
+        let owner = MemberOwner {
+            visibility,
+            module_path: owner_module,
+            id: owner_id,
+        };
         self.require_visible_member(node_id, span, field, base, owner)?;
-        projections.push(CheckedProjection::UnionField { field: field.clone(), index, r#type: r#type.clone() });
+        projections.push(CheckedProjection::UnionField {
+            field: field.clone(),
+            index,
+            r#type: r#type.clone(),
+        });
         Some(r#type)
     }
 
@@ -267,15 +337,27 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let (found, owner_module, owner_id) = {
             let s = cell.borrow();
-            (Self::find_field(&s.fields, field), s.module_path.clone(), s.id)
+            (
+                Self::find_field(&s.fields, field),
+                s.module_path.clone(),
+                s.id,
+            )
         };
         let Some((index, r#type, visibility)) = found else {
             self.no_such_field(node_id, span, field, base);
             return None;
         };
-        let owner = MemberOwner { visibility, module_path: owner_module, id: owner_id };
+        let owner = MemberOwner {
+            visibility,
+            module_path: owner_module,
+            id: owner_id,
+        };
         self.require_visible_member(node_id, span, field, base, owner)?;
-        projections.push(CheckedProjection::FieldAccess { field: field.clone(), index, r#type: r#type.clone() });
+        projections.push(CheckedProjection::FieldAccess {
+            field: field.clone(),
+            index,
+            r#type: r#type.clone(),
+        });
         Some(r#type)
     }
 
@@ -306,14 +388,27 @@ impl<'r> Analyzer<'r> {
         if self.check_member_visibility(owner.visibility, &owner.module_path, owner.id) {
             return Some(());
         }
-        self.error(node_id, span, AnalysisErrorKind::FieldNotVisible { field: field.clone(), base: base.clone() });
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::FieldNotVisible {
+                field: field.clone(),
+                base: base.clone(),
+            },
+        );
         None
     }
 
     fn no_such_field(&mut self, node_id: HirId, span: Span, field: &Ident, base: &ResolvedType) {
-        self.error(node_id, span, AnalysisErrorKind::NoSuchField { field: field.clone(), base: base.clone() });
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::NoSuchField {
+                field: field.clone(),
+                base: base.clone(),
+            },
+        );
     }
-
 
     /// Every method named `field` on `current_type` (after at most one
     /// pointer deref) -- usually zero or one, but two or more is a valid
@@ -321,8 +416,15 @@ impl<'r> Analyzer<'r> {
     /// sites route a multi-candidate result through). A field with this
     /// name always shadows every same-named method, exactly like a single
     /// method would have.
-    pub(super) fn find_methods(&mut self, id: HirId, span: Span, current_type: &ResolvedType, field: &Ident) -> Vec<ResolvedMethod> {
-        match current_type.autoderef() {
+    pub(super) fn find_methods(
+        &mut self,
+        id: HirId,
+        span: Span,
+        current_type: &ResolvedType,
+        field: &Ident,
+    ) -> Vec<ResolvedMethod> {
+        let current_type = current_type.autoderef();
+        let mut methods = match current_type {
             ResolvedType::Struct(struct_type) => {
                 let struct_type = struct_type.borrow();
                 if struct_type.fields.iter().any(|(name, _, _)| name == field) {
@@ -342,11 +444,20 @@ impl<'r> Analyzer<'r> {
                 let e = cell.borrow();
                 let shadowed = field.as_ref() == "tag"
                     || e.header.iter().any(|(name, _, _)| name == field)
-                    || variant.is_some_and(|i| e.variants[i].fields.iter().any(|(name, _, _)| name == field));
+                    || variant.is_some_and(|i| {
+                        e.variants[i]
+                            .fields
+                            .iter()
+                            .any(|(name, _, _)| name == field)
+                    });
                 if shadowed {
                     return Vec::new();
                 }
-                e.functions.iter().filter(|(name, _)| name == field).map(|(_, method)| method.clone()).collect()
+                e.functions
+                    .iter()
+                    .filter(|(name, _)| name == field)
+                    .map(|(_, method)| method.clone())
+                    .collect()
             }
             ResolvedType::Union(union_type) => {
                 let union_type = union_type.borrow();
@@ -360,18 +471,48 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, method)| method.clone())
                     .collect()
             }
-            // A primitive (or `Slice`/`Str`) has no method list of its own
-            // -- the only way it ever has one is a `for`-attached spec in
-            // `core` (see `HirSpecDef::target`'s doc comment), looked up
-            // through the resolver rather than any locally-held cell.
-            other => match self.resolver.extension_methods(other) {
-                Ok(methods) => methods.into_iter().filter(|(name, _)| name == field).map(|(_, m)| m).collect(),
+            // Built-in types store their inherent methods in core's
+            // `primitive` registry rather than in a declared type cell.
+            other => match self.resolver.primitive_methods(other) {
+                Ok(methods) => methods
+                    .into_iter()
+                    .filter(|(name, _)| name == field)
+                    .map(|(_, m)| m)
+                    .collect(),
                 Err(err) => {
                     self.error(id, span, AnalysisErrorKind::ModuleResolution(err));
                     Vec::new()
                 }
             },
+        };
+
+        // A composition is deliberately not an inherent method source.
+        // Instance syntax is admitted only while checking a body whose
+        // generic/compose context established the matching bound.
+        for (target, spec, spec_args) in self.bounds.clone() {
+            if target != *current_type {
+                continue;
+            }
+            match self.resolver.compose_for(current_type, &spec, &spec_args) {
+                Ok(Some(compose)) => {
+                    for method in compose
+                        .methods
+                        .into_iter()
+                        .filter(|(name, _)| name == field)
+                        .map(|(_, method)| method)
+                    {
+                        if !methods.iter().any(|existing| {
+                            existing.decl_id == method.decl_id && existing.fn_type == method.fn_type
+                        }) {
+                            methods.push(method);
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => self.error(id, span, AnalysisErrorKind::ModuleResolution(err)),
+            }
         }
+        methods
     }
 
     /// The name of an enum member that an assignment must not target --
@@ -396,31 +537,57 @@ impl<'r> Analyzer<'r> {
     /// a false positive (warning on `a.foo = b.foo`) is not.
     pub(super) fn places_provably_equal(a: &CheckedPlace, b: &CheckedPlace) -> bool {
         let roots_equal = match (&a.root, &b.root) {
-            (CheckedPlaceRoot::Variable { decl_id: a, .. }, CheckedPlaceRoot::Variable { decl_id: b, .. }) => a == b,
+            (
+                CheckedPlaceRoot::Variable { decl_id: a, .. },
+                CheckedPlaceRoot::Variable { decl_id: b, .. },
+            ) => a == b,
             _ => false,
         };
         if !roots_equal || a.projections.len() != b.projections.len() {
             return false;
         }
 
-        a.projections.iter().zip(b.projections.iter()).all(|(a, b)| match (a, b) {
-            (CheckedProjection::FieldAccess { index: a, .. }, CheckedProjection::FieldAccess { index: b, .. }) => a == b,
-            (CheckedProjection::SliceLength, CheckedProjection::SliceLength) => true,
-            (CheckedProjection::SpecObjectPtr { .. }, CheckedProjection::SpecObjectPtr { .. }) => true,
-            (CheckedProjection::SpecObjectVtable, CheckedProjection::SpecObjectVtable) => true,
-            (CheckedProjection::EnumTag { .. }, CheckedProjection::EnumTag { .. }) => true,
-            (CheckedProjection::EnumHeader { index: a, .. }, CheckedProjection::EnumHeader { index: b, .. }) => a == b,
-            (
-                CheckedProjection::EnumDynamicField { index: a, .. },
-                CheckedProjection::EnumDynamicField { index: b, .. },
-            ) => a == b,
-            (
-                CheckedProjection::EnumBody { variant_index: av, field_index: af, .. },
-                CheckedProjection::EnumBody { variant_index: bv, field_index: bf, .. },
-            ) => av == bv && af == bf,
-            (CheckedProjection::UnionField { index: a, .. }, CheckedProjection::UnionField { index: b, .. }) => a == b,
-            _ => false,
-        })
+        a.projections
+            .iter()
+            .zip(b.projections.iter())
+            .all(|(a, b)| match (a, b) {
+                (
+                    CheckedProjection::FieldAccess { index: a, .. },
+                    CheckedProjection::FieldAccess { index: b, .. },
+                ) => a == b,
+                (CheckedProjection::SliceLength, CheckedProjection::SliceLength) => true,
+                (
+                    CheckedProjection::SpecObjectPtr { .. },
+                    CheckedProjection::SpecObjectPtr { .. },
+                ) => true,
+                (CheckedProjection::SpecObjectVtable, CheckedProjection::SpecObjectVtable) => true,
+                (CheckedProjection::EnumTag { .. }, CheckedProjection::EnumTag { .. }) => true,
+                (
+                    CheckedProjection::EnumHeader { index: a, .. },
+                    CheckedProjection::EnumHeader { index: b, .. },
+                ) => a == b,
+                (
+                    CheckedProjection::EnumDynamicField { index: a, .. },
+                    CheckedProjection::EnumDynamicField { index: b, .. },
+                ) => a == b,
+                (
+                    CheckedProjection::EnumBody {
+                        variant_index: av,
+                        field_index: af,
+                        ..
+                    },
+                    CheckedProjection::EnumBody {
+                        variant_index: bv,
+                        field_index: bf,
+                        ..
+                    },
+                ) => av == bv && af == bf,
+                (
+                    CheckedProjection::UnionField { index: a, .. },
+                    CheckedProjection::UnionField { index: b, .. },
+                ) => a == b,
+                _ => false,
+            })
     }
 
     /// Errors (returning `None`) unless a place `analyze_place` already
@@ -452,7 +619,11 @@ impl<'r> Analyzer<'r> {
         // check at one of those sites only would leave the others able to
         // desynchronize a live value's tag from its actual variant.
         if let Some(field) = Self::immutable_enum_member(checked_place) {
-            self.error(node_id, span, AnalysisErrorKind::EnumFieldImmutable { field });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::EnumFieldImmutable { field },
+            );
             return None;
         }
         if mutable {
@@ -468,13 +639,18 @@ impl<'r> Analyzer<'r> {
             }
             return Some(());
         }
-        let through_pointer = checked_place.projections.iter().any(|p| matches!(p, CheckedProjection::Deref { .. }));
+        let through_pointer = checked_place
+            .projections
+            .iter()
+            .any(|p| matches!(p, CheckedProjection::Deref { .. }));
         let kind = if through_pointer {
             AnalysisErrorKind::NotMutablePointer
         } else {
             match hir_root {
                 HirPlaceRoot::Path(p) if p.path.is_unqualified() => {
-                    AnalysisErrorKind::NotMutableBinding { ident: p.path.head.clone() }
+                    AnalysisErrorKind::NotMutableBinding {
+                        ident: p.path.head.clone(),
+                    }
                 }
                 _ => AnalysisErrorKind::NotMutablePointer,
             }
@@ -498,7 +674,8 @@ impl<'r> Analyzer<'r> {
         range: &HirRange,
         requested_mutable: bool,
     ) -> Option<CheckedExprNode> {
-        let (mut checked_base, base_type, place_mutable) = self.analyze_place(node_id, span, base, None)?;
+        let (mut checked_base, base_type, place_mutable) =
+            self.analyze_place(node_id, span, base, None)?;
         // Snapshotted before the match below moves `base_type` -- only
         // needed by the `comp`-binding const-promotion path further down,
         // as the `Deref` projection's target type (see there for why).
@@ -570,9 +747,19 @@ impl<'r> Analyzer<'r> {
         // building the wrong leaves rather than just rejecting a genuinely
         // narrow, likely-never-hit combination outright.
         if base_lacks_length
-            && matches!(checked_base.root, CheckedPlaceRoot::Variable { storage: Storage::Comp, .. })
+            && matches!(
+                checked_base.root,
+                CheckedPlaceRoot::Variable {
+                    storage: Storage::Comp,
+                    ..
+                }
+            )
         {
-            self.error(node_id, span, AnalysisErrorKind::CompPointerSliceNotSupported);
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CompPointerSliceNotSupported,
+            );
             return None;
         }
 
@@ -583,7 +770,11 @@ impl<'r> Analyzer<'r> {
         // out by this point: a comp binding's own `source_mutable` is
         // always `false` (never `mut`), so the check just above already
         // rejected `&mut comp_binding[range]`.
-        if let CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } = checked_base.root {
+        if let CheckedPlaceRoot::Variable {
+            storage: Storage::Comp,
+            ..
+        } = checked_base.root
+        {
             let value = self.resolve_comp_place(node_id, span, &checked_base)?;
             checked_base = if from_fat_pointer {
                 // Already its own fat pointer (`Slice`/`Str`) -- no address
@@ -595,7 +786,10 @@ impl<'r> Analyzer<'r> {
                 let r#type = if is_str {
                     ResolvedType::Str { mutable: false }
                 } else {
-                    ResolvedType::Slice { item: Box::new(item_type.clone()), mutable: false }
+                    ResolvedType::Slice {
+                        item: Box::new(item_type.clone()),
+                        mutable: false,
+                    }
                 };
                 CheckedPlace {
                     root: CheckedPlaceRoot::Expr(Box::new(CheckedExprNode {
@@ -620,22 +814,33 @@ impl<'r> Analyzer<'r> {
                     root: CheckedPlaceRoot::Expr(Box::new(CheckedExprNode {
                         id: node_id,
                         span,
-                        r#type: ResolvedType::Pointer { pointee: Box::new(item_type.clone()), mutable: false },
+                        r#type: ResolvedType::Pointer {
+                            pointee: Box::new(item_type.clone()),
+                            mutable: false,
+                        },
                         kind: CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
                     })),
-                    projections: vec![CheckedProjection::Deref { r#type: base_type_snapshot }],
+                    projections: vec![CheckedProjection::Deref {
+                        r#type: base_type_snapshot,
+                    }],
                 }
             };
         }
 
-        let analyze_bound = |this: &mut Self, bound: &Option<Box<HirExprNode>>| -> Option<Option<Box<CheckedExprNode>>> {
-            let Some(bound) = bound else { return Some(None) };
+        let analyze_bound = |this: &mut Self,
+                             bound: &Option<Box<HirExprNode>>|
+         -> Option<Option<Box<CheckedExprNode>>> {
+            let Some(bound) = bound else {
+                return Some(None);
+            };
             let checked_bound = this.analyze_expr(bound, Some(&ResolvedType::I32))?;
             if checked_bound.r#type != ResolvedType::I32 {
                 this.error(
                     bound.id,
                     bound.span,
-                    AnalysisErrorKind::InvalidSliceBound { r#type: checked_bound.r#type },
+                    AnalysisErrorKind::InvalidSliceBound {
+                        r#type: checked_bound.r#type,
+                    },
                 );
                 return None;
             }
@@ -656,9 +861,14 @@ impl<'r> Analyzer<'r> {
         }
 
         let result_type = if is_str {
-            ResolvedType::Str { mutable: requested_mutable }
+            ResolvedType::Str {
+                mutable: requested_mutable,
+            }
         } else {
-            ResolvedType::Slice { item: Box::new(item_type.clone()), mutable: requested_mutable }
+            ResolvedType::Slice {
+                item: Box::new(item_type.clone()),
+                mutable: requested_mutable,
+            }
         };
         Some(CheckedExprNode {
             id: node_id,
@@ -705,7 +915,10 @@ impl<'r> Analyzer<'r> {
         }
 
         let item_type = match expected {
-            Some(ResolvedType::Slice { item, mutable: false }) => item.as_ref().clone(),
+            Some(ResolvedType::Slice {
+                item,
+                mutable: false,
+            }) => item.as_ref().clone(),
             _ => self.analyze_expr(&elements[0], None)?.r#type.widened(),
         };
 
@@ -717,7 +930,10 @@ impl<'r> Analyzer<'r> {
         Some(CheckedExprNode {
             id: node_id,
             span,
-            r#type: ResolvedType::Slice { item: Box::new(item_type), mutable: false },
+            r#type: ResolvedType::Slice {
+                item: Box::new(item_type),
+                mutable: false,
+            },
             kind: CheckedExpr::Const(ConstValue::Slice(values)),
         })
     }
@@ -755,7 +971,8 @@ impl<'r> Analyzer<'r> {
         place: &HirPlace,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlace, ResolvedType, bool)> {
-        let (root, mut current_type, mut mutable) = self.resolve_place_root(node_id, span, place, expected)?;
+        let (root, mut current_type, mut mutable) =
+            self.resolve_place_root(node_id, span, place, expected)?;
 
         let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
@@ -768,16 +985,33 @@ impl<'r> Analyzer<'r> {
                     field,
                     &mut mutable,
                 )?,
-                HirProjection::Index(index) => {
-                    self.project_index(node_id, span, &mut projections, current_type, index, &mut mutable)?
-                }
+                HirProjection::Index(index) => self.project_index(
+                    node_id,
+                    span,
+                    &mut projections,
+                    current_type,
+                    index,
+                    &mut mutable,
+                )?,
                 HirProjection::Deref => {
-                    let ResolvedType::Pointer { pointee, mutable: pointer_mutable } = current_type else {
-                        self.error(node_id, span, AnalysisErrorKind::NotAPointer { found: current_type });
+                    let ResolvedType::Pointer {
+                        pointee,
+                        mutable: pointer_mutable,
+                    } = current_type
+                    else {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::NotAPointer {
+                                found: current_type,
+                            },
+                        );
                         return None;
                     };
                     mutable = pointer_mutable;
-                    projections.push(CheckedProjection::Deref { r#type: (*pointee).clone() });
+                    projections.push(CheckedProjection::Deref {
+                        r#type: (*pointee).clone(),
+                    });
                     *pointee
                 }
             };
@@ -818,7 +1052,10 @@ impl<'r> Analyzer<'r> {
                 let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
                 let (root, r#type, mutable) = match alias {
                     Some(ImportTarget::Module(target)) => {
-                        let absolute: Vec<Ident> = target.into_iter().chain(path.tail.iter().cloned()).collect();
+                        let absolute: Vec<Ident> = target
+                            .into_iter()
+                            .chain(path.tail.iter().cloned())
+                            .collect();
                         self.resolve_qualified_value(node_id, span, absolute, None, expected)?
                     }
                     // A type-qualified member (`MyEnum::Variant`, a static
@@ -826,7 +1063,8 @@ impl<'r> Analyzer<'r> {
                     // `mutable` is unconditionally `false` here, not just
                     // defaulted.
                     _ => {
-                        let (root, r#type) = self.resolve_type_qualified_value(node_id, span, path, expected)?;
+                        let (root, r#type) =
+                            self.resolve_type_qualified_value(node_id, span, path, expected)?;
                         (root, r#type, false)
                     }
                 };
@@ -870,7 +1108,8 @@ impl<'r> Analyzer<'r> {
         // arbitrary candidate (the same problem `resolve_bare_overload_
         // candidates` exists to avoid for a *call*).
         if let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(ident) {
-            let (root, r#type) = self.resolve_bare_overload_root(node_id, span, &absolute, candidates, expected)?;
+            let (root, r#type) =
+                self.resolve_bare_overload_root(node_id, span, &absolute, candidates, expected)?;
             return Some((root, r#type, false));
         }
 
@@ -887,14 +1126,32 @@ impl<'r> Analyzer<'r> {
         // through to the implicit own-module assumption --
         // `resolve_qualified_value` reports whichever precise error fits.
         let alias = self.resolve_alias_or_error(node_id, span, ident)?;
-        if let Some(ImportTarget::Item(_, ResolvedItem::Value { r#type, storage, decl_id, mutable })) = alias {
-            let root = CheckedPlaceRoot::Variable { decl_id, storage, r#type: r#type.clone() };
+        if let Some(ImportTarget::Item(
+            _,
+            ResolvedItem::Value {
+                r#type,
+                storage,
+                decl_id,
+                mutable,
+            },
+        )) = alias
+        {
+            let root = CheckedPlaceRoot::Variable {
+                decl_id,
+                storage,
+                r#type: r#type.clone(),
+            };
             return Some((root, r#type, mutable));
         }
         let (absolute, unqualified) = match alias {
             Some(ImportTarget::GenericItem(absolute)) => (absolute, None),
             _ => {
-                let absolute = self.module_path.iter().cloned().chain(std::iter::once(ident.clone())).collect();
+                let absolute = self
+                    .module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(ident.clone()))
+                    .collect();
                 (absolute, Some(ident))
             }
         };
@@ -914,8 +1171,10 @@ impl<'r> Analyzer<'r> {
         candidates: OverloadCandidates,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        let signatures: Vec<(HirId, ResolvedFunctionType)> =
-            candidates.iter().map(|(id, fn_type, _)| (*id, fn_type.clone())).collect();
+        let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
+            .iter()
+            .map(|(id, fn_type, _)| (*id, fn_type.clone()))
+            .collect();
         let winner = match expected {
             Some(ResolvedType::Function(expected_fn)) => {
                 Self::unique_overload_signature_match(expected_fn, &signatures)
@@ -923,7 +1182,9 @@ impl<'r> Analyzer<'r> {
             _ => None,
         };
         let Some((decl_id, fn_type)) = winner else {
-            let name = absolute.last().expect("an absolute item path always ends in the item's own name");
+            let name = absolute
+                .last()
+                .expect("an absolute item path always ends in the item's own name");
             self.error(
                 node_id,
                 span,
@@ -939,7 +1200,11 @@ impl<'r> Analyzer<'r> {
         // already the final, decided set (filtered, or fully admitted by
         // `import reveal`).
         let r#type = ResolvedType::Function(fn_type);
-        let root = CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, r#type: r#type.clone() };
+        let root = CheckedPlaceRoot::Variable {
+            decl_id,
+            storage: Storage::Function,
+            r#type: r#type.clone(),
+        };
         Some((root, r#type))
     }
 
@@ -971,14 +1236,19 @@ impl<'r> Analyzer<'r> {
                 *mutable = array_mutable;
                 *item
             }
-            ResolvedType::Slice { item, mutable: slice_mutable } => {
+            ResolvedType::Slice {
+                item,
+                mutable: slice_mutable,
+            } => {
                 *mutable = slice_mutable;
                 *item
             }
             // Byte indexing, same as `*[u8]` -- symmetric with `Slice` above,
             // no artificial restriction (unlike Rust's `str`, which
             // disallows this entirely to avoid a byte/char-boundary footgun).
-            ResolvedType::Str { mutable: str_mutable } => {
+            ResolvedType::Str {
+                mutable: str_mutable,
+            } => {
                 *mutable = str_mutable;
                 ResolvedType::U8
             }
@@ -987,8 +1257,10 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        projections
-            .push(CheckedProjection::Index { index_expr: Box::new(checked_index), item_type: item_type.clone() });
+        projections.push(CheckedProjection::Index {
+            index_expr: Box::new(checked_index),
+            item_type: item_type.clone(),
+        });
         Some(item_type)
     }
 }

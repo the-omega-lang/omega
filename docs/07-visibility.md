@@ -90,33 +90,25 @@ compiler-enforced backstop — see
 [design-review.md](17-design-review.md#compiler-architecture) for why the
 structural fix is to make place resolution own the bypass instead.
 
-## Specs: inherited visibility + minimum-permissiveness
+## Specs and composition
 
 A spec function has **no visibility modifier of its own** — it inherits
-its *declaring* spec's own visibility. An implementor's satisfying method
-must be **at least as permissive**:
+its *declaring* spec's own visibility. A function written in a `compose`
+block likewise cannot declare visibility; it inherits the matched
+requirement's visibility:
 
 ```
 internal spec Mammal : Animal { breathe(*self) => i32; }
 
-struct Dog : Mammal {
-    internal breathe(*self) => i32 { ... }    # OK: internal >= internal
-}
-struct Cat : Mammal {
-    breathe(*self) => i32 { ... }             # ERROR: SpecMethodTooHidden
-}                                               #   (hidden < internal)
-struct Wolf : Mammal {
-    exposed breathe(*self) => i32 { ... }     # OK: exposed >= internal
+struct Dog {}
+compose Dog : Mammal {
+    breathe(*self) => i32 { ... }             # inherits internal
 }
 ```
 
-This is a purely structural, declaration-time rule (checked once, in
-`resolve_implements_clause`) — `reveal` has no bearing on it at all, the
-same way `reveal` doesn't apply to the equally-structural
-`MissingSpecFunction` check. Each function's threshold comes from *its own
-declaring spec*, independent of what's at the top of an `implements`
-clause: `spec Mammal : Animal` where `Animal` is hidden and `Mammal` is
-`exposed` still only requires `hidden` for `Animal`'s own functions.
+`reveal` has no bearing on conformance checking. Each function's inherited
+visibility comes from its own declaring spec, including requirements reached
+through dependencies.
 
 **Why this is also checked at dynamic-dispatch coercion time, not just
 declaration time**: naively, "the implementor already satisfies the

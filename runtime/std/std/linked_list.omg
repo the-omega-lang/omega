@@ -31,10 +31,10 @@ struct Node<T> {
     internal next: *mut Node<T>;
 }
 
-exposed struct LinkedList<T> : ToIterator<T> {
-    head: *mut Node<T>;
-    tail: *mut Node<T>;
-    count: usize;
+exposed struct LinkedList<T> {
+    internal head: *mut Node<T>;
+    internal tail: *mut Node<T>;
+    internal count: usize;
 
     exposed new() => Self {
         Self { head = <*mut Node<T>>0; tail = <*mut Node<T>>0; count = 0; }
@@ -121,15 +121,21 @@ exposed struct LinkedList<T> : ToIterator<T> {
         self.clear();
     }
 
-    exposed to_iterator(*self) => LinkedListIterator<T> {
+}
+
+compose<T> LinkedList<T> : ToIterator<T> {
+    to_iterator(*self) => LinkedListIterator<T> {
         LinkedListIterator<T> { current = self.head; }
     }
 }
 
-exposed struct LinkedListIterator<T> : Iterator<T> {
+exposed struct LinkedListIterator<T> {
     internal current: *mut Node<T>;
 
-    exposed next(*mut self) => Option<T> {
+}
+
+compose<T> LinkedListIterator<T> : Iterator<T> {
+    next(*mut self) => Option<T> {
         if self.current == <*mut Node<T>>0 {
             return Option<T>::None;
         }

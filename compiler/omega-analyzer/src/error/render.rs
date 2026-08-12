@@ -493,24 +493,6 @@ impl AnalysisErrorKind {
             Self::ForLoopRangeBoundTypeMismatch { expected, found } => d
                 .with_label(span, format!("expected `{expected}`, found `{found}`"))
                 .with_note("Omega has no implicit conversions; a range's start and end must have exactly the same type"),
-            Self::SpecMethodTooHidden { implementor, spec, function, required, found } => d
-                .with_label(
-                    span,
-                    format!(
-                        "`{}` on `{}` is `{}`, but spec `{}` requires at least `{}`",
-                        function.as_ref(),
-                        implementor.as_ref(),
-                        found,
-                        spec.as_ref(),
-                        required,
-                    ),
-                )
-                .with_help(format!(
-                    "mark `{}` on `{}` as `{}` (or more permissive)",
-                    function.as_ref(),
-                    implementor.as_ref(),
-                    required
-                )),
             Self::NoSuchSpecFunction { spec, function } => d.with_label(
                 span,
                 format!("no function `{}` on spec `{}`", function.as_ref(), spec.as_ref()),
@@ -522,25 +504,6 @@ impl AnalysisErrorKind {
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
-            Self::ExtensionOutsideCore { name } => d
-                .with_label(span, format!("`{}` uses a `for` clause outside `core`", name.as_ref()))
-                .with_help("`for` only has an effect on a spec declared inside the module tree rooted at `core`"),
-            Self::ExtensionTargetNotAllowed { name } => d
-                .with_label(span, format!("`{}` targets a type `for` doesn't support", name.as_ref()))
-                .with_help(
-                    "`for` may only target one of core's built-in scalar/`str` types, or `[?]T` referencing this \
-                     spec's own single generic parameter",
-                ),
-            Self::ExtensionSelfMustBePointer { name } => d
-                .with_label(span, format!("`{}` receives `self` by value", name.as_ref()))
-                .with_help(
-                    "a `for [?]T` function must receive `self` by pointer (`*self`/`*mut self`) -- by value, \
-                     `self` has no length and can't be indexed safely",
-                ),
-            Self::DuplicateExtensionTarget { target, previous } => d
-                .with_label(span, format!("another `for` block already targets `{target}`"))
-                .with_secondary_label(*previous, format!("`{target}` first targeted here"))
-                .with_help("only one `for` block is allowed per target type"),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
             }
@@ -575,6 +538,30 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("'{}' is not declared by this gap", function.as_ref())),
             Self::GlueFunctionSignatureMismatch { function, .. } => d
                 .with_label(span, format!("'{}' has a different signature in the gap", function.as_ref())),
+            Self::ComposeOrphanViolation { target_package, spec_package } => d
+                .with_label(span, "neither the target type nor the spec is local to this package")
+                .with_note(format!("target package: '{}'; spec package: '{}'", target_package.as_ref(), spec_package.as_ref()))
+                .with_help("declare the compose in one of those two packages"),
+            Self::ComposeTargetNotAType => d.with_label(span, "this must resolve to a concrete type"),
+            Self::DuplicateCompose { previous, .. } => d
+                .with_label(span, "this compose duplicates an existing one")
+                .with_secondary_label(*previous, "the first compose is here"),
+            Self::ComposeExtraFunction { function, spec } => d
+                .with_label(span, format!("'{}' is not declared by '{}'", function.as_ref(), spec.as_ref())),
+            Self::BlanketComposeNotYetSupported { parameter } => d
+                .with_label(span, format!("'{}' is not fixed by the compose target", parameter.as_ref()))
+                .with_note("blanket composes and specialization are reserved for a follow-up"),
+            Self::PrimitiveOutsideCore => d.with_label(span, "primitive blocks belong to the core package"),
+            Self::PrimitiveTargetNotAllowed { .. } => d.with_label(span, "only built-in scalar, str, and slice types are allowed"),
+            Self::DuplicatePrimitiveTarget { previous, .. } => d
+                .with_label(span, "this primitive target already has a declaration block")
+                .with_secondary_label(*previous, "the first block is here"),
+            Self::AmbiguousComposedStatic { specs, .. } => d
+                .with_label(span, "more than one composed spec provides this static function")
+                .with_note(format!("provided by: {}", specs.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", "))),
+            Self::MethodNotInScope { method, spec } => d
+                .with_label(span, format!("'{}' is supplied by '{}'", method.as_ref(), spec.as_ref()))
+                .with_help(format!("call '{}::{}(value, ...)', or add a generic bound that includes '{}'", spec.as_ref(), method.as_ref(), spec.as_ref())),
             Self::MultipleGluesForGap { glues, .. } => d
                 .with_label(span, "this gap has more than one glue implementation")
                 .with_note(format!(
@@ -733,9 +720,6 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
     }
 }
 
-
-
-
 /// The inclusive value range of a numeric type, for
 /// `NumberLiteralOutOfRange`'s note -- `None` for floats (their "range" is
 /// about precision, not simple bounds, so a bounds note would mislead).
@@ -746,7 +730,11 @@ fn type_range(r#type: &ResolvedType) -> Option<String> {
             Some(format!("-{} to {max}", max + 1))
         }
         NumericKind::Unsigned(bits) => {
-            let max = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+            let max = if bits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            };
             Some(format!("0 to {max}"))
         }
         NumericKind::Float(_) => None,

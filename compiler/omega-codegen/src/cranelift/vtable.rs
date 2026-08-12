@@ -25,7 +25,7 @@ impl Codegen {
     /// function, nothing here re-derives *which* concrete method satisfies
     /// a given slot by matching names. That used to be sound (`by the time
     /// codegen runs, every name collision is already known-identical`), but
-    /// stopped being true the moment `resolve_implements_clause` started
+    /// stopped being true once conformance checking started
     /// allowing one implementor to satisfy the same generic spec at two
     /// different type arguments via two same-named overloads -- codegen has
     /// no way to tell those apart by name alone, so it no longer tries to;
@@ -66,7 +66,10 @@ impl Codegen {
         let bytes = vec![0u8; slots.len() * ptr_bytes as usize];
         let mut desc = DataDescription::new();
         for (i, decl_id) in slots.iter().enumerate() {
-            let func_id = *self.functions.get(decl_id).expect("every method is declared before any vtable needs it");
+            let func_id = *self
+                .functions
+                .get(decl_id)
+                .expect("every method is declared before any vtable needs it");
             let fref = self.module.declare_func_in_data(func_id, &mut desc);
             desc.write_function_addr(i as u32 * ptr_bytes, fref);
         }
@@ -82,8 +85,15 @@ impl Codegen {
         // under the identical symbol name, and are just as safe (and
         // worth) folding into one copy at link time as a generic
         // function/method instantiation is.
-        let symbol = mangle::encode(&mangle::vtable_symbol(concrete, &spec.borrow().name, spec_type_args));
-        let data_id = self.module.declare_data(&symbol, Linkage::Preemptible, false, false).unwrap();
+        let symbol = mangle::encode(&mangle::vtable_symbol(
+            concrete,
+            &spec.borrow().name,
+            spec_type_args,
+        ));
+        let data_id = self
+            .module
+            .declare_data(&symbol, Linkage::Preemptible, false, false)
+            .unwrap();
         self.module.define_data(data_id, &desc).unwrap();
 
         self.vtables.insert(key, data_id);

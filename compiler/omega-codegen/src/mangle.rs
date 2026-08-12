@@ -35,8 +35,16 @@ fn mangle_module_path(segments: &[Ident]) -> ManglePath {
 /// module path, its own name, and -- if it's a generic instantiation --
 /// its concrete type arguments.
 fn mangle_type_path(module_path: &[Ident], name: &Ident, type_args: &[ResolvedType]) -> ManglePath {
-    let base = ManglePath::Nested(Box::new(mangle_module_path(module_path)), Namespace::Type, name.as_ref().to_string());
-    if type_args.is_empty() { base } else { ManglePath::Generic(Box::new(base), type_args.iter().map(mangle_type).collect()) }
+    let base = ManglePath::Nested(
+        Box::new(mangle_module_path(module_path)),
+        Namespace::Type,
+        name.as_ref().to_string(),
+    );
+    if type_args.is_empty() {
+        base
+    } else {
+        ManglePath::Generic(Box::new(base), type_args.iter().map(mangle_type).collect())
+    }
 }
 
 fn mangle_type(ty: &ResolvedType) -> MangleType {
@@ -57,42 +65,72 @@ fn mangle_type(ty: &ResolvedType) -> MangleType {
         ResolvedType::USize => MangleType::USize,
         ResolvedType::F32 => MangleType::F32,
         ResolvedType::F64 => MangleType::F64,
-        ResolvedType::Pointer { pointee, mutable } => MangleType::Pointer(Box::new(mangle_type(pointee)), *mutable),
-        ResolvedType::Slice { item, mutable } => MangleType::Slice(Box::new(mangle_type(item)), *mutable),
+        ResolvedType::Pointer { pointee, mutable } => {
+            MangleType::Pointer(Box::new(mangle_type(pointee)), *mutable)
+        }
+        ResolvedType::Slice { item, mutable } => {
+            MangleType::Slice(Box::new(mangle_type(item)), *mutable)
+        }
         ResolvedType::Str { mutable } => MangleType::Str(*mutable),
-        ResolvedType::Array(inner, mutable) => MangleType::Array(Box::new(mangle_type(inner)), *mutable),
-        ResolvedType::SizedArray(inner, len) => MangleType::SizedArray(Box::new(mangle_type(inner)), u64::from(*len)),
+        ResolvedType::Array(inner, mutable) => {
+            MangleType::Array(Box::new(mangle_type(inner)), *mutable)
+        }
+        ResolvedType::SizedArray(inner, len) => {
+            MangleType::SizedArray(Box::new(mangle_type(inner)), u64::from(*len))
+        }
         ResolvedType::Function(fn_type) => {
             let (params, ret) = build_signature(fn_type);
             MangleType::Function(params, Box::new(ret), fn_type.is_variadic)
         }
         ResolvedType::Struct(cell) => {
             let cell = cell.borrow();
-            MangleType::Named(mangle_type_path(&cell.module_path, &cell.name, &cell.type_args), None)
+            MangleType::Named(
+                mangle_type_path(&cell.module_path, &cell.name, &cell.type_args),
+                None,
+            )
         }
         ResolvedType::Union(cell) => {
             let cell = cell.borrow();
-            MangleType::Named(mangle_type_path(&cell.module_path, &cell.name, &cell.type_args), None)
+            MangleType::Named(
+                mangle_type_path(&cell.module_path, &cell.name, &cell.type_args),
+                None,
+            )
         }
         ResolvedType::Enum { cell, variant } => {
             let cell = cell.borrow();
             let variant = variant.map(|v| v as u32);
-            MangleType::Named(mangle_type_path(&cell.module_path, &cell.name, &cell.type_args), variant)
+            MangleType::Named(
+                mangle_type_path(&cell.module_path, &cell.name, &cell.type_args),
+                variant,
+            )
         }
         ResolvedType::Spec(cell) => {
             let cell = cell.borrow();
-            MangleType::Named(mangle_type_path(&cell.module_path, &cell.name, &cell.type_args), None)
+            MangleType::Named(
+                mangle_type_path(&cell.module_path, &cell.name, &cell.type_args),
+                None,
+            )
         }
-        ResolvedType::SpecObject { spec, type_args, mutable } => {
+        ResolvedType::SpecObject {
+            spec,
+            type_args,
+            mutable,
+        } => {
             let cell = spec.borrow();
-            let inner = MangleType::Named(mangle_type_path(&cell.module_path, &cell.name, type_args), None);
+            let inner = MangleType::Named(
+                mangle_type_path(&cell.module_path, &cell.name, type_args),
+                None,
+            );
             MangleType::SpecObject(Box::new(inner), *mutable)
         }
     }
 }
 
 fn build_signature(fn_type: &ResolvedFunctionType) -> (Vec<MangleType>, MangleType) {
-    (fn_type.params.iter().map(|(_, t)| mangle_type(t)).collect(), mangle_type(&fn_type.return_type))
+    (
+        fn_type.params.iter().map(|(_, t)| mangle_type(t)).collect(),
+        mangle_type(&fn_type.return_type),
+    )
 }
 
 /// A top-level function's symbol. The caller is responsible for the
@@ -106,10 +144,22 @@ pub(crate) fn free_function_symbol(
     type_args: &[ResolvedType],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
-    let leaf = ManglePath::Nested(Box::new(mangle_module_path(module_path)), Namespace::Value, name.as_ref().to_string());
-    let path = if type_args.is_empty() { leaf } else { ManglePath::Generic(Box::new(leaf), type_args.iter().map(mangle_type).collect()) };
+    let leaf = ManglePath::Nested(
+        Box::new(mangle_module_path(module_path)),
+        Namespace::Value,
+        name.as_ref().to_string(),
+    );
+    let path = if type_args.is_empty() {
+        leaf
+    } else {
+        ManglePath::Generic(Box::new(leaf), type_args.iter().map(mangle_type).collect())
+    };
     let (params, ret) = build_signature(fn_type);
-    Symbol { path, signature: Some((params, ret)), vendor_suffix: None }
+    Symbol {
+        path,
+        signature: Some((params, ret)),
+        vendor_suffix: None,
+    }
 }
 
 /// A top-level global's symbol (`Storage::Global` -- see `MirItem::
@@ -120,8 +170,16 @@ pub(crate) fn free_function_symbol(
 /// bare name within one module regardless, since nothing here ever indexes
 /// two different *kinds* of item under the same name in the first place).
 pub(crate) fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
-    let path = ManglePath::Nested(Box::new(mangle_module_path(module_path)), Namespace::Value, name.as_ref().to_string());
-    Symbol { path, signature: None, vendor_suffix: None }
+    let path = ManglePath::Nested(
+        Box::new(mangle_module_path(module_path)),
+        Namespace::Value,
+        name.as_ref().to_string(),
+    );
+    Symbol {
+        path,
+        signature: None,
+        vendor_suffix: None,
+    }
 }
 
 /// A struct/enum/union method's symbol -- nested under its owner type's
@@ -137,9 +195,17 @@ pub(crate) fn method_symbol(
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     let owner = mangle_type_path(module_path, owner_name, owner_type_args);
-    let path = ManglePath::Nested(Box::new(owner), Namespace::Value, method_name.as_ref().to_string());
+    let path = ManglePath::Nested(
+        Box::new(owner),
+        Namespace::Value,
+        method_name.as_ref().to_string(),
+    );
     let (params, ret) = build_signature(fn_type);
-    Symbol { path, signature: Some((params, ret)), vendor_suffix: None }
+    Symbol {
+        path,
+        signature: Some((params, ret)),
+        vendor_suffix: None,
+    }
 }
 
 /// A `glue` function's forced symbol -- the exact same string a `gap`
@@ -149,8 +215,53 @@ pub(crate) fn method_symbol(
 /// against (see `omega_analyzer::annotations::ManglingMode::Glued`'s doc
 /// comment). Gaps are never generic, so `owner_type_args` is always
 /// empty here.
-pub(crate) fn glued_symbol(spec_module_path: &[Ident], spec_name: &Ident, function_name: &Ident, fn_type: &ResolvedFunctionType) -> String {
-    encode(&method_symbol(spec_module_path, spec_name, &[], function_name, fn_type))
+pub(crate) fn glued_symbol(
+    spec_module_path: &[Ident],
+    spec_name: &Ident,
+    function_name: &Ident,
+    fn_type: &ResolvedFunctionType,
+) -> String {
+    encode(&method_symbol(
+        spec_module_path,
+        spec_name,
+        &[],
+        function_name,
+        fn_type,
+    ))
+}
+
+pub(crate) fn compose_method_symbol(
+    target: &ResolvedType,
+    spec_name: &Ident,
+    spec_args: &[ResolvedType],
+    method_name: &Ident,
+    fn_type: &ResolvedFunctionType,
+) -> Symbol {
+    let target_path = match mangle_type(target) {
+        MangleType::Named(path, _) => path,
+        _ => ManglePath::Root(target.to_string()),
+    };
+    let spec = ManglePath::Nested(
+        Box::new(target_path),
+        Namespace::Type,
+        spec_name.as_ref().to_string(),
+    );
+    let spec = if spec_args.is_empty() {
+        spec
+    } else {
+        ManglePath::Generic(Box::new(spec), spec_args.iter().map(mangle_type).collect())
+    };
+    let path = ManglePath::Nested(
+        Box::new(spec),
+        Namespace::Value,
+        method_name.as_ref().to_string(),
+    );
+    let (params, ret) = build_signature(fn_type);
+    Symbol {
+        path,
+        signature: Some((params, ret)),
+        vendor_suffix: None,
+    }
 }
 
 /// A `(concrete type, spec, spec type args)` triple's vtable data symbol --
@@ -181,18 +292,35 @@ pub(crate) fn glued_symbol(spec_module_path: &[Ident], spec_name: &Ident, functi
 /// `concrete` is always a `Struct`/`Enum`/`Union` (a spec-object
 /// coercion's pointee can never be anything else -- see
 /// `Codegen::vtable_for`'s identical assumption).
-pub(crate) fn vtable_symbol(concrete: &ResolvedType, spec_name: &Ident, spec_type_args: &[ResolvedType]) -> Symbol {
+pub(crate) fn vtable_symbol(
+    concrete: &ResolvedType,
+    spec_name: &Ident,
+    spec_type_args: &[ResolvedType],
+) -> Symbol {
     let MangleType::Named(concrete_path, _) = mangle_type(concrete) else {
-        unreachable!("a spec-object coercion's concrete pointee is always struct/enum/union, which always mangles to MangleType::Named");
+        unreachable!(
+            "a spec-object coercion's concrete pointee is always struct/enum/union, which always mangles to MangleType::Named"
+        );
     };
-    let spec_segment = ManglePath::Nested(Box::new(concrete_path), Namespace::Type, spec_name.as_ref().to_string());
+    let spec_segment = ManglePath::Nested(
+        Box::new(concrete_path),
+        Namespace::Type,
+        spec_name.as_ref().to_string(),
+    );
     let with_spec = if spec_type_args.is_empty() {
         spec_segment
     } else {
-        ManglePath::Generic(Box::new(spec_segment), spec_type_args.iter().map(mangle_type).collect())
+        ManglePath::Generic(
+            Box::new(spec_segment),
+            spec_type_args.iter().map(mangle_type).collect(),
+        )
     };
     let path = ManglePath::Nested(Box::new(with_spec), Namespace::Value, "vtable".to_string());
-    Symbol { path, signature: None, vendor_suffix: None }
+    Symbol {
+        path,
+        signature: None,
+        vendor_suffix: None,
+    }
 }
 
 pub(crate) fn encode(symbol: &Symbol) -> String {

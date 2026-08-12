@@ -13,9 +13,14 @@ use crate::items::{CheckedBody, GlueSignature, ItemKey};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::annotations::ManglingMode;
-use omega_analyzer::checked::{CheckedExternDeclaration, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef, Storage};
+use omega_analyzer::checked::{
+    CheckedExternDeclaration, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef,
+    Storage,
+};
 use omega_analyzer::dead_code::{self, FieldUsage};
-use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind};
+use omega_analyzer::error::{
+    AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind,
+};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_hir::{HirEnumDef, HirGlueDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
@@ -33,7 +38,10 @@ pub(crate) type CheckedModules = Vec<(ModulePath, CheckedModule)>;
 
 /// A resolution failure with no importing site of its own to blame.
 fn fatal(error: ResolveError) -> Vec<CompileError> {
-    vec![CompileError::Resolve { error, importer: None }]
+    vec![CompileError::Resolve {
+        error,
+        importer: None,
+    }]
 }
 
 impl Driver {
@@ -52,7 +60,6 @@ impl Driver {
         let local = self.local_module_paths().map_err(|e| vec![e])?;
         let extern_surface = self.collect_extern_signatures()?;
 
-        self.collect_signatures(&local)?;
         // Deduplicated, because sweeping one module for `glue` blocks is
         // *not* idempotent -- each pass appends to `items.glues` (a list of
         // declaration sites, where a repeat is by definition a conflict) and
@@ -62,12 +69,16 @@ impl Driver {
         // in both, which would otherwise report every one of its glues as
         // `MultipleGluesForGap` against itself, naming the same `HirId`
         // twice.
-        let mut glue_modules: Vec<ModulePath> = Vec::with_capacity(extern_surface.len() + local.len());
+        let mut glue_modules: Vec<ModulePath> =
+            Vec::with_capacity(extern_surface.len() + local.len());
         for path in extern_surface.iter().chain(local.iter()) {
             if !glue_modules.contains(path) {
                 glue_modules.push(path.clone());
             }
         }
+        self.collect_primitive_signatures(&glue_modules);
+        self.collect_compose_signatures(&glue_modules);
+        self.collect_signatures(&local)?;
         self.collect_glue_signatures(&glue_modules);
         let (mut modules, mut warnings) = self.check_bodies(&local)?;
 
@@ -85,24 +96,25 @@ impl Driver {
         // each module independently, with no cross-module state, so an
         // item only needs to be present *somewhere* codegen will see it.
         for (key, body) in &self.items.generic_instantiations {
-            let target_index =
-                modules.iter().position(|(path, _)| *path == key.module).unwrap_or(0);
+            let target_index = modules
+                .iter()
+                .position(|(path, _)| *path == key.module)
+                .unwrap_or(0);
             let (path, checked_module) = modules
                 .get_mut(target_index)
                 .expect("`local_module_paths` always includes at least the entry module");
             checked_module.items.push(body.item.clone());
             warnings.extend(body.warnings.iter().map(|w| (path.clone(), w.clone())));
         }
-        // Every `for`-attached method any of the above actually triggered,
-        // directly or transitively through another one's body.
-        self.drain_pending_extensions(&mut modules, &mut warnings);
+        // Every generic primitive/compose body any of the above actually
+        // triggered, directly or transitively through another one's body.
+        self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
 
-        // A genuine error inside `core`'s own tree (a `for` block with a
-        // bodyless function, say) must still surface even when nothing local
+        // A genuine error inside an extern tree (a malformed primitive or
+        // compose block, say) must still surface even when nothing local
         // imports that particular submodule. Warnings stay scoped to local
         // modules only, deliberately.
         let mut error_scope = local.clone();
-        error_scope.extend(self.extensions.module_paths.iter().cloned());
         error_scope.extend(extern_surface);
         let errors = self.diagnostics.drain_errors(&error_scope);
         if !errors.is_empty() {
@@ -123,7 +135,12 @@ impl Driver {
         warnings.extend(gap_warnings);
 
         let extern_functions = self.collect_extern_functions();
-        Ok(CompiledProgram { modules, entry: entry.to_vec(), warnings, extern_functions })
+        Ok(CompiledProgram {
+            modules,
+            entry: entry.to_vec(),
+            warnings,
+            extern_functions,
+        })
     }
 
     /// Every module the local package -- the one actually being compiled --
@@ -147,8 +164,14 @@ impl Driver {
         // Collected into an owned `Vec` first, not iterated in place --
         // `load_failure` below needs `&mut self`, which can't coexist with
         // `local_modules()`'s own borrow of `self.roots`.
-        let entries: Vec<(ModulePath, Result<crate::fs_resolve::ModuleLocation, ResolveError>)> =
-            self.roots.local_modules().map(|(path, result)| (path.clone(), result.clone())).collect();
+        let entries: Vec<(
+            ModulePath,
+            Result<crate::fs_resolve::ModuleLocation, ResolveError>,
+        )> = self
+            .roots
+            .local_modules()
+            .map(|(path, result)| (path.clone(), result.clone()))
+            .collect();
 
         let mut paths: Vec<ModulePath> = Vec::new();
         for (path, location) in entries {
@@ -252,7 +275,10 @@ impl Driver {
                 .hir
                 .items
                 .iter()
-                .filter_map(|item| match item { HirItem::Glue(glue) => Some(glue.clone()), _ => None })
+                .filter_map(|item| match item {
+                    HirItem::Glue(glue) => Some(glue.clone()),
+                    _ => None,
+                })
                 .collect();
             for glue in glues {
                 let run = self.with_analyzer(path, &[], (glue.id, glue.span), |analyzer| {
@@ -260,7 +286,11 @@ impl Driver {
                     let functions = glue
                         .functions
                         .iter()
-                        .map(|function| analyzer.collect_function_signature(function, None).map(|(signature, _)| (function.clone(), signature)))
+                        .map(|function| {
+                            analyzer
+                                .collect_function_signature(function, None)
+                                .map(|(signature, _)| (function.clone(), signature))
+                        })
                         .collect::<Option<Vec<_>>>()?;
                     let mut errors = Vec::new();
                     let mut seen = std::collections::HashMap::new();
@@ -277,15 +307,23 @@ impl Driver {
                         }
                     }
                     for (name, requirement) in &gap.functions {
-                        match functions.iter().find(|(function, _)| function.name == *name) {
+                        match functions
+                            .iter()
+                            .find(|(function, _)| function.name == *name)
+                        {
                             None => {
                                 errors.push(AnalysisError::new(
                                     glue.id,
                                     glue.span,
-                                    AnalysisErrorKind::GlueMissingFunction { gap: gap.name.clone(), function: name.clone() },
+                                    AnalysisErrorKind::GlueMissingFunction {
+                                        gap: gap.name.clone(),
+                                        function: name.clone(),
+                                    },
                                 ));
                             }
-                            Some((function, actual)) if !Self::same_glue_signature(&requirement.fn_type, actual) => {
+                            Some((function, actual))
+                                if !Self::same_glue_signature(&requirement.fn_type, actual) =>
+                            {
                                 errors.push(AnalysisError::new(
                                     function.id,
                                     function.span,
@@ -316,11 +354,18 @@ impl Driver {
                 if run.failed {
                     continue;
                 }
-                let Some((gap, functions, errors)) = run.result else { continue };
+                let Some((gap, functions, errors)) = run.result else {
+                    continue;
+                };
                 if self.diagnostics.record_errors(path, errors) {
                     continue;
                 }
-                self.items.glues.push(GlueSignature { module: path.clone(), id: glue.id, gap, functions });
+                self.items.glues.push(GlueSignature {
+                    module: path.clone(),
+                    id: glue.id,
+                    gap,
+                    functions,
+                });
             }
         }
     }
@@ -330,7 +375,11 @@ impl Driver {
             && expected.self_mode == actual.self_mode
             && expected.return_type == actual.return_type
             && expected.params.len() == actual.params.len()
-            && expected.params.iter().zip(&actual.params).all(|((_, expected), (_, actual))| expected == actual)
+            && expected
+                .params
+                .iter()
+                .zip(&actual.params)
+                .all(|((_, expected), (_, actual))| expected == actual)
     }
 
     /// Every `gap` this compilation actually resolved (see
@@ -358,7 +407,11 @@ impl Driver {
                 .map(|glue| {
                     Ident(format!(
                         "{}#{}",
-                        glue.module.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+                        glue.module
+                            .iter()
+                            .map(Ident::as_ref)
+                            .collect::<Vec<_>>()
+                            .join("::"),
                         glue.id.local
                     ))
                 })
@@ -381,7 +434,10 @@ impl Driver {
                     errors: vec![AnalysisError::new(
                         gap.id,
                         gap.span,
-                        AnalysisErrorKind::MultipleGluesForGap { gap: gap.name.clone(), glues },
+                        AnalysisErrorKind::MultipleGluesForGap {
+                            gap: gap.name.clone(),
+                            glues,
+                        },
                     )],
                 }),
             }
@@ -427,7 +483,11 @@ impl Driver {
         }
 
         let errors = self.diagnostics.drain_errors(local);
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Phase 2: every local module's every non-generic item's body, now that
@@ -438,7 +498,10 @@ impl Driver {
     /// templates is (merged during final assembly), since nothing else will
     /// ever compile that exact instantiation, and that must happen in
     /// whichever project actually asked for it.
-    fn check_bodies(&mut self, local: &[ModulePath]) -> Result<(CheckedModules, TaggedWarnings), Vec<CompileError>> {
+    fn check_bodies(
+        &mut self,
+        local: &[ModulePath],
+    ) -> Result<(CheckedModules, TaggedWarnings), Vec<CompileError>> {
         let mut modules = Vec::with_capacity(local.len());
         let mut warnings = TaggedWarnings::new();
 
@@ -458,8 +521,6 @@ impl Driver {
         path: &[Ident],
         warnings: &mut TaggedWarnings,
     ) -> Result<Vec<CheckedItem>, Vec<CompileError>> {
-        self.reject_local_extensions(path);
-
         let mut bodies: Vec<CheckedBody> = Vec::new();
 
         for (name, index) in self.modules.index(path).plain_items() {
@@ -482,12 +543,21 @@ impl Driver {
         }
         items.extend(self.synthesize_gap_items(path));
         items.extend(self.check_glue_bodies(path, warnings));
+        items.extend(self.check_primitive_bodies(path, warnings));
+        items.extend(self.check_compose_bodies(path, warnings));
         self.report_unused_imports(path, warnings);
         Ok(items)
     }
 
-    fn check_glue_bodies(&mut self, path: &[Ident], warnings: &mut TaggedWarnings) -> Vec<CheckedItem> {
-        let signatures: Vec<(std::rc::Rc<omega_analyzer::resolved_type::ResolvedGap>, Vec<(omega_hir::HirFunctionDef, ResolvedFunctionType)>)> = self
+    fn check_glue_bodies(
+        &mut self,
+        path: &[Ident],
+        warnings: &mut TaggedWarnings,
+    ) -> Vec<CheckedItem> {
+        let signatures: Vec<(
+            std::rc::Rc<omega_analyzer::resolved_type::ResolvedGap>,
+            Vec<(omega_hir::HirFunctionDef, ResolvedFunctionType)>,
+        )> = self
             .items
             .glues
             .iter()
@@ -509,7 +579,11 @@ impl Driver {
                 // renamed parameter would emit no body, no symbol and no
                 // diagnostic, deferring the whole thing to an "undefined
                 // reference" from the system linker.
-                let Some((_, declared)) = gap.functions.iter().find(|(name, _)| *name == function.name) else {
+                let Some((_, declared)) = gap
+                    .functions
+                    .iter()
+                    .find(|(name, _)| *name == function.name)
+                else {
                     continue;
                 };
                 if !Self::same_glue_signature(&declared.fn_type, &fn_type) {
@@ -529,10 +603,201 @@ impl Driver {
                 if let Some(checked) = run.result {
                     items.push(CheckedItem::FunctionDefinition(checked));
                 }
-                warnings.extend(run.warnings.into_iter().map(|warning| (path.to_vec(), warning)));
+                warnings.extend(
+                    run.warnings
+                        .into_iter()
+                        .map(|warning| (path.to_vec(), warning)),
+                );
             }
         }
         items
+    }
+
+    fn check_compose_bodies(
+        &mut self,
+        path: &[Ident],
+        warnings: &mut TaggedWarnings,
+    ) -> Vec<CheckedItem> {
+        let entries: Vec<_> = self
+            .composes
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.module == path
+                    && !self.composes.emitted.contains(&(
+                        entry.target.clone(),
+                        entry.spec.borrow().id,
+                        entry.spec_args.clone(),
+                    ))
+            })
+            .cloned()
+            .collect();
+        let mut items = Vec::new();
+        for entry in entries {
+            self.composes.emitted.push((
+                entry.target.clone(),
+                entry.spec.borrow().id,
+                entry.spec_args.clone(),
+            ));
+            let bounds = vec![(
+                entry.target.clone(),
+                entry.spec.clone(),
+                entry.spec_args.clone(),
+            )];
+            let owner = Self::compose_owner(&entry);
+            for function in &entry.functions {
+                let Some((_, method)) = entry
+                    .methods
+                    .iter()
+                    .find(|(_, method)| method.decl_id == function.id)
+                else {
+                    continue;
+                };
+                let run = self.with_analyzer_in(
+                    path,
+                    &entry.substitution,
+                    &bounds,
+                    (function.id, function.span),
+                    |analyzer| {
+                        analyzer.check_function_body(
+                            function,
+                            &method.fn_type,
+                            method.decl_id,
+                            &method.annotations,
+                        )
+                    },
+                );
+                if let Some(mut checked) = run.result {
+                    checked.compose_owner = Some(owner.clone());
+                    items.push(CheckedItem::FunctionDefinition(checked));
+                }
+                warnings.extend(
+                    run.warnings
+                        .into_iter()
+                        .map(|warning| (path.to_vec(), warning)),
+                );
+            }
+            for pending in &entry.pending {
+                let run = self.with_analyzer_in(
+                    path,
+                    &pending.substitution,
+                    &bounds,
+                    (pending.id, pending.raw.span),
+                    |analyzer| analyzer.check_pending_spec_method(pending),
+                );
+                if let Some(mut checked) = run.result {
+                    checked.compose_owner = Some(owner.clone());
+                    items.push(CheckedItem::FunctionDefinition(checked));
+                }
+                warnings.extend(
+                    run.warnings
+                        .into_iter()
+                        .map(|warning| (path.to_vec(), warning)),
+                );
+            }
+        }
+        items
+    }
+
+    fn check_primitive_bodies(
+        &mut self,
+        path: &[Ident],
+        warnings: &mut TaggedWarnings,
+    ) -> Vec<CheckedItem> {
+        let entries: Vec<_> = self
+            .primitives
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.module == path && !self.primitives.emitted.contains(&entry.target)
+            })
+            .cloned()
+            .collect();
+        let mut items = Vec::new();
+        for entry in entries {
+            self.primitives.emitted.push(entry.target.clone());
+            for function in &entry.functions {
+                let Some((_, method)) = entry
+                    .methods
+                    .iter()
+                    .find(|(_, method)| method.decl_id == function.id)
+                else {
+                    continue;
+                };
+                let run = self.with_analyzer(
+                    path,
+                    &entry.substitution,
+                    (function.id, function.span),
+                    |analyzer| {
+                        analyzer.check_function_body(
+                            function,
+                            &method.fn_type,
+                            method.decl_id,
+                            &method.annotations,
+                        )
+                    },
+                );
+                if let Some(mut checked) = run.result {
+                    checked.primitive_target = Some(entry.target.clone());
+                    items.push(CheckedItem::FunctionDefinition(checked));
+                }
+                warnings.extend(
+                    run.warnings
+                        .into_iter()
+                        .map(|warning| (path.to_vec(), warning)),
+                );
+            }
+        }
+        items
+    }
+
+    fn drain_pending_declaration_bodies(
+        &mut self,
+        modules: &mut CheckedModules,
+        warnings: &mut TaggedWarnings,
+    ) {
+        loop {
+            let primitive_module = self
+                .primitives
+                .entries
+                .iter()
+                .find(|entry| {
+                    !self.primitives.emitted.contains(&entry.target)
+                        && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
+                })
+                .map(|entry| entry.module.clone());
+            let compose_module = self
+                .composes
+                .entries
+                .iter()
+                .find(|entry| {
+                    !self.composes.emitted.contains(&(
+                        entry.target.clone(),
+                        entry.spec.borrow().id,
+                        entry.spec_args.clone(),
+                    )) && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
+                })
+                .map(|entry| entry.module.clone());
+            let Some((module, primitive)) = primitive_module
+                .map(|module| (module, true))
+                .or_else(|| compose_module.map(|module| (module, false)))
+            else {
+                break;
+            };
+            let items = if primitive {
+                self.check_primitive_bodies(&module, warnings)
+            } else {
+                self.check_compose_bodies(&module, warnings)
+            };
+            if items.is_empty() {
+                continue;
+            }
+            if let Some((_, checked)) = modules.iter_mut().find(|(path, _)| *path == module) {
+                checked.items.extend(items);
+            } else if let Some((_, checked)) = modules.first_mut() {
+                checked.items.extend(items);
+            }
+        }
     }
 
     /// Every `gap` declared directly in `path`, synthesized as one
@@ -550,7 +815,9 @@ impl Driver {
         for (name, index) in self.modules.index(path).plain_items() {
             if matches!(self.modules.parsed(path).hir.items[index], HirItem::Gap(_)) {
                 let key = ItemKey::new(path, &name, &[]);
-                let Some(gap) = self.items.gaps.get(&key) else { continue };
+                let Some(gap) = self.items.gaps.get(&key) else {
+                    continue;
+                };
                 for (fn_name, gap_fn) in &gap.functions {
                     items.push(CheckedItem::ExternDeclaration(CheckedExternDeclaration {
                         id: gap_fn.decl_id,
@@ -578,11 +845,16 @@ impl Driver {
             if self.imports.was_used(path, alias) {
                 continue;
             }
-            let kind = AnalysisWarningKind::UnusedImport { alias: alias.clone() };
+            let kind = AnalysisWarningKind::UnusedImport {
+                alias: alias.clone(),
+            };
             if import.suppress.iter().any(|s| s.as_ref() == kind.name()) {
                 continue;
             }
-            warnings.push((path.to_vec(), AnalysisWarning::new(import.id, import.span, kind)));
+            warnings.push((
+                path.to_vec(),
+                AnalysisWarning::new(import.id, import.span, kind),
+            ));
         }
     }
 
@@ -627,7 +899,9 @@ impl Driver {
             if !self.roots.is_extern(module_path) {
                 continue;
             }
-            let HirItem::FunctionDefinition(f) = &self.modules.parsed(module_path).hir.items[*index] else {
+            let HirItem::FunctionDefinition(f) =
+                &self.modules.parsed(module_path).hir.items[*index]
+            else {
                 unreachable!("only a function is ever recorded as an overload candidate");
             };
             functions.push(ExternFunctionRef {
@@ -647,7 +921,10 @@ impl Driver {
                 functions.push(ExternFunctionRef {
                     decl_id: method.decl_id,
                     module_path: key.module.clone(),
-                    kind: ExternFunctionKind::Method { type_name: key.name.clone(), method_name },
+                    kind: ExternFunctionKind::Method {
+                        type_name: key.name.clone(),
+                        method_name,
+                    },
                     mangling: method.annotations.mangling,
                     fn_type: method.fn_type,
                 });
@@ -673,13 +950,58 @@ impl Driver {
             }
         }
 
+        for entry in &self.primitives.entries {
+            if entry.substitution.len() != 1 || !self.roots.is_extern(&entry.module) {
+                continue;
+            }
+            for (method_name, method) in &entry.methods {
+                functions.push(ExternFunctionRef {
+                    decl_id: method.decl_id,
+                    module_path: entry.module.clone(),
+                    kind: ExternFunctionKind::Primitive {
+                        target: entry.target.clone(),
+                        method_name: method_name.clone(),
+                    },
+                    fn_type: method.fn_type.clone(),
+                    mangling: method.annotations.mangling.clone(),
+                });
+            }
+        }
+
+        for entry in &self.composes.entries {
+            if entry.substitution.len() != 1 || !self.roots.is_extern(&entry.module) {
+                continue;
+            }
+            for (method_name, method) in &entry.methods {
+                if method.source.is_none() {
+                    continue;
+                }
+                functions.push(ExternFunctionRef {
+                    decl_id: method.decl_id,
+                    module_path: entry.module.clone(),
+                    kind: ExternFunctionKind::Compose {
+                        target: entry.target.clone(),
+                        spec_name: entry.spec.borrow().name.clone(),
+                        spec_args: entry.spec_args.clone(),
+                        method_name: method_name.clone(),
+                    },
+                    fn_type: method.fn_type.clone(),
+                    mangling: method.annotations.mangling.clone(),
+                });
+            }
+        }
+
         functions
     }
 
     /// A free function's own resolved `@mangling(...)`, which a consuming
     /// compilation must agree with or the two mangled symbols diverge.
     fn mangling_of(&self, decl_id: &HirId) -> ManglingMode {
-        self.items.function_annotations.get(decl_id).map(|a| a.mangling.clone()).unwrap_or_default()
+        self.items
+            .function_annotations
+            .get(decl_id)
+            .map(|a| a.mangling.clone())
+            .unwrap_or_default()
     }
 
     /// `UnusedField`/`NeverConstructedVariant`'s whole-program sweep, run once
@@ -707,12 +1029,18 @@ impl Driver {
             AnalysisWarning::new(
                 field.id,
                 field.span,
-                AnalysisWarningKind::UnusedField { owner: owner.clone(), field: field.ident.clone() },
+                AnalysisWarningKind::UnusedField {
+                    owner: owner.clone(),
+                    field: field.ident.clone(),
+                },
             )
         };
 
-        for decl in group_by_declaration(self.items.cells.structs(), |c| (c.id, c.suppress.clone())) {
-            let Some(def) = self.hir_struct(decl.module, decl.name) else { continue };
+        for decl in group_by_declaration(self.items.cells.structs(), |c| (c.id, c.suppress.clone()))
+        {
+            let Some(def) = self.hir_struct(decl.module, decl.name) else {
+                continue;
+            };
             if !local.contains(decl.module) || decl.suppresses("unused_field") {
                 continue;
             }
@@ -723,8 +1051,11 @@ impl Driver {
             }
         }
 
-        for decl in group_by_declaration(self.items.cells.unions(), |c| (c.id, c.suppress.clone())) {
-            let Some(def) = self.hir_union(decl.module, decl.name) else { continue };
+        for decl in group_by_declaration(self.items.cells.unions(), |c| (c.id, c.suppress.clone()))
+        {
+            let Some(def) = self.hir_union(decl.module, decl.name) else {
+                continue;
+            };
             if !local.contains(decl.module) || decl.suppresses("unused_field") {
                 continue;
             }
@@ -736,7 +1067,9 @@ impl Driver {
         }
 
         for decl in group_by_declaration(self.items.cells.enums(), |c| (c.id, c.suppress.clone())) {
-            let Some(def) = self.hir_enum(decl.module, decl.name) else { continue };
+            let Some(def) = self.hir_enum(decl.module, decl.name) else {
+                continue;
+            };
             if !local.contains(decl.module) {
                 continue;
             }
@@ -749,7 +1082,11 @@ impl Driver {
                 }
                 for (variant_index, variant) in def.variants.iter().enumerate() {
                     for (field_index, field) in variant.fields.iter().enumerate() {
-                        if !decl.any(|id| usage.enum_body_fields.contains(&(id, variant_index, field_index))) {
+                        if !decl.any(|id| {
+                            usage
+                                .enum_body_fields
+                                .contains(&(id, variant_index, field_index))
+                        }) {
                             warnings.push((decl.module.clone(), unused_field(decl.name, field)));
                         }
                     }
@@ -782,8 +1119,14 @@ impl Driver {
         // across all three kinds together, instead of every struct warning,
         // then every union warning, then every enum warning.
         warnings.sort_by(|(a_path, a), (b_path, b)| {
-            let key = |path: &ModulePath| path.iter().map(|i| i.as_ref().to_string()).collect::<Vec<_>>();
-            key(a_path).cmp(&key(b_path)).then(a.span.start.cmp(&b.span.start))
+            let key = |path: &ModulePath| {
+                path.iter()
+                    .map(|i| i.as_ref().to_string())
+                    .collect::<Vec<_>>()
+            };
+            key(a_path)
+                .cmp(&key(b_path))
+                .then(a.span.start.cmp(&b.span.start))
         });
         warnings
     }
@@ -854,7 +1197,12 @@ where
         let (id, suppress) = facts(&cell.borrow());
         grouped
             .entry((&key.module, &key.name))
-            .or_insert_with(|| Declaration { module: &key.module, name: &key.name, ids: vec![], suppress })
+            .or_insert_with(|| Declaration {
+                module: &key.module,
+                name: &key.name,
+                ids: vec![],
+                suppress,
+            })
             .ids
             .push(id);
     }

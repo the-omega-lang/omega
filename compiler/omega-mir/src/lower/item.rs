@@ -4,21 +4,27 @@
 
 use crate::lower::function::FunctionLowerer;
 use crate::mir::{
-    MirDeclaration, MirEnumDef, MirExternDeclaration, MirFunctionDef, MirItem, MirModule, MirStructDef, MirUnionDef,
+    MirDeclaration, MirEnumDef, MirExternDeclaration, MirFunctionDef, MirItem, MirModule,
+    MirStructDef, MirUnionDef,
 };
 use omega_analyzer::checked::{
-    CheckedDeclaration, CheckedEnumDef, CheckedExternDeclaration, CheckedFunctionDef, CheckedItem, CheckedModule,
-    CheckedStructDef, CheckedUnionDef,
+    CheckedDeclaration, CheckedEnumDef, CheckedExternDeclaration, CheckedFunctionDef, CheckedItem,
+    CheckedModule, CheckedStructDef, CheckedUnionDef,
 };
 
 pub(crate) fn lower_module(module: CheckedModule) -> MirModule {
-    MirModule { id: module.id, items: module.items.into_iter().map(lower_item).collect() }
+    MirModule {
+        id: module.id,
+        items: module.items.into_iter().map(lower_item).collect(),
+    }
 }
 
 fn lower_item(item: CheckedItem) -> MirItem {
     match item {
         CheckedItem::Declaration(d) => MirItem::Declaration(lower_declaration(d)),
-        CheckedItem::ExternDeclaration(d) => MirItem::ExternDeclaration(lower_extern_declaration(d)),
+        CheckedItem::ExternDeclaration(d) => {
+            MirItem::ExternDeclaration(lower_extern_declaration(d))
+        }
         CheckedItem::FunctionDefinition(f) => MirItem::FunctionDefinition(lower_function_def(f)),
         CheckedItem::Struct(s) => MirItem::Struct(lower_struct_def(s)),
         CheckedItem::Enum(e) => MirItem::Enum(lower_enum_def(e)),
@@ -27,11 +33,23 @@ fn lower_item(item: CheckedItem) -> MirItem {
 }
 
 fn lower_declaration(decl: CheckedDeclaration) -> MirDeclaration {
-    MirDeclaration { id: decl.id, span: decl.span, ident: decl.ident, r#type: decl.r#type, initial_value: decl.initial_value }
+    MirDeclaration {
+        id: decl.id,
+        span: decl.span,
+        ident: decl.ident,
+        r#type: decl.r#type,
+        initial_value: decl.initial_value,
+    }
 }
 
 fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclaration {
-    MirExternDeclaration { id: decl.id, span: decl.span, ident: decl.ident, r#type: decl.r#type, mangling: decl.mangling }
+    MirExternDeclaration {
+        id: decl.id,
+        span: decl.span,
+        ident: decl.ident,
+        r#type: decl.r#type,
+        mangling: decl.mangling,
+    }
 }
 
 fn lower_function_def(f: CheckedFunctionDef) -> MirFunctionDef {
@@ -47,7 +65,8 @@ fn lower_function_def(f: CheckedFunctionDef) -> MirFunctionDef {
         body,
         inline,
         mangling,
-        extension_target,
+        compose_owner,
+        primitive_target,
     } = f;
     // Lowered against `&params`/`&return_type` (only its own id/type is
     // needed to seed parameter locals and the return slot -- see
@@ -67,7 +86,8 @@ fn lower_function_def(f: CheckedFunctionDef) -> MirFunctionDef {
         return_type,
         inline,
         mangling,
-        extension_target,
+        compose_owner,
+        primitive_target,
         body: mir_body,
     }
 }

@@ -17,9 +17,9 @@
 //! not it was ever written with `comp` in mind -- see [`CompFunctionResolver`].
 
 use crate::checked::{
-    CheckedBinaryOp, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFor, CheckedFunctionCall,
-    CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-    CheckedStmt, CheckedWhile, CastKind, NumberValue, Storage,
+    CastKind, CheckedBinaryOp, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFor,
+    CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace,
+    CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedWhile, NumberValue, Storage,
 };
 use crate::resolved_type::{ConstValue, ResolvedType};
 use crate::resolver::ResolveError;
@@ -46,7 +46,10 @@ pub trait CompFunctionResolver {
     /// at all (an `extern` declaration, most likely) -- distinguished from
     /// `Err` (a real resolution failure) so the interpreter can report the
     /// precise [`CompErrorKind::ExternCall`] instead of a generic failure.
-    fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError>;
+    fn resolve_function_body(
+        &mut self,
+        decl_id: HirId,
+    ) -> Result<Option<CheckedFunctionDef>, ResolveError>;
 }
 
 /// `Analyzer::analyze_comp` only ever has a `&mut dyn ModuleResolver` in
@@ -58,7 +61,10 @@ pub trait CompFunctionResolver {
 /// unit test here only ever needs to fake one method, not `ModuleResolver`'s
 /// entire cross-module surface (import aliases, spec declarations, ...).
 impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
-    fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+    fn resolve_function_body(
+        &mut self,
+        decl_id: HirId,
+    ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
         crate::resolver::ModuleResolver::resolve_function_body(self, decl_id)
     }
 }
@@ -113,12 +119,19 @@ impl std::fmt::Display for CompErrorKind {
         match self {
             Self::ExternCall => write!(f, "it calls an 'extern' function"),
             Self::DynamicDispatch => write!(f, "it uses dynamic dispatch through a 'spec' object"),
-            Self::UnresolvableMemory => write!(f, "it dereferences a pointer this evaluation didn't itself produce"),
-            Self::NonCompGlobalRead => write!(f, "it reads a global that isn't itself a 'comp' binding"),
+            Self::UnresolvableMemory => write!(
+                f,
+                "it dereferences a pointer this evaluation didn't itself produce"
+            ),
+            Self::NonCompGlobalRead => {
+                write!(f, "it reads a global that isn't itself a 'comp' binding")
+            }
             Self::ReadBeforeInit => write!(f, "it reads a local before it's ever assigned"),
             Self::ResolutionFailed(e) => write!(f, "{e}"),
             Self::FuelExhausted => write!(f, "it ran for too long (a runaway loop or recursion)"),
-            Self::Unsupported(what) => write!(f, "{what} isn't supported in a compile-time evaluation yet"),
+            Self::Unsupported(what) => {
+                write!(f, "{what} isn't supported in a compile-time evaluation yet")
+            }
         }
     }
 }
@@ -209,8 +222,16 @@ struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
 /// CompFunctionResolver` directly isn't something Rust does between two
 /// unrelated trait objects, but instantiating `R = dyn ModuleResolver` here
 /// needs no coercion at all, just the ordinary blanket impl.
-pub fn eval<R: CompFunctionResolver + ?Sized>(resolver: &mut R, expr: &CheckedExprNode) -> Result<ConstValue, CompError> {
-    let mut interp = Interpreter { resolver, fuel: FUEL_LIMIT, frames: vec![Frame::default()], call_trace: vec![] };
+pub fn eval<R: CompFunctionResolver + ?Sized>(
+    resolver: &mut R,
+    expr: &CheckedExprNode,
+) -> Result<ConstValue, CompError> {
+    let mut interp = Interpreter {
+        resolver,
+        fuel: FUEL_LIMIT,
+        frames: vec![Frame::default()],
+        call_trace: vec![],
+    };
     let result = interp.eval_expr(expr);
     // A `defer` reached directly by the outermost `comp <expr>` (rather
     // than inside a function `call_function` itself calls into, which
@@ -241,17 +262,25 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(resolver: &mut R, expr: &CheckedEx
         // a function, `break`/`continue` outside a loop) -- if it happens
         // anyway, that's an analyzer/interpreter bug, not a user-reportable
         // `comp` failure.
-        Err(Outcome::Signal(_)) => unreachable!("control-flow signal escaped the outermost comp evaluation"),
+        Err(Outcome::Signal(_)) => {
+            unreachable!("control-flow signal escaped the outermost comp evaluation")
+        }
     }
 }
 
 impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     fn err(&self, span: Span, kind: CompErrorKind) -> Outcome {
-        Outcome::Error(CompError { kind, span, trace: self.call_trace.clone() })
+        Outcome::Error(CompError {
+            kind,
+            span,
+            trace: self.call_trace.clone(),
+        })
     }
 
     fn frame(&mut self) -> &mut Frame {
-        self.frames.last_mut().expect("comp evaluation always has at least one frame")
+        self.frames
+            .last_mut()
+            .expect("comp evaluation always has at least one frame")
     }
 
     fn tick(&mut self, span: Span) -> CompResult<()> {
@@ -275,9 +304,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // No dedicated byte-string `ConstValue` shape -- represented as
             // an ordinary `Slice` of `U8` `Number`s, matching how every
             // other `comp`-evaluated slice is represented.
-            CheckedExpr::ByteString(s) => {
-                Ok(ConstValue::Slice(s.bytes().map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64))).collect()))
-            }
+            CheckedExpr::ByteString(s) => Ok(ConstValue::Slice(
+                s.bytes()
+                    .map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64)))
+                    .collect(),
+            )),
             // Already a fully evaluated constant -- an enum tag/header
             // value, a `&[...]` literal, or (see `Analyzer::analyze_comp`)
             // a previously-evaluated `comp <expr>` reached again through
@@ -315,7 +346,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 // analysis (see `CheckedStructLiteral`'s doc comment) --
                 // evaluated in that same (source) order for side effects,
                 // then stored positionally.
-                let mut values: Vec<Option<ConstValue>> = (0..lit.fields.len()).map(|_| None).collect();
+                let mut values: Vec<Option<ConstValue>> =
+                    (0..lit.fields.len()).map(|_| None).collect();
                 for field in &lit.fields {
                     let value = self.eval_expr(&field.value)?;
                     if field.field_index >= values.len() {
@@ -325,12 +357,17 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 }
                 let fields = values
                     .into_iter()
-                    .map(|v| v.expect("analysis guarantees every declared field is initialized exactly once"))
+                    .map(|v| {
+                        v.expect(
+                            "analysis guarantees every declared field is initialized exactly once",
+                        )
+                    })
                     .collect();
                 Ok(ConstValue::Struct(fields))
             }
             CheckedExpr::EnumConstruct(construct) => {
-                let (tag, header, dynamic_count) = self.enum_variant_facts(node, construct.variant_index)?;
+                let (tag, header, dynamic_count) =
+                    self.enum_variant_facts(node, construct.variant_index)?;
                 // `construct.fields` is in *source* (evaluation) order, each
                 // entry carrying its *declared* position in the combined
                 // "dynamic fields, then this variant's own body fields"
@@ -338,7 +375,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 // are evaluated in source order (their side effects must
                 // run in that order) but stored positionally, exactly like
                 // `CheckedExpr::StructLiteral` just above.
-                let mut values: Vec<Option<ConstValue>> = (0..construct.fields.len()).map(|_| None).collect();
+                let mut values: Vec<Option<ConstValue>> =
+                    (0..construct.fields.len()).map(|_| None).collect();
                 for field in &construct.fields {
                     let value = self.eval_expr(&field.value)?;
                     if field.field_index >= values.len() {
@@ -348,14 +386,27 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 }
                 let mut values: Vec<ConstValue> = values
                     .into_iter()
-                    .map(|v| v.expect("analysis guarantees every declared field is initialized exactly once"))
+                    .map(|v| {
+                        v.expect(
+                            "analysis guarantees every declared field is initialized exactly once",
+                        )
+                    })
                     .collect();
                 let fields = values.split_off(dynamic_count);
-                Ok(ConstValue::Enum { variant_index: construct.variant_index, tag, header, dynamic_fields: values, fields })
+                Ok(ConstValue::Enum {
+                    variant_index: construct.variant_index,
+                    tag,
+                    header,
+                    dynamic_fields: values,
+                    fields,
+                })
             }
             CheckedExpr::UnionConstruct(construct) => {
                 let value = self.eval_expr(&construct.value)?;
-                Ok(ConstValue::Union { field_index: construct.field_index, value: Box::new(value) })
+                Ok(ConstValue::Union {
+                    field_index: construct.field_index,
+                    value: Box::new(value),
+                })
             }
             CheckedExpr::Slice(slice) => self.eval_slice(slice, node.span),
             CheckedExpr::Cast(cast) => self.eval_cast(cast, node.span),
@@ -364,9 +415,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // identical `ISize`/`USize` hardcoding), so `sizeof` inside a
             // `comp` evaluation uses that same fixed width rather than
             // threading a real target through the interpreter.
-            CheckedExpr::Sizeof(target) => {
-                Ok(ConstValue::Number(NumberValue::Unsigned(crate::layout::total_bytes(target, 8) as u64)))
-            }
+            CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
+                crate::layout::total_bytes(target, 8) as u64,
+            ))),
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
         }
@@ -392,7 +443,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             ResolvedType::Enum { cell, .. } => {
                 let cell = cell.borrow();
                 let variant = &cell.variants[variant_index];
-                Ok((variant.tag, variant.header_values.clone(), cell.dynamic_fields.len()))
+                Ok((
+                    variant.tag,
+                    variant.header_values.clone(),
+                    cell.dynamic_fields.len(),
+                ))
             }
             _ => unreachable!("CheckedExpr::EnumConstruct's own type is always ResolvedType::Enum"),
         }
@@ -400,18 +455,32 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
     fn eval_negate(&mut self, inner: &CheckedExprNode, span: Span) -> CompResult<ConstValue> {
         match self.eval_expr(inner)? {
-            ConstValue::Number(NumberValue::Signed(n)) => Ok(ConstValue::Number(NumberValue::Signed(n.wrapping_neg()))),
-            ConstValue::Number(NumberValue::Float(f)) => Ok(ConstValue::Number(NumberValue::Float(-f))),
-            _ => Err(self.err(span, CompErrorKind::Unsupported("negation of a non-numeric comp value"))),
+            ConstValue::Number(NumberValue::Signed(n)) => {
+                Ok(ConstValue::Number(NumberValue::Signed(n.wrapping_neg())))
+            }
+            ConstValue::Number(NumberValue::Float(f)) => {
+                Ok(ConstValue::Number(NumberValue::Float(-f)))
+            }
+            _ => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("negation of a non-numeric comp value"),
+            )),
         }
     }
 
     fn eval_bitnot(&mut self, inner: &CheckedExprNode, span: Span) -> CompResult<ConstValue> {
         match self.eval_expr(inner)? {
-            ConstValue::Number(NumberValue::Signed(n)) => Ok(ConstValue::Number(NumberValue::Signed(!n))),
-            ConstValue::Number(NumberValue::Unsigned(n)) => Ok(ConstValue::Number(NumberValue::Unsigned(!n))),
+            ConstValue::Number(NumberValue::Signed(n)) => {
+                Ok(ConstValue::Number(NumberValue::Signed(!n)))
+            }
+            ConstValue::Number(NumberValue::Unsigned(n)) => {
+                Ok(ConstValue::Number(NumberValue::Unsigned(!n)))
+            }
             ConstValue::Bool(b) => Ok(ConstValue::Bool(!b)),
-            _ => Err(self.err(span, CompErrorKind::Unsupported("bitwise-not of a non-integer comp value"))),
+            _ => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("bitwise-not of a non-integer comp value"),
+            )),
         }
     }
 
@@ -423,14 +492,29 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         // interpreter only has to pick signed/unsigned/float arithmetic
         // from the *values'* own shape, never re-check agreement.
         match (left, right) {
-            (ConstValue::Number(l), ConstValue::Number(r)) => self.eval_numeric_binary_op(bin.op, l, r, span),
-            (ConstValue::Bool(l), ConstValue::Bool(r)) => self.eval_bool_binary_op(bin.op, l, r, span),
-            (ConstValue::Char(l), ConstValue::Char(r)) => self.eval_char_binary_op(bin.op, l, r, span),
-            _ => Err(self.err(span, CompErrorKind::Unsupported("binary operator on this comp value shape"))),
+            (ConstValue::Number(l), ConstValue::Number(r)) => {
+                self.eval_numeric_binary_op(bin.op, l, r, span)
+            }
+            (ConstValue::Bool(l), ConstValue::Bool(r)) => {
+                self.eval_bool_binary_op(bin.op, l, r, span)
+            }
+            (ConstValue::Char(l), ConstValue::Char(r)) => {
+                self.eval_char_binary_op(bin.op, l, r, span)
+            }
+            _ => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("binary operator on this comp value shape"),
+            )),
         }
     }
 
-    fn eval_bool_binary_op(&mut self, op: BinaryOp, l: bool, r: bool, span: Span) -> CompResult<ConstValue> {
+    fn eval_bool_binary_op(
+        &mut self,
+        op: BinaryOp,
+        l: bool,
+        r: bool,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         match op {
             BinaryOp::Eq => Ok(ConstValue::Bool(l == r)),
             BinaryOp::Ne => Ok(ConstValue::Bool(l != r)),
@@ -441,7 +525,13 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         }
     }
 
-    fn eval_char_binary_op(&mut self, op: BinaryOp, l: char, r: char, span: Span) -> CompResult<ConstValue> {
+    fn eval_char_binary_op(
+        &mut self,
+        op: BinaryOp,
+        l: char,
+        r: char,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         if op.is_comparison() {
             let ord = (l as u32).cmp(&(r as u32));
             return Ok(ConstValue::Bool(compare(op, ord)));
@@ -449,7 +539,13 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         Err(self.err(span, CompErrorKind::Unsupported("arithmetic on char")))
     }
 
-    fn eval_numeric_binary_op(&mut self, op: BinaryOp, l: NumberValue, r: NumberValue, span: Span) -> CompResult<ConstValue> {
+    fn eval_numeric_binary_op(
+        &mut self,
+        op: BinaryOp,
+        l: NumberValue,
+        r: NumberValue,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         use NumberValue::*;
         if op.is_comparison() {
             let ord = match (l, r) {
@@ -462,10 +558,21 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     // arm only ever needs to make `<`/`<=`/`>`/`>=` false.
                     None => return Ok(ConstValue::Bool(false)),
                 },
-                _ => return Err(self.err(span, CompErrorKind::Unsupported("comparison across numeric kinds"))),
+                _ => {
+                    return Err(self.err(
+                        span,
+                        CompErrorKind::Unsupported("comparison across numeric kinds"),
+                    ));
+                }
             };
-            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && let (Float(l), Float(r)) = (l, r) {
-                return Ok(ConstValue::Bool(if op == BinaryOp::Eq { l == r } else { l != r }));
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                && let (Float(l), Float(r)) = (l, r)
+            {
+                return Ok(ConstValue::Bool(if op == BinaryOp::Eq {
+                    l == r
+                } else {
+                    l != r
+                }));
             }
             return Ok(ConstValue::Bool(compare(op, ord)));
         }
@@ -473,49 +580,88 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             (Signed(l), Signed(r)) => self.eval_signed_arith(op, l, r, span),
             (Unsigned(l), Unsigned(r)) => self.eval_unsigned_arith(op, l, r, span),
             (Float(l), Float(r)) => self.eval_float_arith(op, l, r, span),
-            _ => Err(self.err(span, CompErrorKind::Unsupported("arithmetic across numeric kinds"))),
+            _ => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("arithmetic across numeric kinds"),
+            )),
         }
     }
 
-    fn eval_signed_arith(&mut self, op: BinaryOp, l: i64, r: i64, span: Span) -> CompResult<ConstValue> {
+    fn eval_signed_arith(
+        &mut self,
+        op: BinaryOp,
+        l: i64,
+        r: i64,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         let v = match op {
             BinaryOp::Add => l.wrapping_add(r),
             BinaryOp::Sub => l.wrapping_sub(r),
             BinaryOp::Mul => l.wrapping_mul(r),
-            BinaryOp::Div if r == 0 => return Err(self.err(span, CompErrorKind::Unsupported("division by zero"))),
+            BinaryOp::Div if r == 0 => {
+                return Err(self.err(span, CompErrorKind::Unsupported("division by zero")));
+            }
             BinaryOp::Div => l.wrapping_div(r),
-            BinaryOp::Rem if r == 0 => return Err(self.err(span, CompErrorKind::Unsupported("division by zero"))),
+            BinaryOp::Rem if r == 0 => {
+                return Err(self.err(span, CompErrorKind::Unsupported("division by zero")));
+            }
             BinaryOp::Rem => l.wrapping_rem(r),
             BinaryOp::BitAnd => l & r,
             BinaryOp::BitOr => l | r,
             BinaryOp::BitXor => l ^ r,
             BinaryOp::Shl => l.wrapping_shl(r as u32),
             BinaryOp::Shr => l.wrapping_shr(r as u32),
-            _ => return Err(self.err(span, CompErrorKind::Unsupported("this operator on a signed integer"))),
+            _ => {
+                return Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("this operator on a signed integer"),
+                ));
+            }
         };
         Ok(ConstValue::Number(NumberValue::Signed(v)))
     }
 
-    fn eval_unsigned_arith(&mut self, op: BinaryOp, l: u64, r: u64, span: Span) -> CompResult<ConstValue> {
+    fn eval_unsigned_arith(
+        &mut self,
+        op: BinaryOp,
+        l: u64,
+        r: u64,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         let v = match op {
             BinaryOp::Add => l.wrapping_add(r),
             BinaryOp::Sub => l.wrapping_sub(r),
             BinaryOp::Mul => l.wrapping_mul(r),
-            BinaryOp::Div if r == 0 => return Err(self.err(span, CompErrorKind::Unsupported("division by zero"))),
+            BinaryOp::Div if r == 0 => {
+                return Err(self.err(span, CompErrorKind::Unsupported("division by zero")));
+            }
             BinaryOp::Div => l.wrapping_div(r),
-            BinaryOp::Rem if r == 0 => return Err(self.err(span, CompErrorKind::Unsupported("division by zero"))),
+            BinaryOp::Rem if r == 0 => {
+                return Err(self.err(span, CompErrorKind::Unsupported("division by zero")));
+            }
             BinaryOp::Rem => l.wrapping_rem(r),
             BinaryOp::BitAnd => l & r,
             BinaryOp::BitOr => l | r,
             BinaryOp::BitXor => l ^ r,
             BinaryOp::Shl => l.wrapping_shl(r as u32),
             BinaryOp::Shr => l.wrapping_shr(r as u32),
-            _ => return Err(self.err(span, CompErrorKind::Unsupported("this operator on an unsigned integer"))),
+            _ => {
+                return Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("this operator on an unsigned integer"),
+                ));
+            }
         };
         Ok(ConstValue::Number(NumberValue::Unsigned(v)))
     }
 
-    fn eval_float_arith(&mut self, op: BinaryOp, l: f64, r: f64, span: Span) -> CompResult<ConstValue> {
+    fn eval_float_arith(
+        &mut self,
+        op: BinaryOp,
+        l: f64,
+        r: f64,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         let v = match op {
             BinaryOp::Add => l + r,
             BinaryOp::Sub => l - r,
@@ -527,7 +673,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         Ok(ConstValue::Number(NumberValue::Float(v)))
     }
 
-    fn eval_cast(&mut self, cast: &crate::checked::CheckedCast, span: Span) -> CompResult<ConstValue> {
+    fn eval_cast(
+        &mut self,
+        cast: &crate::checked::CheckedCast,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         let base = self.eval_expr(&cast.base)?;
         match cast.kind {
             // Same underlying representation on both sides -- including the
@@ -548,34 +698,62 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // this pointer to be reference-equal to another, only valid.
             CastKind::DropLength => match base {
                 ConstValue::Str(s) => {
-                    let bytes = s.bytes().map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64))).collect();
+                    let bytes = s
+                        .bytes()
+                        .map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64)))
+                        .collect();
                     Ok(ConstValue::Ref(Box::new(ConstValue::Array(bytes))))
                 }
-                ConstValue::Slice(elements) => Ok(ConstValue::Ref(Box::new(ConstValue::Array(elements)))),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("a fat-to-thin pointer cast of a non-str/slice comp value"))),
+                ConstValue::Slice(elements) => {
+                    Ok(ConstValue::Ref(Box::new(ConstValue::Array(elements))))
+                }
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported(
+                        "a fat-to-thin pointer cast of a non-str/slice comp value",
+                    ),
+                )),
             },
             // Same reasoning as `DropLength`'s own comp-unsupported case
             // just above -- no fundamental blocker (`base` is always a
             // `Pointer` to a `SizedArray`, which `comp` already knows how
             // to build), just not implemented in this pass.
-            CastKind::Unsize => Err(self.err(span, CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"))),
+            CastKind::Unsize => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"),
+            )),
             _ => {
                 let ConstValue::Number(n) = base else {
-                    return Err(self.err(span, CompErrorKind::Unsupported("a numeric cast of a non-numeric comp value")));
+                    return Err(self.err(
+                        span,
+                        CompErrorKind::Unsupported("a numeric cast of a non-numeric comp value"),
+                    ));
                 };
                 let Some(target) = cast.target_type.numeric_kind() else {
-                    return Err(self.err(span, CompErrorKind::Unsupported("a cast to a non-numeric type")));
+                    return Err(self.err(
+                        span,
+                        CompErrorKind::Unsupported("a cast to a non-numeric type"),
+                    ));
                 };
                 Ok(ConstValue::Number(cast_number(n, target)))
             }
         }
     }
 
-    fn eval_slice(&mut self, slice: &crate::checked::CheckedSlice, span: Span) -> CompResult<ConstValue> {
+    fn eval_slice(
+        &mut self,
+        slice: &crate::checked::CheckedSlice,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         let base = self.read_place(&slice.base, span)?;
         let elements = match base {
             ConstValue::Array(v) | ConstValue::Slice(v) => v,
-            _ => return Err(self.err(span, CompErrorKind::Unsupported("slicing a non-array/slice comp value"))),
+            _ => {
+                return Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("slicing a non-array/slice comp value"),
+                ));
+            }
         };
         let start = match &slice.start {
             Some(e) => self.expect_index(e)?,
@@ -589,7 +767,10 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             None => elements.len(),
         };
         if start > end || end > elements.len() {
-            return Err(self.err(span, CompErrorKind::Unsupported("an out-of-range comp slice")));
+            return Err(self.err(
+                span,
+                CompErrorKind::Unsupported("an out-of-range comp slice"),
+            ));
         }
         Ok(ConstValue::Slice(elements[start..end].to_vec()))
     }
@@ -612,7 +793,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     };
                 }
                 ConstValue::Bool(false) => continue,
-                _ => return Err(self.err(span, CompErrorKind::Unsupported("a non-bool if-condition"))),
+                _ => {
+                    return Err(
+                        self.err(span, CompErrorKind::Unsupported("a non-bool if-condition"))
+                    );
+                }
             }
         }
         match &if_expr.else_branch {
@@ -635,7 +820,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     match self.eval_expr(condition)? {
                         ConstValue::Bool(true) => {}
                         ConstValue::Bool(false) => continue 'groups,
-                        _ => return Err(self.err(span, CompErrorKind::Unsupported("a non-bool match condition"))),
+                        _ => {
+                            return Err(self.err(
+                                span,
+                                CompErrorKind::Unsupported("a non-bool match condition"),
+                            ));
+                        }
                     }
                 }
                 return match self.eval_block(&arm.body)? {
@@ -654,19 +844,32 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // (far more likely) analysis proved coverage using information
             // (a real enum discriminant only known here, mid-evaluation)
             // this interpreter's own arm evaluation didn't reproduce.
-            None => Err(self.err(span, CompErrorKind::Unsupported("an exhaustive match with no matching arm"))),
+            None => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("an exhaustive match with no matching arm"),
+            )),
         }
     }
 
     // ---- calls ------------------------------------------------------------
 
     fn eval_call(&mut self, call: &CheckedFunctionCall, span: Span) -> CompResult<ConstValue> {
-        let CheckedExpr::Place(CheckedPlace { root: CheckedPlaceRoot::Variable { decl_id, storage: Storage::Function, .. }, projections }) =
-            &call.callee.kind
+        let CheckedExpr::Place(CheckedPlace {
+            root:
+                CheckedPlaceRoot::Variable {
+                    decl_id,
+                    storage: Storage::Function,
+                    ..
+                },
+            projections,
+        }) = &call.callee.kind
         else {
             return Err(self.err(span, CompErrorKind::Unsupported("an indirect call")));
         };
-        debug_assert!(projections.is_empty(), "a Storage::Function place is never itself projected");
+        debug_assert!(
+            projections.is_empty(),
+            "a Storage::Function place is never itself projected"
+        );
 
         let mut args = Vec::with_capacity(call.args.len());
         for arg in &call.args {
@@ -694,7 +897,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         })
     }
 
-    fn call_function(&mut self, body: &CheckedFunctionDef, args: Vec<ConstValue>) -> CompResult<ConstValue> {
+    fn call_function(
+        &mut self,
+        body: &CheckedFunctionDef,
+        args: Vec<ConstValue>,
+    ) -> CompResult<ConstValue> {
         let mut frame = Frame::default();
         for (param, value) in body.params.iter().zip(args) {
             frame.locals.insert(param.id, value);
@@ -784,7 +991,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             match self.eval_expr(&w.condition)? {
                 ConstValue::Bool(true) => {}
                 ConstValue::Bool(false) => return Ok(()),
-                _ => return Err(self.err(w.span, CompErrorKind::Unsupported("a non-bool while-condition"))),
+                _ => {
+                    return Err(self.err(
+                        w.span,
+                        CompErrorKind::Unsupported("a non-bool while-condition"),
+                    ));
+                }
             }
             match self.eval_block(&w.body) {
                 Ok(_) => {}
@@ -821,7 +1033,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             match self.eval_expr(&f.condition)? {
                 ConstValue::Bool(true) => {}
                 ConstValue::Bool(false) => return Ok(()),
-                _ => return Err(self.err(f.span, CompErrorKind::Unsupported("a non-bool for-condition"))),
+                _ => {
+                    return Err(self.err(
+                        f.span,
+                        CompErrorKind::Unsupported("a non-bool for-condition"),
+                    ));
+                }
             }
             match self.eval_block(&f.body) {
                 Ok(_) => {}
@@ -847,39 +1064,68 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
     fn read_root(&mut self, root: &CheckedPlaceRoot, span: Span) -> CompResult<ConstValue> {
         match root {
-            CheckedPlaceRoot::Variable { decl_id, storage: Storage::Local | Storage::Parameter, .. } => self
+            CheckedPlaceRoot::Variable {
+                decl_id,
+                storage: Storage::Local | Storage::Parameter,
+                ..
+            } => self
                 .frame()
                 .locals
                 .get(decl_id)
                 .cloned()
                 .ok_or_else(|| self.err(span, CompErrorKind::ReadBeforeInit)),
-            CheckedPlaceRoot::Variable { storage: Storage::Global, .. } => {
-                Err(self.err(span, CompErrorKind::NonCompGlobalRead))
-            }
-            CheckedPlaceRoot::Variable { storage: Storage::Function, .. } => {
-                Err(self.err(span, CompErrorKind::Unsupported("a function value used outside of a direct call")))
-            }
-            CheckedPlaceRoot::Variable { storage: Storage::Comp, .. } => {
-                unreachable!("a comp binding is substituted into CheckedExpr::Const during analysis -- see Storage::Comp's doc comment")
+            CheckedPlaceRoot::Variable {
+                storage: Storage::Global,
+                ..
+            } => Err(self.err(span, CompErrorKind::NonCompGlobalRead)),
+            CheckedPlaceRoot::Variable {
+                storage: Storage::Function,
+                ..
+            } => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("a function value used outside of a direct call"),
+            )),
+            CheckedPlaceRoot::Variable {
+                storage: Storage::Comp,
+                ..
+            } => {
+                unreachable!(
+                    "a comp binding is substituted into CheckedExpr::Const during analysis -- see Storage::Comp's doc comment"
+                )
             }
             CheckedPlaceRoot::Expr(expr) => self.eval_expr(expr),
         }
     }
 
-    fn read_projection(&mut self, value: ConstValue, proj: &CheckedProjection, span: Span) -> CompResult<ConstValue> {
+    fn read_projection(
+        &mut self,
+        value: ConstValue,
+        proj: &CheckedProjection,
+        span: Span,
+    ) -> CompResult<ConstValue> {
         match proj {
             CheckedProjection::FieldAccess { index, .. } => match value {
                 ConstValue::Struct(fields) => Ok(fields[*index].clone()),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("field access on a non-struct comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("field access on a non-struct comp value"),
+                )),
             },
             CheckedProjection::Index { index_expr, .. } => {
                 let index = self.expect_index(index_expr)?;
                 match value {
-                    ConstValue::Array(v) | ConstValue::Slice(v) => v
-                        .get(index)
-                        .cloned()
-                        .ok_or_else(|| self.err(span, CompErrorKind::Unsupported("an out-of-range comp index"))),
-                    _ => Err(self.err(span, CompErrorKind::Unsupported("indexing a non-array/slice comp value"))),
+                    ConstValue::Array(v) | ConstValue::Slice(v) => {
+                        v.get(index).cloned().ok_or_else(|| {
+                            self.err(
+                                span,
+                                CompErrorKind::Unsupported("an out-of-range comp index"),
+                            )
+                        })
+                    }
+                    _ => Err(self.err(
+                        span,
+                        CompErrorKind::Unsupported("indexing a non-array/slice comp value"),
+                    )),
                 }
             }
             CheckedProjection::Deref { .. } => match value {
@@ -887,41 +1133,74 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 _ => Err(self.err(span, CompErrorKind::UnresolvableMemory)),
             },
             CheckedProjection::SliceLength => match value {
-                ConstValue::Slice(v) | ConstValue::Array(v) => Ok(ConstValue::Number(NumberValue::Unsigned(v.len() as u64))),
+                ConstValue::Slice(v) | ConstValue::Array(v) => {
+                    Ok(ConstValue::Number(NumberValue::Unsigned(v.len() as u64)))
+                }
                 ConstValue::Str(s) => Ok(ConstValue::Number(NumberValue::Unsigned(s.len() as u64))),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("length of a non-slice/str comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("length of a non-slice/str comp value"),
+                )),
             },
             CheckedProjection::EnumTag { .. } => match value {
                 ConstValue::Enum { tag, .. } => Ok(ConstValue::Number(tag)),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("tag access on a non-enum comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("tag access on a non-enum comp value"),
+                )),
             },
             CheckedProjection::EnumBody { field_index, .. } => match value {
                 ConstValue::Enum { fields, .. } => Ok(fields[*field_index].clone()),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("body-field access on a non-enum comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("body-field access on a non-enum comp value"),
+                )),
             },
             CheckedProjection::EnumHeader { index, .. } => match value {
                 ConstValue::Enum { header, .. } => Ok(header[*index].clone()),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("header access on a non-enum comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("header access on a non-enum comp value"),
+                )),
             },
             CheckedProjection::EnumDynamicField { index, .. } => match value {
                 ConstValue::Enum { dynamic_fields, .. } => Ok(dynamic_fields[*index].clone()),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("dynamic-field access on a non-enum comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("dynamic-field access on a non-enum comp value"),
+                )),
             },
             CheckedProjection::UnionField { index, .. } => match value {
                 ConstValue::Union { field_index, value } if field_index == *index => Ok(*value),
-                ConstValue::Union { .. } => Err(self.err(span, CompErrorKind::Unsupported("reading a union through its inactive field"))),
-                _ => Err(self.err(span, CompErrorKind::Unsupported("field access on a non-union comp value"))),
+                ConstValue::Union { .. } => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("reading a union through its inactive field"),
+                )),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("field access on a non-union comp value"),
+                )),
             },
             // A `spec *Self` value has no `ConstValue` shape -- dynamic
             // dispatch isn't comp-evaluable, so this can never actually see
             // a real base value; reject uniformly rather than panic.
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
-                Err(self.err(span, CompErrorKind::Unsupported("accessing a spec object's pointer/vtable inside a 'comp' evaluation")))
+                Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported(
+                        "accessing a spec object's pointer/vtable inside a 'comp' evaluation",
+                    ),
+                ))
             }
         }
     }
 
-    fn write_place(&mut self, place: &CheckedPlace, value: ConstValue, span: Span) -> CompResult<()> {
+    fn write_place(
+        &mut self,
+        place: &CheckedPlace,
+        value: ConstValue,
+        span: Span,
+    ) -> CompResult<()> {
         if place.projections.is_empty() {
             return self.write_root(&place.root, value, span);
         }
@@ -953,45 +1232,79 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     fields[*index] = self.write_projections(inner, rest, value, span)?;
                     Ok(ConstValue::Struct(fields))
                 }
-                _ => Err(self.err(span, CompErrorKind::Unsupported("field write on a non-struct comp value"))),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("field write on a non-struct comp value"),
+                )),
             },
             CheckedProjection::Index { index_expr, .. } => {
                 let index = self.expect_index(index_expr)?;
                 match base {
                     ConstValue::Array(mut v) => {
                         if index >= v.len() {
-                            return Err(self.err(span, CompErrorKind::Unsupported("an out-of-range comp index write")));
+                            return Err(self.err(
+                                span,
+                                CompErrorKind::Unsupported("an out-of-range comp index write"),
+                            ));
                         }
                         let inner = std::mem::replace(&mut v[index], ConstValue::Bool(false));
                         v[index] = self.write_projections(inner, rest, value, span)?;
                         Ok(ConstValue::Array(v))
                     }
-                    _ => Err(self.err(span, CompErrorKind::Unsupported("index write on a non-array comp value"))),
+                    _ => Err(self.err(
+                        span,
+                        CompErrorKind::Unsupported("index write on a non-array comp value"),
+                    )),
                 }
             }
             CheckedProjection::UnionField { index, .. } => {
                 let inner = self.write_projections(ConstValue::Bool(false), rest, value, span)?;
-                Ok(ConstValue::Union { field_index: *index, value: Box::new(inner) })
+                Ok(ConstValue::Union {
+                    field_index: *index,
+                    value: Box::new(inner),
+                })
             }
-            CheckedProjection::Deref { .. } => Err(self.err(span, CompErrorKind::UnresolvableMemory)),
-            CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => Err(self.err(
+            CheckedProjection::Deref { .. } => {
+                Err(self.err(span, CompErrorKind::UnresolvableMemory))
+            }
+            CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
+                Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported(
+                        "writing through a spec object's pointer/vtable inside a 'comp' evaluation",
+                    ),
+                ))
+            }
+            _ => Err(self.err(
                 span,
-                CompErrorKind::Unsupported("writing through a spec object's pointer/vtable inside a 'comp' evaluation"),
+                CompErrorKind::Unsupported("this write target inside a comp evaluation"),
             )),
-            _ => Err(self.err(span, CompErrorKind::Unsupported("this write target inside a comp evaluation"))),
         }
     }
 
-    fn write_root(&mut self, root: &CheckedPlaceRoot, value: ConstValue, span: Span) -> CompResult<()> {
+    fn write_root(
+        &mut self,
+        root: &CheckedPlaceRoot,
+        value: ConstValue,
+        span: Span,
+    ) -> CompResult<()> {
         match root {
-            CheckedPlaceRoot::Variable { decl_id, storage: Storage::Local | Storage::Parameter, .. } => {
+            CheckedPlaceRoot::Variable {
+                decl_id,
+                storage: Storage::Local | Storage::Parameter,
+                ..
+            } => {
                 self.frame().locals.insert(*decl_id, value);
                 Ok(())
             }
-            CheckedPlaceRoot::Variable { storage: Storage::Global, .. } => {
-                Err(self.err(span, CompErrorKind::NonCompGlobalRead))
-            }
-            _ => Err(self.err(span, CompErrorKind::Unsupported("this assignment target inside a comp evaluation"))),
+            CheckedPlaceRoot::Variable {
+                storage: Storage::Global,
+                ..
+            } => Err(self.err(span, CompErrorKind::NonCompGlobalRead)),
+            _ => Err(self.err(
+                span,
+                CompErrorKind::Unsupported("this assignment target inside a comp evaluation"),
+            )),
         }
     }
 }
@@ -1027,7 +1340,13 @@ fn compare(op: BinaryOp, ord: std::cmp::Ordering) -> bool {
 /// wrap, not to reject).
 fn cast_number(n: NumberValue, target: crate::resolved_type::NumericKind) -> NumberValue {
     use crate::resolved_type::NumericKind;
-    let mask = |width: u32, bits: u64| if width >= 64 { bits } else { bits & ((1u64 << width) - 1) };
+    let mask = |width: u32, bits: u64| {
+        if width >= 64 {
+            bits
+        } else {
+            bits & ((1u64 << width) - 1)
+        }
+    };
     let sign_extend = |width: u32, bits: u64| -> i64 {
         if width >= 64 {
             bits as i64
@@ -1056,7 +1375,11 @@ fn cast_number(n: NumberValue, target: crate::resolved_type::NumericKind) -> Num
                 NumberValue::Unsigned(v) => v as f64,
                 NumberValue::Float(f) => f,
             };
-            NumberValue::Float(if width == 32 { as_f64 as f32 as f64 } else { as_f64 })
+            NumberValue::Float(if width == 32 {
+                as_f64 as f32 as f64
+            } else {
+                as_f64
+            })
         }
     }
 }
@@ -1065,12 +1388,16 @@ fn cast_number(n: NumberValue, target: crate::resolved_type::NumericKind) -> Num
 mod tests {
     use super::*;
     use crate::checked::{
-        CheckedAssignment, CheckedIf, CheckedParam, CheckedStructLiteral, CheckedStructLiteralField, CheckedWhile,
+        CheckedAssignment, CheckedIf, CheckedParam, CheckedStructLiteral,
+        CheckedStructLiteralField, CheckedWhile,
     };
     use omega_hir::ModuleId;
 
     fn id(n: u32) -> HirId {
-        HirId { module: ModuleId(0), local: n }
+        HirId {
+            module: ModuleId(0),
+            local: n,
+        }
     }
 
     fn sp() -> Span {
@@ -1078,20 +1405,38 @@ mod tests {
     }
 
     fn node(kind: CheckedExpr, r#type: ResolvedType) -> CheckedExprNode {
-        CheckedExprNode { id: id(9999), span: sp(), r#type, kind }
+        CheckedExprNode {
+            id: id(9999),
+            span: sp(),
+            r#type,
+            kind,
+        }
     }
 
     fn num(n: i64) -> CheckedExprNode {
-        node(CheckedExpr::Number(NumberValue::Signed(n)), ResolvedType::I32)
+        node(
+            CheckedExpr::Number(NumberValue::Signed(n)),
+            ResolvedType::I32,
+        )
     }
 
     fn local_place(decl: HirId, r#type: ResolvedType) -> CheckedPlace {
-        CheckedPlace { root: CheckedPlaceRoot::Variable { decl_id: decl, storage: Storage::Local, r#type }, projections: vec![] }
+        CheckedPlace {
+            root: CheckedPlaceRoot::Variable {
+                decl_id: decl,
+                storage: Storage::Local,
+                r#type,
+            },
+            projections: vec![],
+        }
     }
 
     struct NoFunctions;
     impl CompFunctionResolver for NoFunctions {
-        fn resolve_function_body(&mut self, _decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+        fn resolve_function_body(
+            &mut self,
+            _decl_id: HirId,
+        ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
             panic!("this test never calls a function")
         }
     }
@@ -1099,7 +1444,11 @@ mod tests {
     #[test]
     fn arithmetic_folds() {
         let expr = node(
-            CheckedExpr::BinaryOp(CheckedBinaryOp { op: BinaryOp::Add, left: Box::new(num(10)), right: Box::new(num(20)) }),
+            CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op: BinaryOp::Add,
+                left: Box::new(num(10)),
+                right: Box::new(num(20)),
+            }),
             ResolvedType::I32,
         );
         let value = eval(&mut NoFunctions, &expr).unwrap();
@@ -1109,7 +1458,11 @@ mod tests {
     #[test]
     fn division_by_zero_is_rejected_not_a_panic() {
         let expr = node(
-            CheckedExpr::BinaryOp(CheckedBinaryOp { op: BinaryOp::Div, left: Box::new(num(1)), right: Box::new(num(0)) }),
+            CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op: BinaryOp::Div,
+                left: Box::new(num(1)),
+                right: Box::new(num(0)),
+            }),
             ResolvedType::I32,
         );
         let err = eval(&mut NoFunctions, &expr).unwrap_err();
@@ -1119,10 +1472,19 @@ mod tests {
     #[test]
     fn if_else_picks_the_taken_branch() {
         let cond = node(CheckedExpr::Bool(false), ResolvedType::Bool);
-        let then_block = CheckedBlock { stmts: vec![], tail: Some(Box::new(num(1))) };
-        let else_block = CheckedBlock { stmts: vec![], tail: Some(Box::new(num(2))) };
+        let then_block = CheckedBlock {
+            stmts: vec![],
+            tail: Some(Box::new(num(1))),
+        };
+        let else_block = CheckedBlock {
+            stmts: vec![],
+            tail: Some(Box::new(num(2))),
+        };
         let expr = node(
-            CheckedExpr::If(CheckedIf { branches: vec![(cond, then_block)], else_branch: Some(else_block) }),
+            CheckedExpr::If(CheckedIf {
+                branches: vec![(cond, then_block)],
+                else_branch: Some(else_block),
+            }),
             ResolvedType::I32,
         );
         let value = eval(&mut NoFunctions, &expr).unwrap();
@@ -1134,15 +1496,24 @@ mod tests {
         let struct_ty = ResolvedType::Bool; // placeholder -- struct fields don't need a real ResolvedStructType for this test
         let lit = CheckedStructLiteral {
             fields: vec![
-                CheckedStructLiteralField { field_index: 1, value: num(20) },
-                CheckedStructLiteralField { field_index: 0, value: num(10) },
+                CheckedStructLiteralField {
+                    field_index: 1,
+                    value: num(20),
+                },
+                CheckedStructLiteralField {
+                    field_index: 0,
+                    value: num(10),
+                },
             ],
         };
         let expr = node(CheckedExpr::StructLiteral(lit), struct_ty);
         let value = eval(&mut NoFunctions, &expr).unwrap();
         assert_eq!(
             value,
-            ConstValue::Struct(vec![ConstValue::Number(NumberValue::Signed(10)), ConstValue::Number(NumberValue::Signed(20))])
+            ConstValue::Struct(vec![
+                ConstValue::Number(NumberValue::Signed(10)),
+                ConstValue::Number(NumberValue::Signed(20))
+            ])
         );
     }
 
@@ -1168,8 +1539,14 @@ mod tests {
                 value: Box::new(node(
                     CheckedExpr::BinaryOp(CheckedBinaryOp {
                         op: BinaryOp::Add,
-                        left: Box::new(node(CheckedExpr::Place(sum_place.clone()), ResolvedType::I32)),
-                        right: Box::new(node(CheckedExpr::Place(i_place.clone()), ResolvedType::I32)),
+                        left: Box::new(node(
+                            CheckedExpr::Place(sum_place.clone()),
+                            ResolvedType::I32,
+                        )),
+                        right: Box::new(node(
+                            CheckedExpr::Place(i_place.clone()),
+                            ResolvedType::I32,
+                        )),
                     }),
                     ResolvedType::I32,
                 )),
@@ -1182,7 +1559,10 @@ mod tests {
                 value: Box::new(node(
                     CheckedExpr::BinaryOp(CheckedBinaryOp {
                         op: BinaryOp::Add,
-                        left: Box::new(node(CheckedExpr::Place(i_place.clone()), ResolvedType::I32)),
+                        left: Box::new(node(
+                            CheckedExpr::Place(i_place.clone()),
+                            ResolvedType::I32,
+                        )),
                         right: Box::new(num(1)),
                     }),
                     ResolvedType::I32,
@@ -1190,34 +1570,65 @@ mod tests {
             }),
             ResolvedType::I32,
         ));
-        let body = CheckedBlock { stmts: vec![sum_incr, i_incr], tail: None };
-        let while_stmt = CheckedStmt::While(CheckedWhile { id: id(3), span: sp(), condition: cond, body });
+        let body = CheckedBlock {
+            stmts: vec![sum_incr, i_incr],
+            tail: None,
+        };
+        let while_stmt = CheckedStmt::While(CheckedWhile {
+            id: id(3),
+            span: sp(),
+            condition: cond,
+            body,
+        });
 
         let init_i = CheckedStmt::Expression(node(
-            CheckedExpr::Assignment(CheckedAssignment { target: i_place.clone(), value: Box::new(num(0)) }),
+            CheckedExpr::Assignment(CheckedAssignment {
+                target: i_place.clone(),
+                value: Box::new(num(0)),
+            }),
             ResolvedType::I32,
         ));
         let init_sum = CheckedStmt::Expression(node(
-            CheckedExpr::Assignment(CheckedAssignment { target: sum_place.clone(), value: Box::new(num(0)) }),
+            CheckedExpr::Assignment(CheckedAssignment {
+                target: sum_place.clone(),
+                value: Box::new(num(0)),
+            }),
             ResolvedType::I32,
         ));
 
         let outer = CheckedBlock {
             stmts: vec![init_i, init_sum, while_stmt],
-            tail: Some(Box::new(node(CheckedExpr::Place(sum_place), ResolvedType::I32))),
+            tail: Some(Box::new(node(
+                CheckedExpr::Place(sum_place),
+                ResolvedType::I32,
+            ))),
         };
         let expr = node(CheckedExpr::Codeblock(outer), ResolvedType::I32);
 
         let value = eval(&mut NoFunctions, &expr).unwrap();
-        assert_eq!(value, ConstValue::Number(NumberValue::Signed(0 + 1 + 2 + 3 + 4)));
+        assert_eq!(
+            value,
+            ConstValue::Number(NumberValue::Signed(0 + 1 + 2 + 3 + 4))
+        );
     }
 
     #[test]
     fn infinite_loop_exhausts_fuel_instead_of_hanging() {
         let cond = node(CheckedExpr::Bool(true), ResolvedType::Bool);
-        let body = CheckedBlock { stmts: vec![], tail: None };
-        let while_stmt = CheckedStmt::While(CheckedWhile { id: id(1), span: sp(), condition: cond, body });
-        let outer = CheckedBlock { stmts: vec![while_stmt], tail: Some(Box::new(num(0))) };
+        let body = CheckedBlock {
+            stmts: vec![],
+            tail: None,
+        };
+        let while_stmt = CheckedStmt::While(CheckedWhile {
+            id: id(1),
+            span: sp(),
+            condition: cond,
+            body,
+        });
+        let outer = CheckedBlock {
+            stmts: vec![while_stmt],
+            tail: Some(Box::new(num(0))),
+        };
         let expr = node(CheckedExpr::Codeblock(outer), ResolvedType::I32);
 
         let err = eval(&mut NoFunctions, &expr).unwrap_err();
@@ -1228,7 +1639,10 @@ mod tests {
     fn calling_an_extern_is_rejected_with_a_precise_reason() {
         struct AllExtern;
         impl CompFunctionResolver for AllExtern {
-            fn resolve_function_body(&mut self, _decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+            fn resolve_function_body(
+                &mut self,
+                _decl_id: HirId,
+            ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
                 Ok(None)
             }
         }
@@ -1281,8 +1695,14 @@ mod tests {
             tail: Some(Box::new(node(
                 CheckedExpr::BinaryOp(CheckedBinaryOp {
                     op: BinaryOp::Add,
-                    left: Box::new(node(CheckedExpr::Place(local_place(a_id, ResolvedType::I32)), ResolvedType::I32)),
-                    right: Box::new(node(CheckedExpr::Place(local_place(b_id, ResolvedType::I32)), ResolvedType::I32)),
+                    left: Box::new(node(
+                        CheckedExpr::Place(local_place(a_id, ResolvedType::I32)),
+                        ResolvedType::I32,
+                    )),
+                    right: Box::new(node(
+                        CheckedExpr::Place(local_place(b_id, ResolvedType::I32)),
+                        ResolvedType::I32,
+                    )),
                 }),
                 ResolvedType::I32,
             ))),
@@ -1295,38 +1715,67 @@ mod tests {
             self_mode: None,
             is_variadic: false,
             params: vec![
-                CheckedParam { id: a_id, span: sp(), ident: omega_parser::prelude::Ident("a".into()), r#type: ResolvedType::I32 },
-                CheckedParam { id: b_id, span: sp(), ident: omega_parser::prelude::Ident("b".into()), r#type: ResolvedType::I32 },
+                CheckedParam {
+                    id: a_id,
+                    span: sp(),
+                    ident: omega_parser::prelude::Ident("a".into()),
+                    r#type: ResolvedType::I32,
+                },
+                CheckedParam {
+                    id: b_id,
+                    span: sp(),
+                    ident: omega_parser::prelude::Ident("b".into()),
+                    r#type: ResolvedType::I32,
+                },
             ],
             return_type: ResolvedType::I32,
             body: add_body,
             inline: None,
             mangling: crate::annotations::ManglingMode::Enabled,
-            extension_target: None,
+            compose_owner: None,
+            primitive_target: None,
         };
 
         struct OneFunction(CheckedFunctionDef);
         impl CompFunctionResolver for OneFunction {
-            fn resolve_function_body(&mut self, decl_id: HirId) -> Result<Option<CheckedFunctionDef>, ResolveError> {
-                if decl_id == self.0.id { Ok(Some(self.0.clone())) } else { Ok(None) }
+            fn resolve_function_body(
+                &mut self,
+                decl_id: HirId,
+            ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+                if decl_id == self.0.id {
+                    Ok(Some(self.0.clone()))
+                } else {
+                    Ok(None)
+                }
             }
         }
 
         let fn_type = crate::resolved_type::ResolvedFunctionType {
-            params: vec![(omega_parser::prelude::Ident("a".into()), ResolvedType::I32), (omega_parser::prelude::Ident("b".into()), ResolvedType::I32)],
+            params: vec![
+                (omega_parser::prelude::Ident("a".into()), ResolvedType::I32),
+                (omega_parser::prelude::Ident("b".into()), ResolvedType::I32),
+            ],
             return_type: Box::new(ResolvedType::I32),
             is_variadic: false,
             self_mode: None,
         };
         let callee = node(
             CheckedExpr::Place(CheckedPlace {
-                root: CheckedPlaceRoot::Variable { decl_id: id(100), storage: Storage::Function, r#type: ResolvedType::Function(fn_type.clone()) },
+                root: CheckedPlaceRoot::Variable {
+                    decl_id: id(100),
+                    storage: Storage::Function,
+                    r#type: ResolvedType::Function(fn_type.clone()),
+                },
                 projections: vec![],
             }),
             ResolvedType::Function(fn_type.clone()),
         );
         let call = node(
-            CheckedExpr::FunctionCall(CheckedFunctionCall { callee: Box::new(callee), fn_type, args: vec![num(10), num(20)] }),
+            CheckedExpr::FunctionCall(CheckedFunctionCall {
+                callee: Box::new(callee),
+                fn_type,
+                args: vec![num(10), num(20)],
+            }),
             ResolvedType::I32,
         );
 

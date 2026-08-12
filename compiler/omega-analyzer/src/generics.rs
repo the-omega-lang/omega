@@ -32,27 +32,37 @@ pub fn unify_generic_type(
 ) {
     match (raw, concrete) {
         (Type::Named(path), _) if path.is_unqualified() && generics.contains(&path.head) => {
-            subst.entry(path.head.clone()).or_insert_with(|| concrete.clone());
+            subst
+                .entry(path.head.clone())
+                .or_insert_with(|| concrete.clone());
         }
         // `*[]T`/`*[?]T` only ever resolve to `Array`/`Slice`, never a
         // plain `Pointer` (see `Context::resolve_pointer_type`) -- so these
         // raw shapes only ever unify against the matching `ResolvedType`,
         // regardless of whether `concrete` actually turns out to be one (a
         // mismatch here is left for the ordinary argument-type check).
-        (Type::Pointer(inner, _), ResolvedType::Array(c, _)) if matches!(inner.as_ref(), Type::UnsizedArray(_)) => {
-            let Type::UnsizedArray(elem) = inner.as_ref() else { unreachable!() };
+        (Type::Pointer(inner, _), ResolvedType::Array(c, _))
+            if matches!(inner.as_ref(), Type::UnsizedArray(_)) =>
+        {
+            let Type::UnsizedArray(elem) = inner.as_ref() else {
+                unreachable!()
+            };
             unify_generic_type(generics, elem, c, subst);
         }
         (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
             if matches!(inner.as_ref(), Type::UnknownSizeArray(_)) =>
         {
-            let Type::UnknownSizeArray(elem) = inner.as_ref() else { unreachable!() };
+            let Type::UnknownSizeArray(elem) = inner.as_ref() else {
+                unreachable!()
+            };
             unify_generic_type(generics, elem, c, subst);
         }
         (Type::Pointer(inner, _), ResolvedType::Pointer { pointee: c, .. }) => {
             unify_generic_type(generics, inner, c, subst)
         }
-        (Type::SizedArray(inner, _), ResolvedType::SizedArray(c, _)) => unify_generic_type(generics, inner, c, subst),
+        (Type::SizedArray(inner, _), ResolvedType::SizedArray(c, _)) => {
+            unify_generic_type(generics, inner, c, subst)
+        }
         (Type::Function(f), ResolvedType::Function(c)) => {
             for ((_, p), (_, cp)) in f.params.iter().zip(&c.params) {
                 unify_generic_type(generics, p, cp, subst);
@@ -137,31 +147,5 @@ fn owner_type_args(concrete: &ResolvedType) -> Option<Vec<ResolvedType>> {
         ResolvedType::Enum { cell, .. } => Some(cell.borrow().type_args.clone()),
         ResolvedType::Union(cell) => Some(cell.borrow().type_args.clone()),
         _ => None,
-    }
-}
-
-/// Whether `raw` mentions any name in `generics` anywhere within its shape
-/// -- purely syntactic (no `ResolvedType` involved), used to tell a `for`
-/// clause's *concrete* targets (`for str`, `for u32`) apart from its one
-/// supported *pattern* target (`for [?]T`, referencing the spec's own
-/// generic parameter -- see `HirSpecDef::target`'s doc comment). Recurses
-/// through the same compound shapes `unify_generic_type` does.
-pub fn type_references_generics(generics: &[Ident], raw: &Type) -> bool {
-    match raw {
-        Type::Named(path) => path.is_unqualified() && generics.contains(&path.head),
-        Type::Pointer(inner, _)
-        | Type::UnsizedArray(inner)
-        | Type::UnknownSizeArray(inner)
-        | Type::SizedArray(inner, _) => type_references_generics(generics, inner),
-        Type::Generic(path, args) => {
-            (path.is_unqualified() && generics.contains(&path.head))
-                || args.iter().any(|a| type_references_generics(generics, a))
-        }
-        Type::SpecObject(inner, _) => type_references_generics(generics, inner),
-        Type::SpecStatic(inner) => type_references_generics(generics, inner),
-        Type::Function(f) => {
-            f.params.iter().any(|(_, p)| type_references_generics(generics, p))
-                || type_references_generics(generics, &f.return_type)
-        }
     }
 }

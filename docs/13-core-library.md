@@ -1,8 +1,7 @@
 # The core library
 
 `runtime/core/` — Omega's real, permanent standard-library package (replaces
-an earlier `examples/core` throwaway used only to prove the underlying
-`for`-spec mechanism worked at all).
+an earlier `examples/core` throwaway used to prove primitive method attachment).
 
 ## Layout
 
@@ -15,10 +14,10 @@ runtime/core/
     platform.omg               # core::platform — gap GlobalAllocator
     hash.omg                     # core::hash — Hash
     iterator.omg                 # core::iterator — Iterator<T>, ToIterator<T>
-    numerics.omg                   # core::numerics — all scalar for-blocks (macros)
+    numerics.omg                   # core::numerics — scalar primitive blocks (macros)
     option.omg                       # core::option — Option<T>
-    slices.omg                          # core::slices — SliceImpl<T> for [?]T
-    strings.omg                            # core::strings — StrOps for str
+    slices.omg                          # core::slices — primitive<T> [?]T
+    strings.omg                            # core::strings — primitive str
 ```
 
 `core.omg` has nothing left to declare — it exists only because the
@@ -32,15 +31,15 @@ two reasons, both now gone:
   whichever package is being compiled locally (see
   [modules & linkage](10-modules-and-linkage.md)'s "Eager local
   discovery").
-- Feeding [specs](08-specs.md)'s `for`-attachment discovery, which used
-  to walk `core.omg`'s own import graph to find every extension method in
+- Feeding an earlier primitive-extension discovery pass, which used to walk
+  `core.omg`'s own import graph to find every attached method in
   the package. `core` now gets the same eager, filesystem-driven
   treatment as the local package being compiled, *regardless* of whether
   it's local or `--extern`-referenced (`ModuleRoots::core_modules`, see
   [modules & linkage](10-modules-and-linkage.md)'s "Eager local
   discovery" and "`core` as an ambient prelude") — no import graph is
   walked for this anymore, so a submodule missing from `core.omg` can no
-  longer hide a `for`-block from anyone.
+  longer hide a primitive or compose block from anyone.
 
 That same eager treatment is also what makes every name `core` exposes
 resolvable with no `import core;` at all, anywhere else in a program —
@@ -50,13 +49,11 @@ ordinary imports among themselves, same as any other module — the
 prelude treatment is specifically for code *outside* `core`.
 
 `core` is built and linked exactly like any other `--extern` dependency —
-its own **ordinary** (non-`for`) items, like `Ordering`'s own methods, are
+its named items, like `Ordering`'s own methods, are
 compiled by `core`'s own `omgc` invocation and must be linked in
-(`undefined reference` otherwise). `for`-attached methods are the one
-exception: those are compiled by *whoever calls them*, following
-`for`-attachment's own by-design "extension methods live in the using
-side's TU" model (see [specs](08-specs.md) and
-[modules & linkage](10-modules-and-linkage.md)'s weak-linkage section).
+(`undefined reference` otherwise). Concrete generic primitive and compose
+instantiations are emitted by the compilation that uses them, like other
+monomorphized generic bodies (see [specs](08-specs.md)).
 
 ## API surface
 
@@ -70,12 +67,8 @@ side's TU" model (see [specs](08-specs.md) and
 - **`core::default`** — `Default { default() => Self; }`. Its own tiny
   file deliberately, for reuse beyond just numerics.
 - **`core::hash`** — `exposed spec Hash { hash(*self) => u64; }`. Lives in
-  `core`, not `std`, because it isn't optional: `for`-attached specs (the
-  only way to give a primitive a method at all) are hardcoded to `core`'s
-  own module tree, and a target type gets exactly one `for` block,
-  globally — so giving `i32`/`str`/etc. a `hash()` method means extending
-  the *existing* `for`-blocks in `numerics.omg`/`strings.omg`, not adding
-  a competing one. Numeric types mix their bits through a SplitMix64-style
+  `core`, not `std`, because the primitive blocks that provide the matching
+  inherent methods are core-only. Numeric types mix their bits through a SplitMix64-style
   finalizer (`mix64`, reading `<u64>*self`); floats bit-reinterpret to
   `u64` first, normalizing `-0.0` to `0.0`'s own bit pattern before mixing
   (required for "equal values hash equal" — `-0.0 == 0.0` but they don't
@@ -112,10 +105,11 @@ side's TU" model (see [specs](08-specs.md) and
   fixed, when this was strictly required rather than just harmless/
   explicit; left as-is (still correct, just no longer the only way to
   write it) rather than churned for its own sake.
-- **`core::slices`** — `SliceImpl<T> for [?]T`: `is_empty`, and `get`/
+- **`core::slices`** — `primitive<T> [?]T`: `is_empty`, and `get`/
   `first`/`last` via an `(index, out: *mut T) => bool` pattern (see below
   for why, not `Option<T>`).
-- **`core::strings`** — `StrOps : Eq for str`: `equals` (byte-compare
+- **`core::strings`** — `primitive str` plus separate `Eq`/`Hash`/`Display`
+  compositions: `equals` (byte-compare
   loop — two different `*str` pointers are never automatically
   structurally equal), `is_empty`, `as_bytes` (a plain reinterpret-cast,
   `str`/`*[?]u8` share the identical fat-pointer leaf layout),
@@ -154,35 +148,15 @@ somewhere.
 
 ## `Eq`/`Ord`/`Ordering`/`Default`/`Hash` are `exposed`, not just declared
 
-A spec function carries no visibility modifier of its own — it always
-inherits its *declaring spec's* own visibility, unlike an ordinary
-struct/enum method, which does carry one. `Eq`, `Ord`, `Ordering`, and
-`Default` all shipped with no modifier (hidden by default), which meant
-every method `core::numerics`/`core::strings` attaches to a primitive via
-these specs — `equals`, `compare`, `min`, `hash`, all of it — was
-unreachable from any package other than `core` itself, cascading into
-"not visible here" errors the moment, say, `42i32.hash()` was called from
-a consumer. Nothing had exercised this path before (`examples/dev/main.omg`
-never called any of these methods), so it was a real, previously-untested
-gap, not a regression — fixed by marking all four specs, plus `Hash`
-itself, `exposed`.
+A spec function inherits its declaring spec's visibility, and a compose
+method inherits the requirement it satisfies. Primitive methods instead carry
+ordinary explicit modifiers. `Eq`, `Ord`, `Default`, `Hash`, and `Display`
+are exposed so their conformances form public API outside core.
 
-## No `char` module yet
+## Character support
 
-`char` gained comparison and `match`/range support (see
-[primitives](01-primitives.md)), so ASCII *classification* (`is_upper`,
-`is_digit`, and similar range-based predicates) is implementable now.
-`char` also now has arithmetic (see [primitives](01-primitives.md)'s
-"`char`, `bool`, and pointer arithmetic"), which unblocks ASCII *case
-conversion* too: `to_upper`/`to_lower` can compute the shifted codepoint
-as a `u32`, truncate to `u8` (every ASCII letter fits), then cast the
-`u8` back to `char` (the one direction guaranteed valid). Full Unicode
-case conversion is still blocked — a shifted codepoint outside ASCII
-doesn't fit in a `u8`, and there is still no general integer-to-`char`
-cast (see [known-issues.md](14-known-issues.md)). A `core::chars` module
-scoped to ASCII (classification and case conversion both) would be
-straightforward to add when wanted, but hasn't been, to avoid shipping a
-half-finished module.
+`core::chars` currently supplies `Display` for `char`. Rich ASCII and Unicode
+classification/case conversion APIs remain future work.
 
 ## No `contains`/generic-bound methods on `core::slices`
 
@@ -206,8 +180,7 @@ cut here — this file only restates the *consequences* for `core`'s own
 API surface, not the underlying compiler gaps themselves.
 
 `core::io`, `core::fmt`, `core::bools`, and `core::chars` provide console
-I/O, `Display`, boolean formatting, and character formatting. `Display`
-extends the existing numeric and `str` `for` blocks rather than creating
-competing implementations; `core::chars` deliberately covers only Display.
-Outside `core`, `for` remains unavailable for primitive targets; packages may
-use it only for non-primitive declared types.
+I/O, `Display`, boolean formatting, and character formatting. `Display` is
+composed separately for numeric, `str`, `bool`, and `char` targets;
+`core::chars` deliberately covers only Display. Outside `core`, `primitive`
+blocks are unavailable.

@@ -45,13 +45,19 @@ impl Diagnostics {
         if errors.is_empty() {
             return false;
         }
-        self.errors.entry(module.to_vec()).or_default().extend(errors);
+        self.errors
+            .entry(module.to_vec())
+            .or_default()
+            .extend(errors);
         true
     }
 
     pub fn record_warnings(&mut self, module: &[Ident], warnings: Vec<AnalysisWarning>) {
         if !warnings.is_empty() {
-            self.warnings.entry(module.to_vec()).or_default().extend(warnings);
+            self.warnings
+                .entry(module.to_vec())
+                .or_default()
+                .extend(warnings);
         }
     }
 
@@ -62,7 +68,10 @@ impl Diagnostics {
             .iter()
             .filter_map(|path| {
                 let errors = self.errors.remove(path)?;
-                (!errors.is_empty()).then(|| CompileError::Analysis { module: path.clone(), errors })
+                (!errors.is_empty()).then(|| CompileError::Analysis {
+                    module: path.clone(),
+                    errors,
+                })
             })
             .collect()
     }
@@ -72,7 +81,13 @@ impl Diagnostics {
     pub fn drain_warnings(&mut self, scope: &[ModulePath]) -> Vec<(ModulePath, AnalysisWarning)> {
         scope
             .iter()
-            .flat_map(|path| self.warnings.remove(path).into_iter().flatten().map(move |w| (path.clone(), w)))
+            .flat_map(|path| {
+                self.warnings
+                    .remove(path)
+                    .into_iter()
+                    .flatten()
+                    .map(move |w| (path.clone(), w))
+            })
             .collect()
     }
 
@@ -112,12 +127,27 @@ impl Driver {
         owner: (HirId, Span),
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> AnalyzerRun<R> {
-        let mut analyzer = Analyzer::new(self, module.to_vec(), generics, owner);
+        self.with_analyzer_in(module, generics, &[], owner, f)
+    }
+
+    pub(crate) fn with_analyzer_in<R>(
+        &mut self,
+        module: &[Ident],
+        generics: &[(Ident, ResolvedType)],
+        bounds: &[omega_analyzer::resolved_type::ResolvedBound],
+        owner: (HirId, Span),
+        f: impl FnOnce(&mut Analyzer) -> R,
+    ) -> AnalyzerRun<R> {
+        let mut analyzer = Analyzer::new_in(self, module.to_vec(), generics, bounds, owner);
         let result = f(&mut analyzer);
         let (errors, warnings, field_usage) = analyzer.finish();
         let failed = self.diagnostics.record_errors(module, errors);
         self.diagnostics.comp_field_usage.merge(field_usage);
-        AnalyzerRun { result, failed, warnings }
+        AnalyzerRun {
+            result,
+            failed,
+            warnings,
+        }
     }
 
     /// [`Self::with_analyzer`] for a run whose warnings have no return path

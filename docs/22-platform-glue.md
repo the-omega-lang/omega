@@ -8,7 +8,7 @@ level alias (`--name=`/`--extern=plat:...`) — the project's own files
 never lie about what they are; only the compiler's view of a root's
 identity can differ from its on-disk name. Unlike `core`
 ([the core library](13-core-library.md)), `plat` gets no ambient-prelude
-treatment, no `for`-block privilege, and no eager-discovery exemption of
+treatment, no `primitive`-block privilege, and no eager-discovery exemption of
 its own; it's just an ordinary `--extern` package that happens to ship
 `glue` implementations for `core`'s own gaps (see
 [gaps and glue](21-gaps-and-glue.md)). Any consumer that registers it gets

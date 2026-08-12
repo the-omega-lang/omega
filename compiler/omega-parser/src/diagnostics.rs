@@ -100,6 +100,12 @@ impl ParseError {
             ParseErrorKind::GapOrGlueVisibility => d
                 .with_label(self.span, "gaps and glues are global by nature")
                 .with_help("remove this visibility modifier"),
+            ParseErrorKind::ComposeMethodVisibility => d
+                .with_label(self.span, "a composed method inherits its spec's visibility")
+                .with_help("remove the method visibility modifier"),
+            ParseErrorKind::PrimitiveVisibility => d
+                .with_label(self.span, "a primitive block does not declare the built-in type")
+                .with_help("remove the block visibility modifier; put visibility on its functions"),
             ParseErrorKind::GapOrGlueGeneric => d
                 .with_label(self.span, "gaps and glues are never generic")
                 .with_help("a gap's linker symbol is computed once, for the bare name -- there is no per-instantiation symbol to glue against"),
@@ -219,6 +225,8 @@ pub enum ParseErrorKind {
     /// precedent as `AnnotationNotAllowedHere`.
     VisibilityNotAllowedHere,
     GapOrGlueVisibility,
+    ComposeMethodVisibility,
+    PrimitiveVisibility,
     /// A `<...>` list on a `gap` name or a `glue` target path. Reported
     /// (and then *consumed* by the caller, see `parse_gap_def`) rather than
     /// aborting the item, so the one real mistake produces one error
@@ -228,11 +236,15 @@ pub enum ParseErrorKind {
     /// are a deliberately deferred *feature*, not a shape rule -- see this
     /// error's own note in `ParseError::render` for what implementing one
     /// would take, and `docs/14-known-issues.md`.
-    GapFunctionBody { name: Ident },
+    GapFunctionBody {
+        name: Ident,
+    },
     /// A `gap` function declared with any `self` at all -- gap functions
     /// are static, symbol-bound calls; there is no instance to hang a
     /// `self` off of.
-    GapFunctionSelf { name: Ident },
+    GapFunctionSelf {
+        name: Ident,
+    },
     /// A generic parameter with no default followed one that does have one
     /// (`<T = i32, U>`) -- positional generic arguments make "explicit
     /// prefix, defaulted suffix" the only unambiguous omission shape, so
@@ -318,9 +330,21 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "a visibility modifier is not allowed here")
             }
             Self::GapOrGlueVisibility => write!(f, "gaps and glues take no visibility modifier"),
+            Self::ComposeMethodVisibility => {
+                write!(f, "a composed method inherits its spec's visibility")
+            }
+            Self::PrimitiveVisibility => {
+                write!(f, "a primitive block takes no visibility modifier")
+            }
             Self::GapOrGlueGeneric => write!(f, "gaps and glues cannot be generic"),
-            Self::GapFunctionBody { name } => write!(f, "a gap declares, it does not define ('{}')", name.as_ref()),
-            Self::GapFunctionSelf { name } => write!(f, "gap function '{}' cannot take 'self'", name.as_ref()),
+            Self::GapFunctionBody { name } => write!(
+                f,
+                "a gap declares, it does not define ('{}')",
+                name.as_ref()
+            ),
+            Self::GapFunctionSelf { name } => {
+                write!(f, "gap function '{}' cannot take 'self'", name.as_ref())
+            }
             Self::DefaultGenericParamNotTrailing { name } => {
                 write!(
                     f,

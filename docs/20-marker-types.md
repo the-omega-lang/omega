@@ -42,10 +42,9 @@ analysis. This mirrors `void`, which likewise has no constructible
 internal shape.
 
 Everything else about a `marker` declaration is identical to a struct's:
-generics, an `implements` clause, and a method list, resolved by the
-exact same machinery (`Analyzer::signature_of_struct`,
-`resolve_implements_clause`, method dispatch, generics instantiation,
-dead-code tracking, spec/vtable coercion). A `marker` *is* a struct with
+generics and a method list use the same signature, dispatch, instantiation,
+and dead-code machinery. It may be the target of an ordinary `compose`
+declaration. A `marker` *is* a struct with
 zero fields under the hood (`ResolvedType::Struct`, with
 `ResolvedStructType::is_marker` set) — not a separate item kind — since
 nothing about any of that machinery actually depends on having at least

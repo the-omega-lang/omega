@@ -3,11 +3,14 @@ use crate::ast::generics::GenericParam;
 use crate::ast::self_mode::SelfMode;
 use crate::ast::statement::{
     Item, ItemNode,
+    compose::ComposeStmt,
     declaration::DeclarationStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     function_definition::FunctionDefinitionStmt,
-    gap::GapStmt, glue::GlueStmt,
+    gap::GapStmt,
+    glue::GlueStmt,
     import::{ImportRoot, ImportStmt},
+    primitive::PrimitiveStmt,
     spec::{SpecFunctionStmt, SpecStmt},
     r#struct::StructStmt,
     union::UnionStmt,
@@ -163,6 +166,26 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             reject_gap_glue_visibility(p, visibility, visibility_span);
             Item::Glue(parse_glue_def(p)?)
         }
+        TokenKind::Ident(name)
+            if name == "compose" && matches!(p.peek_at(1), TokenKind::Ident(_) | TokenKind::Lt) =>
+        {
+            reject_annotations(p, &annotations);
+            reject_visibility(p, visibility, visibility_span);
+            Item::Compose(parse_compose_def(p)?)
+        }
+        TokenKind::Ident(name)
+            if name == "primitive"
+                && matches!(p.peek_at(1), TokenKind::Ident(_) | TokenKind::Lt) =>
+        {
+            reject_annotations(p, &annotations);
+            if visibility != Visibility::Hidden {
+                p.error_at(
+                    visibility_span.expect("non-hidden visibility has a span"),
+                    ParseErrorKind::PrimitiveVisibility,
+                );
+            }
+            Item::Primitive(parse_primitive_def(p)?)
+        }
         TokenKind::Macro => {
             reject_annotations(p, &annotations);
             Item::MacroDefinition(parse_macro_definition(p, visibility)?)
@@ -233,7 +256,10 @@ fn reject_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>)
 
 fn reject_gap_glue_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>) {
     if visibility != Visibility::Hidden {
-        p.error_at(span.expect("non-Hidden visibility always has a span"), ParseErrorKind::GapOrGlueVisibility);
+        p.error_at(
+            span.expect("non-Hidden visibility always has a span"),
+            ParseErrorKind::GapOrGlueVisibility,
+        );
     }
 }
 
@@ -519,14 +545,8 @@ fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<Generi
     })
 }
 
-/// `: Spec, Spec, ...` -- the specs a struct/union/enum implements,
-/// parsed right after the generics list. Absent entirely (no leading `:`)
-/// is the overwhelmingly common case, returning an empty list. Shares its
-/// comma-separated-`Type`-list shape with a spec's own `: Dep, Dep`
-/// dependency clause (see `parse_spec_def`) -- both mean "must also
-/// satisfy these specs," just said from opposite sides (a concrete type
-/// implementing one, vs. a spec requiring one).
-fn parse_optional_implements(p: &mut Parser) -> Option<Vec<Type>> {
+/// A spec declaration's optional `: Dep, Dep, ...` dependency list.
+fn parse_optional_dependencies(p: &mut Parser) -> Option<Vec<Type>> {
     if !p.eat(&TokenKind::Colon) {
         return Some(Vec::new());
     }
@@ -590,7 +610,7 @@ pub fn parse_struct_def(
     parse_struct_or_marker_body(p, annotations, visibility, false)
 }
 
-/// `marker Name<T, ...> : Spec1, Spec2 { method(...) => T { ... } ... }` --
+/// `marker Name<T, ...> { method(...) => T { ... } ... }` --
 /// `marker`'s own doc comment (`ast::statement::struct::StructStmt::
 /// is_marker`) covers the *semantics*; here it's purely a grammar fact that
 /// a marker's field-list section doesn't exist: `parse_struct_or_marker_body`
@@ -609,7 +629,7 @@ pub fn parse_marker_def(
 }
 
 /// The shared tail both `struct` and `marker` parse into, after their own
-/// leading keyword: name, generics, `implements`, an optional field-list
+/// leading keyword: name, generics, an optional field-list
 /// section (skipped entirely for a marker -- see `parse_marker_def`), and
 /// the trailing method list.
 fn parse_struct_or_marker_body(
@@ -620,7 +640,6 @@ fn parse_struct_or_marker_body(
 ) -> Option<StructStmt> {
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
-    let implements = parse_optional_implements(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
@@ -654,7 +673,6 @@ fn parse_struct_or_marker_body(
         visibility,
         ident,
         generics,
-        implements,
         fields,
         functions,
         is_marker,
@@ -688,7 +706,6 @@ pub fn parse_union_def(
     p.expect(&TokenKind::Union, "'union'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
-    let implements = parse_optional_implements(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
     let mut fields = Vec::new();
@@ -720,19 +737,15 @@ pub fn parse_union_def(
         visibility,
         ident,
         generics,
-        implements,
         fields,
         functions,
     })
 }
 
-/// `spec Name<T, ...> : Dep, Dep for Target { functions }` (declaration
-/// form) or `spec Name<T, ...> = Dep | Dep | Dep;` (alias form) -- see
-/// `SpecStmt`'s doc comment for the two forms' shared meaning, and for what
-/// the optional `for Target` clause (decl form only) does. The leading
-/// `:`/`=` token is what disambiguates the two forms; both keep parsing a
-/// `Type`-list afterward (`,`-separated for `:`, `|`-separated for `=`),
-/// just with different terminators (`{ ... }` vs `;`).
+/// `spec Name<T, ...> : Dep, Dep { functions }` (declaration form) or
+/// `spec Name<T, ...> = Dep | Dep | Dep;` (alias form). The leading `:`/`=`
+/// token disambiguates the forms; both parse a type list afterward, with
+/// different separators and terminators.
 pub fn parse_spec_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -759,18 +772,12 @@ pub fn parse_spec_def(
             generics,
             dependencies,
             functions: Vec::new(),
-            target: None,
             is_alias: true,
             annotations,
         });
     }
 
-    let dependencies = parse_optional_implements(p)?;
-    let target = if p.eat(&TokenKind::For) {
-        Some(crate::parser::r#type::parse_type(p)?)
-    } else {
-        None
-    };
+    let dependencies = parse_optional_dependencies(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
@@ -786,7 +793,6 @@ pub fn parse_spec_def(
         generics,
         dependencies,
         functions,
-        target,
         is_alias: false,
         annotations,
     })
@@ -843,10 +849,20 @@ fn parse_gap_def(p: &mut Parser) -> Option<GapStmt> {
     while matches!(p.peek(), TokenKind::Ident(_)) {
         let function = parse_spec_function(p)?;
         if function.self_mode.is_some() {
-            p.error_at(p.last_span(), ParseErrorKind::GapFunctionSelf { name: function.ident.clone() });
+            p.error_at(
+                p.last_span(),
+                ParseErrorKind::GapFunctionSelf {
+                    name: function.ident.clone(),
+                },
+            );
         }
         if function.body.is_some() {
-            p.error_at(p.last_span(), ParseErrorKind::GapFunctionBody { name: function.ident.clone() });
+            p.error_at(
+                p.last_span(),
+                ParseErrorKind::GapFunctionBody {
+                    name: function.ident.clone(),
+                },
+            );
         }
         functions.push(function);
     }
@@ -863,15 +879,69 @@ fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
     while matches!(p.peek(), TokenKind::Ident(_)) {
         let function = parse_function_definition(p, Vec::new(), Visibility::Hidden)?;
         if !function.generics.is_empty() || function.self_mode.is_some() {
-            p.error_at(p.last_span(), ParseErrorKind::Expected {
-                expected: "a non-generic, static glue function",
-                found: "a generic or member function".to_string(),
-            });
+            p.error_at(
+                p.last_span(),
+                ParseErrorKind::Expected {
+                    expected: "a non-generic, static glue function",
+                    found: "a generic or member function".to_string(),
+                },
+            );
         }
         functions.push(function);
     }
     p.expect(&TokenKind::RBrace, "'}'");
     Some(GlueStmt { gap, functions })
+}
+
+fn parse_compose_def(p: &mut Parser) -> Option<ComposeStmt> {
+    p.advance();
+    let generics = parse_optional_generics(p)?;
+    let target = crate::parser::r#type::parse_type(p)?;
+    p.expect(&TokenKind::Colon, "':'");
+    let spec = crate::parser::r#type::parse_type(p)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut functions = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
+        let annotations = parse_annotations(p);
+        let (visibility, visibility_span) = parse_optional_visibility(p);
+        if visibility != Visibility::Hidden {
+            p.error_at(
+                visibility_span.expect("non-hidden visibility has a span"),
+                ParseErrorKind::ComposeMethodVisibility,
+            );
+        }
+        functions.push(parse_function_definition(
+            p,
+            annotations,
+            Visibility::Hidden,
+        )?);
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(ComposeStmt {
+        generics,
+        target,
+        spec,
+        functions,
+    })
+}
+
+fn parse_primitive_def(p: &mut Parser) -> Option<PrimitiveStmt> {
+    p.advance();
+    let generics = parse_optional_generics(p)?;
+    let target = crate::parser::r#type::parse_type(p)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut functions = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
+        let annotations = parse_annotations(p);
+        let (visibility, _) = parse_optional_visibility(p);
+        functions.push(parse_function_definition(p, annotations, visibility)?);
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(PrimitiveStmt {
+        generics,
+        target,
+        functions,
+    })
 }
 
 /// `enum Name<T, ...>(header) { [dynamic_fields] Variant(args) { fields }, ...; functions }`
@@ -891,7 +961,6 @@ pub fn parse_enum_def(
     p.expect(&TokenKind::Enum, "'enum'");
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
-    let implements = parse_optional_implements(p)?;
     let header = parse_enum_header(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
 
@@ -977,7 +1046,6 @@ pub fn parse_enum_def(
         visibility,
         ident,
         generics,
-        implements,
         header,
         dynamic_fields,
         variants,
