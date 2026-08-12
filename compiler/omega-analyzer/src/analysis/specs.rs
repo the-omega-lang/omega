@@ -211,40 +211,24 @@ impl<'r> Analyzer<'r> {
     /// between *dependencies* is a `flatten_spec`-time concern instead
     /// (only detectable once both sides are resolved with a concrete
     /// `Self`).
-    /// Also resolves and validates `sp.annotations` (`@gap`/`@suppress`) --
-    /// folded in here, not a separate function, because this is the one
+    /// Also resolves `sp.annotations` -- folded in here, not a separate
+    /// function, because this is the one
     /// place both of a spec's two possible resolution paths (an ordinary
     /// declaration, via `omega_driver::Driver::resolve_spec_declaration`,
     /// and a `for`-attached one, via `Analyzer::resolve_extension_methods`)
     /// already converge on exactly once -- see those two callers.
-    /// `@gap`'s per-function self-lessness check belongs here for the same
-    /// reason `ExtensionSelfMustBePointer`/`SpecSelfMustBePointer` already
-    /// do: it's a per-function self-mode rule, checked in the same loop
-    /// that already inspects every function's `self_mode` once.
     pub fn resolve_spec_functions(
         &mut self,
         sp: &HirSpecDef,
-    ) -> (Vec<(Ident, RawSpecFunctionSig)>, crate::annotations::ResolvedAnnotations, Vec<(Ident, crate::resolved_type::GapFunction)>)
+    ) -> (Vec<(Ident, RawSpecFunctionSig)>, crate::annotations::ResolvedAnnotations)
     {
         let annotations =
             crate::annotations::resolve(self, sp.id, &sp.annotations, crate::annotations::ItemKind::Spec, false, false);
-        if annotations.gap {
-            if sp.target.is_some() {
-                self.error(sp.id, sp.span, AnalysisErrorKind::GapOnForSpec);
-            }
-            if sp.is_alias {
-                self.error(sp.id, sp.span, AnalysisErrorKind::GapOnSpecAlias);
-            }
-            if !sp.generics.is_empty() {
-                self.error(sp.id, sp.span, AnalysisErrorKind::GapMustNotBeGeneric);
-            }
-        }
 
         let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
         let is_slice_extension =
             sp.target.as_ref().is_some_and(|t| Self::is_slice_extension_target(&generics, t));
         let mut functions = Vec::new();
-        let mut gap_functions = Vec::new();
         let mut seen: HashSet<Ident> = HashSet::new();
         for f in &sp.functions {
             if !seen.insert(f.name.clone()) {
@@ -252,11 +236,7 @@ impl<'r> Analyzer<'r> {
                 continue;
             }
             let by_value = matches!(f.self_mode, Some(SelfMode::Value) | Some(SelfMode::MutValue));
-            if annotations.gap && f.self_mode.is_some() {
-                self.error(f.id, f.span, AnalysisErrorKind::GapFunctionMustBeStatic { name: f.name.clone() });
-            } else if annotations.gap && f.body.is_some() {
-                self.error(f.id, f.span, AnalysisErrorKind::GapFunctionBodyNotYetSupported { name: f.name.clone() });
-            } else if by_value && is_slice_extension {
+            if by_value && is_slice_extension {
                 // `for [?]T`'s `self` (by value) resolves to
                 // `ResolvedType::Array` -- an unsized, lengthless thin
                 // pointer, not the lengthed `Slice` `*self` gives -- see
@@ -288,33 +268,8 @@ impl<'r> Analyzer<'r> {
                 },
             ));
 
-            // Only for a function that passed both gap checks above (no
-            // `self`, no body) -- re-checking here (instead of a tracking
-            // flag) is simplest since both conditions are already right
-            // above and never change in between.
-            if annotations.gap && f.self_mode.is_none() && f.body.is_none() {
-                let params = self.analyze_all(&f.params, |this, p| {
-                    this.resolve_type_or_error(p.id, p.span, &p.r#type, true).map(|t| (p.ident.clone(), t))
-                });
-                let return_type = self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true);
-                if let (Some(params), Some(return_type)) = (params, return_type) {
-                    gap_functions.push((
-                        f.name.clone(),
-                        crate::resolved_type::GapFunction {
-                            decl_id: f.id,
-                            span: f.span,
-                            fn_type: ResolvedFunctionType {
-                                params,
-                                return_type: Box::new(return_type),
-                                is_variadic: false,
-                                self_mode: None,
-                            },
-                        },
-                    ));
-                }
-            }
         }
-        (functions, annotations, gap_functions)
+        (functions, annotations)
     }
 
     /// Every `ResolvedType` a `for` clause may concretely target -- the
@@ -418,7 +373,7 @@ impl<'r> Analyzer<'r> {
         pattern_binding: Option<ResolvedType>,
     ) -> Option<SpecMethods> {
         let dependencies = self.resolve_spec_dependencies(sp);
-        let (functions, annotations, gap_functions) = self.resolve_spec_functions(sp);
+        let (functions, annotations) = self.resolve_spec_functions(sp);
         let generics: Vec<Ident> = sp.generics.iter().map(|g| g.ident.clone()).collect();
         // Never actually consulted -- a `for`-spec is never name-registered,
         // so `spec *Name` can never be written against this cell -- but kept
@@ -436,14 +391,6 @@ impl<'r> Analyzer<'r> {
             is_object_safe,
             dependencies,
             functions,
-            gap_functions,
-            span: sp.span,
-            // `@gap` on a `for`-spec is already rejected (`GapOnForSpec`,
-            // resolved a moment ago inside `resolve_spec_functions`) --
-            // `annotations.gap` is stored as-is anyway, matching
-            // `is_object_safe`'s own "never actually consulted, but keep the
-            // invariant honest" precedent just above.
-            is_gap: annotations.gap,
             suppress: annotations.suppress,
         }));
         let type_args: Vec<ResolvedType> = pattern_binding.into_iter().collect();
@@ -876,19 +823,11 @@ impl<'r> Analyzer<'r> {
         implements: &[Type],
         own_functions: &[(Ident, ResolvedMethod)],
         self_type: &ResolvedType,
-        glue: bool,
     ) -> SpecMethods {
         let mut flattened: Vec<FlattenedSpecFn> = Vec::new();
         let mut implemented_specs = Vec::new();
         for spec_type in implements {
             let Some((spec, type_args)) = self.resolve_spec_reference(id, span, spec_type) else { continue };
-            // A `@glue` marker may only implement gaps -- see
-            // `AnalysisErrorKind::GlueOnNonGapSpec`'s doc comment for why
-            // an ordinary spec is rejected here rather than silently
-            // allowed alongside real gaps.
-            if glue && !spec.borrow().is_gap {
-                self.error(id, span, AnalysisErrorKind::GlueOnNonGapSpec { spec: spec.borrow().name.clone() });
-            }
             implemented_specs.push((spec.clone(), type_args.clone()));
             // A conflict *within* this one entry's own dependency graph is
             // already reported inline (`ConflictingSpecFunctions`); `None`

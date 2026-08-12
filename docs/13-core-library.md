@@ -12,7 +12,7 @@ runtime/core/
     core.omg          # real root: nothing to declare, see below
     cmp.omg              # core::cmp — Ordering, Eq, Ord
     default.omg              # core::default — Default
-    glue.omg                   # core::glue — @gap GlobalAllocator
+    platform.omg               # core::platform — gap GlobalAllocator
     hash.omg                     # core::hash — Hash
     iterator.omg                 # core::iterator — Iterator<T>, ToIterator<T>
     numerics.omg                   # core::numerics — all scalar for-blocks (macros)
@@ -122,12 +122,11 @@ side's TU" model (see [specs](08-specs.md) and
   `starts_with`/`ends_with`, `contains` (naive O(n·m) substring search,
   deliberately no skip table, which would need working memory proportional
   to the needle — this layer never does hidden allocation).
-- **`core::glue`** — `@gap exposed spec GlobalAllocator { alloc; free;
-  realloc; }`, the one platform capability the library needs but can't
-  itself provide — see [gaps and glue](21-gaps-and-glue.md). No default
-  implementation ships here; a final application supplies exactly one
-  `@glue` marker implementing it, or leaves it unglued if nothing ever
-  calls it.
+- **`core::platform`** — `gap GlobalAllocator { alloc; free; realloc; }`,
+  the one platform capability the library needs but can't itself provide —
+  see [gaps and glue](21-gaps-and-glue.md). No default implementation ships
+  here; a final application supplies exactly one `glue`, or leaves it
+  unfilled if nothing ever calls it.
 
 ## `Option<T>` finally exists — but `core::slices` still doesn't use it
 

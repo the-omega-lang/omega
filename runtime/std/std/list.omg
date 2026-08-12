@@ -2,7 +2,7 @@
 # under a name that doesn't collide with "this is actually a vector" the
 # way "Vec" does for a general-purpose audience).
 #
-# Built directly on `core::glue::GlobalAllocator` -- the only capability
+# Built directly on `core::platform::GlobalAllocator` -- the only capability
 # this type needs, so it works on any platform that's supplied *a* glue
 # for it, embedded included. No RAII in this language (no `Drop`
 # equivalent -- `defer` is the only structured cleanup mechanism, see
@@ -23,7 +23,7 @@
 # full ambient prelude for every other package (see
 # `docs/10-modules-and-linkage.md`), exactly like `examples/dev/main.omg`'s
 # own bare `Option::None` usage. `alloc`/`free`/`realloc` come from
-# `std::alloc` instead of calling `core::glue::GlobalAllocator` directly --
+# `std::alloc` instead of calling `core::platform::GlobalAllocator` directly --
 # see that file's own doc comment for why that indirection is required,
 # not stylistic.
 import alloc::alloc;
@@ -71,7 +71,7 @@ exposed struct List<T> : ToIterator<T> {
     # (first allocation) vs. `realloc` (every later growth) rather than
     # always calling `realloc` and relying on `realloc(null, size)`
     # behaving like `alloc` -- that's a real property of libc's own
-    # `realloc`, but not a contract `core::glue::GlobalAllocator` itself
+    # `realloc`, but not a contract `core::platform::GlobalAllocator` itself
     # promises, and this type is meant to work with any future glue,
     # including ones that don't happen to share that behavior.
     reserve(*mut self, min_capacity: usize) => void {

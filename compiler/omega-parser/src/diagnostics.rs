@@ -97,6 +97,19 @@ impl ParseError {
             ParseErrorKind::VisibilityNotAllowedHere => d
                 .with_label(self.span, "this item can't carry a visibility modifier")
                 .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, macros, functions, globals, and externs"),
+            ParseErrorKind::GapOrGlueVisibility => d
+                .with_label(self.span, "gaps and glues are global by nature")
+                .with_help("remove this visibility modifier"),
+            ParseErrorKind::GapOrGlueGeneric => d
+                .with_label(self.span, "gaps and glues are never generic")
+                .with_help("a gap's linker symbol is computed once, for the bare name -- there is no per-instantiation symbol to glue against"),
+            ParseErrorKind::GapFunctionBody { name } => d
+                .with_label(self.span, format!("'{}' has a body", name.as_ref()))
+                .with_note("a default body would need a real, once-compiled MIR function of its own, reusing the synthetic-`HirFunctionDef` reconstruction an ordinary spec default method already needs -- deferred, not ruled out")
+                .with_help("declare it as a bare requirement (no body) instead -- the gap's one `glue` block must then provide it"),
+            ParseErrorKind::GapFunctionSelf { name } => d
+                .with_label(self.span, format!("'{}' takes 'self'", name.as_ref()))
+                .with_help("gap functions are static"),
             ParseErrorKind::DefaultGenericParamNotTrailing { name } => d
                 .with_label(self.span, format!("`{name}` has no default, but an earlier parameter does"))
                 .with_help("once one generic parameter has a default, every parameter after it must too"),
@@ -205,6 +218,21 @@ pub enum ParseErrorKind {
     /// invocation) -- rejected here rather than silently dropped, same
     /// precedent as `AnnotationNotAllowedHere`.
     VisibilityNotAllowedHere,
+    GapOrGlueVisibility,
+    /// A `<...>` list on a `gap` name or a `glue` target path. Reported
+    /// (and then *consumed* by the caller, see `parse_gap_def`) rather than
+    /// aborting the item, so the one real mistake produces one error
+    /// instead of a cascade from re-reading `<T>` as a fresh top-level item.
+    GapOrGlueGeneric,
+    /// A `gap` function written with a body. Default-bodied gap functions
+    /// are a deliberately deferred *feature*, not a shape rule -- see this
+    /// error's own note in `ParseError::render` for what implementing one
+    /// would take, and `docs/14-known-issues.md`.
+    GapFunctionBody { name: Ident },
+    /// A `gap` function declared with any `self` at all -- gap functions
+    /// are static, symbol-bound calls; there is no instance to hang a
+    /// `self` off of.
+    GapFunctionSelf { name: Ident },
     /// A generic parameter with no default followed one that does have one
     /// (`<T = i32, U>`) -- positional generic arguments make "explicit
     /// prefix, defaulted suffix" the only unambiguous omission shape, so
@@ -289,6 +317,10 @@ impl fmt::Display for ParseErrorKind {
             Self::VisibilityNotAllowedHere => {
                 write!(f, "a visibility modifier is not allowed here")
             }
+            Self::GapOrGlueVisibility => write!(f, "gaps and glues take no visibility modifier"),
+            Self::GapOrGlueGeneric => write!(f, "gaps and glues cannot be generic"),
+            Self::GapFunctionBody { name } => write!(f, "a gap declares, it does not define ('{}')", name.as_ref()),
+            Self::GapFunctionSelf { name } => write!(f, "gap function '{}' cannot take 'self'", name.as_ref()),
             Self::DefaultGenericParamNotTrailing { name } => {
                 write!(
                     f,

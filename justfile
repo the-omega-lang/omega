@@ -18,7 +18,7 @@ build-exe: build-core build-plat
 # there is no compiler-level selection mechanism, this is it. `plat` gets
 # no other privilege `core` has (no eager-discovery/ambient-prelude
 # exemption); registering it is enough for `examples/dev`'s reference to
-# `core::glue::GlobalAllocator` to find its glue, even though nothing in
+# `core::platform::GlobalAllocator` to find its glue, even though nothing in
 # `examples/dev` ever imports `plat` itself.
 build-plat: build-core
     ./target/debug/omgc -v runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat.o

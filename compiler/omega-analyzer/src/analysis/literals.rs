@@ -347,7 +347,7 @@ impl<'r> Analyzer<'r> {
             let absolute = self.generic_prefix_absolute(node_id, span, prefix)?;
             let resolved = match self.resolve_item_checked_with_ambient_fallback(prefix, &absolute, &type_args) {
                 Ok(ResolvedItem::Type(t)) => t,
-                Ok(ResolvedItem::Value { .. }) => {
+                Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(
                         node_id,
                         span,
@@ -395,7 +395,7 @@ impl<'r> Analyzer<'r> {
                 )?;
                 let resolved = match result {
                     Ok(ResolvedItem::Type(t)) => t,
-                    Ok(ResolvedItem::Value { .. }) => {
+                    Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                         self.error(node_id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotAType(real_absolute)));
                         return None;
                     }
@@ -426,7 +426,7 @@ impl<'r> Analyzer<'r> {
             };
             let first_error = match whole_result {
                 Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
-                Ok(ResolvedItem::Value { .. }) => {
+                Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(
                         node_id,
                         span,
@@ -482,7 +482,7 @@ impl<'r> Analyzer<'r> {
             Ok(ResolvedItem::Type(t)) => {
                 return self.literal_target_from_type(node_id, span, t, &plain.tail);
             }
-            Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: plain.head.clone() },
+            Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => AnalysisErrorKind::NotAModule { name: plain.head.clone() },
             Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
                 name: plain.head.clone(),
                 similar_module: self.similar_import_alias(&plain.head),

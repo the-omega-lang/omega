@@ -6,6 +6,7 @@ use crate::ast::statement::{
     declaration::DeclarationStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     function_definition::FunctionDefinitionStmt,
+    gap::GapStmt, glue::GlueStmt,
     import::{ImportRoot, ImportStmt},
     spec::{SpecFunctionStmt, SpecStmt},
     r#struct::StructStmt,
@@ -152,6 +153,16 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             Item::Struct(parse_marker_def(p, annotations, visibility)?)
         }
         TokenKind::Spec => Item::Spec(parse_spec_def(p, annotations, visibility)?),
+        TokenKind::Ident(name) if name == "gap" && matches!(p.peek_at(1), TokenKind::Ident(_)) => {
+            reject_annotations(p, &annotations);
+            reject_gap_glue_visibility(p, visibility, visibility_span);
+            Item::Gap(parse_gap_def(p)?)
+        }
+        TokenKind::Ident(name) if name == "glue" && matches!(p.peek_at(1), TokenKind::Ident(_)) => {
+            reject_annotations(p, &annotations);
+            reject_gap_glue_visibility(p, visibility, visibility_span);
+            Item::Glue(parse_glue_def(p)?)
+        }
         TokenKind::Macro => {
             reject_annotations(p, &annotations);
             Item::MacroDefinition(parse_macro_definition(p, visibility)?)
@@ -217,6 +228,12 @@ fn reject_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>)
             span.expect("non-Hidden visibility always has a span"),
             ParseErrorKind::VisibilityNotAllowedHere,
         );
+    }
+}
+
+fn reject_gap_glue_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>) {
+    if visibility != Visibility::Hidden {
+        p.error_at(span.expect("non-Hidden visibility always has a span"), ParseErrorKind::GapOrGlueVisibility);
     }
 }
 
@@ -799,6 +816,62 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
         return_type,
         body,
     })
+}
+
+/// Reports, then *consumes and discards*, a `<...>` list written on a `gap`
+/// name or a `glue` target path -- neither form has generics in its grammar
+/// (see `ParseErrorKind::GapOrGlueGeneric`). Recovering by consuming is what
+/// keeps this to one error: bailing out instead leaves `<T>` in the token
+/// stream for `synchronize_to_item_boundary`, which re-reads it as a fresh
+/// top-level item and reports the same mistake two or three more times.
+/// `None` only ever means the generics list itself was malformed.
+fn reject_gap_glue_generics(p: &mut Parser) -> Option<()> {
+    if !p.check(&TokenKind::Lt) {
+        return Some(());
+    }
+    p.error(ParseErrorKind::GapOrGlueGeneric);
+    parse_optional_generics(p)?;
+    Some(())
+}
+
+fn parse_gap_def(p: &mut Parser) -> Option<GapStmt> {
+    p.advance(); // contextual `gap`, confirmed by the caller
+    let ident = p.expect_ident()?;
+    reject_gap_glue_generics(p)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut functions = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) {
+        let function = parse_spec_function(p)?;
+        if function.self_mode.is_some() {
+            p.error_at(p.last_span(), ParseErrorKind::GapFunctionSelf { name: function.ident.clone() });
+        }
+        if function.body.is_some() {
+            p.error_at(p.last_span(), ParseErrorKind::GapFunctionBody { name: function.ident.clone() });
+        }
+        functions.push(function);
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(GapStmt { ident, functions })
+}
+
+fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
+    p.advance(); // contextual `glue`, confirmed by the caller
+    let gap = parse_path(p)?;
+    reject_gap_glue_generics(p)?;
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut functions = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) {
+        let function = parse_function_definition(p, Vec::new(), Visibility::Hidden)?;
+        if !function.generics.is_empty() || function.self_mode.is_some() {
+            p.error_at(p.last_span(), ParseErrorKind::Expected {
+                expected: "a non-generic, static glue function",
+                found: "a generic or member function".to_string(),
+            });
+        }
+        functions.push(function);
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(GlueStmt { gap, functions })
 }
 
 /// `enum Name<T, ...>(header) { [dynamic_fields] Variant(args) { fields }, ...; functions }`

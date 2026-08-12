@@ -863,7 +863,7 @@ impl<'r> Analyzer<'r> {
 
         let owner_type = match self.resolve_item_checked_with_ambient_fallback(prefix, owner_absolute, &type_args) {
             Ok(ResolvedItem::Type(t)) => t,
-            Ok(ResolvedItem::Value { .. }) => {
+            Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                 self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
                 return None;
             }

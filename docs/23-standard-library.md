@@ -1,7 +1,7 @@
 # The standard library
 
 `runtime/std/` — Omega's first real collection of data structures, built
-entirely on top of `core::glue::GlobalAllocator`. Unlike `plat`, `std`'s
+entirely on top of `core::platform::GlobalAllocator`. Unlike `plat`, `std`'s
 code is the same on every platform; it only ever needs a *glue* to be
 provided, never a per-platform reimplementation of its own.
 
@@ -56,7 +56,7 @@ type.
 
 Every generic collection routes its allocator calls through
 `std::alloc::{alloc, free, realloc}` — plain, non-generic wrapper
-functions — rather than calling `core::glue::GlobalAllocator`'s `@gap`
+functions — rather than calling `core::platform::GlobalAllocator`'s `gap`
 methods straight from a generic method body. See that file's own header
 comment for the full story: originally a workaround for a real codegen
 bug (generic instantiations whose template lived in an extern package
@@ -80,7 +80,7 @@ one per generic collection × instantiation.
   explicitly branching `alloc` (first allocation) vs. `realloc` (every
   later growth) rather than relying on `realloc(NULL, size) ==
   malloc(size)` — a real property of libc's own `realloc` that
-  `core::glue::GlobalAllocator` itself never promises, and this library
+  `core::platform::GlobalAllocator` itself never promises, and this library
   is meant to work with glues nobody's written yet. Fallible access
   (`get`/`set`/`pop`) mirrors `core::slices::SliceImpl<T>`'s own
   out-pointer/`bool` convention exactly, rather than `Option<T>` — it
@@ -165,7 +165,7 @@ being explicit about: **every current `std` type happens to need
 allocation** (`List`, `LinkedList`, `String`, `HashMap`, `HashSet` all
 allocate on construction or first growth), so no program that actually
 constructs any of them today can avoid requiring
-`core::glue::GlobalAllocator`'s glue. That's a property of the current
+`core::platform::GlobalAllocator` glue. That's a property of the current
 five types, not a violated guarantee — a hypothetical future
 allocation-free `std` type (a fixed-capacity ring buffer over caller-
 supplied storage, say) would still link with no glue required at all if
@@ -179,9 +179,9 @@ just build-core                                                                 
 ```
 
 A consumer needs both `--extern=core:...` and `--extern=std:...`, plus,
-if it ever actually reaches an allocation, a `@glue` implementing
+if it ever actually reaches an allocation, a `glue` implementing
 `GlobalAllocator` (`plat`'s `LibcAllocator`, today — see
-[`plat`: the default platform `@glue`](22-platform-glue.md) — or any
+[`plat`: the default platform glue](22-platform-glue.md) — or any
 other).
 
 ## Caveats

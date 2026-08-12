@@ -114,13 +114,13 @@ spec's own *signature* (never a body, never a free function/overload/
 enum/union as its own eager entry point) in every registered extern,
 `core` included, before the local package's own signatures are collected.
 
-This exists for one reason: `@gap`/`@glue` tracking
+This exists for one reason: `gap`/`glue` tracking
 ([gaps and glue](21-gaps-and-glue.md)) needs to see every gap and every
 glue in the whole compilation, not just whichever ones happened to be
 referenced. Before this, an extern module nobody imported was invisible
-to that check entirely — a real `@glue` sitting in an unimported sibling
+to that check entirely — a real `glue` sitting in an unimported sibling
 module produced a false "unfilled gap" warning, and two different externs
-each shipping an unimported `@glue` for the same gap were never compared
+each shipping an unimported `glue` for the same gap were never compared
 at all, silently deferring a genuine conflict to a raw linker "duplicate
 symbol" error. Now every extern's struct/spec surface is resolved
 regardless of reference, exactly like the local package's already is, so
@@ -168,8 +168,8 @@ items resolve lazily, exactly like a generic instantiation, only when a
 local item actually references one — never body-checked. The one
 exception, besides `core`'s ambient/`for`-block treatment above, is every
 struct's and spec's own *signature*, now eagerly resolved regardless of
-reference too (see "Eager local discovery" above) — purely so `@gap`/
-`@glue` tracking sees the whole picture; nothing about ordinary name
+reference too (see "Eager local discovery" above) — purely so `gap`/
+`glue` tracking sees the whole picture; nothing about ordinary name
 resolution changed, an unreferenced struct/spec's signature being resolved
 doesn't make it importable or visible any differently than before. A
 *generic* template defined in an extern module is the one true exception
@@ -206,7 +206,7 @@ both keyed off the same `core_modules()` inventory:
   referencing another part of `core` unqualified doesn't quietly become
   self-referential.
 - **A bare, unqualified name** (`GlobalAllocator`, not
-  `core::glue::GlobalAllocator`; `Option<T>`, not `core::option::Option<T>`)
+  `core::platform::GlobalAllocator`; `Option<T>`, not `core::option::Option<T>`)
   resolves against every *exposed* item across all of `core_modules()`
   (`ModuleResolver::ambient_core_candidates`), tried only *after*
   ordinary local/import resolution of that name already failed — so a

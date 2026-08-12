@@ -1,14 +1,13 @@
 # Platform-capability gaps: functionality `core` (and, eventually, the rest
 # of `std`) needs a concrete answer for, but has no single portable one --
 # the target platform, or the final application, supplies exactly one
-# implementation via `@glue`. See docs/21-gaps-and-glue.md for the full
-# design; this file only ever adds new `@gap` specs, never their glue.
+# implementation via a `glue` block. See docs/21-gaps-and-glue.md for the
+# full design; this file only ever adds new gaps, never their glue.
 
 # The global heap allocator. Every function is required (no default body --
 # see docs/21-gaps-and-glue.md for why a default-bodied gap function isn't
-# supported yet) and self-less: called through this spec's own qualified
-# name (`core::glue::GlobalAllocator::alloc(...)`), exactly like a marker's
-# static function, never through an instance.
+# supported yet) and self-less: called through the gap's own qualified name
+# (`core::platform::GlobalAllocator::alloc(...)`), never through an instance.
 #
 # `alloc`/`realloc` return `*mut u8`, not `*u8` -- freshly allocated memory
 # is always meant to be written into, and a plain `*u8` can never be cast to
@@ -17,8 +16,7 @@
 # allocation impossible for any caller. `free`'s own parameter stays a plain
 # `*u8` -- freeing needs an address, not write access, and a `*mut u8`
 # argument widens to it for free either way.
-@gap
-exposed spec GlobalAllocator {
+gap GlobalAllocator {
     alloc(size: usize) => *mut u8;
     free(ptr: *u8) => void;
     realloc(ptr: *u8, size: usize) => *mut u8;
@@ -28,17 +26,14 @@ exposed spec GlobalAllocator {
 # input, and each fallible operation reports through an out-pointer plus a
 # boolean. `true` with a zero input count means end of input; `false` leaves
 # the out-pointer untouched.
-@gap
-exposed spec StandardOutput {
+gap StandardOutput {
     write(bytes: *[?]u8, written: *mut usize) => bool;
 }
 
-@gap
-exposed spec StandardError {
+gap StandardError {
     write(bytes: *[?]u8, written: *mut usize) => bool;
 }
 
-@gap
-exposed spec StandardInput {
+gap StandardInput {
     read(into: *mut [?]u8, count: *mut usize) => bool;
 }

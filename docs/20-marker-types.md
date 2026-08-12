@@ -1,25 +1,29 @@
 # Zero-sized types (`marker`)
 
 ```
-spec GlobalAllocator {
-    alloc(*mut self, size: usize) => *u8;
-    free(*mut self, ptr: *u8) => void;
+spec Sink {
+    write(*mut self, bytes: *[?]u8) => void;
+    flush(*mut self) => void;
 }
 
-marker SystemAllocator : GlobalAllocator {
-    exposed alloc(*mut self, size: usize) => *u8 { ... }
-    exposed free(*mut self, ptr: *u8) => void { ... }
+marker NullSink : Sink {
+    exposed write(*mut self, bytes: *[?]u8) => void { ... }
+    exposed flush(*mut self) => void { ... }
 }
 ```
 
 `marker` declares a type that carries **no data at all** — the
 zero-sized-type answer to the "stateless singleton implementing a spec"
-pattern (a global allocator with no fields being the motivating case).
-`SystemAllocator` above can be constructed (`SystemAllocator {}`), have its
-address taken, implement specs, and be used through ordinary pointers and
-`spec *GlobalAllocator` dynamic dispatch — everything a struct instance
-can do — but declares no storage of its own, and `sizeof<SystemAllocator>`
-is `0`.
+pattern, and to a zero-sized placeholder type parameter (`HashSet<T>` over
+`HashMap<T, Unit>`). `NullSink` above can be constructed (`NullSink {}`),
+have its address taken, implement specs, and be used through ordinary
+pointers and `spec *Sink` dynamic dispatch — everything a struct instance
+can do — but declares no storage of its own, and `sizeof<NullSink>` is `0`.
+
+Note what a marker is *not* for: filling a platform gap. A `glue` block is
+its own declaration form and needs no type to hang its functions on — see
+[gaps-and-glue.md](21-gaps-and-glue.md). A marker's methods all take `self`;
+a gap's functions never do.
 
 ## Grammar: never has fields, structurally
 
@@ -163,8 +167,8 @@ storage is real, if zero-byte, per-instance storage).
 ## Dynamic dispatch
 
 ```
-obj : spec *GlobalAllocator = &some_system_allocator;
-obj.ptr       # the real address of `some_system_allocator`, never null
+obj : spec *Sink = &some_null_sink;
+obj.ptr       # the real address of `some_null_sink`, never null
 obj.vtable    # the ordinary, content-deduplicated vtable, exactly like
               # any other implementor's
 ```

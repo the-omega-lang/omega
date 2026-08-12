@@ -2,10 +2,10 @@
 # unless the caller supplies a buffer; buffered writers must be flushed by the
 # caller. The console gaps are the only platform-dependent layer.
 
-import glue::StandardInput;
+import platform::StandardInput;
 
-import glue::StandardError;
-import glue::StandardOutput;
+import platform::StandardError;
+import platform::StandardOutput;
 
 stdout_sink(ctx: usize, data: *[?]u8) => usize {
     mut written: usize = 0;

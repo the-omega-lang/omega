@@ -9,7 +9,7 @@
 //! something that isn't ready yet.
 
 use crate::error::{CompileError, CompiledProgram};
-use crate::items::{CheckedBody, ItemKey};
+use crate::items::{CheckedBody, GlueSignature, ItemKey};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::annotations::ManglingMode;
@@ -18,7 +18,7 @@ use omega_analyzer::dead_code::{self, FieldUsage};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
-use omega_hir::{HirEnumDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
+use omega_hir::{HirEnumDef, HirGlueDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,6 +53,22 @@ impl Driver {
         let extern_surface = self.collect_extern_signatures()?;
 
         self.collect_signatures(&local)?;
+        // Deduplicated, because sweeping one module for `glue` blocks is
+        // *not* idempotent -- each pass appends to `items.glues` (a list of
+        // declaration sites, where a repeat is by definition a conflict) and
+        // re-records that module's own diagnostics. The two lists genuinely
+        // can overlap: registering a package as its own `--extern`
+        // (`--name=plat --extern=plat:...`) puts the identical `ModulePath`
+        // in both, which would otherwise report every one of its glues as
+        // `MultipleGluesForGap` against itself, naming the same `HirId`
+        // twice.
+        let mut glue_modules: Vec<ModulePath> = Vec::with_capacity(extern_surface.len() + local.len());
+        for path in extern_surface.iter().chain(local.iter()) {
+            if !glue_modules.contains(path) {
+                glue_modules.push(path.clone());
+            }
+        }
+        self.collect_glue_signatures(&glue_modules);
         let (mut modules, mut warnings) = self.check_bodies(&local)?;
 
         // Merged only now that both phases have finished, in the
@@ -167,12 +183,12 @@ impl Driver {
     /// `error_scope` to extend (see there for why that's required, not
     /// optional).
     ///
-    /// Why: before this, `sweep_gaps` only ever saw a `@gap`/`@glue` item
+    /// Why: before this, `sweep_gaps` only ever saw a `gap`/`glue` item
     /// this compilation happened to *reference* (`ItemQueries::spec_cells`/
     /// `cells.structs()` are populated purely as an `ensure_item` side
-    /// effect) -- a real `@glue` sitting in an extern module nothing
+    /// effect) -- a real `glue` sitting in an extern module nothing
     /// imports was invisible, producing a false `UnfilledGap`, and two
-    /// different externs each shipping an unimported `@glue` for the same
+    /// different externs each shipping an unimported `glue` for the same
     /// gap were never compared at all, silently deferring a genuine
     /// conflict all the way to a raw "duplicate symbol" error from the
     /// system linker (each extern's own build already compiles its own
@@ -183,10 +199,10 @@ impl Driver {
     /// signatures already have (`collect_signatures`), so `sweep_gaps`'
     /// existing logic -- unchanged -- sees the whole picture.
     ///
-    /// Restricted to `HirItem::Struct`/`HirItem::Spec` specifically -- the
-    /// only two kinds `@gap`/`@glue` can ever attach to
-    /// (`annotations.rs`'s `"gap"`/`"glue"` match arms reject every other
-    /// `ItemKind`) -- rather than mirroring `collect_signatures`'s full
+    /// Restricted to `HirItem::Struct`/`HirItem::Spec`/`HirItem::Gap` --
+    /// the only signatures needed for ordinary aggregate conformance and
+    /// first-class gap resolution,
+    /// rather than mirroring `collect_signatures`'s full
     /// per-module sweep (free functions, overloads, enums, unions as their
     /// own eager entry points too). Anything a struct/spec's own signature
     /// transitively needs (a field's enum type, a generic bound, ...)
@@ -198,7 +214,7 @@ impl Driver {
     ///
     /// A parse or signature failure here is a real, fatal `CompileError`,
     /// exactly like a local module's -- deliberately, not swallowed: a
-    /// silently-skipped broken `@glue` would fail *invisibly* instead,
+    /// silently-skipped broken `glue` would fail *invisibly* instead,
     /// which defeats the point of this sweep more than a loud failure
     /// does. This does mean a broken, wholly unrelated struct/spec
     /// anywhere in any registered extern -- `core` included -- can now
@@ -215,8 +231,10 @@ impl Driver {
         for path in &paths {
             self.ensure_module_indexed(path).map_err(fatal)?;
             for (name, index) in self.modules.index(path).plain_items() {
-                let relevant =
-                    matches!(self.modules.parsed(path).hir.items[index], HirItem::Struct(_) | HirItem::Spec(_));
+                let relevant = matches!(
+                    self.modules.parsed(path).hir.items[index],
+                    HirItem::Struct(_) | HirItem::Spec(_) | HirItem::Gap(_)
+                );
                 if !relevant || self.is_generic_template(path, &name).map_err(fatal)? {
                     continue;
                 }
@@ -226,11 +244,100 @@ impl Driver {
         Ok(paths)
     }
 
-    /// Every `@gap` this compilation actually resolved (see
+    fn collect_glue_signatures(&mut self, paths: &[ModulePath]) {
+        for path in paths {
+            let glues: Vec<HirGlueDef> = self
+                .modules
+                .parsed(path)
+                .hir
+                .items
+                .iter()
+                .filter_map(|item| match item { HirItem::Glue(glue) => Some(glue.clone()), _ => None })
+                .collect();
+            for glue in glues {
+                let run = self.with_analyzer(path, &[], (glue.id, glue.span), |analyzer| {
+                    let gap = analyzer.resolve_gap_path(glue.id, glue.span, &glue.gap)?;
+                    let functions = glue
+                        .functions
+                        .iter()
+                        .map(|function| analyzer.collect_function_signature(function, None).map(|(signature, _)| (function.clone(), signature)))
+                        .collect::<Option<Vec<_>>>()?;
+                    let mut errors = Vec::new();
+                    let mut seen = std::collections::HashMap::new();
+                    for (function, _) in &functions {
+                        if let Some(previous) = seen.insert(function.name.clone(), function.span) {
+                            errors.push(AnalysisError::new(
+                                function.id,
+                                function.span,
+                                AnalysisErrorKind::Redeclaration {
+                                    name: function.name.clone(),
+                                    previous: Some(previous),
+                                },
+                            ));
+                        }
+                    }
+                    for (name, requirement) in &gap.functions {
+                        match functions.iter().find(|(function, _)| function.name == *name) {
+                            None => {
+                                errors.push(AnalysisError::new(
+                                    glue.id,
+                                    glue.span,
+                                    AnalysisErrorKind::GlueMissingFunction { gap: gap.name.clone(), function: name.clone() },
+                                ));
+                            }
+                            Some((function, actual)) if !Self::same_glue_signature(&requirement.fn_type, actual) => {
+                                errors.push(AnalysisError::new(
+                                    function.id,
+                                    function.span,
+                                    AnalysisErrorKind::GlueFunctionSignatureMismatch {
+                                        gap: gap.name.clone(),
+                                        function: name.clone(),
+                                    },
+                                ));
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                    for (function, _) in &functions {
+                        if !gap.functions.iter().any(|(name, _)| *name == function.name) {
+                            errors.push(AnalysisError::new(
+                                function.id,
+                                function.span,
+                                AnalysisErrorKind::GlueExtraFunction {
+                                    gap: gap.name.clone(),
+                                    function: function.name.clone(),
+                                },
+                            ));
+                        }
+                    }
+                    Some((gap, functions, errors))
+                });
+                self.diagnostics.record_warnings(path, run.warnings);
+                if run.failed {
+                    continue;
+                }
+                let Some((gap, functions, errors)) = run.result else { continue };
+                if self.diagnostics.record_errors(path, errors) {
+                    continue;
+                }
+                self.items.glues.push(GlueSignature { module: path.clone(), id: glue.id, gap, functions });
+            }
+        }
+    }
+
+    fn same_glue_signature(expected: &ResolvedFunctionType, actual: &ResolvedFunctionType) -> bool {
+        expected.is_variadic == actual.is_variadic
+            && expected.self_mode == actual.self_mode
+            && expected.return_type == actual.return_type
+            && expected.params.len() == actual.params.len()
+            && expected.params.iter().zip(&actual.params).all(|((_, expected), (_, actual))| expected == actual)
+    }
+
+    /// Every `gap` this compilation actually resolved (see
     /// `ItemQueries::spec_cells`'s doc comment for why "resolved" is
     /// exactly the right scope, local or `--extern`, rather than mirroring
     /// `sweep_dead_code`'s "local only" convention), checked against every
-    /// `@glue` marker resolved alongside it: zero matches is `UnfilledGap`
+    /// `glue` declaration resolved alongside it: zero matches is `UnfilledGap`
     /// (a warning -- see its own doc comment for why this design leaves
     /// precise reachability to the linker), two or more is
     /// `MultipleGluesForGap` (a real error). Returns `CompileError`s
@@ -242,36 +349,41 @@ impl Driver {
     fn sweep_gaps(&self) -> (TaggedWarnings, Vec<CompileError>) {
         let mut warnings = TaggedWarnings::new();
         let mut errors = Vec::new();
-        for (_, gap_cell) in self.items.spec_cells() {
-            let gap = gap_cell.borrow();
-            if !gap.is_gap {
-                continue;
-            }
+        for (key, gap) in &self.items.gaps {
             let glues: Vec<Ident> = self
                 .items
-                .cells
-                .structs()
-                .filter_map(|(_, s)| {
-                    let s = s.borrow();
-                    let implements_this_gap =
-                        s.implemented_specs.iter().any(|(spec, _)| *spec.borrow() == *gap);
-                    (s.is_glue && implements_this_gap).then(|| s.name.clone())
+                .glues
+                .iter()
+                .filter(|glue| glue.gap.id == gap.id)
+                .map(|glue| {
+                    Ident(format!(
+                        "{}#{}",
+                        glue.module.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+                        glue.id.local
+                    ))
                 })
                 .collect();
             match glues.as_slice() {
-                [] => {
-                    let functions = gap.gap_functions.iter().map(|(name, _)| name.clone()).collect();
-                    let kind = AnalysisWarningKind::UnfilledGap { gap: gap.name.clone(), functions };
-                    warnings.push((gap.module_path.clone(), AnalysisWarning::new(gap.id, gap.span, kind)));
-                }
+                [] => warnings.push((
+                    key.module.clone(),
+                    AnalysisWarning::new(
+                        gap.id,
+                        gap.span,
+                        AnalysisWarningKind::UnfilledGap {
+                            gap: gap.name.clone(),
+                            functions: gap.functions.iter().map(|(name, _)| name.clone()).collect(),
+                        },
+                    ),
+                )),
                 [_] => {}
-                _ => {
-                    let kind = AnalysisErrorKind::MultipleGluesForGap { gap: gap.name.clone(), glues };
-                    errors.push(CompileError::Analysis {
-                        module: gap.module_path.clone(),
-                        errors: vec![AnalysisError::new(gap.id, gap.span, kind)],
-                    });
-                }
+                _ => errors.push(CompileError::Analysis {
+                    module: key.module.clone(),
+                    errors: vec![AnalysisError::new(
+                        gap.id,
+                        gap.span,
+                        AnalysisErrorKind::MultipleGluesForGap { gap: gap.name.clone(), glues },
+                    )],
+                }),
             }
         }
         (warnings, errors)
@@ -369,16 +481,66 @@ impl Driver {
             warnings.extend(body.warnings.into_iter().map(|w| (path.to_vec(), w)));
         }
         items.extend(self.synthesize_gap_items(path));
+        items.extend(self.check_glue_bodies(path, warnings));
         self.report_unused_imports(path, warnings);
         Ok(items)
     }
 
-    /// Every `@gap` spec declared directly in `path`, synthesized as one
+    fn check_glue_bodies(&mut self, path: &[Ident], warnings: &mut TaggedWarnings) -> Vec<CheckedItem> {
+        let signatures: Vec<(std::rc::Rc<omega_analyzer::resolved_type::ResolvedGap>, Vec<(omega_hir::HirFunctionDef, ResolvedFunctionType)>)> = self
+            .items
+            .glues
+            .iter()
+            .filter(|glue| glue.module == path)
+            .map(|glue| (glue.gap.clone(), glue.functions.clone()))
+            .collect();
+        let mut items = Vec::new();
+        for (gap, functions) in signatures {
+            for (function, fn_type) in functions {
+                // Both guards are already-checked invariants, not filters:
+                // `collect_glue_signatures` refuses to register a glue whose
+                // function set or signatures don't line up with its gap's
+                // (an unregistered glue never reaches here at all), so
+                // anything that *does* reach here matches. They must use
+                // `same_glue_signature`, not `!=`, for exactly that reason:
+                // `ResolvedFunctionType`'s derived `PartialEq` compares
+                // parameter *names* too, and a glue's parameter names are
+                // its own implementation detail -- silently skipping on a
+                // renamed parameter would emit no body, no symbol and no
+                // diagnostic, deferring the whole thing to an "undefined
+                // reference" from the system linker.
+                let Some((_, declared)) = gap.functions.iter().find(|(name, _)| *name == function.name) else {
+                    continue;
+                };
+                if !Self::same_glue_signature(&declared.fn_type, &fn_type) {
+                    continue;
+                }
+                let annotations = omega_analyzer::annotations::ResolvedAnnotations {
+                    mangling: ManglingMode::Glued {
+                        spec_module_path: gap.module_path.clone(),
+                        spec_name: gap.name.clone(),
+                        function_name: function.name.clone(),
+                    },
+                    ..Default::default()
+                };
+                let run = self.with_analyzer(path, &[], (function.id, function.span), |analyzer| {
+                    analyzer.check_function_body(&function, &fn_type, function.id, &annotations)
+                });
+                if let Some(checked) = run.result {
+                    items.push(CheckedItem::FunctionDefinition(checked));
+                }
+                warnings.extend(run.warnings.into_iter().map(|warning| (path.to_vec(), warning)));
+            }
+        }
+        items
+    }
+
+    /// Every `gap` declared directly in `path`, synthesized as one
     /// `CheckedItem::ExternDeclaration` per required function -- reuses
     /// that exact shape (see `CheckedExternDeclaration::mangling`'s doc
     /// comment) since a gap's required function *is*, at codegen time,
     /// indistinguishable from a hand-written top-level `extern`, just with
-    /// its symbol forced to match its `@glue`'s own (`ManglingMode::Glued`)
+    /// its symbol forced to match its `glue` implementation (`ManglingMode::Glued`)
     /// instead of staying bare. A gap spec is never itself a `CheckedItem`
     /// otherwise -- specs declare no code of their own (see
     /// `check_item_body`'s own `HirItem::Spec` arm) -- so this is the one
@@ -386,44 +548,23 @@ impl Driver {
     fn synthesize_gap_items(&mut self, path: &[Ident]) -> Vec<CheckedItem> {
         let mut items = Vec::new();
         for (name, index) in self.modules.index(path).plain_items() {
-            let HirItem::Spec(sp) = &self.modules.parsed(path).hir.items[index] else { continue };
-            // A `for`-spec or an alias can never legitimately be a gap
-            // (already rejected at analysis time if tagged `@gap` anyway;
-            // see `GapOnForSpec`/`GapOnSpecAlias`) -- skipped here purely
-            // to avoid `resolve_spec_declaration`'s ordinary-spec-only
-            // lookup on a `for`-spec, which is never name-registered at all
-            // (see `HirSpecDef::target`'s doc comment).
-            if sp.target.is_some() || sp.is_alias {
+            if matches!(self.modules.parsed(path).hir.items[index], HirItem::Gap(_)) {
+                let key = ItemKey::new(path, &name, &[]);
+                let Some(gap) = self.items.gaps.get(&key) else { continue };
+                for (fn_name, gap_fn) in &gap.functions {
+                    items.push(CheckedItem::ExternDeclaration(CheckedExternDeclaration {
+                        id: gap_fn.decl_id,
+                        span: gap_fn.span,
+                        ident: fn_name.clone(),
+                        r#type: ResolvedType::Function(gap_fn.fn_type.clone()),
+                        mangling: ManglingMode::Glued {
+                            spec_module_path: gap.module_path.clone(),
+                            spec_name: gap.name.clone(),
+                            function_name: fn_name.clone(),
+                        },
+                    }));
+                }
                 continue;
-            }
-            let absolute: Vec<Ident> = path.iter().cloned().chain([name.clone()]).collect();
-            // `Err`/`Ok(None)` both just mean "skip" here, deliberately not
-            // escalated (unlike `is_generic_template`'s own `.map_err(fatal)?`
-            // a few lines up in `check_module_bodies`): a spec that already
-            // failed for some unrelated reason (e.g. `@gap` on a generic
-            // spec, `GapMustNotBeGeneric`) has its real error already
-            // recorded in the diagnostics sink and drained normally at the
-            // end of `compile` -- escalating `ItemFailed` into a second,
-            // pipeline-halting fatal error here would short-circuit
-            // `compile` *before* that drain ever runs, silently swallowing
-            // the one diagnostic that actually explains what went wrong.
-            let Ok(Some(cell)) = self.resolve_spec_declaration(&absolute) else { continue };
-            let cell = cell.borrow();
-            if !cell.is_gap {
-                continue;
-            }
-            for (fn_name, gap_fn) in &cell.gap_functions {
-                items.push(CheckedItem::ExternDeclaration(CheckedExternDeclaration {
-                    id: gap_fn.decl_id,
-                    span: gap_fn.span,
-                    ident: fn_name.clone(),
-                    r#type: ResolvedType::Function(gap_fn.fn_type.clone()),
-                    mangling: ManglingMode::Glued {
-                        spec_module_path: cell.module_path.clone(),
-                        spec_name: cell.name.clone(),
-                        function_name: fn_name.clone(),
-                    },
-                }));
             }
         }
         items
@@ -513,27 +654,11 @@ impl Driver {
             }
         }
 
-        // A `@gap` spec declared in an `--extern`-referenced module (the
-        // realistic shape -- `core::glue::GlobalAllocator` is meant to be
-        // referenced this way, not compiled inline with its own glue) needs
-        // its required functions declared here too, exactly like an
-        // ordinary extern free function/method above -- otherwise a call
-        // resolved against `gap_fn.decl_id` (see `analysis/paths.rs`'s
-        // `GapSpec::function(...)` arm) has no `FuncId` to find in *this*
-        // compilation at all (only the gap's own, separate, local
-        // compilation would ever have declared one). `kind` is never
-        // actually consulted for a `Glued` mangling (see
-        // `declare_extern_function`'s own match) -- `Free` here is an
-        // arbitrary, unread filler, not a real classification.
-        for (key, gap_cell) in self.items.spec_cells() {
-            if !self.roots.is_extern(&key.0) {
+        for (key, gap) in &self.items.gaps {
+            if !self.roots.is_extern(&key.module) {
                 continue;
             }
-            let gap = gap_cell.borrow();
-            if !gap.is_gap {
-                continue;
-            }
-            for (fn_name, gap_fn) in &gap.gap_functions {
+            for (fn_name, gap_fn) in &gap.functions {
                 functions.push(ExternFunctionRef {
                     decl_id: gap_fn.decl_id,
                     module_path: gap.module_path.clone(),

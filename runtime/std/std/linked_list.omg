@@ -5,7 +5,7 @@
 # Same allocator/cleanup story as `std::list::List<T>`: built on
 # `std::alloc` (see that file's own doc comment for why generic collection
 # methods route allocator calls through it rather than calling
-# `core::glue::GlobalAllocator` directly), no RAII, explicit `free`:
+# `core::platform::GlobalAllocator` directly), no RAII, explicit `free`:
 #
 #   list := LinkedList<i32>::new();
 #   defer list.free();

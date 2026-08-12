@@ -112,10 +112,9 @@ turns it into a compile error rather than a `cranelift_module` panic or a
 silent linker failure.
 
 There's a third, internal-only mode, `ManglingMode::Glued`, with no
-`@mangling(...)` spelling of its own — the compiler applies it, never the
-user — that a `@glue` marker's methods get forced into automatically, so
-they land on the exact same symbol their `@gap` spec's own synthesized
-declaration expects. See [gaps-and-glue.md](21-gaps-and-glue.md).
+`@mangling(...)` spelling of its own. The compiler applies it to a `glue`
+function so it lands on the same symbol as its `gap` declaration. See
+[gaps-and-glue.md](21-gaps-and-glue.md).
 
 **The fix that generalized this feature's own placement**: an extern
 function's own `@mangling(disabled)` used to be invisible to a consumer's

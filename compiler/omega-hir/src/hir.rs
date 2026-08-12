@@ -60,6 +60,8 @@ pub enum HirItem {
     Enum(HirEnumDef),
     Union(HirUnionDef),
     Spec(HirSpecDef),
+    Gap(HirGapDef),
+    Glue(HirGlueDef),
     Import(HirImport),
 }
 
@@ -326,6 +328,31 @@ pub struct HirSpecFunction {
     pub params: Vec<HirParam>,
     pub return_type: Type,
     pub body: Option<HirBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirGapDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub functions: Vec<HirGapFunction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirGapFunction {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub params: Vec<HirParam>,
+    pub return_type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirGlueDef {
+    pub id: HirId,
+    pub span: Span,
+    pub gap: Path,
+    pub functions: Vec<HirFunctionDef>,
 }
 
 #[derive(Debug, Clone)]

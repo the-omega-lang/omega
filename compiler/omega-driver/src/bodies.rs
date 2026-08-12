@@ -231,6 +231,7 @@ impl Driver {
             // A spec declares no code of its own -- its functions only ever
             // become real bodies through an implementor (or a `for` target).
             HirItem::Spec(_) => None,
+            HirItem::Gap(_) | HirItem::Glue(_) => None,
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
         }
     }
@@ -296,7 +297,7 @@ impl Driver {
     fn resolved_value_type(&self, key: &ItemKey) -> ResolvedType {
         match self.items.expect_resolved(key) {
             ResolvedItem::Value { r#type, .. } => r#type.clone(),
-            ResolvedItem::Type(_) => unreachable!("a declaration's own resolved item is always a value"),
+            ResolvedItem::Type(_) | ResolvedItem::Gap(_) => unreachable!("a declaration's own resolved item is always a value"),
         }
     }
 

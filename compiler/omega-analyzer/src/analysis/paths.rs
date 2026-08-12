@@ -1,6 +1,28 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
+    pub fn resolve_gap_path(&mut self, id: HirId, span: Span, path: &Path) -> Option<std::rc::Rc<crate::resolved_type::ResolvedGap>> {
+        let absolute = match self.context.resolve_absolute_item_path(&mut *self.resolver, path, &self.module_path) {
+            Ok(absolute) => absolute,
+            Err(error) => {
+                self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
+                return None;
+            }
+        };
+        match self.resolve_item_checked(&absolute, &[], true) {
+            Ok(ResolvedItem::Gap(gap)) => Some(gap),
+            Ok(_) => {
+                self.error(id, span, AnalysisErrorKind::GlueTargetNotGap {
+                    target: absolute.last().cloned().expect("an absolute path has a name"),
+                });
+                None
+            }
+            Err(error) => {
+                self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
     /// What `alias` means as an import in this module, resolved lazily and
     /// memoized by the driver per `(module_path, alias)` pair -- `Ok(None)`
     /// means this module has no `import` statement binding `alias` at all,
@@ -124,6 +146,10 @@ impl<'r> Analyzer<'r> {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None
             }
+            Ok(ResolvedItem::Gap(_)) => {
+                self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
+                None
+            }
             Err(ResolveError::UnknownItem { .. }) if unqualified.is_some() => {
                 let name = unqualified.expect("checked by the guard").clone();
                 // Scope-level candidates first, then this module's own
@@ -146,6 +172,9 @@ impl<'r> Analyzer<'r> {
                 match self.resolve_item_checked(&missing, &[], true) {
                     Ok(ResolvedItem::Type(t)) => self
                         .resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
+                        .map(|(root, r#type)| (root, r#type, false)),
+                    Ok(ResolvedItem::Gap(gap)) => self
+                        .resolve_gap_member(node_id, span, &gap, &absolute[missing.len()..])
                         .map(|(root, r#type)| (root, r#type, false)),
                     _ => {
                         self.error(
@@ -228,6 +257,9 @@ impl<'r> Analyzer<'r> {
         if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.resolve_type_member(node_id, span, &t, &path.tail);
         }
+        if let Some(ImportTarget::Item(_, ResolvedItem::Gap(gap))) = alias {
+            return self.resolve_gap_member(node_id, span, &gap, &path.tail);
+        }
         let absolute: Vec<Ident> = match alias {
             Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => absolute,
             _ => self.module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
@@ -249,6 +281,7 @@ impl<'r> Analyzer<'r> {
             Ok(ResolvedItem::Type(t)) => {
                 return self.resolve_type_member(node_id, span, &t, &path.tail);
             }
+            Ok(ResolvedItem::Gap(gap)) => return self.resolve_gap_member(node_id, span, &gap, &path.tail),
             Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule { name: path.head.clone() },
             // The head names nothing at all -- an unimported module, or a
             // typo of a struct/module that does exist; suggest whichever
@@ -314,6 +347,10 @@ impl<'r> Analyzer<'r> {
                 );
                 None
             }
+            Ok(ResolvedItem::Gap(_)) => {
+                self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
+                None
+            }
             Err(e) => {
                 self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
                 None
@@ -360,6 +397,36 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
+    }
+
+    fn resolve_gap_member(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        gap: &std::rc::Rc<crate::resolved_type::ResolvedGap>,
+        rest: &[Ident],
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        if rest.len() != 1 {
+            self.error(node_id, span, AnalysisErrorKind::NotAModule { name: gap.name.clone() });
+            return None;
+        }
+        let member = &rest[0];
+        let Some((_, function)) = gap.functions.iter().find(|(name, _)| name == member) else {
+            self.error(node_id, span, AnalysisErrorKind::NoSuchStructFunction {
+                r#struct: gap.name.clone(), function: member.clone(),
+                similar: best_match(member, gap.functions.iter().map(|(name, _)| name)),
+            });
+            return None;
+        };
+        let r#type = ResolvedType::Function(function.fn_type.clone());
+        Some((
+            CheckedPlaceRoot::Variable {
+                decl_id: function.decl_id,
+                storage: Storage::Function,
+                r#type: r#type.clone(),
+            },
+            r#type,
+        ))
     }
 
     /// `Type::member` -- resolves `rest` (the path segments after the type's
@@ -438,40 +505,6 @@ impl<'r> Analyzer<'r> {
                     similar_function: best_match(member, e.functions.iter().map(|(name, _)| name)),
                 };
                 (e.name.clone(), method, missing, e.module_path.clone(), e.id)
-            }
-            // `GapSpec::function(...)` -- a `@gap` spec's own qualified
-            // name is callable exactly as if it were a marker's static
-            // function (see `docs/21-gaps-and-glue.md`), resolving directly
-            // against its already-resolved `gap_functions` (eagerly typed
-            // at the spec's own declaration -- see `GapFunction`'s doc
-            // comment -- so there's no `Self`/implementor to wait for the
-            // way an ordinary spec's functions would need). A synthetic
-            // `ResolvedMethod` lets this share every bit of the shared tail
-            // below (visibility, "too many segments", the final
-            // `CheckedPlaceRoot`) with the `Struct`/`Union`/`Enum` arms
-            // above, rather than duplicating it. A *non*-gap spec falls
-            // through to the `other` arm below, completely unchanged --
-            // still the ordinary `StaticAccessOnNonStruct`.
-            ResolvedType::Spec(cell) if cell.borrow().is_gap => {
-                let spec_type = cell.borrow();
-                let method = spec_type.gap_functions.iter().find(|(name, _)| name == member).map(|(_, gap_fn)| {
-                    ResolvedMethod {
-                        decl_id: gap_fn.decl_id,
-                        fn_type: gap_fn.fn_type.clone(),
-                        visibility: spec_type.visibility,
-                        annotations: crate::annotations::ResolvedAnnotations::default(),
-                    }
-                });
-                let similar = match method {
-                    Some(_) => None,
-                    None => best_match(member, spec_type.gap_functions.iter().map(|(name, _)| name)),
-                };
-                let missing = AnalysisErrorKind::NoSuchStructFunction {
-                    r#struct: spec_type.name.clone(),
-                    function: member.clone(),
-                    similar,
-                };
-                (spec_type.name.clone(), method, missing, spec_type.module_path.clone(), spec_type.id)
             }
             // A primitive (or `Slice`/`Str`) has no static members of its
             // own, unless a `for`-attached spec in `core` gave it some (see

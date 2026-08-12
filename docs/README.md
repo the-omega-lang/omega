@@ -77,19 +77,19 @@ New to the codebase — read roughly in this order:
 20. [Zero-sized types (`marker`)](20-marker-types.md) — a data-free
     declaration that can still implement specs, why `struct`/`union` must
     always hold real data, and what's already free vs. newly built.
-21. [Gaps and glue (`@gap`, `@glue`)](21-gaps-and-glue.md) — how
+21. [Gaps and glue](21-gaps-and-glue.md) — how
     `core`/`std` declares a platform-specific capability (a heap
     allocator, first) with no portable implementation of its own, and how
     exactly one project-wide implementation gets wired to it, deferring an
     unfilled gap to the linker rather than whole-program reachability
     analysis.
-22. [`plat`: the default platform `@glue`](22-platform-glue.md) — an
+22. [`plat`: the default platform glue](22-platform-glue.md) — an
     ordinary `--extern` package, not a special one, that fills `core`'s
     gaps; today just a single `libc`-backed heap allocator, with no
     platform-selection mechanism yet.
 23. [The standard library](23-standard-library.md) — `std`'s own data
     structures (`List`, `LinkedList`, `String`, `HashMap`, `HashSet`),
-    built the same way on every platform, on top of `core::glue`'s
+    built the same way on every platform, on top of `core::platform`'s
     allocator gap alone.
 
 ## What this is not

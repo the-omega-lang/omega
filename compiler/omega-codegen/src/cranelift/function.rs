@@ -81,10 +81,10 @@ impl Codegen {
                 // `Disabled` is every ordinary, hand-written `extern`
                 // (annotations are rejected on `extern` at parse time, so
                 // this is the only reachable case for one of those) --
-                // `Glued` is a `@gap` spec's own synthesized required
+                // `Glued` is a `gap` declaration's synthesized required
                 // function (see `CheckedExternDeclaration::mangling`'s doc
                 // comment), which must link against the exact same symbol
-                // its `@glue` implementation forces -- computed the
+                // its `glue` implementation forces -- computed the
                 // identical way, via `mangle::glued_symbol`.
                 let symbol = match &extern_decl.mangling {
                     ManglingMode::Disabled => extern_decl.ident.0.clone(),

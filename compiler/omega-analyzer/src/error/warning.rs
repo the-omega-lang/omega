@@ -76,7 +76,7 @@ impl AnalysisWarning {
                 .with_label(self.span, format!("`{type}` is at least {size} bytes, passed by value"))
                 .with_note("this backend passes structs as flattened scalars, not by reference -- consider a pointer instead"),
             AnalysisWarningKind::UnfilledGap { functions, .. } => d
-                .with_label(self.span, "no '@glue' implements this gap anywhere in this compilation")
+                .with_label(self.span, "no glue implements this gap anywhere in this compilation")
                 .with_note(format!(
                     "missing: {}",
                     functions.iter().map(|f| format!("'{}'", f.as_ref())).collect::<Vec<_>>().join(", ")
@@ -200,7 +200,7 @@ pub enum AnalysisWarningKind {
     /// doc comment for why this is a deliberately approximate lower bound,
     /// not this type's real, `@layout`-aware size.
     LargeStructByValue { r#type: ResolvedType, size: u32 },
-    /// A `@gap` spec with no `@glue` anywhere in this compilation (local or
+    /// A `gap` with no `glue` anywhere in this compilation (local or
     /// `--extern`-visible) implementing it -- deliberately a warning, not an
     /// error (see `docs/21-gaps-and-glue.md`: catching this precisely would
     /// need whole-program reachability analysis through indirect calls,
@@ -266,7 +266,7 @@ impl fmt::Display for AnalysisWarningKind {
             Self::AlwaysTrueFalseComparison { result } => write!(f, "comparison is always {result}"),
             Self::RedundantLayoutAnnotation => write!(f, "redundant '@layout' arguments"),
             Self::LargeStructByValue { r#type, .. } => write!(f, "large type '{type}' passed by value"),
-            Self::UnfilledGap { gap, .. } => write!(f, "gap '{}' has no '@glue' implementation", gap.as_ref()),
+            Self::UnfilledGap { gap, .. } => write!(f, "gap '{}' has no glue implementation", gap.as_ref()),
         }
     }
 }

@@ -5,6 +5,8 @@ pub mod extern_declaration;
 pub mod for_in_stmt;
 pub mod for_stmt;
 pub mod function_definition;
+pub mod gap;
+pub mod glue;
 pub mod import;
 pub mod loop_stmt;
 pub mod macro_definition;
@@ -20,6 +22,7 @@ use crate::ast::statement::{
     declaration::DeclarationStmt, defer::DeferStmt, r#enum::EnumStmt,
     extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
     function_definition::FunctionDefinitionStmt, import::ImportStmt, loop_stmt::LoopStmt,
+    gap::GapStmt, glue::GlueStmt,
     macro_definition::MacroDefinitionStmt, r#return::ReturnStmt, spec::SpecStmt,
     r#struct::StructStmt, union::UnionStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
 };
@@ -53,6 +56,8 @@ pub enum Item {
     /// See `SpecStmt`'s doc comment -- same top-level-only reasoning as
     /// `Struct`/`Enum`/`Union` above.
     Spec(SpecStmt),
+    Gap(GapStmt),
+    Glue(GlueStmt),
     /// `[comp] ident := value;` -- top-level walrus, type always inferred
     /// from `value`. `comp` (see `WalrusStmt::comp`) decides whether this
     /// gets real storage or is substituted everywhere with no storage at

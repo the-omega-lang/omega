@@ -218,6 +218,8 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         // extension-spec walk instead, never by name.
         HirItem::Spec(sp) if sp.target.is_some() => None,
         HirItem::Spec(sp) => Some(sp.name.clone()),
+        HirItem::Gap(gap) => Some(gap.name.clone()),
+        HirItem::Glue(_) => None,
         HirItem::Import(_) => None,
     }
 }
@@ -240,6 +242,8 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
         HirItem::Enum(e) => e.visibility,
         HirItem::Union(u) => u.visibility,
         HirItem::Spec(sp) => sp.visibility,
+        HirItem::Gap(_) => Visibility::Exposed,
+        HirItem::Glue(_) => unreachable!("glues have no name or visibility"),
         HirItem::Import(_) => unreachable!("imports have no item-level visibility and are never looked up by name"),
     }
 }
@@ -257,6 +261,8 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::Enum(e) => (e.id, e.span),
         HirItem::Union(u) => (u.id, u.span),
         HirItem::Spec(sp) => (sp.id, sp.span),
+        HirItem::Gap(gap) => (gap.id, gap.span),
+        HirItem::Glue(glue) => (glue.id, glue.span),
         HirItem::Import(i) => (i.id, i.span),
     }
 }

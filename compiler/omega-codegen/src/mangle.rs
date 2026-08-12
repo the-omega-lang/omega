@@ -142,13 +142,12 @@ pub(crate) fn method_symbol(
     Symbol { path, signature: Some((params, ret)), vendor_suffix: None }
 }
 
-/// A `@glue` method's forced symbol -- the exact same string a `@gap`
-/// spec's own synthesized declaration for `function_name` expects, since
+/// A `glue` function's forced symbol -- the exact same string a `gap`
+/// declaration's synthesized declaration for `function_name` expects, since
 /// both sides call this identically: the gap spec, treated as if it were
 /// an ordinary marker with a static method, is what actually gets linked
 /// against (see `omega_analyzer::annotations::ManglingMode::Glued`'s doc
-/// comment). Gaps are never generic (`@gap` on a generic spec's own
-/// function is rejected at analysis time), so `owner_type_args` is always
+/// comment). Gaps are never generic, so `owner_type_args` is always
 /// empty here.
 pub(crate) fn glued_symbol(spec_module_path: &[Ident], spec_name: &Ident, function_name: &Ident, fn_type: &ResolvedFunctionType) -> String {
     encode(&method_symbol(spec_module_path, spec_name, &[], function_name, fn_type))

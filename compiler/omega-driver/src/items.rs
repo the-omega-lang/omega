@@ -88,6 +88,13 @@ pub(crate) struct CheckedBody {
     pub warnings: Vec<AnalysisWarning>,
 }
 
+pub(crate) struct GlueSignature {
+    pub module: ModulePath,
+    pub id: HirId,
+    pub gap: Rc<omega_analyzer::resolved_type::ResolvedGap>,
+    pub functions: Vec<(HirFunctionDef, ResolvedFunctionType)>,
+}
+
 impl CheckedBody {
     pub fn clone_of(&self) -> Self {
         Self { item: self.item.clone(), warnings: self.warnings.clone() }
@@ -133,7 +140,6 @@ impl TypeCells {
                     suppress: vec![],
                     implemented_specs: vec![],
                     is_marker: false,
-                    is_glue: false,
                 }))
             })
             .clone()
@@ -244,6 +250,8 @@ pub(crate) struct ItemQueries {
     /// is per-process-random.
     resolved: IndexMap<ItemKey, ResolvedEntry>,
     pub cells: TypeCells,
+    pub gaps: HashMap<ItemKey, Rc<omega_analyzer::resolved_type::ResolvedGap>>,
+    pub glues: Vec<GlueSignature>,
     spec_cells: HashMap<SpecKey, Rc<RefCell<ResolvedSpecType>>>,
     /// The `cells` counterpart of `state`, at spec granularity -- spec
     /// declaration bypasses `ensure_item` entirely, so it needs its own guard
@@ -413,21 +421,6 @@ impl ItemQueries {
 
     pub fn spec_cell(&self, key: &SpecKey) -> Option<Rc<RefCell<ResolvedSpecType>>> {
         self.spec_cells.get(key).cloned()
-    }
-
-    /// Every spec this compilation actually resolved -- local or extern,
-    /// `@gap` or not. Used by `Driver::sweep_gaps`'s end-of-compile check.
-    /// A local spec's signature is always resolved regardless of reference
-    /// (`Driver::collect_signatures`'s own eager sweep), and so, now, is
-    /// every registered extern's (`Driver::collect_extern_signatures`) --
-    /// so in practice every declared, non-generic spec anywhere in this
-    /// compilation ends up in here, referenced or not (a gap can never be
-    /// generic at all, see `GapMustNotBeGeneric`, so that's not a carve-out
-    /// for `@gap` specifically). What's *not* eagerly forced is a spec's
-    /// own body -- irrelevant for a spec either way, which declares no
-    /// code of its own (see `check_module_bodies`'s `HirItem::Spec` arm).
-    pub fn spec_cells(&self) -> impl Iterator<Item = (&SpecKey, &Rc<RefCell<ResolvedSpecType>>)> {
-        self.spec_cells.iter()
     }
 
     /// [`Self::state`]'s spec-granular counterpart.
@@ -810,6 +803,16 @@ impl Driver {
                 })
             }
 
+            HirItem::Gap(gap) => {
+                let id = self.items.identity_for(key, gap.id);
+                self.analyze(module, &substitution, (gap.id, gap.span), |a| a.signature_of_gap(gap)).map(|mut gap| {
+                    gap.id = id;
+                    let gap = Rc::new(gap);
+                    self.items.gaps.insert(key.clone(), gap.clone());
+                    ResolvedItem::Gap(gap)
+                })
+            }
+
             // A spec's cell is genuinely args-independent, so its
             // construction is fully delegated (and its own diagnostics
             // recorded) inside `resolve_spec_declaration`. This arm exists
@@ -820,6 +823,7 @@ impl Driver {
                 self.resolve_spec_declaration(&absolute)?.map(|cell| ResolvedItem::Type(ResolvedType::Spec(cell)))
             }
 
+            HirItem::Glue(_) => unreachable!("glues have no item key"),
             HirItem::Import(_) => unreachable!("imports are never indexed into a module's items"),
         };
 
@@ -903,7 +907,7 @@ impl Driver {
             self.items.finish_spec(&key, None);
             return Err(ResolveError::ItemFailed { module: key.0, item: key.1 });
         }
-        let (dependencies, (functions, annotations, gap_functions)) = run.result;
+        let (dependencies, (functions, annotations)) = run.result;
         // See `ResolvedSpecType::is_object_safe`'s doc comment: computed
         // once, here, since `functions`/`dependencies` are both already
         // fully resolved (a dependency's own cell is always `Done` -- and
@@ -921,9 +925,6 @@ impl Driver {
             is_object_safe,
             dependencies,
             functions,
-            gap_functions,
-            span: sp.span,
-            is_gap: annotations.gap,
             suppress: annotations.suppress,
         }));
         self.items.finish_spec(&key, Some(&cell));

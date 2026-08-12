@@ -1,5 +1,5 @@
 use crate::checked::Storage;
-use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType, ResolvedType};
+use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedGap, ResolvedMethod, ResolvedSpecType, ResolvedType};
 use omega_hir::HirId;
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
@@ -16,6 +16,7 @@ use std::rc::Rc;
 pub enum ResolvedItem {
     Type(ResolvedType),
     Value { r#type: ResolvedType, storage: Storage, decl_id: HirId, mutable: bool },
+    Gap(Rc<ResolvedGap>),
 }
 
 /// What an `import` statement's path actually names -- not decidable from
@@ -559,5 +560,4 @@ pub struct GenericStaticFunctionSignature {
     pub function_generics: Vec<Ident>,
     pub params: Vec<Type>,
 }
-
 

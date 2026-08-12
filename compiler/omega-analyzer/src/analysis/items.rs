@@ -18,6 +18,40 @@ impl EnumHeader {
 }
 
 impl<'r> Analyzer<'r> {
+    pub fn signature_of_gap(&mut self, gap: &omega_hir::HirGapDef) -> Option<crate::resolved_type::ResolvedGap> {
+        let mut functions = Vec::with_capacity(gap.functions.len());
+        let mut seen = HashMap::new();
+        let mut ok = true;
+        for function in &gap.functions {
+            if let Some(previous) = seen.insert(function.name.clone(), function.span) {
+                self.error(function.id, function.span, AnalysisErrorKind::Redeclaration {
+                    name: function.name.clone(), previous: Some(previous),
+                });
+                ok = false;
+                continue;
+            }
+            let mut params = Vec::with_capacity(function.params.len());
+            for param in &function.params {
+                let Some(r#type) = self.resolve_type_or_error(param.id, param.span, &param.r#type, true) else {
+                    ok = false;
+                    continue;
+                };
+                params.push((param.ident.clone(), r#type));
+            }
+            let Some(return_type) = self.resolve_return_type_or_error(function.id, function.span, &function.return_type, true) else {
+                ok = false;
+                continue;
+            };
+            functions.push((function.name.clone(), crate::resolved_type::GapFunction {
+                decl_id: function.id,
+                span: function.span,
+                fn_type: ResolvedFunctionType { params, return_type: Box::new(return_type), is_variadic: false, self_mode: None },
+            }));
+        }
+        ok.then_some(crate::resolved_type::ResolvedGap {
+            id: gap.id, name: gap.name.clone(), module_path: self.module_path.clone(), span: gap.span, functions,
+        })
+    }
     pub fn analyze_declaration(&mut self, decl: &HirDeclaration, storage: Storage) -> Option<CheckedDeclaration> {
         // A global's type is never itself embedded inline into another
         // type's layout (it isn't a struct field), so it can never be part
@@ -569,7 +603,6 @@ impl<'r> Analyzer<'r> {
         implements: &[Type],
         method_ids: &[HirId],
         self_type: &ResolvedType,
-        glue: bool,
     ) -> Option<SpecMethods> {
         self.context.enter_scope();
         // A struct/enum/union method never yet supports `spec T` return-type
@@ -585,7 +618,7 @@ impl<'r> Analyzer<'r> {
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
 
-        let mut own: Vec<(Ident, ResolvedMethod)> = functions
+        let own: Vec<(Ident, ResolvedMethod)> = functions
             .iter()
             .zip(signatures)
             .zip(method_ids)
@@ -595,33 +628,7 @@ impl<'r> Analyzer<'r> {
             .collect();
 
         let (from_specs, pending, implemented_specs) =
-            self.resolve_implements_clause(owner.0, owner.1, name, implements, &own, self_type, glue);
-
-        // `@glue`'s actual wiring: for every gap this marker implements,
-        // any of its *own* methods matching one of that gap's own function
-        // names (by name -- the signature match was already verified by
-        // ordinary spec conformance, above) gets its mangled symbol forced
-        // to match the gap's own expected one (`ManglingMode::Glued`). Only
-        // `own` is ever eligible -- a method inherited from a spec default
-        // is compiled once, in the gap's own declaring module, never
-        // per-glue (see `docs/21-gaps-and-glue.md`).
-        if glue {
-            for (spec, _) in &implemented_specs {
-                let spec = spec.borrow();
-                if !spec.is_gap {
-                    continue;
-                }
-                for (fn_name, _) in &spec.functions {
-                    if let Some((_, method)) = own.iter_mut().find(|(name, _)| name == fn_name) {
-                        method.annotations.mangling = crate::annotations::ManglingMode::Glued {
-                            spec_module_path: spec.module_path.clone(),
-                            spec_name: spec.name.clone(),
-                            function_name: fn_name.clone(),
-                        };
-                    }
-                }
-            }
-        }
+            self.resolve_implements_clause(owner.0, owner.1, name, implements, &own, self_type);
 
         let mut all = own;
         all.extend(from_specs);
@@ -640,23 +647,6 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().layout = annotations.layout;
         cell.borrow_mut().suppress = annotations.suppress;
         cell.borrow_mut().is_marker = s.is_marker;
-        cell.borrow_mut().is_glue = annotations.glue;
-        // `@glue`'s "must be a marker" restriction can't be expressed as an
-        // ordinary `ItemKind` applicability check (`@glue` still applies to
-        // `ItemKind::Struct` as a whole -- see `ItemKind::Spec`'s doc
-        // comment for why) -- checked here instead, right where `is_marker`
-        // is already known, the same way `ZeroSizedAggregate`'s own marker
-        // exemption is a few lines down.
-        if annotations.glue && !s.generics.is_empty() {
-            // Same reasoning as `GapMustNotBeGeneric`: `ManglingMode::Glued`
-            // forces every matching method onto one fixed symbol, computed
-            // from the *gap's* identity alone -- every instantiation of a
-            // generic glue marker would collide on that identical symbol.
-            self.error(s.id, s.span, AnalysisErrorKind::GlueMustNotBeGeneric);
-        }
-        if annotations.glue && !s.is_marker {
-            self.error(s.id, s.span, AnalysisErrorKind::GlueOnNonMarker);
-        }
 
         cell.borrow_mut().fields = self.resolve_declared_fields(&s.fields)?;
 
@@ -679,7 +669,6 @@ impl<'r> Analyzer<'r> {
             &s.implements,
             method_ids,
             &self_type,
-            annotations.glue,
         )?;
         cell.borrow_mut().functions = functions;
         cell.borrow_mut().implemented_specs = implemented_specs;
@@ -715,7 +704,6 @@ impl<'r> Analyzer<'r> {
             &u.implements,
             method_ids,
             &self_type,
-            false, // `@glue` only applies to markers -- see `ItemKind::Spec`'s doc comment.
         )?;
         cell.borrow_mut().functions = functions;
         cell.borrow_mut().implemented_specs = implemented_specs;
@@ -1058,7 +1046,6 @@ impl<'r> Analyzer<'r> {
             &e.implements,
             method_ids,
             &self_type,
-            false, // `@glue` only applies to markers -- see `ItemKind::Spec`'s doc comment.
         )?;
         cell.borrow_mut().functions = functions;
         cell.borrow_mut().implemented_specs = implemented_specs;

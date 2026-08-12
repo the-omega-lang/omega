@@ -1,5 +1,5 @@
 # `std::alloc` -- a thin, deliberately *non-generic* wrapper around
-# `core::glue::GlobalAllocator`, used by every generic collection in this
+# `core::platform::GlobalAllocator`, used by every generic collection in this
 # package instead of calling the gap directly from their own generic
 # methods.
 #

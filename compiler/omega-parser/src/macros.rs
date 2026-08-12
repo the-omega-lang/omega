@@ -353,6 +353,15 @@ fn expand_item_list(
                 item: Item::Spec(expand_spec_def(sp, defs, budget)?),
                 span: node.span,
             }),
+            Item::Gap(gap) => result.push(ItemNode { item: Item::Gap(gap), span: node.span }),
+            Item::Glue(mut glue) => {
+                glue.functions = glue
+                    .functions
+                    .into_iter()
+                    .map(|f| expand_function_def(f, defs, budget))
+                    .collect::<Result<_, _>>()?;
+                result.push(ItemNode { item: Item::Glue(glue), span: node.span });
+            }
             other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
                 result.push(ItemNode {
                     item: other,

@@ -412,12 +412,13 @@ impl ModuleResolver for Driver {
                 HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) | HirItem::Spec(_) => {
                     namespace == ItemNamespace::Type
                 }
+                HirItem::Gap(_) => namespace == ItemNamespace::Value,
                 HirItem::FunctionDefinition(_)
                 | HirItem::Declaration(_)
                 | HirItem::DeclarationWithInit(..)
                 | HirItem::Walrus(_)
                 | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
-                HirItem::Import(_) => false,
+                HirItem::Glue(_) | HirItem::Import(_) => false,
             })
             .map(|(name, _)| name);
         best_match(target, candidates)

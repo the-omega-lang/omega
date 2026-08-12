@@ -449,7 +449,7 @@ impl Context {
                     };
                     match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
                         Ok(ResolvedItem::Type(t)) => t,
-                        Ok(ResolvedItem::Value { .. }) => return Err(TypeResolutionError::NotAType(absolute)),
+                        Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => return Err(TypeResolutionError::NotAType(absolute)),
                         // The implicit own-module fallback missing isn't
                         // a module problem from the user's point of
                         // view -- they wrote a bare type name that
@@ -472,7 +472,7 @@ impl Context {
                                 Ok(Some(ambient_absolute)) => {
                                     match resolver.resolve_item(module_path, &ambient_absolute, &[], indirect, bypass) {
                                         Ok(ResolvedItem::Type(t)) => t,
-                                        Ok(ResolvedItem::Value { .. }) => {
+                                        Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                                             return Err(TypeResolutionError::NotAType(ambient_absolute));
                                         }
                                         Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
@@ -504,7 +504,7 @@ impl Context {
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
-                    ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                    ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => return Err(TypeResolutionError::NotAType(absolute)),
                 }
             }
         
@@ -549,7 +549,7 @@ impl Context {
             };
             match result.map_err(TypeResolutionError::ModuleResolution)? {
                 ResolvedItem::Type(t) => t,
-                ResolvedItem::Value { .. } => return Err(TypeResolutionError::NotAType(absolute)),
+                ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => return Err(TypeResolutionError::NotAType(absolute)),
             }
 
         };
@@ -718,4 +718,3 @@ impl Context {
             .expect("BAD: Context does not have a scope. This should NEVER happen.")
     }
 }
-

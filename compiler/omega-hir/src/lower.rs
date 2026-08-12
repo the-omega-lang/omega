@@ -4,7 +4,7 @@ use crate::hir::{
     HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFor, HirForIn,
     HirFunctionCall, HirFunctionDef, HirGenericParam, HirIf, HirImport, HirItem, HirLoop, HirMatch,
     HirMatchArm, HirModule, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection, HirRange,
-    HirSlice, HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirStructLiteral,
+    HirSlice, HirSpecDef, HirSpecFunction, HirGapDef, HirGapFunction, HirGlueDef, HirStmt, HirStructDef, HirStructLiteral,
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
@@ -64,6 +64,18 @@ impl Lowerer {
             Item::Enum(e) => HirItem::Enum(self.lower_enum_def(e, node.span)),
             Item::Union(u) => HirItem::Union(self.lower_union_def(u, node.span)),
             Item::Spec(sp) => HirItem::Spec(self.lower_spec_def(sp, node.span)),
+            Item::Gap(gap) => HirItem::Gap(HirGapDef {
+                id: self.ids.next(), span: node.span, name: gap.ident.clone(),
+                functions: gap.functions.iter().map(|f| HirGapFunction {
+                    id: self.ids.next(), span: node.span, name: f.ident.clone(),
+                    params: f.params.iter().map(|p| self.lower_param(p, node.span)).collect(),
+                    return_type: f.return_type.clone(),
+                }).collect(),
+            }),
+            Item::Glue(glue) => HirItem::Glue(HirGlueDef {
+                id: self.ids.next(), span: node.span, gap: glue.gap.clone(),
+                functions: glue.functions.iter().map(|f| self.lower_function_def(f, node.span, false)).collect(),
+            }),
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,

@@ -17,8 +17,11 @@ silently reporting a truncation.
 The only platform-specific contract is three independent gaps:
 `StandardOutput::write`, `StandardError::write`, and `StandardInput::read`.
 They use an out-count and `bool`, so targets can implement only the console
-capabilities they possess. The hosted libc package implements them with
-`write(2)` and `read(2)`.
+capabilities they possess. The hosted libc package fills each one with its own
+`glue` block, implemented with `write(2)` and `read(2)`. `StandardOutput` and
+`StandardError` deliberately declare the *same* `write` signature: a `glue`
+block has no type of its own, so two identically named functions in separate
+blocks never collide — see [gaps-and-glue.md](21-gaps-and-glue.md).
 
 ## Formatting and printing
 
@@ -71,9 +74,7 @@ literals that remain are the two that genuinely demonstrate byte slices
 
 There is no implicit flush at program exit. A caller-owned buffered writer
 must be flushed. Macro bodies resolve nested macro calls at the invocation
-site. The libc glue uses separate markers for stdout and stderr because
-current glue lowering cannot export two identical `write` methods from one
-marker.
+site.
 
 A user-defined type implements `Display` through ordinary spec conformance,
 `struct Pair : Display { exposed fmt(*self, out: *mut Writer) => void { ... } }`

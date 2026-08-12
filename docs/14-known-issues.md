@@ -82,26 +82,37 @@ new one is found.
 
 ## Gaps and glue
 
-- **No default-bodied `@gap` function** — every gap function must
+- **No default-bodied `gap` function** — every gap function must
   currently be a bare requirement; a body is rejected outright
-  (`GapFunctionBodyNotYetSupported`). [gaps-and-glue.md](21-gaps-and-glue.md)
-- **No generic gap convenience overloads** (e.g. `alloc<T>()` alongside
-  `alloc(size: usize)`) — blocked on the pre-existing overload-pipeline
-  bug just above, not specific to gaps.
-  [gaps-and-glue.md](21-gaps-and-glue.md)
-- **No "override" or test-only glue concept** — a second `@glue` for the
+  ([gaps-and-glue.md](21-gaps-and-glue.md)).
+- **No "override" or test-only glue concept** — a second `glue` for the
   same gap is always a hard error project-wide, with no way to shadow one
   intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
-- **One `@glue` marker cannot implement two gaps that share a function
-  name.** Glue lowering exports one symbol per marker method, so a marker
-  implementing both `StandardOutput` and `StandardError` — whose required
-  function is `write` in both — can only carry one `write` body and silently
-  loses a gap symbol. `plat`'s `libc` platform works around it with one
-  marker per stream (`LibcStandardOutput`/`LibcStandardError`/
-  `LibcStandardInput`). This constrains gap naming project-wide: two gaps a
-  single platform is likely to implement together must not share a function
-  name. [gaps-and-glue.md](21-gaps-and-glue.md),
-  [platform-glue.md](22-platform-glue.md)
+- **`MultipleGluesForGap` cannot point at the conflicting glue blocks.**
+  The error is anchored at the *gap*'s declaration (correctly — neither
+  glue is more at fault), and names each conflicting glue as
+  `<module path>#<internal HirId>`, e.g. `plat#1, other#1`. Within a single
+  module that degrades to `t#3, t#7`, which names nothing a reader can act
+  on. The real fix is a secondary diagnostic label at each glue's own span,
+  and those spans are in *different files* from the primary — the renderer
+  only supports same-file secondary labels today (`Redeclaration`'s
+  `previous: Option<Span>` is the only precedent). Resolving it means
+  either cross-file labels in `omega-diagnostics`, or having
+  `Driver::sweep_gaps` emit one additional `CompileError::Analysis` per
+  glue site in that glue's own module. Left alone because the choice
+  between those is a diagnostics-subsystem design decision, not a local fix.
+- **`@suppress(unfilled_gap)` is unreachable.** Every warning's rendering
+  ends with the generic "suppress this with `@suppress(<slug>)`" note, so
+  `UnfilledGap` advertises it — but `gap` is a first-class declaration that
+  takes no annotations at all, so following the advice is now a hard parse
+  error. It never worked before either: `Driver::sweep_gaps` constructs the
+  warning directly rather than going through `Analyzer::warn`, which is the
+  only thing that consults `@suppress`. Fixing it means either giving
+  `HirGapDef` an annotation list (which the gap/glue plan deliberately
+  avoided, to keep anything downstream from branching on gap-level
+  metadata) or teaching the whole-program sweeps to honour suppression and
+  suppressing the note when a warning kind has no suppressible anchor.
+  [gaps-and-glue.md](21-gaps-and-glue.md)
 
 ## Visibility
 

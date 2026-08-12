@@ -1,4 +1,4 @@
-# `plat`: the default platform `@glue`
+# `plat`: the default platform glue
 
 `runtime/plat/` — a plain directory, not a package itself. Each
 subdirectory under it is its own independent, standalone-compilable
@@ -10,7 +10,7 @@ identity can differ from its on-disk name. Unlike `core`
 ([the core library](13-core-library.md)), `plat` gets no ambient-prelude
 treatment, no `for`-block privilege, and no eager-discovery exemption of
 its own; it's just an ordinary `--extern` package that happens to ship
-`@glue` implementations for `core`'s own gaps (see
+`glue` implementations for `core`'s own gaps (see
 [gaps and glue](21-gaps-and-glue.md)). Any consumer that registers it gets
 its glue discovered automatically, whether or not it ever `import`s `plat`
 itself — the same eager, whole-program struct/spec surface resolution
@@ -27,7 +27,7 @@ runtime/plat/
 
 `libc.omg` declares everything this platform needs directly: three
 `internal extern` bindings to libc's own `malloc`/`free`/`realloc`, and
-the one `@glue` marker that adapts them to `core::glue::GlobalAllocator`.
+the `glue` declaration that adapts them to `core::platform::GlobalAllocator`.
 A deliberate, real name collision lives here — the marker's own
 `free`/`realloc` methods share their literal names with the raw externs
 they call — confirmed safe rather than assumed: a bare call inside a
@@ -79,8 +79,8 @@ just the one platform that exists right now, at its own honest path.
 
 ## API surface
 
-- **`LibcAllocator`** — the one `@glue` `plat`'s `libc` platform ships:
-  implements `core::glue::GlobalAllocator` by forwarding straight to
+- **Allocator glue** — the `glue` `plat`'s `libc` platform ships implements
+  `core::platform::GlobalAllocator` by forwarding straight to
   libc's own `malloc`/`free`/`realloc`. No page-level allocation, no
   alignment beyond whatever libc's `malloc` already guarantees, and no
   error handling beyond a straight pass-through — the gap's own signature
@@ -103,5 +103,4 @@ link `target/plat.o` alongside `core.o`/`mathlib.o`, even though
 prelude with no `plat` reference of any kind).
 
 The libc platform adds console glue using `write(2)` for stdout/stderr and
-`read(2)` for stdin. Stdout and stderr use separate markers because current
-glue lowering cannot export two identical `write` methods from one marker.
+`read(2)` for stdin. Each target gap has its own glue declaration.
