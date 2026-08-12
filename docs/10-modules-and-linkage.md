@@ -182,6 +182,18 @@ in any package are admitted by the target-or-spec-local orphan rule. Imports
 still control which spec names can be written at a declaration or qualified
 call site.
 
+A compose's method bodies are compiled into the **composing** package's own
+object file, with ordinary linkage — not into the consumer's, and not into
+the package that declares the target type. The symbol nests the target under
+the spec (`<target>::<Spec>::<method>`), so two packages may attach
+same-named methods to one foreign type without colliding: `alpha` declaring
+`Foo`, `beta` composing `Foo : SpecB`, and an application composing
+`Foo : SpecC` produce `alpha::Foo::SpecB::m` in `beta.o` and
+`alpha::Foo::SpecC::m` in the application's own object, with the application
+carrying an ordinary undefined reference to the first. This replaces the old
+`for`-attached model, where extension methods were emitted with weak linkage
+into whichever translation unit happened to *use* them.
+
 ## `core` as an ambient prelude
 
 `core` is not an ordinary `--extern` (or, when it's the package actually

@@ -73,7 +73,7 @@ Same `name = value;` struct-literal grammar reused verbatim for a variant's
 body (dynamic fields first, then that variant's own body fields) — no
 separate construction syntax was invented for shared dynamic fields.
 
-## Refinement, narrowing, and sum-type subtyping
+## Refinement and narrowing
 
 `ResolvedType::Enum { cell, variant: Option<usize> }` — a value can be
 *statically refined* to a specific variant, and Omega tracks this two ways:
@@ -83,15 +83,37 @@ separate construction syntax was invented for shared dynamic fields.
   — `&s` stays refined (`accepts` forbids ever assigning a *different*
   variant into a permanently-refined binding, so the pointee can't change
   shape underneath a live pointer), letting it flow directly anywhere a
-  `*MyEnumWithBodies::Second`-specific pointer is expected. This is real
-  sum-type subtyping through proofs, not just a convenience: no `match` is
-  needed once the proof already happened at construction.
+  `*MyEnumWithBodies::Second`-specific pointer is expected. This is a real
+  proof carried in the type, not just a convenience: no `match` is needed
+  once the proof already happened at construction.
 - **Match narrowing**: proving a variant via `match` re-declares a
   bare-identifier scrutinee in a fresh inner scope with the refined type —
   ordinary scope-shadowing, not a separate mechanism. Only a bare
   identifier narrows; a field access, deref, or computed expression still
   matches/branches correctly but isn't narrowed (and is evaluated exactly
   once into a synthesized local, so side effects don't re-run per arm).
+
+**A refinement is a proof, not a separate type.** Both mechanisms above put
+the same thing into the type: the compiler's own proof that this value is
+that variant, obtained either at construction or from a `match`. What the
+proof buys is direct access to the variant's body fields with no further
+`match`, and the ability to pass the value where a parameter is declared at
+that variant type (`area(c: MyEnum::First)`) — so a variant's payload shape
+is nameable without re-declaring it as a separate struct.
+
+What it deliberately is *not* is a full type. A refined type has no method
+table of its own and does not conform to specs independently of its parent,
+so everything asking "which behaviour does this value have" widens to the
+enum first. Inherent methods already do (`find_methods` reads the enum
+cell's own `functions`, ignoring `variant` entirely), and so does
+`&mut`/`mut self`, below. `compose` conformance is likewise a property of
+the enum, never of one variant: there is deliberately no
+`compose MyEnum::Variant : Spec`, because a value whose variant is *not*
+statically known would then have no determinable vtable, and one value would
+answer differently depending on whether it had passed through `spec *T`
+erasure. Per-variant behaviour is written as a `match` inside the enum's one
+compose. (Compose lookup does not currently widen — see
+[known-issues.md](14-known-issues.md)'s composition section.)
 
 `&` (immutable) preserves refinement for a *permanent* binding but erases
 it for a match-arm shadow (whose refinement is only true for that lexical

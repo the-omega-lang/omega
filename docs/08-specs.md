@@ -74,11 +74,24 @@ required function is `MissingSpecFunction`, and an extra function is
 and a spec default supplies an omitted method with a body. A compose method
 has no visibility modifier; it inherits the requirement's visibility.
 
-Composition is nominal and non-blanket. The target must be a concrete type;
-generic composition may pattern-match a declared generic target such as
-`compose<T> List<T> : ToIterator<T>`. The declaration is legal when either
+Composition is nominal and non-blanket. The declaration is legal when either
 the target type or the spec belongs to the current package. A second compose
 for the same `(target, spec, spec arguments)` is rejected.
+
+The target must be a **named** type — a struct, enum, union, marker, `str`,
+or a primitive scalar — optionally a generic one pattern-matched through the
+compose's own parameters (`compose<T> List<T> : ToIterator<T>`). A spec alias
+works as the composed spec (`compose Foo : AB`, where `spec AB = A | B`), and
+composing a dependent spec satisfies its dependencies too (`compose Foo :
+Derived` supplies `Base`'s requirements as well).
+
+Slice and pointer targets are **not** currently composable in any form —
+neither `compose [?]u8 : Eq` nor `compose<T> [?]T : Eq` works, and the two
+fail differently and unhelpfully. See
+[known-issues.md](14-known-issues.md)'s composition section; this is a real
+hole, not a design decision, and it is why `[?]T` has inherent methods
+(`core::slices`' `primitive<T> [?]T`) but no spec conformance at all, while
+`str` has both.
 
 Composed instance methods do not become globally callable as ordinary
 inherent methods. They are available through a generic bound (`T: Animal`),

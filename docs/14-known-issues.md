@@ -144,6 +144,159 @@ new one is found.
   written against `Display`. Deciding whether the bodies belong in the
   `compose` blocks instead is a migration, not a compiler change.
 
+- **The compose/primitive registry keys on `ResolvedType` equality, which is
+  finer than the identity that decides a type's method table.** This is the
+  general statement of the two entries that follow; both are instances, and a
+  fix should target the general form rather than either symptom.
+
+  A `ResolvedType` carries refinements that are *not* part of "which
+  behaviour does this type have": an enum's `variant`, and pointer/slice/`str`
+  mutability. Every existing method-lookup path already erases them —
+  `find_methods`' enum arm reads the cell's own `functions` ignoring
+  `variant`, and `adapt_self_argument` re-stamps mutability to whatever the
+  self-mode declares. But `Driver::compose_for`, `composes_for_type`, and
+  `primitive_methods` all select with `entry.target == *target`, i.e.
+  `ResolvedType`'s derived structural equality, which distinguishes exactly
+  those refinements.
+
+  The fix is a canonical **lookup key** — widen enum variants, drop
+  mutability — applied on entry to all three, rather than teaching each
+  caller to normalize. Deliberately *not* "route lookup through the subtyping
+  relation": coercion semantics do not belong in a registry probe, and the
+  two refinements are not coercions of the same kind.
+
+- **A variant-narrowed enum never finds its own compose.** `enum Color { Red,
+  Green }` with `compose Color : Show`, then `c := Color::Red; Show::show(&c)`
+  fails with `'Color::Red' does not implement spec 'Show' (missing: show)`.
+  Binding the same value from a function returning `Color` works, and so does
+  reaching it through a generic bound (`use_it<T: Show>(&c)`) — only the
+  spec-qualified call on a refined value fails.
+
+  The sharpest form: on one binding `abc : Shape::Circle`, field access
+  (`abc.r`) works, an **inherent** method (`abc.tell()`) works, and a
+  **composed** method (`Show::show(&abc)`) does not. Same value, same
+  refinement, two lookup paths disagreeing — so this is an inconsistency
+  between two implementations of one concept, not an open question about
+  variant subtyping.
+
+  `Color::Red` has type `ResolvedType::Enum { variant: Some(0) }`; the compose
+  was registered under `variant: None`, and the derived equality compares the
+  field. A **regression**: the old model read `implemented_specs` straight off
+  the enum's cell, where `variant` could not participate.
+
+  **Settled, not a design decision**: conformance belongs to the enum, so the
+  answer is always to widen. A refinement is a *proof* carried in the type —
+  real, and load-bearing for field access and variant-typed parameters — but
+  not a separate identity with a method table of its own. See
+  [enums](05-enums-and-pattern-matching.md)'s refinement section, which also
+  records why per-variant conformance is not wanted (an unrefined value would
+  have no determinable vtable). `ResolvedType::widened()` already collapses
+  `Some(_) -> None` and is already called by `adapt_self_argument` for this
+  exact reason. Match-narrowed bindings (`declare_narrowed_binding`) reach the
+  same shape, so this is not limited to a literal variant path.
+
+- **Calling any `primitive<T> [?]T` method on a *mutable* slice panics the
+  compiler.** `mut a: [4]u8; rw := &mut a[0..]; rw.is_empty()` aborts with
+  cranelift's `DuplicateDefinition` on
+  `_omg_NvNtC4main6*[?]u88is_emptyShEb`. The immutable form (`&a[0..]`) is
+  fine, and the trigger is the receiver's mutability, not the method — `get`
+  fails identically. In effect **`core::slices` is unusable on mutable
+  slices**, which is ordinary code; no test covers it, and `just test-io`
+  passes because `examples/io_demo` only ever passes mutable slices as
+  arguments, never uses one as a method receiver.
+
+  Mechanism: `match_primitive_target` destructures `ResolvedType::Slice
+  { item, .. }`, ignoring mutability, so it matches a mutable slice and
+  instantiates the template with the mutable target; but `primitive_methods`'
+  cache probe and `instantiate_primitive`'s duplicate check both compare
+  `entry.target == target` *including* mutability. Meanwhile
+  `adapt_self_argument` re-stamps `*self` to the self-mode's own mutability.
+  So one element type yields two entries that share every method `decl_id`
+  (inherited from the template's HIR) and collapse onto one symbol at
+  emission. Same "two instantiations, one `decl_id`" root cause as the
+  generic-target compose collision below, but reachable without writing a
+  single `compose`.
+
+- **Symbols for primitive and compose methods on unnamed targets embed raw
+  type renderings.** `omega-codegen/src/mangle.rs`'s target path falls back to
+  `ManglePath::Root(target.to_string())` when the target has no declared name,
+  so `ResolvedType`'s `Display` output goes straight into the symbol:
+  `core::strings`' slice/`str` methods ship today as
+  `_omg_NvNtNtC4core7strings4*str8is_emptyTEb`, whose path segment is
+  literally `*str`, and the slice forms render `*[?]u8` and — containing a
+  **space** — `*mut [?]u8`.
+
+  The byte-length prefixes are correct, so these parse, but they leave the
+  `[A-Za-z0-9_]` set that the rest of the scheme deliberately stays inside:
+  `vtable_symbol`'s own doc comment explains that RFC 2603's
+  `<vendor-specific-suffix>` production is *not* used precisely because
+  arbitrary bytes in compiler-emitted symbols are a cross-platform
+  portability problem. A space in a symbol name is exactly that problem, and
+  `omg_demangle` cannot round-trip these. The fix is a real encoding for
+  structural targets — the same `MangleType` grammar `mangle_type` already
+  produces for every other position — rather than a `Display` fallback.
+
+- **Slice and pointer compose/primitive targets are unreachable, in two
+  different ways.** The contextual-keyword dispatch in
+  `omega-parser/src/parser/item.rs` recognizes `compose`/`primitive` only when
+  the next token is `Ident` or `<`, but `parse_compose_def`/
+  `parse_primitive_def` both call the full `parse_type`. So the grammar those
+  functions implement is strictly wider than anything the dispatcher can route
+  to them:
+
+  - `compose [?]u8 : Eq`, `compose *Foo : Eq`, `primitive [?]u8 { }` are not
+    recognized as declarations at all. They fall through to the top-level
+    binding path and report `expected ':', found '['`, which names nothing a
+    reader can act on.
+  - `compose<T> [?]T : Eq` and `compose<T> *T : Eq` *are* recognized (they
+    start with `<`) and pass `blanket_parameter` (`T` does occur in the
+    target), so they register as templates — but `match_compose_target` only
+    handles `Type::Generic`, so no target can ever bind them. They are
+    **silently dropped**, and the only diagnostic anyone sees is
+    `SpecNotImplemented` at an unrelated use site. This is precisely the
+    failure mode `collect_compose_signatures`' own comment says the
+    `BlanketComposeNotYetSupported` error exists to prevent.
+
+  Net effect: **a slice type can never conform to any spec.** `[?]T` can carry
+  inherent methods (`primitive_target_allowed` explicitly permits `Slice`, and
+  `core::slices` uses it) but can never be `Eq`, `Display`, or iterable, while
+  `str` — the other fat pointer, treated identically by `adapt_self_argument`
+  and by `primitive_target_allowed` — is fully composable
+  (`core::strings`' `compose str : Eq {}`). Fixing this means widening the
+  lookahead and teaching `match_compose_target` the non-`Generic` shapes, or
+  deciding these targets are out of scope and rejecting all four spellings
+  with one honest diagnostic. [specs.md](08-specs.md)
+
+- **An extra *overload* of a required name in a compose block is silently
+  dropped, and its body is never checked.** `Analyzer::check_compose_block`'s
+  extra-function guard tests `!requirement_names.contains(&function.name)` —
+  the name alone. A compose supplying both `show(*self) => i32` (the
+  requirement) and `show(*self, k: i32) => i32` (not a requirement) is
+  accepted with no `ComposeExtraFunction`, emits no symbol for the second, and
+  **does not type-check its body**: `show(*self, k: i32) => i32 { "not an
+  int" }` compiles clean. A differently-*named* extra is correctly rejected,
+  so this is specifically the overload case. The guard needs to match on
+  `(name, signature)`, the same pairing the requirement matching just above it
+  already uses.
+
+- **A `hidden` inherent method becomes publicly callable through an exposed
+  compose, with nothing at its declaration to say so.** When a compose block
+  omits a requirement, `check_compose_block` satisfies it from the target's
+  inherent methods and overwrites the method's visibility with the
+  requirement's (`method.visibility = requirement.visibility`). So a `hidden`
+  method — per [visibility.md](07-visibility.md), callable only from its own
+  type's method bodies — paired with `compose Foo : ExposedSpec {}` becomes
+  reachable from any package as `ExposedSpec::method(&foo)`.
+
+  Arguably intended (composing with an exposed spec is a deliberate act of
+  exposure), but it is the unexamined interaction of two decisions made
+  separately: the inherent fallback, and dropping per-method visibility on
+  compose functions. The latter deleted `SpecMethodTooHidden`, whose entire
+  job was "an implementor can never narrow a spec's contract"; the opposite
+  direction — a spec silently *widening* an implementor's own declared
+  visibility — is now unguarded, and is invisible at the method's declaration
+  site. Worth an explicit decision either way. [visibility.md](07-visibility.md)
+
 - **`ComposeTargetNotAType` is defined but never constructed**
   (`omega-analyzer/src/error/kind.rs`), with a rendered label and message
   that no input can reach.
