@@ -118,6 +118,10 @@ fn parse_path(bytes: &[u8], pos: &mut usize) -> Option<ManglePath> {
             *pos += 1;
             Some(ManglePath::Generic(Box::new(parent), args))
         }
+        TAG_TYPE_PATH => {
+            *pos += 1;
+            Some(ManglePath::Type(Box::new(parse_type(bytes, pos)?)))
+        }
         _ => None,
     }
 }
@@ -242,6 +246,7 @@ fn render_path(path: &ManglePath) -> String {
             let rendered_args: Vec<String> = args.iter().map(render_type).collect();
             format!("{}<{}>", render_path(parent), rendered_args.join(", "))
         }
+        ManglePath::Type(ty) => render_type(ty),
     }
 }
 

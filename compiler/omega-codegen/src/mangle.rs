@@ -239,7 +239,7 @@ pub(crate) fn compose_method_symbol(
 ) -> Symbol {
     let target_path = match mangle_type(target) {
         MangleType::Named(path, _) => path,
-        _ => ManglePath::Root(target.to_string()),
+        target => ManglePath::Type(Box::new(target)),
     };
     let spec = ManglePath::Nested(
         Box::new(target_path),

@@ -66,6 +66,109 @@ new one is found.
 
 ## Composition (`compose` / `primitive`)
 
+### Found by review of the composition/spec structural repair
+
+These are new, and were introduced (or left half-done) by the dependency-closure
+and target-model work. None is a safe local patch; each needs a design decision.
+
+- **A spec *alias* bound is no longer satisfiable through its members'
+  composes.** `spec MySpec = Dummy | Mammal` with `compose Wolf : Mammal`
+  (where `Mammal : Animal, Dummy`) now fails with `'Wolf' does not implement
+  spec 'MySpec'`, listing every requirement as missing.
+  `examples/dev/main.omg:1183` reproduces it, and `just run-exec` cannot
+  build because of it.
+
+  Mechanism: dependency-closure registration
+  (`Driver::register_derived_composes` →
+  `Analyzer::compose_dependency_closure`) walks *downward* — `compose T : S`
+  registers derived entries for everything in `S`'s `dependencies` closure.
+  An alias needs the *upward* direction: `MySpec` has no compose entry of its
+  own, and `type_implements_spec`'s `Ok(None)` arm now returns "all
+  requirements missing" instead of the signature search that used to cover
+  this. Resolving it means deciding whether an alias (or any dependency-only
+  spec) can have its conformance *synthesized* from its members' entries at
+  lookup time, and where that synthesis lives — a registry-model decision,
+  not a local fix. [specs.md](08-specs.md)
+
+- **A derived entry silently shadows a later directly-declared compose for
+  the same spec.** `compose Foo : Derived` (where `Derived : Base`) followed
+  by `compose Foo : Base { b(*self) => i32 { 99 } }` reports no
+  `DuplicateCompose`: `Driver::reject_duplicate_compose` skips derived
+  entries, so the direct `Base` compose registers as a *second* entry for
+  `(Foo, Base)`. `compose_for` takes the first match, which is the derived
+  one, so `Base::b(&foo)` calls the `Derived` block's body while the
+  explicitly written one is compiled, emitted, and never reached. Either the
+  second declaration must be `DuplicateCompose` (a type conforming twice) or
+  a direct entry must displace a derived one; both are semantic decisions.
+
+- **`compose_dependency_closure` matches methods by exact
+  `ResolvedFunctionType` equality**, not `fn_satisfies_requirement`, so a
+  derived entry can be registered with *fewer* methods than the dependency
+  requires. `spec Seq<T> : ToIterator<T>` composed with a concrete
+  `to_iterator(*self) => It` (the normal spelling — `ToIterator`'s
+  requirement carries a `spec Iterator<T>` return *bound*, never an exact
+  type) registers a `ToIterator<u8>` entry with an empty method list. The
+  visible symptom is a nonsense diagnostic (`method 'to_iterator' comes from
+  spec 'Seq' but is not in this bound context`); the latent one is
+  `type_implements_spec` returning a slot list shorter than the spec's
+  requirements, since it maps the entry's `methods` straight to vtable slots
+  with no arity check against `flatten_spec`. Not fixed here because the
+  closure needs the requirement's `return_type_bound` — the same input
+  `check_compose_block` uses — and threading it through changes what a
+  derived entry *is*.
+
+- **Slice compose targets parse, register, and mangle, but no call can ever
+  reach one.** `compose [?]u8 : Eq { equals(*self, ...) }` compiles, yet a
+  spec-qualified call reports `expected '**[?]u8' ... found '*[?]u8'` and a
+  bound-driven call (`f<T: Eq>(x: T)`) aborts in the cranelift verifier
+  (`mismatched argument count for call_indirect`).
+
+  Mechanism: `instantiate_primitive` re-shapes `Self` for a `[?]T` target
+  (`ResolvedType::Slice` → `ResolvedType::Array`) precisely so
+  `Context::resolve_pointer_type` collapses `*self` to the fat pointer;
+  `instantiate_compose` binds `Self` to the `Slice` directly, so `*self`
+  becomes `Pointer{Slice}`. Copying the primitive's re-shape is *not*
+  sufficient — it was tried and moves the failure to
+  `fn_satisfies_requirement`, because the requirement's own `*self` is built
+  by `flatten_spec` from the same `Slice`-shaped target. The two sides
+  disagree about what `Self` means for a structural target, and picking one
+  answer is a model decision that spans `flatten_spec`,
+  `resolve_compose_target`, and `resolve_pointer_type`. Until then, slice
+  conformance is declarable but unusable. [specs.md](08-specs.md)
+
+- **`compose<T> *T : Spec` is still silently dropped.** The non-generic
+  spelling (`compose *Foo : Spec`) now correctly reports
+  `ComposeTargetNotAType`, but the generic one passes `blanket_parameter`
+  (`T` does occur in `*T`), registers as a template, and is never
+  instantiated — so `resolve_compose_target`, which owns the diagnostic, is
+  never reached. The program compiles with no diagnostic at all. The fix is
+  to validate a template's target shape at `collect_compose_signatures`
+  time, which needs target validation split from target *resolution*.
+
+- **Primitive-method symbols still embed `ResolvedType`'s `Display`
+  output.** Structural-target mangling was applied to `compose_method_symbol`
+  only; `ExternFunctionKind::Primitive`
+  (`omega-codegen/src/cranelift/function.rs:280`) and its declare-pass twin
+  (`cranelift/item.rs:107`) still build `Ident(target.to_string())`. So
+  `nm target/core.o` still contains
+  `_omg_NvNtNtC4core7strings4*str8is_emptyTEb`, and a local
+  `primitive<T> [?]T` method still emits `_omg_NvNtC4main6*[?]u88is_empty…`
+  — symbols outside `[A-Za-z0-9_]` that `omg_demangle` cannot round-trip,
+  which is the original complaint. (The *space* in `*mut [?]u8` is gone, but
+  only as a side effect of `lookup_key` normalizing mutability.) Not fixed
+  here because `ManglePath::Type` is a root-shaped node while a primitive
+  method's symbol nests its owner under a module path; giving structural
+  primitive owners a spelling is a grammar decision, and it moves ABI.
+
+- **`AmbiguousForLoopElementType` fires with an empty candidate list when a
+  `for x : T in` annotation matches nothing.** `classify_for_in_source`
+  filters the `ToIterator` entries by the annotation and then reports
+  ambiguity whenever the survivors are not exactly one — so `for x : u16 in
+  s` on a source composing `ToIterator<u8>`/`ToIterator<char>` renders
+  `for-loop source has ambiguous element type: ` with nothing after the
+  colon. A zero-candidate result is a *mismatch*, not an ambiguity, and wants
+  its own diagnostic naming what was available.
+
 - **The bound context is widened to every compose on the concrete type**,
   which voids the coherence guarantee `compose` exists to provide.
   `Driver::check_generic_bounds` (`omega-driver/src/items.rs`, the
@@ -308,19 +411,46 @@ new one is found.
 
 ## Specs
 
-- **Coercion into `spec *T` isn't wired into every expression position**
-  (struct-literal fields, array-literal elements, bare tail-return without
-  `return` are missing). [specs.md](08-specs.md)
-- **No `is_variadic` support on spec functions.** [specs.md](08-specs.md)
-- **`spec T` (static-dispatch) return-type inference isn't supported on
-  struct/enum/union methods or overloaded free functions** — only a plain,
-  non-overloaded top-level function can infer its return type from its own
-  body; a method needing this hits `SpecStaticNotAllowedHere` instead.
+### Fixed in the composition/spec structural repair
+
+- **Coercion into `spec *T` now covers every expression position** —
+  struct-literal fields, array-literal elements, and a bare tail-return
+  without `return`, alongside the four positions that already worked.
   [specs.md](08-specs.md)
-- **A type implementing `ToIterator<T>` more than once, at different `T`,
-  has no disambiguation mechanism** — the explicit-cast escape hatch
-  (`<spec *ToIterator<u64>>expr`) stopped working once `ToIterator<T>`
-  became not-object-safe. [for-in-loops.md](18-for-in-loops.md)
+- **A type implementing `ToIterator<T>` more than once can be disambiguated**
+  with a binding annotation, `for value : u8 in source`. Unannotated, more
+  than one candidate is an ambiguity error naming each `T` (but see the
+  empty-candidate-list bug in the composition section above).
+  [for-in-loops.md](18-for-in-loops.md)
+
+### Still open after that change
+
+- **`is_variadic` on spec functions is parsed and stored but never
+  observed.** `spec Log { write(*self, ...) => i32; }` now parses, and
+  `resolve_raw_spec_fn_type` threads the flag into the
+  `ResolvedFunctionType`, but nothing reads it: the arity checks for a
+  spec-qualified call (`analysis/calls.rs:302`) and for spec-object dispatch
+  (`analysis/calls.rs:1041`) still compare `args.len()` against
+  `params.len()` unconditionally, so `Log::write(&l, 1, 2)` is rejected as
+  "takes 1 argument but 3 were supplied". Separately, Omega has no way to
+  *define* a variadic function (see [functions.md](00-functions.md)), so a
+  compose block cannot declare `...` at all and no variadic requirement is
+  implementable. Making this real means deciding whether variadic spec
+  functions exist to be *called* (extern/glue-shaped) or to be
+  *implemented*, and wiring the arity checks accordingly.
+  [specs.md](08-specs.md)
+- **`spec T` return-type inference on a method observes a partially
+  populated owner cell.** `collect_methods` now probes a method's body when
+  its return type is bare `spec T`, which runs while the owning type's cell
+  is still `InProgress` — so the body can see the type's *fields* but not
+  its *methods*. `exposed pick(*self) => spec Animal { self.helper() }`
+  fails with `no field 'helper' on 'Zoo'` regardless of declaration order.
+  This is the exact hazard the plan flagged; it shipped rather than being
+  abandoned. Either the probe needs the method table populated first (which
+  is what makes this hard — signatures are what `collect_methods` is
+  computing), or the diagnostic must at minimum say *why* siblings are
+  invisible instead of claiming the method is a missing field. Overloaded
+  free functions remain outside the rule as before. [specs.md](08-specs.md)
 
 ## Gaps and glue
 

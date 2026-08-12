@@ -5,10 +5,8 @@ import fmt::Display;
 import fmt::write_bool;
 import io::Writer;
 
-primitive bool {
-    exposed fmt(*self, out: *mut Writer) => void {
+compose bool : Display {
+    fmt(*self, out: *mut Writer) => void {
         write_bool(out, *self);
     }
 }
-
-compose bool : Display {}

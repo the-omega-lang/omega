@@ -624,6 +624,7 @@ impl Driver {
             .iter()
             .filter(|entry| {
                 entry.module == path
+                    && !entry.derived
                     && !self.composes.emitted.contains(&(
                         entry.target.clone(),
                         entry.spec.borrow().id,
@@ -645,11 +646,11 @@ impl Driver {
                 entry.spec_args.clone(),
             )];
             let owner = Self::compose_owner(&entry);
-            for function in &entry.functions {
+            for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
                 let Some((_, method)) = entry
                     .methods
                     .iter()
-                    .find(|(_, method)| method.decl_id == function.id)
+                    .find(|(_, method)| method.decl_id == *method_id)
                 else {
                     continue;
                 };
@@ -716,11 +717,11 @@ impl Driver {
         let mut items = Vec::new();
         for entry in entries {
             self.primitives.emitted.push(entry.target.clone());
-            for function in &entry.functions {
+            for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
                 let Some((_, method)) = entry
                     .methods
                     .iter()
-                    .find(|(_, method)| method.decl_id == function.id)
+                    .find(|(_, method)| method.decl_id == *method_id)
                 else {
                     continue;
                 };
@@ -771,11 +772,18 @@ impl Driver {
                 .entries
                 .iter()
                 .find(|entry| {
-                    !self.composes.emitted.contains(&(
-                        entry.target.clone(),
-                        entry.spec.borrow().id,
-                        entry.spec_args.clone(),
-                    )) && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
+                    // Same `!derived` filter `check_compose_bodies` applies:
+                    // a derived entry owns no body, so it can never become
+                    // `emitted` and would otherwise keep this loop finding
+                    // work that produces nothing, forever.
+                    !entry.derived
+                        && !self.composes.emitted.contains(&(
+                            entry.target.clone(),
+                            entry.spec.borrow().id,
+                            entry.spec_args.clone(),
+                        ))
+                        && (!self.roots.is_extern(&entry.module)
+                            || entry.substitution.len() > 1)
                 })
                 .map(|entry| entry.module.clone());
             let Some((module, primitive)) = primitive_module

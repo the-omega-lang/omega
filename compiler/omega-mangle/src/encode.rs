@@ -82,6 +82,10 @@ impl Encoder {
                 }
                 self.out.push(TAG_LIST_END as char);
             }
+            ManglePath::Type(ty) => {
+                self.out.push(TAG_TYPE_PATH as char);
+                self.encode_type(ty);
+            }
         }
         self.path_subs.insert(path.clone(), start);
     }

@@ -71,6 +71,8 @@ pub struct SpecFunctionStmt {
     /// *T` dynamic dispatch's `Self`-erasure.
     pub self_mode: Option<SelfMode>,
     pub params: Vec<DeclarationStmt>,
+    /// A final `...`, matching ordinary function-type variadics.
+    pub is_variadic: bool,
     pub return_type: Type,
     pub body: Option<CodeblockExpr>,
 }

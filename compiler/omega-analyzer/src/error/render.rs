@@ -484,6 +484,15 @@ impl AnalysisErrorKind {
                     "declare `{type} : ToIterator<T>` and implement `to_iterator`, \
                      or `{type} : Iterator<T>` and implement `next` directly"
                 )),
+            Self::AmbiguousForLoopElementType { candidates } => d
+                .with_label(
+                    span,
+                    format!(
+                        "multiple `ToIterator<T>` implementations produce: {}",
+                        candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                    ),
+                )
+                .with_help("write an element annotation, for example `for item : u8 in source { ... }`"),
             Self::ForLoopRangeMissingStart => d
                 .with_label(span, "no principled value to start counting from")
                 .with_help("write an explicit start, e.g. `for i in 0..<10 { ... }`"),

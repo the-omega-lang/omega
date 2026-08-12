@@ -130,6 +130,74 @@ fn duplicate_and_extra_compositions_are_rejected() {
 }
 
 #[test]
+fn a_compose_cannot_borrow_an_inherent_requirement() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Speak { speak(*self) => i32; }
+        struct Dog {
+            exposed value: i32;
+            exposed speak(*self) => i32 { self.value }
+        }
+        compose Dog : Speak {}
+        main() => i32 { 0 }
+        "#,
+    );
+    let errors = compile_errors(&package, "an inherent method must not satisfy compose");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::MissingSpecFunction { .. }
+    )));
+}
+
+#[test]
+fn slice_composes_and_invalid_structural_targets_are_diagnosed_semantically() {
+    let slice = TestPackage::new(
+        r#"
+        exposed spec Empty { empty(*self) => bool; }
+        compose [?]u8 : Empty { empty(*self) => bool { self.length == 0 } }
+        main() => i32 { 0 }
+        "#,
+    );
+    slice
+        .compile()
+        .expect("a bare slice target should reach the compose registry");
+
+    let pointer = TestPackage::new(
+        r#"
+        exposed spec Empty { empty(*self) => bool; }
+        struct Dog { exposed value: i32; }
+        compose *Dog : Empty { empty(*self) => bool { false } }
+        main() => i32 { 0 }
+        "#,
+    );
+    let errors = compile_errors(&pointer, "a pointer target must be rejected by the target model");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ComposeTargetNotAType
+    )));
+}
+
+#[test]
+fn dependency_compositions_satisfy_the_dependency_bound() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Animal { sound(*self) => i32; }
+        exposed spec Mammal : Animal { fur(*self) => i32; }
+        struct Dog { exposed value: i32; }
+        compose Dog : Mammal {
+            sound(*self) => i32 { self.value }
+            fur(*self) => i32 { 1 }
+        }
+        call<T: Animal>(value: *T) => i32 { value.sound() }
+        main() => i32 { dog := Dog { value = 4; }; call(&dog) }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a direct compose must register its dependency closure");
+}
+
+#[test]
 fn primitive_blocks_are_core_only() {
     let package = TestPackage::new(
         r#"

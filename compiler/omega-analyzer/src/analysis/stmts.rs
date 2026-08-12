@@ -6,7 +6,7 @@ use super::*;
 /// directly (the source *is* already an iterator; `f.iterator`'s own
 /// already-checked value becomes `$iter` verbatim, no method call at all).
 enum ForInSource {
-    ToIterator(CheckedExprNode),
+    ToIterator(CheckedExprNode, ResolvedBound),
     DirectIterator(CheckedExprNode),
 }
 
@@ -168,7 +168,10 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedBlock> {
         self.context.enter_scope();
         let checked_stmts = self.analyze_stmts(&block.stmts);
-        let checked_tail = block.tail.as_ref().map(|e| self.analyze_expr(e, expected));
+        let checked_tail = block.tail.as_ref().map(|e| {
+            self.analyze_expr(e, expected)
+                .map(|value| self.coerce_to_expected(expected, value))
+        });
         let scope = self.context.leave_scope();
         self.warn_unused_bindings(scope, false);
 
@@ -611,15 +614,9 @@ impl<'r> Analyzer<'r> {
         self.context.enter_scope();
 
         let iter_init = match self.classify_for_in_source(f) {
-            Some(ForInSource::ToIterator(checked)) => {
+            Some(ForInSource::ToIterator(_checked, selected)) => {
                 let old_bounds = self.bounds.len();
-                if let Ok(composes) = self.resolver.composes_for_type(&checked.r#type) {
-                    self.bounds.extend(
-                        composes
-                            .into_iter()
-                            .map(|compose| (compose.target, compose.spec, compose.spec_args)),
-                    );
-                }
+                self.bounds.push(selected);
                 let result = self.synthesize_method_call(
                     HirPlaceRoot::Expr(Box::new(f.iterator.clone())),
                     "to_iterator",
@@ -1036,8 +1033,37 @@ impl<'r> Analyzer<'r> {
         self.errors.truncate(errors_before);
         self.warnings.truncate(warnings_before);
 
-        if self.for_in_source_declares(&checked.r#type, "ToIterator") {
-            return Some(ForInSource::ToIterator(checked));
+        let to_iterator = self.for_in_composes(&checked.r#type, "ToIterator");
+        if !to_iterator.is_empty() {
+            let expected_element = f.binding_type.as_ref().and_then(|raw| {
+                self.resolve_type_or_error(f.id, f.span, raw, true)
+            });
+            let candidates: Vec<_> = to_iterator
+                .into_iter()
+                .filter(|compose| {
+                    expected_element.as_ref().is_none_or(|expected| {
+                        compose.spec_args.first() == Some(expected)
+                    })
+                })
+                .collect();
+            if candidates.len() == 1 {
+                let compose = candidates.into_iter().next().expect("length checked");
+                return Some(ForInSource::ToIterator(
+                    checked,
+                    (compose.target, compose.spec, compose.spec_args),
+                ));
+            }
+            self.error(
+                f.id,
+                f.span,
+                AnalysisErrorKind::AmbiguousForLoopElementType {
+                    candidates: candidates
+                        .iter()
+                        .filter_map(|compose| compose.spec_args.first().cloned())
+                        .collect(),
+                },
+            );
+            return None;
         }
         if self.for_in_source_declares(&checked.r#type, "Iterator") {
             return Some(ForInSource::DirectIterator(checked));

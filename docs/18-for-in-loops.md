@@ -35,9 +35,10 @@ for c in my_custom_str {
 
 The iteration-protocol loop, distinct from the classic C-style `for init;
 cond; post { }` (both start with `for`; the parser disambiguates by
-lookahead — `for <mut>? ident in` commits to this grammar, everything else
-falls through to the three-clause one unchanged). `for <mut>? binding in
-iterator { }` — exactly one plain identifier binding, no destructuring
+lookahead — `for <mut>? ident in` (or `for <mut>? ident : Type in`) commits
+to this grammar, everything else falls through to the three-clause one
+unchanged). `for <mut>? binding [: Type] in iterator { }` — exactly one plain
+identifier binding, no destructuring
 (this language has none, anywhere — see below for why that mattered more
 than usual here).
 
@@ -120,6 +121,11 @@ iterator, matching Rust's explicit-impl-beats-blanket-impl precedence);
 only if that's absent does it check `Iterator<T>` directly, in which case
 `f.iterator`'s own already-checked value becomes `$iter` verbatim — no
 `.to_iterator()` call is synthesized at all in that case.
+
+If a source composes `ToIterator<T>` more than once, the element type is
+ambiguous. Select one explicitly: `for value : u8 in source { ... }`. The
+annotation is matched against the composed `ToIterator<u8>` argument rather
+than treated as a post-hoc cast of the loop binding.
 
 ## Desugaring
 

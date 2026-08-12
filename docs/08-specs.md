@@ -70,28 +70,24 @@ compose Dog : Animal {
 `compose Target : Spec { ... }` is the only conformance declaration. The
 block must contain exactly the spec requirements it implements: a missing
 required function is `MissingSpecFunction`, and an extra function is
-`ComposeExtraFunction`. A matching inherent method may satisfy a requirement,
-and a spec default supplies an omitted method with a body. A compose method
-has no visibility modifier; it inherits the requirement's visibility.
+`ComposeExtraFunction`. Inherent methods never satisfy a requirement; only a
+body in this compose (or a spec default) does. A compose method has no
+visibility modifier; it inherits the requirement's visibility.
 
 Composition is nominal and non-blanket. The declaration is legal when either
 the target type or the spec belongs to the current package. A second compose
 for the same `(target, spec, spec arguments)` is rejected.
 
-The target must be a **named** type — a struct, enum, union, marker, `str`,
-or a primitive scalar — optionally a generic one pattern-matched through the
-compose's own parameters (`compose<T> List<T> : ToIterator<T>`). A spec alias
-works as the composed spec (`compose Foo : AB`, where `spec AB = A | B`), and
-composing a dependent spec satisfies its dependencies too (`compose Foo :
-Derived` supplies `Base`'s requirements as well).
-
-Slice and pointer targets are **not** currently composable in any form —
-neither `compose [?]u8 : Eq` nor `compose<T> [?]T : Eq` works, and the two
-fail differently and unhelpfully. See
-[known-issues.md](14-known-issues.md)'s composition section; this is a real
-hole, not a design decision, and it is why `[?]T` has inherent methods
-(`core::slices`' `primitive<T> [?]T`) but no spec conformance at all, while
-`str` has both.
+The target may be a named type, `str`, or a primitive scalar. A pointer,
+inline array, function, or spec-object target is rejected with
+`ComposeTargetNotAType` — except `compose<T> *T : Spec`, which is still
+silently dropped. Composing a dependent spec registers conformance for its
+dependencies too (`compose Foo : Derived` supplies `Base`'s requirements as
+well); a spec *alias* as the composed spec (`compose Foo : AB`, where `spec
+AB = A | B`) works, but a `T: AB` bound is **not** satisfied by composing
+`A` and `B` separately. Slice targets (`compose [?]u8 : Eq`, `compose<T>
+[?]T : Eq`) parse and register but no call can reach them. See
+[known-issues.md](14-known-issues.md)'s composition section for all three.
 
 Composed instance methods do not become globally callable as ordinary
 inherent methods. They are available through a generic bound (`T: Animal`),
@@ -247,10 +243,9 @@ pointer becoming a 2-leaf fat pointer) — every other implicit coercion
 (e.g. refined-enum widening) is representation-preserving and needs no
 explicit node at all.
 
-Coercion into `spec *T` happens at 4 sites: ordinary call arguments,
-assignment, declaration-with-init, and `return` — **not** yet struct-
-literal fields, array-literal elements, or a bare tail-return without the
-`return` keyword (a documented, narrow gap).
+Coercion into `spec *T` happens at ordinary call arguments, assignment,
+declaration-with-init, explicit and tail `return`, struct-literal fields, and
+array-literal elements.
 
 ### Casting into a spec object
 
@@ -401,11 +396,12 @@ call resolution's own `InProgress` tracking already catches this first
 a normal function call, since callee-signature resolution for *any*
 function funnels through the same query the dedicated guard backstops.
 
-Not yet supported for struct/enum/union **methods** or overloaded free
-functions — both go through a different, harder-to-retrofit signature-
-collection path (`compute_aggregate`/`collect_methods`); a `spec T` return
-type there is rejected with the same `SpecStaticNotAllowedHere` diagnostic
-any other unsupported position gets.
+Struct, enum, and union methods use the same body probe during method
+signature collection — but the probe runs while the owning type's cell is
+still being populated, so such a body can read `self`'s fields and cannot
+call the type's other methods (see
+[known-issues.md](14-known-issues.md)). Overloaded free functions remain
+outside this rule.
 
 ## Primitive methods
 
@@ -426,11 +422,10 @@ each concrete type. Functions carry ordinary visibility modifiers and are
 called like inherent methods.
 
 Primitive methods and spec conformance are deliberately separate. Core adds
-conformance with ordinary empty or method-bearing compose blocks, for example
-`compose str : Eq {}` when the primitive block already supplies the matching
-`equals` implementation. This keeps specs named and independently composable
-instead of inventing an anonymous interface as a side effect of adding
-methods.
+conformance with method-bearing compose blocks, for example `compose str : Eq
+{ equals(*self, other: Self) => bool { ... } }`. This keeps specs named and
+independently composable instead of inventing an anonymous interface as a
+side effect of adding methods.
 
 ## Caveats
 
@@ -447,8 +442,9 @@ methods.
   `mangle::vtable_symbol`.
 - **Only `core` can add inherent methods to primitives.** Any package allowed
   by the orphan rule can compose a spec with a concrete target.
-- **No `is_variadic` support** on spec functions.
-- **Coercion into `spec *T` isn't wired into every expression position** —
-  see the 4-site list above.
+- Spec functions may declare a final `...`, preserved in their resolved
+  function type — but no call site consults it yet, and a compose block
+  cannot declare `...`, so a variadic requirement is not implementable or
+  callable. See [known-issues.md](14-known-issues.md).
 - Generic primitive and compose templates are instantiated lazily for the
   concrete target types a compilation uses.

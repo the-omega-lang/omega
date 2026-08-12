@@ -109,6 +109,15 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn parses_variadic_spec_functions_and_typed_for_in_bindings() {
+        SourceModule::parse(
+            "spec Log { write(*self, ...) => void; }\n\
+             main() => void { for value : u8 in source { } }",
+        )
+        .expect("both new contextual grammar forms should parse");
+    }
+
     /// `gap`/`glue` are contextual keywords recognized only at item
     /// position, and only when followed by another identifier -- so both
     /// stay usable as ordinary names, including as top-level bindings in

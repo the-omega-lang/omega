@@ -1,3 +1,4 @@
+use crate::items::ItemKey;
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::PendingSpecMethod;
 use omega_analyzer::checked::ComposeOwner;
@@ -18,9 +19,13 @@ pub(crate) struct ComposeEntry {
     pub spec: Rc<RefCell<ResolvedSpecType>>,
     pub spec_args: Vec<ResolvedType>,
     pub methods: Vec<(Ident, ResolvedMethod)>,
+    pub method_ids: Vec<HirId>,
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
     pub substitution: Vec<(Ident, ResolvedType)>,
+    /// Derived entries model a dependency of a directly declared compose;
+    /// they make conformance discoverable but never own a second body.
+    pub derived: bool,
 }
 
 #[derive(Clone)]
@@ -42,6 +47,7 @@ pub(crate) struct PrimitiveEntry {
     pub span: Span,
     pub target: ResolvedType,
     pub methods: Vec<(Ident, ResolvedMethod)>,
+    pub method_ids: Vec<HirId>,
     pub functions: Vec<HirFunctionDef>,
     pub substitution: Vec<(Ident, ResolvedType)>,
 }
@@ -135,7 +141,7 @@ impl Driver {
             .primitives
             .entries
             .iter()
-            .find(|entry| entry.target == target)
+            .find(|entry| entry.target == target.lookup_key())
         {
             self.diagnostics.error(
                 module,
@@ -158,6 +164,7 @@ impl Driver {
             _ => target.clone(),
         };
         method_substitution.push((Ident("Self".to_string()), self_type));
+        let method_ids = self.composed_method_ids(module, primitive.id, &target, &primitive.functions);
         let signatures = self.analyze(
             module,
             &method_substitution,
@@ -175,11 +182,12 @@ impl Driver {
                         .functions
                         .iter()
                         .zip(resolved)
-                        .map(|(function, (fn_type, annotations))| {
+                        .zip(&method_ids)
+                        .map(|((function, (fn_type, annotations)), method_id)| {
                             (
                                 function.name.clone(),
                                 ResolvedMethod {
-                                    decl_id: function.id,
+                                    decl_id: *method_id,
                                     fn_type,
                                     visibility: function.visibility,
                                     annotations,
@@ -194,8 +202,9 @@ impl Driver {
         let entry = PrimitiveEntry {
             module: module.to_vec(),
             span: primitive.span,
-            target,
+            target: target.lookup_key(),
             methods: signatures,
+            method_ids,
             functions: primitive.functions.clone(),
             substitution: method_substitution,
         };
@@ -233,7 +242,7 @@ impl Driver {
             .primitives
             .entries
             .iter()
-            .find(|entry| entry.target == *target)
+            .find(|entry| entry.target == target.lookup_key())
         {
             return entry.methods.clone();
         }
@@ -277,15 +286,6 @@ impl Driver {
             return None;
         }
         Some(vec![(path.head.clone(), (**item).clone())])
-    }
-
-    fn inherent_methods(&mut self, target: &ResolvedType) -> Vec<(Ident, ResolvedMethod)> {
-        match target {
-            ResolvedType::Struct(cell) => cell.borrow().functions.clone(),
-            ResolvedType::Enum { cell, .. } => cell.borrow().functions.clone(),
-            ResolvedType::Union(cell) => cell.borrow().functions.clone(),
-            _ => self.primitive_methods(target),
-        }
     }
 
     pub(crate) fn collect_compose_signatures(&mut self, paths: &[ModulePath]) {
@@ -353,13 +353,13 @@ impl Driver {
             .composes
             .entries
             .iter()
-            .find(|existing| existing.id == compose.id && existing.target == target)
+            .find(|existing| existing.id == compose.id && existing.target == target.lookup_key())
         {
             return Some(existing.clone());
         }
         let mut method_substitution = substitution.to_vec();
         method_substitution.push((Ident("Self".to_string()), target.clone()));
-        let inherent = self.inherent_methods(&target);
+        let method_ids = self.composed_method_ids(module, compose.id, &target, &compose.functions);
         let run = self.with_analyzer(
             module,
             &method_substitution,
@@ -371,7 +371,7 @@ impl Driver {
                     &target,
                     &compose.spec,
                     &compose.functions,
-                    &inherent,
+                    &method_ids,
                 )
             },
         );
@@ -381,19 +381,67 @@ impl Driver {
             module: module.to_vec(),
             id: compose.id,
             span: compose.span,
-            target,
+            target: target.lookup_key(),
             spec,
             spec_args,
             methods,
+            method_ids,
             functions: compose.functions.clone(),
             pending,
             substitution: method_substitution,
+            derived: false,
         };
         if !self.check_compose_orphan(&entry) || self.reject_duplicate_compose(&entry) {
             return None;
         }
         self.composes.entries.push(entry.clone());
+        self.register_derived_composes(&entry);
         Some(entry)
+    }
+
+    fn register_derived_composes(&mut self, entry: &ComposeEntry) {
+        let run = self.with_analyzer(
+            &entry.module,
+            &entry.substitution,
+            (entry.id, entry.span),
+            |analyzer| {
+                analyzer.compose_dependency_closure(
+                    entry.id,
+                    entry.span,
+                    &entry.target,
+                    &entry.spec,
+                    &entry.spec_args,
+                    &entry.methods,
+                )
+            },
+        );
+        self.diagnostics.record_warnings(&entry.module, run.warnings);
+        let Some(closure) = run.result else {
+            return;
+        };
+        for (spec, spec_args, methods) in closure {
+            if self.composes.entries.iter().any(|existing| {
+                existing.target == entry.target
+                    && existing.spec.borrow().id == spec.borrow().id
+                    && existing.spec_args == spec_args
+            }) {
+                continue;
+            }
+            self.composes.entries.push(ComposeEntry {
+                module: entry.module.clone(),
+                id: entry.id,
+                span: entry.span,
+                target: entry.target.clone(),
+                spec,
+                spec_args,
+                methods,
+                method_ids: vec![],
+                functions: vec![],
+                pending: vec![],
+                substitution: entry.substitution.clone(),
+                derived: true,
+            });
+        }
     }
 
     fn check_compose_orphan(&mut self, entry: &ComposeEntry) -> bool {
@@ -433,7 +481,8 @@ impl Driver {
 
     fn reject_duplicate_compose(&mut self, entry: &ComposeEntry) -> bool {
         let Some(previous) = self.composes.entries.iter().find(|existing| {
-            existing.target == entry.target
+            !existing.derived
+                && existing.target == entry.target.lookup_key()
                 && existing.spec.borrow().id == entry.spec.borrow().id
                 && existing.spec_args == entry.spec_args
         }) else {
@@ -461,7 +510,7 @@ impl Driver {
         spec_args: &[ResolvedType],
     ) -> Option<ComposeEntry> {
         if let Some(entry) = self.composes.entries.iter().find(|entry| {
-            entry.target == *target
+            entry.target == target.lookup_key()
                 && entry.spec.borrow().id == spec.borrow().id
                 && entry.spec_args == spec_args
         }) {
@@ -493,7 +542,7 @@ impl Driver {
         self.composes
             .entries
             .iter()
-            .filter(|entry| entry.target == *target)
+            .filter(|entry| entry.target == target.lookup_key())
             .cloned()
             .collect()
     }
@@ -553,6 +602,22 @@ impl Driver {
         compose: &HirComposeDef,
         actual: &ResolvedType,
     ) -> Option<Vec<(Ident, ResolvedType)>> {
+        if let (Type::UnknownSizeArray(raw_item), ResolvedType::Slice { item, .. }) =
+            (&compose.target, actual)
+        {
+            let Type::Named(path) = raw_item.as_ref() else {
+                return None;
+            };
+            if !path.is_unqualified()
+                || !compose
+                    .generics
+                    .iter()
+                    .any(|generic| generic.ident == path.head)
+            {
+                return None;
+            }
+            return Some(vec![(path.head.clone(), (**item).clone())]);
+        }
         let (actual_name, actual_args) = match actual {
             ResolvedType::Struct(cell) => {
                 let cell = cell.borrow();
@@ -589,6 +654,26 @@ impl Driver {
             substitution.push((path.head.clone(), concrete));
         }
         Some(substitution)
+    }
+
+    /// Compose and primitive blocks have no named `ItemKey` of their own,
+    /// but every concrete target instantiation still needs a distinct method
+    /// identity. Reuse the normal item identity allocator with an internal
+    /// key made from the declaration and canonical target.
+    fn composed_method_ids(
+        &mut self,
+        module: &[Ident],
+        declaration: HirId,
+        target: &ResolvedType,
+        functions: &[HirFunctionDef],
+    ) -> Vec<HirId> {
+        let key = ItemKey::new(
+            module,
+            &Ident(format!("__compose_{}", declaration.local)),
+            &[target.lookup_key()],
+        );
+        self.items
+            .method_identities(&key, functions.iter().map(|function| function.id))
     }
 
     pub(crate) fn compose_owner(entry: &ComposeEntry) -> ComposeOwner {

@@ -378,7 +378,29 @@ fn is_for_in_lookahead(p: &mut Parser) -> bool {
         0
     };
     matches!(p.peek_at(offset), TokenKind::Ident(_))
-        && matches!(p.peek_at(offset + 1), TokenKind::Ident(name) if name == "in")
+        && (matches!(p.peek_at(offset + 1), TokenKind::Ident(name) if name == "in")
+            || for_in_annotation_follows(p, offset + 1))
+}
+
+/// Looks only far enough to distinguish `for x : T in source` from the
+/// C-style loop's typed initializer (`for x : T = ...;`). The type parser
+/// remains the authority on whether the intervening tokens form a type.
+fn for_in_annotation_follows(p: &Parser, colon_offset: usize) -> bool {
+    if !matches!(p.peek_at(colon_offset), TokenKind::Colon) {
+        return false;
+    }
+    let mut offset = colon_offset + 1;
+    let mut depth = 0usize;
+    loop {
+        match p.peek_at(offset) {
+            TokenKind::Lt | TokenKind::LBracket | TokenKind::LParen => depth += 1,
+            TokenKind::Gt | TokenKind::RBracket | TokenKind::RParen if depth > 0 => depth -= 1,
+            TokenKind::Semi | TokenKind::LBrace | TokenKind::Eof => return false,
+            TokenKind::Ident(name) if depth == 0 && name == "in" => return true,
+            _ => {}
+        }
+        offset += 1;
+    }
 }
 
 /// `for <mut>? binding in iterator { ... }` -- called only once
@@ -398,6 +420,11 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     };
     p.advance(); // binding
     let binding = Ident(binding);
+    let binding_type = if p.eat(&TokenKind::Colon) {
+        Some(crate::parser::r#type::parse_type(p)?)
+    } else {
+        None
+    };
     p.advance(); // 'in' (contextual; `is_for_in_lookahead` already confirmed this token)
 
     // Same body-`{` ambiguity `while`/the classic `for`'s own condition
@@ -409,6 +436,7 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     Some(ForInStmt {
         mutable,
         binding,
+        binding_type,
         iterator,
         body,
     })

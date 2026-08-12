@@ -14,22 +14,6 @@ import io::Writer;
 
 
 primitive str {
-    exposed equals(*self, other: Self) => bool {
-        if self.size != other.size {
-            return false;
-        }
-        a := <*[?]u8>self;
-        b := <*[?]u8>other;
-        mut i : i32 = 0;
-        while i < self.size {
-            if a[i] != b[i] {
-                return false;
-            }
-            i = i + 1;
-        }
-        true
-    }
-
     exposed is_empty(*self) => bool {
         self.size == 0
     }
@@ -107,10 +91,31 @@ primitive str {
         false
     }
 
+}
+
+compose str : Eq {
+    equals(*self, other: Self) => bool {
+        if self.size != other.size {
+            return false;
+        }
+        a := <*[?]u8>self;
+        b := <*[?]u8>other;
+        mut i : i32 = 0;
+        while i < self.size {
+            if a[i] != b[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+}
+
+compose str : Hash {
     # FNV-1a -- simple, well-known, and (unlike `core::numerics`' own
     # `mix64`) a genuinely natural fit for a variable-length byte run: one
     # multiply-xor per byte, no separate finalization step needed.
-    exposed hash(*self) => u64 {
+    hash(*self) => u64 {
         mut h : u64 = 0xcbf29ce484222325u64;
         bytes := <*[?]u8>self;
         mut i : i32 = 0;
@@ -121,12 +126,10 @@ primitive str {
         }
         h
     }
+}
 
-    exposed fmt(*self, out: *mut Writer) => void {
+compose str : Display {
+    fmt(*self, out: *mut Writer) => void {
         out.write_bytes(<*[?]u8>self);
     }
 }
-
-compose str : Eq {}
-compose str : Hash {}
-compose str : Display {}

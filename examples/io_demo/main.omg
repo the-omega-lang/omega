@@ -16,7 +16,7 @@ struct Pair {
 compose Pair : Display {
     fmt(*self, out: *mut Writer) => void {
         out.write_str("Pair(");
-        self.value.fmt(out);
+        Display::fmt(self.value, out);
         out.write_byte(41u8);
     }
 }

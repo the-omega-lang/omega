@@ -685,6 +685,11 @@ pub enum AnalysisErrorKind {
     ForLoopSourceNotIterable {
         r#type: ResolvedType,
     },
+    /// A source has more than one `ToIterator<T>` composition; the loop
+    /// binding needs an explicit `: T` annotation to select one.
+    AmbiguousForLoopElementType {
+        candidates: Vec<ResolvedType>,
+    },
     /// `for i in ..b { }` / bare `for i in .. { }` -- a range-driven `for`
     /// loop with no start has no principled value to begin counting from
     /// (unlike a slice's own missing start, which unambiguously means 0).
@@ -1407,6 +1412,11 @@ impl fmt::Display for AnalysisErrorKind {
                     "'{type}' does not implement 'ToIterator<T>' or 'Iterator<T>'"
                 )
             }
+            Self::AmbiguousForLoopElementType { candidates } => write!(
+                f,
+                "for-loop source has ambiguous element type: {}",
+                candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            ),
             Self::ForLoopRangeMissingStart => {
                 write!(f, "this range-driven 'for' loop has no start")
             }

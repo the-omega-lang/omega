@@ -316,6 +316,7 @@ pub struct HirSpecFunction {
     /// parameter is already inserted here by lowering, exactly like an
     /// ordinary method's -- see `lower_function_def`'s spec-aware case.
     pub params: Vec<HirParam>,
+    pub is_variadic: bool,
     pub return_type: Type,
     pub body: Option<HirBlock>,
 }
@@ -488,6 +489,7 @@ pub struct HirForIn {
     pub span: Span,
     pub mutable: bool,
     pub binding: Ident,
+    pub binding_type: Option<Type>,
     pub iterator: HirExprNode,
     pub body: HirBlock,
 }

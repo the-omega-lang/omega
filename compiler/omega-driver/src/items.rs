@@ -753,11 +753,6 @@ impl Driver {
             match run.result {
                 Some(Ok((spec, spec_args))) => {
                     resolved_bounds.push((concrete.clone(), spec, spec_args));
-                    resolved_bounds.extend(
-                        self.composes_for_type(concrete)
-                            .into_iter()
-                            .map(|entry| (entry.target, entry.spec, entry.spec_args)),
-                    );
                 }
                 Some(Err((spec, missing))) => {
                     return Err(ResolveError::SpecNotImplemented {

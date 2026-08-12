@@ -37,6 +37,8 @@ pub const TAG_VARIADIC: u8 = b'V';
 pub const TAG_REFINED: u8 = b'R';
 pub const TAG_STR: u8 = b'T';
 pub const TAG_STR_MUT: u8 = b'U';
+/// A structural type promoted to a composition-owner path.
+pub const TAG_TYPE_PATH: u8 = b'X';
 
 pub const VENDOR_SUFFIX_SEP: u8 = b'.';
 

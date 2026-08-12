@@ -226,6 +226,7 @@ impl Lowerer {
                 span,
                 mutable: f.mutable,
                 binding: f.binding.clone(),
+                binding_type: f.binding_type.clone(),
                 iterator: self.lower_expr(&f.iterator),
                 body: self.lower_block(&f.body),
             })],
@@ -558,6 +559,7 @@ impl Lowerer {
             name: f.ident.clone(),
             self_mode: f.self_mode,
             params,
+            is_variadic: f.is_variadic,
             return_type: f.return_type.clone(),
             body,
         }

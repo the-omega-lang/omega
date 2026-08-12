@@ -18,13 +18,9 @@
 # `core`-provided primitive, and any user type meant to be hashable at
 # all) already provides `cmp::Eq::equals` as a matter of course, the same
 # structural expectation `Ord`'s own default methods already lean on --
-# so `key.equals(other)` inside `HashMap`'s own body stays duck-typed,
-# unbound, exactly like any other structural call in this language (see
-# `docs/08-specs.md`: "an unbound generic parameter still works purely by
-# duck-typing"). A concrete `K` that doesn't actually implement `Eq`
-# simply fails at that call site once substituted in, the same way it
-# would for any other duck-typed method call -- no separate bound needed
-# to catch it.
+# so `HashMap` selects `Eq::equals` explicitly at its concrete key
+# instantiation. A `K` without `Eq` fails at that call site; no second formal
+# bound is needed to preserve the one-bound generic syntax.
 
 exposed spec Hash {
     hash(*self) => u64;

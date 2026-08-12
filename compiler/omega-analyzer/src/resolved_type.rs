@@ -379,6 +379,7 @@ pub struct RawSpecFunctionSig {
     /// `check_function_body` wholesale, rather than duplicating its
     /// param-binding logic.
     pub params: Vec<HirParam>,
+    pub is_variadic: bool,
     pub return_type: Type,
     /// `None` for a required function (every implementor must provide its
     /// own matching method); `Some` for a default, used as-is unless a
@@ -995,6 +996,32 @@ impl ResolvedType {
                 cell: cell.clone(),
                 variant: None,
             },
+            other => other.clone(),
+        }
+    }
+
+    /// The canonical identity used by composition and primitive registries.
+    ///
+    /// Lookup is about which methods belong to a type, not transient facts
+    /// carried by a particular expression. Enum refinements and pointer-like
+    /// mutability are such facts, so registry users must always key through
+    /// this method at both insertion and lookup. Any future `ResolvedType`
+    /// refinement needs an explicit decision here.
+    pub fn lookup_key(&self) -> ResolvedType {
+        match self {
+            Self::Enum { cell, .. } => Self::Enum {
+                cell: cell.clone(),
+                variant: None,
+            },
+            Self::Pointer { pointee, .. } => Self::Pointer {
+                pointee: Box::new(pointee.lookup_key()),
+                mutable: false,
+            },
+            Self::Slice { item, .. } => Self::Slice {
+                item: Box::new(item.lookup_key()),
+                mutable: false,
+            },
+            Self::Str { .. } => Self::Str { mutable: false },
             other => other.clone(),
         }
     }

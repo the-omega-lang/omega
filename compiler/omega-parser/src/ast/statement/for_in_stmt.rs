@@ -1,5 +1,6 @@
 use crate::ast::expression::{ExpressionNode, codeblock::CodeblockExpr};
 use crate::ast::identifier::Ident;
+use crate::ast::r#type::Type;
 
 /// `for <mut>? binding in iterator { ... }` -- the iteration-protocol loop,
 /// distinct from `ForStmt`'s classic C-style three-clause form (both start
@@ -15,6 +16,9 @@ use crate::ast::identifier::Ident;
 pub struct ForInStmt {
     pub mutable: bool,
     pub binding: Ident,
+    /// An optional element type (`for value : u8 in bytes`) selecting a
+    /// particular `ToIterator<T>` implementation when more than one exists.
+    pub binding_type: Option<Type>,
     pub iterator: ExpressionNode,
     pub body: CodeblockExpr,
 }

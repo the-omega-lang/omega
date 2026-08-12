@@ -45,33 +45,6 @@ mix64(x: u64) => u64 {
 
 macro signed_integer($T: type) => {
     primitive $T {
-        exposed equals(*self, other: Self) => bool { *self == other }
-
-        exposed compare(*self, other: Self) => Ordering {
-            if *self < other {
-                Ordering::Less
-            } else if *self > other {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        }
-
-        exposed default() => Self { 0 }
-
-        # Overrides `Ord`'s default `min`/`max` (which would otherwise
-        # route through `compare` and an `Ordering` match) with a direct
-        # comparison -- same result, no detour through a 3-way enum for
-        # what's a single machine instruction. `Ord` is still satisfied:
-        # these match its required signature exactly.
-        exposed min(*self, other: Self) => Self {
-            if *self < other { *self } else { other }
-        }
-
-        exposed max(*self, other: Self) => Self {
-            if *self > other { *self } else { other }
-        }
-
         exposed clamp(*self, lo: Self, hi: Self) => Self {
             if *self < lo { lo } else if *self > hi { hi } else { *self }
         }
@@ -100,47 +73,30 @@ macro signed_integer($T: type) => {
         exposed is_negative(*self) => bool { *self < <Self>0 }
         exposed is_positive(*self) => bool { *self > <Self>0 }
 
-        # Sign-extends to `u64` (per this language's own "extend signedness
-        # comes from the source" cast rule) before mixing -- an arbitrary,
-        # but deterministic and type-local, bit pattern is all `Hash`
-        # actually requires.
-        exposed hash(*self) => u64 { mix64(<u64>*self) }
-
-        exposed fmt(*self, out: *mut Writer) => void {
-            write_int(out, <i64>*self, 10u32);
-        }
     }
-    compose $T : Eq {}
-    compose $T : Ord {}
-    compose $T : Default {}
-    compose $T : Hash {}
-    compose $T : Display {}
+    compose $T : Ord {
+        equals(*self, other: Self) => bool { *self == other }
+        compare(*self, other: Self) => Ordering {
+            if *self < other { Ordering::Less }
+            else if *self > other { Ordering::Greater }
+            else { Ordering::Equal }
+        }
+        # Overrides `Ord`'s default `min`/`max` with direct comparisons.
+        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
+        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+    }
+    compose $T : Default { default() => Self { 0 } }
+    compose $T : Hash {
+        # Sign-extends to `u64` before mixing.
+        hash(*self) => u64 { mix64(<u64>*self) }
+    }
+    compose $T : Display {
+        fmt(*self, out: *mut Writer) => void { write_int(out, <i64>*self, 10u32); }
+    }
 }
 
 macro unsigned_integer($T: type) => {
     primitive $T {
-        exposed equals(*self, other: Self) => bool { *self == other }
-
-        exposed compare(*self, other: Self) => Ordering {
-            if *self < other {
-                Ordering::Less
-            } else if *self > other {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        }
-
-        exposed default() => Self { 0 }
-
-        exposed min(*self, other: Self) => Self {
-            if *self < other { *self } else { other }
-        }
-
-        exposed max(*self, other: Self) => Self {
-            if *self > other { *self } else { other }
-        }
-
         exposed clamp(*self, lo: Self, hi: Self) => Self {
             if *self < lo { lo } else if *self > hi { hi } else { *self }
         }
@@ -165,18 +121,25 @@ macro unsigned_integer($T: type) => {
             if *self == <Self>0 { false } else { (*self & (*self - <Self>1)) == <Self>0 }
         }
 
-        # Zero-extends to `u64` before mixing -- see `SignedIntegerOps::hash`.
-        exposed hash(*self) => u64 { mix64(<u64>*self) }
-
-        exposed fmt(*self, out: *mut Writer) => void {
-            write_uint(out, <u64>*self, 10u32);
-        }
     }
-    compose $T : Eq {}
-    compose $T : Ord {}
-    compose $T : Default {}
-    compose $T : Hash {}
-    compose $T : Display {}
+    compose $T : Ord {
+        equals(*self, other: Self) => bool { *self == other }
+        compare(*self, other: Self) => Ordering {
+            if *self < other { Ordering::Less }
+            else if *self > other { Ordering::Greater }
+            else { Ordering::Equal }
+        }
+        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
+        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+    }
+    compose $T : Default { default() => Self { 0 } }
+    compose $T : Hash {
+        # Zero-extends to `u64` before mixing.
+        hash(*self) => u64 { mix64(<u64>*self) }
+    }
+    compose $T : Display {
+        fmt(*self, out: *mut Writer) => void { write_uint(out, <u64>*self, 10u32); }
+    }
 }
 
 macro float_ops($T: type) => {
@@ -185,18 +148,6 @@ macro float_ops($T: type) => {
         # honestly rather than papering over it -- `Ord` is deliberately
         # *not* implemented here at all (see `core::cmp`'s own doc comment
         # on why: `NaN` has no correct position in a total order).
-        exposed equals(*self, other: Self) => bool { *self == other }
-
-        exposed default() => Self { 0.0 }
-
-        exposed min(*self, other: Self) => Self {
-            if *self < other { *self } else { other }
-        }
-
-        exposed max(*self, other: Self) => Self {
-            if *self > other { *self } else { other }
-        }
-
         exposed clamp(*self, lo: Self, hi: Self) => Self {
             if *self < lo { lo } else if *self > hi { hi } else { *self }
         }
@@ -210,43 +161,23 @@ macro float_ops($T: type) => {
         # defines as unequal to itself.
         exposed is_nan(*self) => bool { *self != *self }
 
-        # Hashing needs the value's real *bit pattern*, not its (lossy,
-        # rounding) integer value -- there's no direct float<->int bit
-        # reinterpret cast in this language, so this reads it back out
-        # through a pointer-to-pointer cast instead (`self` is already a
-        # `*Self`; retargeting that pointer's own pointee type is always a
-        # pure `Reinterpret`, unlike a float-to-int *value* cast -- see
-        # `docs/11-strings-casting-and-slices.md`'s general pointer-cast
-        # rule). `sizeof<Self> == 4` is a compile-time-constant condition
-        # once `Self` is substituted (generics fully monomorphize), so only
-        # the branch matching this instantiation's own real width is ever
-        # actually reached at runtime -- the other arm's 4-vs-8-byte read
-        # is unreachable code for that concrete type, not a real
-        # out-of-bounds access. `-0.0`/`0.0` are normalized to the same bit
-        # pattern first (`equals` already treats them as equal, per IEEE
-        # 754), which `Hash`'s own "equal values hash equal" contract
-        # requires; `NaN` needs no special handling at all -- it never
-        # equals anything, including itself, so any hash value for it is
-        # trivially consistent with that same contract.
-        exposed hash(*self) => u64 {
-            bits := if *self == <Self>0.0 {
-                0u64
-            } else if sizeof<Self> == 4 {
-                <u64>*<*u32>self
-            } else {
-                *<*u64>self
-            };
+    }
+    compose $T : Eq {
+        equals(*self, other: Self) => bool { *self == other }
+    }
+    compose $T : Default { default() => Self { 0.0 } }
+    compose $T : Hash {
+        # Hash the normalized IEEE bit pattern through a pointer reinterpret.
+        hash(*self) => u64 {
+            bits := if *self == <Self>0.0 { 0u64 }
+            else if sizeof<Self> == 4 { <u64>*<*u32>self }
+            else { *<*u64>self };
             mix64(bits)
         }
-
-        exposed fmt(*self, out: *mut Writer) => void {
-            write_float(out, <f64>*self);
-        }
     }
-    compose $T : Eq {}
-    compose $T : Default {}
-    compose $T : Hash {}
-    compose $T : Display {}
+    compose $T : Display {
+        fmt(*self, out: *mut Writer) => void { write_float(out, <f64>*self); }
+    }
 }
 
 signed_integer$(i8);

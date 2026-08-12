@@ -234,3 +234,67 @@ fn malformed_backref_is_rejected_not_looped() {
     assert!(decode("_omg_BZ_").is_none());
     assert!(decode("_omg_B_").is_none());
 }
+
+#[test]
+fn structural_compose_owner_paths_round_trip() {
+    // `omega_codegen::mangle::compose_method_symbol` wraps an unnamed
+    // composition target (`compose [?]u8 : Eq`, `compose str : Eq`,
+    // `compose i32 : Ord`) in `ManglePath::Type` rather than rendering the
+    // type through `Display`. Every such owner must stay inside
+    // `[A-Za-z0-9_]` and decode back to the same structural type -- the
+    // whole point of the wrapper.
+    for owner in [
+        MangleType::Slice(Box::new(MangleType::U8), false),
+        MangleType::Slice(Box::new(MangleType::U8), true),
+        MangleType::Str(false),
+        MangleType::Str(true),
+        MangleType::I32,
+        MangleType::Pointer(Box::new(named(nested(root("mymod"), Namespace::Type, "Dog"))), false),
+    ] {
+        let spec = ManglePath::Nested(
+            Box::new(ManglePath::Type(Box::new(owner.clone()))),
+            Namespace::Type,
+            "Eq".to_string(),
+        );
+        let sym = Symbol {
+            path: ManglePath::Nested(Box::new(spec), Namespace::Value, "equals".to_string()),
+            signature: Some((vec![owner.clone(), owner], MangleType::Bool)),
+            vendor_suffix: None,
+        };
+        assert_round_trips(&sym);
+    }
+}
+
+#[test]
+fn structural_owners_of_different_shape_never_collide() {
+    let build = |owner: MangleType| Symbol {
+        path: ManglePath::Nested(
+            Box::new(ManglePath::Nested(
+                Box::new(ManglePath::Type(Box::new(owner))),
+                Namespace::Type,
+                "Eq".to_string(),
+            )),
+            Namespace::Value,
+            "equals".to_string(),
+        ),
+        signature: Some((vec![], MangleType::Bool)),
+        vendor_suffix: None,
+    };
+    // `*str` and `*[?]u8` are the two fat pointers, and previously both
+    // rendered through `Display` into a path segment; they must stay
+    // distinct symbols, as must a slice's two mutabilities.
+    let mangled: Vec<String> = [
+        MangleType::Str(false),
+        MangleType::Str(true),
+        MangleType::Slice(Box::new(MangleType::U8), false),
+        MangleType::Slice(Box::new(MangleType::U8), true),
+    ]
+    .into_iter()
+    .map(|owner| assert_round_trips(&build(owner)))
+    .collect();
+    for (i, a) in mangled.iter().enumerate() {
+        for b in &mangled[i + 1..] {
+            assert_ne!(a, b, "structural compose owners must not collide");
+        }
+    }
+}

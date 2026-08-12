@@ -2,11 +2,10 @@
 #
 # Bound only on `K: Hash` -- a generic parameter only ever carries one
 # formal bound (see `GenericParam`'s own doc comment), and every realistic
-# key type already provides `cmp::Eq::equals` structurally (every `core`
-# primitive does, via its core primitive block), so key comparison inside this
-# file's own bodies stays duck-typed/unbound, exactly like any other
-# structural call in this language -- see `core::hash`'s own doc comment
-# for the full reasoning.
+# key type's `Hash` and `Eq` operations are selected explicitly below. The
+# `Hash` bound establishes the normal hash operation; equality remains a
+# concrete-instantiation requirement, diagnosed at the exact use if a key
+# type omits it.
 #
 # Separate chaining, not open addressing -- simpler to get correct (no
 # tombstones, no probe-sequence resize dance), and this is a first pass
@@ -79,7 +78,7 @@ exposed struct HashMap<K: Hash, V> {
     }
 
     bucket_index(*self, key: K) => usize {
-        <usize>(key.hash() % <u64>self.bucket_count)
+        <usize>(Hash::hash(key) % <u64>self.bucket_count)
     }
 
     exposed new() => Self {
@@ -121,7 +120,7 @@ exposed struct HashMap<K: Hash, V> {
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
         while current != <*mut Entry<K, V>>0 {
-            if (*current).key.equals(key) {
+            if Eq::equals((*current).key, key) {
                 old_value := (*current).value;
                 (*current).value = value;
                 return Option<V>::Some { value = old_value; };
@@ -139,7 +138,7 @@ exposed struct HashMap<K: Hash, V> {
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
         while current != <*mut Entry<K, V>>0 {
-            if (*current).key.equals(key) {
+            if Eq::equals((*current).key, key) {
                 return Option<V>::Some { value = (*current).value; };
             }
             current = (*current).next;
@@ -151,7 +150,7 @@ exposed struct HashMap<K: Hash, V> {
         idx := self.bucket_index(key);
         mut current := *self.bucket_slot(idx);
         while current != <*mut Entry<K, V>>0 {
-            if (*current).key.equals(key) {
+            if Eq::equals((*current).key, key) {
                 return true;
             }
             current = (*current).next;
@@ -164,7 +163,7 @@ exposed struct HashMap<K: Hash, V> {
         mut current := *self.bucket_slot(idx);
         mut prev := <*mut Entry<K, V>>0;
         while current != <*mut Entry<K, V>>0 {
-            if (*current).key.equals(key) {
+            if Eq::equals((*current).key, key) {
                 if prev == <*mut Entry<K, V>>0 {
                     *self.bucket_slot(idx) = (*current).next;
                 } else {

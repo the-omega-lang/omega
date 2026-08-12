@@ -281,7 +281,10 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             }
-            let Some(value) = self.analyze_expr(&field.value, Some(&expected)) else {
+            let Some(value) = self
+                .analyze_expr(&field.value, Some(&expected))
+                .map(|value| self.coerce_to_expected(Some(&expected), value))
+            else {
                 ok = false;
                 continue;
             };
@@ -858,7 +861,9 @@ impl<'r> Analyzer<'r> {
             _ => None,
         };
 
-        let checked_first = self.analyze_expr(first, declared_item_type)?;
+        let checked_first = self
+            .analyze_expr(first, declared_item_type)
+            .map(|value| self.coerce_to_expected(declared_item_type, value))?;
         // Widened for the same reason an `if`'s branches are -- an
         // array of mixed variants of one enum is an array of that
         // enum.
@@ -882,7 +887,9 @@ impl<'r> Analyzer<'r> {
         checked_elements.push(check_element(self, first.id, first.span, checked_first)?);
 
         for element in rest {
-            let checked_element = self.analyze_expr(element, Some(&item_type))?;
+            let checked_element = self
+                .analyze_expr(element, Some(&item_type))
+                .map(|value| self.coerce_to_expected(Some(&item_type), value))?;
             checked_elements.push(check_element(self, element.id, element.span, checked_element)?);
         }
 

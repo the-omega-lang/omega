@@ -167,7 +167,15 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             Item::Glue(parse_glue_def(p)?)
         }
         TokenKind::Ident(name)
-            if name == "compose" && matches!(p.peek_at(1), TokenKind::Ident(_) | TokenKind::Lt) =>
+            if name == "compose"
+                && matches!(
+                    p.peek_at(1),
+                    TokenKind::Ident(_)
+                        | TokenKind::Lt
+                        | TokenKind::LBracket
+                        | TokenKind::Star
+                        | TokenKind::Spec
+                ) =>
         {
             reject_annotations(p, &annotations);
             reject_visibility(p, visibility, visibility_span);
@@ -175,7 +183,14 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         }
         TokenKind::Ident(name)
             if name == "primitive"
-                && matches!(p.peek_at(1), TokenKind::Ident(_) | TokenKind::Lt) =>
+                && matches!(
+                    p.peek_at(1),
+                    TokenKind::Ident(_)
+                        | TokenKind::Lt
+                        | TokenKind::LBracket
+                        | TokenKind::Star
+                        | TokenKind::Spec
+                ) =>
         {
             reject_annotations(p, &annotations);
             if visibility != Visibility::Hidden {
@@ -806,6 +821,17 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
     let ident = p.expect_ident()?;
     p.expect(&TokenKind::LParen, "'('");
     let (self_mode, params) = parse_param_list(p);
+    let is_variadic = if p.eat(&TokenKind::Comma) {
+        p.expect(&TokenKind::DotDotDot, "'...'");
+        true
+    } else if p.eat(&TokenKind::DotDotDot) {
+        // `parse_param_list` consumes the comma after a `self` mode before
+        // discovering whether a following identifier exists, so `(*self,
+        // ...)` reaches us positioned directly at `...`.
+        true
+    } else {
+        false
+    };
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = crate::parser::r#type::parse_type(p)?;
@@ -819,6 +845,7 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
         ident,
         self_mode,
         params,
+        is_variadic,
         return_type,
         body,
     })

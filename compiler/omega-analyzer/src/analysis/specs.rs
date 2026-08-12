@@ -128,7 +128,28 @@ impl<'r> Analyzer<'r> {
                 mutable: false,
             });
         }
-        self.resolve_type_or_error(id, span, target, true)
+        // A composition has a concrete owner.  The parser intentionally
+        // accepts every type-shaped token sequence here so this semantic
+        // gate, rather than parser recovery, owns the diagnostic for shapes
+        // which can never own a conformance.
+        if matches!(
+            target,
+            Type::Pointer(..)
+                | Type::UnsizedArray(..)
+                | Type::SizedArray(..)
+                | Type::Function(..)
+                | Type::SpecObject(..)
+                | Type::SpecStatic(..)
+        ) {
+            self.error(id, span, AnalysisErrorKind::ComposeTargetNotAType);
+            return None;
+        }
+        let resolved = self.resolve_type_or_error(id, span, target, true)?;
+        if matches!(resolved, ResolvedType::Spec(..) | ResolvedType::Function(..)) {
+            self.error(id, span, AnalysisErrorKind::ComposeTargetNotAType);
+            return None;
+        }
+        Some(resolved)
     }
 
     pub fn check_compose_block(
@@ -138,7 +159,7 @@ impl<'r> Analyzer<'r> {
         target: &ResolvedType,
         spec_type: &Type,
         functions: &[HirFunctionDef],
-        inherent: &[(Ident, ResolvedMethod)],
+        method_ids: &[HirId],
     ) -> Option<(
         Rc<RefCell<ResolvedSpecType>>,
         Vec<ResolvedType>,
@@ -147,11 +168,6 @@ impl<'r> Analyzer<'r> {
     )> {
         let (spec, spec_args) = self.resolve_spec_reference(id, span, spec_type)?;
         let requirements = self.flatten_spec(id, span, &spec, &spec_args, target)?;
-        let requirement_names: HashSet<Ident> = requirements
-            .iter()
-            .map(|requirement| requirement.name.clone())
-            .collect();
-
         self.context.enter_scope();
         let signatures = self.analyze_all(functions, |this, function| {
             this.collect_function_signature(function, None)
@@ -170,7 +186,8 @@ impl<'r> Analyzer<'r> {
             let matching = functions
                 .iter()
                 .zip(&signatures)
-                .find(|(function, (signature, _))| {
+                .zip(method_ids)
+                .find(|((function, (signature, _)), _)| {
                     function.name == requirement.name
                         && self.fn_satisfies_requirement(
                             id,
@@ -180,30 +197,17 @@ impl<'r> Analyzer<'r> {
                             &requirement.return_type_bound,
                         )
                 });
-            if let Some((function, (signature, annotations))) = matching {
+            if let Some(((_function, (signature, annotations)), method_id)) = matching {
                 methods.push((
                     requirement.name.clone(),
                     ResolvedMethod {
-                        decl_id: function.id,
+                        decl_id: *method_id,
                         fn_type: signature.clone(),
                         visibility: requirement.visibility,
                         annotations: annotations.clone(),
                         source: Some(source.clone()),
                     },
                 ));
-            } else if let Some((_, method)) = inherent.iter().find(|(name, method)| {
-                *name == requirement.name
-                    && self.fn_satisfies_requirement(
-                        id,
-                        span,
-                        &method.fn_type,
-                        &requirement.fn_type,
-                        &requirement.return_type_bound,
-                    )
-            }) {
-                let mut method = method.clone();
-                method.visibility = requirement.visibility;
-                methods.push((requirement.name.clone(), method));
             } else if requirement.raw.default_body.is_some() {
                 let minted_id = self.resolver.fresh_synthetic_id();
                 methods.push((
@@ -237,11 +241,10 @@ impl<'r> Analyzer<'r> {
             }
         }
         let spec_name = spec.borrow().name.clone();
-        for function in functions {
+        for (function, method_id) in functions.iter().zip(method_ids) {
             if !methods
                 .iter()
-                .any(|(name, method)| *name == function.name && method.decl_id == function.id)
-                && !requirement_names.contains(&function.name)
+                .any(|(_, method)| method.decl_id == *method_id)
             {
                 self.error(
                     function.id,
@@ -377,6 +380,7 @@ impl<'r> Analyzer<'r> {
                     name: f.name.clone(),
                     span: f.span,
                     self_mode: f.self_mode,
+                    is_variadic: f.is_variadic,
                     params: f.params.clone(),
                     return_type: f.return_type.clone(),
                     default_body: f.body.clone(),
@@ -555,14 +559,26 @@ impl<'r> Analyzer<'r> {
     /// spec. Composition metadata, rather than methods merged onto an
     /// aggregate cell, is the sole conformance source.
     pub(super) fn for_in_source_declares(&mut self, ty: &ResolvedType, name: &str) -> bool {
+        !self.for_in_composes(ty, name).is_empty()
+    }
+
+    /// Every direct registry entry for an ambient iterator spec. Unlike a
+    /// receiver lookup, a `for` loop needs the spec arguments too: two
+    /// `ToIterator<T>` implementations are only distinguishable by `T`.
+    pub(super) fn for_in_composes(
+        &mut self,
+        ty: &ResolvedType,
+        name: &str,
+    ) -> Vec<crate::resolved_type::ResolvedCompose> {
         let Some(target_cell) = self.resolve_ambient_iterator_spec_cell(name) else {
-            return false;
+            return vec![];
         };
         match self.resolver.composes_for_type(ty) {
             Ok(composes) => composes
-                .iter()
-                .any(|compose| compose.spec.borrow().id == target_cell.borrow().id),
-            Err(_) => false,
+                .into_iter()
+                .filter(|compose| compose.spec.borrow().id == target_cell.borrow().id)
+                .collect(),
+            Err(_) => vec![],
         }
     }
 
@@ -624,7 +640,7 @@ impl<'r> Analyzer<'r> {
                 ResolvedFunctionType {
                     params,
                     return_type: Box::new(return_type?),
-                    is_variadic: false,
+                    is_variadic: raw.is_variadic,
                     self_mode: raw.self_mode,
                 },
                 return_type_bound,
@@ -807,50 +823,109 @@ impl<'r> Analyzer<'r> {
                 .iter()
                 .map(|(_, method)| method.decl_id)
                 .collect()),
-            Ok(None) => {
-                let requirements = self
-                    .flatten_spec(id, span, spec, spec_type_args, ty)
-                    .unwrap_or_default();
-                let composes = match self.resolver.composes_for_type(ty) {
-                    Ok(composes) => composes,
-                    Err(error) => {
-                        self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
-                        return Err(vec![]);
-                    }
-                };
-                let methods: Vec<_> = composes
-                    .into_iter()
-                    .flat_map(|compose| compose.methods)
-                    .collect();
-                let mut slots = Vec::with_capacity(requirements.len());
-                let mut missing = Vec::new();
-                for requirement in requirements {
-                    if let Some((_, method)) = methods.iter().find(|(name, method)| {
-                        *name == requirement.name
-                            && self.fn_satisfies_requirement(
-                                id,
-                                span,
-                                &method.fn_type,
-                                &requirement.fn_type,
-                                &requirement.return_type_bound,
-                            )
-                    }) {
-                        slots.push(method.decl_id);
-                    } else {
-                        missing.push(requirement.name);
-                    }
-                }
-                if missing.is_empty() {
-                    Ok(slots)
-                } else {
-                    Err(missing)
-                }
-            }
+            Ok(None) => Err(self
+                .flatten_spec(id, span, spec, spec_type_args, ty)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|requirement| requirement.name)
+                .collect()),
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
                 Err(vec![])
             }
         }
+    }
+
+    /// The transitive specs a direct `compose Target : Spec<Args>` also
+    /// satisfies. Dependency arguments stay raw on a spec declaration, so
+    /// this is deliberately resolved under the same `Self`/generic binding
+    /// as `flatten_spec`, rather than walked by the driver as plain syntax.
+    /// Each returned method list is restricted to that dependency's own
+    /// flattened requirements, ready to become a derived registry entry.
+    pub fn compose_dependency_closure(
+        &mut self,
+        id: HirId,
+        span: Span,
+        target: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+        direct_methods: &[(Ident, ResolvedMethod)],
+    ) -> Option<Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>, Vec<(Ident, ResolvedMethod)>)>>
+    {
+        let mut closure = Vec::new();
+        let mut visited = HashSet::new();
+        self.compose_dependency_closure_into(
+            id,
+            span,
+            target,
+            spec,
+            spec_args,
+            direct_methods,
+            &mut visited,
+            &mut closure,
+        )?;
+        Some(closure)
+    }
+
+    fn compose_dependency_closure_into(
+        &mut self,
+        id: HirId,
+        span: Span,
+        target: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+        direct_methods: &[(Ident, ResolvedMethod)],
+        visited: &mut HashSet<(HirId, Vec<ResolvedType>)>,
+        out: &mut Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>, Vec<(Ident, ResolvedMethod)>)>,
+    ) -> Option<()> {
+        let (generics, dependencies) = {
+            let spec = spec.borrow();
+            (spec.generics.clone(), spec.dependencies.clone())
+        };
+        let substitution: Vec<(Ident, ResolvedType)> = std::iter::once((
+            Ident("Self".to_string()),
+            target.clone(),
+        ))
+        .chain(generics.into_iter().zip(spec_args.iter().cloned()))
+        .collect();
+
+        for (dependency, raw_args) in dependencies {
+            let args = self.with_substitution(&substitution, |this| {
+                raw_args
+                    .iter()
+                    .map(|arg| this.resolve_type_or_error(id, span, arg, true))
+                    .collect::<Option<Vec<_>>>()
+            })?;
+            let dependency_id = dependency.borrow().id;
+            if !visited.insert((dependency_id, args.clone())) {
+                continue;
+            }
+
+            let requirements = self.flatten_spec(id, span, &dependency, &args, target)?;
+            let methods = requirements
+                .iter()
+                .filter_map(|requirement| {
+                    direct_methods
+                        .iter()
+                        .find(|(name, method)| {
+                            *name == requirement.name && method.fn_type == requirement.fn_type
+                        })
+                        .cloned()
+                })
+                .collect();
+            out.push((dependency.clone(), args.clone(), methods));
+            self.compose_dependency_closure_into(
+                id,
+                span,
+                target,
+                &dependency,
+                &args,
+                direct_methods,
+                visited,
+                out,
+            )?;
+        }
+        Some(())
     }
 
     /// Checks a single generic bound (`T: Animal`) against the concrete

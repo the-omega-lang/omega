@@ -732,16 +732,12 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         self.context.enter_scope();
-        // A struct/enum/union method never yet supports `spec T` return-type
-        // body inference (`return_type_override: None`, unconditionally) --
-        // that machinery only exists for a free function so far (see
-        // `omega_driver::Driver::resolve_spec_return_function`, which is
-        // only ever triggered from `compute_item`'s own top-level
-        // `HirFunctionDefinition` arm); a method whose return type is bare
-        // `spec T` gets the same `SpecStaticNotAllowedHere` rejection any
-        // other unsupported position does.
         let signatures = self.analyze_all(functions, |this, f| {
-            this.collect_function_signature(f, None)
+            let return_type_override = match &f.return_type {
+                Type::SpecStatic(bound) => Some(this.infer_body_return_type(f, bound)?),
+                _ => None,
+            };
+            this.collect_function_signature(f, return_type_override)
         });
         self.context.leave_scope();
         let signatures = signatures?;
@@ -1378,7 +1374,7 @@ impl<'r> Analyzer<'r> {
             name: f.name.clone(),
             type_args: vec![],
             self_mode: f.self_mode,
-            is_variadic: false,
+            is_variadic: fn_type.is_variadic,
             params,
             return_type: (*fn_type.return_type).clone(),
             body,
