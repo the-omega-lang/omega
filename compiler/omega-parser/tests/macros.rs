@@ -42,6 +42,35 @@ fn imported_macro_definitions_merge_and_local_definitions_shadow() {
 }
 
 #[test]
+fn imported_macro_expansions_are_attributed_to_the_call_site() {
+    // Imported definitions were lexed from another source file. Since spans
+    // do not carry a source-file identity, their original offsets must never
+    // survive into this module's AST: later diagnostics would render them
+    // against this caller's unrelated text.
+    let imported = macro_definition("exposed macro foreign() => { side_effect(); }");
+    let mut definitions = HashMap::new();
+    definitions.insert(imported.name.clone(), imported);
+
+    let source = "main() => void { foreign$(); }";
+    let parsed = SourceModule::parse(source).unwrap();
+    let Item::FunctionDefinition(function) = &parsed.nodes[0].item else {
+        panic!("expected main function");
+    };
+    let call_span = function.codeblock.statements[0].span;
+
+    let expanded = macros::expand(parsed, &definitions).unwrap();
+    let Item::FunctionDefinition(function) = &expanded.nodes[0].item else {
+        panic!("expected expanded main function");
+    };
+    let statement = &function.codeblock.statements[0];
+    assert_eq!(statement.span, call_span);
+    let Statement::Expression(expression) = &statement.statement else {
+        panic!("expected foreign macro body to become an expression statement");
+    };
+    assert_eq!(expression.span, call_span);
+}
+
+#[test]
 fn macro_visibility_and_definition_expansion_are_reported() {
     use omega_parser::ast::visibility::Visibility;
 

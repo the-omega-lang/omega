@@ -14,14 +14,14 @@
 //! per invocation position (`parser::item::parse_source_module`,
 //! `parser::expression::parse_block_contents`,
 //! `parser::expression::parse_expression`)
-//! -- no render-to-text-then-re-lex round-trip. Every individual token keeps
-//! whichever real span it was originally lexed with (from the macro
-//! definition's body, or from the invocation's arguments) -- composite spans
-//! built while re-parsing a spliced token stream are always well-formed
-//! (`start <= end`) because `Span::to` is `min`/`max` construction rather
-//! than first-token/last-token linearity (see `Span`'s own doc comment); a
-//! node built from tokens mixing both origins may not describe one single
-//! contiguous file range, but it can never be inverted.
+//! -- no render-to-text-then-re-lex round-trip. Before reparsing, generated
+//! tokens are re-anchored at the invocation's span. A [`Span`] deliberately
+//! carries no source-file identity, so preserving definition-site spans
+//! would make an imported macro's byte offsets point into the importing
+//! module's unrelated source text when a later diagnostic is rendered.
+//! Call-site attribution is therefore both meaningful to the author and the
+//! only source-safe policy without threading source identities through the
+//! whole compiler.
 //!
 //! A macro's body is never type-checked or even syntax-checked on its own,
 //! only once fully substituted with concrete arguments at a specific
@@ -331,7 +331,7 @@ fn expand_item_list(
     for node in nodes {
         match node.item {
             Item::MacroInvocation(inv) => {
-                result.extend(expand_items_invocation(&inv, defs, budget)?);
+                result.extend(expand_items_invocation(&inv, node.span, defs, budget)?);
             }
             Item::FunctionDefinition(f) => result.push(ItemNode {
                 item: Item::FunctionDefinition(expand_function_def(f, defs, budget)?),
@@ -424,6 +424,7 @@ fn expand_item_list(
 /// expanded, with no separate token-level nested-invocation handling needed.
 fn expand_items_invocation(
     inv: &MacroInvocationExpr,
+    call_span: Span,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<Vec<ItemNode>, MacroError> {
@@ -432,7 +433,7 @@ fn expand_items_invocation(
         .ok_or_else(|| MacroError::UnknownMacro {
             name: inv.name.clone(),
         })?;
-    let tokens = substitute_invocation(def, &inv.args, budget)?;
+    let tokens = substitute_invocation(def, &inv.args, call_span, budget)?;
     let padded = with_eof(&tokens);
     let mut p = Parser::new(&padded);
     let nodes = crate::parser::item::parse_source_module(&mut p);
@@ -459,6 +460,7 @@ fn expand_items_invocation(
 /// diagnostic to point at, whereas the call site always is.
 fn expand_expr_invocation(
     inv: &MacroInvocationExpr,
+    call_span: Span,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<ExpressionNode, MacroError> {
@@ -467,7 +469,7 @@ fn expand_expr_invocation(
         .ok_or_else(|| MacroError::UnknownMacro {
             name: inv.name.clone(),
         })?;
-    let tokens = substitute_invocation(def, &inv.args, budget)?;
+    let tokens = substitute_invocation(def, &inv.args, call_span, budget)?;
     let padded = with_eof(&tokens);
     let mut p = Parser::new(&padded);
     let parsed = crate::parser::expression::parse_expression(&mut p);
@@ -496,6 +498,7 @@ fn expand_expr_invocation(
 /// spliced into its surrounding block.
 fn expand_statements_invocation(
     inv: &MacroInvocationExpr,
+    call_span: Span,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
 ) -> Result<Vec<StatementNode>, MacroError> {
@@ -504,7 +507,7 @@ fn expand_statements_invocation(
         .ok_or_else(|| MacroError::UnknownMacro {
             name: inv.name.clone(),
         })?;
-    let tokens = substitute_invocation(def, &inv.args, budget)?;
+    let tokens = substitute_invocation(def, &inv.args, call_span, budget)?;
     let padded = with_eof(&tokens);
     let mut p = Parser::new(&padded);
     let parsed = p.allow_struct_literals(crate::parser::expression::parse_block_contents);
@@ -542,6 +545,7 @@ fn expand_statements_invocation(
 fn substitute_invocation(
     def: &MacroDefinitionStmt,
     args: &[Vec<Token>],
+    call_span: Span,
     budget: &mut u32,
 ) -> Result<Vec<Token>, MacroError> {
     let fixed_len = def.signature.fixed.len();
@@ -586,7 +590,18 @@ fn substitute_invocation(
         def.signature.variadic.as_ref().map(|p| &p.name),
         &mut out,
     );
-    Ok(out)
+    // `Span` has no file identity. Macro definitions can come from an
+    // imported module, so retaining their token spans would later render
+    // offsets from that module against the caller's source file. Attribute
+    // all generated code to the invocation instead: precise enough to find
+    // the expansion and always guaranteed to belong to the rendered file.
+    Ok(out
+        .into_iter()
+        .map(|token| Token {
+            kind: token.kind,
+            span: call_span,
+        })
+        .collect())
 }
 
 /// Parses `arg` against `param`'s declared fragment grammar -- this is what
@@ -813,7 +828,7 @@ fn expand_statement_list(
     for node in statements {
         match node.statement {
             Statement::MacroInvocation(inv) => {
-                result.extend(expand_statements_invocation(&inv, defs, budget)?)
+                result.extend(expand_statements_invocation(&inv, node.span, defs, budget)?)
             }
             statement => result.push(expand_stmt_node(
                 StatementNode {
@@ -936,7 +951,7 @@ fn expand_expr(
 ) -> Result<ExpressionNode, MacroError> {
     let span = node.span;
     if let Expression::MacroInvocation(inv) = node.expression {
-        let expanded = expand_expr_invocation(&inv, defs, budget)?;
+        let expanded = expand_expr_invocation(&inv, span, defs, budget)?;
         return Ok(ExpressionNode {
             expression: expanded.expression,
             span,
