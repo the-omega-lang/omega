@@ -49,12 +49,11 @@ directories claiming the same declared name is a hard
 `DuplicateModuleIdentity` compile error, checked once, at construction,
 before any parsing happens.
 
-The root directory **is** the root module. Its own source file is named for
-the directory's physical basename and sits directly in that directory;
-everything else in the directory is a child module:
+The root directory **is** the root module. It may have an own source file,
+named for the directory's physical basename and placed directly in that
+directory; everything else in the directory is a child module:
 
 ```
-runtime/core/core.omg       # core
 runtime/core/option.omg     # core::option
 runtime/core/strings.omg    # core::strings
 ```
@@ -62,8 +61,9 @@ runtime/core/strings.omg    # core::strings
 The same convention already applies to a nested directory-shaped module:
 `foo/foo.omg` owns `foo`, and `foo/bar.omg` owns `foo::bar`. At the root,
 `<root>/<basename>.omg` owns the declared root module even when `--name=`
-renames that module. A root with no own file is a namespace-only module and
-may still contain children.
+renames that module. A root with no own file — `runtime/core/` and
+`runtime/std/` are examples — is a namespace-only module and may still
+contain children.
 
 `main.omg` has no special meaning. A function named `main` in the root module
 receives the bare C entry symbol; a `main` elsewhere is an ordinary mangled
@@ -488,9 +488,8 @@ A directory-shaped module's own children live in a directory matching its
 name (`X/X.omg`) — `discover_into` recorded that entry, then recursed
 into `X/` to find its children, and that rescan found `X.omg` again,
 indistinguishable from an ordinary sibling submodule. The result was both
-`X` and a spurious `X::X` pointing at the identical file — silent
-whenever `X` declared nothing (`core.omg` was the one real-world case,
-harmless only for that reason), but a real duplicate-definition/
+`X` and a spurious `X::X` pointing at the identical file — silent whenever
+`X` declared nothing, but a real duplicate-definition/
 `AmbiguousAmbientName` error the moment it declared anything and this
 project's own `--extern` aliasing (see below) needed exactly that shape
 to work. Fixed by threading through which single name to skip on that one

@@ -1,8 +1,0 @@
-# `core`'s own root file. `core` is a full ambient prelude for every other
-# package (see docs/10-modules-and-linkage.md) -- its entire tree is always
-# eagerly, filesystem-discovered, whether it's the package actually being
-# compiled or a registered `--extern`, so nothing here needs to `import` a
-# sibling submodule for it to be part of the build, be discoverable for
-# `for`-extension purposes, or be reachable by any consumer. This file has
-# nothing left to declare; it is the root module when `core` itself is
-# compiled standalone (`just build-core`).

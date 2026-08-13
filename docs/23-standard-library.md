@@ -9,21 +9,21 @@ import every name they use.
 
 ```
 runtime/std/
-  std/
-    std.omg         # package entry point
-    alloc.omg       # non-generic allocator wrappers
-    cmp.omg         # Ordering, Eq, Ord
-    default.omg     # Default
-    fmt.omg         # Display and formatting helpers
-    hash.omg        # Hash
-    io.omg          # Read/Write, console markers, buffering, print macros
-    primitives.omg  # primitive conformances for std-owned specs
-    list.omg        # List<T>
-    linked_list.omg # LinkedList<T>
-    string.omg      # String
-    hash_map.omg    # HashMap<K, V>
-    hash_set.omg    # HashSet<T>
+  alloc.omg       # non-generic allocator wrappers
+  cmp.omg         # Ordering, Eq, Ord
+  default.omg     # Default
+  fmt.omg         # Display and formatting helpers
+  hash.omg        # Hash
+  io.omg          # Read/Write, console markers, buffering, print macros
+  primitives.omg  # primitive conformances for std-owned specs
+  list.omg        # List<T>
+  linked_list.omg # LinkedList<T>
+  string.omg      # String
+  hash_map.omg    # HashMap<K, V>
+  hash_set.omg    # HashSet<T>
 ```
+
+`std` likewise has a namespace-only root module.
 
 Build it as a separately compiled extern package:
 

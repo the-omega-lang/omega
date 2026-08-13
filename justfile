@@ -24,9 +24,10 @@ build-plat: build-core
     ./target/debug/omgc -v runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat.o
 
 # `omgc` takes a package root directory. That directory is its root module:
-# `<dir>/<basename>.omg` owns the root and the root's other entries are its
-# children. `main` in that root module, not a special filename, receives the
-# C entry symbol. `core` therefore lives directly at `runtime/core/core.omg`.
+# `<dir>/<basename>.omg`, when present, owns the root and the root's other
+# entries are its children. Without that file the root is a namespace-only
+# module. `main` in the root module, not a special filename, receives the C
+# entry symbol.
 build-core:
     mkdir -p target
     RUST_BACKTRACE=1 cargo build

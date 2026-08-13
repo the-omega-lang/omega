@@ -9,15 +9,16 @@ console policy; those belong to `std`.
 
 ```
 runtime/core/
-  core/
-    core.omg       # package entry point
-    iterator.omg   # Iterator<T>, ToIterator<T>
-    numerics.omg   # inherent scalar operations
-    option.omg     # Option<T>
-    platform.omg   # allocator and console capability gaps
-    slices.omg     # inherent generic-slice operations
-    strings.omg    # inherent str operations
+  iterator.omg   # Iterator<T>, ToIterator<T>
+  numerics.omg   # inherent scalar operations
+  option.omg     # Option<T>
+  platform.omg   # allocator and console capability gaps
+  slices.omg     # inherent generic-slice operations
+  strings.omg    # inherent str operations
 ```
+
+`core` has no root source file: its package root is a namespace for these
+child modules.
 
 `core` is the one ambient package. Code outside it may name exposed core items
 without importing `core`; files *inside* it still use ordinary imports. The
