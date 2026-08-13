@@ -12,20 +12,29 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 struct TestPackage(PathBuf);
 
 impl TestPackage {
+    /// A package shaped exactly like a real one: a root *directory* whose
+    /// own module file is named after it (`main/main.omg`), so `source`
+    /// becomes the root module `main` and `write_child` adds `main::<name>`
+    /// beside it. The filename is deliberately not a parameter -- under the
+    /// root-module rule it is not free, it must match the directory, and a
+    /// harness that could vary it independently would be compiling a shape
+    /// no user package can have.
     fn new(source: &str) -> Self {
-        Self::with_file("main.omg", source)
-    }
-
-    fn with_file(file: &str, source: &str) -> Self {
         let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
+        let parent = std::env::temp_dir().join(format!(
             "omega_compose_test_{}_{}",
             std::process::id(),
             sequence,
         ));
-        fs::create_dir(&root).expect("create test package");
-        fs::write(root.join(file), source).expect("write test module");
+        let root = parent.join("main");
+        fs::create_dir_all(&root).expect("create test package");
+        fs::write(root.join("main.omg"), source).expect("write root module");
         Self(root)
+    }
+
+    fn write_child(&self, name: &str, source: &str) {
+        fs::write(self.0.join(format!("{name}.omg")), source)
+            .expect("write test child module");
     }
 
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
@@ -37,7 +46,8 @@ impl TestPackage {
 
 impl Drop for TestPackage {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let parent = self.0.parent().expect("test root has a parent");
+        let _ = fs::remove_dir_all(parent);
     }
 }
 
@@ -59,10 +69,7 @@ fn compile_errors(package: &TestPackage, message: &str) -> Vec<CompileError> {
 }
 
 fn option_core() -> TestPackage {
-    TestPackage::with_file(
-        "core.omg",
-        "exposed enum Option<T> { None, Some { exposed value: T; }; }",
-    )
+    TestPackage::new("exposed enum Option<T> { None, Some { exposed value: T; }; }")
 }
 
 #[test]
@@ -225,10 +232,7 @@ fn primitive_blocks_are_core_only() {
 
 #[test]
 fn external_non_generic_primitive_is_imported_not_redefined() {
-    let core = TestPackage::with_file(
-        "core.omg",
-        "primitive i32 { exposed identity(*self) => i32 { *self } }",
-    );
+    let core = TestPackage::new("primitive i32 { exposed identity(*self) => i32 { *self } }");
     let local = TestPackage::new("main() => i32 { 7i32.identity() }");
     let mut driver = Driver::new(
         local.0.clone(),
@@ -264,8 +268,7 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
 /// same composed method reach the linker.
 #[test]
 fn extern_owned_concrete_compose_is_imported_not_reemitted() {
-    let library = TestPackage::with_file(
-        "lib.omg",
+    let library = TestPackage::new(
         r#"
         exposed spec Show { show(*self) => i32; }
         exposed struct Value { exposed n: i32; }
@@ -316,8 +319,7 @@ fn extern_owned_concrete_compose_is_imported_not_reemitted() {
 #[test]
 fn externally_owned_stdout_cannot_be_composed_with_externally_owned_write() {
     let core = option_core();
-    let library = TestPackage::with_file(
-        "lib.omg",
+    let library = TestPackage::new(
         r#"
         exposed spec Write { write(*mut self, bytes: *[?]u8) => Option<usize>; }
         exposed marker Stdout {}
@@ -420,7 +422,7 @@ fn print_macro_requires_an_explicit_import() {
 
 #[test]
 fn formatting_is_not_available_from_core() {
-    let core = TestPackage::with_file("core.omg", "marker CoreOnly {}");
+    let core = TestPackage::new("marker CoreOnly {}");
     let consumer = TestPackage::new("main() => i32 { core::fmt::missing() }");
     let mut driver = Driver::new(
         consumer.0.clone(),
@@ -443,6 +445,55 @@ fn formatting_is_not_available_from_core() {
         )),
         "expected core::fmt to be unresolved, got {errors:#?}"
     );
+}
+
+#[test]
+fn internal_items_are_visible_across_executable_modules() {
+    let package = TestPackage::new(
+        r#"
+        import helper::shared;
+        main() => i32 { shared() }
+        "#,
+    );
+    package.write_child("helper", "internal shared() => i32 { 42 }");
+    package
+        .compile()
+        .expect("an executable's root and child modules share internal visibility");
+}
+
+#[test]
+fn root_imports_are_anchored_to_the_package_root_module() {
+    let package = TestPackage::new(
+        r#"
+        import root::helper::shared;
+        main() => i32 { shared() }
+        "#,
+    );
+    package.write_child("helper", "internal shared() => i32 { 42 }");
+    package
+        .compile()
+        .expect("root imports from a child should remain inside the package");
+}
+
+#[test]
+fn local_and_extern_root_identities_cannot_collide() {
+    let local = TestPackage::new("main() => i32 { 0 }");
+    let dependency = TestPackage::new("exposed value() => i32 { 42 }");
+    let errors = match Driver::new(
+        local.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("main".to_string()),
+            dir: dependency.0.clone(),
+        }],
+    ) {
+        Ok(_) => panic!("local and extern package identities must not collide"),
+        Err(errors) => errors,
+    };
+    assert!(matches!(
+        errors.as_slice(),
+        [CompileError::DuplicateModuleIdentity { name, .. }] if name.as_ref() == "main"
+    ));
 }
 
 /// `Spec::method(receiver, ...)` must adapt `receiver` to the declared self
@@ -987,9 +1038,7 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
 /// names -- outside the `[A-Za-z0-9_]` set the scheme deliberately keeps to.
 #[test]
 fn primitive_method_symbols_stay_within_the_mangling_charset() {
-    let package = TestPackage::with_file(
-        "main.omg",
-        r#"
+    let package = TestPackage::new(r#"
         primitive str { exposed width(*self) => i32 { self.size } }
         main() => i32 { 0 }
         "#,
@@ -1013,4 +1062,39 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
         })
         .collect();
     assert!(names.iter().any(|name| name == "width"));
+}
+
+/// A package whose root directory contains no module at all is a reportable
+/// error, not a panic. The reachable cause is the pre-root-module layout
+/// (`<root>/<basename>/<basename>.omg`): `discover_tree`'s `skip` matches by
+/// name rather than kind, so the same-named *directory* is swallowed too and
+/// the root ends up with neither an own file nor children. That used to reach
+/// `compile`'s generic-instantiation merge and fail its "always includes at
+/// least the entry module" expectation as a compiler panic — exactly the
+/// shape anyone migrating an old package is in.
+#[test]
+fn a_package_root_with_no_modules_is_a_reportable_error() {
+    let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "omega_empty_pkg_{}_{}",
+        std::process::id(),
+        sequence
+    ));
+    let nested = root.join(root.file_name().expect("temp dir has a name"));
+    fs::create_dir_all(&nested).expect("create nested package");
+    let own = format!("{}.omg", root.file_name().unwrap().to_str().unwrap());
+    fs::write(nested.join(&own), "exposed helper() => i32 { 7 }\n").expect("write inner module");
+
+    let result = Driver::new(root.clone(), None, Vec::new())
+        .expect("construct driver")
+        .compile(&[Ident("main".to_string())]);
+    let _ = fs::remove_dir_all(&root);
+
+    let errors = result.err().expect("an empty package root must not compile");
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, CompileError::EmptyPackage { .. })),
+        "expected EmptyPackage, got {errors:?}"
+    );
 }

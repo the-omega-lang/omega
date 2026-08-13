@@ -11,7 +11,7 @@ use std::time::Instant;
 /// including a few genuinely stack-recursive shapes (e.g. `CodeblockExpr`'s
 /// body parser recurses one native stack frame per statement in a block --
 /// see its doc comment). A single large `main()` like
-/// `examples/dev/main.omg`'s can get deep enough to exceed the platform's
+/// `examples/dev/dev.omg`'s can get deep enough to exceed the platform's
 /// default thread stack (commonly 8MiB), so the real work runs on a
 /// dedicated thread with a much larger stack instead of the process's main
 /// thread -- the same mitigation real-world recursive-descent compilers
@@ -50,7 +50,7 @@ struct Args {
     verbose: bool,
 }
 
-/// `omgc <entry-file> -o <output-file> [OPTIONS]` -- the entry file is the
+/// `omgc <entry-dir> -o <output-file> [OPTIONS]` -- the package root is the
 /// only positional argument; `-o` is a separate next-token argument (unlike
 /// every other flag here, which is `=`-attached or bare), so this walks
 /// `args` with an explicit iterator rather than a plain `for` loop, to
@@ -89,13 +89,20 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 }
                 None => (None, PathBuf::from(rest)),
             };
-            let Some(name) = explicit_name.or_else(|| basename(&dir)) else {
+            // The directory's own basename is required even when `<name>:`
+            // already supplies the declared identity: discovery keys an
+            // extern's entire tree off the *physical* basename and
+            // `relabel_root` renames it only afterwards, so a root with no
+            // usable final component would discover nothing at all and
+            // surface later as a pile of "cannot find" errors instead of
+            // here, at the flag that caused it.
+            let Some(physical_name) = basename(&dir) else {
                 return Err(format!(
                     "invalid --extern flag '{arg}': '{}' has no usable directory name",
                     dir.display()
                 ));
             };
-            externs.push(ExternRoot { name, dir });
+            externs.push(ExternRoot { name: explicit_name.unwrap_or(physical_name), dir });
         } else if let Some(rest) = arg.strip_prefix("--name=") {
             if rest.is_empty() {
                 return Err(format!("invalid --name flag '{arg}': the name cannot be empty"));
@@ -227,13 +234,25 @@ fn run() {
     let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
-    let Some(declared_name) = name.clone().or_else(|| basename(&entry_dir)) else {
+    // The root directory's *physical* basename is what
+    // `fs_resolve::discover_tree` keys the entire local tree off, and it is
+    // also the name the root module's own file has to carry on disk --
+    // `--name=` renames the discovered module afterwards (`relabel_root`),
+    // it does not stand in for a missing directory name. A path with no
+    // usable final component (`.`, `/`, `..`) can therefore never name a
+    // package, with or without `--name=`, and is rejected here, in one
+    // place, rather than discovering an empty tree further down and
+    // silently emitting an object file containing nothing.
+    let Some(physical_name) = basename(&entry_dir) else {
         eprintln!(
-            "error: '{}' has no usable directory name (pass --name=<name> explicitly)",
+            "error: '{}' has no usable directory name -- a package root's own module file is \
+             named after its directory, so name the directory explicitly ('--name=' renames the \
+             module, it cannot supply a missing directory name)",
             entry_dir.display()
         );
         std::process::exit(1);
     };
+    let declared_name = name.clone().unwrap_or(physical_name);
 
     if verbose {
         verbose_step(colors, "Compiling", &format!("{} ({target})", entry_dir.display()));
@@ -251,29 +270,10 @@ fn run() {
         }
     };
 
-    // The local project's own declared identity first (right for a
-    // library-shaped package, whose directory name and entry module
-    // already agree -- see `basename`), falling back to the fixed `main`
-    // convention (right for an ordinary executable, where the directory
-    // name has nothing to do with the program). Mirrors Rust's own
-    // `lib.rs`/`main.rs` split without needing an explicit `--lib`/`--bin`
-    // mode flag. Queried through `Driver::has_local_module` rather than
-    // checked against the filesystem directly here, so a directory-shaped
-    // entry (`<name>/<name>.omg`, nested -- `core`'s own real shape) is
-    // recognized exactly like a flat `<name>.omg` file would be.
-    let main_name = Ident("main".to_string());
-    let entry_name = if driver.has_local_module(&declared_name) {
-        declared_name
-    } else if driver.has_local_module(&main_name) {
-        main_name
-    } else {
-        eprintln!(
-            "error: no entry module found in '{}' (expected '{}.omg' or 'main.omg')",
-            entry_dir.display(),
-            declared_name.as_ref()
-        );
-        std::process::exit(1);
-    };
+    // The root directory is the root module.  A package with no matching
+    // root file is namespace-only and simply has no place to declare the C
+    // entry function; it remains a valid library-shaped package.
+    let entry_name = declared_name;
     let entry_module = vec![entry_name.clone()];
 
     let program = match driver.compile(&entry_module) {

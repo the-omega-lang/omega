@@ -6,7 +6,7 @@ named, static function set; exactly one `glue` declaration provides its
 implementation across the compilation.
 
 ```omega
-# runtime/core/core/platform.omg
+# runtime/core/platform.omg
 gap GlobalAllocator {
     alloc(size: usize) => *mut u8;
     free(ptr: *u8) => void;
@@ -66,7 +66,7 @@ The corresponding glue function is compiled with the exact same mangled
 symbol, so calls have the normal direct-function ABI and need no runtime
 registry, object, or dynamic dispatch.
 
-`runtime/core/core/platform.omg` supplies the core gaps. `runtime/plat/libc/`
+`runtime/core/platform.omg` supplies the core gaps. `runtime/plat/libc/`
 is an ordinary external package that supplies the libc-backed glue for them.
 See [`plat`](22-platform-glue.md) for that implementation and
 [the core library](13-core-library.md) for the public core layout.

@@ -46,10 +46,10 @@ flags point at.
 ## The `plat` alias
 
 `--name=<name>` (standalone compilation) and `--extern=<name>:<dir>`
-(consumption) have always let a package's *declared* identity differ from
-its root directory's own basename in principle (`examples/extern_lib/`
-compiles as `mathlib` this same way) — what's new is that the alias now
-applies to *everything* discovered beneath the root, not just the root
+(consumption) let a package's *declared* identity differ from its root
+directory's own basename. `libc/` needs no move for the root-module layout:
+`libc.omg` is already the root's own file, even though the package presents as
+`plat`. The alias applies to *everything* discovered beneath the root, not just the root
 segment itself, so a directory honestly named `libc`, with real content
 of its own, can still present as `plat` in full. Two real,
 previously-latent problems had to be fixed for this to actually work
@@ -57,10 +57,7 @@ end-to-end, not just at the entry point:
 
 - **`fs_resolve::discover_into` double-counted a directory-shaped module
   named the same as its own entry file** (`X/X.omg`) — the exact shape
-  real nesting under an aliased root would otherwise need. Now fixed
-  (was tracked in [known issues](14-known-issues.md); `core`'s own
-  `core/core.omg` had this bug too, latently, harmless only because
-  `core.omg` itself declares nothing).
+  real nesting under an aliased root would otherwise need. Now fixed.
 - **`ModuleRoots::locate`** used to reconstruct a filesystem path
   directly from a path's *declared* segments for every `--extern`
   lookup — which would search for a literal `plat.omg` on disk no matter
@@ -105,7 +102,7 @@ just build-plat     # omgc runtime/plat/libc/ --name=plat --extern=core:runtime/
 Built and linked exactly like any other `--extern` dependency — `just
 build-exe`/`run-exec` register `--extern=plat:runtime/plat/libc/` and
 link `target/plat.o` alongside `core.o`/`mathlib.o`, even though
-`examples/dev` never imports `plat` (see `examples/dev/main.omg`'s own
+`examples/dev` never imports `plat` (see `examples/dev/dev.omg`'s own
 `GlobalAllocator::alloc`/`free` demo, resolved through the ambient `core`
 prelude with no `plat` reference of any kind).
 

@@ -6,10 +6,10 @@ import simplemodule;
 import mymodule;
 import mymodule::thing::something2;
 # Resolved externally -- scanned (its signatures are fully known here) but
-# never compiled by this process; `examples/extern_lib/mathlib.omg` is
+# never compiled by this process; `examples/mathlib/mathlib.omg` is
 # compiled by its own, separate `omgc` invocation and linked in afterward:
-#   omgc examples/dev/main.omg --extern=mathlib:examples/extern_lib/mathlib.omg -o target/main.o
-#   omgc examples/extern_lib/mathlib.omg -o target/mathlib.o
+#   omgc examples/dev/ --extern=mathlib:examples/mathlib/ -o target/main.o
+#   omgc examples/mathlib/ -o target/mathlib.o
 #   cc target/main.o target/mathlib.o -o hello
 import extern::mathlib;
 import cycle_a::cycle_a_value;

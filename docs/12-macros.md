@@ -109,11 +109,11 @@ There is no mechanism that prevents this, so a macro that must introduce a
 local picks a name a caller is unlikely to write. `std::io`'s print macros use
 an `omega_print_` prefix for precisely this reason; a plainer `out` shadowed
 any caller-supplied `out` passed as an argument, which is a real bug that a
-real program hit (`examples/dev/main.omg` prints a `*str` named `out`).
+real program hit (`examples/dev/dev.omg` prints a `*str` named `out`).
 
 ## Where it's actually used
 
-`runtime/core/core/numerics.omg` uses three macros
+`runtime/core/numerics.omg` uses three macros
 (`signed_integer`/`unsigned_integer`/`float_ops`) to generate numeric spec
 method and conformance declarations for every primitive type instead of
 hand-writing twelve near-identical groups. See [core library](13-core-library.md).

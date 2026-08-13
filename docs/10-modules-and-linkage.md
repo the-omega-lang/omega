@@ -16,9 +16,9 @@ CLI to point at in the first place. A real build, from this repo's own
 
 ```
 omgc runtime/core/ -o target/core.o
-omgc examples/extern_lib/ --name=mathlib -o target/mathlib.o
+omgc examples/mathlib/ -o target/mathlib.o
 omgc examples/dev/ \
-     --extern=mathlib:examples/extern_lib/ \
+     --extern=mathlib:examples/mathlib/ \
      --extern=core:runtime/core/ \
      -o target/main.o
 cc -Wl,--gc-sections target/main.o target/mathlib.o target/core.o -o example
@@ -37,7 +37,7 @@ so an unused function from an otherwise-linked package cannot retain its
 unrelated dependencies. This is what lets a core-only or allocator-only
 executable link only the glue its reachable functions actually require.
 
-## Module identity, and the entry module
+## Module identity and the root module
 
 A module's identity (used for both name resolution *and* symbol mangling)
 defaults to its root directory's own basename, overridable: `--name=<name>`
@@ -49,35 +49,79 @@ directories claiming the same declared name is a hard
 `DuplicateModuleIdentity` compile error, checked once, at construction,
 before any parsing happens.
 
-Given the local root directory and its declared identity, `omgc` finds the
-entry module itself, trying two conventions in order: `<name>.omg`/a
-directory-shaped `<name>/<name>.omg` (the *library* convention — the same
-one any nested directory-shaped module's own content already follows,
-applied to the root itself; right when the directory's name and the
-package's own identity already agree, e.g. `core`, whose own content lives
-at `runtime/core/core/core.omg` — a directory-shaped module named `core`,
-nested one level inside `runtime/core/`, which is why that's the root
-`--extern=core:` points at, not `runtime/core/core/` itself), else the
-fixed, purpose-specific `main.omg` (the *executable* convention — right
-when the directory's name has nothing to do with the program, e.g.
-`examples/dev/`, whose default identity is `dev` but whose entry is
-`main.omg`). Mirrors Rust's own `lib.rs`/`main.rs` split without an
-explicit `--lib`/`--bin` mode flag. Neither present is a real,
-reportable error, not a silent empty build.
+The root directory **is** the root module. Its own source file is named for
+the directory's physical basename and sits directly in that directory;
+everything else in the directory is a child module:
+
+```
+runtime/core/core.omg       # core
+runtime/core/option.omg     # core::option
+runtime/core/strings.omg    # core::strings
+```
+
+The same convention already applies to a nested directory-shaped module:
+`foo/foo.omg` owns `foo`, and `foo/bar.omg` owns `foo::bar`. At the root,
+`<root>/<basename>.omg` owns the declared root module even when `--name=`
+renames that module. A root with no own file is a namespace-only module and
+may still contain children.
+
+`main.omg` has no special meaning. A function named `main` in the root module
+receives the bare C entry symbol; a `main` elsewhere is an ordinary mangled
+function. There is no library/program mode: a package without root-module
+`main` simply has no C entry point, and the linker decides how its object is
+used.
+
+### Known gap: a same-named subdirectory hides itself, silently
+
+`discover_tree` registers the root module and then walks the root's other
+entries with `skip = <basename>`, so `<root>/<basename>.omg` isn't
+double-counted as both the root's own file and a child called `N::N`. `skip`
+matches by *name*, not by kind, so it also swallows a **directory**
+`<root>/<basename>/`. If that directory is where the package's sources
+actually live, discovery finds nothing inside the root at all.
+
+That is exactly the pre-root-module layout (`runtime/core/core/`,
+`runtime/std/std/`), so it is the shape a package being migrated is most
+likely to be in. The *consequence* is now reported rather than silent:
+a package that discovers no modules is `CompileError::EmptyPackage`, naming
+the root, the module file that was looked for, and — in its help — the move
+that fixes an old-layout package. Before that guard it was worse than silent,
+reaching `compile`'s generic-instantiation merge and failing its
+"always includes at least the entry module" expectation as a compiler panic.
+
+What is still missing is the *specific* diagnosis: nothing says "the directory
+`<root>/<basename>/` exists and was skipped", so a package that has both a
+root module file *and* a same-named subdirectory of sources still loses the
+subdirectory quietly. Narrowing `skip` to files only would fix it, but that
+changes the recursive half of discovery, and the both-present case
+(`<root>/<basename>.omg` **and** `<root>/<basename>/`) is already a proper
+`AmbiguousModule` — so the remaining hole is narrow, and worth its own change
+rather than a widening of this one. The same skip-by-name behaviour exists one
+level down (`X/X/` under a directory-shaped module `X`), where it predates the
+root-module rule rather than being introduced by it.
+
+Resolving it is a design decision, not a local fix. Either a same-named
+*directory* becomes a collision with the module its parent already owns,
+reported like the both-a-file-and-a-directory case — but
+`ResolveError::AmbiguousModule`'s wording ("both a file and a directory claim
+this name") is untrue when there is no file, so that needs a reworded or new
+variant — or `skip` narrows to the file `<name>.omg` alone and
+`<root>/<basename>/` resolves as the ordinary child `N::N`, which is what
+"everything else in the root is a child" literally says but changes the
+recursive half of discovery that the root-module change deliberately left
+untouched. Independently of which is chosen, a package that discovers no
+modules at all should be a reportable error rather than an empty object file.
 
 ## Eager local discovery
 
-The local project's own root is **recursively, eagerly walked in full**
-the moment `omgc` starts (`fs_resolve::discover_tree`) — metadata only (no
-file is ever opened at this point, just `read_dir`/`is_file`/`is_dir`), so
-this stays cheap regardless of how large the package is. The result is a
-complete inventory of every module the local project actually contains;
-looking one up (`ModuleRoots::locate`) is a plain map lookup afterward, and
-an absent entry is a real, checked fact — "does not exist" — not "wasn't
-asked about yet". An `--extern` dependency never gets this treatment
-either way; it stays resolved lazily, one path at a time, on demand —
-eager discovery belongs only to whichever package is actually *being
-compiled* in this invocation, never to one merely referenced.
+The local project's root is **recursively, eagerly walked in full** the moment
+`omgc` starts (`fs_resolve::discover_tree`) — metadata only (no file is opened
+at this point, just `read_dir`/`is_file`/`is_dir`). Discovery registers the
+root module first, then walks its children beneath that root path. The result
+is a complete inventory of every module the local project contains; looking
+one up (`ModuleRoots::locate`) is a plain map lookup afterward, and an absent
+entry is a real, checked fact — "does not exist" — not "wasn't asked about
+yet".
 
 **This inventory is also, directly, the local package's own build set**
 (`Driver::local_module_paths`) — every module it finds is parsed and
@@ -390,7 +434,7 @@ same span; worse, a field used by `Holder<i32>` but not `Holder<u8>` was
 reported as unused even though the warning's own text claims it "is never read
 anywhere `Holder` is used". Instantiations of one declaration are now judged
 together: a field is unused only when *no* instantiation touched it, and it is
-reported once. This is why `examples/dev/main.omg` no longer warns about
+reported once. This is why `examples/dev/dev.omg` no longer warns about
 `Optional`'s `None` variant and `value` field — `Optional<u32>::None` is
 constructed on line 849, so the old warning was simply false.
 
@@ -455,21 +499,17 @@ one level up, never a fresh sibling.
 
 ## Aliasing a root's declared identity, independent of its on-disk name
 
-`--name=<name>` (standalone) and `--extern=<name>:<dir>` (as a
-dependency) have always let a root's declared identity differ from its
-directory's own basename at the root itself (`examples/extern_lib/`
-compiles as `mathlib` this way) — what changed is that the alias now
-applies to everything discovered *beneath* the root too
+`--name=<name>` (standalone) and `--extern=<name>:<dir>` (as a dependency)
+let a root's declared identity differ from its directory's own basename. The
+root file remains named after the physical directory: `runtime/plat/libc/`
+contains `libc.omg`, yet compiles and imports as `plat`. The alias applies to
+the root and everything discovered *beneath* it
 (`fs_resolve::relabel_root`, applied to `ModuleRoots::local_tree`/
 `extern_trees`), so a directory honestly named `libc`, with real,
 multi-item content of its own, can present in full as a different
 package, e.g. `plat` (see [`plat`](22-platform-glue.md)). For the local
-package specifically, this only applies when `--name=` was given
-*explicitly* — never automatically from a defaulted basename, since that
-would silently break the existing "does the entry match the directory's
-own name, else fall back to the `main.omg` executable convention"
-distinction `omgc` still needs; an extern's own declared name has no such
-duality, so its aliasing is unconditional.
+package specifically, this applies when `--name=` is given explicitly; an
+extern's declared name is likewise applied to its whole discovered tree.
 
 Making lookup agree with this required one more change: `ModuleRoots::
 locate` used to reconstruct a filesystem path directly from a path's

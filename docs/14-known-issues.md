@@ -287,6 +287,17 @@ need a breaking change to fix — full writeups in
   conformance living only in the compose registry, an aggregate queues
   nothing, so the `ItemKey`-keyed queue was deleted outright rather than
   unified; `ComposeEntry::pending` is the only one left.
+- **A directory sharing its package root's name is skipped without saying
+  so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
+  `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
+  exists to de-duplicate. The *consequence* is now diagnosed —
+  a package that ends up with no modules is `CompileError::EmptyPackage`,
+  which names the expected root file and tells an old-layout package what to
+  move (it previously panicked on `compile`'s "always includes at least the
+  entry module" expectation). What remains is that nothing reports the skipped
+  directory itself, so a package with both a root file *and* a same-named
+  subdirectory still loses the subdirectory quietly. Full writeup in
+  [modules and linkage](10-modules-and-linkage.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
 - **`ResolveError::Cycle` carries a chain it never populates** — it always
   prints one module, so the rendered message implies a cycle it never
   shows.

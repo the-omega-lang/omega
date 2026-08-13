@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! error: mismatched types
-//!   --> examples/dev/main.omg:88:13
+//!   --> examples/dev/dev.omg:88:13
 //!    |
 //! 88 |     total = total + "hi";
 //!    |             ^^^^^^^^^^^^ expected `i32`, found `*u8`

@@ -4,6 +4,5 @@
 # compiled or a registered `--extern`, so nothing here needs to `import` a
 # sibling submodule for it to be part of the build, be discoverable for
 # `for`-extension purposes, or be reachable by any consumer. This file has
-# nothing left to declare; it exists only because the compiler still needs
-# a conventionally-named entry file to find (`core.omg`/`core/core.omg`)
-# when `core` itself is compiled standalone (`just build-core`).
+# nothing left to declare; it is the root module when `core` itself is
+# compiled standalone (`just build-core`).

@@ -1,8 +1,8 @@
 # A small standalone project, meant to be compiled on its own
-# (`omgc examples/extern_lib/mathlib.omg -o target/mathlib.o`) and linked
+# (`omgc examples/mathlib/ -o target/mathlib.o`) and linked
 # into another project that references it via `import extern::mathlib;`
-# (see `examples/dev/main.omg`, compiled with
-# `--extern=mathlib:examples/extern_lib`). Nothing here is aware it's
+# (see `examples/dev/dev.omg`, compiled with
+# `--extern=mathlib:examples/mathlib/`). Nothing here is aware it's
 # being used this way -- it's an entirely ordinary module.
 
 exposed add_numbers(a: i32, b: i32) => i32 {

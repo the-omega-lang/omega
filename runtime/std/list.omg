@@ -21,7 +21,7 @@
 
 # No imports needed for `Iterator`/`ToIterator`/`Option<T>` -- `core` is a
 # full ambient prelude for every other package (see
-# `docs/10-modules-and-linkage.md`), exactly like `examples/dev/main.omg`'s
+# `docs/10-modules-and-linkage.md`), exactly like `examples/dev/dev.omg`'s
 # own bare `Option::None` usage. `alloc`/`free`/`realloc` come from
 # `std::alloc` instead of calling `core::platform::GlobalAllocator` directly --
 # see that file's own doc comment for why that indirection is required,

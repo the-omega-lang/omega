@@ -703,15 +703,14 @@ impl Driver {
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            // "Root of *my* current project" -- if the importer is itself part
-            // of an extern project (its path leads with that project's own
-            // declared module name), re-prepend that name so the result stays
-            // anchored to *that* project's root rather than silently falling
-            // back to the local one.
+            // "Root of *my* current project". Every discovered module path,
+            // local or extern, now begins with its project's declared root
+            // name, so re-prepend the importer's first segment to keep this
+            // path anchored to that project.
             ImportRoot::ProjectRoot => {
                 let mut absolute = Vec::new();
-                if self.roots.is_extern(importer) {
-                    absolute.push(importer[0].clone());
+                if let Some(project_root) = importer.first() {
+                    absolute.push(project_root.clone());
                 }
                 absolute.extend(path.segments());
                 Ok(absolute)

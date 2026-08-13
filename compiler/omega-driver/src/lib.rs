@@ -87,8 +87,8 @@ impl Driver {
     /// is an *explicit* `--name=` override, `None` when `omgc` wasn't given
     /// one (see `ModuleRoots::new`'s doc comment for why that distinction,
     /// not a plain already-defaulted name, is what this needs); `externs`
-    /// is every `--extern` the CLI was given. Fails only if two different
-    /// `--extern`s claim the same declared name.
+    /// is every `--extern` the CLI was given. Fails if two package roots
+    /// claim the same declared name.
     pub fn new(
         root: PathBuf,
         root_name: Option<Ident>,

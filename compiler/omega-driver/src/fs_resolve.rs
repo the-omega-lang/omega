@@ -127,7 +127,40 @@ fn is_module_segment_name(name: &str) -> bool {
 /// misleading "doesn't exist".
 pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
     let mut out = HashMap::new();
-    discover_into(root, &mut Vec::new(), &mut out, None);
+    // Unreachable in practice: `omgc` rejects a root with no usable final
+    // component (`.`, `/`, `..`) up front, for the local package and every
+    // `--extern` alike, precisely so this can never become a *second*,
+    // silent way to end up with an empty tree and an empty object file. The
+    // empty map stays here only because this function is total; it is not a
+    // supported outcome.
+    let Some(name) = basename(root) else {
+        return out;
+    };
+
+    // A package root follows the same directory-shaped-module convention as
+    // every nested directory: `<root>/<basename>.omg` is its own content and
+    // the root directory contains its children.  A same-named child directory
+    // would claim the identical path, so preserve the ordinary ambiguity
+    // diagnostic rather than inventing a root-only tie break.
+    let own_file = root.join(format!("{}.omg", name.as_ref()));
+    let same_named_child = root.join(name.as_ref());
+    let root_path = vec![name.clone()];
+    if own_file.is_file() && same_named_child.is_dir() {
+        out.insert(
+            root_path,
+            Err(ResolveError::AmbiguousModule(vec![name])),
+        );
+        return out;
+    }
+
+    out.insert(
+        root_path,
+        Ok(ModuleLocation {
+            own_file: own_file.is_file().then_some(own_file),
+            children_dir: Some(root.to_path_buf()),
+        }),
+    );
+    discover_into(root, &mut vec![name.clone()], &mut out, Some(&name));
     out
 }
 
@@ -140,8 +173,7 @@ pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, 
 /// (`X/X.omg`) gets double-counted: this same rescan would find `X.omg`
 /// again and register a spurious `[...prefix, "X"]` pointing at the
 /// identical file `[...prefix]` already has. `None` only at the very top
-/// (`discover_tree`'s own call), where there is no parent to have already
-/// claimed anything.
+/// after `discover_tree` has registered the root module itself.
 fn discover_into(
     dir: &Path,
     prefix: &mut ModulePath,
@@ -184,5 +216,136 @@ fn discover_into(
             Err(SegmentError::NotFound) => {}
         }
         prefix.pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "omega_root_layout_test_{}_{}",
+                std::process::id(),
+                sequence,
+            ));
+            std::fs::create_dir_all(&root).expect("create test root");
+            Self(root)
+        }
+
+        fn name(&self) -> Ident {
+            basename(&self.0).expect("test root has a basename")
+        }
+
+        fn write(&self, relative: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().expect("test file has a parent"))
+                .expect("create test module parent");
+            std::fs::write(path, "").expect("write test module");
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn root_file_and_children_share_the_root_module() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write(&format!("{}.omg", name.as_ref()));
+        root.write("foo.omg");
+
+        let tree = discover_tree(&root.0);
+        let root_location = tree
+            .get(&vec![name.clone()])
+            .expect("root module is discovered")
+            .as_ref()
+            .expect("root module is unambiguous");
+        assert!(root_location.own_file.is_some());
+        assert!(root_location.children_dir.is_some());
+        assert!(tree.contains_key(&vec![name, Ident("foo".to_string())]));
+    }
+
+    #[test]
+    fn a_root_without_its_own_file_is_a_namespace_for_children() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write("foo.omg");
+
+        let tree = discover_tree(&root.0);
+        let root_location = tree
+            .get(&vec![name.clone()])
+            .expect("namespace root is discovered")
+            .as_ref()
+            .expect("namespace root is unambiguous");
+        assert!(root_location.own_file.is_none());
+        assert!(tree.contains_key(&vec![name, Ident("foo".to_string())]));
+    }
+
+    #[test]
+    fn a_misnamed_root_file_is_only_a_child_module() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write("mathlib.omg");
+
+        let tree = discover_tree(&root.0);
+        let root_location = tree
+            .get(&vec![name.clone()])
+            .expect("namespace root is discovered")
+            .as_ref()
+            .expect("namespace root is unambiguous");
+        assert!(root_location.own_file.is_none());
+        assert!(tree.contains_key(&vec![name, Ident("mathlib".to_string())]));
+    }
+
+    #[test]
+    fn nested_directory_modules_keep_their_existing_shape() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write("foo/foo.omg");
+        root.write("foo/bar.omg");
+
+        let tree = discover_tree(&root.0);
+        assert!(tree.contains_key(&vec![name.clone(), Ident("foo".to_string())]));
+        assert!(tree.contains_key(&vec![
+            name,
+            Ident("foo".to_string()),
+            Ident("bar".to_string()),
+        ]));
+    }
+
+    #[test]
+    fn a_same_named_root_file_and_child_directory_are_ambiguous() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write(&format!("{}.omg", name.as_ref()));
+        std::fs::create_dir(root.0.join(name.as_ref())).expect("create colliding child directory");
+
+        let tree = discover_tree(&root.0);
+        assert!(matches!(
+            tree.get(&vec![name]).expect("collision is retained"),
+            Err(ResolveError::AmbiguousModule(_))
+        ));
+    }
+
+    #[test]
+    fn relabeling_keeps_an_honestly_named_root_file() {
+        let root = TestDir::new();
+        let physical = root.name();
+        root.write(&format!("{}.omg", physical.as_ref()));
+
+        let declared = Ident("plat".to_string());
+        let tree = relabel_root(discover_tree(&root.0), &declared);
+        assert!(tree.contains_key(&vec![declared]));
     }
 }

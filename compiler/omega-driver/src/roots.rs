@@ -69,6 +69,11 @@ pub(crate) struct ModuleRoots {
     /// absent key is a real, checked fact ("does not exist"), not "wasn't
     /// looked up yet".
     local_tree: HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
+    /// The local package's own root directory, kept so a package that turns
+    /// out to contain no modules at all can name itself and the file it was
+    /// looked for (`CompileError::EmptyPackage`). Nothing resolves through
+    /// this -- `local_tree` above is the inventory; this is for diagnostics.
+    local_dir: PathBuf,
     /// Every `--extern`, keyed by its declared name, in registration order.
     /// A module path whose first segment is a key here is an *extern*
     /// module: resolved against that entry's own `dir` instead of the local
@@ -89,31 +94,15 @@ pub(crate) struct ModuleRoots {
 
 impl ModuleRoots {
     /// `local` is the local project's own root directory, eagerly walked in
-    /// full right here; `local_name` is an *explicit* `--name=` override,
-    /// when `omgc` was given one -- deliberately not the same as
-    /// `omgc::main`'s own already-defaulted `declared_name` (basename when
-    /// no override), which still has to distinguish "this package's entry
-    /// matches its own declared identity" from "this is an executable,
-    /// whose entry is conventionally `main.omg` regardless of directory
-    /// name" *before* any relabeling happens -- relabeling the physical
-    /// tree unconditionally would make that distinction impossible to
-    /// recover (an ordinary `main.omg`-shaped executable would get silently
-    /// relabeled to its own directory's basename, permanently hiding the
-    /// `main.omg` fallback `omgc::main` still needs). So: `None` here
-    /// means "leave the discovered tree exactly as found on disk," and
-    /// `omgc::main`'s existing basename-or-`main.omg` probe keeps working
-    /// completely unchanged. An extern's own declared name has no such
-    /// duality (there is no "extern fallback convention" to protect), so
-    /// its relabeling stays unconditional below.
+    /// full right here; `local_name` is an optional `--name=` override.
+    /// Discovery always starts from the on-disk basename, then an override
+    /// relabels the entire root subtree. There is no filename-based entry
+    /// fallback: the root module is always the package module.
     ///
-    /// Fails immediately if two different `--extern` directories claim the
-    /// same declared name -- genuinely ambiguous, since that name is a real
-    /// lookup key (`extern::<name>::...`), unlike the local project's own
-    /// declared identity, which never is (see `Driver::
-    /// import_absolute_path`'s `ProjectRoot` arm: only an extern's own name
-    /// is ever prepended to a path, never the local project's) -- so a
-    /// local/extern name collision isn't checked at all; it can't actually
-    /// change how anything resolves.
+    /// Fails immediately if two package roots claim the same declared name.
+    /// The name is the first segment of every absolute module path now, so
+    /// both duplicate externs and a local/extern collision are genuinely
+    /// ambiguous lookup keys.
     pub fn new(
         local: PathBuf,
         local_name: Option<Ident>,
@@ -143,7 +132,19 @@ impl ModuleRoots {
         if let Some(name) = &local_name {
             local_tree = fs_resolve::relabel_root(local_tree, name);
         }
-        // Unconditional here, unlike above: `relabel_root` is already a
+        if let Some(local_identity) = local_tree
+            .keys()
+            .find(|path| path.len() == 1)
+            .and_then(|path| path.first())
+            && let Some(extern_root) = registered.get(local_identity)
+        {
+            return Err(vec![CompileError::DuplicateModuleIdentity {
+                name: local_identity.clone(),
+                first: local,
+                second: extern_root.dir.clone(),
+            }]);
+        }
+        // Unconditional here: `relabel_root` is already a
         // no-op whenever an extern's declared name matches its own
         // on-disk basename (the common case -- `core`, `mathlib`, and
         // every existing extern), and there's no fallback convention to
@@ -159,6 +160,7 @@ impl ModuleRoots {
             .collect();
         Ok(Self {
             local_tree,
+            local_dir: local,
             externs: registered,
             extern_trees,
         })
@@ -225,6 +227,17 @@ impl ModuleRoots {
     /// accessor here -- the same division of labor `structs()`/`spec_cells()`
     /// already follow elsewhere in this codebase -- rather than baking that
     /// filtering into `ModuleRoots` itself.
+    /// The local package's own root directory, paired with the module file
+    /// that root would have to contain to be a package at all -- only ever
+    /// read to build `CompileError::EmptyPackage`.
+    pub fn local_root(&self) -> (PathBuf, PathBuf) {
+        let expected = match fs_resolve::basename(&self.local_dir) {
+            Some(name) => self.local_dir.join(format!("{}.omg", name.as_ref())),
+            None => self.local_dir.clone(),
+        };
+        (self.local_dir.clone(), expected)
+    }
+
     pub fn local_modules(
         &self,
     ) -> impl Iterator<Item = (&ModulePath, &Result<ModuleLocation, ResolveError>)> {
@@ -279,17 +292,5 @@ impl ModuleRoots {
             .values()
             .flat_map(Self::real_modules)
             .collect()
-    }
-}
-
-impl crate::Driver {
-    /// Whether `name` names a real top-level module in the local project --
-    /// either a flat `<name>.omg` file or a directory-shaped `<name>/`
-    /// (nested content resolved the same way any other directory-shaped
-    /// module's is). What `omgc` checks to find the entry module: the
-    /// local project's own declared identity first, falling back to the
-    /// fixed `main` convention.
-    pub fn has_local_module(&self, name: &Ident) -> bool {
-        self.roots.module_exists(std::slice::from_ref(name))
     }
 }

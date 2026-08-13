@@ -58,6 +58,15 @@ impl Driver {
     ///
     pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
         let local = self.local_module_paths().map_err(|e| vec![e])?;
+        // Checked here, before anything else runs, so a package with nothing
+        // in it reports that fact instead of surfacing much later as an
+        // internal assertion -- the generic-instantiation merge below indexes
+        // `modules` expecting the entry module to be present, and an empty
+        // `local` used to panic there rather than diagnose anything. See
+        // `CompileError::EmptyPackage` for the layout that reaches this.
+        if local.is_empty() {
+            return Err(vec![self.empty_package_error()]);
+        }
         let extern_surface = self.collect_extern_signatures()?;
 
         // Deduplicated, because sweeping one module for `glue` blocks is
@@ -141,6 +150,12 @@ impl Driver {
             warnings,
             extern_functions,
         })
+    }
+
+    /// `CompileError::EmptyPackage` for the package currently being compiled.
+    fn empty_package_error(&self) -> CompileError {
+        let (root, expected) = self.roots.local_root();
+        CompileError::EmptyPackage { root, expected }
     }
 
     /// Every module the local package -- the one actually being compiled --

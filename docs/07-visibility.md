@@ -16,7 +16,9 @@ by identifier text, like `mut`), not reserved words.
 - **`internal`** — visible anywhere within the same top-level package (same
   root module path segment), regardless of nesting depth. This is Rust
   `pub(crate)`-style — explicitly **not** restricted to descendants of the
-  declaring module.
+  declaring module. Executable packages follow the same rule: their root
+  module is the package directory, so an `internal` item in `dev::helper` is
+  visible to `dev` and every other `dev::*` module.
 - **(no modifier, the default)** — the narrowest level, `Hidden`, and it
   means two different things depending on what it's attached to (see
   below).

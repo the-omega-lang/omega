@@ -6,7 +6,7 @@ import helper;
 # `root::` always escapes back to the project's own root, regardless of how
 # deeply nested the importing module is -- reaches `simplemodule.omg`
 # sitting directly at the project root, exactly as if this import had been
-# written in `main.omg` itself.
+# written in `dev.omg` itself.
 import root::simplemodule;
 
 exposed something2() => i32 {

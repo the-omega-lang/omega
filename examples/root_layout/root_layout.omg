@@ -1,0 +1,5 @@
+# The root module's `main` is the program entry point. `nested.omg` also
+# declares `main`, deliberately, to verify that only this function gets the
+# unmangled C symbol.
+
+main() => i32 { 0 }

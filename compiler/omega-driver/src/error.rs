@@ -30,8 +30,8 @@ pub enum CompileError {
     /// Ordinary semantic errors from one module's own signature/body
     /// analysis.
     Analysis { module: ModulePath, errors: Vec<AnalysisError> },
-    /// Two different files both claim the same top-level module identity --
-    /// the entry's own real name, or a `--extern`'s, collide. Detected
+    /// Two different package roots claim the same top-level module identity.
+    /// Detected
     /// eagerly, before any module is parsed (see `ModuleRoots`), because the
     /// loser of such a collision would otherwise be silently unreachable,
     /// misrouting every reference to that name. Carries no module/span --
@@ -40,6 +40,21 @@ pub enum CompileError {
     DuplicateModuleIdentity { name: Ident, first: PathBuf, second: PathBuf },
     /// Two `core` modules expose the same ambient macro name.
     AmbiguousPreludeMacro { name: Ident, first: ModulePath, second: ModulePath },
+    /// A package root contains no modules at all. Reported here, before any
+    /// analysis, rather than left to surface as an internal assertion later:
+    /// `local_module_paths` returning nothing used to reach `compile`'s
+    /// generic-instantiation merge and panic on its
+    /// "always includes at least the entry module" expectation.
+    ///
+    /// The reachable cause is a root whose own module file is missing while a
+    /// *directory* of the same name sits beside it -- the pre-migration
+    /// `<root>/<name>/<name>.omg` layout, whose inner directory discovery
+    /// deliberately skips (see `fs_resolve::discover_into`'s `skip`) so a
+    /// directory-shaped module's own file is not double-counted as its own
+    /// child. Carries no module or span: there is no module to anchor to,
+    /// which is the whole problem, so it renders headline-only like
+    /// `DuplicateModuleIdentity`.
+    EmptyPackage { root: PathBuf, expected: PathBuf },
 }
 
 impl CompileError {
@@ -51,7 +66,9 @@ impl CompileError {
             Self::Parse { module, .. } | Self::MacroExpansion { module, .. } | Self::Analysis { module, .. } => {
                 Some(module)
             }
-            Self::DuplicateModuleIdentity { .. } | Self::AmbiguousPreludeMacro { .. } => None,
+            Self::DuplicateModuleIdentity { .. }
+            | Self::AmbiguousPreludeMacro { .. }
+            | Self::EmptyPackage { .. } => None,
         }
     }
 
@@ -68,12 +85,24 @@ impl CompileError {
             Self::MacroExpansion { error, .. } => vec![Diagnostic::error(error.to_string())],
             Self::Analysis { errors, .. } => errors.iter().map(AnalysisError::to_diagnostic).collect(),
             Self::DuplicateModuleIdentity { name, first, second } => vec![Diagnostic::error(format!(
-                "module identity '{}' is claimed by two different --extern directories: '{}' and '{}' -- \
-                 give one an explicit --extern=<name>:<dir> to disambiguate",
+                "module identity '{}' is claimed by two different package roots: '{}' and '{}' -- \
+                 give one an explicit name to disambiguate",
                 name.as_ref(),
                 first.display(),
                 second.display(),
             ))],
+            Self::EmptyPackage { root, expected } => vec![
+                Diagnostic::error(format!(
+                    "package root '{}' contains no modules -- expected its own module file at '{}'",
+                    root.display(),
+                    expected.display(),
+                ))
+                .with_help(
+                    "a package root is its own root module, so its file is named after the \
+                     directory and sits directly inside it; if this package still uses the older \
+                     nested layout, move '<root>/<name>/*.omg' up into '<root>/'",
+                ),
+            ],
             Self::AmbiguousPreludeMacro { name, first, second } => vec![Diagnostic::error(format!(
                 "exposed macro '{}' is provided by both core modules '{}' and '{}'",
                 name.as_ref(),

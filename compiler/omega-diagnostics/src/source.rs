@@ -5,7 +5,7 @@
 /// grapheme clusters -- good enough for a terminal-caret-style renderer
 /// without pulling in a full grapheme-segmentation dependency.
 ///
-/// `name` is display-only (e.g. `"examples/dev/main.omg"`) -- whatever the
+/// `name` is display-only (e.g. `"examples/dev/dev.omg"`) -- whatever the
 /// caller wants printed in a diagnostic's `--> name:line:col` line; this
 /// crate never touches the filesystem itself.
 pub struct SourceFile {

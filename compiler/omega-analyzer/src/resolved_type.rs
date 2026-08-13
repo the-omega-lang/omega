@@ -528,7 +528,7 @@ pub enum ResolvedType {
     /// same representation Rust's `char` uses (large enough to hold any
     /// UTF-8-encoded character, decoded). This is *not* what a C string's
     /// bytes are typed as; that's `U8` (see `*u8`'s use for `puts`/`printf`
-    /// in `examples/dev/main.omg`) -- a byte and a decoded character are
+    /// in `examples/dev/dev.omg`) -- a byte and a decoded character are
     /// different things once `char` stops being an alias for "one byte".
     Char,
     I8,
@@ -564,7 +564,7 @@ pub enum ResolvedType {
     /// unsized run of `T`: genuinely just a thin pointer value (one leaf,
     /// see `layout::leaves_of`) with array-like properties (indexing,
     /// slicing) -- the same C-decayed-array-parameter shape `argv : *[]*u8`
-    /// in `examples/dev/main.omg` already uses, now a fully general,
+    /// in `examples/dev/dev.omg` already uses, now a fully general,
     /// constructible type (see `Analyzer::array_pointer_cast_kind`) rather
     /// than only ever populated by the OS's own C entry-point convention.
     /// Mutability is a type-level fact exactly like `Pointer`'s own --

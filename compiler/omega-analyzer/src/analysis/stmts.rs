@@ -579,7 +579,7 @@ impl<'r> Analyzer<'r> {
     ///
     /// `core::option::Option`'s variant order is load-bearing here --
     /// `None` is hardcoded as variant 0, `Some` as variant 1 (see
-    /// `runtime/core/core/option.omg`'s own doc comment).
+    /// `runtime/core/option.omg`'s own doc comment).
     ///
     /// Real, nominal conformance -- **not** duck-typed -- is checked first,
     /// via `classify_for_in_source`: a type that merely happens to have a
