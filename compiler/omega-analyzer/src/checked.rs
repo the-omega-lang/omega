@@ -210,6 +210,22 @@ pub struct ComposeOwner {
     pub spec_module_path: Vec<Ident>,
     pub spec_name: Ident,
     pub spec_args: Vec<ResolvedType>,
+    /// Whether this body came from instantiating a *generic* compose
+    /// (`compose<W> BufWriter<W> : Write` at `W = Stdout`) rather than a
+    /// directly-written concrete one (`compose Stdout : Write`).
+    ///
+    /// This is the compose counterpart of `MirFunctionDef::type_args` being
+    /// non-empty, and it exists because that test does not work here: a
+    /// compose method's genericity lives in its *target* (`Self`), never in
+    /// the function's own parameter list, so `type_args` is empty for both
+    /// kinds. Codegen needs the distinction for linkage — a template
+    /// instantiation is emitted independently by every package that uses it
+    /// and must be weak so the linker folds the copies, exactly like a
+    /// generic function's; a concrete compose is emitted once, by its
+    /// declaring package, and must stay strong so a genuine duplicate is
+    /// still an error. Without it, two packages that both use
+    /// `BufWriter<Stdout>` could not be linked together.
+    pub from_template: bool,
 }
 
 impl CheckedFunctionDef {

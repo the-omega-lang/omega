@@ -3,9 +3,18 @@
 import extern::std::io::read_line;
 import extern::std::io::string_writer;
 import extern::std::io::to_string;
+import extern::std::io::BufReader;
+import extern::std::io::BufWriter;
+import extern::std::io::SliceWriter;
+import extern::std::io::Stdin;
+import extern::std::io::Stderr;
+import extern::std::io::Stdout;
+import extern::std::io::Write;
+import extern::std::io::eprintln;
+import extern::std::io::println;
 import extern::std::string::String;
-import extern::core::fmt::Display;
-import extern::core::fmt::write_uint;
+import extern::std::fmt::Display;
+import extern::std::fmt::write_uint;
 
 # A user-defined `Display` conformance is an explicit composition. The type
 # declaration itself owns only Pair's representation and inherent methods.
@@ -14,10 +23,10 @@ struct Pair {
 }
 
 compose Pair : Display {
-    fmt(*self, out: *mut Writer) => void {
-        out.write_str("Pair(");
+    fmt(*self, out: spec *mut Write) => void {
+        out.write(b"Pair(");
         Display::fmt(self.value, out);
-        out.write_byte(41u8);
+        out.write(b")");
     }
 }
 
@@ -40,41 +49,60 @@ main() => i32 {
     println$("special=", nan, "|", inf, "|", negative_inf, "|", 0.0f64, "|", -0.0f64);
     println$("scientific=", 0.0000001f64, "|", 100000000000000000000.0f64);
     mut bases: [32]u8;
-    mut base_writer := Writer::stdout_buffered(&mut bases[0..]);
+    mut base_stdout := Stdout {};
+    mut base_writer := BufWriter<Stdout>::new(&mut base_stdout, &mut bases[0..]);
     write_uint(&mut base_writer, 10u64, 2u32);
-    base_writer.write_byte(32u8);
+    Write::write(&mut base_writer, b" ");
     write_uint(&mut base_writer, 255u64, 16u32);
     mut limited: [1]u8;
-    mut memory_writer := Writer::to_buffer(&mut limited[0..]);
-    memory_writer.write_byte(65u8);
-    memory_writer.write_byte(66u8);
-    println$("overflow=", memory_writer.had_error());
-    base_writer.newline();
+    mut memory_writer := SliceWriter::new(&mut limited[0..]);
+    Write::write(&mut memory_writer, b"A");
+    overflow_result := Write::write(&mut memory_writer, b"B");
+    mut overflow := false;
+    match overflow_result {
+        Option::None => { overflow = true; },
+        Option::Some => {},
+    }
+    println$("overflow=", overflow);
+    Write::write(&mut base_writer, b"\n");
     base_writer.flush();
     mut buffered: [16]u8;
-    mut writer := Writer::stdout_buffered(&mut buffered[0..]);
-    writer.write_str("buffered");
-    writer.newline();
+    mut stdout := Stdout {};
+    mut writer := BufWriter<Stdout>::new(&mut stdout, &mut buffered[0..]);
+    Write::write(&mut writer, b"buffered");
+    Write::write(&mut writer, b"\n");
     writer.flush();
     mut rendered := String::new();
     mut rendered_writer := string_writer(&mut rendered);
-    rendered_writer.write_str("owned");
+    Write::write(&mut rendered_writer, b"owned");
     println$("string=", rendered.as_str());
     mut rendered_from_value := to_string(123i16);
     println$("to_string=", rendered_from_value.as_str());
-    mut reader := Reader::stdin();
+    mut stdin := Stdin {};
+    mut reader_buffer: [256]u8;
+    mut reader := BufReader<Stdin>::new(&mut stdin, &mut reader_buffer[0..]);
     mut first := String::new();
     mut second := String::new();
     read_line(&mut reader, &mut first);
     read_line(&mut reader, &mut second);
+    mut third := String::new();
+    read_line(&mut reader, &mut third);
     mut fixed: [3]u8;
-    mut fixed_count: usize = 0;
-    println$("truncated=", reader.read_line(&mut fixed[0..], &mut fixed_count));
+    mut fixed_writer := SliceWriter::new(&mut fixed[0..]);
+    fixed_result := Write::write(&mut fixed_writer, <*[?]u8>third.as_str());
+    mut fits := false;
+    match fixed_result {
+        Option::None => {},
+        Option::Some => { fits = fixed_result.value == third.len(); },
+    }
+    Write::write(&mut fixed_writer, b"x");
+    println$("truncated=", fits);
     println$("input=", first.as_str(), "|", second.as_str());
     eprintln$("stderr line");
     rendered.free();
     first.free();
     second.free();
+    third.free();
     rendered_from_value.free();
     0
 }

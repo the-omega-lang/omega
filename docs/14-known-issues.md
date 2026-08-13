@@ -36,6 +36,21 @@ new one is found.
   [mir-and-codegen.md](16-mir-and-codegen.md)'s own "Fixed" note); direct
   assignment is a separate, still-unfixed code path. An explicit local
   copy works around it today. [mir-and-codegen.md](16-mir-and-codegen.md)
+- ~~**A monomorphized *compose* method gets strong linkage**~~ — **fixed.**
+  `linkage_for` decided weak vs. strong from the *function's* own `type_args`,
+  which is empty for a compose method: the genericity lives in the target
+  (`Self`), not the method. So two packages that each called `println$` — whose
+  expansion instantiates `compose<W: Write> BufWriter<W> : Write` at
+  `BufWriter<Stdout>` — failed to link with `multiple definition of
+  _omg_…BufWriterNtBb_6StdoutE5Write5write…`, while the type's *inherent*
+  methods and its vtable symbol were correctly weak.
+
+  `ComposeOwner::from_template` now carries the missing bit (set from whether
+  `instantiate_compose` was handed a substitution — only a template match
+  produces one), and codegen gives a template instantiation `Preemptible`
+  linkage while a directly-written concrete compose stays `Export`, so a
+  genuine duplicate is still an error. Guarded by `just test-multi-print`,
+  which links two printing packages and fails without the fix.
 
 ## Types
 
@@ -57,7 +72,7 @@ new one is found.
   `CheckedExpr`/`MirExpr` variant — left for a dedicated follow-up rather
   than folded into an otherwise analyzer-only change).
   [primitives.md](01-primitives.md), [control-flow.md](03-control-flow.md)
-- **`core::fmt`'s float output is fixed-precision, not round-trip** — six
+- **`std::fmt`'s float output is fixed-precision, not round-trip** — six
   fractional digits, with a scientific fallback below `1e-6` and at or above
   `1e19` whose normalization loop (repeated multiply/divide by ten) is itself
   lossy. `nan`/`inf`/`-inf` are exact. A shortest-round-trip formatter
@@ -217,6 +232,20 @@ deliberate limitations and one coverage gap.
   `UnknownMacro` names the *inner* macro with no indication that it came from
   an expansion. The fix is a per-definition home environment carried
   alongside each `MacroDefinitionStmt`. [macros.md](12-macros.md)
+- **Every *item* a macro body names must also be imported by the caller**, for
+  the same reason as the entry above: the body is spliced into the caller's
+  module and resolved there, so a macro cannot carry its own dependencies.
+  Newly load-bearing now that the print macros live in `std` rather than the
+  ambient `core` prelude — `import extern::std::io::println;` alone does not
+  make `println$` usable, and the caller must additionally import `BufWriter`,
+  `Stdout`/`Stderr`, `Write`, and `Display` (five import lines for one macro).
+  The diagnostics are also poor: the missing names are reported at a composite
+  span past the end of the file, and the cascade ends with `cannot find
+  'omega_print_out' in this scope … a name with a similar spelling exists:
+  'omega_print_buf'`, naming an expansion-internal local the author never
+  wrote. The same per-definition home environment that would fix nested macro
+  resolution is the fix here too, applied to item names.
+  [macros.md](12-macros.md), [console-io.md](24-console-io.md)
 - **Importing a macro leaves a spurious `unused import` warning.** Macro
   names are resolved and consumed by the pre-pass in `omega-driver`'s
   `Driver::macro_env`, entirely before HIR exists, so the ordinary
@@ -233,7 +262,7 @@ deliberate limitations and one coverage gap.
   argument naming a caller variable binds to a macro-introduced local that
   shadows it. Wrapping the body in `{ }` prevents the local from leaking out
   but not from capturing in — that block is the scope the argument lands in.
-  Hit for real: `core::io`'s print macros originally named their writer `out`,
+  Hit for real: the print macros originally named their writer `out`,
   which silently shadowed the `*str out` in `examples/dev/main.omg` and made
   `println$(..., out)` fail with `no field 'fmt' on 'Writer'`. Worked around
   with an `omega_print_` prefix, which is a convention, not a guarantee. A
@@ -282,6 +311,32 @@ need a breaking change to fix — full writeups in
 
 ## Diagnostics
 
+- ~~**A method call's receiver, and any write through a projection, did not
+  count as reads**~~ — **fixed.** `Context::mark_used` was reached from a
+  single site (`analyze_expr`'s `HirExpr::Place` arm), which a *receiver*
+  never goes through — it is analyzed as a place instead — and which a
+  projected write (`*out = 5`, `s.v = 5`) does not reach either. So a
+  parameter used only as a receiver, or only as an out-pointer, reported
+  `UnusedParameter`: `write_bool(out: spec *mut Write, …)` used `out` twice
+  and still warned, and `List::pop(*mut self, out: *mut T)` did too.
+  Long-standing and not spec-object-specific — a concrete `d.get()` warned
+  identically — but the stdio redesign made it unmissable, since every
+  `write_*` helper uses its `out` parameter only as a receiver. Marked now in
+  `resolve_callee` (receivers) and in `analyze_place` when the place has at
+  least one projection (a projection must load its root to compute an
+  address). A bare, projection-less `n = 5` is deliberately still a pure
+  write, so `UnusedVariable` keeps firing on write-only bindings.
+
+- **An unsatisfied generic-`compose` bound is reported once per conformance
+  lookup, not once per declaration.** `Driver::instantiate_compose` checks the
+  template's own bounds before its memoization guard, and a failed check
+  registers no entry, so every later `composes_for_type` call for the same
+  target re-runs the check and re-reports. `compose<T: W> Buf<T> : W` against
+  a `Buf<NotW>` that is also coerced to `spec *mut W` prints the identical
+  `SpecNotImplemented` twice. The anchor and wording are correct; only the
+  count is wrong. The fix is either a per-`(compose id, target)` "already
+  reported" set in `Composes`, or general diagnostic de-duplication — both
+  wider than the compose path itself. [specs.md](08-specs.md)
 - **A `*mut self` requirement against an rvalue receiver reports
   `NotMutablePointer`, and the invariant that made that correct no longer
   holds.** `Bump::bump(make())`, where `bump(*mut self)` and `make()` returns
@@ -315,12 +370,12 @@ need a breaking change to fix — full writeups in
   so `mut b : [8]u8; s := &mut b[0..]; s[0] = 1u8;` warns `unused variable`
   for *both* `b` and `s`. Writing through a slice isn't tracked as a read of
   its base either. Previously obscure; now unavoidable, because
-  `core::io`'s `println$`/`print$`/`eprint$`/`eprintln$` all declare a
-  `mut buf : [256]u8;` in their expansion, so **every print statement emits a
-  spurious `unused variable 'buf'`** — a hello-world program warns. Compounded
-  by the composite-span issue below, the label points past the end of the
-  file. The fix is in the analyzer's use-tracking (a slice/`&mut` of a place
-  is a use of that place), not in `core::io`.
+  `std::io`'s `println`/`print`/`eprint`/`eprintln` all declare a
+  `mut omega_print_buf : [256]u8;` in their expansion, so **every print
+  statement emits a spurious unused-variable warning**. Compounded by the
+  composite-span issue below, the label points past the end of the file. The
+  fix is in the analyzer's use-tracking (a slice/`&mut` of a place is a use of
+  that place), not in `std::io`.
   [console-io.md](24-console-io.md)
 
 ## Control flow
@@ -328,5 +383,6 @@ need a breaking change to fix — full writeups in
 - **A bare `return;` is a parse error**, so a `void` function cannot return
   early at all — `expected an expression, found ';'`. Every early exit in a
   `void` body has to be restructured around a sentinel flag, which
-  `core::io::Writer::write_bytes` and `std::io::read_line` both had to do.
+  old fixed-buffer I/O helpers had to do; the current `std::io::read_line`
+  loops with a sentinel flag instead.
   [control-flow.md](03-control-flow.md)

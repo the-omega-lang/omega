@@ -974,6 +974,22 @@ impl<'r> Analyzer<'r> {
         let (root, mut current_type, mut mutable) =
             self.resolve_place_root(node_id, span, place, expected)?;
 
+        // Any projection off a root *reads* that root, whether the place is
+        // ultimately written or not: `*out = 5` must load `out` to know where
+        // to store, and `s.v = 5` must load `s` to find the field. Only a
+        // bare, projection-less `n = 5` is a pure write, and that case is
+        // deliberately left alone so `UnusedVariable` still fires on a
+        // genuinely write-only binding.
+        //
+        // Without this, every out-pointer parameter in the tree reported
+        // `UnusedParameter` -- `List::pop(*mut self, out: *mut T)` writes
+        // `*out` and still warned.
+        if !place.projections.is_empty()
+            && let CheckedPlaceRoot::Variable { decl_id, .. } = root
+        {
+            self.context.mark_used(decl_id);
+        }
+
         let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
             current_type = match projection {

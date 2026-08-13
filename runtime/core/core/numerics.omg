@@ -19,30 +19,6 @@
 # wasn't built assuming. Nothing below needs to know any type's width to
 # be correct.
 
-import cmp::Eq;
-import cmp::Ord;
-import cmp::Ordering;
-import default::Default;
-import hash::Hash;
-import fmt::Display;
-import fmt::write_float;
-import fmt::write_int;
-import fmt::write_uint;
-import io::Writer;
-
-
-# SplitMix64's own finalizer (public domain, widely used) -- a fixed-cost,
-# well-mixed `u64 -> u64` step, shared by every integer/float `hash` below
-# rather than reimplemented per type. Not itself part of `core::hash`'s own
-# public surface -- purely an implementation detail of this file's own
-# primitive blocks, so it stays a plain, unmarked (module-hidden) function.
-mix64(x: u64) => u64 {
-    mut z := x + 0x9E3779B97F4A7C15u64;
-    z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
-    z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
-    z ^ (z >> 31u64)
-}
-
 macro signed_integer($T: type) => {
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
@@ -72,26 +48,6 @@ macro signed_integer($T: type) => {
 
         exposed is_negative(*self) => bool { *self < <Self>0 }
         exposed is_positive(*self) => bool { *self > <Self>0 }
-
-    }
-    compose $T : Ord {
-        equals(*self, other: Self) => bool { *self == other }
-        compare(*self, other: Self) => Ordering {
-            if *self < other { Ordering::Less }
-            else if *self > other { Ordering::Greater }
-            else { Ordering::Equal }
-        }
-        # Overrides `Ord`'s default `min`/`max` with direct comparisons.
-        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
-        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
-    }
-    compose $T : Default { default() => Self { 0 } }
-    compose $T : Hash {
-        # Sign-extends to `u64` before mixing.
-        hash(*self) => u64 { mix64(<u64>*self) }
-    }
-    compose $T : Display {
-        fmt(*self, out: *mut Writer) => void { write_int(out, <i64>*self, 10u32); }
     }
 }
 
@@ -120,25 +76,6 @@ macro unsigned_integer($T: type) => {
         exposed is_power_of_two(*self) => bool {
             if *self == <Self>0 { false } else { (*self & (*self - <Self>1)) == <Self>0 }
         }
-
-    }
-    compose $T : Ord {
-        equals(*self, other: Self) => bool { *self == other }
-        compare(*self, other: Self) => Ordering {
-            if *self < other { Ordering::Less }
-            else if *self > other { Ordering::Greater }
-            else { Ordering::Equal }
-        }
-        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
-        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
-    }
-    compose $T : Default { default() => Self { 0 } }
-    compose $T : Hash {
-        # Zero-extends to `u64` before mixing.
-        hash(*self) => u64 { mix64(<u64>*self) }
-    }
-    compose $T : Display {
-        fmt(*self, out: *mut Writer) => void { write_uint(out, <u64>*self, 10u32); }
     }
 }
 
@@ -146,7 +83,7 @@ macro float_ops($T: type) => {
     primitive $T {
         # IEEE 754 equality (`NaN != NaN`, `-0.0 == 0.0`) reflects the type
         # honestly rather than papering over it -- `Ord` is deliberately
-        # *not* implemented here at all (see `core::cmp`'s own doc comment
+        # *not* implemented here at all (see `std::cmp`'s own doc comment
         # on why: `NaN` has no correct position in a total order).
         exposed clamp(*self, lo: Self, hi: Self) => Self {
             if *self < lo { lo } else if *self > hi { hi } else { *self }
@@ -160,23 +97,6 @@ macro float_ops($T: type) => {
         # trickery or platform intrinsic: `NaN` is the only value IEEE 754
         # defines as unequal to itself.
         exposed is_nan(*self) => bool { *self != *self }
-
-    }
-    compose $T : Eq {
-        equals(*self, other: Self) => bool { *self == other }
-    }
-    compose $T : Default { default() => Self { 0.0 } }
-    compose $T : Hash {
-        # Hash the normalized IEEE bit pattern through a pointer reinterpret.
-        hash(*self) => u64 {
-            bits := if *self == <Self>0.0 { 0u64 }
-            else if sizeof<Self> == 4 { <u64>*<*u32>self }
-            else { *<*u64>self };
-            mix64(bits)
-        }
-    }
-    compose $T : Display {
-        fmt(*self, out: *mut Writer) => void { write_float(out, <f64>*self); }
     }
 }
 

@@ -174,7 +174,8 @@ impl Codegen {
         let module = {
             let translation_unit_name = module_name.bytes().collect::<Vec<_>>();
             let libcall_names = cranelift_module::default_libcall_names();
-            let builder = ObjectBuilder::new(isa.clone(), translation_unit_name, libcall_names).unwrap();
+            let mut builder = ObjectBuilder::new(isa.clone(), translation_unit_name, libcall_names).unwrap();
+            builder.per_function_section(true);
             ObjectModule::new(builder)
         };
 

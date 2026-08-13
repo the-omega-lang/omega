@@ -625,6 +625,13 @@ impl Driver {
             .filter(|entry| {
                 entry.module == path
                     && !entry.derived
+                    // A concrete composition owned by an extern package is
+                    // defined by that package's object, never by whichever
+                    // consumer happened to need it. Generic compositions are
+                    // the deliberate exception: their concrete instantiation
+                    // is monomorphized in this compilation, and `Self` is the
+                    // second substitution after the template's parameter(s).
+                    && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
                     && !self.composes.emitted.contains(&(
                         entry.target.clone(),
                         entry.spec.borrow().id,
@@ -640,11 +647,12 @@ impl Driver {
                 entry.spec.borrow().id,
                 entry.spec_args.clone(),
             ));
-            let bounds = vec![(
+            let mut bounds = vec![(
                 entry.target.clone(),
                 entry.spec.clone(),
                 entry.spec_args.clone(),
             )];
+            bounds.extend(entry.bounds.clone());
             let owner = Self::compose_owner(&entry);
             for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
                 let Some((_, method)) = entry
@@ -764,7 +772,8 @@ impl Driver {
                 .iter()
                 .find(|entry| {
                     !self.primitives.emitted.contains(&entry.target)
-                        && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
+                        && (!self.roots.is_extern(&entry.module)
+                            || entry.substitution.len() > 1)
                 })
                 .map(|entry| entry.module.clone());
             let compose_module = self
@@ -782,8 +791,7 @@ impl Driver {
                             entry.spec.borrow().id,
                             entry.spec_args.clone(),
                         ))
-                        && (!self.roots.is_extern(&entry.module)
-                            || entry.substitution.len() > 1)
+                        && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
                 })
                 .map(|entry| entry.module.clone());
             let Some((module, primitive)) = primitive_module

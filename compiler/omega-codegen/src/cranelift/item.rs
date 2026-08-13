@@ -110,7 +110,22 @@ impl Codegen {
                         &mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()),
                     ),
                 };
-                self.declare_function_def(f, mangled, linkage_for(&f.type_args));
+                // A compose method's genericity lives in its *target*
+                // (`Self`), never in its own parameter list, so `f.type_args`
+                // is empty for `compose<W> BufWriter<W> : Write` at
+                // `W = Stdout` just as it is for `compose Stdout : Write`.
+                // Asking `linkage_for` alone would make both strong, and the
+                // first is emitted independently by every package that uses
+                // it -- two packages both calling `println$` then failed to
+                // link with a `multiple definition` of
+                // `BufWriter<Stdout>::Write::write`. `from_template` is the
+                // compose counterpart of a non-empty `type_args`; see
+                // `ComposeOwner::from_template`.
+                let linkage = match &f.compose_owner {
+                    Some(owner) if owner.from_template => Linkage::Preemptible,
+                    _ => linkage_for(&f.type_args),
+                };
+                self.declare_function_def(f, mangled, linkage);
             }
             MirItem::Struct(s) => {
                 for f in &s.functions {

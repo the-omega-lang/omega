@@ -1,186 +1,100 @@
 # The core library
 
-`runtime/core/` — Omega's real, permanent standard-library package (replaces
-an earlier `examples/core` throwaway used to prove primitive method attachment).
+`runtime/core/` is Omega's minimal, permanently available library package. It
+contains data representations and allocation-free operations that every target
+can support. It does not own comparison, hashing, formatting, buffered I/O, or
+console policy; those belong to `std`.
 
 ## Layout
 
 ```
 runtime/core/
   core/
-    core.omg          # real root: nothing to declare, see below
-    cmp.omg              # core::cmp — Ordering, Eq, Ord
-    default.omg              # core::default — Default
-    platform.omg               # core::platform — gap GlobalAllocator
-    hash.omg                     # core::hash — Hash
-    iterator.omg                 # core::iterator — Iterator<T>, ToIterator<T>
-    numerics.omg                   # core::numerics — scalar primitive blocks (macros)
-    option.omg                       # core::option — Option<T>
-    slices.omg                          # core::slices — primitive<T> [?]T
-    strings.omg                            # core::strings — primitive str
+    core.omg       # package entry point
+    iterator.omg   # Iterator<T>, ToIterator<T>
+    numerics.omg   # inherent scalar operations
+    option.omg     # Option<T>
+    platform.omg   # allocator and console capability gaps
+    slices.omg     # inherent generic-slice operations
+    strings.omg    # inherent str operations
 ```
 
-`core.omg` has nothing left to declare — it exists only because the
-compiler still needs a conventionally-named entry file to find
-(`core.omg`/`core/core.omg`) when `core` is compiled standalone (`just
-build-core`). It used to need an `import` of every sibling submodule, for
-two reasons, both now gone:
+`core` is the one ambient package. Code outside it may name exposed core items
+without importing `core`; files *inside* it still use ordinary imports. The
+compiler discovers all of core's modules whether core is built locally or
+registered as an extern package. It is otherwise an ordinary separately
+compiled object: definitions from `core.o` must be linked when used.
 
-- Making the whole package reachable when compiled standalone — the
-  filesystem alone already guarantees that, unconditionally, for
-  whichever package is being compiled locally (see
-  [modules & linkage](10-modules-and-linkage.md)'s "Eager local
-  discovery").
-- Feeding an earlier primitive-extension discovery pass, which used to walk
-  `core.omg`'s own import graph to find every attached method in
-  the package. `core` now gets the same eager, filesystem-driven
-  treatment as the local package being compiled, *regardless* of whether
-  it's local or `--extern`-referenced (`ModuleRoots::core_modules`, see
-  [modules & linkage](10-modules-and-linkage.md)'s "Eager local
-  discovery" and "`core` as an ambient prelude") — no import graph is
-  walked for this anymore, so a submodule missing from `core.omg` can no
-  longer hide a primitive or compose block from anyone.
+## What core owns
 
-That same eager treatment is also what makes every name `core` exposes
-resolvable with no `import core;` at all, anywhere else in a program —
-see [modules & linkage](10-modules-and-linkage.md)'s "`core` as an
-ambient prelude" for the full mechanism. `core`'s own files still need
-ordinary imports among themselves, same as any other module — the
-prelude treatment is specifically for code *outside* `core`.
+- **`core::option::Option<T>`** is the simple `None` / `Some { value: T }`
+  result used when a value may be absent.
+- **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
+  and `ToIterator<T>`, the protocols behind `for`.
+- **`core::numerics`** supplies only inherent scalar operations: `clamp`,
+  `pow`, `abs`, `signum`, `is_even`/`is_odd`, `is_negative`/`is_positive`,
+  `is_power_of_two`, and `is_nan`. It does not attach comparison, defaulting,
+  hash, or formatting conformances — `min`/`max` in particular are `Ord`
+  methods and live in `std::cmp`.
+- **`core::slices`** supplies inherent operations on `*[?]T`, including
+  `is_empty` and bounds-checked out-parameter access. The out-parameter/
+  `bool` form is intentional for this hot, allocation-free API; it is not a
+  replacement for `Option<T>` everywhere.
+- **`core::strings`** supplies inherent byte-oriented `str` operations:
+  `is_empty`, `as_bytes`, `starts_with`, `ends_with`, and `contains`.
+  Equality, hashing, and display of `str` are standard-library
+  conformances.
 
-`core` is built and linked exactly like any other `--extern` dependency —
-its named items, like `Ordering`'s own methods, are
-compiled by `core`'s own `omgc` invocation and must be linked in
-(`undefined reference` otherwise). Concrete generic primitive and compose
-instantiations are emitted by the compilation that uses them, like other
-monomorphized generic bodies (see [specs](08-specs.md)).
+## Platform capabilities
 
-## API surface
+`core::platform` only declares capabilities. A final program or platform
+package supplies exactly one matching `glue` block when a reachable path needs
+one.
 
-- **`core::cmp`** — `Ordering` (`Less`/`Equal`/`Greater`, plus `is_lt`/
-  `is_eq`/`is_gt`/`reverse`, an ordinary non-generic enum with methods —
-  works fine; see [generics](06-generics.md) for why *generic* enum
-  methods specifically don't). `Eq { equals; not_equals default }`. `Ord :
-  Eq { compare -> Ordering; everything else defaulted off compare alone }`
-  — genuinely usable from one required function, as an interface design
-  should be.
-- **`core::default`** — `Default { default() => Self; }`. Its own tiny
-  file deliberately, for reuse beyond just numerics.
-- **`core::hash`** — `exposed spec Hash { hash(*self) => u64; }`. Lives in
-  `core`, not `std`, because the primitive blocks that provide the matching
-  inherent methods are core-only. Numeric types mix their bits through a SplitMix64-style
-  finalizer (`mix64`, reading `<u64>*self`); floats bit-reinterpret to
-  `u64` first, normalizing `-0.0` to `0.0`'s own bit pattern before mixing
-  (required for "equal values hash equal" — `-0.0 == 0.0` but they don't
-  share a bit pattern). `str` uses a plain FNV-1a byte loop over
-  `as_bytes()`, matching `core::strings`' own existing byte-loop style.
-  `std::hash_map::HashMap<K: Hash, V>`/`std::hash_set::HashSet<T: Hash>`
-  are `Hash`'s only consumers so far — see
-  [the standard library](23-standard-library.md). No random seeding: the
-  default hasher is deterministic, not DoS-resistant, unlike Rust's own
-  SipHash default — fine for a first pass, a real gap if either type ever
-  sees untrusted keys.
-- **`core::option`** — `Option<T> { None, Some { exposed value: T; }; }`.
-  Real, ordinary generic enum — see "`Option<T>` finally exists" below for
-  why it's here now, and why its variant order (`None` = 0, `Some` = 1) is
-  load-bearing, not incidental.
-- **`core::iterator`** — `Iterator<T> { next(*mut self) => Option<T>; }`
-  and `ToIterator<T> { to_iterator(*self) => spec *mut Iterator<T>; }` —
-  the protocol `for <binding> in <iterator> { }` is built on. See
-  [for-in loops](18-for-in-loops.md).
-- **`core::numerics`** — three macros (`signed_integer`/
-  `unsigned_integer`/`float_ops`), invoked once per concrete type (10
-  integers + 2 floats), **not** one shared template copy-pasted three
-  times: signed types get `abs`/`signum`/`is_negative`/`is_positive`,
-  unsigned gets `is_power_of_two`, float gets `is_nan` and skips `Ord`
-  entirely (NaN has no correct total order — deliberate). `min`/`max`/
-  `clamp`/`pow`/`is_even`/`is_odd` are hand-written directly for speed
-  rather than left to `Ord`'s default (they still satisfy `Ord`'s required
-  signature). No `min_value`/`max_value` anywhere — `isize`/`usize`'s
-  width is target-dependent, so a baked-in bound would silently be wrong
-  on some target; cut uniformly across all twelve types rather than
-  provided inconsistently. Its macro bodies still explicitly cast every
-  bare literal compared or combined with `*self` (`<Self>0`, not `0`) —
-  written before [binary-op literal narrowing](03-control-flow.md) was
-  fixed, when this was strictly required rather than just harmless/
-  explicit; left as-is (still correct, just no longer the only way to
-  write it) rather than churned for its own sake.
-- **`core::slices`** — `primitive<T> [?]T`: `is_empty`, and `get`/
-  `first`/`last` via an `(index, out: *mut T) => bool` pattern (see below
-  for why, not `Option<T>`).
-- **`core::strings`** — `primitive str` plus separate `Eq`/`Hash`/`Display`
-  compositions: `equals` (byte-compare
-  loop — two different `*str` pointers are never automatically
-  structurally equal), `is_empty`, `as_bytes` (a plain reinterpret-cast,
-  `str`/`*[?]u8` share the identical fat-pointer leaf layout),
-  `starts_with`/`ends_with`, `contains` (naive O(n·m) substring search,
-  deliberately no skip table, which would need working memory proportional
-  to the needle — this layer never does hidden allocation).
-- **`core::platform`** — `gap GlobalAllocator { alloc; free; realloc; }`,
-  the one platform capability the library needs but can't itself provide —
-  see [gaps and glue](21-gaps-and-glue.md). No default implementation ships
-  here; a final application supplies exactly one `glue`, or leaves it
-  unfilled if nothing ever calls it.
+```omega
+gap GlobalAllocator {
+    alloc(size: usize) => *mut u8;
+    free(ptr: *u8) => void;
+    realloc(ptr: *u8, size: usize) => *mut u8;
+}
 
-## `Option<T>` finally exists — but `core::slices` still doesn't use it
-
-`Option<T>`'s blockers (a generic enum with methods failing signature
-collection; `T` not deducible from a generic-enum-typed argument) were
-fixed independently of any real need for `Option<T>` itself — it stayed
-out of `core` on scope grounds alone until `for <binding> in <iterator>
-{ }` (see [for-in loops](18-for-in-loops.md)) needed a real "maybe a
-value" return type for `Iterator<T>::next`, at which point adding it
-stopped being optional. It's the plainest possible shape (`None`, `Some {
-value: T }`, no methods) — deliberately not extended with `is_some`/
-`unwrap_or`-style conveniences in the same pass that added it, to avoid
-piling unrelated scope onto a change driven by one specific need.
-
-`core::slices`' own `(index, out: *mut T) => bool` pattern (`get`/`first`/
-`last`) is **not** being migrated to return `Option<T>` — both shapes now
-coexist deliberately: the out-pointer form avoids a hidden tag-copy and
-reads as a closer match to a C/Zig fallible-call convention, which is
-still the better fit for a hot, no-allocation slice-indexing path;
-`Option<T>` is the better fit for a one-shot "maybe produced a value"
-result like an iterator step, which was never going to be `#[inline]`-hot
-the same way `get` is. Picking one uniformly across `core` would have
-been consistency for its own sake at a real ergonomics/performance cost
-somewhere.
-
-## `Eq`/`Ord`/`Ordering`/`Default`/`Hash` are `exposed`, not just declared
-
-A spec function inherits its declaring spec's visibility, and a compose
-method inherits the requirement it satisfies. Primitive methods instead carry
-ordinary explicit modifiers. `Eq`, `Ord`, `Default`, `Hash`, and `Display`
-are exposed so their conformances form public API outside core.
-
-## Character support
-
-`core::chars` currently supplies `Display` for `char`. Rich ASCII and Unicode
-classification/case conversion APIs remain future work.
-
-## No `contains`/generic-bound methods on `core::slices`
-
-A spec's own generics don't support *per-function* bounds (`SliceImpl<T:
-Eq>` would gate the whole spec, including `is_empty`/`get`, behind `Eq`
-too, wrongly).
-
-## Building it
-
-```
-just build-core     # omgc runtime/core/core/core.omg --name=core -o target/core.o
-just build-exe       # links against target/core.o, alongside mathlib.o
-just run-exec           # cc ... -o example && ./example
+gap StandardOutput { write(bytes: *[?]u8) => Option<usize>; }
+gap StandardError  { write(bytes: *[?]u8) => Option<usize>; }
+gap StandardInput  { read(into: *mut [?]u8) => Option<usize>; }
 ```
 
-## Caveats
+For the console gaps, `None` means failure and `Some(n)` is the exact number
+of bytes transferred. In particular, `Some(0)` is valid: it can mean EOF on
+input or a zero-progress write. Core declares these names but does not call
+them. That keeps a core-only program freestanding and free of console or
+allocator glue requirements.
 
-Everything under [generics](06-generics.md)'s and
-[control flow](03-control-flow.md)'s caveats sections that shaped a scope
-cut here — this file only restates the *consequences* for `core`'s own
-API surface, not the underlying compiler gaps themselves.
+## Deliberate boundary with `std`
 
-`core::io`, `core::fmt`, `core::bools`, and `core::chars` provide console
-I/O, `Display`, boolean formatting, and character formatting. `Display` is
-composed separately for numeric, `str`, `bool`, and `char` targets;
-`core::chars` deliberately covers only Display. Outside `core`, `primitive`
-blocks are unavailable.
+`std::cmp` owns `Ordering`, `Eq`, and `Ord`; `std::default` owns `Default`;
+`std::hash` owns `Hash`; `std::fmt` owns `Display` and formatting helpers; and
+`std::io` owns `Write`, `Read`, buffering, console marker types, and printing.
+The primitive conformances for all of those specs also live in `std`. Core may
+still be the only package allowed to add *inherent* primitive methods, while
+the ordinary compose orphan rule decides where a spec conformance may be
+declared.
+
+Consequently, a core-only package cannot name `Display`, `Write`, `Hash`, or
+`Ord` unless it explicitly links and imports the relevant `std` module. This
+is intentional: core remains useful on a target with neither heap nor
+console.
+
+## Building and linking
+
+```
+just build-core
+```
+
+The compiler emits each function into its own object-file section. Link with
+`--gc-sections` (the repository's `just` recipes do) so unused sections from a
+separately compiled package do not make a capability reachable merely because
+another function in the same object uses it. A core-only executable therefore
+links with `core.o` and no `plat.o`; it provides no console or allocator glue.
+
+See [the standard library](23-standard-library.md) for the higher-level
+facilities and [gaps and glue](21-gaps-and-glue.md) for the capability model.

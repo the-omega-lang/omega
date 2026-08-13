@@ -1,60 +1,363 @@
-# `std::io` -- allocation-dependent convenience wrappers over `core::io`.
+# `std::io` -- byte-oriented I/O contracts, concrete console capabilities,
+# and caller-owned buffering.  The only types that name console gaps are the
+# three zero-sized markers below; every other writer and reader is an adapter
+# over an ordinary `Write` or `Read` implementor.
 
+import extern::core::platform::StandardInput;
+import extern::core::platform::StandardError;
+import extern::core::platform::StandardOutput;
+import fmt::Display;
 import string::String;
 
-# Appends through `String`'s own public `push_str` rather than reaching into
-# its byte list: a sink is an ordinary consumer of the type, not a privileged
-# one, and `push_str` already copies a whole run at a time.
-string_sink(ctx: usize, data: *[?]u8) => usize {
-    target := <*mut String>ctx;
-    target.push_str(<*str>data);
-    <usize>data.length
+# `None` is failure.  `Some(n)` is the exact number of bytes consumed, so a
+# short result is visible to the caller and can be resumed without an
+# out-parameter or a sticky error bit.
+exposed spec Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize>;
 }
 
-exposed string_writer(value: *mut String) => Writer {
-    mut empty: [0]u8;
-    Writer::to_sink(string_sink, <usize>value, &mut empty[0..])
+exposed spec Read {
+    read(*mut self, into: *mut [?]u8) => Option<usize>;
 }
 
-# `true` once anything was read, including a final line with no trailing
-# newline; `false` only at end of input with nothing consumed, which is what
-# lets a caller loop until the input runs out. The newline is consumed and
-# never appended. Bytes are gathered in fixed-size runs so this needs no
-# access to `String`'s internal storage.
-exposed read_line(reader: *mut Reader, into: *mut String) => bool {
-    mut chunk: [256]u8;
-    mut n: i32 = 0;
-    mut byte: u8 = 0;
-    mut saw_input := false;
-    mut ended_at_newline := false;
-    mut running := true;
-    while running {
-        if reader.read_byte(&mut byte) {
-            saw_input = true;
-            if byte == 10u8 {
-                ended_at_newline = true;
-                running = false;
+# Console identity is separate from buffering.  These are markers rather
+# than global singleton writers: callers decide where their state lives.
+exposed marker Stdout {}
+
+compose Stdout : Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize> {
+        StandardOutput::write(bytes)
+    }
+}
+
+exposed marker Stderr {}
+
+compose Stderr : Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize> {
+        StandardError::write(bytes)
+    }
+}
+
+exposed marker Stdin {}
+
+compose Stdin : Read {
+    read(*mut self, into: *mut [?]u8) => Option<usize> {
+        StandardInput::read(into)
+    }
+}
+
+# A bounded in-memory writer.  It deliberately has no failure latch: when
+# storage is exhausted, a subsequent non-empty write simply returns `None`.
+exposed struct SliceWriter {
+    internal storage: *mut [?]u8;
+    internal len: usize;
+
+    exposed new(storage: *mut [?]u8) => Self {
+        Self { storage = storage; len = 0; }
+    }
+
+    exposed len(*self) => usize { self.len }
+
+    exposed as_slice(*self) => *[?]u8 {
+        end := <i32>self.len;
+        &self.storage[0..<end]
+    }
+}
+
+compose SliceWriter : Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize> {
+        total := <usize>bytes.length;
+        if total == 0 {
+            return Option<usize>::Some { value = 0; };
+        }
+
+        capacity := <usize>self.storage.length;
+        if self.len == capacity {
+            return Option<usize>::None;
+        }
+
+        available := capacity - self.len;
+        count := if total < available { total } else { available };
+        mut i: usize = 0;
+        while i < count {
+            self.storage[<i32>(self.len + i)] = bytes[<i32>i];
+            i = i + 1;
+        }
+        self.len = self.len + count;
+        Option<usize>::Some { value = count; }
+    }
+}
+
+# The allocation-backed writer is separate from `SliceWriter`, rather than a
+# mode bit on one broad Writer type.  It preserves the longstanding public
+# `string_writer` and `to_string` conveniences.
+exposed struct StringWriter {
+    internal value: *mut String;
+
+    exposed new(value: *mut String) => Self {
+        Self { value = value; }
+    }
+}
+
+compose StringWriter : Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize> {
+        self.value.push_str(<*str>bytes);
+        Option<usize>::Some { value = <usize>bytes.length; }
+    }
+}
+
+exposed string_writer(value: *mut String) => StringWriter {
+    StringWriter::new(value)
+}
+
+# A generic buffer is itself a writer, so buffers can be stacked without a
+# special case.  Its storage is borrowed from the caller and a failed flush
+# retains unwritten bytes for a later retry.
+exposed struct BufWriter<W: Write> {
+    internal inner: *mut W;
+    internal buf: *mut [?]u8;
+    internal len: usize;
+
+    exposed new(inner: *mut W, buffer: *mut [?]u8) => Self {
+        Self { inner = inner; buf = buffer; len = 0; }
+    }
+
+    buffer_slice(*self, start: usize, end: usize) => *[?]u8 {
+        start_i32 := <i32>start;
+        end_i32 := <i32>end;
+        &self.buf[start_i32..<end_i32]
+    }
+
+    # Flushes as much buffered data as the inner writer accepts.  A short
+    # inner write is resumed here; a `None` or zero-progress result preserves
+    # the remaining bytes and leaves retry policy with the caller.
+    exposed flush(*mut self) => Option<usize> {
+        mut total: usize = 0;
+        mut keep_flushing := true;
+        while keep_flushing {
+            if self.len == 0 {
+                keep_flushing = false;
             } else {
-                chunk[n] = byte;
-                n = n + 1;
-                if n == 256 {
-                    into.push_str(<*str>&chunk[0..<n]);
-                    n = 0;
+                result := self.inner.write(self.buffer_slice(0, self.len));
+                match result {
+                    Option::None => {
+                        return Option<usize>::None;
+                    },
+                    Option::Some => {
+                        written := result.value;
+                        if written == 0 {
+                            return Option<usize>::None;
+                        }
+                        if written > self.len {
+                            return Option<usize>::None;
+                        }
+                        mut i := written;
+                        while i < self.len {
+                            self.buf[<i32>(i - written)] = self.buf[<i32>i];
+                            i = i + 1;
+                        }
+                        self.len = self.len - written;
+                        total = total + written;
+                    },
                 }
             }
+        }
+        Option<usize>::Some { value = total; }
+    }
+}
+
+compose<W: Write> BufWriter<W> : Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize> {
+        total := <usize>bytes.length;
+        if total == 0 {
+            return Option<usize>::Some { value = 0; };
+        }
+
+        capacity := <usize>self.buf.length;
+        if capacity == 0 {
+            return self.inner.write(bytes);
+        }
+
+        mut copied: usize = 0;
+        mut accepting := true;
+        while accepting {
+            if copied == total {
+                accepting = false;
+            } else {
+                if self.len == capacity {
+                    result := self.flush();
+                    match result {
+                        Option::None => { accepting = false; },
+                        Option::Some => {},
+                    }
+                }
+
+                if accepting {
+                    available := capacity - self.len;
+                    remaining := total - copied;
+                    count := if remaining < available { remaining } else { available };
+                    mut i: usize = 0;
+                    while i < count {
+                        self.buf[<i32>(self.len + i)] = bytes[<i32>(copied + i)];
+                        i = i + 1;
+                    }
+                    self.len = self.len + count;
+                    copied = copied + count;
+                }
+            }
+        }
+
+        if copied == 0 {
+            Option<usize>::None
         } else {
-            running = false;
+            Option<usize>::Some { value = copied; }
         }
     }
-    if n > 0 {
-        into.push_str(<*str>&chunk[0..<n]);
+}
+
+# The reader counterpart keeps unread source bytes in caller-owned storage.
+# One `read` call makes at most one inner read, so a short read remains visible
+# to its caller just like it is on a concrete source.
+exposed struct BufReader<R: Read> {
+    internal inner: *mut R;
+    internal buf: *mut [?]u8;
+    internal start: usize;
+    internal len: usize;
+
+    exposed new(inner: *mut R, buffer: *mut [?]u8) => Self {
+        Self { inner = inner; buf = buffer; start = 0; len = 0; }
     }
-    if ended_at_newline { true } else { saw_input }
+}
+
+compose<R: Read> BufReader<R> : Read {
+    read(*mut self, into: *mut [?]u8) => Option<usize> {
+        wanted := <usize>into.length;
+        if wanted == 0 {
+            return Option<usize>::Some { value = 0; };
+        }
+
+        if self.start < self.len {
+            available := self.len - self.start;
+            count := if wanted < available { wanted } else { available };
+            mut i: usize = 0;
+            while i < count {
+                into[<i32>i] = self.buf[<i32>(self.start + i)];
+                i = i + 1;
+            }
+            self.start = self.start + count;
+            return Option<usize>::Some { value = count; };
+        }
+
+        capacity := <usize>self.buf.length;
+        if capacity == 0 {
+            return self.inner.read(into);
+        }
+
+        result := self.inner.read(self.buf);
+        match result {
+            Option::None => Option<usize>::None,
+            Option::Some => {
+                received := result.value;
+                if received > capacity {
+                    return Option<usize>::None;
+                }
+                self.start = 0;
+                self.len = received;
+                count := if wanted < received { wanted } else { received };
+                mut i: usize = 0;
+                while i < count {
+                    into[<i32>i] = self.buf[<i32>i];
+                    i = i + 1;
+                }
+                self.start = count;
+                Option<usize>::Some { value = count; }
+            },
+        }
+    }
+}
+
+# Line splitting is policy, not a method every byte source must carry.  The
+# newline is consumed but not appended; `false` means no byte was read.
+exposed read_line(reader: spec *mut Read, into: *mut String) => bool {
+    mut chunk: [256]u8;
+    mut count: i32 = 0;
+    mut one: [1]u8;
+    mut saw_input := false;
+    mut reading := true;
+    while reading {
+        result := reader.read(&mut one[0..]);
+        match result {
+            Option::None => { reading = false; },
+            Option::Some => {
+                if result.value == 0 {
+                    reading = false;
+                } else {
+                    saw_input = true;
+                    if one[0] == 10u8 {
+                        reading = false;
+                    } else {
+                        chunk[count] = one[0];
+                        count = count + 1;
+                        if count == 256 {
+                            into.push_str(<*str>&chunk[0..<count]);
+                            count = 0;
+                        }
+                    }
+                }
+            },
+        }
+    }
+    if count > 0 {
+        into.push_str(<*str>&chunk[0..<count]);
+    }
+    saw_input
 }
 
 exposed to_string<T: Display>(value: T) => String {
     mut result := String::new();
-    mut out := string_writer(&mut result);
-    value.fmt(&mut out);
+    mut out := StringWriter::new(&mut result);
+    Display::fmt(value, &mut out);
     result
+}
+
+exposed macro print($args: expr...) => {
+    {
+        mut omega_print_buf: [256]u8;
+        mut omega_print_sink := Stdout {};
+        mut omega_print_out := BufWriter<Stdout>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
+        $...(){ Display::fmt($args, &mut omega_print_out); }
+        omega_print_out.flush();
+    }
+}
+
+exposed macro println($args: expr...) => {
+    {
+        mut omega_print_buf: [256]u8;
+        mut omega_print_sink := Stdout {};
+        mut omega_print_out := BufWriter<Stdout>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
+        $...(){ Display::fmt($args, &mut omega_print_out); }
+        Write::write(&mut omega_print_out, b"\n");
+        omega_print_out.flush();
+    }
+}
+
+exposed macro eprint($args: expr...) => {
+    {
+        mut omega_print_buf: [256]u8;
+        mut omega_print_sink := Stderr {};
+        mut omega_print_out := BufWriter<Stderr>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
+        $...(){ Display::fmt($args, &mut omega_print_out); }
+        omega_print_out.flush();
+    }
+}
+
+exposed macro eprintln($args: expr...) => {
+    {
+        mut omega_print_buf: [256]u8;
+        mut omega_print_sink := Stderr {};
+        mut omega_print_out := BufWriter<Stderr>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
+        $...(){ Display::fmt($args, &mut omega_print_out); }
+        Write::write(&mut omega_print_out, b"\n");
+        omega_print_out.flush();
+    }
 }

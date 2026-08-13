@@ -106,7 +106,7 @@ of the same name instead. Wrapping a macro body in `{ }` stops the local from
 is exactly the scope the argument is substituted into.
 
 There is no mechanism that prevents this, so a macro that must introduce a
-local picks a name a caller is unlikely to write. `core::io`'s print macros use
+local picks a name a caller is unlikely to write. `std::io`'s print macros use
 an `omega_print_` prefix for precisely this reason; a plainer `out` shadowed
 any caller-supplied `out` passed as an argument, which is a real bug that a
 real program hit (`examples/dev/main.omg` prints a `*str` named `out`).

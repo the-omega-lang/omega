@@ -1,4 +1,4 @@
-# Console output now goes through `core::io`'s `print$`/`println$` macros and
+# Console output now goes through `std::io`'s `print$`/`println$` macros and
 # the `StandardOutput`/`StandardError` gaps, glued by `plat` -- this example no
 # longer declares or links a single libc `extern`.
 
@@ -14,9 +14,14 @@ import mymodule::thing::something2;
 import extern::mathlib;
 import cycle_a::cycle_a_value;
 import cycle_b::unrelated_b;
-# `core` is an ambient prelude for *types* (`Writer` needs no import), but a
-# free function still has to be imported by name.
-import extern::core::fmt::write_uint;
+import extern::std::fmt::Display;
+import extern::std::fmt::write_uint;
+import extern::std::io::BufWriter;
+import extern::std::io::Stderr;
+import extern::std::io::Stdout;
+import extern::std::io::Write;
+import extern::std::io::print;
+import extern::std::io::println;
 
 
 # Kept at exactly `(s: *str) => i32` so `Interface::do_thing` and the
@@ -28,15 +33,17 @@ put_line(s: *str) => i32 {
 }
 
 # Addresses read better in hex than decimal, and `print$`/`println$` are
-# deliberately concatenative with no format specifiers -- so this drops to the
-# `Writer` API directly, which is what those macros expand to anyway.
+# deliberately concatenative with no format specifiers -- so this drops to a
+# caller-owned `BufWriter<Stdout>` directly, which is what those macros expand
+# to anyway.
 put_addr(label: *str, address: u64) => void {
     mut buf: [64]u8;
-    mut w := Writer::stdout_buffered(&mut buf[0..]);
-    w.write_str(label);
-    w.write_str("0x");
+    mut stdout := Stdout {};
+    mut w := BufWriter<Stdout>::new(&mut stdout, &mut buf[0..]);
+    Write::write(&mut w, <*[?]u8>label);
+    Write::write(&mut w, b"0x");
     write_uint(&mut w, address, 16u32);
-    w.newline();
+    Write::write(&mut w, b"\n");
     w.flush();
 }
 
@@ -328,7 +335,7 @@ enum MyCoolEnum(tag: i16, exposed description: *str) {
 
     exposed print_description(*self) => void {
         # `self.description` is `*str`, a length-carrying fat pointer with no
-        # null terminator -- which is exactly what `core::io` wants. The
+        # null terminator -- which is exactly what `std::io` wants. The
         # length is already part of the value, so printing it is one
         # `Display` call with no cast, no terminator scan, and no chance of
         # reading past the end. (This used to need C's `%.*s` and a

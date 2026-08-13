@@ -625,7 +625,7 @@ impl Driver {
         }
 
         if generic_params.iter().any(|g| g.bound.is_some()) {
-            self.check_generic_bounds(&key, index, &generic_params, &type_args)?;
+            self.check_item_generic_bounds(&key, index, &generic_params, &type_args)?;
         }
 
         let visibility = self
@@ -718,21 +718,21 @@ impl Driver {
     }
 
     /// Checks every bound generic parameter (`T: Animal`) against the
-    /// concrete argument it was instantiated with. Skipped entirely (not even
-    /// called) for the common all-unbound case, so an ordinary duck-typed
-    /// generic pays nothing. A resolution failure *inside* a bound (a typo'd
-    /// spec name, say) is an ordinary recorded error and fails soft with
-    /// `ItemFailed`; a bound that resolved fine but isn't satisfied is the
-    /// real, structured `SpecNotImplemented`.
-    fn check_generic_bounds(
+    /// concrete argument it was instantiated with, returning exactly the
+    /// analyzer-bound context those satisfied bounds establish. Both named
+    /// generic items and generic `compose` templates use this path: a bound
+    /// means the same thing at either instantiation site.
+    ///
+    /// `None` means resolving a bound recorded its own ordinary analysis
+    /// error. `Some(Err(_))` is the structured `SpecNotImplemented` case,
+    /// whose caller chooses the appropriate declaration/use-site anchor.
+    pub(crate) fn check_generic_bounds(
         &mut self,
-        key: &ItemKey,
-        index: usize,
+        module: &[Ident],
+        owner: (HirId, Span),
         generic_params: &[HirGenericParam],
         type_args: &[ResolvedType],
-    ) -> Result<(), ResolveError> {
-        let hir = self.modules.hir(&key.module);
-        let owner = item_id_span(&hir.items[index]);
+    ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
         let substitution: Vec<(Ident, ResolvedType)> = generic_params
             .iter()
             .map(|g| g.ident.clone())
@@ -744,26 +744,46 @@ impl Driver {
             let Some(bound) = param.bound.clone() else {
                 continue;
             };
-            let run = self.with_analyzer(&key.module, &substitution, owner, |analyzer| {
+            let run = self.with_analyzer(module, &substitution, owner, |analyzer| {
                 analyzer.check_generic_bound(owner.0, owner.1, &bound, concrete)
             });
             if run.failed {
-                return Err(key.failed());
+                return None;
             }
             match run.result {
                 Some(Ok((spec, spec_args))) => {
                     resolved_bounds.extend(self.bound_context_for(concrete, spec, spec_args));
                 }
                 Some(Err((spec, missing))) => {
-                    return Err(ResolveError::SpecNotImplemented {
+                    return Some(Err(ResolveError::SpecNotImplemented {
                         type_name: concrete.to_string(),
                         spec,
                         missing,
-                    });
+                    }));
                 }
                 None => {}
             }
         }
+        Some(Ok(resolved_bounds))
+    }
+
+    /// Stores the bound context for a named generic item after the shared
+    /// checker has validated its concrete arguments.
+    fn check_item_generic_bounds(
+        &mut self,
+        key: &ItemKey,
+        index: usize,
+        generic_params: &[HirGenericParam],
+        type_args: &[ResolvedType],
+    ) -> Result<(), ResolveError> {
+        let hir = self.modules.hir(&key.module);
+        let owner = item_id_span(&hir.items[index]);
+        let resolved_bounds =
+            match self.check_generic_bounds(&key.module, owner, generic_params, type_args) {
+                Some(Ok(bounds)) => bounds,
+                Some(Err(error)) => return Err(error),
+                None => return Err(key.failed()),
+            };
         self.items
             .generic_bounds
             .insert(key.clone(), resolved_bounds);

@@ -110,7 +110,7 @@ Speak::speak(make())    # an rvalue -- see the cost note below
 ```
 
 The adaptation is **type-directed, not a uniform `&`**. Given `fmt(*self,
-out: *mut Writer)`, what `*self` actually means depends on what `Self` is:
+out: spec *mut Write)`, what `*self` actually means depends on what `Self` is:
 
 | receiver | `*self` resolves to | what the call passes |
 |---|---|---|
@@ -122,7 +122,7 @@ out: *mut Writer)`, what `*self` actually means depends on what `Self` is:
 `str` and `[?]T` *are* their own pointer representation, so `Self`
 substitution re-stamps `*self` rather than wrapping it (see
 `Context::resolve_pointer_type`) — writing `&"hi"` by hand would produce a
-pointer to a pointer. This is precisely why `core::io`'s print macros can
+pointer to a pointer. This is precisely why `std::io`'s print macros can
 spell `Display::fmt($args, &mut omega_print_out)` at all: a macro cannot know
 which of these shapes its argument is, so the adaptation has to happen in the
 compiler rather than in the macro body.
@@ -421,11 +421,13 @@ targets; `void` is not a valid target. Exactly one primitive block may target
 each concrete type. Functions carry ordinary visibility modifiers and are
 called like inherent methods.
 
-Primitive methods and spec conformance are deliberately separate. Core adds
-conformance with method-bearing compose blocks, for example `compose str : Eq
-{ equals(*self, other: Self) => bool { ... } }`. This keeps specs named and
-independently composable instead of inventing an anonymous interface as a
-side effect of adding methods.
+Primitive methods and spec conformance are deliberately separate. Only core
+adds inherent primitive methods, but a package that owns a spec or its target
+may add the corresponding compose block. Omega's standard-library primitive
+conformances therefore live in `std::primitives`, for example `compose str :
+Eq { equals(*self, other: Self) => bool { ... } }`. This keeps specs named and
+independently composable instead of inventing an anonymous interface as a side
+effect of adding methods.
 
 ## Caveats
 

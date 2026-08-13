@@ -4,6 +4,8 @@
 # implementation via a `glue` block. See docs/21-gaps-and-glue.md for the
 # full design; this file only ever adds new gaps, never their glue.
 
+import option::Option;
+
 # The global heap allocator. Every function is required (no default body --
 # see docs/21-gaps-and-glue.md for why a default-bodied gap function isn't
 # supported yet) and self-less: called through the gap's own qualified name
@@ -23,17 +25,15 @@ gap GlobalAllocator {
 }
 
 # Console capabilities stay separate: a platform can provide output without
-# input, and each fallible operation reports through an out-pointer plus a
-# boolean. `true` with a zero input count means end of input; `false` leaves
-# the out-pointer untouched.
+# input. `None` is failure; `Some(0)` remains a valid short write or EOF.
 gap StandardOutput {
-    write(bytes: *[?]u8, written: *mut usize) => bool;
+    write(bytes: *[?]u8) => Option<usize>;
 }
 
 gap StandardError {
-    write(bytes: *[?]u8, written: *mut usize) => bool;
+    write(bytes: *[?]u8) => Option<usize>;
 }
 
 gap StandardInput {
-    read(into: *mut [?]u8, count: *mut usize) => bool;
+    read(into: *mut [?]u8) => Option<usize>;
 }

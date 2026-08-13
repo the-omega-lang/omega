@@ -1,92 +1,122 @@
-# Console I/O
+# Console I/O and formatting
 
-`core::io` provides explicit, allocation-free `Writer` and `Reader` values. A
-writer is unbuffered by default (`Writer::stdout()` / `stderr()`); bytes reach
-the platform sink before the call returns. `stdout_buffered`, `stderr_buffered`,
-and `to_sink` use a caller-owned buffer and require an explicit `flush`. A
-memory-only `to_buffer` writer sets `had_error()` when full rather than writing
-past the supplied storage.
+Console and byte I/O live in `std`, not `core`. The model separates an
+operation contract from a concrete capability and from caller-owned buffering.
+It has no global stream object and no hidden allocation.
 
-`Reader::stdin()` is similarly unbuffered. `stdin_buffered` accepts caller
-storage. `read` and `read_line` use an out-count plus `bool`; successful zero
-bytes is EOF. Fixed-buffer `read_line` rejects a non-fitting line instead of
-silently reporting a truncation.
+## Byte contracts
 
-## Platform gaps
+```omega
+exposed spec Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize>;
+}
 
-The only platform-specific contract is three independent gaps:
-`StandardOutput::write`, `StandardError::write`, and `StandardInput::read`.
-They use an out-count and `bool`, so targets can implement only the console
-capabilities they possess. The hosted libc package fills each one with its own
-`glue` block, implemented with `write(2)` and `read(2)`. `StandardOutput` and
-`StandardError` deliberately declare the *same* `write` signature: a `glue`
-block has no type of its own, so two identically named functions in separate
-blocks never collide — see [gaps-and-glue.md](21-gaps-and-glue.md).
+exposed spec Read {
+    read(*mut self, into: *mut [?]u8) => Option<usize>;
+}
+```
 
-## Formatting and printing
+`None` is failure. `Some(n)` reports exactly how many bytes were consumed or
+produced; `Some(0)` is a legitimate result. A caller must treat a short write
+as partial progress and resume from the unwritten suffix when appropriate.
+This is equally useful for a console, a bounded memory sink, a file-like
+adapter, or a test double.
 
-`core::fmt::Display` writes a value to a `Writer`. Integers, floats, `bool`,
-`char`, and `str` implement it. Integer digit conversion has bases 2–16.
-Floats use six fixed fractional digits; `nan`, `inf`, and `-inf` are handled,
-and values below `1e-6` or above `1e19` use scientific notation. This is
-intentionally not a shortest-round-trip formatter.
+## Console capabilities
 
-`print$`, `println$`, `eprint$`, and `eprintln$` are exposed `core` macros.
-They visibly allocate a 256-byte stack buffer in their expansion, format each
-argument through `Display`, then flush. They are concatenative:
-`println$("count=", count)`, not format-string based. One syscall per print
-statement, no global state, and nothing left pending when the statement ends.
+`Stdout`, `Stderr`, and `Stdin` are zero-sized marker values that compose
+`Write` or `Read`. They are the only `std` types that name the core platform
+gaps:
 
-Their locals are named `omega_print_buf`/`omega_print_out` rather than
-`buf`/`out`. Omega has no macro hygiene and a statement-position expansion is
-spliced into the caller's own block, so a plainer name is *captured* by any
-argument expression referencing a caller variable of the same name — see
-[macros.md](12-macros.md)'s hygiene section. The surrounding `{ }` keeps them
-from leaking back out.
+```omega
+mut sink := Stdout {};
+Write::write(&mut sink, b"hello\n");
+```
 
-`examples/dev/main.omg` — the language's main integration example, ~150 print
-sites — was migrated off libc `printf`/`puts` onto these macros and declares no
-`extern` of its own; `nm -u target/main.o` shows no `printf`/`puts` reference.
-Two output differences fell out of the switch, both corrections: a `bool` now
-prints `true`/`false` rather than the `%d` fallback `1`/`0`, and a `char`
-prints as its character rather than its codepoint. Addresses are formatted by
-dropping to the `Writer` API directly (`write_uint(&mut w, addr, 16u32)`),
-since the macros carry no format specifiers by design.
+The hosted `plat` package forwards `Stdout`/`Stderr` writes to `write(2)` and
+`Stdin` reads to `read(2)`, returning `None` for a negative libc result and
+`Some(count)` otherwise. A platform can implement the three gaps
+independently. Linking a program that uses a marker requires the corresponding
+glue; linking a program that does not reach it does not.
 
-NUL-terminated `*u8` text went with it. Every `<*u8>b"...\0"` literal in that
-example existed only because `puts` scans for a terminator and `printf`'s `%s`
-does too; all 27 are now plain `*str` literals, and the signatures that carried
-them (`classify`, `make_sound`, `print_any`, `Interface::do_thing`, the
-`some_text`/`favorite_color`/`message` fields) say `*str`. A length-carrying
-fat pointer is what `core::io` wants anyway: printing one is a single `Display`
-call with no cast, no terminator scan, and no way to read past the end — where
-`printf` needed `%.*s` plus a `<*u8>` length-drop to be sound at all. The `b"…"`
-literals that remain are the two that genuinely demonstrate byte slices
-(`*[?]u8` and the `ToIterator<u8>` example), not text.
+## Caller-owned adapters
 
-## `std::io`
+`SliceWriter` writes into a supplied `*mut [?]u8`. It returns a partial
+`Some(n)` when the final write reaches its capacity and returns `None` for a
+later non-empty write once full. Its `len()` and `as_slice()` expose the
+written prefix.
 
-`std::io::string_writer` targets an owned `String`; `read_line` grows a
-`String`; `to_string<T: Display>` owns its result. Build hosted programs with
-`just build-core`, `just build-std`, `just build-plat`, and `just test-io`.
+`BufWriter<W: Write>` wraps a caller-supplied `W` and caller-supplied byte
+storage. Its `write` buffers bytes, flushing as necessary; `flush()` resumes
+short inner writes and preserves any unflushed suffix when the inner writer
+returns `None` or zero progress. It is itself a `Write`, so buffering can be
+nested without a special case.
 
-## Caveats
+```omega
+mut sink := Stdout {};
+mut storage: [128]u8;
+mut out := BufWriter<Stdout>::new(&mut sink, &mut storage[0..]);
+out.write(b"buffered text\n");
+out.flush();
+```
 
-There is no implicit flush at program exit. A caller-owned buffered writer
-must be flushed. Macro bodies resolve nested macro calls at the invocation
-site.
+`BufReader<R: Read>` is the symmetric caller-buffered reader. It returns
+already buffered bytes first and makes at most one inner read per call, so it
+does not hide a source's short-read behavior. A zero-length buffer simply
+delegates to its inner reader or writer.
 
-A user-defined type implements `Display` with
-`compose Pair : Display { fmt(*self, out: *mut Writer) => void { ... } }` —
-see `examples/io_demo/main.omg`. Primitive inherent methods live in core-only
-`primitive` blocks; their `Display` conformances are separate compose blocks.
-For any compose, either the target type or the spec must belong to the current
-package.
+`read_line(reader: spec *mut Read, into: *mut String) => bool` is a free
+function rather than a required method on every reader. It appends a line to
+the caller's `String`, consumes but does not append a newline, and returns
+false only when it read no byte at all. `StringWriter` and
+`string_writer(*mut String)` are `Write` adapters for allocation-backed text;
+`to_string<T: Display>` formats through one.
 
-The four print macros expand each argument to `Display::fmt($args, ...)`, the
-spec-qualified form, not `($args).fmt(...)`: a composed method is only
-reachable through its spec, and the expansion site has no bound to reach it
-through. `Display` needs no import at the call site — an unqualified spec name
-resolves ambiently from `core`, the same way the rest of core's prelude does.
-The receiver is adapted to `fmt`'s `*self` exactly as a method call would
-adapt it, so an argument that is a literal or a temporary works unchanged.
+## Formatting and macros
+
+```omega
+exposed spec Display {
+    fmt(*self, out: spec *mut Write) => void;
+}
+```
+
+`std::fmt` owns `Display` and its allocation-free helpers. Integer helpers
+support bases 2 through 36. Floating-point output has six fractional digits,
+uses scientific notation outside its fixed range, and handles `nan`, `inf`,
+and `-inf`; it is deliberately not shortest-round-trip formatting.
+
+Primitive `Display` conformances live in `std::primitives`. A package-owned
+type can compose it in the usual way:
+
+```omega
+import extern::std::fmt::Display;
+import extern::std::io::Write;
+
+compose Pair : Display {
+    fmt(*self, out: spec *mut Write) => void {
+        out.write(b"pair");
+    }
+}
+```
+
+`print`, `println`, `eprint`, and `eprintln` are exposed `std::io` macros.
+They build a caller-visible 256-byte `BufWriter` around the relevant console
+marker, format each argument through `Display`, and flush before the expansion
+ends. They are concatenative (`println$("count=", count)`), not format-string
+based. There is no implicit flush at program exit.
+
+Omega macros are textual and unhygienic. The expansion refers to `Display`,
+`Write`, `BufWriter`, and the relevant `Stdout`/`Stderr` marker, so callers
+using a print macro import those names as well as the macro. The expansion's
+locals use `omega_print_*` names to reduce accidental capture. A composed
+method is reached with the spec-qualified `Display::fmt`, which lets literals
+and temporaries use the normal receiver adaptation rules.
+
+Build the hosted integration examples with:
+
+```sh
+just build-core
+just build-std
+just build-plat
+just test-io
+```

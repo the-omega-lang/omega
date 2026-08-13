@@ -3,7 +3,9 @@ use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::PendingSpecMethod;
 use omega_analyzer::checked::ComposeOwner;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
-use omega_analyzer::resolved_type::{ResolvedMethod, ResolvedSpecType, ResolvedType};
+use omega_analyzer::resolved_type::{
+    ResolvedBound, ResolvedMethod, ResolvedSpecType, ResolvedType,
+};
 use omega_diagnostics::Span;
 use omega_hir::{HirComposeDef, HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
 use omega_parser::prelude::{Ident, Type};
@@ -23,9 +25,20 @@ pub(crate) struct ComposeEntry {
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
     pub substitution: Vec<(Ident, ResolvedType)>,
+    /// Bounds declared by this compose's own generic parameters. These are
+    /// checked before registration, then seed the compose bodies alongside
+    /// the spec this block itself implements.
+    pub bounds: Vec<ResolvedBound>,
     /// Derived entries model a dependency of a directly declared compose;
     /// they make conformance discoverable but never own a second body.
     pub derived: bool,
+    /// Whether this entry came from matching a *generic* compose template
+    /// against a concrete target, rather than from a directly-written
+    /// concrete `compose`. Decided by whether `instantiate_compose` was
+    /// handed a substitution: only a template match produces one. Reaches
+    /// codegen through `ComposeOwner::from_template`, where it decides weak
+    /// vs. strong linkage -- see that field's own doc comment.
+    pub from_template: bool,
 }
 
 #[derive(Clone)]
@@ -38,6 +51,14 @@ struct ComposeTemplate {
 pub(crate) struct Composes {
     pub entries: Vec<ComposeEntry>,
     templates: Vec<ComposeTemplate>,
+    /// Template instantiations whose own generic bounds were not satisfied,
+    /// keyed the same way the success guard is. `composes_for_type` and
+    /// `compose_for` re-walk every matching template on each call, and a
+    /// failed instantiation registers no entry to be found the second time --
+    /// so without this the same `SpecNotImplemented` was reported once per
+    /// conformance lookup (twice for a target that is also coerced to
+    /// `spec *T`). Correct anchor and wording; only the count was wrong.
+    failed: Vec<(HirId, ResolvedType)>,
     pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedType>)>,
 }
 
@@ -371,6 +392,51 @@ impl Driver {
         self.diagnostics
             .record_warnings(module, target_run.warnings);
         let target = target_run.result?;
+        let type_args: Vec<_> = compose
+            .generics
+            .iter()
+            .map(|param| {
+                substitution
+                    .iter()
+                    .find(|(ident, _)| ident == &param.ident)
+                    .map(|(_, r#type)| r#type.clone())
+                    .expect("a generic compose template pins every parameter")
+            })
+            .collect();
+        // Checked before the success guard below, because a failure
+        // registers no entry for that guard to find.
+        if self
+            .composes
+            .failed
+            .iter()
+            .any(|(id, failed)| *id == compose.id && *failed == target.lookup_key())
+        {
+            return None;
+        }
+        let bounds = match self.check_generic_bounds(
+            module,
+            (compose.id, compose.span),
+            &compose.generics,
+            &type_args,
+        ) {
+            Some(Ok(bounds)) => bounds,
+            Some(Err(error)) => {
+                self.diagnostics.error(
+                    module,
+                    AnalysisError::new(
+                        compose.id,
+                        compose.span,
+                        AnalysisErrorKind::ModuleResolution(error),
+                    ),
+                );
+                self.composes.failed.push((compose.id, target.lookup_key()));
+                return None;
+            }
+            None => {
+                self.composes.failed.push((compose.id, target.lookup_key()));
+                return None;
+            }
+        };
         // Instantiating one template twice at the same target is not a
         // duplicate compose -- `composes_for_type` re-walks every matching
         // template on each call, so without this the *second* lookup for a
@@ -417,7 +483,9 @@ impl Driver {
             functions: compose.functions.clone(),
             pending,
             substitution: method_substitution,
+            bounds,
             derived: false,
+            from_template: !substitution.is_empty(),
         };
         if !self.check_compose_orphan(&entry) || self.reject_duplicate_compose(&entry) {
             return None;
@@ -482,7 +550,9 @@ impl Driver {
                 functions: vec![],
                 pending: vec![],
                 substitution: entry.substitution.clone(),
+                bounds: entry.bounds.clone(),
                 derived: true,
+                from_template: entry.from_template,
             });
         }
     }
@@ -790,6 +860,7 @@ impl Driver {
             spec_module_path: spec.module_path.clone(),
             spec_name: spec.name.clone(),
             spec_args: entry.spec_args.clone(),
+            from_template: entry.from_template,
         }
     }
 }

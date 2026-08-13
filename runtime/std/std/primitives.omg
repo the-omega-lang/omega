@@ -1,0 +1,148 @@
+# Primitive conformance blocks for the specs `std` owns. The corresponding
+# inherent primitive methods remain in `core`; composition is the explicit
+# package boundary between them.
+
+import cmp::Eq;
+import cmp::Ord;
+import cmp::Ordering;
+import default::Default;
+import fmt::Display;
+import fmt::write_bool;
+import fmt::write_char;
+import fmt::write_float;
+import fmt::write_int;
+import fmt::write_uint;
+import hash::Hash;
+import io::Write;
+
+# SplitMix64's fixed-cost finalizer, shared by integer and float `Hash`
+# conformances rather than copied into every generated block.
+mix64(x: u64) => u64 {
+    mut z := x + 0x9E3779B97F4A7C15u64;
+    z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
+    z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
+    z ^ (z >> 31u64)
+}
+
+macro signed_integer($T: type) => {
+    compose $T : Ord {
+        equals(*self, other: Self) => bool { *self == other }
+        compare(*self, other: Self) => Ordering {
+            if *self < other { Ordering::Less }
+            else if *self > other { Ordering::Greater }
+            else { Ordering::Equal }
+        }
+        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
+        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+    }
+    compose $T : Default { default() => Self { 0 } }
+    compose $T : Hash {
+        hash(*self) => u64 { mix64(<u64>*self) }
+    }
+    compose $T : Display {
+        fmt(*self, out: spec *mut Write) => void { write_int(out, <i64>*self, 10u32); }
+    }
+}
+
+macro unsigned_integer($T: type) => {
+    compose $T : Ord {
+        equals(*self, other: Self) => bool { *self == other }
+        compare(*self, other: Self) => Ordering {
+            if *self < other { Ordering::Less }
+            else if *self > other { Ordering::Greater }
+            else { Ordering::Equal }
+        }
+        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
+        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+    }
+    compose $T : Default { default() => Self { 0 } }
+    compose $T : Hash {
+        hash(*self) => u64 { mix64(<u64>*self) }
+    }
+    compose $T : Display {
+        fmt(*self, out: spec *mut Write) => void { write_uint(out, <u64>*self, 10u32); }
+    }
+}
+
+macro float_ops($T: type) => {
+    compose $T : Eq {
+        equals(*self, other: Self) => bool { *self == other }
+    }
+    compose $T : Default { default() => Self { 0.0 } }
+    compose $T : Hash {
+        hash(*self) => u64 {
+            bits := if *self == <Self>0.0 { 0u64 }
+            else if sizeof<Self> == 4 { <u64>*<*u32>self }
+            else { *<*u64>self };
+            mix64(bits)
+        }
+    }
+    compose $T : Display {
+        fmt(*self, out: spec *mut Write) => void { write_float(out, <f64>*self); }
+    }
+}
+
+signed_integer$(i8);
+signed_integer$(i16);
+signed_integer$(i32);
+signed_integer$(i64);
+signed_integer$(isize);
+
+unsigned_integer$(u8);
+unsigned_integer$(u16);
+unsigned_integer$(u32);
+unsigned_integer$(u64);
+unsigned_integer$(usize);
+
+float_ops$(f32);
+float_ops$(f64);
+
+compose str : Eq {
+    equals(*self, other: Self) => bool {
+        if self.size != other.size {
+            return false;
+        }
+        a := <*[?]u8>self;
+        b := <*[?]u8>other;
+        mut i : i32 = 0;
+        while i < self.size {
+            if a[i] != b[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+}
+
+compose str : Hash {
+    hash(*self) => u64 {
+        mut h : u64 = 0xcbf29ce484222325u64;
+        bytes := <*[?]u8>self;
+        mut i : i32 = 0;
+        while i < self.size {
+            h = h ^ <u64>bytes[i];
+            h = h * 0x100000001b3u64;
+            i = i + 1;
+        }
+        h
+    }
+}
+
+compose str : Display {
+    fmt(*self, out: spec *mut Write) => void {
+        out.write(<*[?]u8>self);
+    }
+}
+
+compose char : Display {
+    fmt(*self, out: spec *mut Write) => void {
+        write_char(out, *self);
+    }
+}
+
+compose bool : Display {
+    fmt(*self, out: spec *mut Write) => void {
+        write_bool(out, *self);
+    }
+}

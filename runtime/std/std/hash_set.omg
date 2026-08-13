@@ -16,6 +16,7 @@
 
 import hash_map::HashMap;
 import hash_map::HashMapIterator;
+import hash::Hash;
 
 marker Unit {}
 

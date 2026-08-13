@@ -1,7 +1,8 @@
 use omega_analyzer::checked::{CheckedItem, ExternFunctionKind};
 use omega_analyzer::error::AnalysisErrorKind;
+use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver, ExternRoot};
-use omega_parser::prelude::Ident;
+use omega_parser::{macros::MacroError, prelude::Ident};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -55,6 +56,13 @@ fn compile_errors(package: &TestPackage, message: &str) -> Vec<CompileError> {
         Ok(_) => panic!("{message}"),
         Err(errors) => errors,
     }
+}
+
+fn option_core() -> TestPackage {
+    TestPackage::with_file(
+        "core.omg",
+        "exposed enum Option<T> { None, Some { exposed value: T; }; }",
+    )
 }
 
 #[test]
@@ -170,7 +178,10 @@ fn slice_composes_and_invalid_structural_targets_are_diagnosed_semantically() {
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&pointer, "a pointer target must be rejected by the target model");
+    let errors = compile_errors(
+        &pointer,
+        "a pointer target must be rejected by the target model",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::ComposeTargetNotAType
@@ -247,6 +258,193 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
     );
 }
 
+/// A concrete composition declared in an extern package is linked from that
+/// package's object.  Resolving it to build a vtable in the consumer must not
+/// also re-check and emit its body locally, or two strong definitions of the
+/// same composed method reach the linker.
+#[test]
+fn extern_owned_concrete_compose_is_imported_not_reemitted() {
+    let library = TestPackage::with_file(
+        "lib.omg",
+        r#"
+        exposed spec Show { show(*self) => i32; }
+        exposed struct Value { exposed n: i32; }
+        compose Value : Show { show(*self) => i32 { self.n } }
+        "#,
+    );
+    let consumer = TestPackage::new(
+        r#"
+        import extern::lib::Show;
+        import extern::lib::Value;
+
+        main() => i32 {
+            value := Value { n = 7; };
+            Show::show(&value)
+        }
+        "#,
+    );
+    let program = Driver::new(
+        consumer.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("lib".to_string()),
+            dir: library.0.clone(),
+        }],
+    )
+    .expect("construct driver with library extern")
+    .compile(&[Ident("main".to_string())])
+    .expect("calling an extern-owned concrete composition should compile");
+
+    let definitions = program
+        .modules
+        .iter()
+        .flat_map(|(_, module)| &module.items)
+        .filter(|item| matches!(item, CheckedItem::FunctionDefinition(_)))
+        .count();
+    assert_eq!(definitions, 1, "only the consumer's main should be defined");
+    assert!(
+        program
+            .extern_functions
+            .iter()
+            .any(|function| matches!(function.kind, ExternFunctionKind::Compose { .. }))
+    );
+}
+
+/// The relocated standard I/O boundary still follows the ordinary compose
+/// orphan rule: an application cannot attach the externally-owned `Write`
+/// contract to the externally-owned `Stdout` marker.
+#[test]
+fn externally_owned_stdout_cannot_be_composed_with_externally_owned_write() {
+    let core = option_core();
+    let library = TestPackage::with_file(
+        "lib.omg",
+        r#"
+        exposed spec Write { write(*mut self, bytes: *[?]u8) => Option<usize>; }
+        exposed marker Stdout {}
+        compose Stdout : Write {
+            write(*mut self, bytes: *[?]u8) => Option<usize> {
+                Option<usize>::Some { value = <usize>bytes.length; }
+            }
+        }
+        "#,
+    );
+    let consumer = TestPackage::new(
+        r#"
+        import extern::lib::Stdout;
+        import extern::lib::Write;
+
+        compose Stdout : Write {
+            write(*mut self, bytes: *[?]u8) => Option<usize> {
+                Option<usize>::Some { value = <usize>bytes.length; }
+            }
+        }
+        main() => i32 { 0 }
+        "#,
+    );
+    let mut driver = Driver::new(
+        consumer.0.clone(),
+        None,
+        vec![
+            ExternRoot {
+                name: Ident("core".to_string()),
+                dir: core.0.clone(),
+            },
+            ExternRoot {
+                name: Ident("lib".to_string()),
+                dir: library.0.clone(),
+            },
+        ],
+    )
+    .expect("construct driver with I/O library extern");
+    let errors = match driver.compile(&[Ident("main".to_string())]) {
+        Ok(_) => panic!("a consumer must not compose two foreign I/O items"),
+        Err(errors) => errors,
+    };
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::ComposeOrphanViolation { .. }
+        )),
+        "expected an orphan violation, got {errors:#?}"
+    );
+}
+
+/// Gap glue is an exact ABI contract. This is the former boolean success
+/// shape, rejected against the current `Option<usize>` console convention.
+#[test]
+fn old_boolean_console_glue_signature_is_rejected() {
+    let core = option_core();
+    let package = TestPackage::new(
+        r#"
+        gap StandardOutput { write(bytes: *[?]u8) => Option<usize>; }
+        glue StandardOutput {
+            write(bytes: *[?]u8) => bool { true }
+        }
+        main() => i32 { 0 }
+        "#,
+    );
+    let mut driver = Driver::new(
+        package.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("core".to_string()),
+            dir: core.0.clone(),
+        }],
+    )
+    .expect("construct driver with Option core extern");
+    let errors = match driver.compile(&[Ident("main".to_string())]) {
+        Ok(_) => panic!("an old console glue signature must fail"),
+        Err(errors) => errors,
+    };
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::GlueFunctionSignatureMismatch { .. }
+        )),
+        "expected a glue signature mismatch, got {errors:#?}"
+    );
+}
+
+#[test]
+fn print_macro_requires_an_explicit_import() {
+    let package = TestPackage::new("main() => i32 { println$(\"missing\"); 0 }");
+    let errors = compile_errors(&package, "an unimported print macro must fail");
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        CompileError::MacroExpansion {
+            error: MacroError::UnknownMacro { name },
+            ..
+        } if name.as_ref() == "println"
+    )));
+}
+
+#[test]
+fn formatting_is_not_available_from_core() {
+    let core = TestPackage::with_file("core.omg", "marker CoreOnly {}");
+    let consumer = TestPackage::new("main() => i32 { core::fmt::missing() }");
+    let mut driver = Driver::new(
+        consumer.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("core".to_string()),
+            dir: core.0.clone(),
+        }],
+    )
+    .expect("construct driver with core extern");
+    let errors = match driver.compile(&[Ident("main".to_string())]) {
+        Ok(_) => panic!("core must not provide a formatting module"),
+        Err(errors) => errors,
+    };
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(path))
+                if path.iter().map(Ident::as_ref).eq(["core", "fmt"])
+        )),
+        "expected core::fmt to be unresolved, got {errors:#?}"
+    );
+}
+
 /// `Spec::method(receiver, ...)` must adapt `receiver` to the declared self
 /// mode whatever *shape* the argument has -- a literal and a struct
 /// expression are not places, and before this was fixed they reached a
@@ -306,7 +504,10 @@ fn blanket_composes_are_rejected_with_their_own_diagnostic() {
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&unfixed_parameter, "an unbindable parameter must be rejected");
+    let errors = compile_errors(
+        &unfixed_parameter,
+        "an unbindable parameter must be rejected",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::BlanketComposeNotYetSupported { .. }
@@ -325,6 +526,158 @@ fn blanket_composes_are_rejected_with_their_own_diagnostic() {
     generic_target
         .compile()
         .expect("a generic target that fixes its parameter is not a blanket compose");
+}
+
+/// A generic compose has its own bound context, just like a generic named
+/// item. In particular, `inner.w(...)` is resolved through `T: W`; it must
+/// not depend on a spec-qualified spelling or on every compose registered
+/// for the concrete type leaking into scope.
+#[test]
+fn generic_compose_bounds_seed_the_body_context() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec W { w(*self, value: i32) => i32; }
+        exposed spec Sum { sum(*self) => i32; }
+        exposed spec QualifiedSum { qualified_sum(*self) => i32; }
+
+        struct One { exposed value: i32; }
+        struct Two { exposed value: i32; }
+        compose One : W { w(*self, value: i32) => i32 { self.value + value } }
+        compose Two : W { w(*self, value: i32) => i32 { self.value + value } }
+
+        struct Buf<T> { exposed inner: *T; }
+        compose<T: W> Buf<T> : Sum {
+            sum(*self) => i32 { self.inner.w(1) }
+        }
+        compose<T: W> Buf<T> : QualifiedSum {
+            qualified_sum(*self) => i32 { W::w(self.inner, 1) }
+        }
+
+        use_sum<T: Sum>(value: *T) => i32 { value.sum() }
+        use_qualified_sum<T: QualifiedSum>(value: *T) => i32 { value.qualified_sum() }
+        main() => i32 {
+            one := One { value = 1; };
+            two := Two { value = 2; };
+            first := Buf<One> { inner = &one; };
+            second := Buf<Two> { inner = &two; };
+            use_sum(&first) + use_qualified_sum(&first) + use_sum(&second)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a compose generic bound must both validate and seed its body context");
+}
+
+/// An unsatisfied compose bound must be rejected when the template is
+/// instantiated, before a conformance entry or its vtable can exist. The
+/// compose declaration, not the caller that happened to trigger discovery,
+/// owns the bad promise and therefore owns the diagnostic.
+#[test]
+fn generic_compose_bounds_reject_unsatisfied_conformance_at_the_declaration() {
+    let source = r#"
+        exposed spec W { w(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct NotW { exposed value: i32; }
+        struct Buf<T> { exposed inner: *T; }
+        compose<T: W> Buf<T> : Show { show(*self) => i32 { 1 } }
+
+        as_w(value: *Buf<NotW>) => spec *W { value }
+        main() => i32 {
+            value := NotW { value = 0; };
+            buf := Buf<NotW> { inner = &value; };
+            as_w(&buf).w()
+        }
+        "#;
+    let package = TestPackage::new(source);
+    let errors = compile_errors(
+        &package,
+        "an unsatisfied compose generic bound must not produce a conformance or vtable",
+    );
+    let expected_start = source
+        .find("compose<T: W> Buf<T> : Show")
+        .expect("the declaration is present");
+    let error = errors
+        .iter()
+        .flat_map(|error| match error {
+            CompileError::Analysis { errors, .. } => errors.iter(),
+            _ => [].iter(),
+        })
+        .find(|error| {
+            matches!(
+                error.kind,
+                AnalysisErrorKind::ModuleResolution(
+                    omega_analyzer::resolver::ResolveError::SpecNotImplemented { .. }
+                )
+            )
+        })
+        .expect("the compose bound failure is reported as SpecNotImplemented");
+    assert_eq!(error.span.start, expected_start);
+}
+
+/// A compose bound may name an aggregate spec alias. The shared bound checker
+/// must seed the alias and the already-composed member specs, exactly as it
+/// does for ordinary generic items.
+#[test]
+fn generic_compose_bounds_expand_spec_aliases() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B : A { b(*self) => i32 { 2 } }
+        spec AB = A | B;
+        exposed spec Sum { sum(*self) => i32; }
+        struct Value { exposed value: i32; }
+        compose Value : B { a(*self) => i32 { self.value } }
+
+        struct Buf<T> { exposed inner: *T; }
+        compose<T: AB> Buf<T> : Sum {
+            sum(*self) => i32 { self.inner.a() + self.inner.b() }
+        }
+        use_sum<T: Sum>(value: *T) => i32 { value.sum() }
+        main() => i32 {
+            value := Value { value = 1; };
+            buf := Buf<Value> { inner = &value; };
+            use_sum(&buf)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a compose generic alias bound must reach its member composes");
+}
+
+/// An unbounded compose remains an ordinary duck-typed template. It must not
+/// inherit every compose on its concrete argument merely because another
+/// instantiation happened to register one there.
+#[test]
+fn an_unbounded_generic_compose_gains_no_bound_context() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Secret { secret(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct Value { exposed value: i32; }
+        compose Value : Secret { secret(*self) => i32 { self.value } }
+
+        struct Box<T> { exposed inner: *T; }
+        compose<T> Box<T> : Show {
+            show(*self) => i32 { self.inner.secret() }
+        }
+        use_show<T: Show>(value: *T) => i32 { value.show() }
+        main() => i32 {
+            value := Value { value = 1; };
+            boxed := Box<Value> { inner = &value; };
+            use_show(&boxed)
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "an unbounded compose must not gain methods from its concrete argument",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::MethodNotInScope { .. }
+    )));
 }
 
 /// A type's *inherent* method body is not a compose body, so a spec
@@ -449,8 +802,14 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
 #[test]
 fn an_explicit_compose_wins_over_a_derived_dependency_entry() {
     for (first, second) in [
-        ("compose Foo : Derived { b(*self) => i32 { 1 } }", "compose Foo : Base { b(*self) => i32 { 99 } }"),
-        ("compose Foo : Base { b(*self) => i32 { 99 } }", "compose Foo : Derived { b(*self) => i32 { 1 } }"),
+        (
+            "compose Foo : Derived { b(*self) => i32 { 1 } }",
+            "compose Foo : Base { b(*self) => i32 { 99 } }",
+        ),
+        (
+            "compose Foo : Base { b(*self) => i32 { 99 } }",
+            "compose Foo : Derived { b(*self) => i32 { 1 } }",
+        ),
     ] {
         let package = TestPackage::new(&format!(
             r#"
@@ -477,7 +836,9 @@ fn an_explicit_compose_wins_over_a_derived_dependency_entry() {
             .modules
             .iter()
             .flat_map(|(_, module)| &module.items)
-            .filter(|item| matches!(item, CheckedItem::FunctionDefinition(f) if f.name.as_ref() == "b"))
+            .filter(
+                |item| matches!(item, CheckedItem::FunctionDefinition(f) if f.name.as_ref() == "b"),
+            )
             .count();
         assert_eq!(bodies, 2, "one body per compose block, no more");
     }

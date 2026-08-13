@@ -1,0 +1,175 @@
+# Executable coverage for the concrete pieces of `std::io`'s byte contracts.
+# It deliberately avoids the print macros for its checks: every result is
+# verified through the public Read/Write surface, and the program returns 1
+# if any contract is violated.
+
+import extern::std::io::BufWriter;
+import extern::std::io::Read;
+import extern::std::io::SliceWriter;
+import extern::std::io::Stdout;
+import extern::std::io::Write;
+import extern::std::io::read_line;
+import extern::std::string::String;
+
+# A sink that deliberately consumes at most two bytes per call.  The caller
+# below resumes at the returned count, proving that a short successful write
+# remains distinguishable from failure.
+struct ShortWriter {
+    internal storage: *mut [?]u8;
+    internal len: usize;
+}
+
+compose ShortWriter : Write {
+    write(*mut self, bytes: *[?]u8) => Option<usize> {
+        total := <usize>bytes.length;
+        if total == 0 {
+            return Option<usize>::Some { value = 0; };
+        }
+        capacity := <usize>self.storage.length;
+        if self.len == capacity {
+            return Option<usize>::None;
+        }
+        available := capacity - self.len;
+        mut count := if total < 2usize { total } else { 2usize };
+        if count > available { count = available; }
+        mut i: usize = 0;
+        while i < count {
+            self.storage[<i32>(self.len + i)] = bytes[<i32>i];
+            i = i + 1;
+        }
+        self.len = self.len + count;
+        Option<usize>::Some { value = count; }
+    }
+}
+
+# `read_line` operates on the Read object, not a concrete reader type.  This
+# bounded source makes the dynamic-dispatch path visible without depending on
+# stdin.
+struct SliceReader {
+    internal source: *[?]u8;
+    internal pos: usize;
+}
+
+compose SliceReader : Read {
+    read(*mut self, into: *mut [?]u8) => Option<usize> {
+        if self.pos == <usize>self.source.length {
+            return Option<usize>::Some { value = 0; };
+        }
+        wanted := <usize>into.length;
+        remaining := <usize>self.source.length - self.pos;
+        count := if wanted < remaining { wanted } else { remaining };
+        mut i: usize = 0;
+        while i < count {
+            into[<i32>i] = self.source[<i32>(self.pos + i)];
+            i = i + 1;
+        }
+        self.pos = self.pos + count;
+        Option<usize>::Some { value = count; }
+    }
+}
+
+main() => i32 {
+    mut passed := true;
+
+    # The same generic adapter runs over the console marker.
+    mut stdout := Stdout {};
+    mut stdout_buffer: [8]u8;
+    mut stdout_writer := BufWriter<Stdout>::new(&mut stdout, &mut stdout_buffer[0..]);
+    stdout_result := Write::write(&mut stdout_writer, b"stdout\n");
+    match stdout_result {
+        Option::None => { passed = false; },
+        Option::Some => { if stdout_result.value != 7usize { passed = false; } },
+    }
+    stdout_writer.flush();
+
+    # A buffer over another buffer composes Write honestly.  The inner flush
+    # is intentionally explicit: buffering never hides a flush boundary.
+    mut inner_buffer: [4]u8;
+    mut inner := BufWriter<Stdout>::new(&mut stdout, &mut inner_buffer[0..]);
+    mut outer_buffer: [3]u8;
+    mut outer := BufWriter<BufWriter<Stdout>>::new(&mut inner, &mut outer_buffer[0..]);
+    nested_result := Write::write(&mut outer, b"nested\n");
+    match nested_result {
+        Option::None => { passed = false; },
+        Option::Some => { if nested_result.value != 7usize { passed = false; } },
+    }
+    outer.flush();
+    inner.flush();
+
+    # The identical buffer adapter works over a caller-owned in-memory sink.
+    mut stored: [8]u8;
+    mut slice := SliceWriter::new(&mut stored[0..]);
+    mut slice_buffer: [3]u8;
+    mut buffered_slice := BufWriter<SliceWriter>::new(&mut slice, &mut slice_buffer[0..]);
+    Write::write(&mut buffered_slice, b"slice");
+    buffered_slice.flush();
+    view := slice.as_slice();
+    if view.length != 5 { passed = false; }
+    if view[0] != 115u8 { passed = false; }
+    if view[4] != 101u8 { passed = false; }
+
+    # A full SliceWriter reports failure on the next non-empty call, with no
+    # sticky flag or alternate mode.
+    mut tiny: [1]u8;
+    mut full := SliceWriter::new(&mut tiny[0..]);
+    Write::write(&mut full, b"A");
+    overflow := Write::write(&mut full, b"B");
+    match overflow {
+        Option::None => {},
+        Option::Some => { passed = false; },
+    }
+
+    mut short_storage: [4]u8;
+    mut short := ShortWriter { storage = &mut short_storage[0..]; len = 0; };
+    first_short := Write::write(&mut short, b"abcd");
+    match first_short {
+        Option::None => { passed = false; },
+        Option::Some => { if first_short.value != 2usize { passed = false; } },
+    }
+    second_short := Write::write(&mut short, b"cd");
+    match second_short {
+        Option::None => { passed = false; },
+        Option::Some => { if second_short.value != 2usize { passed = false; } },
+    }
+    if short_storage[0] != 97u8 { passed = false; }
+    if short_storage[3] != 100u8 { passed = false; }
+
+    # `BufWriter::flush` itself resumes a short successful inner write until
+    # all buffered bytes reach the sink; this is distinct from the caller
+    # resumption check above.
+    mut buffered_short_storage: [4]u8;
+    mut buffered_short_sink := ShortWriter {
+        storage = &mut buffered_short_storage[0..]; len = 0;
+    };
+    mut buffered_short_bytes: [4]u8;
+    mut buffered_short := BufWriter<ShortWriter>::new(
+        &mut buffered_short_sink, &mut buffered_short_bytes[0..]
+    );
+    Write::write(&mut buffered_short, b"abcd");
+    flush_short := buffered_short.flush();
+    match flush_short {
+        Option::None => { passed = false; },
+        Option::Some => { if flush_short.value != 4usize { passed = false; } },
+    }
+    if buffered_short_storage[0] != 97u8 { passed = false; }
+    if buffered_short_storage[3] != 100u8 { passed = false; }
+
+    mut source := SliceReader { source = b"alpha\nbeta"; pos = 0; };
+    mut first := String::new();
+    mut second := String::new();
+    if read_line(&mut source, &mut first) == false { passed = false; }
+    if read_line(&mut source, &mut second) == false { passed = false; }
+    if read_line(&mut source, &mut second) { passed = false; }
+    first_bytes := <*[?]u8>first.as_str();
+    second_bytes := <*[?]u8>second.as_str();
+    if first_bytes.length != 5 { passed = false; }
+    if second_bytes.length != 4 { passed = false; }
+    if first_bytes[0] != 97u8 { passed = false; }
+    if first_bytes[4] != 97u8 { passed = false; }
+    if second_bytes[0] != 98u8 { passed = false; }
+    if second_bytes[3] != 97u8 { passed = false; }
+    first.free();
+    second.free();
+
+    if passed { 0 } else { 1 }
+}

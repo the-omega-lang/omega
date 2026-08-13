@@ -13,6 +13,11 @@ gap GlobalAllocator {
     realloc(ptr: *u8, size: usize) => *mut u8;
 }
 
+# Independent console capabilities use Option for an exact transfer result.
+gap StandardOutput { write(bytes: *[?]u8) => Option<usize>; }
+gap StandardError  { write(bytes: *[?]u8) => Option<usize>; }
+gap StandardInput  { read(into: *mut [?]u8) => Option<usize>; }
+
 # a platform package
 glue core::platform::GlobalAllocator {
     alloc(size: usize) => *mut u8 { libc_alloc(size) }
@@ -25,6 +30,11 @@ Both declarations are contextual keywords, not annotations. `gap` has no
 visibility modifier, generics, bodies, or `self` parameters. A `glue` has no
 name, visibility, or generics of its own; it names one qualified gap path and
 contains ordinary static function definitions.
+
+For console I/O, `None` represents failure and `Some(n)` is the exact transfer
+count. `Some(0)` is valid, including EOF on input. The three gaps are separate
+so a target may provide only the capabilities it possesses; `std::io` turns
+them into its `Stdout`, `Stderr`, and `Stdin` marker implementations.
 
 ## Resolution and conformance
 

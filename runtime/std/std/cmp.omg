@@ -1,16 +1,11 @@
-# `core::cmp` -- the two interfaces (`Eq`, `Ord`) most of the rest of
-# `core` is written against, plus the three-way result `Ord::compare`
+# `std::cmp` -- the two interfaces (`Eq`, `Ord`) most of the rest of
+# `std` is written against, plus the three-way result `Ord::compare`
 # reports through. Deliberately split from `Ord` (Rust's own split of
 # `PartialEq`/`Eq` from `PartialOrd`/`Ord` collapsed into one pair here,
 # since this language has no partial/total distinction to encode): a type
 # can be comparable for equality alone (most usefully, `f32`/`f64`, where a
 # total order doesn't exist because of `NaN`) without claiming a total
 # order it can't actually provide.
-#
-# All three items here are `exposed` -- not just for direct external
-# reference, but because `core::numerics` and `core::strings` compose
-# primitive targets with them. A hidden spec would only be nameable within
-# its declaring module and could not serve as ambient core API.
 
 exposed enum Ordering {
     Less,
@@ -76,7 +71,7 @@ exposed spec Eq {
 # (`compare(a, b).is_eq()`), so every `Ord` implementor is required to
 # provide `Eq` too; `less_than`/`greater_than`/`min`/`max` all come free
 # from `compare` alone, though an implementor is free to override any of
-# them with a more direct definition (see `core::numerics`, which does,
+# them with a more direct definition (see `std::primitives`, which does,
 # purely for speed -- the defaults here are what make the interface usable
 # on their own).
 exposed spec Ord : Eq {

@@ -25,9 +25,10 @@ runtime/plat/
     libc.omg      # honestly named — compiles/registers as "plat" via alias
 ```
 
-`libc.omg` declares everything this platform needs directly: three
-`internal extern` bindings to libc's own `malloc`/`free`/`realloc`, and
-the `glue` declaration that adapts them to `core::platform::GlobalAllocator`.
+`libc.omg` declares everything this platform needs directly: five
+`internal extern` bindings to libc's `malloc`/`free`/`realloc` and
+`write`/`read`, plus glue declarations for the allocator and three console
+capabilities.
 A deliberate, real name collision lives here — the marker's own
 `free`/`realloc` methods share their literal names with the raw externs
 they call — confirmed safe rather than assumed: a bare call inside a
@@ -86,8 +87,14 @@ just the one platform that exists right now, at its own honest path.
   error handling beyond a straight pass-through — the gap's own signature
   has no failure channel (no `Option`/`Result`) to put anything else in;
   a `NULL` from `malloc`/`realloc` is returned as-is.
-- The three `extern` bindings themselves are `internal` (package-wide,
+- The five `extern` bindings themselves are `internal` (package-wide,
   not `exposed`): implementation detail, not part of any public surface.
+- **Console glue** — `StandardOutput` and `StandardError` forward their byte
+  slice to `write(2)` on descriptors 1 and 2; `StandardInput` forwards its
+  mutable slice to `read(2)` on descriptor 0. A negative libc result becomes
+  `Option<usize>::None`; every non-negative result, including zero, becomes
+  `Some { value = count }`. `std::io` owns the public `Stdout`, `Stderr`, and
+  `Stdin` markers that use these gaps.
 
 ## Building it
 
@@ -102,5 +109,5 @@ link `target/plat.o` alongside `core.o`/`mathlib.o`, even though
 `GlobalAllocator::alloc`/`free` demo, resolved through the ambient `core`
 prelude with no `plat` reference of any kind).
 
-The libc platform adds console glue using `write(2)` for stdout/stderr and
-`read(2)` for stdin. Each target gap has its own glue declaration.
+Each console capability has its own glue declaration, so an application that
+does not reach a console marker need not retain that glue at final link.

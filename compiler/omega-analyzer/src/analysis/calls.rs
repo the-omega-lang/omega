@@ -419,6 +419,21 @@ impl<'r> Analyzer<'r> {
         };
         let (checked, r#type, mutable) =
             self.analyze_place(callee.id, callee.span, &base_place, None)?;
+        // A method call reads its receiver, so `x` in `x.method()` is used.
+        // `Context::mark_used` is otherwise only reached from `analyze_expr`'s
+        // `HirExpr::Place` arm, which a receiver never goes through -- it is
+        // analyzed here, as a place, instead. Without this every parameter
+        // used *only* as a receiver reported `UnusedParameter`, which the
+        // stdio redesign made unmissable (`write_bool(out: spec *mut Write,
+        // ...)` uses `out` twice and still warned). Long-standing, and not
+        // specific to spec objects: a concrete `d.get()` warned identically.
+        //
+        // Marked here rather than inside `analyze_place`, which also serves
+        // assignment *targets* -- `x = 1;` must stay a write, not a read, or
+        // `UnusedVariable` would stop firing on write-only bindings.
+        if let CheckedPlaceRoot::Variable { decl_id, .. } = checked.root {
+            self.context.mark_used(decl_id);
+        }
         let receiver = Receiver {
             place: base_place,
             checked,

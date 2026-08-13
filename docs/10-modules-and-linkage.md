@@ -21,7 +21,7 @@ omgc examples/dev/ \
      --extern=mathlib:examples/extern_lib/ \
      --extern=core:runtime/core/ \
      -o target/main.o
-cc target/main.o target/mathlib.o target/core.o -o example
+cc -Wl,--gc-sections target/main.o target/mathlib.o target/core.o -o example
 ```
 
 Each `--extern`/local root is compiled by its **own separate** `omgc`
@@ -30,6 +30,12 @@ whole-program single-invocation build. This works because module identity,
 symbol mangling, and linkage are all deterministic, pure functions of
 source text (see below) — two independent processes agree on symbol names
 without ever communicating.
+
+Omega places each generated function in a separate object-file section. The
+final link should use `--gc-sections` (as every repository `just` recipe does)
+so an unused function from an otherwise-linked package cannot retain its
+unrelated dependencies. This is what lets a core-only or allocator-only
+executable link only the glue its reachable functions actually require.
 
 ## Module identity, and the entry module
 
