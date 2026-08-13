@@ -373,7 +373,7 @@ impl Lowerer {
                 *ty = Type::Named(fresh.into());
             }
             Type::Pointer(inner, _)
-            | Type::UnsizedArray(inner)
+            | Type::InferredArray(inner)
             | Type::UnknownSizeArray(inner)
             | Type::SizedArray(inner, _) => {
                 Self::replace_spec_static(inner, next, generics);

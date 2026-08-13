@@ -197,7 +197,7 @@ impl<'r> Analyzer<'r> {
     /// requirement).
     ///
     /// Handles one shape ordinary `resolve_type` can't: `ident : []T =
-    /// [a, b, c];` (`Type::UnsizedArray`), where the array's real length
+    /// [a, b, c];` (`Type::InferredArray`), where the array's real length
     /// is inferred from `value` itself rather than written in the type --
     /// reusing `analyze_array_literal`'s own existing behavior of reading
     /// *only* the item type out of an `expected: Some(&SizedArray(item,
@@ -214,7 +214,7 @@ impl<'r> Analyzer<'r> {
         r#type: &Type,
         value: &HirExprNode,
     ) -> Option<(ResolvedType, CheckedExprNode)> {
-        if let Type::UnsizedArray(item) = r#type {
+        if let Type::InferredArray(item) = r#type {
             let item_type = self.resolve_type_or_error(decl_id, decl_span, item, true)?;
             // Size is a placeholder, never read back -- only the item type
             // inside is (see `analyze_array_literal`'s own `expected` match).

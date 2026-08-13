@@ -33,7 +33,7 @@ glue core::platform::GlobalAllocator {
 }
 
 glue core::platform::StandardOutput {
-    write(bytes: *[?]u8) => Option<usize> {
+    write(bytes: *[]u8) => Option<usize> {
         count := write(1, <*u8>bytes, <usize>bytes.length);
         if count < 0isize { Option<usize>::None } else {
             Option<usize>::Some { value = <usize>count; }
@@ -42,7 +42,7 @@ glue core::platform::StandardOutput {
 }
 
 glue core::platform::StandardError {
-    write(bytes: *[?]u8) => Option<usize> {
+    write(bytes: *[]u8) => Option<usize> {
         count := write(2, <*u8>bytes, <usize>bytes.length);
         if count < 0isize { Option<usize>::None } else {
             Option<usize>::Some { value = <usize>count; }
@@ -51,7 +51,7 @@ glue core::platform::StandardError {
 }
 
 glue core::platform::StandardInput {
-    read(into: *mut [?]u8) => Option<usize> {
+    read(into: *mut []u8) => Option<usize> {
         read_count := read(0, <*mut u8>into, <usize>into.length);
         if read_count < 0isize { Option<usize>::None } else {
             Option<usize>::Some { value = <usize>read_count; }

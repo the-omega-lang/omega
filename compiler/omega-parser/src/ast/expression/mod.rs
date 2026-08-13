@@ -92,9 +92,9 @@ pub enum Expression {
     Number(NumberExpr),
     String(StringExpr),
     /// `b"..."` -- a raw run of bytes, not a null-terminated C string: its
-    /// type is `*[?]u8` (`ResolvedType::Slice`, a data pointer + length),
+    /// type is `*[]u8` (`ResolvedType::Slice`, a data pointer + length),
     /// never `*u8` the way `String` is. See `Context::resolve_pointer_type`'s
-    /// `UnknownSizeArray` case for why `*[?]u8` already means exactly that.
+    /// `InferredArray` case for why `*[]u8` already means exactly that.
     ByteString(ByteStringExpr),
     Bool(BoolExpr),
     Char(CharExpr),

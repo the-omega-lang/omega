@@ -13,11 +13,11 @@ import string::String;
 # short result is visible to the caller and can be resumed without an
 # out-parameter or a sticky error bit.
 exposed spec Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize>;
+    write(*mut self, bytes: *[]u8) => Option<usize>;
 }
 
 exposed spec Read {
-    read(*mut self, into: *mut [?]u8) => Option<usize>;
+    read(*mut self, into: *mut []u8) => Option<usize>;
 }
 
 # Console identity is separate from buffering.  These are markers rather
@@ -25,7 +25,7 @@ exposed spec Read {
 exposed marker Stdout {}
 
 compose Stdout : Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize> {
+    write(*mut self, bytes: *[]u8) => Option<usize> {
         StandardOutput::write(bytes)
     }
 }
@@ -33,7 +33,7 @@ compose Stdout : Write {
 exposed marker Stderr {}
 
 compose Stderr : Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize> {
+    write(*mut self, bytes: *[]u8) => Option<usize> {
         StandardError::write(bytes)
     }
 }
@@ -41,7 +41,7 @@ compose Stderr : Write {
 exposed marker Stdin {}
 
 compose Stdin : Read {
-    read(*mut self, into: *mut [?]u8) => Option<usize> {
+    read(*mut self, into: *mut []u8) => Option<usize> {
         StandardInput::read(into)
     }
 }
@@ -49,23 +49,23 @@ compose Stdin : Read {
 # A bounded in-memory writer.  It deliberately has no failure latch: when
 # storage is exhausted, a subsequent non-empty write simply returns `None`.
 exposed struct SliceWriter {
-    internal storage: *mut [?]u8;
+    internal storage: *mut []u8;
     internal len: usize;
 
-    exposed new(storage: *mut [?]u8) => Self {
+    exposed new(storage: *mut []u8) => Self {
         Self { storage = storage; len = 0; }
     }
 
     exposed len(*self) => usize { self.len }
 
-    exposed as_slice(*self) => *[?]u8 {
+    exposed as_slice(*self) => *[]u8 {
         end := <i32>self.len;
         &self.storage[0..<end]
     }
 }
 
 compose SliceWriter : Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize> {
+    write(*mut self, bytes: *[]u8) => Option<usize> {
         total := <usize>bytes.length;
         if total == 0 {
             return Option<usize>::Some { value = 0; };
@@ -100,7 +100,7 @@ exposed struct StringWriter {
 }
 
 compose StringWriter : Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize> {
+    write(*mut self, bytes: *[]u8) => Option<usize> {
         self.value.push_str(<*str>bytes);
         Option<usize>::Some { value = <usize>bytes.length; }
     }
@@ -115,14 +115,14 @@ exposed string_writer(value: *mut String) => StringWriter {
 # retains unwritten bytes for a later retry.
 exposed struct BufWriter<W: Write> {
     internal inner: *mut W;
-    internal buf: *mut [?]u8;
+    internal buf: *mut []u8;
     internal len: usize;
 
-    exposed new(inner: *mut W, buffer: *mut [?]u8) => Self {
+    exposed new(inner: *mut W, buffer: *mut []u8) => Self {
         Self { inner = inner; buf = buffer; len = 0; }
     }
 
-    buffer_slice(*self, start: usize, end: usize) => *[?]u8 {
+    buffer_slice(*self, start: usize, end: usize) => *[]u8 {
         start_i32 := <i32>start;
         end_i32 := <i32>end;
         &self.buf[start_i32..<end_i32]
@@ -167,7 +167,7 @@ exposed struct BufWriter<W: Write> {
 }
 
 compose<W: Write> BufWriter<W> : Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize> {
+    write(*mut self, bytes: *[]u8) => Option<usize> {
         total := <usize>bytes.length;
         if total == 0 {
             return Option<usize>::Some { value = 0; };
@@ -220,17 +220,17 @@ compose<W: Write> BufWriter<W> : Write {
 # to its caller just like it is on a concrete source.
 exposed struct BufReader<R: Read> {
     internal inner: *mut R;
-    internal buf: *mut [?]u8;
+    internal buf: *mut []u8;
     internal start: usize;
     internal len: usize;
 
-    exposed new(inner: *mut R, buffer: *mut [?]u8) => Self {
+    exposed new(inner: *mut R, buffer: *mut []u8) => Self {
         Self { inner = inner; buf = buffer; start = 0; len = 0; }
     }
 }
 
 compose<R: Read> BufReader<R> : Read {
-    read(*mut self, into: *mut [?]u8) => Option<usize> {
+    read(*mut self, into: *mut []u8) => Option<usize> {
         wanted := <usize>into.length;
         if wanted == 0 {
             return Option<usize>::Some { value = 0; };

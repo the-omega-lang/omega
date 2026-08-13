@@ -10,19 +10,19 @@ primitive str {
         self.size == 0
     }
 
-    # A plain reinterpretation, not a copy -- `*str` and `*[?]u8` share the
+    # A plain reinterpretation, not a copy -- `*str` and `*[]u8` share the
     # exact same fat-pointer leaf layout (data pointer + byte count --
-    # `*str`'s `.size` and `*[?]u8`'s `.length` read the identical leaf).
-    exposed as_bytes(*self) => *[?]u8 {
-        <*[?]u8>self
+    # `*str`'s `.size` and `*[]u8`'s `.length` read the identical leaf).
+    exposed as_bytes(*self) => *[]u8 {
+        <*[]u8>self
     }
 
     exposed starts_with(*self, prefix: Self) => bool {
         if prefix.size > self.size {
             return false;
         }
-        a := <*[?]u8>self;
-        b := <*[?]u8>prefix;
+        a := <*[]u8>self;
+        b := <*[]u8>prefix;
         mut i : i32 = 0;
         while i < prefix.size {
             if a[i] != b[i] {
@@ -38,8 +38,8 @@ primitive str {
             return false;
         }
         offset := self.size - suffix.size;
-        a := <*[?]u8>self;
-        b := <*[?]u8>suffix;
+        a := <*[]u8>self;
+        b := <*[]u8>suffix;
         mut i : i32 = 0;
         while i < suffix.size {
             if a[offset + i] != b[i] {
@@ -63,8 +63,8 @@ primitive str {
         if needle.size > self.size {
             return false;
         }
-        a := <*[?]u8>self;
-        b := <*[?]u8>needle;
+        a := <*[]u8>self;
+        b := <*[]u8>needle;
         mut start : i32 = 0;
         while start <= self.size - needle.size {
             mut matched := true;

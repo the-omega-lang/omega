@@ -21,7 +21,7 @@ use std::collections::HashMap;
 /// Recurses through `Pointer`/`SizedArray`/`Function`/`Generic` to find a
 /// generic parameter nested inside a compound shape (e.g. a parameter
 /// declared `item: *T`, or `item: Pair<T>`), including the same
-/// `*[]T` -> `Array` / `*[?]T` -> `Slice` dedicated productions
+/// `*[]T` -> `Slice` / `*[?]T` -> `Array` dedicated productions
 /// `Context::resolve_pointer_type` applies when *resolving* (rather than
 /// unifying) a type.
 pub fn unify_generic_type(
@@ -36,20 +36,20 @@ pub fn unify_generic_type(
                 .entry(path.head.clone())
                 .or_insert_with(|| concrete.clone());
         }
-        // `*[]T`/`*[?]T` only ever resolve to `Array`/`Slice`, never a
+        // `*[]T`/`*[?]T` only ever resolve to `Slice`/`Array`, never a
         // plain `Pointer` (see `Context::resolve_pointer_type`) -- so these
         // raw shapes only ever unify against the matching `ResolvedType`,
         // regardless of whether `concrete` actually turns out to be one (a
         // mismatch here is left for the ordinary argument-type check).
-        (Type::Pointer(inner, _), ResolvedType::Array(c, _))
-            if matches!(inner.as_ref(), Type::UnsizedArray(_)) =>
+        (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
+            if matches!(inner.as_ref(), Type::InferredArray(_)) =>
         {
-            let Type::UnsizedArray(elem) = inner.as_ref() else {
+            let Type::InferredArray(elem) = inner.as_ref() else {
                 unreachable!()
             };
             unify_generic_type(generics, elem, c, subst);
         }
-        (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
+        (Type::Pointer(inner, _), ResolvedType::Array(c, _))
             if matches!(inner.as_ref(), Type::UnknownSizeArray(_)) =>
         {
             let Type::UnknownSizeArray(elem) = inner.as_ref() else {

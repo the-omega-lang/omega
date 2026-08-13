@@ -167,7 +167,7 @@ mod tests {
             "spec Show { show(*self) => i32; }\n\
              struct Box<T> { value: T; }\n\
              compose<T> Box<T> : Show { show(*self) => i32 { 1 } }\n\
-             primitive<T> [?]T { exposed is_empty(*self) => bool { self.length == 0 } }",
+             primitive<T> []T { exposed is_empty(*self) => bool { self.length == 0 } }",
         )
         .expect("compose and primitive declarations should parse");
         assert!(matches!(module.nodes[2].item, Item::Compose(_)));

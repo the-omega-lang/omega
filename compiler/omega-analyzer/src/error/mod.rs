@@ -126,7 +126,7 @@ pub enum TypeResolutionError {
     /// resolved type in its own right, never as another type's inner
     /// return-type position.
     NeverNotAllowedHere,
-    /// `[]T` reached ordinary type resolution directly -- unsized, and
+    /// `[]T` reached ordinary type resolution directly -- inferred-size, and
     /// nothing here to give it a length. Only legal behind a leading `*`
     /// (`*[]T`, a pointer-with-array-properties) or as a declaration's own
     /// type annotation paired with an array-literal initializer, which
@@ -135,7 +135,7 @@ pub enum TypeResolutionError {
     /// `[?]T` reached ordinary type resolution directly -- unlike `[]T`
     /// above, there is no standalone-legal case at all: a slice's length
     /// is only ever known at runtime, nothing to infer here either. Only
-    /// legal behind a leading `*` (`*[?]T`, a slice).
+    /// legal behind a leading `*` (`*[?]T`, an unsized-array pointer).
     BareUnknownSizeArray,
 }
 

@@ -73,7 +73,7 @@ to a variant's own body fields or the shared dynamic fields, are unaffected.
 struct Box { data: [4]i32; }
 
 peek_whole(b: *Box) => *[4]i32 { &reveal b.data }         # works
-peek(b: *Box) => *[?]i32 { &reveal b.data[0..=1] }         # fails:
+peek(b: *Box) => *[]i32 { &reveal b.data[0..=1] }         # fails:
 # error: 'data' on 'Box' is not visible here
 #   = help: mark the field `exposed`/`internal` on `Box`, or bypass with `reveal`
 ```
@@ -268,15 +268,15 @@ depending on how it fails. Worth fixing before a 32-bit target is added, not
 after — this is the kind of latent assumption that's cheap to fix now and
 expensive to debug once it's live.
 
-### Fixed: `ResolvedType::Array` (`*[]T`) had neither implicit coercion nor an explicit cast to/from `Pointer(T)`
+### Fixed: `ResolvedType::Array` (`*[?]T`) had neither implicit coercion nor an explicit cast to/from `Pointer(T)`
 
-`*[]T` (an unsized array pointer, e.g. `argv: *[]*u8`) is runtime-identical
+`*[?]T` (an unsized array pointer, e.g. `argv: *[?]*u8`) is runtime-identical
 to a single thin pointer — one leaf, no length — the same relationship
-`*[?]u8` has to `*str` (different nominal types, identical runtime shape).
+`*[]u8` has to `*str` (different nominal types, identical runtime shape).
 Originally `Array` was absent from both `cast_class` and `accepts`
 (`resolved_type.rs`), so there was no way — implicit or explicit — to
-convert between `*[]T` and `*T`, even though they're bit-identical at
-runtime; `*[]T` was also missing a `mutable` field entirely, unlike every
+convert between `*[?]T` and `*T`, even though they're bit-identical at
+runtime; `*[?]T` was also missing a `mutable` field entirely, unlike every
 other pointer-shaped type. Fixed generally: `Array` gained a `mutable`
 field (mirroring `Pointer`'s own shape end to end, parser through
 mangling), a `Pointer ↔ Array` cast (`Analyzer::array_pointer_cast_kind`,
@@ -290,9 +290,9 @@ never set the resulting place's mutability from the type's own flag,
 so `arr[i] = x`'s legality was inherited from whatever *binding* held
 the value rather than being the type-level fact it now correctly is.
 (The surface syntax bare `[T]`/`mut [T]` this originally shipped under was
-later replaced by the `*[]T`/`*mut []T` spelling described here, as part
+later replaced by the `*[?]T`/`*mut [?]T` spelling described here, as part
 of the broader array/slice/pointer syntax redesign — see
-[primitives](01-primitives.md)'s "`*[]T`: a pointer with array-like
+[primitives](01-primitives.md)'s "`*[?]T`: a pointer with array-like
 properties" section for the current spelling and rules.)
 
 ## Minor rough edges

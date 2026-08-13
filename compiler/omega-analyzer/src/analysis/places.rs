@@ -680,7 +680,7 @@ impl<'r> Analyzer<'r> {
         // needed by the `comp`-binding const-promotion path further down,
         // as the `Deref` projection's target type (see there for why).
         let base_type_snapshot = base_type.clone();
-        // `*[]T` (`Array`) -- itself just a pointer value with array-like
+        // `*[?]T` (`Array`) -- itself just a pointer value with array-like
         // properties, see `ResolvedType::Array`'s own doc comment -- has no
         // length anywhere, at compile time or runtime, to default a
         // missing `end` to -- unlike `SizedArray` (its own compile-time
@@ -709,7 +709,7 @@ impl<'r> Analyzer<'r> {
             ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false, false),
             ResolvedType::Slice { item, mutable } => (*item, mutable, true, false),
             ResolvedType::Str { mutable } => (ResolvedType::U8, mutable, true, true),
-            // `*[]T` -- the mutability genuinely lives on the pointer
+            // `*[?]T` -- the mutability genuinely lives on the pointer
             // *value* (matching `Slice`/`Str`'s `true`, not `SizedArray`'s
             // binding-borne `false`), so `&mut an_immutable_arr[a..b]`
             // correctly blames the pointer itself (`ImmutableSliceSource`
@@ -717,7 +717,7 @@ impl<'r> Analyzer<'r> {
             // pointer is *not* matched here -- `*T` is strictly a
             // single-value pointer, with no indexing or slicing of its
             // own; the only way to slice through one is to cast it to
-            // `*[]T` first (see `Context::resolve_pointer_type` and
+            // `*[?]T` first (see `Context::resolve_pointer_type` and
             // `Analyzer::array_pointer_cast_kind`).
             ResolvedType::Array(item, mutable) => (*item, mutable, true, false),
             found => {
@@ -739,7 +739,7 @@ impl<'r> Analyzer<'r> {
             self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
         }
 
-        // A `comp`-bound `*[]T` has no established promotion story: unlike
+        // A `comp`-bound `*[?]T` has no established promotion story: unlike
         // `SizedArray` (promote its address) or `Slice`/`Str` (already its
         // own two leaves), a `comp` array's own `ConstValue` shape isn't
         // one either of the two branches below already knows how to
@@ -852,7 +852,7 @@ impl<'r> Analyzer<'r> {
         // A missing `start` always defaults to `0`, fine for every base
         // kind -- but a missing `end` only has something to default to
         // when `base_lacks_length` is `false` (`SizedArray`'s compile-time
-        // `N`, or `Slice`/`Str`'s own runtime length leaf). `*[]T` (`Array`)
+        // `N`, or `Slice`/`Str`'s own runtime length leaf). `*[?]T` (`Array`)
         // has no such fallback anywhere, so `&arr[a..]` must name its own
         // end explicitly; `&arr[a..<b]`/`&arr[..<b]` are unaffected.
         if checked_end.is_none() && base_lacks_length {

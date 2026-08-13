@@ -37,7 +37,7 @@ compiled object: definitions from `core.o` must be linked when used.
   `is_power_of_two`, and `is_nan`. It does not attach comparison, defaulting,
   hash, or formatting conformances — `min`/`max` in particular are `Ord`
   methods and live in `std::cmp`.
-- **`core::slices`** supplies inherent operations on `*[?]T`, including
+- **`core::slices`** supplies inherent operations on `*[]T`, including
   `is_empty` and bounds-checked out-parameter access. The out-parameter/
   `bool` form is intentional for this hot, allocation-free API; it is not a
   replacement for `Option<T>` everywhere.
@@ -59,9 +59,9 @@ gap GlobalAllocator {
     realloc(ptr: *u8, size: usize) => *mut u8;
 }
 
-gap StandardOutput { write(bytes: *[?]u8) => Option<usize>; }
-gap StandardError  { write(bytes: *[?]u8) => Option<usize>; }
-gap StandardInput  { read(into: *mut [?]u8) => Option<usize>; }
+gap StandardOutput { write(bytes: *[]u8) => Option<usize>; }
+gap StandardError  { write(bytes: *[]u8) => Option<usize>; }
+gap StandardInput  { read(into: *mut []u8) => Option<usize>; }
 ```
 
 For the console gaps, `None` means failure and `Some(n)` is the exact number

@@ -244,7 +244,7 @@ none is ever reachable.
 
 ## Caveats
 
-- **`*str`/`*[?]T` don't implement `ToIterator` yet.** `for c in
+- **`*str`/`*[]T` don't implement `ToIterator` yet.** `for c in
   some_str { }` needs a hand-written wrapper struct today (as in the
   example above). Wiring the built-ins up is a natural follow-up using the
   the same generic compose mechanism collections use (see

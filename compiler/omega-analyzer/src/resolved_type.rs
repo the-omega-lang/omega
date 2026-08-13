@@ -560,7 +560,7 @@ pub enum ResolvedType {
         mutable: bool,
     },
     Function(ResolvedFunctionType),
-    /// `*[]T` (`mutable: false`) or `*mut []T` (`mutable: true`) -- an
+    /// `*[?]T` (`mutable: false`) or `*mut [?]T` (`mutable: true`) -- an
     /// unsized run of `T`: genuinely just a thin pointer value (one leaf,
     /// see `layout::leaves_of`) with array-like properties (indexing,
     /// slicing) -- the same C-decayed-array-parameter shape `argv : *[]*u8`
@@ -570,7 +570,7 @@ pub enum ResolvedType {
     /// Mutability is a type-level fact exactly like `Pointer`'s own --
     /// whether `arr[i] = x` is legal follows this flag, never whatever
     /// binding holds the value (see `Analyzer::project_index`'s `Array`
-    /// arm). This is *not* what `*[?]T` resolves to -- see `Slice` below,
+    /// arm). This is *not* what `*[]T` resolves to -- see `Slice` below,
     /// and `Context::resolve_pointer_type`'s dedicated production that
     /// produces it.
     Array(Box<ResolvedType>, bool),
@@ -579,7 +579,7 @@ pub enum ResolvedType {
     /// (locals, struct fields, ...) rather than referenced through a
     /// pointer, the same way a `Struct` is.
     SizedArray(Box<ResolvedType>, u32),
-    /// `*[?]T` (`mutable: false`) or `*mut [?]T` (`mutable: true`) -- a fat
+    /// `*[]T` (`mutable: false`) or `*mut []T` (`mutable: true`) -- a fat
     /// pointer: a data pointer plus a length, unlike `Pointer` which is
     /// always a single thin pointer value. Never written as
     /// `Pointer(Array(_))`; see `Context::resolve_pointer_type`. `mutable`
@@ -756,17 +756,17 @@ impl std::fmt::Display for ResolvedType {
                 }
                 write!(f, ") => {}", fn_type.return_type)
             }
-            Self::Array(inner, false) => write!(f, "*[]{inner}"),
-            Self::Array(inner, true) => write!(f, "*mut []{inner}"),
+            Self::Array(inner, false) => write!(f, "*[?]{inner}"),
+            Self::Array(inner, true) => write!(f, "*mut [?]{inner}"),
             Self::SizedArray(inner, size) => write!(f, "[{size}]{inner}"),
             Self::Slice {
                 item,
                 mutable: false,
-            } => write!(f, "*[?]{item}"),
+            } => write!(f, "*[]{item}"),
             Self::Slice {
                 item,
                 mutable: true,
-            } => write!(f, "*mut [?]{item}"),
+            } => write!(f, "*mut []{item}"),
             Self::Str { mutable: false } => write!(f, "*str"),
             Self::Str { mutable: true } => write!(f, "*mut str"),
             // Only the name, never the fields -- a struct may reference

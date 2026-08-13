@@ -89,7 +89,7 @@ main() => i32 {
     read_line(&mut reader, &mut third);
     mut fixed: [3]u8;
     mut fixed_writer := SliceWriter::new(&mut fixed[0..]);
-    fixed_result := Write::write(&mut fixed_writer, <*[?]u8>third.as_str());
+    fixed_result := Write::write(&mut fixed_writer, <*[]u8>third.as_str());
     mut fits := false;
     match fixed_result {
         Option::None => {},

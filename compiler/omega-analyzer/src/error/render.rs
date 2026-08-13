@@ -672,10 +672,10 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
             .with_help("there is no such thing as a `never`-typed value -- only a function/method/extern/gap may declare `=> never`"),
         TypeResolutionError::BareUnsizedArray => d
             .with_label(span, "unsized array type used on its own")
-            .with_help("write `*[]T` (a pointer to an unsized array), or use `[]T` only as a declaration's type annotation with an array-literal initializer to infer its length"),
+            .with_help("write `*[]T` (a slice), or use `[]T` only as a declaration's type annotation with an array-literal initializer to infer its length"),
         TypeResolutionError::BareUnknownSizeArray => d
             .with_label(span, "unknown-size array type used on its own")
-            .with_help("write `*[?]T` (a slice) instead"),
+            .with_help("write `*[?]T` (a pointer to an unsized array) instead"),
     }
 }
 

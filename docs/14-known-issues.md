@@ -55,7 +55,7 @@ new one is found.
 ## Types
 
 - **`*str` is not actually guaranteed valid UTF-8** — casting between
-  `*str` and `*[?]u8`/`*[?]i8` is unsound in both directions, no validation.
+  `*str` and `*[]u8`/`*[]i8` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
   [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
 - **`char`/pointer arithmetic and `bool` logical-not are fixed; casting an
@@ -112,7 +112,7 @@ deliberate limitations and one coverage gap.
   working, and it should be lifted the day variadic definitions exist.
 
 - **A generic parameter cannot be inferred from a slice argument.**
-  `f<T>(x: *T)` called with a `*[?]u8` reports "cannot infer type parameter
+  `f<T>(x: *T)` called with a `*[]u8` reports "cannot infer type parameter
   'T' from this call's arguments", and `f<[?]u8>(...)` is not valid syntax
   either. Nothing to do with composition — it reproduces with no spec or
   compose in the program — but it is what stops a slice compose from being

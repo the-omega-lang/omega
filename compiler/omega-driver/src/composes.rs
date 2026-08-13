@@ -179,7 +179,7 @@ impl Driver {
         }
         let mut method_substitution = substitution.to_vec();
         let self_type = match (&primitive.target, &target) {
-            (Type::UnknownSizeArray(_), ResolvedType::Slice { item, mutable }) => {
+            (Type::InferredArray(_), ResolvedType::Slice { item, mutable }) => {
                 ResolvedType::Array(item.clone(), *mutable)
             }
             _ => target.clone(),
@@ -292,7 +292,7 @@ impl Driver {
         let ResolvedType::Slice { item, .. } = actual else {
             return None;
         };
-        let Type::UnknownSizeArray(raw_item) = &primitive.target else {
+        let Type::InferredArray(raw_item) = &primitive.target else {
             return None;
         };
         let Type::Named(path) = raw_item.as_ref() else {
@@ -374,7 +374,7 @@ impl Driver {
     /// `match_compose_target`'s own arms — the two must agree or a legal
     /// target gets refused, or an unmatchable one slips through again.
     fn template_target_is_matchable(target: &Type) -> bool {
-        matches!(target, Type::Generic(..) | Type::UnknownSizeArray(_))
+        matches!(target, Type::Generic(..) | Type::InferredArray(_))
     }
 
     fn instantiate_compose(
@@ -763,7 +763,7 @@ impl Driver {
                 }
             }
             Type::Pointer(inner, _)
-            | Type::UnsizedArray(inner)
+            | Type::InferredArray(inner)
             | Type::UnknownSizeArray(inner)
             | Type::SizedArray(inner, _) => Self::collect_type_idents(inner, out),
             Type::Generic(_, args) => {
@@ -779,7 +779,7 @@ impl Driver {
         compose: &HirComposeDef,
         actual: &ResolvedType,
     ) -> Option<Vec<(Ident, ResolvedType)>> {
-        if let (Type::UnknownSizeArray(raw_item), ResolvedType::Slice { item, .. }) =
+        if let (Type::InferredArray(raw_item), ResolvedType::Slice { item, .. }) =
             (&compose.target, actual)
         {
             let Type::Named(path) = raw_item.as_ref() else {

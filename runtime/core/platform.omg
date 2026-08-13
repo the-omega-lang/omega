@@ -27,13 +27,13 @@ gap GlobalAllocator {
 # Console capabilities stay separate: a platform can provide output without
 # input. `None` is failure; `Some(0)` remains a valid short write or EOF.
 gap StandardOutput {
-    write(bytes: *[?]u8) => Option<usize>;
+    write(bytes: *[]u8) => Option<usize>;
 }
 
 gap StandardError {
-    write(bytes: *[?]u8) => Option<usize>;
+    write(bytes: *[]u8) => Option<usize>;
 }
 
 gap StandardInput {
-    read(into: *mut [?]u8) => Option<usize>;
+    read(into: *mut []u8) => Option<usize>;
 }

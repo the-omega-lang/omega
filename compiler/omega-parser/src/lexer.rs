@@ -144,7 +144,7 @@ pub enum TokenKind {
     /// `@` -- leads an item annotation (`@inline(always)`); see
     /// `parser::item::parse_annotations`.
     At,
-    /// `?` -- marks `[?]T`, an unknown-(runtime-)size array; see
+    /// `?` -- marks `[?]T`, an unsized array; see
     /// `parser::r#type::parse_bracket_type`.
     Question,
 

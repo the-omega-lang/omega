@@ -8,11 +8,11 @@ It has no global stream object and no hidden allocation.
 
 ```omega
 exposed spec Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize>;
+    write(*mut self, bytes: *[]u8) => Option<usize>;
 }
 
 exposed spec Read {
-    read(*mut self, into: *mut [?]u8) => Option<usize>;
+    read(*mut self, into: *mut []u8) => Option<usize>;
 }
 ```
 
@@ -41,7 +41,7 @@ glue; linking a program that does not reach it does not.
 
 ## Caller-owned adapters
 
-`SliceWriter` writes into a supplied `*mut [?]u8`. It returns a partial
+`SliceWriter` writes into a supplied `*mut []u8`. It returns a partial
 `Some(n)` when the final write reaches its capacity and returns `None` for a
 later non-empty write once full. Its `len()` and `as_slice()` expose the
 written prefix.

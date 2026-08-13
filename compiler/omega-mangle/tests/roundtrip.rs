@@ -161,9 +161,9 @@ fn wrapped_types() {
 
 #[test]
 fn str_never_collides_with_slice_u8() {
-    // `*str` and `*[?]u8` share an identical runtime shape but must never
+    // `*str` and `*[]u8` share an identical runtime shape but must never
     // mangle to the same symbol -- otherwise two overloads differing only
-    // in one taking `*str` and the other `*[?]u8` would collide.
+    // in one taking `*str` and the other `*[]u8` would collide.
     let path = nested(root("mymod"), Namespace::Value, "do_thing");
     let str_sym = Symbol {
         path: path.clone(),
@@ -179,7 +179,7 @@ fn str_never_collides_with_slice_u8() {
     let m_slice = assert_round_trips(&slice_sym);
     assert_ne!(m_str, m_slice);
     assert_eq!(demangle(&m_str).unwrap(), "mymod::do_thing(*str) -> void");
-    assert_eq!(demangle(&m_slice).unwrap(), "mymod::do_thing(*[?]u8) -> void");
+    assert_eq!(demangle(&m_slice).unwrap(), "mymod::do_thing(*[]u8) -> void");
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn malformed_backref_is_rejected_not_looped() {
 #[test]
 fn structural_compose_owner_paths_round_trip() {
     // `omega_codegen::mangle::compose_method_symbol` wraps an unnamed
-    // composition target (`compose [?]u8 : Eq`, `compose str : Eq`,
+    // composition target (`compose []u8 : Eq`, `compose str : Eq`,
     // `compose i32 : Ord`) in `ManglePath::Type` rather than rendering the
     // type through `Display`. Every such owner must stay inside
     // `[A-Za-z0-9_]` and decode back to the same structural type -- the

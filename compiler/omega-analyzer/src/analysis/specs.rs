@@ -121,7 +121,7 @@ impl<'r> Analyzer<'r> {
         {
             return Some(ResolvedType::Str { mutable: false });
         }
-        if let Type::UnknownSizeArray(item) = target {
+        if let Type::InferredArray(item) = target {
             let item = self.resolve_type_or_error(id, span, item, true)?;
             return Some(ResolvedType::Slice {
                 item: Box::new(item),
@@ -135,7 +135,7 @@ impl<'r> Analyzer<'r> {
         if matches!(
             target,
             Type::Pointer(..)
-                | Type::UnsizedArray(..)
+                | Type::UnknownSizeArray(..)
                 | Type::SizedArray(..)
                 | Type::Function(..)
                 | Type::SpecObject(..)

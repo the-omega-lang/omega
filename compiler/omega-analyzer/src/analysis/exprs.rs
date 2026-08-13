@@ -1676,10 +1676,10 @@ impl<'r> Analyzer<'r> {
         (item.as_ref() == target_item.as_ref()).then_some(CastKind::Unsize)
     }
 
-    /// `<*[]T>ptr` / `<*mut T>arr` -- `Pointer` and `Array` are both exactly
+    /// `<*[?]T>ptr` / `<*mut T>arr` -- `Pointer` and `Array` are both exactly
     /// one `Leaf::Ptr` (`layout::leaves_of`), so converting between them is
     /// a pure `Reinterpret`, no leaf-count change at all -- the same
-    /// "shapes already agree, nothing to convert" case `*str <-> *[?]u8`
+    /// "shapes already agree, nothing to convert" case `*str <-> *[]u8`
     /// already is.
     /// Deliberately **not** requiring the pointee/item types to match --
     /// this mirrors how an ordinary `*Foo -> *Bar` cast doesn't require

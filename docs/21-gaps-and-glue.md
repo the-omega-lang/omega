@@ -14,9 +14,9 @@ gap GlobalAllocator {
 }
 
 # Independent console capabilities use Option for an exact transfer result.
-gap StandardOutput { write(bytes: *[?]u8) => Option<usize>; }
-gap StandardError  { write(bytes: *[?]u8) => Option<usize>; }
-gap StandardInput  { read(into: *mut [?]u8) => Option<usize>; }
+gap StandardOutput { write(bytes: *[]u8) => Option<usize>; }
+gap StandardError  { write(bytes: *[]u8) => Option<usize>; }
+gap StandardInput  { read(into: *mut []u8) => Option<usize>; }
 
 # a platform package
 glue core::platform::GlobalAllocator {

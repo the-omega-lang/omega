@@ -375,12 +375,12 @@ impl Context {
                 Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?))
             }
             // Always invalid reached directly -- their only legal uses
-            // (behind a leading `*`, or -- for `UnsizedArray` only -- as a
+            // (behind a leading `*`, or -- for `InferredArray` only -- as a
             // declaration's own type annotation with an inferred length)
             // are both intercepted *before* they ever reach this dispatch;
             // see `resolve_pointer_type` and `Analyzer::
             // resolve_typed_decl_init` respectively.
-            Type::UnsizedArray(_) => Err(TypeResolutionError::BareUnsizedArray),
+            Type::InferredArray(_) => Err(TypeResolutionError::BareUnsizedArray),
             Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
             Type::SizedArray(item, size) => {
                 let size = size.parse::<u32>().map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
@@ -574,20 +574,20 @@ impl Context {
         bypass: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
         match pointee_type {
-            Type::UnsizedArray(item) => {
+            Type::InferredArray(item) => {
                 let item = self.resolve_type(*item, resolver, module_path, true, bypass)?;
-                Ok(ResolvedType::Array(Box::new(item), mutable))
+                Ok(ResolvedType::Slice { item: Box::new(item), mutable })
             }
             Type::UnknownSizeArray(item) => {
                 let item = self.resolve_type(*item, resolver, module_path, true, bypass)?;
-                Ok(ResolvedType::Slice { item: Box::new(item), mutable })
+                Ok(ResolvedType::Array(Box::new(item), mutable))
             }
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
             // `*self`/`*mut self` always lowers to exactly this raw shape
             // (see `omega_hir::lower::Lowerer::self_param`'s doc comment)
-            // -- when a `primitive str`/`primitive<T> [?]T` method's `Self`
+            // -- when a `primitive str`/`primitive<T> []T` method's `Self`
             // is substituted with `Str`/`Array`, this re-stamps rather
             // than double-wraps, so `*self` comes out as the real `Str`/
             // `Slice` receiver instead of a pointer *to* one. Checked as a
@@ -605,7 +605,7 @@ impl Context {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
                     // `Self` already *being* the slice is the shape a
-                    // `compose [?]u8 : Spec` binds (the registry's own target
+                    // `compose []u8 : Spec` binds (the registry's own target
                     // type), as opposed to the `Array` stand-in a `primitive
                     // <T> [?]T` block substitutes. Both must re-stamp to the
                     // real lengthed receiver rather than wrap: without this

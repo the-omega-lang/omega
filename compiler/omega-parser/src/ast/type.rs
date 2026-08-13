@@ -22,26 +22,25 @@ pub enum Type {
     /// matching every binding's own default (see `DeclarationStmt::mutable`).
     Pointer(Box<Type>, bool),
     Function(FunctionType),
-    /// `[]T` -- unsized. Standalone, this is always invalid: `Context::
+    /// `[]T` -- inferred-size. Standalone, this is always invalid: `Context::
     /// resolve_type` rejects it unconditionally wherever it's reached
     /// directly, since there's no length to give it. The only two legal
-    /// uses are behind a leading `*` (`Pointer(UnsizedArray(T), mutable)`,
+    /// uses are behind a leading `*` (`Pointer(InferredArray(T), mutable)`,
     /// which `Context::resolve_pointer_type` turns into `ResolvedType::
-    /// Array` -- genuinely just a thin pointer value with array-like
-    /// properties, indexing and slicing, no length carried alongside it),
+    /// Slice` -- a fat pointer value with a runtime length),
     /// or as a declaration's type annotation paired with an array-literal
     /// initializer, which infers the real length from it (see
     /// `Analyzer::resolve_typed_decl_init`). Mutability lives on the
     /// wrapping `*`/`*mut` sigil, never here -- `[]T` itself has no
     /// `mutable` flag, matching `SizedArray` below and unlike `Pointer`.
-    UnsizedArray(Box<Type>),
-    /// `[?]T` -- unknown-(runtime-)size. Standalone, this is always
-    /// invalid, with no exception (unlike `UnsizedArray` above, it has no
+    InferredArray(Box<Type>),
+    /// `[?]T` -- unsized. Standalone, this is always
+    /// invalid, with no exception (unlike `InferredArray` above, it has no
     /// inferred-length declaration escape hatch either -- a slice's length
     /// is only ever known at runtime, nothing to infer at all). The only
     /// legal use is behind a leading `*` (`Pointer(UnknownSizeArray(T),
     /// mutable)`, which `Context::resolve_pointer_type` turns into
-    /// `ResolvedType::Slice`, a fat `[data, length]` pointer).
+    /// `ResolvedType::Array`, a thin array-like pointer).
     UnknownSizeArray(Box<Type>),
     /// `[N]T` -- a sized, inline, contiguous run of exactly `N` `T`s. `N`
     /// is kept as raw digit text here and parsed/range-checked during type

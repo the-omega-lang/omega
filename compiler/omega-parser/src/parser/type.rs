@@ -80,7 +80,7 @@ fn parse_bracket_type(p: &mut Parser) -> Option<Type> {
         TokenKind::RBracket => {
             p.advance();
             let item = parse_type(p)?;
-            Some(Type::UnsizedArray(Box::new(item)))
+            Some(Type::InferredArray(Box::new(item)))
         }
         TokenKind::Question => {
             p.advance();

@@ -85,7 +85,7 @@ silently dropped. Composing a dependent spec registers conformance for its
 dependencies too (`compose Foo : Derived` supplies `Base`'s requirements as
 well); a spec *alias* as the composed spec (`compose Foo : AB`, where `spec
 AB = A | B`) works, but a `T: AB` bound is **not** satisfied by composing
-`A` and `B` separately. Slice targets (`compose [?]u8 : Eq`, `compose<T>
+`A` and `B` separately. Slice targets (`compose []u8 : Eq`, `compose<T>
 [?]T : Eq`) parse and register but no call can reach them. See
 [known-issues.md](14-known-issues.md)'s composition section for all three.
 
@@ -116,7 +116,7 @@ out: spec *mut Write)`, what `*self` actually means depends on what `Self` is:
 |---|---|---|
 | `n : i32` | `*i32` | `&n` |
 | `"hi"` (`*str`) | `Str` | the fat pointer itself, **no `&`** |
-| `&buf[0..]` (`*[?]u8`) | `Slice` | the fat pointer itself, **no `&`** |
+| `&buf[0..]` (`*[]u8`) | `Slice` | the fat pointer itself, **no `&`** |
 | `p : *i32` | `*i32` | `p` |
 
 `str` and `[?]T` *are* their own pointer representation, so `Self`
@@ -229,7 +229,7 @@ make_sound_with_dynamic_dispatch(&dog);        # &Dog coerces to spec *Animal
 ```
 
 `spec *Animal` is a genuine fat pointer — `[data pointer, vtable pointer]`,
-the same 2-leaf template `*[?]T` slices already established. Every Omega
+the same 2-leaf template `*[]T` slices already established. Every Omega
 call already compiles to `call_indirect` (there is no direct-call
 instruction anywhere in this backend), so the vtable mechanism only needed
 one new piece: a static data blob per resolved vtable-slot list (in
@@ -261,7 +261,7 @@ Unlike every numeric/pointer cast, this one can't be decided by a pure
 width/signedness computation — it has to *prove* something (`expr`'s
 pointee genuinely implements `Spec<Args>`), so `Analyzer::analyze_cast`
 checks it first, as its own family, before ever reaching the ordinary
-`cast_class`-based machinery (mirroring how the `*str`/`*[?]u8`/`*[?]i8`
+`cast_class`-based machinery (mirroring how the `*str`/`*[]u8`/`*[]i8`
 byte-pointer family already gets its own first-checked special case, for
 the identical reason — neither fits the scalar-width model at all). Runs
 the exact same proof `coerce_to_expected` runs for the implicit version of
@@ -278,7 +278,7 @@ vt := obj.vtable;    # always *u8, immutable -- the vtable is read-only rodata
 ```
 
 `.ptr`/`.vtable` read the fat pointer's own two leaves directly, exactly
-like `.length`/`.size` already do for `*[?]T`/`*str`'s `[data_ptr, len]`
+like `.length`/`.size` already do for `*[]T`/`*str`'s `[data_ptr, len]`
 leaves — not real fields (the concrete implementor is erased, so there's
 nothing to look up by name), so they're recognized before the ordinary
 struct-field paths would reject `spec *Spec` outright. `.ptr`'s own
@@ -409,7 +409,7 @@ outside this rule.
 primitive str {
     exposed is_empty(*self) => bool { self.length == 0 }
 }
-primitive<T> [?]T {
+primitive<T> []T {
     exposed first(*self, out: *mut T) => bool { ... }
 }
 ```

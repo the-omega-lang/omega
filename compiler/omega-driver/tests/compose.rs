@@ -169,7 +169,7 @@ fn slice_composes_and_invalid_structural_targets_are_diagnosed_semantically() {
     let slice = TestPackage::new(
         r#"
         exposed spec Empty { empty(*self) => bool; }
-        compose [?]u8 : Empty { empty(*self) => bool { self.length == 0 } }
+        compose []u8 : Empty { empty(*self) => bool { self.length == 0 } }
         main() => i32 { 0 }
         "#,
     );
@@ -896,13 +896,13 @@ fn an_explicit_compose_wins_over_a_derived_dependency_entry() {
 }
 
 /// A slice target is composable, and reachable. Declaring one used to compile
-/// while every call failed with `expected '**[?]u8'`: `Self` bound to the
+/// while every call failed with `expected '**[]u8'`: `Self` bound to the
 /// `Slice` had no re-stamping arm, so `*self` wrapped instead of re-stamping
 /// and the compose's signature disagreed with the requirement built from the
 /// same `Self`.
 #[test]
 fn slice_composes_are_callable_not_merely_declarable() {
-    for target in ["[?]u8", "<T> [?]T"] {
+    for target in ["[]u8", "<T> []T"] {
         let package = TestPackage::new(&format!(
             r#"
             exposed spec Show {{ show(*self) => i32; }}
@@ -923,6 +923,25 @@ fn slice_composes_are_callable_not_merely_declarable() {
             .compile()
             .unwrap_or_else(|_| panic!("a `{target}` compose must be callable"));
     }
+}
+
+#[test]
+fn inferred_arrays_slices_and_unsized_array_pointers_have_distinct_spellings() {
+    let package = TestPackage::new(
+        r#"
+        takes_slice(value: *[]i32) => i32 { value.length }
+        takes_unsized(value: *[?]i32) => i32 { value[1] }
+        main() => i32 {
+            inferred: []i32 = [10, 20, 30];
+            unsized := <*[?]i32>&inferred;
+            slice := &inferred[0..];
+            takes_slice(slice) + takes_unsized(unsized)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("the new array and slice spellings should resolve to their distinct shapes");
 }
 
 /// A *generic* compose never reaches `resolve_compose_target`, so a target
@@ -1034,7 +1053,7 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
 
 /// Primitive-method symbols must encode a structural target through the
 /// `MangleType` grammar rather than `ResolvedType`'s `Display`, which put
-/// `*str`, `*[?]u8` and (with a space) `*mut [?]u8` straight into symbol
+/// `*str`, `*[]u8` and (with a space) `*mut []u8` straight into symbol
 /// names -- outside the `[A-Za-z0-9_]` set the scheme deliberately keeps to.
 #[test]
 fn primitive_method_symbols_stay_within_the_mangling_charset() {

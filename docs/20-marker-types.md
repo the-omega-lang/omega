@@ -2,12 +2,12 @@
 
 ```
 spec Sink {
-    write(*mut self, bytes: *[?]u8) => void;
+    write(*mut self, bytes: *[]u8) => void;
     flush(*mut self) => void;
 }
 
 marker NullSink : Sink {
-    exposed write(*mut self, bytes: *[?]u8) => void { ... }
+    exposed write(*mut self, bytes: *[]u8) => void { ... }
     exposed flush(*mut self) => void { ... }
 }
 ```

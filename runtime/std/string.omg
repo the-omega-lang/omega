@@ -40,7 +40,7 @@ exposed struct String {
     exposed is_empty(*self) => bool { self.bytes.is_empty() }
 
     exposed push_str(*mut self, s: *str) => void {
-        source_bytes := <*[?]u8>s;
+        source_bytes := <*[]u8>s;
         mut i : i32 = 0;
         while i < s.size {
             self.bytes.push(source_bytes[i]);
@@ -77,7 +77,7 @@ exposed struct String {
     }
 
     # A real, borrowed `*str` view of this string's current contents --
-    # `List<u8>::as_slice`'s own `*[?]u8` reinterpreted, the same free
+    # `List<u8>::as_slice`'s own `*[]u8` reinterpreted, the same free
     # fat-pointer-to-fat-pointer cast `core::strings` itself relies on.
     exposed as_str(*self) => *str {
         <*str>self.bytes.as_slice()

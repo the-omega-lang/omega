@@ -15,12 +15,12 @@ import extern::std::string::String;
 # below resumes at the returned count, proving that a short successful write
 # remains distinguishable from failure.
 struct ShortWriter {
-    internal storage: *mut [?]u8;
+    internal storage: *mut []u8;
     internal len: usize;
 }
 
 compose ShortWriter : Write {
-    write(*mut self, bytes: *[?]u8) => Option<usize> {
+    write(*mut self, bytes: *[]u8) => Option<usize> {
         total := <usize>bytes.length;
         if total == 0 {
             return Option<usize>::Some { value = 0; };
@@ -46,12 +46,12 @@ compose ShortWriter : Write {
 # bounded source makes the dynamic-dispatch path visible without depending on
 # stdin.
 struct SliceReader {
-    internal source: *[?]u8;
+    internal source: *[]u8;
     internal pos: usize;
 }
 
 compose SliceReader : Read {
-    read(*mut self, into: *mut [?]u8) => Option<usize> {
+    read(*mut self, into: *mut []u8) => Option<usize> {
         if self.pos == <usize>self.source.length {
             return Option<usize>::Some { value = 0; };
         }
@@ -160,8 +160,8 @@ main() => i32 {
     if read_line(&mut source, &mut first) == false { passed = false; }
     if read_line(&mut source, &mut second) == false { passed = false; }
     if read_line(&mut source, &mut second) { passed = false; }
-    first_bytes := <*[?]u8>first.as_str();
-    second_bytes := <*[?]u8>second.as_str();
+    first_bytes := <*[]u8>first.as_str();
+    second_bytes := <*[]u8>second.as_str();
     if first_bytes.length != 5 { passed = false; }
     if second_bytes.length != 4 { passed = false; }
     if first_bytes[0] != 97u8 { passed = false; }

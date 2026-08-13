@@ -896,7 +896,7 @@ impl<'r> Analyzer<'r> {
         match raw_type {
             Type::Named(path) => !path.is_unqualified() || name_ok(&path.head),
             Type::Pointer(inner, _)
-            | Type::UnsizedArray(inner)
+            | Type::InferredArray(inner)
             | Type::UnknownSizeArray(inner)
             | Type::SizedArray(inner, _) => {
                 Self::generic_refs_resolvable(inner, generics, defaults, subst)
