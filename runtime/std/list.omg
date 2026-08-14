@@ -151,7 +151,7 @@ exposed struct List<T> {
 
 }
 
-compose<T> List<T> : ToIterator<T> {
+conform<T> List<T> to ToIterator<T> {
     to_iterator(*self) => ListIterator<T> {
         ListIterator<T> { data = self.data; index = 0; remaining = self.count; }
     }
@@ -170,7 +170,7 @@ exposed struct ListIterator<T> {
 
 }
 
-compose<T> ListIterator<T> : Iterator<T> {
+conform<T> ListIterator<T> to Iterator<T> {
     next(*mut self) => Option<T> {
         if self.remaining == 0 {
             return Option<T>::None;

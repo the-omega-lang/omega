@@ -19,7 +19,7 @@ struct ShortWriter {
     internal len: usize;
 }
 
-compose ShortWriter : Write {
+conform ShortWriter to Write {
     write(*mut self, bytes: *[]u8) => Option<usize> {
         total := <usize>bytes.length;
         if total == 0 {
@@ -50,7 +50,7 @@ struct SliceReader {
     internal pos: usize;
 }
 
-compose SliceReader : Read {
+conform SliceReader to Read {
     read(*mut self, into: *mut []u8) => Option<usize> {
         if self.pos == <usize>self.source.length {
             return Option<usize>::Some { value = 0; };
@@ -82,7 +82,7 @@ main() => i32 {
     }
     stdout_writer.flush();
 
-    # A buffer over another buffer composes Write honestly.  The inner flush
+    # A buffer over another buffer conformances Write honestly.  The inner flush
     # is intentionally explicit: buffering never hides a flush boundary.
     mut inner_buffer: [4]u8;
     mut inner := BufWriter<Stdout>::new(&mut stdout, &mut inner_buffer[0..]);

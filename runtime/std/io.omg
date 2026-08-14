@@ -24,7 +24,7 @@ exposed spec Read {
 # than global singleton writers: callers decide where their state lives.
 exposed marker Stdout {}
 
-compose Stdout : Write {
+conform Stdout to Write {
     write(*mut self, bytes: *[]u8) => Option<usize> {
         StandardOutput::write(bytes)
     }
@@ -32,7 +32,7 @@ compose Stdout : Write {
 
 exposed marker Stderr {}
 
-compose Stderr : Write {
+conform Stderr to Write {
     write(*mut self, bytes: *[]u8) => Option<usize> {
         StandardError::write(bytes)
     }
@@ -40,7 +40,7 @@ compose Stderr : Write {
 
 exposed marker Stdin {}
 
-compose Stdin : Read {
+conform Stdin to Read {
     read(*mut self, into: *mut []u8) => Option<usize> {
         StandardInput::read(into)
     }
@@ -64,7 +64,7 @@ exposed struct SliceWriter {
     }
 }
 
-compose SliceWriter : Write {
+conform SliceWriter to Write {
     write(*mut self, bytes: *[]u8) => Option<usize> {
         total := <usize>bytes.length;
         if total == 0 {
@@ -99,7 +99,7 @@ exposed struct StringWriter {
     }
 }
 
-compose StringWriter : Write {
+conform StringWriter to Write {
     write(*mut self, bytes: *[]u8) => Option<usize> {
         self.value.push_str(<*str>bytes);
         Option<usize>::Some { value = <usize>bytes.length; }
@@ -166,7 +166,7 @@ exposed struct BufWriter<W: Write> {
     }
 }
 
-compose<W: Write> BufWriter<W> : Write {
+conform<W: Write> BufWriter<W> to Write {
     write(*mut self, bytes: *[]u8) => Option<usize> {
         total := <usize>bytes.length;
         if total == 0 {
@@ -229,7 +229,7 @@ exposed struct BufReader<R: Read> {
     }
 }
 
-compose<R: Read> BufReader<R> : Read {
+conform<R: Read> BufReader<R> to Read {
     read(*mut self, into: *mut []u8) => Option<usize> {
         wanted := <usize>into.length;
         if wanted == 0 {

@@ -240,7 +240,7 @@ impl Codegen {
                 ManglingMode::Disabled,
                 ExternFunctionKind::Method { .. }
                 | ExternFunctionKind::Primitive { .. }
-                | ExternFunctionKind::Compose { .. },
+                | ExternFunctionKind::Conform { .. },
             ) => {
                 unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
             }
@@ -284,13 +284,13 @@ impl Codegen {
             }
             (
                 ManglingMode::Enabled,
-                ExternFunctionKind::Compose {
+                ExternFunctionKind::Conform {
                     target,
                     spec_name,
                     spec_args,
                     method_name,
                 },
-            ) => mangle::encode(&mangle::compose_method_symbol(
+            ) => mangle::encode(&mangle::conformance_method_symbol(
                 target,
                 spec_name,
                 spec_args,

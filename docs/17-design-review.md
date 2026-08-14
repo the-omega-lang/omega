@@ -143,10 +143,10 @@ true") in ordinary code, and today's only answer scales badly.
 ### Fixed: spec conformance is nominal
 
 Conformance now has its own registry, populated only by
-`compose Target : Spec { ... }`. Generic bounds, spec-object coercions, and
+`conform Target to Spec { ... }`. Generic bounds, spec-object coercions, and
 `for .. in` classification consult that registry before selecting methods, so
-a structurally identical type without a compose declaration no longer
-satisfies a spec accidentally. Composed instance methods also stay out of
+a structurally identical type without a conform declaration no longer
+satisfies a spec accidentally. Conforming instance methods also stay out of
 ordinary concrete method scope; they are available through a bound or an
 explicit `Spec::method(receiver, ...)` call.
 
@@ -214,7 +214,7 @@ exposed spec Right { greet(*self) => i32 { 2 } }
 spec BothDefaults = Left | Right;
 
 struct Both { value: i32; }
-compose Both : BothDefaults {}
+conform Both to BothDefaults {}
 # BothDefaults::greet(&both) silently returns 1 (Left's default) -- no ConflictingSpecFunctions,
 # no ambiguity error, no diagnostic of any kind
 ```
@@ -389,17 +389,17 @@ at least one trait method collapse into the ordinary path — and generic
 overloads become possible rather than structurally excluded. Breaking:
 changes the resolver trait's surface and every cache key shape.
 
-#### Fixed: one composition-owned pending-default path
+#### Fixed: one conformance-owned pending-default path
 
-Spec defaults are now queued only by a compose entry and checked in the
-compose body's second phase with the same target/spec bounds as explicit
-compose functions. Aggregate item queries no longer own a parallel pending
+Spec defaults are now queued only by a conform entry and checked in the
+conform body's second phase with the same target/spec bounds as explicit
+conform functions. Aggregate item queries no longer own a parallel pending
 default queue.
 
 #### Fixed: primitive methods and spec conformance are separate
 
 Core-only `primitive` blocks add inherent methods to built-in targets, while
-ordinary `compose Target : Spec` blocks register nominal conformance under a
+ordinary `conform Target to Spec` blocks register nominal conformance under a
 target-or-spec-local orphan rule. This removes anonymous extension specs and
 the former global one-extension-block-per-target coupling.
 

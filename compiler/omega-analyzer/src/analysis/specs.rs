@@ -26,8 +26,8 @@ pub(super) struct FlattenedSpecFn {
     /// (`spec_name`'s own `ResolvedSpecType::visibility`) -- a spec
     /// function has no per-function modifier of its own (see
     /// `SpecFunctionStmt`), it always inherits its declaring spec's. This
-    /// is inherited by the composed method. Tracked per function rather than
-    /// read once off the top-level compose target, because a dependency spec
+    /// is inherited by the conforming method. Tracked per function rather than
+    /// read once off the top-level conform target, because a dependency spec
     /// (`spec Mammal : Animal`) can have
     /// a different visibility than the spec that depends on it -- each
     /// function keeps the visibility of the spec that actually declared
@@ -60,7 +60,7 @@ impl FlattenedSpecFn {
 
 /// A spec-default method an implementor needs (no override, spec supplied
 /// a body) -- signature already resolved and merged into the implementor's
-/// composed method list in phase 1; this is what phase 2 still needs to
+/// conforming method list in phase 1; this is what phase 2 still needs to
 /// check with the same `Self`/generics binding --
 /// see `Analyzer::check_pending_spec_method`.
 #[derive(Clone)]
@@ -109,7 +109,7 @@ fn requirements_are_same(
 }
 
 impl<'r> Analyzer<'r> {
-    pub fn resolve_compose_target(
+    pub fn resolve_conform_target(
         &mut self,
         id: HirId,
         span: Span,
@@ -128,7 +128,7 @@ impl<'r> Analyzer<'r> {
                 mutable: false,
             });
         }
-        // A composition has a concrete owner.  The parser intentionally
+        // A conformance has a concrete owner.  The parser intentionally
         // accepts every type-shaped token sequence here so this semantic
         // gate, rather than parser recovery, owns the diagnostic for shapes
         // which can never own a conformance.
@@ -141,18 +141,18 @@ impl<'r> Analyzer<'r> {
                 | Type::SpecObject(..)
                 | Type::SpecStatic(..)
         ) {
-            self.error(id, span, AnalysisErrorKind::ComposeTargetNotAType);
+            self.error(id, span, AnalysisErrorKind::ConformTargetNotAType);
             return None;
         }
         let resolved = self.resolve_type_or_error(id, span, target, true)?;
         if matches!(resolved, ResolvedType::Spec(..) | ResolvedType::Function(..)) {
-            self.error(id, span, AnalysisErrorKind::ComposeTargetNotAType);
+            self.error(id, span, AnalysisErrorKind::ConformTargetNotAType);
             return None;
         }
         Some(resolved)
     }
 
-    pub fn check_compose_block(
+    pub fn check_conform_block(
         &mut self,
         id: HirId,
         span: Span,
@@ -176,7 +176,7 @@ impl<'r> Analyzer<'r> {
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
 
-        let source = ComposeSource {
+        let source = ConformanceSource {
             spec: spec.clone(),
             spec_args: spec_args.clone(),
         };
@@ -249,7 +249,7 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     function.id,
                     function.span,
-                    AnalysisErrorKind::ComposeExtraFunction {
+                    AnalysisErrorKind::ConformanceExtraFunction {
                         spec: spec_name.clone(),
                         function: function.name.clone(),
                     },
@@ -258,7 +258,7 @@ impl<'r> Analyzer<'r> {
         }
         Some((spec, spec_args, methods, pending))
     }
-    /// Resolves a raw `Type` that's expected to name a spec (a compose target,
+    /// Resolves a raw `Type` that's expected to name a spec (a conform target,
     /// spec dependency, or generic bound) to its cell plus
     /// its own resolved generic arguments (e.g. `Iterator<i32>`'s `[i32]`)
     /// -- `None` on failure (already reported, either as an ordinary
@@ -355,7 +355,7 @@ impl<'r> Analyzer<'r> {
                 // by-value `self` is, just below: nothing downstream could
                 // ever satisfy it. Omega has no variadic function
                 // *definitions* at all -- only `extern` declarations may be
-                // variadic, for C interop -- so neither a `compose` block nor
+                // variadic, for C interop -- so neither a `conform` block nor
                 // a spec default can supply a matching body, and every
                 // implementor would get a bare `MissingSpecFunction` naming a
                 // function it has no syntax to write.
@@ -413,7 +413,7 @@ impl<'r> Analyzer<'r> {
     /// Animal, Dummy`) to their cells, keeping each dependency's own type
     /// arguments **raw** (unresolved `Type`, not `ResolvedType`). Unlike
     /// `resolve_spec_reference` (used wherever a concrete reference's args
-    /// are already resolvable -- a generic bound or compose declaration),
+    /// are already resolvable -- a generic bound or conform declaration),
     /// this runs at the *depending* spec's own declaration, before its own
     /// generics are ever bound to anything concrete -- resolving a
     /// dependency's args here would fail for exactly the case that matters
@@ -539,13 +539,13 @@ impl<'r> Analyzer<'r> {
     }
 
     /// The ambiently-resolvable `core::iterator::{name}` spec cell, used by
-    /// `Analyzer::for_in_source_declares` for compose-registry identity
+    /// `Analyzer::for_in_source_declares` for conform-registry identity
     /// comparison. Tries this
     /// module's own implicit absolute path first (`[self.module_path,
     /// name]`, or a real import alias if one exists), then falls back to
     /// `ModuleResolver::ambient_core_candidates` -- the same two-step retry
     /// `Context::resolve_generic_type` already gives every *type-position*
-    /// reference to a `core`-exposed name (a compose declaration or
+    /// reference to a `core`-exposed name (a conform declaration or
     /// generic bound); this is the one caller that needs the identical
     /// fallback from a for-in-loop's own value-analysis-time context
     /// instead, which never goes through `resolve_type` at all. `None` for
@@ -574,28 +574,28 @@ impl<'r> Analyzer<'r> {
         self.resolver.spec_declaration(&ambient).ok().flatten()
     }
 
-    /// Whether `ty` has a registered composition for the ambient iterator
-    /// spec. Composition metadata, rather than methods merged onto an
+    /// Whether `ty` has a registered conformance for the ambient iterator
+    /// spec. Conformance metadata, rather than methods merged onto an
     /// aggregate cell, is the sole conformance source.
     pub(super) fn for_in_source_declares(&mut self, ty: &ResolvedType, name: &str) -> bool {
-        !self.for_in_composes(ty, name).is_empty()
+        !self.for_in_conformances(ty, name).is_empty()
     }
 
     /// Every direct registry entry for an ambient iterator spec. Unlike a
     /// receiver lookup, a `for` loop needs the spec arguments too: two
     /// `ToIterator<T>` implementations are only distinguishable by `T`.
-    pub(super) fn for_in_composes(
+    pub(super) fn for_in_conformances(
         &mut self,
         ty: &ResolvedType,
         name: &str,
-    ) -> Vec<crate::resolved_type::ResolvedCompose> {
+    ) -> Vec<crate::resolved_type::ResolvedConformance> {
         let Some(target_cell) = self.resolve_ambient_iterator_spec_cell(name) else {
             return vec![];
         };
-        match self.resolver.composes_for_type(ty) {
-            Ok(composes) => composes
+        match self.resolver.conformances_for_type(ty) {
+            Ok(conformances) => conformances
                 .into_iter()
-                .filter(|compose| compose.spec.borrow().id == target_cell.borrow().id)
+                .filter(|conform| conform.spec.borrow().id == target_cell.borrow().id)
                 .collect(),
             Err(_) => vec![],
         }
@@ -853,8 +853,8 @@ impl<'r> Analyzer<'r> {
         spec_type_args: &[ResolvedType],
         _check_method_visibility: bool,
     ) -> Result<Vec<HirId>, Vec<Ident>> {
-        match self.resolver.compose_for(ty, spec, spec_type_args) {
-            Ok(Some(compose)) => Ok(compose
+        match self.resolver.conformance_for(ty, spec, spec_type_args) {
+            Ok(Some(conform)) => Ok(conform
                 .methods
                 .iter()
                 .map(|(_, method)| method.decl_id)
@@ -863,9 +863,9 @@ impl<'r> Analyzer<'r> {
             // `ty` fails to implement it: an **aggregate** spec -- a pure
             // alias (`spec MySpec = Dummy | Mammal`), or any spec whose own
             // requirements are all supplied by its dependencies -- is
-            // satisfied by composing its *members*, and nobody ever writes
-            // `compose Wolf : MySpec` for one. `transitive_spec_dependencies`
-            // registers derived entries walking *downward* (a compose's spec
+            // satisfied by conforming its *members*, and nobody ever writes
+            // `conform Wolf to MySpec` for one. `transitive_spec_dependencies`
+            // registers derived entries walking *downward* (a conform's spec
             // to that spec's dependencies), which is the wrong direction for
             // this: `MySpec` depends on `Mammal`, not the reverse.
             //
@@ -873,7 +873,7 @@ impl<'r> Analyzer<'r> {
             // `spec`'s own flattened requirements onto the methods `ty`'s
             // registry entries already provide. Restricted to entries whose
             // spec lies in `spec`'s transitive dependencies, so an unrelated
-            // compose that happens to share a signature can never contribute:
+            // conform that happens to share a signature can never contribute:
             // this is conformance, not method lookup, and it must not become
             // a second way for a foreign spec's method to count.
             //
@@ -886,7 +886,7 @@ impl<'r> Analyzer<'r> {
                 };
                 let mut permitted = HashSet::new();
                 Self::transitive_dependency_ids(spec, &mut permitted);
-                let candidates = match self.resolver.composes_for_type(ty) {
+                let candidates = match self.resolver.conformances_for_type(ty) {
                     Ok(entries) => entries,
                     Err(error) => {
                         self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
@@ -926,7 +926,7 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The transitive specs a direct `compose Target : Spec<Args>` also
+    /// The transitive specs a direct `conform Target to Spec<Args>` also
     /// satisfies. Dependency arguments stay raw on a spec declaration, so
     /// this is deliberately resolved under the same `Self`/generic binding
     /// as `flatten_spec`, rather than walked by the driver as plain syntax.
@@ -1026,7 +1026,7 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
-            // Not an error: the direct compose was already checked against
+            // Not an error: the direct conform was already checked against
             // its own spec, so an unmatched dependency requirement means this
             // dependency simply is not fully covered here. Registering
             // nothing lets `type_implements_spec`'s own transitive-dependency search answer

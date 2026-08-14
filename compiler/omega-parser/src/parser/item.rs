@@ -3,7 +3,7 @@ use crate::ast::generics::GenericParam;
 use crate::ast::self_mode::SelfMode;
 use crate::ast::statement::{
     Item, ItemNode,
-    compose::ComposeStmt,
+    conform::ConformStmt,
     declaration::DeclarationStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},
     function_definition::FunctionDefinitionStmt,
@@ -167,7 +167,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             Item::Glue(parse_glue_def(p)?)
         }
         TokenKind::Ident(name)
-            if name == "compose"
+            if name == "conform"
                 && matches!(
                     p.peek_at(1),
                     TokenKind::Ident(_)
@@ -179,7 +179,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         {
             reject_annotations(p, &annotations);
             reject_visibility(p, visibility, visibility_span);
-            Item::Compose(parse_compose_def(p)?)
+            Item::Conform(parse_conform_def(p)?)
         }
         TokenKind::Ident(name)
             if name == "primitive"
@@ -920,11 +920,15 @@ fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
     Some(GlueStmt { gap, functions })
 }
 
-fn parse_compose_def(p: &mut Parser) -> Option<ComposeStmt> {
+fn parse_conform_def(p: &mut Parser) -> Option<ConformStmt> {
     p.advance();
     let generics = parse_optional_generics(p)?;
     let target = crate::parser::r#type::parse_type(p)?;
-    p.expect(&TokenKind::Colon, "':'");
+    // `to` is contextual, exactly like `conform` itself -- it is only the
+    // conformance separator in this one position, and stays an ordinary
+    // identifier everywhere else (see `TokenKind`'s own note on why the
+    // grammar reserves as few words as it can get away with).
+    p.expect(&TokenKind::Ident("to".to_string()), "'to'");
     let spec = crate::parser::r#type::parse_type(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
     let mut functions = Vec::new();
@@ -934,7 +938,7 @@ fn parse_compose_def(p: &mut Parser) -> Option<ComposeStmt> {
         if visibility != Visibility::Hidden {
             p.error_at(
                 visibility_span.expect("non-hidden visibility has a span"),
-                ParseErrorKind::ComposeMethodVisibility,
+                ParseErrorKind::ConformMethodVisibility,
             );
         }
         functions.push(parse_function_definition(
@@ -944,7 +948,7 @@ fn parse_compose_def(p: &mut Parser) -> Option<ComposeStmt> {
         )?);
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(ComposeStmt {
+    Some(ConformStmt {
         generics,
         target,
         spec,

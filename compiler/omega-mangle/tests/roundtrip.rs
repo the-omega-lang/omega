@@ -236,10 +236,10 @@ fn malformed_backref_is_rejected_not_looped() {
 }
 
 #[test]
-fn structural_compose_owner_paths_round_trip() {
-    // `omega_codegen::mangle::compose_method_symbol` wraps an unnamed
-    // composition target (`compose []u8 : Eq`, `compose str : Eq`,
-    // `compose i32 : Ord`) in `ManglePath::Type` rather than rendering the
+fn structural_conformance_owner_paths_round_trip() {
+    // `omega_codegen::mangle::conformance_method_symbol` wraps an unnamed
+    // conformance target (`conform []u8 to Eq`, `conform str to Eq`,
+    // `conform i32 to Ord`) in `ManglePath::Type` rather than rendering the
     // type through `Display`. Every such owner must stay inside
     // `[A-Za-z0-9_]` and decode back to the same structural type -- the
     // whole point of the wrapper.
@@ -294,7 +294,7 @@ fn structural_owners_of_different_shape_never_collide() {
     .collect();
     for (i, a) in mangled.iter().enumerate() {
         for b in &mangled[i + 1..] {
-            assert_ne!(a, b, "structural compose owners must not collide");
+            assert_ne!(a, b, "structural conform owners must not collide");
         }
     }
 }

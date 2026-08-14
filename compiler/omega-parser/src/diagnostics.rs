@@ -100,8 +100,8 @@ impl ParseError {
             ParseErrorKind::GapOrGlueVisibility => d
                 .with_label(self.span, "gaps and glues are global by nature")
                 .with_help("remove this visibility modifier"),
-            ParseErrorKind::ComposeMethodVisibility => d
-                .with_label(self.span, "a composed method inherits its spec's visibility")
+            ParseErrorKind::ConformMethodVisibility => d
+                .with_label(self.span, "a conforming method inherits its spec's visibility")
                 .with_help("remove the method visibility modifier"),
             ParseErrorKind::PrimitiveVisibility => d
                 .with_label(self.span, "a primitive block does not declare the built-in type")
@@ -225,7 +225,7 @@ pub enum ParseErrorKind {
     /// precedent as `AnnotationNotAllowedHere`.
     VisibilityNotAllowedHere,
     GapOrGlueVisibility,
-    ComposeMethodVisibility,
+    ConformMethodVisibility,
     PrimitiveVisibility,
     /// A `<...>` list on a `gap` name or a `glue` target path. Reported
     /// (and then *consumed* by the caller, see `parse_gap_def`) rather than
@@ -330,8 +330,8 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "a visibility modifier is not allowed here")
             }
             Self::GapOrGlueVisibility => write!(f, "gaps and glues take no visibility modifier"),
-            Self::ComposeMethodVisibility => {
-                write!(f, "a composed method inherits its spec's visibility")
+            Self::ConformMethodVisibility => {
+                write!(f, "a conforming method inherits its spec's visibility")
             }
             Self::PrimitiveVisibility => {
                 write!(f, "a primitive block takes no visibility modifier")

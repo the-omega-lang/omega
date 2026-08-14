@@ -31,7 +31,7 @@ initialization or `..Default::default()`-style spread.
 
 **Structs support single-generic-parameter-list generics**
 (`struct MyNode<T> { value: T; next: *MyNode<T>; }`). They conform to
-[specs](08-specs.md) through separate `compose S : Spec { ... }` blocks.
+[specs](08-specs.md) through separate `conform S to Spec { ... }` blocks.
 
 ## Unions
 

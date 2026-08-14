@@ -98,7 +98,7 @@ Not a language spec, not a tutorial, and not a changelog — it describes the
 *current* state only. Rationale for individual decisions is summarized
 inline per topic; the fuller blow-by-blow (including false starts and
 rolled-back designs like the `@ufcs` annotation predecessor to
-[primitive blocks and composition](08-specs.md)) lives in this repo's own commit history,
+[primitive blocks and conformance](08-specs.md)) lives in this repo's own commit history,
 where design conversations are recorded verbatim.
 
 - [24. Console I/O](24-console-io.md)

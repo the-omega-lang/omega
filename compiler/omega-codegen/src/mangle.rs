@@ -264,7 +264,7 @@ pub(crate) fn primitive_method_symbol(
     }
 }
 
-/// The path a compose/primitive target is nested under: a named type keeps
+/// The path a conform/primitive target is nested under: a named type keeps
 /// its own module-qualified path, a structural one (`i32`, `str`, `[?]T`)
 /// is encoded through the ordinary `MangleType` grammar.
 fn target_owner_path(target: &ResolvedType) -> ManglePath {
@@ -274,7 +274,7 @@ fn target_owner_path(target: &ResolvedType) -> ManglePath {
     }
 }
 
-pub(crate) fn compose_method_symbol(
+pub(crate) fn conformance_method_symbol(
     target: &ResolvedType,
     spec_name: &Ident,
     spec_args: &[ResolvedType],

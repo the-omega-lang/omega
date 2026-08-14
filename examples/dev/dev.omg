@@ -420,7 +420,7 @@ exposed spec Animal {
 struct Dog {
     exposed id: i32;
 }
-compose Dog : Animal {
+conform Dog to Animal {
     kind(*self) => AnimalKind { AnimalKind::Dog }
     make_sound(*self) => *str { "woof woof" }
 }
@@ -428,7 +428,7 @@ compose Dog : Animal {
 struct Cat {
     exposed id: i32;
 }
-compose Cat : Animal {
+conform Cat to Animal {
     kind(*self) => AnimalKind { AnimalKind::Cat }
     make_sound(*self) => *str { "meow" }
     # Overrides the default: a cat is never a dog, no matter what its own
@@ -485,14 +485,14 @@ exposed spec Labeled<T> : Container<T> {
 struct Score {
     exposed value: i32;
 }
-compose Score : Labeled<i32> {
+conform Score to Labeled<i32> {
     get(*self) => i32 { self.value }
 }
 
 struct Wolf {
     exposed id: i32;
 }
-compose Wolf : Mammal {
+conform Wolf to Mammal {
     kind(*self) => AnimalKind { AnimalKind::Wolf }
     make_sound(*self) => *str { "howl" }
 }
@@ -763,7 +763,7 @@ main(argc : i32, argv : *[?]*u8) => i32 {
     println$("generic pair (inferred T) sum: ", gp2.sum());
 
     # Deep inference: `T` deduced from a *static function call's* own
-    # argument types (`GenericPair::new`, no `<i32>` anywhere) -- composes
+    # argument types (`GenericPair::new`, no `<i32>` anywhere) -- conformances
     # the same duck-typed unification across the owner/function boundary.
     gp3 := GenericPair::new(7, 8);
     println$("generic pair (static new, inferred T) sum: ", gp3.sum());
@@ -1285,7 +1285,7 @@ struct MyByteStringIterator {
 
 }
 
-compose MyByteStringIterator : Iterator<u8> {
+conform MyByteStringIterator to Iterator<u8> {
     next(*mut self) => Option<u8> {
         current_index := self.index;
         if current_index < <usize>self.ptr.length {
@@ -1312,7 +1312,7 @@ struct MyByteString {
 
 }
 
-compose MyByteString : ToIterator<u8> {
+conform MyByteString to ToIterator<u8> {
     to_iterator(*self) => MyByteStringIterator {
         MyByteStringIterator::new(self.ptr)
     }

@@ -106,14 +106,14 @@ table of its own and does not conform to specs independently of its parent,
 so everything asking "which behaviour does this value have" widens to the
 enum first. Inherent methods already do (`find_methods` reads the enum
 cell's own `functions`, ignoring `variant` entirely), and so does
-`&mut`/`mut self`, below. `compose` conformance is likewise a property of
+`&mut`/`mut self`, below. `conform` conformance is likewise a property of
 the enum, never of one variant: there is deliberately no
-`compose MyEnum::Variant : Spec`, because a value whose variant is *not*
+`conform MyEnum::Variant to Spec`, because a value whose variant is *not*
 statically known would then have no determinable vtable, and one value would
 answer differently depending on whether it had passed through `spec *T`
 erasure. Per-variant behaviour is written as a `match` inside the enum's one
-compose. (Compose lookup does not currently widen — see
-[known-issues.md](14-known-issues.md)'s composition section.)
+conform. (Conform lookup does not currently widen — see
+[known-issues.md](14-known-issues.md)'s conformance section.)
 
 `&` (immutable) preserves refinement for a *permanent* binding but erases
 it for a match-arm shadow (whose refinement is only true for that lexical

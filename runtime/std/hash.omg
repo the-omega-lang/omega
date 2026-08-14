@@ -11,7 +11,7 @@
 # combined `Hash`-and-`Eq` spec, even though a bucket lookup needs both.
 # A generic parameter only ever carries a single formal bound (see
 # `GenericParam`'s own doc comment), and every realistic key type (every
-# primitive `std::primitives` composes, and any user type meant to be
+# primitive `std::primitives` conformances, and any user type meant to be
 # hashable at all) already provides `cmp::Eq::equals` as a matter of course,
 # the same structural expectation `Ord`'s own default methods already lean
 # on -- so `HashMap` selects `Eq::equals` explicitly at its concrete key

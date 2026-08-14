@@ -310,9 +310,9 @@ pub(crate) struct ItemQueries {
     /// nothing may assume this map is complete any earlier. `IndexMap` for
     /// deterministic (discovery-order) merging.
     pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
-    /// The concrete compose contexts established by this instantiation's
+    /// The concrete conform contexts established by this instantiation's
     /// generic bounds. Body analysis consults only these entries for
-    /// instance-method syntax supplied by a composition.
+    /// instance-method syntax supplied by a conformance.
     pub generic_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
     /// Counter behind every synthetic `HirId`. Always paired with
     /// `SYNTHETIC_MODULE`, a module id the lowerer never produces, so these
@@ -720,7 +720,7 @@ impl Driver {
     /// Checks every bound generic parameter (`T: Animal`) against the
     /// concrete argument it was instantiated with, returning exactly the
     /// analyzer-bound context those satisfied bounds establish. Both named
-    /// generic items and generic `compose` templates use this path: a bound
+    /// generic items and generic `conform` templates use this path: a bound
     /// means the same thing at either instantiation site.
     ///
     /// `None` means resolving a bound recorded its own ordinary analysis
@@ -1010,7 +1010,7 @@ impl Driver {
                     .map(|cell| ResolvedItem::Type(ResolvedType::Spec(cell)))
             }
 
-            HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) => {
+            HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
                 unreachable!("unnamed blocks have no item key")
             }
             HirItem::Import(_) => unreachable!("imports are never indexed into a module's items"),

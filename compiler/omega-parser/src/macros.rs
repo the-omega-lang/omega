@@ -368,14 +368,14 @@ fn expand_item_list(
                     span: node.span,
                 });
             }
-            Item::Compose(mut compose) => {
-                compose.functions = compose
+            Item::Conform(mut conform) => {
+                conform.functions = conform
                     .functions
                     .into_iter()
                     .map(|f| expand_function_def(f, defs, budget))
                     .collect::<Result<_, _>>()?;
                 result.push(ItemNode {
-                    item: Item::Compose(compose),
+                    item: Item::Conform(conform),
                     span: node.span,
                 });
             }

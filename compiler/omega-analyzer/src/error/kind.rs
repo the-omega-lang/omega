@@ -624,13 +624,13 @@ pub enum AnalysisErrorKind {
     },
 
     // -- specs --
-    /// A compose declaration requires `function` (from
+    /// A conform declaration requires `function` (from
     /// `spec<spec_type_args>`, possibly by way of one of its dependencies),
     /// but the type provides neither its own matching method nor does
     /// `spec` supply a default -- `implementor` is the concrete type's own
     /// name. `spec_type_args` matters now that the same spec can be
     /// implemented more than once at different type arguments (see
-    /// composition checking) -- without it, two missing
+    /// conformance checking) -- without it, two missing
     /// requirements from two different instantiations of the same generic
     /// spec would render identically, with nothing to tell a reader which
     /// one is actually missing.
@@ -685,12 +685,12 @@ pub enum AnalysisErrorKind {
     ForLoopSourceNotIterable {
         r#type: ResolvedType,
     },
-    /// A source has more than one `ToIterator<T>` composition; the loop
+    /// A source has more than one `ToIterator<T>` conformance; the loop
     /// binding needs an explicit `: T` annotation to select one.
     AmbiguousForLoopElementType {
         candidates: Vec<ResolvedType>,
     },
-    /// `for x : u64 in source { }` where `source` composes `ToIterator<T>`,
+    /// `for x : u64 in source { }` where `source` conforms to `ToIterator<T>`,
     /// but never at `u64`. Distinct from
     /// [`Self::AmbiguousForLoopElementType`]: that one means "too many to
     /// choose from", this one means "the one you named isn't there" -- which
@@ -740,7 +740,7 @@ pub enum AnalysisErrorKind {
     /// spec's own definition, for the same "nothing downstream could satisfy
     /// it" reason as [`Self::SpecSelfMustBePointer`]. Omega has no variadic
     /// function *definitions*; only `extern` declarations may be variadic, so
-    /// neither a `compose` block nor a spec default can supply a body with a
+    /// neither a `conform` block nor a spec default can supply a body with a
     /// matching signature, and every implementor would fail with a bare
     /// `MissingSpecFunction` naming a function it has no syntax to write.
     /// Lift this the day variadic definitions exist -- the `is_variadic`
@@ -816,21 +816,21 @@ pub enum AnalysisErrorKind {
         gap: Ident,
         function: Ident,
     },
-    ComposeOrphanViolation {
+    ConformanceOrphanViolation {
         target_package: Ident,
         spec_package: Ident,
     },
-    ComposeTargetNotAType,
-    DuplicateCompose {
+    ConformTargetNotAType,
+    DuplicateConformance {
         target: String,
         spec: Ident,
         previous: Span,
     },
-    ComposeExtraFunction {
+    ConformanceExtraFunction {
         spec: Ident,
         function: Ident,
     },
-    BlanketComposeNotYetSupported {
+    BlanketConformanceNotYetSupported {
         parameter: Ident,
     },
     PrimitiveOutsideCore,
@@ -841,7 +841,7 @@ pub enum AnalysisErrorKind {
         target: String,
         previous: Span,
     },
-    AmbiguousComposedStatic {
+    AmbiguousConformanceStatic {
         target: String,
         function: Ident,
         specs: Vec<Ident>,
@@ -1523,31 +1523,31 @@ impl fmt::Display for AnalysisErrorKind {
                     gap.as_ref()
                 )
             }
-            Self::ComposeOrphanViolation {
+            Self::ConformanceOrphanViolation {
                 target_package,
                 spec_package,
             } => write!(
                 f,
-                "cannot compose a type from '{}' with a spec from '{}'",
+                "cannot conform a type from '{}' to a spec from '{}'",
                 target_package.as_ref(),
                 spec_package.as_ref()
             ),
-            Self::ComposeTargetNotAType => write!(f, "compose target is not a concrete type"),
-            Self::DuplicateCompose { target, spec, .. } => {
-                write!(f, "duplicate compose for '{target}: {}'", spec.as_ref())
+            Self::ConformTargetNotAType => write!(f, "conform target is not a concrete type"),
+            Self::DuplicateConformance { target, spec, .. } => {
+                write!(f, "duplicate conform for '{target}: {}'", spec.as_ref())
             }
-            Self::ComposeExtraFunction { spec, function } => {
+            Self::ConformanceExtraFunction { spec, function } => {
                 write!(
                     f,
-                    "compose declares '{}' which is not in spec '{}'",
+                    "conform declares '{}' which is not in spec '{}'",
                     function.as_ref(),
                     spec.as_ref()
                 )
             }
-            Self::BlanketComposeNotYetSupported { parameter } => {
+            Self::BlanketConformanceNotYetSupported { parameter } => {
                 write!(
                     f,
-                    "blanket compose over '{}' is not yet supported",
+                    "blanket conform over '{}' is not yet supported",
                     parameter.as_ref()
                 )
             }
@@ -1560,12 +1560,12 @@ impl fmt::Display for AnalysisErrorKind {
             Self::DuplicatePrimitiveTarget { target, .. } => {
                 write!(f, "duplicate primitive block for '{target}'")
             }
-            Self::AmbiguousComposedStatic {
+            Self::AmbiguousConformanceStatic {
                 target, function, ..
             } => {
                 write!(
                     f,
-                    "composed static function '{}::{}' is ambiguous",
+                    "conforming static function '{}::{}' is ambiguous",
                     target,
                     function.as_ref()
                 )

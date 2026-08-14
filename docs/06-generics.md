@@ -53,13 +53,13 @@ counter values across separate compiler processes.
 process<T: Animal>(value: T) => void { value.make_sound(); }
 ```
 
-Nominal, not structural — `T: Animal` requires an explicit `compose S :
+Nominal, not structural — `T: Animal` requires an explicit `conform S to
 Animal` declaration; an unbound generic still works purely by duck-typing
 (whatever method the body calls just has to exist on whatever concrete type
 shows up). Bound-checking happens once, at instantiation, via
 `type_implements_spec` — in practice this only ever fires for a primitive
 type or a genuine caller mistake, since anything that already passed
-composition checking has a complete method list by construction.
+conformance checking has a complete method list by construction.
 
 ## Inference: omitted type arguments, deduced wherever possible
 
@@ -253,7 +253,7 @@ item kind doesn't fit the ordinary args-bound lookup contract") — a
 spec's dependency *cell* is now resolved through this args-independent
 path, while its *type args* stay raw and are resolved lazily, alongside
 `Self`, once a concrete implementor is actually being checked. Ordinary
-spec references (bounds, compose declarations, `spec *T` object types) are
+spec references (bounds, conform declarations, `spec *T` object types) are
 completely unaffected — this only changes how a spec's own declared
 dependency list resolves.
 

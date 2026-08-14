@@ -1,6 +1,6 @@
 use crate::hir::{
     HirAddressOf, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirAssignment, HirBinaryOp,
-    HirBlock, HirBreak, HirCast, HirComposeDef, HirCompoundAssign, HirContinue, HirDeclaration,
+    HirBlock, HirBreak, HirCast, HirConformDef, HirCompoundAssign, HirContinue, HirDeclaration,
     HirDefer, HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam,
     HirGlueDef, HirIf, HirImport, HirItem, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam,
@@ -95,13 +95,13 @@ impl Lowerer {
                     .map(|f| self.lower_function_def(f, node.span, false))
                     .collect(),
             }),
-            Item::Compose(compose) => HirItem::Compose(HirComposeDef {
+            Item::Conform(conform) => HirItem::Conform(HirConformDef {
                 id: self.ids.next(),
                 span: node.span,
-                generics: Self::lower_generics(&compose.generics),
-                target: compose.target.clone(),
-                spec: compose.spec.clone(),
-                functions: compose
+                generics: Self::lower_generics(&conform.generics),
+                target: conform.target.clone(),
+                spec: conform.spec.clone(),
+                functions: conform
                     .functions
                     .iter()
                     .map(|f| self.lower_function_def(f, node.span, true))

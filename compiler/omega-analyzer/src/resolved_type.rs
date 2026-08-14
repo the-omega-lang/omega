@@ -39,17 +39,17 @@ pub struct ResolvedMethod {
     /// this field's only reader outside `check_struct_body`/`check_enum_body`/
     /// `check_union_body`.
     pub annotations: crate::annotations::ResolvedAnnotations,
-    pub source: Option<ComposeSource>,
+    pub source: Option<ConformanceSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComposeSource {
+pub struct ConformanceSource {
     pub spec: Rc<RefCell<ResolvedSpecType>>,
     pub spec_args: Vec<ResolvedType>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvedCompose {
+pub struct ResolvedConformance {
     pub target: ResolvedType,
     pub spec: Rc<RefCell<ResolvedSpecType>>,
     pub spec_args: Vec<ResolvedType>,
@@ -112,7 +112,7 @@ pub struct ResolvedStructType {
     /// *only* thing this changes anywhere in the analyzer/codegen: it's
     /// what exempts this cell from the "a struct must have at least one
     /// sized field" check (`Analyzer::signature_of_struct`) -- everything
-    /// else (composition checking, method dispatch, generics,
+    /// else (conformance checking, method dispatch, generics,
     /// dead-code tracking, spec/vtable coercion, layout) already works
     /// unmodified for a zero-field struct, which is deliberately why
     /// `marker` reuses this type wholesale instead of being a separate
@@ -276,7 +276,7 @@ impl Hash for ResolvedEnumType {
 /// is (see its doc comment) -- though a spec is never self-referential the
 /// way a struct field can be, so the placeholder-then-patch dance doesn't
 /// apply here; it's still behind a cell purely so every reference to "this
-/// spec" (a compose declaration, a generic bound, a spec-object type) shares
+/// spec" (a conform declaration, a generic bound, a spec-object type) shares
 /// one identity to compare/hash against, exactly like a struct reference
 /// does.
 ///
@@ -299,7 +299,7 @@ pub struct ResolvedSpecType {
     /// *inherits* this same visibility (see `FlattenedSpecFn::visibility`'s
     /// doc comment) -- an implementor's own method satisfying one of them
     /// must be at least this permissive, checked in
-    /// compose conformance checking.
+    /// conform conformance checking.
     pub visibility: Visibility,
     pub generics: Vec<Ident>,
     /// See `ResolvedStructType::module_path`'s doc comment.
@@ -361,7 +361,7 @@ impl Hash for ResolvedSpecType {
 /// generic-referencing) type can't be resolved to a concrete
 /// `ResolvedType` until a concrete implementor is known, so resolution is
 /// deferred to that point (see `Analyzer::signature_of_struct`'s
-/// composition handling) rather than attempted here, at the spec's
+/// conformance handling) rather than attempted here, at the spec's
 /// own definition.
 #[derive(Debug, Clone)]
 pub struct RawSpecFunctionSig {
@@ -619,8 +619,8 @@ pub enum ResolvedType {
         cell: Rc<RefCell<ResolvedEnumType>>,
         variant: Option<usize>,
     },
-    /// A reference to a spec *definition* -- what a compose declaration
-    /// (`compose Dog : Animal`), a generic bound (`T: Animal`), or a
+    /// A reference to a spec *definition* -- what a conform declaration
+    /// (`conform Dog to Animal`), a generic bound (`T: Animal`), or a
     /// spec-object type's pointee (`spec *Animal`) resolves the name
     /// `Animal` to. Never itself the type of a runtime value -- a `spec
     /// *Animal` *value*'s type is `SpecObject` below, not this.
@@ -1000,7 +1000,7 @@ impl ResolvedType {
         }
     }
 
-    /// The canonical identity used by composition and primitive registries.
+    /// The canonical identity used by conformance and primitive registries.
     ///
     /// Lookup is about which methods belong to a type, not transient facts
     /// carried by a particular expression. Enum refinements and pointer-like
@@ -1109,7 +1109,7 @@ impl ResolvedType {
     /// The module and declaration this type's own members belong to -- what
     /// a member-visibility check needs. `None` for anything with no
     /// declaration of its own (a primitive, a slice, a pointer): their
-    /// members come from a `primitive` block or a `compose`, whose
+    /// members come from a `primitive` block or a `conform`, whose
     /// visibility is the declaring spec's rather than the target's, so no
     /// owner is needed.
     pub fn declaring_owner(&self) -> Option<(Vec<Ident>, HirId)> {

@@ -74,7 +74,7 @@ impl Codegen {
                 // primitive doesn't otherwise have, avoiding a collision
                 // with an unrelated, same-named, same-`type_args`-shaped
                 // free function elsewhere in the same module.
-                let mangled = match (&f.mangling, &f.compose_owner, &f.primitive_target) {
+                let mangled = match (&f.mangling, &f.conformance_owner, &f.primitive_target) {
                     (ManglingMode::Forced(name), _, _) => name.clone(),
                     (
                         ManglingMode::Glued {
@@ -95,7 +95,7 @@ impl Codegen {
                         "main".to_string()
                     }
                     (ManglingMode::Enabled, Some(owner), _) => {
-                        mangle::encode(&mangle::compose_method_symbol(
+                        mangle::encode(&mangle::conformance_method_symbol(
                             &owner.target,
                             &owner.spec_name,
                             &owner.spec_args,
@@ -110,18 +110,18 @@ impl Codegen {
                         &mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()),
                     ),
                 };
-                // A compose method's genericity lives in its *target*
+                // A conform method's genericity lives in its *target*
                 // (`Self`), never in its own parameter list, so `f.type_args`
-                // is empty for `compose<W> BufWriter<W> : Write` at
-                // `W = Stdout` just as it is for `compose Stdout : Write`.
+                // is empty for `conform<W> BufWriter<W> to Write` at
+                // `W = Stdout` just as it is for `conform Stdout to Write`.
                 // Asking `linkage_for` alone would make both strong, and the
                 // first is emitted independently by every package that uses
                 // it -- two packages both calling `println$` then failed to
                 // link with a `multiple definition` of
                 // `BufWriter<Stdout>::Write::write`. `from_template` is the
-                // compose counterpart of a non-empty `type_args`; see
-                // `ComposeOwner::from_template`.
-                let linkage = match &f.compose_owner {
+                // conform counterpart of a non-empty `type_args`; see
+                // `ConformanceOwner::from_template`.
+                let linkage = match &f.conformance_owner {
                     Some(owner) if owner.from_template => Linkage::Preemptible,
                     _ => linkage_for(&f.type_args),
                 };

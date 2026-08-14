@@ -22,7 +22,7 @@ impl TestPackage {
     fn new(source: &str) -> Self {
         let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
         let parent = std::env::temp_dir().join(format!(
-            "omega_compose_test_{}_{}",
+            "omega_conform_test_{}_{}",
             std::process::id(),
             sequence,
         ));
@@ -78,7 +78,7 @@ fn bound_and_spec_qualified_dispatch_compile() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        compose Dog : Speak { speak(*self) => i32 { self.value } }
+        conform Dog to Speak { speak(*self) => i32 { self.value } }
 
         call_bound<T: Speak>(value: *T) => i32 { value.speak() }
         main() => i32 {
@@ -89,16 +89,16 @@ fn bound_and_spec_qualified_dispatch_compile() {
     );
     package
         .compile()
-        .expect("both composition call forms should compile");
+        .expect("both conformance call forms should compile");
 }
 
 #[test]
-fn composed_instance_method_is_not_in_concrete_scope() {
+fn conforming_instance_method_is_not_in_concrete_scope() {
     let package = TestPackage::new(
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        compose Dog : Speak { speak(*self) => i32 { self.value } }
+        conform Dog to Speak { speak(*self) => i32 { self.value } }
         main() => i32 { dog := Dog { value = 7; }; dog.speak() }
         "#,
     );
@@ -110,42 +110,42 @@ fn composed_instance_method_is_not_in_concrete_scope() {
 }
 
 #[test]
-fn duplicate_and_extra_compositions_are_rejected() {
+fn duplicate_and_extra_conformances_are_rejected() {
     let duplicate = TestPackage::new(
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        compose Dog : Speak { speak(*self) => i32 { self.value } }
-        compose Dog : Speak { speak(*self) => i32 { self.value } }
+        conform Dog to Speak { speak(*self) => i32 { self.value } }
+        conform Dog to Speak { speak(*self) => i32 { self.value } }
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&duplicate, "duplicate composition must fail");
+    let errors = compile_errors(&duplicate, "duplicate conformance must fail");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::DuplicateCompose { .. }
+        AnalysisErrorKind::DuplicateConformance { .. }
     )));
 
     let extra = TestPackage::new(
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        compose Dog : Speak {
+        conform Dog to Speak {
             speak(*self) => i32 { self.value }
             extra(*self) => i32 { 0 }
         }
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&extra, "extra compose functions must fail");
+    let errors = compile_errors(&extra, "extra conform functions must fail");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::ComposeExtraFunction { .. }
+        AnalysisErrorKind::ConformanceExtraFunction { .. }
     )));
 }
 
 #[test]
-fn a_compose_cannot_borrow_an_inherent_requirement() {
+fn a_conform_cannot_borrow_an_inherent_requirement() {
     let package = TestPackage::new(
         r#"
         exposed spec Speak { speak(*self) => i32; }
@@ -153,11 +153,11 @@ fn a_compose_cannot_borrow_an_inherent_requirement() {
             exposed value: i32;
             exposed speak(*self) => i32 { self.value }
         }
-        compose Dog : Speak {}
+        conform Dog to Speak {}
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&package, "an inherent method must not satisfy compose");
+    let errors = compile_errors(&package, "an inherent method must not satisfy conform");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::MissingSpecFunction { .. }
@@ -165,23 +165,23 @@ fn a_compose_cannot_borrow_an_inherent_requirement() {
 }
 
 #[test]
-fn slice_composes_and_invalid_structural_targets_are_diagnosed_semantically() {
+fn slice_conformances_and_invalid_structural_targets_are_diagnosed_semantically() {
     let slice = TestPackage::new(
         r#"
         exposed spec Empty { empty(*self) => bool; }
-        compose []u8 : Empty { empty(*self) => bool { self.length == 0 } }
+        conform []u8 to Empty { empty(*self) => bool { self.length == 0 } }
         main() => i32 { 0 }
         "#,
     );
     slice
         .compile()
-        .expect("a bare slice target should reach the compose registry");
+        .expect("a bare slice target should reach the conform registry");
 
     let pointer = TestPackage::new(
         r#"
         exposed spec Empty { empty(*self) => bool; }
         struct Dog { exposed value: i32; }
-        compose *Dog : Empty { empty(*self) => bool { false } }
+        conform *Dog to Empty { empty(*self) => bool { false } }
         main() => i32 { 0 }
         "#,
     );
@@ -191,18 +191,18 @@ fn slice_composes_and_invalid_structural_targets_are_diagnosed_semantically() {
     );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::ComposeTargetNotAType
+        AnalysisErrorKind::ConformTargetNotAType
     )));
 }
 
 #[test]
-fn dependency_compositions_satisfy_the_dependency_bound() {
+fn dependency_conformances_satisfy_the_dependency_bound() {
     let package = TestPackage::new(
         r#"
         exposed spec Animal { sound(*self) => i32; }
         exposed spec Mammal : Animal { fur(*self) => i32; }
         struct Dog { exposed value: i32; }
-        compose Dog : Mammal {
+        conform Dog to Mammal {
             sound(*self) => i32 { self.value }
             fur(*self) => i32 { 1 }
         }
@@ -212,7 +212,7 @@ fn dependency_compositions_satisfy_the_dependency_bound() {
     );
     package
         .compile()
-        .expect("a direct compose must register its transitive dependencies");
+        .expect("a direct conform must register its transitive dependencies");
 }
 
 #[test]
@@ -262,17 +262,17 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
     );
 }
 
-/// A concrete composition declared in an extern package is linked from that
+/// A concrete conformance declared in an extern package is linked from that
 /// package's object.  Resolving it to build a vtable in the consumer must not
 /// also re-check and emit its body locally, or two strong definitions of the
-/// same composed method reach the linker.
+/// same conforming method reach the linker.
 #[test]
-fn extern_owned_concrete_compose_is_imported_not_reemitted() {
+fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     let library = TestPackage::new(
         r#"
         exposed spec Show { show(*self) => i32; }
         exposed struct Value { exposed n: i32; }
-        compose Value : Show { show(*self) => i32 { self.n } }
+        conform Value to Show { show(*self) => i32 { self.n } }
         "#,
     );
     let consumer = TestPackage::new(
@@ -296,7 +296,7 @@ fn extern_owned_concrete_compose_is_imported_not_reemitted() {
     )
     .expect("construct driver with library extern")
     .compile(&[Ident("main".to_string())])
-    .expect("calling an extern-owned concrete composition should compile");
+    .expect("calling an extern-owned concrete conformance should compile");
 
     let definitions = program
         .modules
@@ -309,21 +309,21 @@ fn extern_owned_concrete_compose_is_imported_not_reemitted() {
         program
             .extern_functions
             .iter()
-            .any(|function| matches!(function.kind, ExternFunctionKind::Compose { .. }))
+            .any(|function| matches!(function.kind, ExternFunctionKind::Conform { .. }))
     );
 }
 
-/// The relocated standard I/O boundary still follows the ordinary compose
+/// The relocated standard I/O boundary still follows the ordinary conform
 /// orphan rule: an application cannot attach the externally-owned `Write`
 /// contract to the externally-owned `Stdout` marker.
 #[test]
-fn externally_owned_stdout_cannot_be_composed_with_externally_owned_write() {
+fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
     let core = option_core();
     let library = TestPackage::new(
         r#"
         exposed spec Write { write(*mut self, bytes: *[?]u8) => Option<usize>; }
         exposed marker Stdout {}
-        compose Stdout : Write {
+        conform Stdout to Write {
             write(*mut self, bytes: *[?]u8) => Option<usize> {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
@@ -335,7 +335,7 @@ fn externally_owned_stdout_cannot_be_composed_with_externally_owned_write() {
         import extern::lib::Stdout;
         import extern::lib::Write;
 
-        compose Stdout : Write {
+        conform Stdout to Write {
             write(*mut self, bytes: *[?]u8) => Option<usize> {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
@@ -359,13 +359,13 @@ fn externally_owned_stdout_cannot_be_composed_with_externally_owned_write() {
     )
     .expect("construct driver with I/O library extern");
     let errors = match driver.compile(&[Ident("main".to_string())]) {
-        Ok(_) => panic!("a consumer must not compose two foreign I/O items"),
+        Ok(_) => panic!("a consumer must not conform two foreign I/O items"),
         Err(errors) => errors,
     };
     assert!(
         has_analysis_error(&errors, |kind| matches!(
             kind,
-            AnalysisErrorKind::ComposeOrphanViolation { .. }
+            AnalysisErrorKind::ConformanceOrphanViolation { .. }
         )),
         "expected an orphan violation, got {errors:#?}"
     );
@@ -508,7 +508,7 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        compose Dog : Speak { speak(*self) => i32 { self.value } }
+        conform Dog to Speak { speak(*self) => i32 { self.value } }
         make() => Dog { Dog { value = 3; } }
         main() => i32 {
             dog := Dog { value = 7; };
@@ -524,25 +524,25 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         .expect("a non-place spec-qualified receiver should be adapted, not rejected");
 }
 
-/// Blanket composes are deliberately out of scope, and must say so rather
-/// than being silently dropped: `match_compose_target` can never bind a
+/// Blanket conformances are deliberately out of scope, and must say so rather
+/// than being silently dropped: `match_conform_target` can never bind a
 /// target that is itself a parameter, so without the check the only
 /// diagnostic anyone saw was an unrelated `SpecNotImplemented` at a use
-/// site -- or, for an unused compose, nothing at all.
+/// site -- or, for an unused conform, nothing at all.
 #[test]
-fn blanket_composes_are_rejected_with_their_own_diagnostic() {
+fn blanket_conformances_are_rejected_with_their_own_diagnostic() {
     let bare_target = TestPackage::new(
         r#"
         exposed spec Numeric { zero(*self) => i32; }
         exposed spec Sum { sum(*self) => i32; }
-        compose<T: Numeric> T : Sum { sum(*self) => i32 { 0 } }
+        conform<T: Numeric> T to Sum { sum(*self) => i32 { 0 } }
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&bare_target, "a blanket compose must be rejected");
+    let errors = compile_errors(&bare_target, "a blanket conform must be rejected");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::BlanketComposeNotYetSupported { .. }
+        AnalysisErrorKind::BlanketConformanceNotYetSupported { .. }
     )));
 
     // A parameter that the target never mentions is equally unbindable.
@@ -551,7 +551,7 @@ fn blanket_composes_are_rejected_with_their_own_diagnostic() {
         exposed spec Bound { zero(*self) => i32; }
         exposed spec Sum { sum(*self) => i32; }
         struct Box<T> { exposed value: T; }
-        compose<T, U: Bound> Box<T> : Sum { sum(*self) => i32 { 0 } }
+        conform<T, U: Bound> Box<T> to Sum { sum(*self) => i32 { 0 } }
         main() => i32 { 0 }
         "#,
     );
@@ -561,7 +561,7 @@ fn blanket_composes_are_rejected_with_their_own_diagnostic() {
     );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::BlanketComposeNotYetSupported { .. }
+        AnalysisErrorKind::BlanketConformanceNotYetSupported { .. }
     )));
 
     // ...while a target that does fix its parameter stays fully supported.
@@ -569,22 +569,22 @@ fn blanket_composes_are_rejected_with_their_own_diagnostic() {
         r#"
         exposed spec Sum { sum(*self) => i32; }
         struct Box<T> { exposed value: T; }
-        compose<T> Box<T> : Sum { sum(*self) => i32 { 1 } }
+        conform<T> Box<T> to Sum { sum(*self) => i32 { 1 } }
         use_sum<X: Sum>(value: *X) => i32 { value.sum() }
         main() => i32 { boxed := Box<i32> { value = 1; }; use_sum(&boxed) }
         "#,
     );
     generic_target
         .compile()
-        .expect("a generic target that fixes its parameter is not a blanket compose");
+        .expect("a generic target that fixes its parameter is not a blanket conform");
 }
 
-/// A generic compose has its own bound context, just like a generic named
+/// A generic conform has its own bound context, just like a generic named
 /// item. In particular, `inner.w(...)` is resolved through `T: W`; it must
-/// not depend on a spec-qualified spelling or on every compose registered
+/// not depend on a spec-qualified spelling or on every conform registered
 /// for the concrete type leaking into scope.
 #[test]
-fn generic_compose_bounds_seed_the_body_context() {
+fn generic_conform_bounds_seed_the_body_context() {
     let package = TestPackage::new(
         r#"
         exposed spec W { w(*self, value: i32) => i32; }
@@ -593,14 +593,14 @@ fn generic_compose_bounds_seed_the_body_context() {
 
         struct One { exposed value: i32; }
         struct Two { exposed value: i32; }
-        compose One : W { w(*self, value: i32) => i32 { self.value + value } }
-        compose Two : W { w(*self, value: i32) => i32 { self.value + value } }
+        conform One to W { w(*self, value: i32) => i32 { self.value + value } }
+        conform Two to W { w(*self, value: i32) => i32 { self.value + value } }
 
         struct Buf<T> { exposed inner: *T; }
-        compose<T: W> Buf<T> : Sum {
+        conform<T: W> Buf<T> to Sum {
             sum(*self) => i32 { self.inner.w(1) }
         }
-        compose<T: W> Buf<T> : QualifiedSum {
+        conform<T: W> Buf<T> to QualifiedSum {
             qualified_sum(*self) => i32 { W::w(self.inner, 1) }
         }
 
@@ -617,21 +617,21 @@ fn generic_compose_bounds_seed_the_body_context() {
     );
     package
         .compile()
-        .expect("a compose generic bound must both validate and seed its body context");
+        .expect("a conform generic bound must both validate and seed its body context");
 }
 
-/// An unsatisfied compose bound must be rejected when the template is
+/// An unsatisfied conform bound must be rejected when the template is
 /// instantiated, before a conformance entry or its vtable can exist. The
-/// compose declaration, not the caller that happened to trigger discovery,
+/// conform declaration, not the caller that happened to trigger discovery,
 /// owns the bad promise and therefore owns the diagnostic.
 #[test]
-fn generic_compose_bounds_reject_unsatisfied_conformance_at_the_declaration() {
+fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
     let source = r#"
         exposed spec W { w(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct NotW { exposed value: i32; }
         struct Buf<T> { exposed inner: *T; }
-        compose<T: W> Buf<T> : Show { show(*self) => i32 { 1 } }
+        conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
 
         as_w(value: *Buf<NotW>) => spec *W { value }
         main() => i32 {
@@ -643,10 +643,10 @@ fn generic_compose_bounds_reject_unsatisfied_conformance_at_the_declaration() {
     let package = TestPackage::new(source);
     let errors = compile_errors(
         &package,
-        "an unsatisfied compose generic bound must not produce a conformance or vtable",
+        "an unsatisfied conform generic bound must not produce a conformance or vtable",
     );
     let expected_start = source
-        .find("compose<T: W> Buf<T> : Show")
+        .find("conform<T: W> Buf<T> to Show")
         .expect("the declaration is present");
     let error = errors
         .iter()
@@ -662,15 +662,15 @@ fn generic_compose_bounds_reject_unsatisfied_conformance_at_the_declaration() {
                 )
             )
         })
-        .expect("the compose bound failure is reported as SpecNotImplemented");
+        .expect("the conform bound failure is reported as SpecNotImplemented");
     assert_eq!(error.span.start, expected_start);
 }
 
-/// A compose bound may name an aggregate spec alias. The shared bound checker
-/// must seed the alias and the already-composed member specs, exactly as it
+/// A conform bound may name an aggregate spec alias. The shared bound checker
+/// must seed the alias and the already-conformed member specs, exactly as it
 /// does for ordinary generic items.
 #[test]
-fn generic_compose_bounds_expand_spec_aliases() {
+fn generic_conform_bounds_expand_spec_aliases() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
@@ -678,10 +678,10 @@ fn generic_compose_bounds_expand_spec_aliases() {
         spec AB = A | B;
         exposed spec Sum { sum(*self) => i32; }
         struct Value { exposed value: i32; }
-        compose Value : B { a(*self) => i32 { self.value } }
+        conform Value to B { a(*self) => i32 { self.value } }
 
         struct Buf<T> { exposed inner: *T; }
-        compose<T: AB> Buf<T> : Sum {
+        conform<T: AB> Buf<T> to Sum {
             sum(*self) => i32 { self.inner.a() + self.inner.b() }
         }
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
@@ -694,23 +694,23 @@ fn generic_compose_bounds_expand_spec_aliases() {
     );
     package
         .compile()
-        .expect("a compose generic alias bound must reach its member composes");
+        .expect("a conform generic alias bound must reach its member conformances");
 }
 
-/// An unbounded compose remains an ordinary duck-typed template. It must not
-/// inherit every compose on its concrete argument merely because another
+/// An unbounded conform remains an ordinary duck-typed template. It must not
+/// inherit every conform on its concrete argument merely because another
 /// instantiation happened to register one there.
 #[test]
-fn an_unbounded_generic_compose_gains_no_bound_context() {
+fn an_unbounded_generic_conform_gains_no_bound_context() {
     let package = TestPackage::new(
         r#"
         exposed spec Secret { secret(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Value { exposed value: i32; }
-        compose Value : Secret { secret(*self) => i32 { self.value } }
+        conform Value to Secret { secret(*self) => i32 { self.value } }
 
         struct Box<T> { exposed inner: *T; }
-        compose<T> Box<T> : Show {
+        conform<T> Box<T> to Show {
             show(*self) => i32 { self.inner.secret() }
         }
         use_show<T: Show>(value: *T) => i32 { value.show() }
@@ -723,7 +723,7 @@ fn an_unbounded_generic_compose_gains_no_bound_context() {
     );
     let errors = compile_errors(
         &package,
-        "an unbounded compose must not gain methods from its concrete argument",
+        "an unbounded conform must not gain methods from its concrete argument",
     );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
@@ -731,13 +731,13 @@ fn an_unbounded_generic_compose_gains_no_bound_context() {
     )));
 }
 
-/// A type's *inherent* method body is not a compose body, so a spec
-/// composed onto that type is not in its scope. Without this, every method
-/// a type declares could reach every method any package ever composed onto
-/// it -- exactly the incoherence resolving composed methods through their
+/// A type's *inherent* method body is not a conform body, so a spec
+/// conformed onto that type is not in its scope. Without this, every method
+/// a type declares could reach every method any package ever conformed onto
+/// it -- exactly the incoherence resolving conformance methods through their
 /// spec exists to prevent.
 #[test]
-fn an_inherent_method_body_cannot_reach_a_composed_method() {
+fn an_inherent_method_body_cannot_reach_a_conformance_method() {
     let package = TestPackage::new(
         r#"
         exposed spec Secret { secret(*self) => i32; }
@@ -745,11 +745,11 @@ fn an_inherent_method_body_cannot_reach_a_composed_method() {
             exposed value: i32;
             exposed leak(*self) => i32 { self.secret() }
         }
-        compose Dog : Secret { secret(*self) => i32 { 99 } }
+        conform Dog to Secret { secret(*self) => i32 { 99 } }
         main() => i32 { dog := Dog { value = 1; }; dog.leak() }
         "#,
     );
-    let errors = compile_errors(&package, "an inherent body must not see a composed method");
+    let errors = compile_errors(&package, "an inherent body must not see a conforming method");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::MethodNotInScope { .. }
@@ -757,15 +757,15 @@ fn an_inherent_method_body_cannot_reach_a_composed_method() {
 }
 
 #[test]
-fn distinct_generic_spec_compositions_emit_distinct_bodies() {
+fn distinct_generic_spec_conformances_emit_distinct_bodies() {
     let package = TestPackage::new(
         r#"
         exposed spec Consume<T> { consume(*self, value: T) => i32; }
         struct Multi { exposed base: i32; }
-        compose Multi : Consume<i32> {
+        conform Multi to Consume<i32> {
             consume(*self, value: i32) => i32 { self.base + value }
         }
-        compose Multi : Consume<u8> {
+        conform Multi to Consume<u8> {
             consume(*self, value: u8) => i32 { self.base + <i32>value }
         }
         main() => i32 {
@@ -776,7 +776,7 @@ fn distinct_generic_spec_compositions_emit_distinct_bodies() {
     );
     let program = package
         .compile()
-        .expect("both generic spec compositions should compile");
+        .expect("both generic spec conformances should compile");
     let definitions = program
         .modules
         .iter()
@@ -785,7 +785,7 @@ fn distinct_generic_spec_compositions_emit_distinct_bodies() {
         .count();
     assert_eq!(
         definitions, 3,
-        "main and both compose bodies must be emitted"
+        "main and both conform bodies must be emitted"
     );
 }
 
@@ -796,21 +796,21 @@ fn distinct_generic_spec_compositions_emit_distinct_bodies() {
 // one was a hard compile failure of `examples/dev`, and one shipped symbols
 // containing characters the mangling scheme excludes.
 
-/// A bound on a spec *alias* must reach the composes satisfying its members.
+/// A bound on a spec *alias* must reach the conformances satisfying its members.
 /// `transitive_spec_dependencies` registers derived entries walking downward
 /// (spec -> its dependencies), which is the wrong direction for an alias:
 /// `AB` depends on `A`/`B`, so no entry is ever registered under `AB` itself.
 /// This is `examples/dev`'s `accepts_myspec<T: MySpec>`, which stopped
 /// compiling entirely.
 #[test]
-fn a_bound_on_a_spec_alias_reaches_its_members_composes() {
+fn a_bound_on_a_spec_alias_reaches_its_members_conformances() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B : A { b(*self) => i32 { 2 } }
         spec AB = A | B;
         struct Foo { exposed v: i32; }
-        compose Foo : B { a(*self) => i32 { 1 } }
+        conform Foo to B { a(*self) => i32 { 1 } }
 
         use_alias<T: AB>(x: *T) => i32 { x.a() + x.b() }
         main() => i32 { f := Foo { v = 0; }; use_alias(&f) }
@@ -818,11 +818,11 @@ fn a_bound_on_a_spec_alias_reaches_its_members_composes() {
     );
     package
         .compile()
-        .expect("an alias bound must resolve through its members' composes");
+        .expect("an alias bound must resolve through its members' conformances");
 }
 
 /// The coherence guarantee, stated negatively: widening the bound context to
-/// every compose on the concrete type is what the alias fix must *not* do.
+/// every conform on the concrete type is what the alias fix must *not* do.
 #[test]
 fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
     let package = TestPackage::new(
@@ -830,8 +830,8 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
         exposed spec Speak { speak(*self) => i32; }
         exposed spec Secret { secret(*self) => i32; }
         struct Dog { exposed id: i32; }
-        compose Dog : Speak { speak(*self) => i32 { self.id } }
-        compose Dog : Secret { secret(*self) => i32 { 999 } }
+        conform Dog to Speak { speak(*self) => i32 { self.id } }
+        conform Dog to Secret { secret(*self) => i32 { 999 } }
 
         leak<T: Speak>(x: *T) => i32 { x.secret() }
         main() => i32 { d := Dog { id = 7; }; leak(&d) }
@@ -844,22 +844,22 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
     )));
 }
 
-/// A directly-written compose must win over the derived stand-in a *different*
-/// compose's transitive dependencies registered for the same `(target, spec)`.
+/// A directly-written conform must win over the derived stand-in a *different*
+/// conform's transitive dependencies registered for the same `(target, spec)`.
 /// Previously the derived entry sat ahead of it in `entries`, so `Base::b`
 /// silently called `Derived`'s body while the explicit block was emitted and
 /// never reached -- wrong code, no diagnostic. Asserted in both declaration
 /// orders, since the bug was order-dependent.
 #[test]
-fn an_explicit_compose_wins_over_a_derived_dependency_entry() {
+fn an_explicit_conform_wins_over_a_derived_dependency_entry() {
     for (first, second) in [
         (
-            "compose Foo : Derived { b(*self) => i32 { 1 } }",
-            "compose Foo : Base { b(*self) => i32 { 99 } }",
+            "conform Foo to Derived { b(*self) => i32 { 1 } }",
+            "conform Foo to Base { b(*self) => i32 { 99 } }",
         ),
         (
-            "compose Foo : Base { b(*self) => i32 { 99 } }",
-            "compose Foo : Derived { b(*self) => i32 { 1 } }",
+            "conform Foo to Base { b(*self) => i32 { 99 } }",
+            "conform Foo to Derived { b(*self) => i32 { 1 } }",
         ),
     ] {
         let package = TestPackage::new(&format!(
@@ -872,10 +872,10 @@ fn an_explicit_compose_wins_over_a_derived_dependency_entry() {
             main() => i32 {{ f := Foo {{ v = 0; }}; Base::b(&f) }}
             "#
         ));
-        let program = package.compile().expect("both composes are legal");
+        let program = package.compile().expect("both conformances are legal");
         // Only declaration-level correctness is checkable here: a direct
-        // compose landing on a key a derived stand-in already holds must be
-        // *accepted* (it is not a `DuplicateCompose` -- the author wrote one
+        // conform landing on a key a derived stand-in already holds must be
+        // *accepted* (it is not a `DuplicateConformance` -- the author wrote one
         // `Base` block), and each block still emits its own body.
         //
         // Which body a `Base::b(&f)` call actually reaches is a runtime fact
@@ -891,22 +891,22 @@ fn an_explicit_compose_wins_over_a_derived_dependency_entry() {
                 |item| matches!(item, CheckedItem::FunctionDefinition(f) if f.name.as_ref() == "b"),
             )
             .count();
-        assert_eq!(bodies, 2, "one body per compose block, no more");
+        assert_eq!(bodies, 2, "one body per conform block, no more");
     }
 }
 
-/// A slice target is composable, and reachable. Declaring one used to compile
+/// A slice target can be conformed, and reached. Declaring one used to compile
 /// while every call failed with `expected '**[]u8'`: `Self` bound to the
 /// `Slice` had no re-stamping arm, so `*self` wrapped instead of re-stamping
-/// and the compose's signature disagreed with the requirement built from the
+/// and the conform's signature disagreed with the requirement built from the
 /// same `Self`.
 #[test]
-fn slice_composes_are_callable_not_merely_declarable() {
+fn slice_conformances_are_callable_not_merely_declarable() {
     for target in ["[]u8", "<T> []T"] {
         let package = TestPackage::new(&format!(
             r#"
             exposed spec Show {{ show(*self) => i32; }}
-            compose{target} : Show {{ show(*self) => i32 {{ self.length }} }}
+            conform{target} to Show {{ show(*self) => i32 {{ self.length }} }}
             main() => i32 {{
                 mut a: [2]u8;
                 s := &a[0..];
@@ -921,7 +921,7 @@ fn slice_composes_are_callable_not_merely_declarable() {
         ));
         package
             .compile()
-            .unwrap_or_else(|_| panic!("a `{target}` compose must be callable"));
+            .unwrap_or_else(|_| panic!("a `{target}` conform must be callable"));
     }
 }
 
@@ -944,23 +944,23 @@ fn inferred_arrays_slices_and_unsized_array_pointers_have_distinct_spellings() {
         .expect("the new array and slice spellings should resolve to their distinct shapes");
 }
 
-/// A *generic* compose never reaches `resolve_compose_target`, so a target
-/// `match_compose_target` cannot bind used to register a template nothing
+/// A *generic* conform never reaches `resolve_conform_target`, so a target
+/// `match_conform_target` cannot bind used to register a template nothing
 /// could ever match and vanish silently, surfacing only as an unrelated
 /// `SpecNotImplemented` at some use site.
 #[test]
-fn an_unmatchable_generic_compose_target_is_rejected_at_its_declaration() {
+fn an_unmatchable_generic_conform_target_is_rejected_at_its_declaration() {
     let package = TestPackage::new(
         r#"
         exposed spec Show { show(*self) => i32; }
-        compose<T> *T : Show { show(*self) => i32 { 1 } }
+        conform<T> *T to Show { show(*self) => i32 { 1 } }
         main() => i32 { 0 }
         "#,
     );
-    let errors = compile_errors(&package, "a pointer compose target must be rejected");
+    let errors = compile_errors(&package, "a pointer conform target must be rejected");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::ComposeTargetNotAType
+        AnalysisErrorKind::ConformTargetNotAType
     )));
 }
 
@@ -994,7 +994,7 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
         r#"
         exposed spec Countable { count(*self) => i32; }
         struct Wrap { exposed n: i32; }
-        compose Wrap : Countable { count(*self) => i32 { self.n } }
+        conform Wrap to Countable { count(*self) => i32 { self.n } }
         struct Zoo {
             exposed n: i32;
             exposed helper(*self) => i32 { 5 }
@@ -1024,9 +1024,9 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
     let package = TestPackage::new(
         r#"
         exposed struct BagIter { exposed i: i32; }
-        compose BagIter : Iterator<u8> { next(*mut self) => Option<u8> { Option<u8>::None } }
+        conform BagIter to Iterator<u8> { next(*mut self) => Option<u8> { Option<u8>::None } }
         exposed struct Bag { exposed n: i32; }
-        compose Bag : ToIterator<u8> { to_iterator(*self) => BagIter { BagIter { i = 0; } } }
+        conform Bag to ToIterator<u8> { to_iterator(*self) => BagIter { BagIter { i = 0; } } }
         main() => i32 { b := Bag { n = 0; }; for x : u64 in b { } 0 }
         "#,
     );

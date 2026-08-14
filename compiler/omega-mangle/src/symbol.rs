@@ -52,7 +52,7 @@ pub enum ManglePath {
     /// path (a generic struct/enum/union/spec instantiation, or a
     /// generic free function/method instantiation).
     Generic(Box<ManglePath>, Vec<MangleType>),
-    /// A structural type used as the owner of a composed method. Ordinary
+    /// A structural type used as the owner of a conforming method. Ordinary
     /// named targets keep their existing path spelling; unnamed targets
     /// (primitives, slices, and strings) need this wrapper so their owner is
     /// encoded by the type grammar rather than by a rendered source string.

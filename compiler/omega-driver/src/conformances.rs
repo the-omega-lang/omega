@@ -1,19 +1,19 @@
 use crate::items::ItemKey;
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::PendingSpecMethod;
-use omega_analyzer::checked::ComposeOwner;
+use omega_analyzer::checked::ConformanceOwner;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::{
     ResolvedBound, ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
 use omega_diagnostics::Span;
-use omega_hir::{HirComposeDef, HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
+use omega_hir::{HirConformDef, HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 #[derive(Clone)]
-pub(crate) struct ComposeEntry {
+pub(crate) struct ConformanceEntry {
     pub module: ModulePath,
     pub id: HirId,
     pub span: Span,
@@ -25,35 +25,35 @@ pub(crate) struct ComposeEntry {
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
     pub substitution: Vec<(Ident, ResolvedType)>,
-    /// Bounds declared by this compose's own generic parameters. These are
-    /// checked before registration, then seed the compose bodies alongside
+    /// Bounds declared by this conform's own generic parameters. These are
+    /// checked before registration, then seed the conform bodies alongside
     /// the spec this block itself implements.
     pub bounds: Vec<ResolvedBound>,
-    /// Derived entries model a dependency of a directly declared compose;
+    /// Derived entries model a dependency of a directly declared conform;
     /// they make conformance discoverable but never own a second body.
     pub derived: bool,
-    /// Whether this entry came from matching a *generic* compose template
+    /// Whether this entry came from matching a *generic* conform template
     /// against a concrete target, rather than from a directly-written
-    /// concrete `compose`. Decided by whether `instantiate_compose` was
+    /// concrete `conform`. Decided by whether `instantiate_conformance` was
     /// handed a substitution: only a template match produces one. Reaches
-    /// codegen through `ComposeOwner::from_template`, where it decides weak
+    /// codegen through `ConformanceOwner::from_template`, where it decides weak
     /// vs. strong linkage -- see that field's own doc comment.
     pub from_template: bool,
 }
 
 #[derive(Clone)]
-struct ComposeTemplate {
+struct ConformanceTemplate {
     module: ModulePath,
-    compose: HirComposeDef,
+    conform: HirConformDef,
 }
 
 #[derive(Default)]
-pub(crate) struct Composes {
-    pub entries: Vec<ComposeEntry>,
-    templates: Vec<ComposeTemplate>,
+pub(crate) struct Conformances {
+    pub entries: Vec<ConformanceEntry>,
+    templates: Vec<ConformanceTemplate>,
     /// Template instantiations whose own generic bounds were not satisfied,
-    /// keyed the same way the success guard is. `composes_for_type` and
-    /// `compose_for` re-walk every matching template on each call, and a
+    /// keyed the same way the success guard is. `conformances_for_type` and
+    /// `conformance_for` re-walk every matching template on each call, and a
     /// failed instantiation registers no entry to be found the second time --
     /// so without this the same `SpecNotImplemented` was reported once per
     /// conformance lookup (twice for a target that is also coerced to
@@ -139,7 +139,7 @@ impl Driver {
                 substitution,
                 (primitive.id, primitive.span),
                 |analyzer| {
-                    analyzer.resolve_compose_target(primitive.id, primitive.span, &primitive.target)
+                    analyzer.resolve_conform_target(primitive.id, primitive.span, &primitive.target)
                 },
             );
             self.diagnostics.record_warnings(module, run.warnings);
@@ -185,7 +185,7 @@ impl Driver {
             _ => target.clone(),
         };
         method_substitution.push((Ident("Self".to_string()), self_type));
-        let method_ids = self.composed_method_ids(module, primitive.id, &target, &primitive.functions);
+        let method_ids = self.conformance_method_ids(module, primitive.id, &target, &primitive.functions);
         let signatures = self.analyze(
             module,
             &method_substitution,
@@ -309,7 +309,7 @@ impl Driver {
         Some(vec![(path.head.clone(), (**item).clone())])
     }
 
-    pub(crate) fn collect_compose_signatures(&mut self, paths: &[ModulePath]) {
+    pub(crate) fn collect_conformance_signatures(&mut self, paths: &[ModulePath]) {
         for module in paths {
             let declarations: Vec<_> = self
                 .modules
@@ -318,81 +318,81 @@ impl Driver {
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    HirItem::Compose(compose) => Some(compose.clone()),
+                    HirItem::Conform(conform) => Some(conform.clone()),
                     _ => None,
                 })
                 .collect();
-            for compose in declarations {
-                if compose.generics.is_empty() {
-                    self.instantiate_compose(module, &compose, &[]);
-                } else if let Some(parameter) = Self::blanket_parameter(&compose) {
+            for conform in declarations {
+                if conform.generics.is_empty() {
+                    self.instantiate_conformance(module, &conform, &[]);
+                } else if let Some(parameter) = Self::blanket_parameter(&conform) {
                     // Registering this as a template would be worse than
-                    // useless: `match_compose_target` can never bind it, so
-                    // the compose would be silently dropped and the only
+                    // useless: `match_conform_target` can never bind it, so
+                    // the conform would be silently dropped and the only
                     // diagnostic anyone ever saw would be a
                     // `SpecNotImplemented` at some unrelated use site.
                     self.diagnostics.error(
                         module,
                         AnalysisError::new(
-                            compose.id,
-                            compose.span,
-                            AnalysisErrorKind::BlanketComposeNotYetSupported { parameter },
+                            conform.id,
+                            conform.span,
+                            AnalysisErrorKind::BlanketConformanceNotYetSupported { parameter },
                         ),
                     );
-                } else if !Self::template_target_is_matchable(&compose.target) {
+                } else if !Self::template_target_is_matchable(&conform.target) {
                     // Same reasoning as the blanket case just above, for a
-                    // different shape: a *generic* compose never reaches
-                    // `resolve_compose_target` (only concrete instantiations
-                    // do), so a target `match_compose_target` cannot bind --
-                    // `compose<T> *T : Spec`, `compose<T> [4]T : Spec` --
+                    // different shape: a *generic* conform never reaches
+                    // `resolve_conform_target` (only concrete instantiations
+                    // do), so a target `match_conform_target` cannot bind --
+                    // `conform<T> *T to Spec`, `conform<T> [4]T to Spec` --
                     // would register as a template that nothing can ever
                     // match and vanish without a word. Rejected here, with
                     // the same diagnostic the concrete path already gives.
                     self.diagnostics.error(
                         module,
                         AnalysisError::new(
-                            compose.id,
-                            compose.span,
-                            AnalysisErrorKind::ComposeTargetNotAType,
+                            conform.id,
+                            conform.span,
+                            AnalysisErrorKind::ConformTargetNotAType,
                         ),
                     );
                 } else {
-                    self.composes.templates.push(ComposeTemplate {
+                    self.conformances.templates.push(ConformanceTemplate {
                         module: module.clone(),
-                        compose,
+                        conform,
                     });
                 }
             }
         }
     }
 
-    /// Whether a *generic* compose's raw target is a shape
-    /// `match_compose_target` can actually bind: a named generic type
+    /// Whether a *generic* conform's raw target is a shape
+    /// `match_conform_target` can actually bind: a named generic type
     /// (`List<T>`) or a slice pattern (`[?]T`). Anything else registers a
     /// template no concrete type will ever match, so it is rejected at
     /// declaration instead. Kept deliberately in step with
-    /// `match_compose_target`'s own arms — the two must agree or a legal
+    /// `match_conform_target`'s own arms — the two must agree or a legal
     /// target gets refused, or an unmatchable one slips through again.
     fn template_target_is_matchable(target: &Type) -> bool {
         matches!(target, Type::Generic(..) | Type::InferredArray(_))
     }
 
-    fn instantiate_compose(
+    fn instantiate_conformance(
         &mut self,
         module: &[Ident],
-        compose: &HirComposeDef,
+        conform: &HirConformDef,
         substitution: &[(Ident, ResolvedType)],
-    ) -> Option<ComposeEntry> {
+    ) -> Option<ConformanceEntry> {
         let target_run = self.with_analyzer(
             module,
             substitution,
-            (compose.id, compose.span),
-            |analyzer| analyzer.resolve_compose_target(compose.id, compose.span, &compose.target),
+            (conform.id, conform.span),
+            |analyzer| analyzer.resolve_conform_target(conform.id, conform.span, &conform.target),
         );
         self.diagnostics
             .record_warnings(module, target_run.warnings);
         let target = target_run.result?;
-        let type_args: Vec<_> = compose
+        let type_args: Vec<_> = conform
             .generics
             .iter()
             .map(|param| {
@@ -400,23 +400,23 @@ impl Driver {
                     .iter()
                     .find(|(ident, _)| ident == &param.ident)
                     .map(|(_, r#type)| r#type.clone())
-                    .expect("a generic compose template pins every parameter")
+                    .expect("a generic conform template pins every parameter")
             })
             .collect();
         // Checked before the success guard below, because a failure
         // registers no entry for that guard to find.
         if self
-            .composes
+            .conformances
             .failed
             .iter()
-            .any(|(id, failed)| *id == compose.id && *failed == target.lookup_key())
+            .any(|(id, failed)| *id == conform.id && *failed == target.lookup_key())
         {
             return None;
         }
         let bounds = match self.check_generic_bounds(
             module,
-            (compose.id, compose.span),
-            &compose.generics,
+            (conform.id, conform.span),
+            &conform.generics,
             &type_args,
         ) {
             Some(Ok(bounds)) => bounds,
@@ -424,93 +424,93 @@ impl Driver {
                 self.diagnostics.error(
                     module,
                     AnalysisError::new(
-                        compose.id,
-                        compose.span,
+                        conform.id,
+                        conform.span,
                         AnalysisErrorKind::ModuleResolution(error),
                     ),
                 );
-                self.composes.failed.push((compose.id, target.lookup_key()));
+                self.conformances.failed.push((conform.id, target.lookup_key()));
                 return None;
             }
             None => {
-                self.composes.failed.push((compose.id, target.lookup_key()));
+                self.conformances.failed.push((conform.id, target.lookup_key()));
                 return None;
             }
         };
         // Instantiating one template twice at the same target is not a
-        // duplicate compose -- `composes_for_type` re-walks every matching
+        // duplicate conform -- `conformances_for_type` re-walks every matching
         // template on each call, so without this the *second* lookup for a
-        // generic target would report `DuplicateCompose` against the entry
+        // generic target would report `DuplicateConformance` against the entry
         // the first lookup registered. Keyed on the declaration's own id, so
-        // two genuinely distinct `compose` blocks still collide below.
+        // two genuinely distinct `conform` blocks still collide below.
         if let Some(existing) = self
-            .composes
+            .conformances
             .entries
             .iter()
-            .find(|existing| existing.id == compose.id && existing.target == target.lookup_key())
+            .find(|existing| existing.id == conform.id && existing.target == target.lookup_key())
         {
             return Some(existing.clone());
         }
         let mut method_substitution = substitution.to_vec();
         method_substitution.push((Ident("Self".to_string()), target.clone()));
-        let method_ids = self.composed_method_ids(module, compose.id, &target, &compose.functions);
+        let method_ids = self.conformance_method_ids(module, conform.id, &target, &conform.functions);
         let run = self.with_analyzer(
             module,
             &method_substitution,
-            (compose.id, compose.span),
+            (conform.id, conform.span),
             |analyzer| {
-                analyzer.check_compose_block(
-                    compose.id,
-                    compose.span,
+                analyzer.check_conform_block(
+                    conform.id,
+                    conform.span,
                     &target,
-                    &compose.spec,
-                    &compose.functions,
+                    &conform.spec,
+                    &conform.functions,
                     &method_ids,
                 )
             },
         );
         self.diagnostics.record_warnings(module, run.warnings);
         let (spec, spec_args, methods, pending) = run.result?;
-        let entry = ComposeEntry {
+        let entry = ConformanceEntry {
             module: module.to_vec(),
-            id: compose.id,
-            span: compose.span,
+            id: conform.id,
+            span: conform.span,
             target: target.lookup_key(),
             spec,
             spec_args,
             methods,
             method_ids,
-            functions: compose.functions.clone(),
+            functions: conform.functions.clone(),
             pending,
             substitution: method_substitution,
             bounds,
             derived: false,
             from_template: !substitution.is_empty(),
         };
-        if !self.check_compose_orphan(&entry) || self.reject_duplicate_compose(&entry) {
+        if !self.check_conformance_orphan(&entry) || self.reject_duplicate_conformance(&entry) {
             return None;
         }
-        // A directly-written compose supersedes any derived entry standing in
+        // A directly-written conform supersedes any derived entry standing in
         // for the same `(target, spec, args)`. Without this, declaring
-        // `compose Foo : Derived` before `compose Foo : Base` left the derived
+        // `conform Foo to Derived` before `conform Foo to Base` left the derived
         // stand-in ahead of the explicit block in `entries`, so `Base::b(&f)`
         // silently called *Derived*'s body while the hand-written one was
         // emitted and never reached -- wrong code, no diagnostic. This is not
-        // a `DuplicateCompose`: the author wrote exactly one `Base` block, and
+        // a `DuplicateConformance`: the author wrote exactly one `Base` block, and
         // it is the one that must win.
         let spec_id = entry.spec.borrow().id;
-        self.composes.entries.retain(|existing| {
+        self.conformances.entries.retain(|existing| {
             !(existing.derived
                 && existing.target == entry.target
                 && existing.spec.borrow().id == spec_id
                 && existing.spec_args == entry.spec_args)
         });
-        self.composes.entries.push(entry.clone());
-        self.register_derived_composes(&entry);
+        self.conformances.entries.push(entry.clone());
+        self.register_derived_conformances(&entry);
         Some(entry)
     }
 
-    fn register_derived_composes(&mut self, entry: &ComposeEntry) {
+    fn register_derived_conformances(&mut self, entry: &ConformanceEntry) {
         let run = self.with_analyzer(
             &entry.module,
             &entry.substitution,
@@ -531,14 +531,14 @@ impl Driver {
             return;
         };
         for (spec, spec_args, methods) in transitive {
-            if self.composes.entries.iter().any(|existing| {
+            if self.conformances.entries.iter().any(|existing| {
                 existing.target == entry.target
                     && existing.spec.borrow().id == spec.borrow().id
                     && existing.spec_args == spec_args
             }) {
                 continue;
             }
-            self.composes.entries.push(ComposeEntry {
+            self.conformances.entries.push(ConformanceEntry {
                 module: entry.module.clone(),
                 id: entry.id,
                 span: entry.span,
@@ -557,7 +557,7 @@ impl Driver {
         }
     }
 
-    fn check_compose_orphan(&mut self, entry: &ComposeEntry) -> bool {
+    fn check_conformance_orphan(&mut self, entry: &ConformanceEntry) -> bool {
         let local = entry
             .module
             .first()
@@ -583,7 +583,7 @@ impl Driver {
             AnalysisError::new(
                 entry.id,
                 entry.span,
-                AnalysisErrorKind::ComposeOrphanViolation {
+                AnalysisErrorKind::ConformanceOrphanViolation {
                     target_package,
                     spec_package,
                 },
@@ -592,8 +592,8 @@ impl Driver {
         false
     }
 
-    fn reject_duplicate_compose(&mut self, entry: &ComposeEntry) -> bool {
-        let Some(previous) = self.composes.entries.iter().find(|existing| {
+    fn reject_duplicate_conformance(&mut self, entry: &ConformanceEntry) -> bool {
+        let Some(previous) = self.conformances.entries.iter().find(|existing| {
             !existing.derived
                 && existing.target == entry.target.lookup_key()
                 && existing.spec.borrow().id == entry.spec.borrow().id
@@ -606,7 +606,7 @@ impl Driver {
             AnalysisError::new(
                 entry.id,
                 entry.span,
-                AnalysisErrorKind::DuplicateCompose {
+                AnalysisErrorKind::DuplicateConformance {
                     target: entry.target.to_string(),
                     spec: entry.spec.borrow().name.clone(),
                     previous: previous.span,
@@ -616,38 +616,38 @@ impl Driver {
         true
     }
 
-    pub(crate) fn compose_for(
+    pub(crate) fn conformance_for(
         &mut self,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedType],
-    ) -> Option<ComposeEntry> {
+    ) -> Option<ConformanceEntry> {
         // Directly-written blocks first, derived stand-ins only as a fallback:
         // registration order must never decide which body a call reaches (see
-        // `instantiate_compose`'s supersede step). Belt-and-braces alongside
+        // `instantiate_conformance`'s supersede step). Belt-and-braces alongside
         // that removal, since a derived entry can also be registered *after* a
-        // direct one by a later compose's own dependency walk.
-        let matches = |entry: &&ComposeEntry| {
+        // direct one by a later conform's own dependency walk.
+        let matches = |entry: &&ConformanceEntry| {
             entry.target == target.lookup_key()
                 && entry.spec.borrow().id == spec.borrow().id
                 && entry.spec_args == spec_args
         };
         if let Some(entry) = self
-            .composes
+            .conformances
             .entries
             .iter()
             .find(|entry| !entry.derived && matches(entry))
-            .or_else(|| self.composes.entries.iter().find(matches))
+            .or_else(|| self.conformances.entries.iter().find(matches))
         {
             return Some(entry.clone());
         }
-        let templates = self.composes.templates.clone();
+        let templates = self.conformances.templates.clone();
         for template in templates {
-            let Some(substitution) = Self::match_compose_target(&template.compose, target) else {
+            let Some(substitution) = Self::match_conform_target(&template.conform, target) else {
                 continue;
             };
             if let Some(entry) =
-                self.instantiate_compose(&template.module, &template.compose, &substitution)
+                self.instantiate_conformance(&template.module, &template.conform, &substitution)
                 && entry.spec.borrow().id == spec.borrow().id
                 && entry.spec_args == spec_args
             {
@@ -679,19 +679,19 @@ impl Driver {
     }
 
     /// What a `T: Spec` bound puts into the analyzer's bound context: the
-    /// declared bound itself, plus every compose already registered on
+    /// declared bound itself, plus every conform already registered on
     /// `concrete` whose spec lies in `spec`'s transitive dependencies.
     ///
     /// The transitive part is what makes an **aggregate** bound work at all. A
-    /// pure alias (`spec MySpec = Dummy | Mammal`) is never itself composed,
+    /// pure alias (`spec MySpec = Dummy | Mammal`) is never itself conformed to,
     /// so `(concrete, MySpec)` has no entry and a receiver call under
-    /// `T: MySpec` would find nothing -- even though `compose Wolf : Mammal`
+    /// `T: MySpec` would find nothing -- even though `conform Wolf to Mammal`
     /// already registered every method the alias names.
     ///
-    /// Restricted to those, never "every compose on the type": seeding
+    /// Restricted to those, never "every conform on the type": seeding
     /// the latter is what previously let `x.secret()` resolve under
-    /// `T: Speak` merely because someone wrote `compose Dog : Secret`, which
-    /// voids the guarantee `compose` exists to provide.
+    /// `T: Speak` merely because someone wrote `conform Dog to Secret`, which
+    /// voids the guarantee `conform` exists to provide.
     pub(crate) fn bound_context_for(
         &mut self,
         concrete: &ResolvedType,
@@ -701,7 +701,7 @@ impl Driver {
         let mut permitted = Vec::new();
         Self::transitive_dependency_ids(&spec, &mut permitted);
         let mut seeds = vec![(concrete.clone(), spec, spec_args)];
-        for entry in self.composes_for_type(concrete) {
+        for entry in self.conformances_for_type(concrete) {
             if permitted.contains(&entry.spec.borrow().id) {
                 seeds.push((entry.target, entry.spec, entry.spec_args));
             }
@@ -709,14 +709,14 @@ impl Driver {
         seeds
     }
 
-    pub(crate) fn composes_for_type(&mut self, target: &ResolvedType) -> Vec<ComposeEntry> {
-        let templates = self.composes.templates.clone();
+    pub(crate) fn conformances_for_type(&mut self, target: &ResolvedType) -> Vec<ConformanceEntry> {
+        let templates = self.conformances.templates.clone();
         for template in templates {
-            if let Some(substitution) = Self::match_compose_target(&template.compose, target) {
-                self.instantiate_compose(&template.module, &template.compose, &substitution);
+            if let Some(substitution) = Self::match_conform_target(&template.conform, target) {
+                self.instantiate_conformance(&template.module, &template.conform, &substitution);
             }
         }
-        self.composes
+        self.conformances
             .entries
             .iter()
             .filter(|entry| entry.target == target.lookup_key())
@@ -724,18 +724,18 @@ impl Driver {
             .collect()
     }
 
-    /// The first of `compose`'s own generic parameters that its *target*
+    /// The first of `conform`'s own generic parameters that its *target*
     /// does not pin down -- either because the target is that parameter
-    /// (`compose<T: Numeric> T : Sum`, which would apply to every type) or
+    /// (`conform<T: Numeric> T to Sum`, which would apply to every type) or
     /// because the parameter appears nowhere in the target at all
-    /// (`compose<T, U: Foo> List<T> : Bar`, whose `U` nothing can ever
-    /// bind). Both are blanket composes, deliberately out of scope for now;
-    /// a target that uses every parameter (`compose<T> List<T> :
+    /// (`conform<T, U: Foo> List<T> to Bar`, whose `U` nothing can ever
+    /// bind). Both are blanket conformances, deliberately out of scope for now;
+    /// a target that uses every parameter (`conform<T> List<T> to
     /// ToIterator<T>`) is not one, and is fully supported.
-    fn blanket_parameter(compose: &HirComposeDef) -> Option<Ident> {
-        if let Type::Named(path) = &compose.target
+    fn blanket_parameter(conform: &HirConformDef) -> Option<Ident> {
+        if let Type::Named(path) = &conform.target
             && path.is_unqualified()
-            && let Some(generic) = compose
+            && let Some(generic) = conform
                 .generics
                 .iter()
                 .find(|generic| generic.ident == path.head)
@@ -743,8 +743,8 @@ impl Driver {
             return Some(generic.ident.clone());
         }
         let mut mentioned = Vec::new();
-        Self::collect_type_idents(&compose.target, &mut mentioned);
-        compose
+        Self::collect_type_idents(&conform.target, &mut mentioned);
+        conform
             .generics
             .iter()
             .find(|generic| !mentioned.contains(&generic.ident))
@@ -752,7 +752,7 @@ impl Driver {
     }
 
     /// Every unqualified identifier a raw `Type` mentions, in source order.
-    /// Only used to ask whether a generic parameter occurs in a compose
+    /// Only used to ask whether a generic parameter occurs in a conform
     /// target, so a qualified path (which can never *be* a parameter) is
     /// deliberately not contributed.
     fn collect_type_idents(r#type: &Type, out: &mut Vec<Ident>) {
@@ -775,18 +775,18 @@ impl Driver {
         }
     }
 
-    fn match_compose_target(
-        compose: &HirComposeDef,
+    fn match_conform_target(
+        conform: &HirConformDef,
         actual: &ResolvedType,
     ) -> Option<Vec<(Ident, ResolvedType)>> {
         if let (Type::InferredArray(raw_item), ResolvedType::Slice { item, .. }) =
-            (&compose.target, actual)
+            (&conform.target, actual)
         {
             let Type::Named(path) = raw_item.as_ref() else {
                 return None;
             };
             if !path.is_unqualified()
-                || !compose
+                || !conform
                     .generics
                     .iter()
                     .any(|generic| generic.ident == path.head)
@@ -810,7 +810,7 @@ impl Driver {
             }
             _ => return None,
         };
-        let (path, args) = match &compose.target {
+        let (path, args) = match &conform.target {
             Type::Generic(path, args) => (path, args),
             _ => return None,
         };
@@ -821,7 +821,7 @@ impl Driver {
         for (raw, concrete) in args.iter().zip(actual_args) {
             let Type::Named(path) = raw else { return None };
             if !path.is_unqualified()
-                || !compose
+                || !conform
                     .generics
                     .iter()
                     .any(|generic| generic.ident == path.head)
@@ -833,11 +833,11 @@ impl Driver {
         Some(substitution)
     }
 
-    /// Compose and primitive blocks have no named `ItemKey` of their own,
+    /// Conform and primitive blocks have no named `ItemKey` of their own,
     /// but every concrete target instantiation still needs a distinct method
     /// identity. Reuse the normal item identity allocator with an internal
     /// key made from the declaration and canonical target.
-    fn composed_method_ids(
+    fn conformance_method_ids(
         &mut self,
         module: &[Ident],
         declaration: HirId,
@@ -846,16 +846,16 @@ impl Driver {
     ) -> Vec<HirId> {
         let key = ItemKey::new(
             module,
-            &Ident(format!("__compose_{}", declaration.local)),
+            &Ident(format!("__conform_{}", declaration.local)),
             &[target.lookup_key()],
         );
         self.items
             .method_identities(&key, functions.iter().map(|function| function.id))
     }
 
-    pub(crate) fn compose_owner(entry: &ComposeEntry) -> ComposeOwner {
+    pub(crate) fn conformance_owner(entry: &ConformanceEntry) -> ConformanceOwner {
         let spec = entry.spec.borrow();
-        ComposeOwner {
+        ConformanceOwner {
             target: entry.target.clone(),
             spec_module_path: spec.module_path.clone(),
             spec_name: spec.name.clone(),

@@ -62,7 +62,7 @@ pub enum HirItem {
     Spec(HirSpecDef),
     Gap(HirGapDef),
     Glue(HirGlueDef),
-    Compose(HirComposeDef),
+    Conform(HirConformDef),
     Primitive(HirPrimitiveDef),
     Import(HirImport),
 }
@@ -347,7 +347,7 @@ pub struct HirGlueDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct HirComposeDef {
+pub struct HirConformDef {
     pub id: HirId,
     pub span: Span,
     pub generics: Vec<HirGenericParam>,

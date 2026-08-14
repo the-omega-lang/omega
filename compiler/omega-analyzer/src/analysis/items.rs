@@ -1394,7 +1394,7 @@ impl<'r> Analyzer<'r> {
             body,
             inline: annotations.inline,
             mangling: annotations.mangling.clone(),
-            compose_owner: None,
+            conformance_owner: None,
             primitive_target: None,
         })
     }
@@ -1417,20 +1417,20 @@ impl<'r> Analyzer<'r> {
         // `current_owner` is deliberately *not* set here: a default body is
         // the spec's own code, not the implementor's, so it gets no
         // hidden-field access to whatever `Self` turns out to be. Under
-        // `compose` that matters concretely -- `Self` may be a type in a
+        // `conform` that matters concretely -- `Self` may be a type in a
         // different package entirely, which the spec's author has never
         // seen. A default body that needs a field must go through a method
         // the spec itself declares.
         //
         // `Self` was already seeded into this `Analyzer`'s own scope by
         // `Analyzer::new_in` (from `pending`'s own substitution, via
-        // `omega_driver::Driver::check_compose_bodies`), so it needs no
+        // `omega_driver::Driver::check_conformance_bodies`), so it needs no
         // separate parameter here.
         let body = pending
             .raw
             .default_body
             .clone()
-            .expect("only ever queued by composition when a default body exists");
+            .expect("only ever queued by conformance when a default body exists");
         let synthetic = HirFunctionDef {
             id: pending.raw.decl_id,
             span: pending.raw.span,

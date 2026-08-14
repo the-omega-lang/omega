@@ -68,7 +68,7 @@ exposed struct HashSet<T: Hash> {
 
 }
 
-compose<T: Hash> HashSet<T> : ToIterator<T> {
+conform<T: Hash> HashSet<T> to ToIterator<T> {
     to_iterator(*self) => HashSetIterator<T> {
         HashSetIterator<T> { inner = self.inner.to_iterator(); }
     }
@@ -79,7 +79,7 @@ exposed struct HashSetIterator<T> {
 
 }
 
-compose<T> HashSetIterator<T> : Iterator<T> {
+conform<T> HashSetIterator<T> to Iterator<T> {
     next(*mut self) => Option<T> {
         kv := self.inner.next();
         match kv {

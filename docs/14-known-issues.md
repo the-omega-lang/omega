@@ -36,19 +36,19 @@ new one is found.
   [mir-and-codegen.md](16-mir-and-codegen.md)'s own "Fixed" note); direct
   assignment is a separate, still-unfixed code path. An explicit local
   copy works around it today. [mir-and-codegen.md](16-mir-and-codegen.md)
-- ~~**A monomorphized *compose* method gets strong linkage**~~ — **fixed.**
+- ~~**A monomorphized *conform* method gets strong linkage**~~ — **fixed.**
   `linkage_for` decided weak vs. strong from the *function's* own `type_args`,
-  which is empty for a compose method: the genericity lives in the target
+  which is empty for a conform method: the genericity lives in the target
   (`Self`), not the method. So two packages that each called `println$` — whose
-  expansion instantiates `compose<W: Write> BufWriter<W> : Write` at
+  expansion instantiates `conform<W: Write> BufWriter<W> to Write` at
   `BufWriter<Stdout>` — failed to link with `multiple definition of
   _omg_…BufWriterNtBb_6StdoutE5Write5write…`, while the type's *inherent*
   methods and its vtable symbol were correctly weak.
 
-  `ComposeOwner::from_template` now carries the missing bit (set from whether
-  `instantiate_compose` was handed a substitution — only a template match
+  `ConformanceOwner::from_template` now carries the missing bit (set from whether
+  `instantiate_conformance` was handed a substitution — only a template match
   produces one), and codegen gives a template instantiation `Preemptible`
-  linkage while a directly-written concrete compose stays `Export`, so a
+  linkage while a directly-written concrete conform stays `Export`, so a
   genuine duplicate is still an error. Guarded by `just test-multi-print`,
   which links two printing packages and fails without the fix.
 
@@ -79,7 +79,7 @@ new one is found.
   (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
   [console-io.md](24-console-io.md)
 
-## Composition and specs (`compose` / `primitive`)
+## Conformance and specs (`conform` / `primitive`)
 
 Every issue tracked here through plan 0005 is now fixed and verified; see
 [specs.md](08-specs.md) for the resulting behaviour. What remains are two
@@ -104,7 +104,7 @@ deliberate limitations and one coverage gap.
 - **A variadic spec function is rejected at its declaration**
   (`VariadicSpecFunctionUnsatisfiable`). Omega has no variadic function
   *definitions* — only `extern` declarations may be variadic, for C interop —
-  so neither a `compose` block nor a spec default can supply a matching body,
+  so neither a `conform` block nor a spec default can supply a matching body,
   and every implementor would otherwise fail with a bare
   `MissingSpecFunction` naming a function it has no syntax to write. The
   `is_variadic` plumbing behind it (HIR, `RawSpecFunctionSig`, the resolved
@@ -114,17 +114,17 @@ deliberate limitations and one coverage gap.
 - **A generic parameter cannot be inferred from a slice argument.**
   `f<T>(x: *T)` called with a `*[]u8` reports "cannot infer type parameter
   'T' from this call's arguments", and `f<[?]u8>(...)` is not valid syntax
-  either. Nothing to do with composition — it reproduces with no spec or
-  compose in the program — but it is what stops a slice compose from being
+  either. Nothing to do with conformance — it reproduces with no spec or
+  conform in the program — but it is what stops a slice conform from being
   reached through a generic bound: `Show::show(s)` works, `use_it<T: Show>(s)`
   does not. [generics](06-generics.md)
 
-- **Coverage gap: which compose body a call selects is not unit-testable.**
-  `compiler/omega-driver/tests/compose.rs` produces a `CompiledProgram` and
+- **Coverage gap: which conform body a call selects is not unit-testable.**
+  `compiler/omega-driver/tests/conform.rs` produces a `CompiledProgram` and
   cannot execute it, so
-  `an_explicit_compose_wins_over_a_derived_dependency_entry` asserts only
+  `an_explicit_conform_wins_over_a_derived_dependency_entry` asserts only
   declaration-level facts. The bug it guards — a derived dependency entry
-  shadowing a later explicit compose, so `Base::b` silently ran `Derived`'s
+  shadowing a later explicit conform, so `Base::b` silently ran `Derived`'s
   body — emitted *both* bodies before and after the fix, making the emitted
   set non-discriminating. Closing this needs a compile-and-run harness, which
   only `just test-io`/`run-exec` provide today.
@@ -284,9 +284,9 @@ need a breaking change to fix — full writeups in
   likely `ensure_overload_signature` resolving a generic candidate's own
   signature with an empty substitution list.
 - ~~**Two independent pending-spec-method queues**~~ — **fixed.** With
-  conformance living only in the compose registry, an aggregate queues
+  conformance living only in the conform registry, an aggregate queues
   nothing, so the `ItemKey`-keyed queue was deleted outright rather than
-  unified; `ComposeEntry::pending` is the only one left.
+  unified; `ConformanceEntry::pending` is the only one left.
 - **A directory sharing its package root's name is skipped without saying
   so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
   `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
@@ -338,16 +338,16 @@ need a breaking change to fix — full writeups in
   address). A bare, projection-less `n = 5` is deliberately still a pure
   write, so `UnusedVariable` keeps firing on write-only bindings.
 
-- **An unsatisfied generic-`compose` bound is reported once per conformance
-  lookup, not once per declaration.** `Driver::instantiate_compose` checks the
+- **An unsatisfied generic-`conform` bound is reported once per conformance
+  lookup, not once per declaration.** `Driver::instantiate_conformance` checks the
   template's own bounds before its memoization guard, and a failed check
-  registers no entry, so every later `composes_for_type` call for the same
-  target re-runs the check and re-reports. `compose<T: W> Buf<T> : W` against
+  registers no entry, so every later `conformances_for_type` call for the same
+  target re-runs the check and re-reports. `conform<T: W> Buf<T> to W` against
   a `Buf<NotW>` that is also coerced to `spec *mut W` prints the identical
   `SpecNotImplemented` twice. The anchor and wording are correct; only the
-  count is wrong. The fix is either a per-`(compose id, target)` "already
-  reported" set in `Composes`, or general diagnostic de-duplication — both
-  wider than the compose path itself. [specs.md](08-specs.md)
+  count is wrong. The fix is either a per-`(conform id, target)` "already
+  reported" set in `Conformances`, or general diagnostic de-duplication — both
+  wider than the conform path itself. [specs.md](08-specs.md)
 - **A `*mut self` requirement against an rvalue receiver reports
   `NotMutablePointer`, and the invariant that made that correct no longer
   holds.** `Bump::bump(make())`, where `bump(*mut self)` and `make()` returns
@@ -370,7 +370,7 @@ need a breaking change to fix — full writeups in
 
   Pre-existing in the sense that a receiver-position call on an rvalue
   reaches the same arm, but newly *reachable* in ordinary code: a
-  spec-qualified call is the normal way to invoke a composed method, and its
+  spec-qualified call is the normal way to invoke a conforming method, and its
   receiver is an ordinary argument expression that anyone may write as a call
   or a literal. The fix is a third `AnalysisErrorKind` for the not-a-place
   case — "`*mut self` needs a place to mutate; bind the value to a `mut`

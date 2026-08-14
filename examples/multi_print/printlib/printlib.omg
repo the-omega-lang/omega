@@ -1,7 +1,7 @@
 # Half of the two-package link test (see `just test-multi-print`).
 #
 # The point is not what this prints -- it is that a *second* package also
-# prints. `println$` expands to a `BufWriter<Stdout>`, a generic compose
+# prints. `println$` expands to a `BufWriter<Stdout>`, a generic conform
 # instantiation, which every package using it emits independently. Those
 # copies must be weak so the linker folds them; if they are strong, linking
 # this package alongside any other that prints fails with `multiple

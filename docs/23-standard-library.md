@@ -43,7 +43,7 @@ the linker's `--gc-sections` discard unused functions.
 
 `std::cmp` provides `Ordering`, `Eq`, and `Ord`; `std::default` provides
 `Default`; `std::hash` provides `Hash`; and `std::fmt` provides `Display`.
-`std::primitives` composes these specs for numeric scalars, `str`, `char`, and
+`std::primitives` declares these conformances for numeric scalars, `str`, `char`, and
 `bool`. The corresponding inherent primitive operations remain in core.
 
 `HashMap<K: Hash, V>` and `HashSet<T: Hash>` therefore import `std::hash`,

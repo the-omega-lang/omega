@@ -10,7 +10,7 @@
 //! per concern, each contributing its own `impl Analyzer` block:
 //!
 //! - [`visibility`] -- `exposed`/`internal`/hidden and the `reveal` bypass.
-//! - [`specs`] -- spec declarations, flattening, composition, and conformance.
+//! - [`specs`] -- spec declarations, flattening, conformance, and conformance.
 //! - [`items`] -- top-level item signatures and bodies (the driver's entry
 //!   points).
 //! - [`stmts`] -- blocks, statements, control flow, divergence.
@@ -61,7 +61,7 @@ use crate::{
     },
     generics::{resolve_inferred_type_args, unify_generic_type},
     resolved_type::{
-        CastClass, ComposeSource, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedBound,
+        CastClass, ConformanceSource, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedBound,
         ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType, ResolvedMethod,
         ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
@@ -218,7 +218,7 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::Union(u) => Some(u.name.clone()),
         HirItem::Spec(sp) => Some(sp.name.clone()),
         HirItem::Gap(gap) => Some(gap.name.clone()),
-        HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) => None,
+        HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => None,
         HirItem::Import(_) => None,
     }
 }
@@ -242,7 +242,7 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
         HirItem::Union(u) => u.visibility,
         HirItem::Spec(sp) => sp.visibility,
         HirItem::Gap(_) => Visibility::Exposed,
-        HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) => {
+        HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
             unreachable!("unnamed blocks have no item visibility")
         }
         HirItem::Import(_) => {
@@ -266,7 +266,7 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::Spec(sp) => (sp.id, sp.span),
         HirItem::Gap(gap) => (gap.id, gap.span),
         HirItem::Glue(glue) => (glue.id, glue.span),
-        HirItem::Compose(compose) => (compose.id, compose.span),
+        HirItem::Conform(conform) => (conform.id, conform.span),
         HirItem::Primitive(primitive) => (primitive.id, primitive.span),
         HirItem::Import(i) => (i.id, i.span),
     }
@@ -446,7 +446,7 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Wraps `value` in `CheckedExpr::SpecCoerce` when `expected` is a
-    /// `SpecObject` and `value` points to a type composed with the target
+    /// `SpecObject` and `value` points to a type conforming to the target
     /// spec -- see
     /// `CheckedExpr::SpecCoerce`'s doc comment for why this needs an
     /// explicit node rather than being folded into `ResolvedType::accepts`
@@ -710,7 +710,7 @@ impl<'r> Analyzer<'r> {
         let resolved = self.resolve_type_or_error_raw(id, span, typ, indirect)?;
         // A bare spec name (`ResolvedType::Spec`) is never a valid value
         // type -- see `TypeResolutionError::SpecUsedAsValueType`'s doc
-        // comment. Every position that legitimately wants one (a compose
+        // comment. Every position that legitimately wants one (a conform
         // declaration, a generic bound, `spec *Foo`'s own pointee) goes through
         // `resolve_spec_reference`, which calls `resolve_type_or_error_raw`
         // directly instead of this wrapper -- so every other caller (which
@@ -738,7 +738,7 @@ impl<'r> Analyzer<'r> {
 
     /// The same resolution `resolve_type_or_error` does, minus its
     /// bare-`ResolvedType::Spec`-is-never-a-value-type check -- for the one
-    /// legitimate exception, `resolve_spec_reference` (a compose declaration
+    /// legitimate exception, `resolve_spec_reference` (a conform declaration
     /// entry, a spec dependency, a generic bound), where a bare spec is
     /// exactly the expected, successful result.
     pub(crate) fn resolve_type_or_error_raw(

@@ -139,9 +139,9 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `Spec::method(receiver, ...)` is the explicit escape hatch for a
-    /// composed instance method outside a bound context. The first argument
-    /// selects the target composition; the resulting call is an ordinary
-    /// direct call to that composition's symbol.
+    /// conforming instance method outside a bound context. The first argument
+    /// selects the target conformance; the resulting call is an ordinary
+    /// direct call to that conformance's symbol.
     pub(super) fn resolve_spec_qualified_call(
         &mut self,
         node_id: HirId,
@@ -217,7 +217,7 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Claimed(None);
         };
         // The receiver is resolved as a *place*, exactly once, before any
-        // composition is selected -- `compose_for` needs its type, and
+        // conformance is selected -- `conformance_for` needs its type, and
         // `adapt_self_argument` below needs the place itself. An argument
         // that is not already a place (a literal, a struct expression, a
         // call result) is wrapped in `HirPlaceRoot::Expr`, the same shape
@@ -237,17 +237,17 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Claimed(None);
         };
         let target = receiver_type.autoderef().clone();
-        let compose_methods = match self.resolver.compose_for(&target, &spec, &spec_args) {
-            Ok(Some(compose)) => compose.methods,
+        let conformance_methods = match self.resolver.conformance_for(&target, &spec, &spec_args) {
+            Ok(Some(conform)) => conform.methods,
             Ok(None)
                 if self
                     .type_implements_spec(node_id, span, &target, &spec, &spec_args, false)
                     .is_ok() =>
             {
-                match self.resolver.composes_for_type(&target) {
-                    Ok(composes) => composes
+                match self.resolver.conformances_for_type(&target) {
+                    Ok(conformances) => conformances
                         .into_iter()
-                        .flat_map(|compose| compose.methods)
+                        .flat_map(|conform| conform.methods)
                         .collect(),
                     Err(err) => {
                         self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
@@ -278,7 +278,7 @@ impl<'r> Analyzer<'r> {
                 return Intercepted::Claimed(None);
             }
         };
-        let candidates: Vec<_> = compose_methods
+        let candidates: Vec<_> = conformance_methods
             .into_iter()
             .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_some())
             .map(|(_, method)| method)
@@ -491,10 +491,10 @@ impl<'r> Analyzer<'r> {
                 _ => false,
             };
             if !field_shadows {
-                match self.resolver.composes_for_type(receiver_type) {
-                    Ok(composes) => {
-                        if let Some(compose) = composes.iter().find(|compose| {
-                            compose.methods.iter().any(|(name, method)| {
+                match self.resolver.conformances_for_type(receiver_type) {
+                    Ok(conformances) => {
+                        if let Some(conform) = conformances.iter().find(|conform| {
+                            conform.methods.iter().any(|(name, method)| {
                                 name == field && method.fn_type.self_mode.is_some()
                             })
                         }) {
@@ -503,7 +503,7 @@ impl<'r> Analyzer<'r> {
                                 callee.span,
                                 AnalysisErrorKind::MethodNotInScope {
                                     method: field.clone(),
-                                    spec: compose.spec.borrow().name.clone(),
+                                    spec: conform.spec.borrow().name.clone(),
                                 },
                             );
                             return None;
@@ -616,7 +616,7 @@ impl<'r> Analyzer<'r> {
         }
 
         // Struct/union/enum have a real declared name; a primitive target
-        // (reachable here only when a self-less `primitive`/`compose`
+        // (reachable here only when a self-less `primitive`/`conform`
         // function shares a name with an instance call) has none, so its own
         // `Display` (`"u32"`, `"*[i32]"`, ...) stands in.
         let r#struct = match receiver_type.autoderef() {
@@ -646,7 +646,7 @@ impl<'r> Analyzer<'r> {
         method: &ResolvedMethod,
     ) -> Option<()> {
         // A primitive receiver's own methods come from a `primitive` block
-        // or a `compose`; neither has a declaring owner of its own, so the
+        // or a `conform`; neither has a declaring owner of its own, so the
         // check below is trivially true whatever owner is passed.
         let (module_path, owner_id) = receiver_type
             .autoderef()
@@ -735,7 +735,7 @@ impl<'r> Analyzer<'r> {
             // self wants a pointer, the receiver is a `Str`/`Slice` value --
             // both already *are* their own fat-pointer representation (see
             // `Context::resolve_pointer_type`'s `*str`/`*[?]T` cases, which
-            // a `primitive`/`compose` block's own `Self` substitution goes
+            // a `primitive`/`conform` block's own `Self` substitution goes
             // through identically), so an `AddressOf` wrapper here would add a
             // genuine extra indirection layer the signature never asked for.
             // Re-stamped with `self_mode`'s own mutability instead, mirroring

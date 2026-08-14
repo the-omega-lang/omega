@@ -36,7 +36,7 @@ pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
     Item, ItemNode, Statement, StatementNode,
-    compose::ComposeStmt,
+    conform::ConformStmt,
     declaration::DeclarationStmt,
     defer::DeferStmt,
     r#enum::{EnumHeaderField, EnumStmt, EnumVariantStmt},

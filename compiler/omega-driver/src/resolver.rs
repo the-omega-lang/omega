@@ -8,7 +8,7 @@ use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
 use omega_analyzer::resolved_type::{
-    ConstValue, ResolvedCompose, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
+    ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
     ResolvedType,
 };
 use omega_analyzer::resolver::{
@@ -477,7 +477,7 @@ impl ModuleResolver for Driver {
                 | HirItem::Walrus(_)
                 | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
                 HirItem::Glue(_)
-                | HirItem::Compose(_)
+                | HirItem::Conform(_)
                 | HirItem::Primitive(_)
                 | HirItem::Import(_) => false,
             })
@@ -492,14 +492,14 @@ impl ModuleResolver for Driver {
         Ok(Driver::primitive_methods(self, receiver))
     }
 
-    fn compose_for(
+    fn conformance_for(
         &mut self,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedType],
-    ) -> Result<Option<ResolvedCompose>, ResolveError> {
+    ) -> Result<Option<ResolvedConformance>, ResolveError> {
         Ok(
-            Driver::compose_for(self, target, spec, spec_args).map(|entry| ResolvedCompose {
+            Driver::conformance_for(self, target, spec, spec_args).map(|entry| ResolvedConformance {
                 target: entry.target,
                 spec: entry.spec,
                 spec_args: entry.spec_args,
@@ -508,13 +508,13 @@ impl ModuleResolver for Driver {
         )
     }
 
-    fn composes_for_type(
+    fn conformances_for_type(
         &mut self,
         target: &ResolvedType,
-    ) -> Result<Vec<ResolvedCompose>, ResolveError> {
-        Ok(Driver::composes_for_type(self, target)
+    ) -> Result<Vec<ResolvedConformance>, ResolveError> {
+        Ok(Driver::conformances_for_type(self, target)
             .into_iter()
-            .map(|entry| ResolvedCompose {
+            .map(|entry| ResolvedConformance {
                 target: entry.target,
                 spec: entry.spec,
                 spec_args: entry.spec_args,

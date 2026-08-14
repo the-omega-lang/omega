@@ -107,8 +107,8 @@ clean:
     rm -rf target
 
 # Two packages that both print, linked together. `println$` expands to a
-# `BufWriter<Stdout>` -- a generic compose instantiation each package emits
-# independently -- so this fails to link outright if a compose method built
+# `BufWriter<Stdout>` -- a generic conform instantiation each package emits
+# independently -- so this fails to link outright if a conform method built
 # from a template gets strong linkage. The `cc` below is the assertion; the
 # diff then confirms both packages' output actually survived folding.
 build-multi-print: build-std build-plat

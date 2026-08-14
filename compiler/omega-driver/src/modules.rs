@@ -650,7 +650,7 @@ impl Driver {
             | HirItem::DeclarationWithInit(..)
             | HirItem::ExternDeclaration(_)
             | HirItem::Walrus(_) => vec![],
-            HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) | HirItem::Import(_) => {
+            HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) | HirItem::Import(_) => {
                 unreachable!("unnamed items are never indexed into a module's items")
             }
         })

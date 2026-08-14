@@ -1,6 +1,6 @@
 use crate::checked::Storage;
 use crate::resolved_type::{
-    ConstValue, ResolvedCompose, ResolvedFunctionType, ResolvedGap, ResolvedMethod,
+    ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedMethod,
     ResolvedSpecType, ResolvedType,
 };
 use omega_hir::HirId;
@@ -524,7 +524,7 @@ pub trait ModuleResolver {
     /// anything concrete, and a spec's cell content never actually varies
     /// by type arguments in the first place -- `flatten_spec` always
     /// receives its concrete args explicitly from whichever call site is
-    /// doing the flattening (a bound's own `<i32>`, a compose declaration's
+    /// doing the flattening (a bound's own `<i32>`, a conform declaration's
     /// own args), never derived from the cell's own stored state. `Ok(None)`
     /// for anything that isn't a spec -- including a name that doesn't
     /// resolve at all -- deferring that diagnosis to the ordinary
@@ -547,17 +547,17 @@ pub trait ModuleResolver {
         receiver: &ResolvedType,
     ) -> Result<Vec<(Ident, ResolvedMethod)>, ResolveError>;
 
-    fn compose_for(
+    fn conformance_for(
         &mut self,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedType],
-    ) -> Result<Option<ResolvedCompose>, ResolveError>;
+    ) -> Result<Option<ResolvedConformance>, ResolveError>;
 
-    fn composes_for_type(
+    fn conformances_for_type(
         &mut self,
         target: &ResolvedType,
-    ) -> Result<Vec<ResolvedCompose>, ResolveError>;
+    ) -> Result<Vec<ResolvedConformance>, ResolveError>;
 
     /// A `comp` evaluation's one hook into the driver (see
     /// `crate::comp_eval::CompFunctionResolver`, which this trait re-exposes

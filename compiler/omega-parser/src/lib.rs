@@ -162,23 +162,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_compose_and_primitive_items() {
+    fn parses_conform_and_primitive_items() {
         let module = SourceModule::parse(
             "spec Show { show(*self) => i32; }\n\
              struct Box<T> { value: T; }\n\
-             compose<T> Box<T> : Show { show(*self) => i32 { 1 } }\n\
+             conform<T> Box<T> to Show { show(*self) => i32 { 1 } }\n\
              primitive<T> []T { exposed is_empty(*self) => bool { self.length == 0 } }",
         )
-        .expect("compose and primitive declarations should parse");
-        assert!(matches!(module.nodes[2].item, Item::Compose(_)));
+        .expect("conform and primitive declarations should parse");
+        assert!(matches!(module.nodes[2].item, Item::Conform(_)));
         assert!(matches!(module.nodes[3].item, Item::Primitive(_)));
     }
 
     #[test]
-    fn compose_and_primitive_enforce_their_visibility_shapes() {
+    fn conform_and_primitive_enforce_their_visibility_shapes() {
         assert!(matches!(
-            errors("spec Show { show(*self) => i32; } struct S {} compose S : Show { exposed show(*self) => i32 { 1 } }").as_slice(),
-            [ParseErrorKind::ComposeMethodVisibility]
+            errors("spec Show { show(*self) => i32; } struct S {} conform S to Show { exposed show(*self) => i32 { 1 } }").as_slice(),
+            [ParseErrorKind::ConformMethodVisibility]
         ));
         assert!(matches!(
             errors("exposed primitive i32 { exposed value(*self) => i32 { *self } }").as_slice(),
@@ -187,21 +187,25 @@ mod tests {
     }
 
     #[test]
-    fn compose_and_primitive_stay_contextual_identifiers() {
+    fn conform_to_and_primitive_stay_contextual_identifiers() {
         let module = SourceModule::parse(
-            "compose := 1;\n\
+            "conform := 1;\n\
              primitive : i32 = 2;\n\
-             compose() => i32 { primitive := 3; return primitive; }\n\
-             primitive() => i32 { return compose; }",
+             to := 3;\n\
+             conform() => i32 { primitive := 3; return primitive; }\n\
+             primitive() => i32 { return conform; }\n\
+             to() => i32 { return to; }",
         )
-        .expect("compose and primitive must remain usable as ordinary identifiers");
+        .expect("conform, to and primitive must remain usable as ordinary identifiers");
         assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
         assert!(matches!(
             module.nodes[1].item,
             Item::DeclarationWithInit(..)
         ));
-        assert!(matches!(module.nodes[2].item, Item::FunctionDefinition(_)));
+        assert!(matches!(module.nodes[2].item, Item::Walrus(_)));
         assert!(matches!(module.nodes[3].item, Item::FunctionDefinition(_)));
+        assert!(matches!(module.nodes[4].item, Item::FunctionDefinition(_)));
+        assert!(matches!(module.nodes[5].item, Item::FunctionDefinition(_)));
     }
 
     #[test]
@@ -210,5 +214,11 @@ mod tests {
         assert!(
             SourceModule::parse("spec Ops { value(*self) => i32; } struct S : Ops {}").is_err()
         );
+        // `conform Target : Spec` -- the separator the `to` spelling replaced.
+        assert!(matches!(
+            errors("spec Show { show(*self) => i32; } struct S {} conform S : Show { show(*self) => i32 { 1 } }")
+                .as_slice(),
+            [ParseErrorKind::Expected { expected: "'to'", .. }, ..]
+        ));
     }
 }

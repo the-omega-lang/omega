@@ -6,7 +6,7 @@ struct MyCustomStringIterator {
     exposed last: *u8;
 }
 
-compose MyCustomStringIterator : Iterator<char> {
+conform MyCustomStringIterator to Iterator<char> {
     next(*mut self) => Option<char> {
         if self.current == self.last {
             return Option<char>::None;
@@ -22,7 +22,7 @@ struct MyCustomString {
     exposed len: usize;
 }
 
-compose MyCustomString : ToIterator<char> {
+conform MyCustomString to ToIterator<char> {
     to_iterator(*self) => MyCustomStringIterator {
         MyCustomStringIterator { current = self.ptr; last = <*u8>(self.ptr + self.len); }
     }
@@ -85,8 +85,8 @@ dynamic-dispatch fat pointer — so:
 
 ## Real, nominal conformance
 
-`for x in y` only compiles when `y`'s type is nominally composed with
-`ToIterator<T>` **or** `Iterator<T>` — checked against the compose registry,
+`for x in y` only compiles when `y`'s type nominally conforms to
+`ToIterator<T>` **or** `Iterator<T>` — checked against the conform registry,
 not merely "does a method named
 `to_iterator`/`next` happen to resolve," which was this feature's one
 significant gap in an earlier iteration. A type with a same-shaped
@@ -99,7 +99,7 @@ struct Counter {
     exposed value: i32;
     exposed limit: i32;
 }
-compose Counter : Iterator<i32> {
+conform Counter to Iterator<i32> {
     next(*mut self) => Option<i32> {
         if self.value >= self.limit { return Option<i32>::None; }
         v := self.value;
@@ -122,9 +122,9 @@ only if that's absent does it check `Iterator<T>` directly, in which case
 `f.iterator`'s own already-checked value becomes `$iter` verbatim — no
 `.to_iterator()` call is synthesized at all in that case.
 
-If a source composes `ToIterator<T>` more than once, the element type is
+If a source conforms to `ToIterator<T>` more than once, the element type is
 ambiguous. Select one explicitly: `for value : u8 in source { ... }`. The
-annotation is matched against the composed `ToIterator<u8>` argument rather
+annotation is matched against the conformed `ToIterator<u8>` argument rather
 than treated as a post-hoc cast of the loop binding.
 
 ## Desugaring
@@ -247,7 +247,7 @@ none is ever reachable.
 - **`*str`/`*[]T` don't implement `ToIterator` yet.** `for c in
   some_str { }` needs a hand-written wrapper struct today (as in the
   example above). Wiring the built-ins up is a natural follow-up using the
-  the same generic compose mechanism collections use (see
+  the same generic conform mechanism collections use (see
   [specs](08-specs.md)) — not done as part of this
   feature, to keep its own scope to the language mechanism and the two
   specs it depends on.

@@ -1732,7 +1732,7 @@ mod tests {
             body: add_body,
             inline: None,
             mangling: crate::annotations::ManglingMode::Enabled,
-            compose_owner: None,
+            conformance_owner: None,
             primitive_target: None,
         };
 

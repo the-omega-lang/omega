@@ -1,5 +1,5 @@
 # Primitive conformance blocks for the specs `std` owns. The corresponding
-# inherent primitive methods remain in `core`; composition is the explicit
+# inherent primitive methods remain in `core`; conformance is the explicit
 # package boundary between them.
 
 import cmp::Eq;
@@ -25,7 +25,7 @@ mix64(x: u64) => u64 {
 }
 
 macro signed_integer($T: type) => {
-    compose $T : Ord {
+    conform $T to Ord {
         equals(*self, other: Self) => bool { *self == other }
         compare(*self, other: Self) => Ordering {
             if *self < other { Ordering::Less }
@@ -35,17 +35,17 @@ macro signed_integer($T: type) => {
         min(*self, other: Self) => Self { if *self < other { *self } else { other } }
         max(*self, other: Self) => Self { if *self > other { *self } else { other } }
     }
-    compose $T : Default { default() => Self { 0 } }
-    compose $T : Hash {
+    conform $T to Default { default() => Self { 0 } }
+    conform $T to Hash {
         hash(*self) => u64 { mix64(<u64>*self) }
     }
-    compose $T : Display {
+    conform $T to Display {
         fmt(*self, out: spec *mut Write) => void { write_int(out, <i64>*self, 10u32); }
     }
 }
 
 macro unsigned_integer($T: type) => {
-    compose $T : Ord {
+    conform $T to Ord {
         equals(*self, other: Self) => bool { *self == other }
         compare(*self, other: Self) => Ordering {
             if *self < other { Ordering::Less }
@@ -55,21 +55,21 @@ macro unsigned_integer($T: type) => {
         min(*self, other: Self) => Self { if *self < other { *self } else { other } }
         max(*self, other: Self) => Self { if *self > other { *self } else { other } }
     }
-    compose $T : Default { default() => Self { 0 } }
-    compose $T : Hash {
+    conform $T to Default { default() => Self { 0 } }
+    conform $T to Hash {
         hash(*self) => u64 { mix64(<u64>*self) }
     }
-    compose $T : Display {
+    conform $T to Display {
         fmt(*self, out: spec *mut Write) => void { write_uint(out, <u64>*self, 10u32); }
     }
 }
 
 macro float_ops($T: type) => {
-    compose $T : Eq {
+    conform $T to Eq {
         equals(*self, other: Self) => bool { *self == other }
     }
-    compose $T : Default { default() => Self { 0.0 } }
-    compose $T : Hash {
+    conform $T to Default { default() => Self { 0.0 } }
+    conform $T to Hash {
         hash(*self) => u64 {
             bits := if *self == <Self>0.0 { 0u64 }
             else if sizeof<Self> == 4 { <u64>*<*u32>self }
@@ -77,7 +77,7 @@ macro float_ops($T: type) => {
             mix64(bits)
         }
     }
-    compose $T : Display {
+    conform $T to Display {
         fmt(*self, out: spec *mut Write) => void { write_float(out, <f64>*self); }
     }
 }
@@ -97,7 +97,7 @@ unsigned_integer$(usize);
 float_ops$(f32);
 float_ops$(f64);
 
-compose str : Eq {
+conform str to Eq {
     equals(*self, other: Self) => bool {
         if self.size != other.size {
             return false;
@@ -115,7 +115,7 @@ compose str : Eq {
     }
 }
 
-compose str : Hash {
+conform str to Hash {
     hash(*self) => u64 {
         mut h : u64 = 0xcbf29ce484222325u64;
         bytes := <*[]u8>self;
@@ -129,19 +129,19 @@ compose str : Hash {
     }
 }
 
-compose str : Display {
+conform str to Display {
     fmt(*self, out: spec *mut Write) => void {
         out.write(<*[]u8>self);
     }
 }
 
-compose char : Display {
+conform char to Display {
     fmt(*self, out: spec *mut Write) => void {
         write_char(out, *self);
     }
 }
 
-compose bool : Display {
+conform bool to Display {
     fmt(*self, out: spec *mut Write) => void {
         write_bool(out, *self);
     }

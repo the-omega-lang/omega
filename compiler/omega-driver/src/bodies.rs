@@ -276,7 +276,7 @@ impl Driver {
             // A spec declares no code of its own -- its functions only ever
             // become real bodies through an implementor (or a `for` target).
             HirItem::Spec(_) => None,
-            HirItem::Gap(_) | HirItem::Glue(_) | HirItem::Compose(_) | HirItem::Primitive(_) => {
+            HirItem::Gap(_) | HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
                 None
             }
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
@@ -298,9 +298,9 @@ impl Driver {
         substitution.push((Ident("Self".to_string()), self_type.clone()));
 
         // An aggregate's own generic bounds only. A type's *inherent*
-        // methods are not a compose body, so nothing composed onto this
-        // type belongs in their scope -- see `check_compose_bodies`, which
-        // seeds a compose body with the one spec it composes, and
+        // methods are not a conform body, so nothing conformed onto this
+        // type belongs in their scope -- see `check_conformance_bodies`, which
+        // seeds a conform body with the one spec it conforms to, and
         // `check_generic_bounds`, which seeds exactly the declared bound.
         let bounds = self
             .items

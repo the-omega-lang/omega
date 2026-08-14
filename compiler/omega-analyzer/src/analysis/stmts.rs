@@ -583,7 +583,7 @@ impl<'r> Analyzer<'r> {
     ///
     /// Real, nominal conformance -- **not** duck-typed -- is checked first,
     /// via `classify_for_in_source`: a type that merely happens to have a
-    /// same-shaped `to_iterator`/`next` method, without a matching compose
+    /// same-shaped `to_iterator`/`next` method, without a matching conform
     /// declaration for `ToIterator<T>`/`Iterator<T>`, is rejected with
     /// `ForLoopSourceNotIterable` instead of silently accepted the way this
     /// desugaring originally worked (`synthesize_method_call` resolves a
@@ -654,11 +654,11 @@ impl<'r> Analyzer<'r> {
                 Self::synthetic_declaration(iter_id, f.span, "$iter", iter_type.clone(), iter_init);
 
             let old_bounds = self.bounds.len();
-            if let Ok(composes) = self.resolver.composes_for_type(&iter_type) {
+            if let Ok(conformances) = self.resolver.conformances_for_type(&iter_type) {
                 self.bounds.extend(
-                    composes
+                    conformances
                         .into_iter()
-                        .map(|compose| (compose.target, compose.spec, compose.spec_args)),
+                        .map(|conform| (conform.target, conform.spec, conform.spec_args)),
                 );
             }
             let while_stmt = self.analyze_for_in_loop(f);
@@ -1033,7 +1033,7 @@ impl<'r> Analyzer<'r> {
         self.errors.truncate(errors_before);
         self.warnings.truncate(warnings_before);
 
-        let to_iterator = self.for_in_composes(&checked.r#type, "ToIterator");
+        let to_iterator = self.for_in_conformances(&checked.r#type, "ToIterator");
         if !to_iterator.is_empty() {
             let expected_element = f.binding_type.as_ref().and_then(|raw| {
                 self.resolve_type_or_error(f.id, f.span, raw, true)
@@ -1043,21 +1043,21 @@ impl<'r> Analyzer<'r> {
             // either message.
             let available: Vec<ResolvedType> = to_iterator
                 .iter()
-                .filter_map(|compose| compose.spec_args.first().cloned())
+                .filter_map(|conform| conform.spec_args.first().cloned())
                 .collect();
             let candidates: Vec<_> = to_iterator
                 .into_iter()
-                .filter(|compose| {
+                .filter(|conform| {
                     expected_element.as_ref().is_none_or(|expected| {
-                        compose.spec_args.first() == Some(expected)
+                        conform.spec_args.first() == Some(expected)
                     })
                 })
                 .collect();
             if candidates.len() == 1 {
-                let compose = candidates.into_iter().next().expect("length checked");
+                let conform = candidates.into_iter().next().expect("length checked");
                 return Some(ForInSource::ToIterator(
                     checked,
-                    (compose.target, compose.spec, compose.spec_args),
+                    (conform.target, conform.spec, conform.spec_args),
                 ));
             }
             // Zero candidates is only reachable *with* an annotation (an

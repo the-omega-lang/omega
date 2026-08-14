@@ -2,7 +2,7 @@
 
 Omega's interface/trait system: function-only contracts, static dispatch
 through generic bounds, dynamic dispatch through fat trait-object pointers,
-explicit composition, and a core-only way to attach inherent methods to
+explicit conformance, and a core-only way to attach inherent methods to
 primitive types.
 
 ## Declaration, dependencies, defaults
@@ -61,38 +61,38 @@ struct Dog {
     exposed id: i32;
 }
 
-compose Dog : Animal {
+conform Dog to Animal {
     kind(*self) => AnimalKind { AnimalKind::Dog }
     make_sound(*self) => *str { "woof woof" }
 }
 ```
 
-`compose Target : Spec { ... }` is the only conformance declaration. The
+`conform Target to Spec { ... }` is the only conformance declaration. The
 block must contain exactly the spec requirements it implements: a missing
 required function is `MissingSpecFunction`, and an extra function is
-`ComposeExtraFunction`. Inherent methods never satisfy a requirement; only a
-body in this compose (or a spec default) does. A compose method has no
+`ConformanceExtraFunction`. Inherent methods never satisfy a requirement; only a
+body in this conform (or a spec default) does. A conform method has no
 visibility modifier; it inherits the requirement's visibility.
 
-Composition is nominal and non-blanket. The declaration is legal when either
-the target type or the spec belongs to the current package. A second compose
+Conformance is nominal and non-blanket. The declaration is legal when either
+the target type or the spec belongs to the current package. A second conform
 for the same `(target, spec, spec arguments)` is rejected.
 
 The target may be a named type, `str`, or a primitive scalar. A pointer,
 inline array, function, or spec-object target is rejected with
-`ComposeTargetNotAType` — except `compose<T> *T : Spec`, which is still
-silently dropped. Composing a dependent spec registers conformance for its
-dependencies too (`compose Foo : Derived` supplies `Base`'s requirements as
-well); a spec *alias* as the composed spec (`compose Foo : AB`, where `spec
-AB = A | B`) works, but a `T: AB` bound is **not** satisfied by composing
-`A` and `B` separately. Slice targets (`compose []u8 : Eq`, `compose<T>
-[?]T : Eq`) parse and register but no call can reach them. See
-[known-issues.md](14-known-issues.md)'s composition section for all three.
+`ConformTargetNotAType` — except `conform<T> *T to Spec`, which is still
+silently dropped. Conforming to a dependent spec registers conformance for its
+dependencies too (`conform Foo to Derived` supplies `Base`'s requirements as
+well); a spec *alias* as the conformed-to spec (`conform Foo to AB`, where `spec
+AB = A | B`) works, but a `T: AB` bound is **not** satisfied by conforming
+`A` and `B` separately. Slice targets (`conform []u8 to Eq`, `conform<T>
+[?]T to Eq`) parse and register but no call can reach them. See
+[known-issues.md](14-known-issues.md)'s conformance section for all three.
 
-Composed instance methods do not become globally callable as ordinary
+Conforming instance methods do not become globally callable as ordinary
 inherent methods. They are available through a generic bound (`T: Animal`),
-or explicitly as `Animal::make_sound(&dog)`. A composed static function is
-called as `Target::function(...)`; two compositions providing the same static
+or explicitly as `Animal::make_sound(&dog)`. A conforming static function is
+called as `Target::function(...)`; two conformances providing the same static
 call are diagnosed as ambiguous.
 
 ### Receiver adaptation in a spec-qualified call
@@ -132,7 +132,7 @@ expression, a call result — is materialized into a stack temporary whose
 address is then taken. `Display::fmt(42, &mut w)` compiles to "store 42 into a
 slot, pass the slot's address," not to anything cheaper. This is the one place
 in a spec-qualified call where the source text does not show the whole cost.
-It is not specific to `compose`: a receiver-position call on an rvalue
+It is not specific to `conform`: a receiver-position call on an rvalue
 (`(1 + 2).fmt(&mut w)`) has always done the same thing, through the same code
 path.
 
@@ -149,16 +149,16 @@ spec Consumer<T> {
 
 struct Multi {}
 
-compose Multi : Consumer<i32> {
+conform Multi to Consumer<i32> {
     consume(*self, value: i32) => i32 { value + 1 }
 }
-compose Multi : Consumer<*u8> {
+conform Multi to Consumer<*u8> {
     consume(*self, value: *u8) => i32 { puts(value) }
 }
 ```
 
 Supported: a type may implement the same generic spec at different type
-arguments, with a separate compose block for each instantiation. Every
+arguments, with a separate conform block for each instantiation. Every
 requirement is matched against
 the implementor's own methods by **exact `(name, signature)`**, never by
 name alone: `Consumer<i32>`'s `consume(*self, value: i32)` and
@@ -208,11 +208,11 @@ make_sound_with_static_dispatch<T: Animal>(animal: *T) => void {
 ```
 
 Because Omega's generics fully monomorphize (see [generics](06-generics.md)),
-static dispatch uses the composed method selected for the concrete
+static dispatch uses the conforming method selected for the concrete
 instantiation. `animal.make_sound()` is in scope because `T: Animal`; the
 same call on a concrete unbound `Dog` is intentionally rejected with
 `MethodNotInScope`, and can be written `Animal::make_sound(animal)` instead.
-Nominal, not structural — `T: Animal` requires a real compose declaration;
+Nominal, not structural — `T: Animal` requires a real conform declaration;
 an unbound generic parameter still works by pure duck-typing as before.
 
 `T: SpecAlias` (`accepts_myspec<T: MySpec>`) requires everything every
@@ -423,10 +423,10 @@ called like inherent methods.
 
 Primitive methods and spec conformance are deliberately separate. Only core
 adds inherent primitive methods, but a package that owns a spec or its target
-may add the corresponding compose block. Omega's standard-library primitive
-conformances therefore live in `std::primitives`, for example `compose str :
+may add the corresponding conform block. Omega's standard-library primitive
+conformances therefore live in `std::primitives`, for example `conform str to
 Eq { equals(*self, other: Self) => bool { ... } }`. This keeps specs named and
-independently composable instead of inventing an anonymous interface as a side
+independently conformable instead of inventing an anonymous interface as a side
 effect of adding methods.
 
 ## Caveats
@@ -443,17 +443,17 @@ effect of adding methods.
   across separately-compiled translation units) — see
   `mangle::vtable_symbol`.
 - **Only `core` can add inherent methods to primitives.** Any package allowed
-  by the orphan rule can compose a spec with a concrete target.
+  by the orphan rule can conform a concrete target to a spec.
 - **A spec function may not be variadic.** `f(*self, ...)` is rejected at the
   spec's own declaration (`VariadicSpecFunctionUnsatisfiable`): Omega has no
   variadic function *definitions* — only `extern` declarations may be
-  variadic — so no `compose` block or spec default could ever supply a
+  variadic — so no `conform` block or spec default could ever supply a
   matching body. The plumbing behind it is complete; the guard lifts when
   variadic definitions exist. See [known-issues.md](14-known-issues.md).
 - **A `spec T` return type is not inferred on a method**, only on a plain
-  top-level function — a method gets `SpecStaticNotAllowedHere`. A compose
+  top-level function — a method gets `SpecStaticNotAllowedHere`. A conform
   method satisfying a `=> spec Bound<...>` requirement declares its own
   *concrete* return type (`std::list`'s `to_iterator(*self) =>
   ListIterator<T>`), which is checked against the bound.
-- Generic primitive and compose templates are instantiated lazily for the
+- Generic primitive and conform templates are instantiated lazily for the
   concrete target types a compilation uses.

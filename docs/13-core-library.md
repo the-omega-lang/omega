@@ -77,7 +77,7 @@ allocator glue requirements.
 `std::io` owns `Write`, `Read`, buffering, console marker types, and printing.
 The primitive conformances for all of those specs also live in `std`. Core may
 still be the only package allowed to add *inherent* primitive methods, while
-the ordinary compose orphan rule decides where a spec conformance may be
+the ordinary conform orphan rule decides where a spec conformance may be
 declared.
 
 Consequently, a core-only package cannot name `Display`, `Write`, `Hash`, or

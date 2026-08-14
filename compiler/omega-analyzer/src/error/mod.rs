@@ -110,7 +110,7 @@ pub enum TypeResolutionError {
     /// "never itself the type of a runtime value") -- only `spec *Foo`
     /// (dynamic dispatch, a fat pointer) or a generic bound (`T: Foo`) give
     /// it one. Every legitimate producer of a bare `ResolvedType::Spec`
-    /// (a compose declaration, a generic bound, `spec *Foo`'s own pointee)
+    /// (a conform declaration, a generic bound, `spec *Foo`'s own pointee)
     /// resolves it through a dedicated path that never reaches this check;
     /// reaching this variant means a spec name was written where none of
     /// those apply.

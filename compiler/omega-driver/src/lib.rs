@@ -25,7 +25,7 @@
 
 mod bodies;
 pub(crate) mod compile;
-mod composes;
+mod conformances;
 mod diagnostics;
 mod error;
 mod fs_resolve;
@@ -38,8 +38,8 @@ pub use error::{CompileError, CompiledProgram};
 pub use fs_resolve::basename;
 pub use roots::ExternRoot;
 
-use composes::Composes;
-use composes::Primitives;
+use conformances::Conformances;
+use conformances::Primitives;
 use diagnostics::Diagnostics;
 use items::ItemQueries;
 use modules::ModuleStore;
@@ -74,9 +74,9 @@ pub struct Driver {
     items: ItemQueries,
     /// Import aliases: what each resolves to, and which were ever used.
     imports: ImportState,
-    /// Primitive and compose declarations, which sit outside named-item queries.
+    /// Primitive and conform declarations, which sit outside named-item queries.
     primitives: Primitives,
-    composes: Composes,
+    conformances: Conformances,
     /// Every exposed macro in the ambient `core` prelude, collected once.
     prelude_macros: Option<Rc<HashMap<Ident, MacroDefinitionStmt>>>,
 }
@@ -101,7 +101,7 @@ impl Driver {
             items: ItemQueries::default(),
             imports: ImportState::default(),
             primitives: Primitives::default(),
-            composes: Composes::default(),
+            conformances: Conformances::default(),
             prelude_macros: None,
         })
     }

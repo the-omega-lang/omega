@@ -86,7 +86,7 @@ impl Driver {
             }
         }
         self.collect_primitive_signatures(&glue_modules);
-        self.collect_compose_signatures(&glue_modules);
+        self.collect_conformance_signatures(&glue_modules);
         self.collect_signatures(&local)?;
         self.collect_glue_signatures(&glue_modules);
         let (mut modules, mut warnings) = self.check_bodies(&local)?;
@@ -115,12 +115,12 @@ impl Driver {
             checked_module.items.push(body.item.clone());
             warnings.extend(body.warnings.iter().map(|w| (path.clone(), w.clone())));
         }
-        // Every generic primitive/compose body any of the above actually
+        // Every generic primitive/conform body any of the above actually
         // triggered, directly or transitively through another one's body.
         self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
 
         // A genuine error inside an extern tree (a malformed primitive or
-        // compose block, say) must still surface even when nothing local
+        // conform block, say) must still surface even when nothing local
         // imports that particular submodule. Warnings stay scoped to local
         // modules only, deliberately.
         let mut error_scope = local.clone();
@@ -559,7 +559,7 @@ impl Driver {
         items.extend(self.synthesize_gap_items(path));
         items.extend(self.check_glue_bodies(path, warnings));
         items.extend(self.check_primitive_bodies(path, warnings));
-        items.extend(self.check_compose_bodies(path, warnings));
+        items.extend(self.check_conformance_bodies(path, warnings));
         self.report_unused_imports(path, warnings);
         Ok(items)
     }
@@ -628,26 +628,26 @@ impl Driver {
         items
     }
 
-    fn check_compose_bodies(
+    fn check_conformance_bodies(
         &mut self,
         path: &[Ident],
         warnings: &mut TaggedWarnings,
     ) -> Vec<CheckedItem> {
         let entries: Vec<_> = self
-            .composes
+            .conformances
             .entries
             .iter()
             .filter(|entry| {
                 entry.module == path
                     && !entry.derived
-                    // A concrete composition owned by an extern package is
+                    // A concrete conformance owned by an extern package is
                     // defined by that package's object, never by whichever
-                    // consumer happened to need it. Generic compositions are
+                    // consumer happened to need it. Generic conformances are
                     // the deliberate exception: their concrete instantiation
                     // is monomorphized in this compilation, and `Self` is the
                     // second substitution after the template's parameter(s).
                     && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
-                    && !self.composes.emitted.contains(&(
+                    && !self.conformances.emitted.contains(&(
                         entry.target.clone(),
                         entry.spec.borrow().id,
                         entry.spec_args.clone(),
@@ -657,7 +657,7 @@ impl Driver {
             .collect();
         let mut items = Vec::new();
         for entry in entries {
-            self.composes.emitted.push((
+            self.conformances.emitted.push((
                 entry.target.clone(),
                 entry.spec.borrow().id,
                 entry.spec_args.clone(),
@@ -668,7 +668,7 @@ impl Driver {
                 entry.spec_args.clone(),
             )];
             bounds.extend(entry.bounds.clone());
-            let owner = Self::compose_owner(&entry);
+            let owner = Self::conformance_owner(&entry);
             for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
                 let Some((_, method)) = entry
                     .methods
@@ -692,7 +692,7 @@ impl Driver {
                     },
                 );
                 if let Some(mut checked) = run.result {
-                    checked.compose_owner = Some(owner.clone());
+                    checked.conformance_owner = Some(owner.clone());
                     items.push(CheckedItem::FunctionDefinition(checked));
                 }
                 warnings.extend(
@@ -710,7 +710,7 @@ impl Driver {
                     |analyzer| analyzer.check_pending_spec_method(pending),
                 );
                 if let Some(mut checked) = run.result {
-                    checked.compose_owner = Some(owner.clone());
+                    checked.conformance_owner = Some(owner.clone());
                     items.push(CheckedItem::FunctionDefinition(checked));
                 }
                 warnings.extend(
@@ -791,17 +791,17 @@ impl Driver {
                             || entry.substitution.len() > 1)
                 })
                 .map(|entry| entry.module.clone());
-            let compose_module = self
-                .composes
+            let conformance_module = self
+                .conformances
                 .entries
                 .iter()
                 .find(|entry| {
-                    // Same `!derived` filter `check_compose_bodies` applies:
+                    // Same `!derived` filter `check_conformance_bodies` applies:
                     // a derived entry owns no body, so it can never become
                     // `emitted` and would otherwise keep this loop finding
                     // work that produces nothing, forever.
                     !entry.derived
-                        && !self.composes.emitted.contains(&(
+                        && !self.conformances.emitted.contains(&(
                             entry.target.clone(),
                             entry.spec.borrow().id,
                             entry.spec_args.clone(),
@@ -811,14 +811,14 @@ impl Driver {
                 .map(|entry| entry.module.clone());
             let Some((module, primitive)) = primitive_module
                 .map(|module| (module, true))
-                .or_else(|| compose_module.map(|module| (module, false)))
+                .or_else(|| conformance_module.map(|module| (module, false)))
             else {
                 break;
             };
             let items = if primitive {
                 self.check_primitive_bodies(&module, warnings)
             } else {
-                self.check_compose_bodies(&module, warnings)
+                self.check_conformance_bodies(&module, warnings)
             };
             if items.is_empty() {
                 continue;
@@ -999,7 +999,7 @@ impl Driver {
             }
         }
 
-        for entry in &self.composes.entries {
+        for entry in &self.conformances.entries {
             if entry.substitution.len() != 1 || !self.roots.is_extern(&entry.module) {
                 continue;
             }
@@ -1010,7 +1010,7 @@ impl Driver {
                 functions.push(ExternFunctionRef {
                     decl_id: method.decl_id,
                     module_path: entry.module.clone(),
-                    kind: ExternFunctionKind::Compose {
+                    kind: ExternFunctionKind::Conform {
                         target: entry.target.clone(),
                         spec_name: entry.spec.borrow().name.clone(),
                         spec_args: entry.spec_args.clone(),

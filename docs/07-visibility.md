@@ -92,10 +92,10 @@ compiler-enforced backstop — see
 [design-review.md](17-design-review.md#compiler-architecture) for why the
 structural fix is to make place resolution own the bypass instead.
 
-## Specs and composition
+## Specs and conformance
 
 A spec function has **no visibility modifier of its own** — it inherits
-its *declaring* spec's own visibility. A function written in a `compose`
+its *declaring* spec's own visibility. A function written in a `conform`
 block likewise cannot declare visibility; it inherits the matched
 requirement's visibility:
 
@@ -103,7 +103,7 @@ requirement's visibility:
 internal spec Mammal : Animal { breathe(*self) => i32; }
 
 struct Dog {}
-compose Dog : Mammal {
+conform Dog to Mammal {
     breathe(*self) => i32 { ... }             # inherits internal
 }
 ```

@@ -9,7 +9,7 @@
 /// that basis: `Hidden < Internal < Exposed`. This ordering is itself
 /// meaningful, not just a derive of convenience -- a spec implementation's
 /// own visibility must be `>=` the spec function it's satisfying (see
-/// composition checking), which
+/// conformance checking), which
 /// is exactly `own_visibility >= required_visibility` on this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Visibility {

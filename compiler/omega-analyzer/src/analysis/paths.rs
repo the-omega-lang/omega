@@ -717,45 +717,45 @@ impl<'r> Analyzer<'r> {
             };
 
         if method.is_none() {
-            let composes = match self.resolver.composes_for_type(r#type) {
-                Ok(composes) => composes,
+            let conformances = match self.resolver.conformances_for_type(r#type) {
+                Ok(conformances) => conformances,
                 Err(err) => {
                     self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
                     return None;
                 }
             };
-            let candidates: Vec<_> = composes
+            let candidates: Vec<_> = conformances
                 .iter()
-                .flat_map(|compose| {
-                    compose
+                .flat_map(|conform| {
+                    conform
                         .methods
                         .iter()
                         .filter(|(name, method)| {
                             name == member && method.fn_type.self_mode.is_none()
                         })
-                        .map(move |(_, method)| (compose, method.clone()))
+                        .map(move |(_, method)| (conform, method.clone()))
                 })
                 .collect();
             if candidates.len() > 1 {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::AmbiguousComposedStatic {
+                    AnalysisErrorKind::AmbiguousConformanceStatic {
                         target: r#type.to_string(),
                         function: member.clone(),
                         specs: candidates
                             .iter()
-                            .map(|(compose, _)| compose.spec.borrow().name.clone())
+                            .map(|(conform, _)| conform.spec.borrow().name.clone())
                             .collect(),
                     },
                 );
                 return None;
             }
-            if let Some((compose, composed_method)) = candidates.into_iter().next() {
-                let spec = compose.spec.borrow();
+            if let Some((conform, conformance_method)) = candidates.into_iter().next() {
+                let spec = conform.spec.borrow();
                 owner_module_path = spec.module_path.clone();
                 owner_id = spec.id;
-                method = Some(composed_method);
+                method = Some(conformance_method);
             }
         }
 

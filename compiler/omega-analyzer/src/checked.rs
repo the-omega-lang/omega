@@ -69,7 +69,7 @@ pub enum ExternFunctionKind {
         target: ResolvedType,
         method_name: Ident,
     },
-    Compose {
+    Conform {
         target: ResolvedType,
         spec_name: Ident,
         spec_args: Vec<ResolvedType>,
@@ -196,32 +196,32 @@ pub struct CheckedFunctionDef {
     /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
     /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
     pub mangling: crate::annotations::ManglingMode,
-    /// `Some` for a function defined by a `compose Target : Spec` block.
+    /// `Some` for a function defined by a `conform Target to Spec` block.
     /// Carries the target and spec identity used for deterministic symbol
-    /// mangling; compose functions otherwise travel through the ordinary
+    /// mangling; conform functions otherwise travel through the ordinary
     /// `CheckedItem::FunctionDefinition` path.
-    pub compose_owner: Option<ComposeOwner>,
+    pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ComposeOwner {
+pub struct ConformanceOwner {
     pub target: ResolvedType,
     pub spec_module_path: Vec<Ident>,
     pub spec_name: Ident,
     pub spec_args: Vec<ResolvedType>,
-    /// Whether this body came from instantiating a *generic* compose
-    /// (`compose<W> BufWriter<W> : Write` at `W = Stdout`) rather than a
-    /// directly-written concrete one (`compose Stdout : Write`).
+    /// Whether this body came from instantiating a *generic* conform
+    /// (`conform<W> BufWriter<W> to Write` at `W = Stdout`) rather than a
+    /// directly-written concrete one (`conform Stdout to Write`).
     ///
-    /// This is the compose counterpart of `MirFunctionDef::type_args` being
+    /// This is the conform counterpart of `MirFunctionDef::type_args` being
     /// non-empty, and it exists because that test does not work here: a
-    /// compose method's genericity lives in its *target* (`Self`), never in
+    /// conform method's genericity lives in its *target* (`Self`), never in
     /// the function's own parameter list, so `type_args` is empty for both
     /// kinds. Codegen needs the distinction for linkage — a template
     /// instantiation is emitted independently by every package that uses it
     /// and must be weak so the linker folds the copies, exactly like a
-    /// generic function's; a concrete compose is emitted once, by its
+    /// generic function's; a concrete conform is emitted once, by its
     /// declaring package, and must stay strong so a genuine duplicate is
     /// still an error. Without it, two packages that both use
     /// `BufWriter<Stdout>` could not be linked together.
@@ -548,7 +548,7 @@ pub struct CheckedSpecCoerce {
     /// re-derived by codegen. This matters now that two different concrete
     /// methods can share a name (an implementor satisfying the same generic
     /// spec at two different type arguments via two overloads, see
-    /// composition checking): a bare name is no longer
+    /// conformance checking): a bare name is no longer
     /// enough to know which one a given slot needs, so codegen is handed
     /// the already-resolved answer instead of a name to match on its own.
     pub slots: Vec<HirId>,

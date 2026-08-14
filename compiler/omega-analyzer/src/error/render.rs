@@ -496,8 +496,8 @@ impl AnalysisErrorKind {
             Self::ForLoopElementTypeMismatch { expected, available } => d
                 .with_label(span, format!("no `ToIterator<{expected}>` for this source"))
                 .with_help(format!(
-                    "it composes `ToIterator` at: {} -- annotate the binding with one of those, or add \
-                     `compose <source> : ToIterator<{expected}>`",
+                    "it conforms to `ToIterator` at: {} -- annotate the binding with one of those, or add \
+                     `conform <source> to ToIterator<{expected}>`",
                     available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
                 )),
             Self::ForLoopRangeMissingStart => d
@@ -524,7 +524,7 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("`{}` is declared variadic", name.as_ref()))
                 .with_help(
                     "Omega has no variadic function definitions -- only `extern` declarations may be \
-                     variadic -- so no `compose` block or spec default could ever supply a matching body",
+                     variadic -- so no `conform` block or spec default could ever supply a matching body",
                 ),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
@@ -560,26 +560,26 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("'{}' is not declared by this gap", function.as_ref())),
             Self::GlueFunctionSignatureMismatch { function, .. } => d
                 .with_label(span, format!("'{}' has a different signature in the gap", function.as_ref())),
-            Self::ComposeOrphanViolation { target_package, spec_package } => d
+            Self::ConformanceOrphanViolation { target_package, spec_package } => d
                 .with_label(span, "neither the target type nor the spec is local to this package")
                 .with_note(format!("target package: '{}'; spec package: '{}'", target_package.as_ref(), spec_package.as_ref()))
-                .with_help("declare the compose in one of those two packages"),
-            Self::ComposeTargetNotAType => d.with_label(span, "this must resolve to a concrete type"),
-            Self::DuplicateCompose { previous, .. } => d
-                .with_label(span, "this compose duplicates an existing one")
-                .with_secondary_label(*previous, "the first compose is here"),
-            Self::ComposeExtraFunction { function, spec } => d
+                .with_help("declare the conform in one of those two packages"),
+            Self::ConformTargetNotAType => d.with_label(span, "this must resolve to a concrete type"),
+            Self::DuplicateConformance { previous, .. } => d
+                .with_label(span, "this conform duplicates an existing one")
+                .with_secondary_label(*previous, "the first conform is here"),
+            Self::ConformanceExtraFunction { function, spec } => d
                 .with_label(span, format!("'{}' is not declared by '{}'", function.as_ref(), spec.as_ref())),
-            Self::BlanketComposeNotYetSupported { parameter } => d
-                .with_label(span, format!("'{}' is not fixed by the compose target", parameter.as_ref()))
-                .with_note("blanket composes and specialization are reserved for a follow-up"),
+            Self::BlanketConformanceNotYetSupported { parameter } => d
+                .with_label(span, format!("'{}' is not fixed by the conform target", parameter.as_ref()))
+                .with_note("blanket conformances and specialization are reserved for a follow-up"),
             Self::PrimitiveOutsideCore => d.with_label(span, "primitive blocks belong to the core package"),
             Self::PrimitiveTargetNotAllowed { .. } => d.with_label(span, "only built-in scalar, str, and slice types are allowed"),
             Self::DuplicatePrimitiveTarget { previous, .. } => d
                 .with_label(span, "this primitive target already has a declaration block")
                 .with_secondary_label(*previous, "the first block is here"),
-            Self::AmbiguousComposedStatic { specs, .. } => d
-                .with_label(span, "more than one composed spec provides this static function")
+            Self::AmbiguousConformanceStatic { specs, .. } => d
+                .with_label(span, "more than one conforming spec provides this static function")
                 .with_note(format!("provided by: {}", specs.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", "))),
             Self::MethodNotInScope { method, spec } => d
                 .with_label(span, format!("'{}' is supplied by '{}'", method.as_ref(), spec.as_ref()))

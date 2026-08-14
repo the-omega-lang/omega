@@ -43,7 +43,7 @@ internal shape.
 
 Everything else about a `marker` declaration is identical to a struct's:
 generics and a method list use the same signature, dispatch, instantiation,
-and dead-code machinery. It may be the target of an ordinary `compose`
+and dead-code machinery. It may be the target of an ordinary `conform`
 declaration. A `marker` *is* a struct with
 zero fields under the hood (`ResolvedType::Struct`, with
 `ResolvedStructType::is_marker` set) — not a separate item kind — since

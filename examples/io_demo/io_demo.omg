@@ -16,13 +16,13 @@ import extern::std::string::String;
 import extern::std::fmt::Display;
 import extern::std::fmt::write_uint;
 
-# A user-defined `Display` conformance is an explicit composition. The type
+# A user-defined `Display` conformance is an explicit conformance. The type
 # declaration itself owns only Pair's representation and inherent methods.
 struct Pair {
     exposed value: i32;
 }
 
-compose Pair : Display {
+conform Pair to Display {
     fmt(*self, out: spec *mut Write) => void {
         out.write(b"Pair(");
         Display::fmt(self.value, out);

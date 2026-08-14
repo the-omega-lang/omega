@@ -3,7 +3,7 @@
 A reproducible Alpine Linux environment for developing Omega, with Claude Code,
 Codex CLI and omp (oh-my-pi) preinstalled and persistent across runs.
 
-You need Docker (with the Compose plugin) and nothing else — no Rust, no
+You need Docker (with the Conform plugin) and nothing else — no Rust, no
 `just`, no Node on the host.
 
 ## Quick start
@@ -149,7 +149,7 @@ These are forwarded from your shell into the container when they are set:
 You do not need an API key for normal use — the interactive login stored in
 the `claude-config`/`codex-config`/`omp-config` volumes is enough for each
 tool respectively. omp speaks to far more providers than the keys listed
-above; add the ones you use to `environment:` in `docker/compose.yaml`, or set
+above; add the ones you use to `environment:` in `docker/conform.yaml`, or set
 them in `~/.omp/.env` inside the container, which is on the volume.
 
 Your git `user.name` and `user.email` are read from the host and applied
@@ -171,7 +171,7 @@ inside the container, so commits made there are attributed to you.
   container, and they share the same volumes.
 - Pushing over SSH from inside the container needs your key. The simplest
   route is to push from the host; alternatively add an agent-forwarding mount
-  to `docker/compose.yaml`:
+  to `docker/conform.yaml`:
   ```yaml
   - ${SSH_AUTH_SOCK}:/ssh-agent
   ```

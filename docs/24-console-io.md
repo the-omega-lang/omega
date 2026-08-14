@@ -24,7 +24,7 @@ adapter, or a test double.
 
 ## Console capabilities
 
-`Stdout`, `Stderr`, and `Stdin` are zero-sized marker values that compose
+`Stdout`, `Stderr`, and `Stdin` are zero-sized marker values that conform to
 `Write` or `Read`. They are the only `std` types that name the core platform
 gaps:
 
@@ -86,13 +86,13 @@ uses scientific notation outside its fixed range, and handles `nan`, `inf`,
 and `-inf`; it is deliberately not shortest-round-trip formatting.
 
 Primitive `Display` conformances live in `std::primitives`. A package-owned
-type can compose it in the usual way:
+type can conform to it in the usual way:
 
 ```omega
 import extern::std::fmt::Display;
 import extern::std::io::Write;
 
-compose Pair : Display {
+conform Pair to Display {
     fmt(*self, out: spec *mut Write) => void {
         out.write(b"pair");
     }
@@ -108,7 +108,7 @@ based. There is no implicit flush at program exit.
 Omega macros are textual and unhygienic. The expansion refers to `Display`,
 `Write`, `BufWriter`, and the relevant `Stdout`/`Stderr` marker, so callers
 using a print macro import those names as well as the macro. The expansion's
-locals use `omega_print_*` names to reduce accidental capture. A composed
+locals use `omega_print_*` names to reduce accidental capture. A conforming
 method is reached with the spec-qualified `Display::fmt`, which lets literals
 and temporaries use the normal receiver adaptation rules.
 

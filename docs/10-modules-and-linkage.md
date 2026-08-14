@@ -147,7 +147,7 @@ same way the local root is, right at `ModuleRoots` construction; if `core`
 *is* the local package (`just build-core`) or happens to live nested
 inside it, `core_modules()` just filters the local inventory already built.
 Either way, the result feeds the local build set (when `core` is local),
-primitive/compose registration, and ambient/prelude name resolution (see "`core` as an ambient
+primitive/conform registration, and ambient/prelude name resolution (see "`core` as an ambient
 prelude" below). No other `--extern` gets *this* — see that section
 for why `core` specifically earns the exception.
 
@@ -180,7 +180,7 @@ compile — there is no incremental build to cache it against yet (see
 [known issues](14-known-issues.md)) — and it also means a broken,
 wholly unrelated struct or spec anywhere in *any* registered extern can
 now fail a build that never references it, the same way it already could
-for `core`'s own primitive/compose declarations. Deliberately not a general "every
+for `core`'s own primitive/conform declarations. Deliberately not a general "every
 extern behaves exactly like the local package" change, though: unlike
 `core` (see "`core` as an ambient prelude" below), an ordinary extern
 still gets no ambient/prelude name resolution — only this narrowly-scoped
@@ -225,19 +225,19 @@ to lazy *body* resolution: its concrete instantiations are fully
 (re)compiled locally, since nothing else will ever produce that exact
 instantiation's body (see [generics](06-generics.md)).
 
-**Primitive and compose declarations never need an import merely to be
+**Primitive and conform declarations never need an import merely to be
 registered.** They are discovered from the same eager package inventory as
-named signatures. Only `core` may declare `primitive` blocks; compose blocks
+named signatures. Only `core` may declare `primitive` blocks; conform blocks
 in any package are admitted by the target-or-spec-local orphan rule. Imports
 still control which spec names can be written at a declaration or qualified
 call site.
 
-A compose's method bodies are compiled into the **composing** package's own
+A conform's method bodies are compiled into the **conforming** package's own
 object file, with ordinary linkage — not into the consumer's, and not into
 the package that declares the target type. The symbol nests the target under
 the spec (`<target>::<Spec>::<method>`), so two packages may attach
 same-named methods to one foreign type without colliding: `alpha` declaring
-`Foo`, `beta` composing `Foo : SpecB`, and an application composing
+`Foo`, `beta` conforming `Foo to SpecB`, and an application conforming
 `Foo : SpecC` produce `alpha::Foo::SpecB::m` in `beta.o` and
 `alpha::Foo::SpecC::m` in the application's own object, with the application
 carrying an ordinary undefined reference to the first. This replaces the old
@@ -271,7 +271,7 @@ both keyed off the same `core_modules()` inventory:
   from this fallback for themselves, same reasoning as above.
 
 This applies uniformly everywhere a bare name can appear — a value
-expression, a type annotation, a generic bound, or a compose declaration —
+expression, a type annotation, a generic bound, or a conform declaration —
 not just the `for`-in loop's `Option`/`Iterator`/`ToIterator` protocol
 this mechanism originally existed for. This is a deliberate, considered
 reversal of an earlier, narrower design (a hardcoded 3-name table, with
@@ -407,7 +407,7 @@ unmodified source, produced byte-different diagnostic output and
 byte-different object files (`cmp`/`nm -p`-confirmed differing function
 declaration order) before each fix, and byte-identical output across
 15+ consecutive fresh runs after -- including for two sites (the pending
-composition queue and `defined_types`) whose nondeterminism doesn't
+conformance queue and `defined_types`) whose nondeterminism doesn't
 manifest in this project's own current source at all (nothing here ties two declared names at the same edit-distance from a
 typo) and needed a dedicated repro to prove real, not just theorized.
 
@@ -419,7 +419,7 @@ ids, directory-shape flags, sources, parse failures, macro failures, item
 indices, overload indices, import aliases, errors, warnings). It is now eight
 focused modules, and the state is grouped by concern: where modules come from
 on disk, what has been parsed and indexed, what has been resolved, what each
-import means, what primitive/compose blocks were found, and where findings accumulate.
+import means, what primitive/conform blocks were found, and where findings accumulate.
 The item query itself is unchanged in behavior — same two phases, same
 per-item granularity, same cycle guard — and every object file this project
 builds is byte-for-byte identical before and after.

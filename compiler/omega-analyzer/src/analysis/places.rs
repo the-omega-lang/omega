@@ -486,16 +486,16 @@ impl<'r> Analyzer<'r> {
             },
         };
 
-        // A composition is deliberately not an inherent method source.
+        // A conformance is deliberately not an inherent method source.
         // Instance syntax is admitted only while checking a body whose
-        // generic/compose context established the matching bound.
+        // generic/conform context established the matching bound.
         for (target, spec, spec_args) in self.bounds.clone() {
             if target != *current_type {
                 continue;
             }
-            match self.resolver.compose_for(current_type, &spec, &spec_args) {
-                Ok(Some(compose)) => {
-                    for method in compose
+            match self.resolver.conformance_for(current_type, &spec, &spec_args) {
+                Ok(Some(conform)) => {
+                    for method in conform
                         .methods
                         .into_iter()
                         .filter(|(name, _)| name == field)

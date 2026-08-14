@@ -65,7 +65,7 @@ fn lower_function_def(f: CheckedFunctionDef) -> MirFunctionDef {
         body,
         inline,
         mangling,
-        compose_owner,
+        conformance_owner,
         primitive_target,
     } = f;
     // Lowered against `&params`/`&return_type` (only its own id/type is
@@ -86,7 +86,7 @@ fn lower_function_def(f: CheckedFunctionDef) -> MirFunctionDef {
         return_type,
         inline,
         mangling,
-        compose_owner,
+        conformance_owner,
         primitive_target,
         body: mir_body,
     }
