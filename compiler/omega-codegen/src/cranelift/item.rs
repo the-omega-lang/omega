@@ -118,11 +118,11 @@ impl Codegen {
                 // first is emitted independently by every package that uses
                 // it -- two packages both calling `println$` then failed to
                 // link with a `multiple definition` of
-                // `BufWriter<Stdout>::Write::write`. `from_template` is the
+                // `BufWriter<Stdout>::Write::write`. `monomorphized` is the
                 // conform counterpart of a non-empty `type_args`; see
-                // `ConformanceOwner::from_template`.
+                // `ConformanceOwner::monomorphized`.
                 let linkage = match &f.conformance_owner {
-                    Some(owner) if owner.from_template => Linkage::Preemptible,
+                    Some(owner) if owner.monomorphized => Linkage::Preemptible,
                     _ => linkage_for(&f.type_args),
                 };
                 self.declare_function_def(f, mangled, linkage);

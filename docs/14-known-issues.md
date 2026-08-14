@@ -348,6 +348,36 @@ need a breaking change to fix — full writeups in
   count is wrong. The fix is either a per-`(conform id, target)` "already
   reported" set in `Conformances`, or general diagnostic de-duplication — both
   wider than the conform path itself. [specs.md](08-specs.md)
+
+- **Blanket conform bodies are checked lazily.** Like existing generic
+  conformance templates, `conform<T: Bound> T to Spec` is type-checked only
+  once a concrete target satisfies its bound. An unused invalid body can
+  therefore ship in a library until some consumer materializes it.
+
+- **Latent blanket overlap is diagnosed at use, not declaration.** The
+  compiler intentionally does not try to prove whether arbitrary spec bounds
+  overlap. Two unrelated blankets become an `AmbiguousConformance` only when a
+  concrete type satisfies both; this avoids rejecting declarations that can
+  never apply together, at the cost of a downstream diagnostic.
+
+- **A blanket emits a body for every type it is *materialized* against, not
+  every type that calls it.** `Driver::materialize` runs whenever any
+  conformance question is asked about a type — a bound check, a spec-qualified
+  path, a `for..in` source — and `check_conformance_bodies` emits a body for
+  every registered entry, with no reachability test. So in a program with
+  `conform<T> T to Sum` where only `A` ever calls `Sum::sum`, but `B` and `C`
+  are queried because they conform to some *other* spec, all three get a
+  `Sum::sum` body in the object file. Measured, not theorised.
+
+  Not a correctness or binary-size problem: codegen puts each function in its
+  own section (`ObjectBuilder::per_function_section`) and every link uses
+  `--gc-sections`, so the dead copies never reach the executable. It costs
+  object size and compile time, proportional to (types queried × matching
+  blankets), and unbounded blankets are the worst case since their bound
+  filters nothing. The real fix is demand-driven conformance emission rather
+  than registration-driven; that is a change to how `check_conformance_bodies`
+  is scheduled, not a local tweak. [specs.md](08-specs.md)
+
 - **A `*mut self` requirement against an rvalue receiver reports
   `NotMutablePointer`, and the invariant that made that correct no longer
   holds.** `Bump::bump(make())`, where `bump(*mut self)` and `make()` returns

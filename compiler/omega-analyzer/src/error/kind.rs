@@ -830,8 +830,21 @@ pub enum AnalysisErrorKind {
         spec: Ident,
         function: Ident,
     },
-    BlanketConformanceNotYetSupported {
+    UnconstrainedConformanceParameter {
         parameter: Ident,
+    },
+    AmbiguousConformance {
+        target: String,
+        spec: Ident,
+        first: Span,
+    },
+    ConformanceCycle {
+        target: String,
+        spec: Ident,
+        declarations: Vec<Span>,
+    },
+    BlanketConformanceForeignSpec {
+        spec_package: Ident,
     },
     PrimitiveOutsideCore,
     PrimitiveTargetNotAllowed {
@@ -1544,12 +1557,21 @@ impl fmt::Display for AnalysisErrorKind {
                     spec.as_ref()
                 )
             }
-            Self::BlanketConformanceNotYetSupported { parameter } => {
+            Self::UnconstrainedConformanceParameter { parameter } => {
                 write!(
                     f,
-                    "blanket conform over '{}' is not yet supported",
+                    "conformance parameter '{}' is not fixed by the target",
                     parameter.as_ref()
                 )
+            }
+            Self::AmbiguousConformance { target, spec, .. } => {
+                write!(f, "ambiguous conform for '{target}: {}'", spec.as_ref())
+            }
+            Self::ConformanceCycle { target, spec, .. } => {
+                write!(f, "cyclic conformance while proving '{target}: {}'", spec.as_ref())
+            }
+            Self::BlanketConformanceForeignSpec { spec_package } => {
+                write!(f, "a blanket conform cannot implement a foreign spec from '{}'", spec_package.as_ref())
             }
             Self::PrimitiveOutsideCore => {
                 write!(f, "primitive blocks may only be declared in core")

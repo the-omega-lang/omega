@@ -570,9 +570,26 @@ impl AnalysisErrorKind {
                 .with_secondary_label(*previous, "the first conform is here"),
             Self::ConformanceExtraFunction { function, spec } => d
                 .with_label(span, format!("'{}' is not declared by '{}'", function.as_ref(), spec.as_ref())),
-            Self::BlanketConformanceNotYetSupported { parameter } => d
+            Self::UnconstrainedConformanceParameter { parameter } => d
                 .with_label(span, format!("'{}' is not fixed by the conform target", parameter.as_ref()))
-                .with_note("blanket conformances and specialization are reserved for a follow-up"),
+                .with_help("mention this parameter in the target, or remove it from the conform declaration"),
+            Self::AmbiguousConformance { target, first, .. } => d
+                .with_label(span, format!("this conform overlaps another one for `{target}`"))
+                .with_secondary_label(*first, "the other matching conform is here")
+                .with_note(format!("neither conform is more specific for `{target}`")),
+            Self::ConformanceCycle { declarations, .. } => {
+                let mut d = d.with_label(span, "this bound re-enters a conformance already being checked");
+                // The primary span is one of the participants by construction;
+                // labelling it twice just prints the same line under itself.
+                for declaration in declarations.iter().filter(|it| **it != span) {
+                    d = d.with_secondary_label(*declaration, "cycle participant");
+                }
+                d
+            }
+            Self::BlanketConformanceForeignSpec { spec_package } => d
+                .with_label(span, "a blanket conform may only implement a spec declared in this package")
+                .with_note(format!("this spec belongs to package '{}'", spec_package.as_ref()))
+                .with_help("declare the blanket alongside that spec, or implement a package-local spec instead"),
             Self::PrimitiveOutsideCore => d.with_label(span, "primitive blocks belong to the core package"),
             Self::PrimitiveTargetNotAllowed { .. } => d.with_label(span, "only built-in scalar, str, and slice types are allowed"),
             Self::DuplicatePrimitiveTarget { previous, .. } => d

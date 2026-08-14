@@ -210,7 +210,7 @@ pub struct ConformanceOwner {
     pub spec_module_path: Vec<Ident>,
     pub spec_name: Ident,
     pub spec_args: Vec<ResolvedType>,
-    /// Whether this body came from instantiating a *generic* conform
+    /// Whether this body came from instantiating a non-concrete conform
     /// (`conform<W> BufWriter<W> to Write` at `W = Stdout`) rather than a
     /// directly-written concrete one (`conform Stdout to Write`).
     ///
@@ -225,7 +225,7 @@ pub struct ConformanceOwner {
     /// declaring package, and must stay strong so a genuine duplicate is
     /// still an error. Without it, two packages that both use
     /// `BufWriter<Stdout>` could not be linked together.
-    pub from_template: bool,
+    pub monomorphized: bool,
 }
 
 impl CheckedFunctionDef {

@@ -417,12 +417,25 @@ exposed spec Animal {
     }
 }
 
+# A blanket conform supplies a default rank to every Animal. A concrete
+# conform for Dog below is more specific, so calls for Dog must use 99 rather
+# than this blanket's 1.
+exposed spec AnimalRank {
+    rank(*self) => i32;
+}
+conform<T: Animal> T to AnimalRank {
+    rank(*self) => i32 { 1 }
+}
+
 struct Dog {
     exposed id: i32;
 }
 conform Dog to Animal {
     kind(*self) => AnimalKind { AnimalKind::Dog }
     make_sound(*self) => *str { "woof woof" }
+}
+conform Dog to AnimalRank {
+    rank(*self) => i32 { 99 }
 }
 
 struct Cat {
@@ -1191,6 +1204,7 @@ main(argc : i32, argv : *[?]*u8) => i32 {
 
     score := Score { value = 88; };
     println$("generic spec forwarding: score.get()=", Container<i32>::get(score), " score.describe()=", Labeled<i32>::describe(score));
+    println$("blanket specialization: dog.rank=", AnimalRank::rank(&dog));
 
     c_like_packing : CLikePacking;
     regular_packing : Packed;

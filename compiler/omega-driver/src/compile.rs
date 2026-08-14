@@ -10,6 +10,7 @@
 
 use crate::error::{CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
+use crate::conformances::{ConformanceOrigin, ConformanceRole};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::annotations::ManglingMode;
@@ -639,14 +640,14 @@ impl Driver {
             .iter()
             .filter(|entry| {
                 entry.module == path
-                    && !entry.derived
+                    && entry.role == ConformanceRole::Declared
                     // A concrete conformance owned by an extern package is
                     // defined by that package's object, never by whichever
                     // consumer happened to need it. Generic conformances are
                     // the deliberate exception: their concrete instantiation
                     // is monomorphized in this compilation, and `Self` is the
                     // second substitution after the template's parameter(s).
-                    && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
+                    && (!self.roots.is_extern(&entry.module) || entry.origin != ConformanceOrigin::Concrete)
                     && !self.conformances.emitted.contains(&(
                         entry.target.clone(),
                         entry.spec.borrow().id,
@@ -788,7 +789,7 @@ impl Driver {
                 .find(|entry| {
                     !self.primitives.emitted.contains(&entry.target)
                         && (!self.roots.is_extern(&entry.module)
-                            || entry.substitution.len() > 1)
+                            || entry.monomorphized())
                 })
                 .map(|entry| entry.module.clone());
             let conformance_module = self
@@ -800,13 +801,13 @@ impl Driver {
                     // a derived entry owns no body, so it can never become
                     // `emitted` and would otherwise keep this loop finding
                     // work that produces nothing, forever.
-                    !entry.derived
+                    entry.role == ConformanceRole::Declared
                         && !self.conformances.emitted.contains(&(
                             entry.target.clone(),
                             entry.spec.borrow().id,
                             entry.spec_args.clone(),
                         ))
-                        && (!self.roots.is_extern(&entry.module) || entry.substitution.len() > 1)
+                        && (!self.roots.is_extern(&entry.module) || entry.origin != ConformanceOrigin::Concrete)
                 })
                 .map(|entry| entry.module.clone());
             let Some((module, primitive)) = primitive_module
@@ -982,7 +983,7 @@ impl Driver {
         }
 
         for entry in &self.primitives.entries {
-            if entry.substitution.len() != 1 || !self.roots.is_extern(&entry.module) {
+            if entry.monomorphized() || !self.roots.is_extern(&entry.module) {
                 continue;
             }
             for (method_name, method) in &entry.methods {
@@ -1000,7 +1001,7 @@ impl Driver {
         }
 
         for entry in &self.conformances.entries {
-            if entry.substitution.len() != 1 || !self.roots.is_extern(&entry.module) {
+            if entry.origin != ConformanceOrigin::Concrete || !self.roots.is_extern(&entry.module) {
                 continue;
             }
             for (method_name, method) in &entry.methods {

@@ -313,6 +313,36 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     );
 }
 
+#[test]
+fn blanket_conforms_require_a_package_local_spec() {
+    let library = TestPackage::new("exposed spec Foreign { show(*self) => i32; }");
+    let consumer = TestPackage::new(
+        r#"
+        import extern::lib::Foreign;
+        conform<T> T to Foreign { show(*self) => i32 { 1 } }
+        main() => i32 { 0 }
+        "#,
+    );
+    let result = Driver::new(
+        consumer.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("lib".to_string()),
+            dir: library.0.clone(),
+        }],
+    )
+    .expect("construct consumer")
+    .compile(&[Ident("main".to_string())]);
+    let errors = match result {
+        Ok(_) => panic!("a blanket conforming a foreign spec must be rejected"),
+        Err(errors) => errors,
+    };
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::BlanketConformanceForeignSpec { .. }
+    )));
+}
+
 /// The relocated standard I/O boundary still follows the ordinary conform
 /// orphan rule: an application cannot attach the externally-owned `Write`
 /// contract to the externally-owned `Stdout` marker.
@@ -524,28 +554,10 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         .expect("a non-place spec-qualified receiver should be adapted, not rejected");
 }
 
-/// Blanket conformances are deliberately out of scope, and must say so rather
-/// than being silently dropped: `match_conform_target` can never bind a
-/// target that is itself a parameter, so without the check the only
-/// diagnostic anyone saw was an unrelated `SpecNotImplemented` at a use
-/// site -- or, for an unused conform, nothing at all.
+/// A generic parameter absent from the target cannot be inferred when the
+/// template is materialized, even though a bare-parameter blanket now can.
 #[test]
-fn blanket_conformances_are_rejected_with_their_own_diagnostic() {
-    let bare_target = TestPackage::new(
-        r#"
-        exposed spec Numeric { zero(*self) => i32; }
-        exposed spec Sum { sum(*self) => i32; }
-        conform<T: Numeric> T to Sum { sum(*self) => i32 { 0 } }
-        main() => i32 { 0 }
-        "#,
-    );
-    let errors = compile_errors(&bare_target, "a blanket conform must be rejected");
-    assert!(has_analysis_error(&errors, |kind| matches!(
-        kind,
-        AnalysisErrorKind::BlanketConformanceNotYetSupported { .. }
-    )));
-
-    // A parameter that the target never mentions is equally unbindable.
+fn unconstrained_conformance_parameters_are_rejected() {
     let unfixed_parameter = TestPackage::new(
         r#"
         exposed spec Bound { zero(*self) => i32; }
@@ -561,7 +573,7 @@ fn blanket_conformances_are_rejected_with_their_own_diagnostic() {
     );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::BlanketConformanceNotYetSupported { .. }
+        AnalysisErrorKind::UnconstrainedConformanceParameter { .. }
     )));
 
     // ...while a target that does fix its parameter stays fully supported.
@@ -577,6 +589,195 @@ fn blanket_conformances_are_rejected_with_their_own_diagnostic() {
     generic_target
         .compile()
         .expect("a generic target that fixes its parameter is not a blanket conform");
+}
+
+#[test]
+fn blanket_conformances_materialize_and_explicit_blocks_win() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Numeric { numeric(*self) => i32; }
+        exposed spec Sum { sum(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform Number to Numeric { numeric(*self) => i32 { self.value } }
+        conform<T: Numeric> T to Sum { sum(*self) => i32 { 1 } }
+        conform Number to Sum { sum(*self) => i32 { 99 } }
+        call<T: Sum>(value: *T) => i32 { value.sum() }
+        main() => i32 { number := Number { value = 7; }; call(&number) + Sum::sum(&number) }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a concrete conform should supersede a matching blanket");
+}
+
+#[test]
+fn a_superseded_blanket_body_is_not_type_checked() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Numeric { numeric(*self) => i32; }
+        exposed spec Sum { sum(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform Number to Numeric { numeric(*self) => i32 { self.value } }
+        conform Number to Sum { sum(*self) => i32 { 7 } }
+        conform<T: Numeric> T to Sum {
+            sum(*self) => i32 { self.this_member_does_not_exist }
+        }
+        call<T: Sum>(value: *T) => i32 { value.sum() }
+        main() => i32 { number := Number { value = 1; }; call(&number) }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a superseded blanket body must not produce diagnostics");
+}
+
+#[test]
+fn a_more_specific_blanket_bound_wins() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Eq { eq(*self) => bool; }
+        exposed spec Ord : Eq { cmp(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform Number to Ord {
+            eq(*self) => bool { true }
+            cmp(*self) => i32 { self.value }
+        }
+        conform<T: Eq> T to Show { show(*self) => i32 { 1 } }
+        conform<T: Ord> T to Show { show(*self) => i32 { 2 } }
+        call<T: Show>(value: *T) => i32 { value.show() }
+        main() => i32 { value := Number { value = 7; }; call(&value) }
+        "#,
+    );
+    let program = package
+        .compile()
+        .expect("the Ord-bounded blanket should supersede the Eq-bounded blanket");
+    let bodies = program
+        .modules
+        .iter()
+        .flat_map(|(_, module)| &module.items)
+        .filter(|item| matches!(item, CheckedItem::FunctionDefinition(function) if function.name.as_ref() == "show"))
+        .count();
+    assert_eq!(bodies, 1, "only the winning blanket may emit a body");
+}
+
+/// An *unbounded* blanket accepts every type, so a bounded one is strictly
+/// more specific. Both are `ConformanceOrigin::Blanket` with `Declared` role,
+/// so a bare `precedence()` comparison calls them equal -- which reported a
+/// bogus `DuplicateConformance` and refused to compile the program at all.
+#[test]
+fn a_bounded_blanket_wins_over_an_unbounded_one() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Numeric { zero(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform Number to Numeric { zero(*self) => i32 { 0 } }
+        conform<T> T to Show { show(*self) => i32 { 1 } }
+        conform<T: Numeric> T to Show { show(*self) => i32 { 2 } }
+        call<T: Show>(value: *T) => i32 { value.show() }
+        main() => i32 { value := Number { value = 7; }; call(&value) }
+        "#,
+    );
+    let program = package
+        .compile()
+        .expect("a bounded blanket must supersede an unbounded one, not duplicate it");
+    let bodies = program
+        .modules
+        .iter()
+        .flat_map(|(_, module)| &module.items)
+        .filter(|item| matches!(item, CheckedItem::FunctionDefinition(function) if function.name.as_ref() == "show"))
+        .count();
+    assert_eq!(bodies, 1, "only the bounded blanket may emit a body");
+}
+
+/// `conform Foo to Derived` derives a `Foo: Base` stand-in, and that stand-in
+/// is specific to `Foo` -- it must displace a blanket that only matched `Foo`
+/// incidentally, *even when the blanket registered first*. `conform Gen to
+/// Producer` below exists purely to force `Foo: Base` to be proven (and so the
+/// blanket to materialize at `Foo`) before the explicit block is reached.
+/// Registration used to bail out early for any derived entry, so `Base::b`
+/// silently ran the blanket's body while the hand-written one was discarded --
+/// no diagnostic, wrong code.
+#[test]
+fn a_derived_stand_in_displaces_a_blanket_registered_before_it() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Marker { mark(*self) => i32; }
+        exposed spec Base { b(*self) => i32; }
+        exposed spec Derived : Base { d(*self) => i32; }
+        exposed spec Producer { make(*self) => spec Base; }
+        struct Foo { exposed value: i32; }
+        struct Gen { exposed value: i32; }
+        conform Foo to Marker { mark(*self) => i32 { 7 } }
+        conform<T: Marker> T to Base { b(*self) => i32 { 111 } }
+        conform Gen to Producer { make(*self) => Foo { Foo { value = 1; } } }
+        conform Foo to Derived { b(*self) => i32 { 222 } d(*self) => i32 { 3 } }
+        main() => i32 { value := Foo { value = 1; }; Base::b(&value) }
+        "#,
+    );
+    let program = package
+        .compile()
+        .expect("an explicit conform's dependency stand-in must win over a blanket");
+    let bodies: Vec<_> = program
+        .modules
+        .iter()
+        .flat_map(|(_, module)| &module.items)
+        .filter_map(|item| match item {
+            CheckedItem::FunctionDefinition(function) if function.name.as_ref() == "b" => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        1,
+        "the superseded blanket must not emit a `b` body as well"
+    );
+}
+
+#[test]
+fn unrelated_matching_blankets_are_ambiguous() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform Number to A { a(*self) => i32 { 1 } }
+        conform Number to B { b(*self) => i32 { 2 } }
+        conform<T: A> T to Show { show(*self) => i32 { 1 } }
+        conform<T: B> T to Show { show(*self) => i32 { 2 } }
+        call<T: Show>(value: *T) => i32 { value.show() }
+        main() => i32 { value := Number { value = 7; }; call(&value) }
+        "#,
+    );
+    let errors = compile_errors(&package, "unrelated blanket bounds must not pick arbitrarily");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::AmbiguousConformance { .. }
+    )));
+}
+
+#[test]
+fn cyclic_blanket_bounds_report_an_error_without_recursing() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform<T: A> T to B { b(*self) => i32 { 1 } }
+        conform<T: B> T to A { a(*self) => i32 { 2 } }
+        call<T: A>(value: *T) => i32 { value.a() }
+        main() => i32 { value := Number { value = 7; }; call(&value) }
+        "#,
+    );
+    let errors = compile_errors(&package, "cyclic blanket bounds must terminate");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ConformanceCycle { .. }
+    )));
 }
 
 /// A generic conform has its own bound context, just like a generic named

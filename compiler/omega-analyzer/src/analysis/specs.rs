@@ -145,11 +145,39 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         let resolved = self.resolve_type_or_error(id, span, target, true)?;
-        if matches!(resolved, ResolvedType::Spec(..) | ResolvedType::Function(..)) {
+        if !Self::is_conformable_target(&resolved) {
             self.error(id, span, AnalysisErrorKind::ConformTargetNotAType);
             return None;
         }
         Some(resolved)
+    }
+
+    /// Whether a resolved type can own a `conform` block. This is shared by
+    /// ordinary target resolution and blanket-template matching so the two
+    /// paths cannot drift into accepting different target families.
+    pub fn is_conformable_target(target: &ResolvedType) -> bool {
+        matches!(
+            target,
+            ResolvedType::Bool
+                | ResolvedType::Char
+                | ResolvedType::I8
+                | ResolvedType::I16
+                | ResolvedType::I32
+                | ResolvedType::I64
+                | ResolvedType::ISize
+                | ResolvedType::U8
+                | ResolvedType::U16
+                | ResolvedType::U32
+                | ResolvedType::U64
+                | ResolvedType::USize
+                | ResolvedType::F32
+                | ResolvedType::F64
+                | ResolvedType::Slice { .. }
+                | ResolvedType::Str { .. }
+                | ResolvedType::Struct(..)
+                | ResolvedType::Union(..)
+                | ResolvedType::Enum { .. }
+        )
     }
 
     pub fn check_conform_block(
@@ -157,7 +185,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         target: &ResolvedType,
-        spec_type: &Type,
+        spec: &(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>),
         functions: &[HirFunctionDef],
         method_ids: &[HirId],
     ) -> Option<(
@@ -166,7 +194,7 @@ impl<'r> Analyzer<'r> {
         Vec<(Ident, ResolvedMethod)>,
         Vec<PendingSpecMethod>,
     )> {
-        let (spec, spec_args) = self.resolve_spec_reference(id, span, spec_type)?;
+        let (spec, spec_args) = spec.clone();
         let requirements = self.flatten_spec(id, span, &spec, &spec_args, target)?;
         self.context.enter_scope();
         let signatures = self.analyze_all(functions, |this, function| {
@@ -264,7 +292,7 @@ impl<'r> Analyzer<'r> {
     /// -- `None` on failure (already reported, either as an ordinary
     /// `UnresolvedType` or, if it resolved to something other than a spec,
     /// `TypeResolutionError::NotASpec`).
-    fn resolve_spec_reference(
+    pub fn resolve_spec_reference(
         &mut self,
         id: HirId,
         span: Span,

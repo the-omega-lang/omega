@@ -74,19 +74,45 @@ required function is `MissingSpecFunction`, and an extra function is
 body in this conform (or a spec default) does. A conform method has no
 visibility modifier; it inherits the requirement's visibility.
 
-Conformance is nominal and non-blanket. The declaration is legal when either
-the target type or the spec belongs to the current package. A second conform
-for the same `(target, spec, spec arguments)` is rejected.
+Conformance is nominal. A concrete declaration is legal when either the target
+type or the spec belongs to the current package. A second equally-specific
+conform for the same `(target, spec, spec arguments)` is rejected.
 
-The target may be a named type, `str`, or a primitive scalar. A pointer,
-inline array, function, or spec-object target is rejected with
-`ConformTargetNotAType` — except `conform<T> *T to Spec`, which is still
-silently dropped. Conforming to a dependent spec registers conformance for its
+### Blanket conformances
+
+```
+conform<T: Numeric> T to Sum {
+    sum(*self) => i32 { 0 }
+}
+```
+
+This applies to every conformable `T` that satisfies `Numeric`; its body is
+monomorphized only when such a `T` is used through `Sum`. A concrete conform
+always wins over a matching blanket. Between two blankets, a bound with a
+transitive dependency on the other bound is more specific (`Ord : Eq` beats
+`Eq`); unrelated matching bounds are an `AmbiguousConformance` error rather
+than an arbitrary declaration-order choice. A blanket may also be written
+*unbounded* (`conform<T> T to Spec`), which accepts every conformable type and
+is therefore strictly less specific than any bounded blanket for the same spec.
+
+Precedence is decided at registration, so exactly one declaration ever owns a
+given `(target, spec, spec arguments)` and only the winner's body is emitted.
+That includes dependency stand-ins: `conform Foo to Derived` supplies `Foo`'s
+`Base` conformance, and being specific to `Foo` it beats a blanket that matched
+`Foo` only incidentally — regardless of which was registered first.
+
+A blanket may implement only a spec declared by its own package. Since its
+target can be a foreign type, allowing a foreign spec would defeat the orphan
+rule for every downstream package (`BlanketConformanceForeignSpec`).
+
+The target may be a named type, `str`, a primitive scalar, or a slice. A
+pointer, inline array, function, or spec-object target is rejected with
+`ConformTargetNotAType`. Conforming to a dependent spec registers conformance for its
 dependencies too (`conform Foo to Derived` supplies `Base`'s requirements as
 well); a spec *alias* as the conformed-to spec (`conform Foo to AB`, where `spec
 AB = A | B`) works, but a `T: AB` bound is **not** satisfied by conforming
 `A` and `B` separately. Slice targets (`conform []u8 to Eq`, `conform<T>
-[?]T to Eq`) parse and register but no call can reach them. See
+[]T to Eq`) parse and register but no call can reach them. See
 [known-issues.md](14-known-issues.md)'s conformance section for all three.
 
 Conforming instance methods do not become globally callable as ordinary

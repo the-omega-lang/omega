@@ -1,6 +1,7 @@
 use crate::items::ItemKey;
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::PendingSpecMethod;
+use omega_analyzer::analysis::Analyzer;
 use omega_analyzer::checked::ConformanceOwner;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::{
@@ -10,7 +11,34 @@ use omega_diagnostics::Span;
 use omega_hir::{HirConformDef, HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
+
+/// The source form that produced a concrete conformance entry. Ordering is
+/// specificity: a more concrete declaration supersedes a less concrete one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ConformanceOrigin {
+    Blanket,
+    Generic,
+    Concrete,
+}
+
+/// Whether an entry declares methods itself or merely exposes methods from a
+/// spec dependency of a declared conformance.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ConformanceRole {
+    Derived,
+    Declared,
+}
+
+/// What registration should do after it has compared a candidate with the
+/// entry already owning the same `(target, spec, arguments)` key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegistrationDecision {
+    Insert,
+    Replace(usize),
+    Ignore,
+}
 
 #[derive(Clone)]
 pub(crate) struct ConformanceEntry {
@@ -29,22 +57,54 @@ pub(crate) struct ConformanceEntry {
     /// checked before registration, then seed the conform bodies alongside
     /// the spec this block itself implements.
     pub bounds: Vec<ResolvedBound>,
-    /// Derived entries model a dependency of a directly declared conform;
-    /// they make conformance discoverable but never own a second body.
-    pub derived: bool,
-    /// Whether this entry came from matching a *generic* conform template
-    /// against a concrete target, rather than from a directly-written
-    /// concrete `conform`. Decided by whether `instantiate_conformance` was
-    /// handed a substitution: only a template match produces one. Reaches
-    /// codegen through `ConformanceOwner::from_template`, where it decides weak
-    /// vs. strong linkage -- see that field's own doc comment.
-    pub from_template: bool,
+    pub origin: ConformanceOrigin,
+    pub role: ConformanceRole,
+}
+
+impl ConformanceEntry {
+    pub fn precedence(&self) -> (ConformanceOrigin, ConformanceRole) {
+        (self.origin, self.role)
+    }
+
+    pub fn monomorphized(&self) -> bool {
+        self.origin != ConformanceOrigin::Concrete
+    }
+}
+
+impl ConformanceOrigin {
+    /// Classifies the raw target shapes that `match_conform_target` can bind.
+    /// Keep this beside that matcher: accepting a template here that the
+    /// matcher cannot bind would silently drop a conform declaration.
+    fn classify(target: &Type, generics: &[omega_hir::HirGenericParam]) -> Option<Self> {
+        if generics.is_empty() {
+            return Some(Self::Concrete);
+        }
+        match target {
+            Type::Named(path)
+                if path.is_unqualified()
+                    && generics.iter().any(|generic| generic.ident == path.head) =>
+            {
+                Some(Self::Blanket)
+            }
+            Type::Generic(..) | Type::InferredArray(..) => Some(Self::Generic),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
 struct ConformanceTemplate {
     module: ModulePath,
     conform: HirConformDef,
+    origin: ConformanceOrigin,
+}
+
+#[derive(Clone)]
+struct InProgressConformance {
+    id: HirId,
+    target: ResolvedType,
+    spec: Rc<RefCell<ResolvedSpecType>>,
+    span: Span,
 }
 
 #[derive(Default)]
@@ -59,6 +119,13 @@ pub(crate) struct Conformances {
     /// conformance lookup (twice for a target that is also coerced to
     /// `spec *T`). Correct anchor and wording; only the count was wrong.
     failed: Vec<(HirId, ResolvedType)>,
+    /// Targets whose template set has already been considered. All templates
+    /// are parked before any materialization, so this is a sound memo rather
+    /// than an order-dependent cache.
+    materialized: Vec<ResolvedType>,
+    /// Active template checks, used to turn recursive blanket bounds into a
+    /// diagnostic instead of unbounded query recursion.
+    in_progress: Vec<InProgressConformance>,
     pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedType>)>,
 }
 
@@ -71,6 +138,16 @@ pub(crate) struct PrimitiveEntry {
     pub method_ids: Vec<HirId>,
     pub functions: Vec<HirFunctionDef>,
     pub substitution: Vec<(Ident, ResolvedType)>,
+}
+
+impl PrimitiveEntry {
+    /// Primitive templates have exactly one type substitution before their
+    /// synthetic `Self` binding is added. Keep this legacy representation
+    /// detail named at its boundary rather than leaking length tests into the
+    /// compiler pipeline.
+    pub fn monomorphized(&self) -> bool {
+        self.substitution.len() > 1
+    }
 }
 
 #[derive(Clone)]
@@ -310,6 +387,7 @@ impl Driver {
     }
 
     pub(crate) fn collect_conformance_signatures(&mut self, paths: &[ModulePath]) {
+        let mut concrete = Vec::new();
         for module in paths {
             let declarations: Vec<_> = self
                 .modules
@@ -323,31 +401,7 @@ impl Driver {
                 })
                 .collect();
             for conform in declarations {
-                if conform.generics.is_empty() {
-                    self.instantiate_conformance(module, &conform, &[]);
-                } else if let Some(parameter) = Self::blanket_parameter(&conform) {
-                    // Registering this as a template would be worse than
-                    // useless: `match_conform_target` can never bind it, so
-                    // the conform would be silently dropped and the only
-                    // diagnostic anyone ever saw would be a
-                    // `SpecNotImplemented` at some unrelated use site.
-                    self.diagnostics.error(
-                        module,
-                        AnalysisError::new(
-                            conform.id,
-                            conform.span,
-                            AnalysisErrorKind::BlanketConformanceNotYetSupported { parameter },
-                        ),
-                    );
-                } else if !Self::template_target_is_matchable(&conform.target) {
-                    // Same reasoning as the blanket case just above, for a
-                    // different shape: a *generic* conform never reaches
-                    // `resolve_conform_target` (only concrete instantiations
-                    // do), so a target `match_conform_target` cannot bind --
-                    // `conform<T> *T to Spec`, `conform<T> [4]T to Spec` --
-                    // would register as a template that nothing can ever
-                    // match and vanish without a word. Rejected here, with
-                    // the same diagnostic the concrete path already gives.
+                let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics) else {
                     self.diagnostics.error(
                         module,
                         AnalysisError::new(
@@ -356,25 +410,66 @@ impl Driver {
                             AnalysisErrorKind::ConformTargetNotAType,
                         ),
                     );
-                } else {
+                    continue;
+                };
+                if let Some(parameter) = Self::unconstrained_parameter(&conform) {
+                    self.diagnostics.error(
+                        module,
+                        AnalysisError::new(
+                            conform.id,
+                            conform.span,
+                            AnalysisErrorKind::UnconstrainedConformanceParameter { parameter },
+                        ),
+                    );
+                    continue;
+                }
+                if origin == ConformanceOrigin::Blanket {
+                    let spec_run = self.with_analyzer(
+                        module,
+                        &[],
+                        (conform.id, conform.span),
+                        |analyzer| analyzer.resolve_spec_reference(conform.id, conform.span, &conform.spec),
+                    );
+                    self.diagnostics.record_warnings(module, spec_run.warnings);
+                    let Some((spec, _)) = spec_run.result else {
+                        continue;
+                    };
+                    let spec_package = spec
+                        .borrow()
+                        .module_path
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| Ident(String::new()));
+                    if module.first() != Some(&spec_package) {
+                        self.diagnostics.error(
+                            module,
+                            AnalysisError::new(
+                                conform.id,
+                                conform.span,
+                                AnalysisErrorKind::BlanketConformanceForeignSpec { spec_package },
+                            ),
+                        );
+                        continue;
+                    }
+                }
+                match origin {
+                    ConformanceOrigin::Concrete => concrete.push((module.clone(), conform)),
+                    ConformanceOrigin::Generic | ConformanceOrigin::Blanket => {
                     self.conformances.templates.push(ConformanceTemplate {
                         module: module.clone(),
                         conform,
+                        origin,
                     });
+                    }
                 }
             }
         }
-    }
-
-    /// Whether a *generic* conform's raw target is a shape
-    /// `match_conform_target` can actually bind: a named generic type
-    /// (`List<T>`) or a slice pattern (`[?]T`). Anything else registers a
-    /// template no concrete type will ever match, so it is rejected at
-    /// declaration instead. Kept deliberately in step with
-    /// `match_conform_target`'s own arms — the two must agree or a legal
-    /// target gets refused, or an unmatchable one slips through again.
-    fn template_target_is_matchable(target: &Type) -> bool {
-        matches!(target, Type::Generic(..) | Type::InferredArray(_))
+        // Every template is now visible before a concrete conform can cause
+        // a bound lookup, removing module-order dependence from lazy
+        // materialization.
+        for (module, conform) in concrete {
+            self.instantiate_conformance(&module, &conform, &[], ConformanceOrigin::Concrete);
+        }
     }
 
     fn instantiate_conformance(
@@ -382,6 +477,7 @@ impl Driver {
         module: &[Ident],
         conform: &HirConformDef,
         substitution: &[(Ident, ResolvedType)],
+        origin: ConformanceOrigin,
     ) -> Option<ConformanceEntry> {
         let target_run = self.with_analyzer(
             module,
@@ -392,6 +488,14 @@ impl Driver {
         self.diagnostics
             .record_warnings(module, target_run.warnings);
         let target = target_run.result?;
+        let spec_run = self.with_analyzer(
+            module,
+            substitution,
+            (conform.id, conform.span),
+            |analyzer| analyzer.resolve_spec_reference(conform.id, conform.span, &conform.spec),
+        );
+        self.diagnostics.record_warnings(module, spec_run.warnings);
+        let spec_reference = spec_run.result?;
         let type_args: Vec<_> = conform
             .generics
             .iter()
@@ -413,6 +517,37 @@ impl Driver {
         {
             return None;
         }
+        let in_progress = InProgressConformance {
+            id: conform.id,
+            target: target.lookup_key(),
+            spec: spec_reference.0.clone(),
+            span: conform.span,
+        };
+        if self.conformances.in_progress.iter().any(|active| {
+            active.id == in_progress.id && active.target == in_progress.target
+        }) {
+            self.diagnostics.error(
+                module,
+                AnalysisError::new(
+                    conform.id,
+                    conform.span,
+                    AnalysisErrorKind::ConformanceCycle {
+                        target: target.to_string(),
+                        spec: spec_reference.0.borrow().name.clone(),
+                        declarations: self
+                            .conformances
+                            .in_progress
+                            .iter()
+                            .filter(|active| active.target == target.lookup_key())
+                            .map(|active| active.span)
+                            .collect(),
+                    },
+                ),
+            );
+            self.conformances.failed.push((conform.id, target.lookup_key()));
+            return None;
+        }
+        self.conformances.in_progress.push(in_progress);
         let bounds = match self.check_generic_bounds(
             module,
             (conform.id, conform.span),
@@ -421,22 +556,33 @@ impl Driver {
         ) {
             Some(Ok(bounds)) => bounds,
             Some(Err(error)) => {
-                self.diagnostics.error(
-                    module,
-                    AnalysisError::new(
-                        conform.id,
-                        conform.span,
-                        AnalysisErrorKind::ModuleResolution(error),
-                    ),
-                );
                 self.conformances.failed.push((conform.id, target.lookup_key()));
+                self.conformances.in_progress.pop();
+                // A blanket's bound is its applicability predicate: a
+                // non-`Animal` type simply does not receive
+                // `conform<T: Animal> T ...`. Generic constructor
+                // templates keep their existing diagnostic behavior, where
+                // a matched `List<NotBound>` is an attempted, invalid
+                // instantiation.
+                if origin != ConformanceOrigin::Blanket {
+                    self.diagnostics.error(
+                        module,
+                        AnalysisError::new(
+                            conform.id,
+                            conform.span,
+                            AnalysisErrorKind::ModuleResolution(error),
+                        ),
+                    );
+                }
                 return None;
             }
             None => {
                 self.conformances.failed.push((conform.id, target.lookup_key()));
+                self.conformances.in_progress.pop();
                 return None;
             }
         };
+        self.conformances.in_progress.pop();
         // Instantiating one template twice at the same target is not a
         // duplicate conform -- `conformances_for_type` re-walks every matching
         // template on each call, so without this the *second* lookup for a
@@ -453,6 +599,34 @@ impl Driver {
         }
         let mut method_substitution = substitution.to_vec();
         method_substitution.push((Ident("Self".to_string()), target.clone()));
+        // Resolve precedence before checking the potentially expensive body.
+        // In particular, a blanket superseded by an explicit conform must not
+        // surface diagnostics from a body that can never be emitted.
+        let header = ConformanceEntry {
+            module: module.to_vec(),
+            id: conform.id,
+            span: conform.span,
+            target: target.lookup_key(),
+            spec: spec_reference.0.clone(),
+            spec_args: spec_reference.1.clone(),
+            methods: vec![],
+            method_ids: vec![],
+            functions: vec![],
+            pending: vec![],
+            substitution: method_substitution.clone(),
+            bounds: bounds.clone(),
+            origin,
+            role: ConformanceRole::Declared,
+        };
+        // Keep the established diagnostic order: an illegal foreign conform
+        // is rejected for violating the orphan rule, even if an imported
+        // declaration happens to own the same conformance key.
+        if !self.check_conformance_orphan(&header) {
+            return None;
+        }
+        if self.registration_decision(&header) == RegistrationDecision::Ignore {
+            return None;
+        }
         let method_ids = self.conformance_method_ids(module, conform.id, &target, &conform.functions);
         let run = self.with_analyzer(
             module,
@@ -463,7 +637,7 @@ impl Driver {
                     conform.id,
                     conform.span,
                     &target,
-                    &conform.spec,
+                    &spec_reference,
                     &conform.functions,
                     &method_ids,
                 )
@@ -484,28 +658,12 @@ impl Driver {
             pending,
             substitution: method_substitution,
             bounds,
-            derived: false,
-            from_template: !substitution.is_empty(),
+            origin,
+            role: ConformanceRole::Declared,
         };
-        if !self.check_conformance_orphan(&entry) || self.reject_duplicate_conformance(&entry) {
+        if !self.register_conformance(entry.clone()) {
             return None;
         }
-        // A directly-written conform supersedes any derived entry standing in
-        // for the same `(target, spec, args)`. Without this, declaring
-        // `conform Foo to Derived` before `conform Foo to Base` left the derived
-        // stand-in ahead of the explicit block in `entries`, so `Base::b(&f)`
-        // silently called *Derived*'s body while the hand-written one was
-        // emitted and never reached -- wrong code, no diagnostic. This is not
-        // a `DuplicateConformance`: the author wrote exactly one `Base` block, and
-        // it is the one that must win.
-        let spec_id = entry.spec.borrow().id;
-        self.conformances.entries.retain(|existing| {
-            !(existing.derived
-                && existing.target == entry.target
-                && existing.spec.borrow().id == spec_id
-                && existing.spec_args == entry.spec_args)
-        });
-        self.conformances.entries.push(entry.clone());
         self.register_derived_conformances(&entry);
         Some(entry)
     }
@@ -531,14 +689,7 @@ impl Driver {
             return;
         };
         for (spec, spec_args, methods) in transitive {
-            if self.conformances.entries.iter().any(|existing| {
-                existing.target == entry.target
-                    && existing.spec.borrow().id == spec.borrow().id
-                    && existing.spec_args == spec_args
-            }) {
-                continue;
-            }
-            self.conformances.entries.push(ConformanceEntry {
+            let derived = ConformanceEntry {
                 module: entry.module.clone(),
                 id: entry.id,
                 span: entry.span,
@@ -551,9 +702,10 @@ impl Driver {
                 pending: vec![],
                 substitution: entry.substitution.clone(),
                 bounds: entry.bounds.clone(),
-                derived: true,
-                from_template: entry.from_template,
-            });
+                origin: entry.origin,
+                role: ConformanceRole::Derived,
+            };
+            self.register_conformance(derived);
         }
     }
 
@@ -592,28 +744,120 @@ impl Driver {
         false
     }
 
-    fn reject_duplicate_conformance(&mut self, entry: &ConformanceEntry) -> bool {
-        let Some(previous) = self.conformances.entries.iter().find(|existing| {
-            !existing.derived
-                && existing.target == entry.target.lookup_key()
+    /// Registers exactly one winner for a `(target, spec, args)` key. A
+    /// loser is deliberately not retained: every later resolver can query
+    /// entries directly without re-implementing precedence.
+    fn register_conformance(&mut self, entry: ConformanceEntry) -> bool {
+        match self.registration_decision(&entry) {
+            RegistrationDecision::Insert => {
+                self.conformances.entries.push(entry);
+                true
+            }
+            RegistrationDecision::Replace(index) => {
+                self.conformances.entries.remove(index);
+                self.conformances.entries.push(entry);
+                true
+            }
+            RegistrationDecision::Ignore => false,
+        }
+    }
+
+    /// Compare a declaration header with the current owner of its key. This
+    /// is deliberately side-effect free except for duplicate/ambiguity
+    /// diagnostics, so `instantiate_conformance` can make the selection
+    /// before it type-checks a body and `register_conformance` can apply the
+    /// same decision afterwards.
+    fn registration_decision(&mut self, entry: &ConformanceEntry) -> RegistrationDecision {
+        let incumbent = self.conformances.entries.iter().position(|existing| {
+            existing.target == entry.target
                 && existing.spec.borrow().id == entry.spec.borrow().id
                 && existing.spec_args == entry.spec_args
-        }) else {
-            return false;
+        });
+        let Some(index) = incumbent else {
+            return RegistrationDecision::Insert;
         };
-        self.diagnostics.error(
-            &entry.module,
-            AnalysisError::new(
-                entry.id,
-                entry.span,
-                AnalysisErrorKind::DuplicateConformance {
-                    target: entry.target.to_string(),
-                    spec: entry.spec.borrow().name.clone(),
-                    previous: previous.span,
-                },
-            ),
-        );
-        true
+        let existing = self.conformances.entries[index].clone();
+        match Self::compare_conformance_precedence(entry, &existing) {
+            Some(Ordering::Greater) => RegistrationDecision::Replace(index),
+            Some(Ordering::Less) => RegistrationDecision::Ignore,
+            // A derived entry stands in for a spec dependency rather than
+            // declaring anything, so an unordered clash with one is never the
+            // author's mistake: two conforms sharing a dependency each derive
+            // the same key. It still *competes* above, though -- a stand-in
+            // from `conform Foo to Derived` is specific to `Foo` and must
+            // displace a blanket that only matched `Foo` incidentally.
+            _ if entry.role == ConformanceRole::Derived => RegistrationDecision::Ignore,
+            Some(Ordering::Equal) => {
+                self.diagnostics.error(
+                    &entry.module,
+                    AnalysisError::new(
+                        entry.id,
+                        entry.span,
+                        AnalysisErrorKind::DuplicateConformance {
+                            target: entry.target.to_string(),
+                            spec: entry.spec.borrow().name.clone(),
+                            previous: existing.span,
+                        },
+                    ),
+                );
+                RegistrationDecision::Ignore
+            }
+            None => {
+                self.diagnostics.error(
+                    &entry.module,
+                    AnalysisError::new(
+                        entry.id,
+                        entry.span,
+                        AnalysisErrorKind::AmbiguousConformance {
+                            target: entry.target.to_string(),
+                            spec: entry.spec.borrow().name.clone(),
+                            first: existing.span,
+                        },
+                    ),
+                );
+                RegistrationDecision::Ignore
+            }
+        }
+    }
+
+    fn compare_conformance_precedence(
+        candidate: &ConformanceEntry,
+        incumbent: &ConformanceEntry,
+    ) -> Option<Ordering> {
+        if candidate.origin == ConformanceOrigin::Blanket
+            && incumbent.origin == ConformanceOrigin::Blanket
+            && candidate.role == ConformanceRole::Declared
+            && incumbent.role == ConformanceRole::Declared
+        {
+            let candidate_bound = candidate.bounds.first().map(|(_, spec, _)| spec.clone());
+            let incumbent_bound = incumbent.bounds.first().map(|(_, spec, _)| spec.clone());
+            return match (candidate_bound, incumbent_bound) {
+                (Some(candidate_bound), Some(incumbent_bound)) => {
+                    let mut candidate_dependencies = Vec::new();
+                    Self::transitive_dependency_ids(&candidate_bound, &mut candidate_dependencies);
+                    let mut incumbent_dependencies = Vec::new();
+                    Self::transitive_dependency_ids(&incumbent_bound, &mut incumbent_dependencies);
+                    let candidate_contains_incumbent =
+                        candidate_dependencies.contains(&incumbent_bound.borrow().id);
+                    let incumbent_contains_candidate =
+                        incumbent_dependencies.contains(&candidate_bound.borrow().id);
+                    match (candidate_contains_incumbent, incumbent_contains_candidate) {
+                        (true, false) => Some(Ordering::Greater),
+                        (false, true) => Some(Ordering::Less),
+                        (true, true) => Some(Ordering::Equal),
+                        (false, false) => None,
+                    }
+                }
+                // An *unbounded* blanket (`conform<T> T to Spec`) accepts every
+                // type, so it is strictly less specific than one that filters by
+                // a bound -- the empty bound set is a subset of every other.
+                // Without this the two collided as `DuplicateConformance`.
+                (Some(_), None) => Some(Ordering::Greater),
+                (None, Some(_)) => Some(Ordering::Less),
+                (None, None) => Some(Ordering::Equal),
+            };
+        }
+        Some(candidate.precedence().cmp(&incumbent.precedence()))
     }
 
     pub(crate) fn conformance_for(
@@ -622,37 +866,42 @@ impl Driver {
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedType],
     ) -> Option<ConformanceEntry> {
-        // Directly-written blocks first, derived stand-ins only as a fallback:
-        // registration order must never decide which body a call reaches (see
-        // `instantiate_conformance`'s supersede step). Belt-and-braces alongside
-        // that removal, since a derived entry can also be registered *after* a
-        // direct one by a later conform's own dependency walk.
+        self.materialize(target);
         let matches = |entry: &&ConformanceEntry| {
             entry.target == target.lookup_key()
                 && entry.spec.borrow().id == spec.borrow().id
                 && entry.spec_args == spec_args
         };
-        if let Some(entry) = self
-            .conformances
-            .entries
-            .iter()
-            .find(|entry| !entry.derived && matches(entry))
-            .or_else(|| self.conformances.entries.iter().find(matches))
-        {
+        if let Some(entry) = self.conformances.entries.iter().find(matches) {
             return Some(entry.clone());
         }
-        let templates = self.conformances.templates.clone();
-        for template in templates {
-            let Some(substitution) = Self::match_conform_target(&template.conform, target) else {
-                continue;
-            };
-            if let Some(entry) =
-                self.instantiate_conformance(&template.module, &template.conform, &substitution)
-                && entry.spec.borrow().id == spec.borrow().id
-                && entry.spec_args == spec_args
-            {
-                return Some(entry);
-            }
+        if let Some(active) = self.conformances.in_progress.iter().find(|active| {
+            active.target == target.lookup_key() && active.spec.borrow().id == spec.borrow().id
+        }) {
+            self.diagnostics.error(
+                &self
+                    .conformances
+                    .templates
+                    .iter()
+                    .find(|template| template.conform.id == active.id)
+                    .map(|template| template.module.clone())
+                    .unwrap_or_default(),
+                AnalysisError::new(
+                    active.id,
+                    active.span,
+                    AnalysisErrorKind::ConformanceCycle {
+                        target: target.to_string(),
+                        spec: spec.borrow().name.clone(),
+                        declarations: self
+                            .conformances
+                            .in_progress
+                            .iter()
+                            .filter(|candidate| candidate.target == target.lookup_key())
+                            .map(|candidate| candidate.span)
+                            .collect(),
+                    },
+                ),
+            );
         }
         None
     }
@@ -710,12 +959,7 @@ impl Driver {
     }
 
     pub(crate) fn conformances_for_type(&mut self, target: &ResolvedType) -> Vec<ConformanceEntry> {
-        let templates = self.conformances.templates.clone();
-        for template in templates {
-            if let Some(substitution) = Self::match_conform_target(&template.conform, target) {
-                self.instantiate_conformance(&template.module, &template.conform, &substitution);
-            }
-        }
+        self.materialize(target);
         self.conformances
             .entries
             .iter()
@@ -724,24 +968,44 @@ impl Driver {
             .collect()
     }
 
-    /// The first of `conform`'s own generic parameters that its *target*
-    /// does not pin down -- either because the target is that parameter
-    /// (`conform<T: Numeric> T to Sum`, which would apply to every type) or
-    /// because the parameter appears nowhere in the target at all
-    /// (`conform<T, U: Foo> List<T> to Bar`, whose `U` nothing can ever
-    /// bind). Both are blanket conformances, deliberately out of scope for now;
-    /// a target that uses every parameter (`conform<T> List<T> to
-    /// ToIterator<T>`) is not one, and is fully supported.
-    fn blanket_parameter(conform: &HirConformDef) -> Option<Ident> {
-        if let Type::Named(path) = &conform.target
-            && path.is_unqualified()
-            && let Some(generic) = conform
-                .generics
-                .iter()
-                .find(|generic| generic.ident == path.head)
-        {
-            return Some(generic.ident.clone());
+    /// Instantiates each matching template at most once for one concrete
+    /// target. Templates are all parked before this can run, so a cached
+    /// target cannot miss a declaration from a later module.
+    fn materialize(&mut self, target: &ResolvedType) {
+        let key = target.lookup_key();
+        if self.conformances.materialized.contains(&key) {
+            return;
         }
+        let templates = self.conformances.templates.clone();
+        for template in templates {
+            if self.conformances.in_progress.iter().any(|active| {
+                active.id == template.conform.id && active.target == target.lookup_key()
+            }) {
+                continue;
+            }
+            if let Some(substitution) = Self::match_conform_target(&template.conform, target) {
+                self.instantiate_conformance(
+                    &template.module,
+                    &template.conform,
+                    &substitution,
+                    template.origin,
+                );
+            }
+        }
+        if !self.conformances.materialized.contains(&key) {
+            self.conformances.materialized.push(key);
+        }
+    }
+
+    /// The first of `conform`'s own generic parameters that appears nowhere in
+    /// its target, so nothing can ever bind it -- `conform<T, U: Foo> List<T>
+    /// to Bar`, whose `U` no concrete `List<...>` determines. Materializing
+    /// such a template is impossible, so it is rejected at its declaration.
+    ///
+    /// A *blanket* (`conform<T: Numeric> T to Sum`) is deliberately not this:
+    /// its target **is** the parameter, so matching binds `T` to whatever type
+    /// is being checked. `ConformanceOrigin::classify` sorts the two apart.
+    fn unconstrained_parameter(conform: &HirConformDef) -> Option<Ident> {
         let mut mentioned = Vec::new();
         Self::collect_type_idents(&conform.target, &mut mentioned);
         conform
@@ -779,6 +1043,13 @@ impl Driver {
         conform: &HirConformDef,
         actual: &ResolvedType,
     ) -> Option<Vec<(Ident, ResolvedType)>> {
+        if let Type::Named(path) = &conform.target
+            && path.is_unqualified()
+            && conform.generics.iter().any(|generic| generic.ident == path.head)
+        {
+            return Analyzer::is_conformable_target(actual)
+                .then(|| vec![(path.head.clone(), actual.clone())]);
+        }
         if let (Type::InferredArray(raw_item), ResolvedType::Slice { item, .. }) =
             (&conform.target, actual)
         {
@@ -860,7 +1131,7 @@ impl Driver {
             spec_module_path: spec.module_path.clone(),
             spec_name: spec.name.clone(),
             spec_args: entry.spec_args.clone(),
-            from_template: entry.from_template,
+            monomorphized: entry.monomorphized(),
         }
     }
 }
