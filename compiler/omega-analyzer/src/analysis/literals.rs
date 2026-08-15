@@ -815,9 +815,12 @@ impl<'r> Analyzer<'r> {
     /// (Cortex-M4F/M7 and friends) are single-precision only -- an unsuffixed
     /// `1.0` defaulting to `f64` there silently pulls in software emulation,
     /// which is exactly the kind of invisible cost this language exists to
-    /// refuse. Write `1.0f64` (or annotate the binding) for double precision;
-    /// note that a C variadic still promotes `f32` to `double` at the call
-    /// boundary, as its ABI requires.
+    /// refuse. Write `1.0f64` (or annotate the binding) for double precision.
+    ///
+    /// This does not affect C interop: a prototyped `extern` passes an `f32`
+    /// as a 4-byte `float`. Only a *variadic* argument is promoted to
+    /// `double`, which is C's own default-argument-promotion rule rather than
+    /// anything to do with this default -- see `Codegen::promote_variadic_arg`.
     fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>) -> ResolvedType {
         let default = if n.fractional_part.is_some() { ResolvedType::F32 } else { ResolvedType::I32 };
         let Some(expected) = expected else { return default };

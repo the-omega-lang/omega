@@ -74,11 +74,21 @@ a large, slow call where the source looks like arithmetic. That is precisely
 the invisible cost this language exists to refuse, so the default is the one
 the hardware can actually execute, and double precision is opt-in.
 
-Two consequences worth knowing. Passing a float to a C variadic still
-promotes it to `double` at the call boundary, because the C ABI requires
-that — the default changes what `1.0` *is*, not how it crosses into C. And
-`f32` carries roughly 7 decimal digits against `f64`'s 15, so code that wants
-the wider type must say so; it will not be inferred as a convenience.
+This does not change C interop. An `extern` with a prototype passes an `f32`
+as a 4-byte `float`, because the prototype fixes the width.
+
+The one exception is a **variadic** argument, and that is C's rule rather
+than Omega's: a variadic callee has no prototype for its `...` arguments, so
+it cannot know what width arrived — `printf` decides how many bytes to read
+purely from its format string. C fixes the widths at the call site instead
+(*default argument promotions*, C11 §6.5.2.2): anything narrower than `int`
+becomes `int`, and `float` becomes `double`. Omega does the same, on the
+variadic tail only (`promote_variadic_arg`). It is why `%f` reads both
+`float` and `double` in C, and why passing a bare 4-byte `f32` there would
+make `printf` read 8 bytes of garbage.
+
+Float variadic arguments are separately broken today for an unrelated
+reason — see [known issues](14-known-issues.md).
 
 ## `never`: not a conventional type
 
