@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # Reproducible Alpine-based development environment for Omega, with Claude Code,
-# Codex CLI and omp (oh-my-pi) preinstalled. Every version that matters is a
-# pinned build argument, so a rebuild of this file on any machine produces the
-# same environment.
+# Codex CLI, omp (oh-my-pi) and opencode preinstalled. Every version that
+# matters is a pinned build argument, so a rebuild of this file on any machine
+# produces the same environment.
 #
 # The project source is never COPYed in -- it is bind-mounted at /workspace by
 # `docker/compose.yaml`, so the build context stays tiny and edits on the host
@@ -19,11 +19,14 @@ FROM alpine:${ALPINE_VERSION}
 # installer takes: "latest" (there is no "stable" channel) or an exact
 # version such as 0.51.0. OMP_VERSION is "latest" (the newest GitHub release)
 # or an exact release tag, which is what omp's installer means by --ref and so
-# carries the leading "v", e.g. v17.2.12.
+# carries the leading "v", e.g. v17.2.12. OPENCODE_VERSION is "latest" (the
+# default) or an exact version such as 0.4.2, passed to opencode's installer
+# through its VERSION variable.
 ARG RUST_VERSION=1.94.1
 ARG CLAUDE_CODE_VERSION=stable
 ARG CODEX_VERSION=latest
 ARG OMP_VERSION=latest
+ARG OPENCODE_VERSION=latest
 
 # The container user is created with the *host* user's uid/gid so that files
 # written into the bind-mounted repo are owned by you, not by root.
@@ -39,18 +42,26 @@ ARG USER_GID=1000
 #   pinned by this image. Without these, a session would re-download a large
 #   binary into a container whose home directory is discarded on exit.
 #   `./dev.sh rebuild` is the update path for both.
+# OPENCODE_DISABLE_AUTOUPDATE: same purpose again -- opencode downloads new
+#   releases on startup otherwise. It has no single state directory to point
+#   at: config lives in ~/.config/opencode and credentials/sessions in
+#   ~/.local/share/opencode, so those get a volume each rather than one
+#   consolidating variable. Its own install prefix (~/.opencode/bin, added to
+#   PATH above) is deliberately *not* a volume -- that is the pinned binary,
+#   which belongs to the image.
 # omp needs neither knob: it keeps all of its state under ~/.omp already (one
 #   volume covers config, credentials, sessions and blobs), and it only
 #   updates itself when you explicitly run `omp update` -- which, in a
 #   throwaway container, `./dev.sh rebuild` supersedes.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/home/dev/.local/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/home/dev/.local/bin:/home/dev/.opencode/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG=C.UTF-8 \
     CLAUDE_CONFIG_DIR=/home/dev/.claude \
     DISABLE_AUTOUPDATER=1 \
     CODEX_HOME=/home/dev/.codex \
     CODEX_UPDATE_DISABLED=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
     HISTFILE=/commandhistory/.bash_history
 
 # System packages:
@@ -67,8 +78,8 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #     and stock Alpine ships neither; without them the download succeeds and
 #     the binary dies with relocation errors. build-base pulls them in as a
 #     side effect today, but omp needs them in its own right.
-# No Node.js and no Bun: Claude Code, Codex CLI and omp are all installed below
-# as their native single-file builds.
+# No Node.js and no Bun: Claude Code, Codex CLI, omp and opencode are all
+# installed below as their native single-file builds.
 RUN apk add --no-cache \
         bash coreutils findutils grep sed diffutils \
         tar xz gzip which less nano \
@@ -109,6 +120,8 @@ RUN mkdir -p \
         /home/dev/.claude \
         /home/dev/.codex \
         /home/dev/.omp \
+        /home/dev/.config/opencode \
+        /home/dev/.local/share/opencode \
         /commandhistory \
         "${CARGO_HOME}/registry" \
         "${CARGO_HOME}/git" \
@@ -148,7 +161,7 @@ RUN CODEX_RELEASE="${CODEX_VERSION}" CODEX_NON_INTERACTIVE=1 \
         curl -fsSL https://chatgpt.com/codex/install.sh | sh \
     && codex --version
 
-# omp (oh-my-pi), third of the trio. `--binary` is not the installer's default
+# omp (oh-my-pi), third of the four. `--binary` is not the installer's default
 # but is what keeps this image free of a Bun toolchain: left to itself the
 # installer builds from source whenever it finds (or can install) Bun. The
 # binary path resolves to omp's linux-musl release asset on Alpine and drops it
@@ -164,6 +177,21 @@ RUN set -eux; \
     fi; \
     curl -fsSL https://omp.sh/install | sh -s -- "$@"; \
     omp --version
+
+# opencode, fourth and last. Its installer detects musl on its own (it looks
+# for /etc/alpine-release, then falls back to `ldd --version`) and fetches the
+# opencode-linux-<arch>-musl asset, another self-contained binary with no Node
+# or Bun behind it. Unlike the other three it installs into ~/.opencode/bin
+# rather than ~/.local/bin, which is why that directory is on PATH above.
+# The installer takes its version from VERSION; leaving it unset means the
+# newest release, so it is only passed when actually pinned.
+RUN set -eux; \
+    if [ "${OPENCODE_VERSION}" = "latest" ]; then \
+        curl -fsSL https://opencode.ai/install | bash; \
+    else \
+        VERSION="${OPENCODE_VERSION}" curl -fsSL https://opencode.ai/install | bash; \
+    fi; \
+    opencode --version
 
 WORKDIR /workspace
 

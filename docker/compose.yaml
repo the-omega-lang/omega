@@ -15,6 +15,7 @@ services:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-stable}
         CODEX_VERSION: ${CODEX_VERSION:-latest}
         OMP_VERSION: ${OMP_VERSION:-latest}
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
         USER_UID: ${HOST_UID:-1000}
         USER_GID: ${HOST_GID:-1000}
     image: omega-dev:rust${RUST_VERSION:-1.94.1}-alpine${ALPINE_VERSION:-3.23}
@@ -60,6 +61,14 @@ services:
       # would hurt most to lose between runs.
       - omp-config:/home/dev/.omp
 
+      # opencode splits its state across two directories rather than one:
+      # settings in ~/.config/opencode, and credentials/sessions in
+      # ~/.local/share/opencode. Both are volumes so a login survives; its
+      # binary (~/.opencode/bin) deliberately is not, since that is pinned by
+      # the image.
+      - opencode-config:/home/dev/.config/opencode
+      - opencode-data:/home/dev/.local/share/opencode
+
       # Cargo's download caches, so a rebuilt container does not re-fetch the
       # dependency graph from crates.io.
       - cargo-registry:/usr/local/cargo/registry
@@ -79,6 +88,8 @@ volumes:
   claude-config:
   codex-config:
   omp-config:
+  opencode-config:
+  opencode-data:
   cargo-registry:
   cargo-git:
   target:

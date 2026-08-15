@@ -1,9 +1,9 @@
 # Omega development container
 
 A reproducible Alpine Linux environment for developing Omega, with Claude Code,
-Codex CLI and omp (oh-my-pi) preinstalled and persistent across runs.
+Codex CLI, omp (oh-my-pi) and opencode preinstalled and persistent across runs.
 
-You need Docker (with the Conform plugin) and nothing else — no Rust, no
+You need Docker (with the Compose plugin) and nothing else — no Rust, no
 `just`, no Node on the host.
 
 ## Quick start
@@ -12,9 +12,10 @@ You need Docker (with the Conform plugin) and nothing else — no Rust, no
 ./dev.sh            # builds the image on first run, then starts Claude Code
 ./dev.sh codex      # same, but starts Codex CLI instead
 ./dev.sh omp        # same, but starts omp
+./dev.sh opencode   # same, but starts opencode
 ```
 
-The first run downloads the base image, the Rust toolchain and the three
+The first run downloads the base image, the Rust toolchain and the four
 agents (a few minutes). Every run after that starts in a second or two.
 
 Log in to each tool once, inside the container; the login is stored in a
@@ -27,6 +28,7 @@ Docker volume and reused by every later run.
 | `./dev.sh` | Start Claude Code in the container |
 | `./dev.sh codex` | Start Codex CLI in the container |
 | `./dev.sh omp` | Start omp (oh-my-pi) in the container |
+| `./dev.sh opencode` | Start opencode in the container |
 | `./dev.sh shell` | Interactive bash shell in the container |
 | `./dev.sh run <cmd...>` | Run a single command, e.g. `./dev.sh run cargo test` |
 | `./dev.sh build` | Build the image if missing or out of date |
@@ -66,6 +68,13 @@ Built from `alpine:3.23`:
   flag matters: without it the installer prefers building from source through
   Bun, and would install Bun itself to do so. The musl build links
   `libstdc++`/`libgcc` dynamically, so both are in the apk list above.
+- **opencode**, installed from `https://opencode.ai/install`. Its installer
+  detects musl itself — it checks for `/etc/alpine-release`, then falls back
+  to `ldd --version` — and fetches the `-musl` release asset, another
+  self-contained binary with no Node or Bun behind it. It is the one tool here
+  that installs somewhere other than `~/.local/bin`: its prefix is
+  `~/.opencode/bin`, which is why that directory is on `PATH` in the
+  Dockerfile.
 - **ripgrep** from apk, which Claude Code uses as its search backend.
 - **GNU userland** (`coreutils`, `findutils`, `grep`, `sed`, `diffutils`)
   instead of busybox's reduced applets, so shell commands behave the way
@@ -84,6 +93,7 @@ ALPINE_VERSION=3.24 ./dev.sh rebuild
 CLAUDE_CODE_VERSION=2.1.220 ./dev.sh rebuild
 CODEX_VERSION=0.51.0 ./dev.sh rebuild
 OMP_VERSION=v17.2.12 ./dev.sh rebuild
+OPENCODE_VERSION=0.4.2 ./dev.sh rebuild
 ```
 
 `CLAUDE_CODE_VERSION` takes whatever `claude install` takes: `stable` (the
@@ -91,11 +101,14 @@ default), `latest`, or an exact version. `CODEX_VERSION` takes whatever
 Codex's own installer takes: `latest` (the default; there is no `stable`
 channel) or an exact version. `OMP_VERSION` is `latest` (the default) or an
 exact release tag — it is passed to the installer as `--ref`, so it carries
-the leading `v`. Pin any of them to an exact version if you want two machines
-to be byte-for-byte identical.
+the leading `v`. `OPENCODE_VERSION` is `latest` (the default) or an exact
+version, passed through the `VERSION` variable its own installer reads —
+unlike omp's, it carries no leading `v`. Pin any of them to an exact version
+if you want two machines to be byte-for-byte identical.
 
-Claude Code's and Codex's in-place auto-updaters are disabled
-(`DISABLE_AUTOUPDATER=1`, `CODEX_UPDATE_DISABLED=1`) so the image stays the
+Claude Code's, Codex's and opencode's in-place auto-updaters are disabled
+(`DISABLE_AUTOUPDATER=1`, `CODEX_UPDATE_DISABLED=1`,
+`OPENCODE_DISABLE_AUTOUPDATE=1`) so the image stays the
 single source of truth — `./dev.sh rebuild` is how you move to a newer
 release. Without that, a session would pull a large binary into a container
 whose home directory is discarded on exit anyway. omp needs no such switch: it
@@ -115,6 +128,8 @@ image rebuilds; removed only by `./dev.sh clean`):
 | `claude-config` | `/home/dev/.claude` | Claude Code login, settings, session history, todos |
 | `codex-config` | `/home/dev/.codex` | Codex CLI login, settings, session state |
 | `omp-config` | `/home/dev/.omp` | omp login, settings, session transcripts, blob store, memory |
+| `opencode-config` | `/home/dev/.config/opencode` | opencode settings (`opencode.json`, `tui.json`) |
+| `opencode-data` | `/home/dev/.local/share/opencode` | opencode credentials (`auth.json`) and session state |
 | `cargo-registry` | `/usr/local/cargo/registry` | crates.io downloads |
 | `cargo-git` | `/usr/local/cargo/git` | git dependency checkouts |
 | `target` | `/workspace/target` | Rust build artifacts |
@@ -125,6 +140,12 @@ credentials file lands in that one directory rather than at `~/.claude.json`,
 which lets a single volume cover all of its state. `CODEX_HOME` is set to
 `/home/dev/.codex` for the same reason on the Codex side. omp needs no
 equivalent — everything it keeps already lives under `~/.omp`.
+
+opencode is the exception: it has no single-directory knob, splitting settings
+(`~/.config/opencode`) from credentials and sessions
+(`~/.local/share/opencode`), so it gets a volume for each. Its binary lives in
+a third directory, `~/.opencode/bin`, deliberately *not* a volume — that is
+the pinned install, and it belongs to the image like every other tool here.
 
 Not persisted: the rest of the container filesystem. Containers are started
 with `--rm`, so anything installed ad-hoc inside a session is gone next time —
@@ -147,9 +168,10 @@ These are forwarded from your shell into the container when they are set:
 `AWS_PROFILE`, `TERM`, `COLORTERM`.
 
 You do not need an API key for normal use — the interactive login stored in
-the `claude-config`/`codex-config`/`omp-config` volumes is enough for each
-tool respectively. omp speaks to far more providers than the keys listed
-above; add the ones you use to `environment:` in `docker/conform.yaml`, or set
+the `claude-config`/`codex-config`/`omp-config`/`opencode-data` volumes is
+enough for each tool respectively. omp and opencode both speak to far more
+providers than the keys listed
+above; add the ones you use to `environment:` in `docker/compose.yaml`, or set
 them in `~/.omp/.env` inside the container, which is on the volume.
 
 Your git `user.name` and `user.email` are read from the host and applied
@@ -164,6 +186,10 @@ inside the container, so commits made there are attributed to you.
   `./dev.sh codex --dangerously-bypass-approvals-and-sandbox`. omp needs no
   flag at all: its default `tools.approvalMode` is already `yolo`. Going the
   other way, `./dev.sh omp --approval-mode always-ask` puts the prompts back.
+- opencode has no equivalent flag — its permissions are config-driven. Set the
+  `permission` block in `~/.config/opencode/opencode.json` to allow what you
+  want run unattended; that file is on the `opencode-config` volume, so it is
+  written once and survives every later run.
 - omp discovers skills from `.claude/skills/` and `.codex/skills/` as well as
   its own `.omp/skills/`, so the skills this repo already carries show up in
   an `omp` session without being duplicated.
@@ -171,7 +197,7 @@ inside the container, so commits made there are attributed to you.
   container, and they share the same volumes.
 - Pushing over SSH from inside the container needs your key. The simplest
   route is to push from the host; alternatively add an agent-forwarding mount
-  to `docker/conform.yaml`:
+  to `docker/compose.yaml`:
   ```yaml
   - ${SSH_AUTH_SOCK}:/ssh-agent
   ```
