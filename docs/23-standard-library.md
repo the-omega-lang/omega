@@ -10,7 +10,6 @@ import every name they use.
 ```
 runtime/std/
   alloc.omg       # non-generic allocator wrappers
-  cmp.omg         # Ordering, Eq, Ord
   default.omg     # Default
   fmt.omg         # Display and formatting helpers
   hash.omg        # Hash
@@ -41,7 +40,7 @@ the linker's `--gc-sections` discard unused functions.
 
 ## Specs and primitive conformances
 
-`std::cmp` provides `Ordering`, `Eq`, and `Ord`; `std::default` provides
+`core::cmp` provides `Ordering`, `Eq`, and `Ord`; `std::default` provides
 `Default`; `std::hash` provides `Hash`; and `std::fmt` provides `Display`.
 `std::primitives` declares these conformances for numeric scalars, `str`, `char`, and
 `bool`. The corresponding inherent primitive operations remain in core.

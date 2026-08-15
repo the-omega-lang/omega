@@ -8,6 +8,22 @@ new one is found.
 
 ## Codegen
 
+- **A range-driven `for` loop no longer compiles to a bare three-clause
+  loop, and will not until MIR-level optimization exists.** `for i in 0..<n`
+  used to be intercepted by a dedicated analyzer desugaring that emitted a
+  counter, a comparison and an increment directly. It is now an ordinary
+  `ToIterator`/`Iterator` call chain over `core::range::Range<T>` and
+  `RangeIterator<T>`, which is what makes ranges tangible values and removes
+  every range special case from the compiler — but it means the emitted code
+  is a `next()` call returning `Option<T>`, plus a match, per iteration.
+  Recovering the old shape needs two MIR passes that do not exist yet:
+  inlining, and scalar replacement of aggregates to dissolve the cursor
+  struct into registers. **Cranelift will not do this for us** — its
+  optimizer is far weaker than LLVM's here, and LLVM is what makes the
+  equivalent Rust code collapse. This is a deliberate, accepted trade of
+  generated-code quality for uniformity and a much smaller compiler; it is
+  the single strongest motivating case for starting the MIR optimizer.
+
 - **A float argument to a variadic (`printf`-style) call reads garbage
   from whatever's left in `%al`.** Not this compiler's bug — Cranelift
   itself has no support for the x86-64 SysV vararg calling convention

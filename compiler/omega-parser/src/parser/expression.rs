@@ -39,14 +39,14 @@ use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::par
 /// outer layers matching their exact non-standard semantics; only the
 /// genuinely standard left-associative additive/multiplicative tiers use
 /// real precedence-climbing (see `parse_additive`/`parse_multiplicative`).
-/// Precedence, loosest to tightest: assignment, comparison, bitor, bitxor,
+/// Precedence, loosest to tightest: range, assignment, comparison, bitor, bitxor,
 /// bitand, shift, additive, multiplicative, prefix unary, postfix, primary.
 /// The bitwise tiers sit *tighter* than comparison and *looser* than shift,
 /// matching Rust's precedence rather than C's -- C famously binds `&`/`|`
 /// looser than `==`, so `a & b == c` silently means `a & (b == c)`; putting
 /// the bitwise ops above comparison here avoids that footgun entirely.
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
-    parse_assignment(p)
+    parse_range_or_expression(p)
 }
 
 /// Plain `=` and every "operate and assign" form (`+= -= *= /= %= &= |= ^=
@@ -352,13 +352,16 @@ fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<Expressi
     p.advance(); // '['
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
-        let range = parse_range_tail(p, None, op_span, &TokenKind::RBracket)?;
+        let range = p.allow_struct_literals(|p| parse_range_tail(p, None, op_span))?;
         return finish_slice(p, base, range);
     }
-    let first = p.allow_struct_literals(parse_expression)?;
+    // Parse the potential first bound below the range layer: otherwise
+    // `0..<end` would be consumed as a standalone range before this
+    // production has a chance to recognize it as a slice.
+    let first = p.allow_struct_literals(parse_assignment)?;
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
-        let range = parse_range_tail(p, Some(first), op_span, &TokenKind::RBracket)?;
+        let range = p.allow_struct_literals(|p| parse_range_tail(p, Some(first), op_span))?;
         return finish_slice(p, base, range);
     }
     let close_span = p.peek_span();
@@ -381,48 +384,57 @@ fn is_range_operator(kind: &TokenKind) -> bool {
 
 /// Consumes the range operator at the parser's current position (`..=`,
 /// `..<`, or `..` -- the caller has already confirmed one is here) and
-/// parses the rest of the shared range grammar. `terminator` is whatever
-/// token means "no end bound follows" in the caller's context (`]` for a
-/// slice, `=>` for a match pattern) -- only meaningful for `..=`/`..<`,
-/// since `..` never attempts to parse an end at all. `..=`/`..<` both
-/// always require an explicit end (`RangeMissingEnd` otherwise, per
-/// `RangeExpr`'s doc comment).
+/// parses the rest of the shared range grammar, identically in all three
+/// positions (slice index, match pattern, ordinary expression).
+///
+/// Whether an end bound follows is decided structurally, by whether an
+/// expression can begin at the current token (`expression_starts_here`),
+/// rather than by a caller-supplied terminator token. Ordinary expression
+/// position has no single terminator to name -- `r := 1..;`, `f(1..)` and
+/// `for i in 1.. { }` all end the range with a different token -- so a
+/// terminator parameter could not describe it at all.
+///
+/// The end bound is parsed *inheriting* the ambient struct-literal
+/// restriction rather than forcing it on or off. That is what makes
+/// `for i in a..<b { }` work: the `for` header already restricts struct
+/// literals (see `parse_for_in`), so `b` is the bound and `{` opens the
+/// loop body instead of being eaten as `b { ... }`. Callers whose own
+/// brackets remove that ambiguity (a slice, a match pattern) re-allow
+/// struct literals around their call.
 fn parse_range_tail(
     p: &mut Parser,
     start: Option<ExpressionNode>,
     op_span: Span,
-    terminator: &TokenKind,
 ) -> Option<RangeExpr> {
     let op = p.peek().clone();
     p.advance();
     let end = match op {
+        // `..` is the contextual range operator -- the spelling for "no bound
+        // is written on this side". An end after it is therefore a
+        // contradiction, and rejected identically in every position: both
+        // `a..b` and `..5` land here. This is not a restriction on
+        // leading-open ranges, which are spelled `..<b`/`..=b` with their own
+        // tokens and stay perfectly valid; it only stops `..` acquiring a
+        // second meaning that would differ between an expression and a slice.
         TokenKind::DotDot => {
-            // `..` never takes an end at all -- anything other than the
-            // terminator right after it means the caller almost certainly
-            // meant `..=`/`..<` instead. Caught here, explicitly, rather
-            // than left to silently return an "open" range and strand
-            // whatever follows for the *caller's* caller to choke on with
-            // an unrelated-looking error.
-            if !p.check(terminator) {
+            if expression_starts_here(p) {
                 p.error_at(op_span, ParseErrorKind::OpenRangeHasEnd);
                 return None;
             }
             RangeEnd::Open
         }
-        TokenKind::DotDotEq | TokenKind::DotDotLt => {
-            let end = if p.check(terminator) {
-                None
+        // `..=`/`..<` always require an explicit end -- an open-ended
+        // exclusive range has nothing to exclude (see `RangeEnd`).
+        TokenKind::DotDotLt | TokenKind::DotDotEq => {
+            if !expression_starts_here(p) {
+                p.error_at(op_span, ParseErrorKind::RangeMissingEnd);
+                return None;
+            }
+            let end = parse_assignment(p)?;
+            if op == TokenKind::DotDotEq {
+                RangeEnd::Inclusive(end)
             } else {
-                Some(p.allow_struct_literals(parse_expression)?)
-            };
-            match (op, end) {
-                (TokenKind::DotDotEq, Some(e)) => RangeEnd::Inclusive(e),
-                (TokenKind::DotDotLt, Some(e)) => RangeEnd::Exclusive(e),
-                (_, None) => {
-                    p.error_at(op_span, ParseErrorKind::RangeMissingEnd);
-                    return None;
-                }
-                _ => unreachable!(),
+                RangeEnd::Exclusive(end)
             }
         }
         _ => unreachable!("caller already confirmed a range operator is here"),
@@ -436,30 +448,24 @@ fn parse_range_tail(
     })
 }
 
-/// A range-driven `for` loop's own iterator position (`for i in <here> {
-/// ... }`) -- the *only* place a standalone `Expression::Range` can ever
-/// be constructed; everywhere else in the grammar, `..=`/`..<`/`..` only
-/// ever appear nested inside a slice or a match pattern (both handled by
-/// `parse_range_tail` directly, never through here). Structured exactly
-/// like `parse_index_or_slice`'s own leading-operator-or-expr-then-operator
-/// shape, reusing `parse_range_tail` a third time so the range grammar
-/// itself stays defined in exactly one place; `terminator` is `{`, the
-/// loop body's own opening brace.
+/// The lowest-precedence range layer. A range is a real expression in every
+/// expression position; slices and match patterns still consume the same
+/// syntax structurally through `parse_range_tail` above.
 pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode> {
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
-        let range = parse_range_tail(p, None, op_span, &TokenKind::LBrace)?;
+        let range = parse_range_tail(p, None, op_span)?;
         let span = range.span;
         return Some(ExpressionNode {
             expression: Expression::Range(Box::new(range)),
             span,
         });
     }
-    let first = p.restrict_struct_literals(parse_expression)?;
+    let first = parse_assignment(p)?;
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let start_span = first.span;
-        let range = parse_range_tail(p, Some(first), op_span, &TokenKind::LBrace)?;
+        let range = parse_range_tail(p, Some(first), op_span)?;
         let span = start_span.to(range.span);
         return Some(ExpressionNode {
             expression: Expression::Range(Box::new(range)),
@@ -467,6 +473,41 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
         });
     }
     Some(first)
+}
+
+/// The subset of tokens that can begin a primary/prefix expression. It is
+/// deliberately syntactic: semantic rejection remains the ordinary parser or
+/// analyzer's job, but range parsing must know whether `a..` ends here.
+///
+/// `{` counts only where a struct literal would (`struct_literals_allowed`),
+/// which is the same ambient signal that already tells `while`/`for`/`if`
+/// headers apart from the block that follows them (see
+/// `Parser::restrict_struct_literals`). Without that gate `for i in 1.. { }`
+/// consumes its own loop body as the range's end bound.
+fn expression_starts_here(p: &Parser) -> bool {
+    if p.check(&TokenKind::LBrace) {
+        return p.struct_literals_allowed();
+    }
+    matches!(
+        p.peek(),
+        TokenKind::Ident(_)
+            | TokenKind::Number(_)
+            | TokenKind::Str(_)
+            | TokenKind::ByteStr(_)
+            | TokenKind::Char(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::If
+            | TokenKind::Match
+            | TokenKind::LParen
+            | TokenKind::LBracket
+            | TokenKind::Amp
+            | TokenKind::Star
+            | TokenKind::Minus
+            | TokenKind::Tilde
+            | TokenKind::PlusPlus
+            | TokenKind::MinusMinus
+    )
 }
 
 fn finish_slice(p: &mut Parser, base: ExpressionNode, range: RangeExpr) -> Option<ExpressionNode> {
@@ -971,20 +1012,23 @@ fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
 /// followed by one of those), or else that one expression stands alone as
 /// `Pattern::Value` -- a literal or an `Enum::Variant` path, told apart by
 /// analysis (see `Pattern`'s doc comment), not here. Reuses
-/// `parse_range_tail` verbatim (terminated by `=>` instead of a slice's
-/// `]`), so the range grammar is defined in exactly one place. A bare `..`
-/// range here (`RangeExpr::is_catch_all`) is the match catch-all arm --
-/// see `Analyzer::analyze_match`.
+/// `parse_range_tail` verbatim, so the range grammar is defined in exactly
+/// one place. A bare `..` range here (`RangeExpr::is_catch_all`) is the
+/// match catch-all arm -- see `Analyzer::analyze_match`. An arm's own `=>`
+/// can never start an expression, so `..` correctly reads as open here
+/// without needing a terminator token to say so.
 fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
-        let range = parse_range_tail(p, None, op_span, &TokenKind::FatArrow)?;
+        let range = p.allow_struct_literals(|p| parse_range_tail(p, None, op_span))?;
         return Some(Pattern::Range(range));
     }
-    let value = p.allow_struct_literals(parse_expression)?;
+    // Keep range syntax structural in patterns; the general expression layer
+    // would otherwise consume `a..<b` before this production sees it.
+    let value = p.allow_struct_literals(parse_assignment)?;
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
-        let range = parse_range_tail(p, Some(value), op_span, &TokenKind::FatArrow)?;
+        let range = p.allow_struct_literals(|p| parse_range_tail(p, Some(value), op_span))?;
         return Some(Pattern::Range(range));
     }
     Some(Pattern::Value(value))

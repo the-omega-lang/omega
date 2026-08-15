@@ -430,10 +430,9 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     p.advance(); // 'in' (contextual; `is_for_in_lookahead` already confirmed this token)
 
     // Same body-`{` ambiguity `while`/the classic `for`'s own condition
-    // clause has -- restricted for the same reason. Also the one place a
-    // standalone range (`10..<20`, `10..`, ...) may appear as an ordinary
-    // expression -- see `parse_range_or_expression`'s own doc comment.
-    let iterator = parse_range_or_expression(p)?;
+    // clause has -- restricted for the same reason. Ranges are ordinary
+    // expressions here, as in every other expression position.
+    let iterator = p.restrict_struct_literals(parse_range_or_expression)?;
     let body = parse_codeblock(p)?;
     Some(ForInStmt {
         mutable,

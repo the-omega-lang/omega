@@ -1,0 +1,60 @@
+# End-to-end proof that ranges are ordinary values: every loop below goes
+# through `core::range`'s `ToIterator`/`Iterator` conformances, with no
+# range-specific machinery anywhere in the compiler. Exits non-zero (with a
+# distinct code per case) so `just test-range` is a real assertion.
+main() => i32 {
+    # A range bound to a name, then iterated -- the whole point of the
+    # feature. Exclusive, so 1 + ... + 9.
+    r := 1..<10;
+    mut total := 0;
+    for value in r { total = total + value; }
+    if total != 45 { return 1; }
+
+    # Inclusive: 1 + ... + 10.
+    mut inclusive := 0;
+    for value in 1..=10 { inclusive = inclusive + value; }
+    if inclusive != 55 { return 2; }
+
+    # Bounds that are names, not literals, immediately before the loop's own
+    # `{`. The range grammar must not read `stop { ... }` as a struct literal.
+    start := 3;
+    stop := 7;
+    mut counted := 0;
+    for value in start..<stop { counted = counted + 1; }
+    if counted != 4 { return 3; }
+
+    # An inferred end at the very top of the domain: the cursor must stop
+    # without ever computing `u8::MAX + 1`.
+    mut near_max := 0;
+    low : u8 = 253u8;
+    for value in low..=255u8 { near_max = near_max + 1; }
+    if near_max != 3 { return 4; }
+
+    # An open end is the element type's domain max, so this is a real loop
+    # over the rest of i32 -- broken out of rather than run to completion.
+    mut open_ended := 0;
+    for value in 10.. {
+        open_ended = open_ended + 1;
+        if open_ended == 5 { break; }
+    }
+    if open_ended != 5 { return 5; }
+
+    # An inverted range is empty, not an accidental walk to the domain max.
+    mut inverted := 0;
+    for value in 10..<1 { inverted = inverted + 1; }
+    if inverted != 0 { return 6; }
+
+    # Ranges are inert data: fields are readable, and copying one does not
+    # disturb anything, because the cursor is a separate type.
+    bounds := 2..=8;
+    if bounds.start != 2 { return 7; }
+    if bounds.end != 8 { return 8; }
+    if bounds.inclusive { } else { return 9; }
+    mut first := 0;
+    for value in bounds { first = first + 1; }
+    mut second := 0;
+    for value in bounds { second = second + 1; }
+    if first != second { return 10; }
+
+    0
+}

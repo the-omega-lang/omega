@@ -9,9 +9,11 @@ console policy; those belong to `std`.
 
 ```
 runtime/core/
+  cmp.omg        # Ordering, Eq, Ord
   iterator.omg   # Iterator<T>, ToIterator<T>
   numerics.omg   # inherent scalar operations
   option.omg     # Option<T>
+  range.omg      # Range<T>, RangeIterator<T>, Successor, Bounded
   platform.omg   # allocator and console capability gaps
   slices.omg     # inherent generic-slice operations
   strings.omg    # inherent str operations
@@ -30,6 +32,8 @@ compiled object: definitions from `core.o` must be linked when used.
 
 - **`core::option::Option<T>`** is the simple `None` / `Some { value: T }`
   result used when a value may be absent.
+- **`core::cmp`** defines `Ordering`, `Eq`, and `Ord`; primitive integer and
+  `str` conformances live in core because range iteration depends on them.
 - **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
   and `ToIterator<T>`, the protocols behind `for`.
 - **`core::numerics`** supplies only inherent scalar operations: `clamp`,
@@ -72,7 +76,7 @@ allocator glue requirements.
 
 ## Deliberate boundary with `std`
 
-`std::cmp` owns `Ordering`, `Eq`, and `Ord`; `std::default` owns `Default`;
+`core::cmp` owns `Ordering`, `Eq`, and `Ord`; `std::default` owns `Default`;
 `std::hash` owns `Hash`; `std::fmt` owns `Display` and formatting helpers; and
 `std::io` owns `Write`, `Read`, buffering, console marker types, and printing.
 The primitive conformances for all of those specs also live in `std`. Core may

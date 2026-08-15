@@ -1,10 +1,7 @@
-# Primitive conformance blocks for the specs `std` owns. The corresponding
-# inherent primitive methods remain in `core`; conformance is the explicit
-# package boundary between them.
+# Primitive conformance blocks for the `std`-owned specs. `Ord`/`Eq` and their
+# integer conformances live in `core`, alongside range iteration; inherent
+# primitive methods remain there too.
 
-import cmp::Eq;
-import cmp::Ord;
-import cmp::Ordering;
 import default::Default;
 import fmt::Display;
 import fmt::write_bool;
@@ -25,16 +22,6 @@ mix64(x: u64) => u64 {
 }
 
 macro signed_integer($T: type) => {
-    conform $T to Ord {
-        equals(*self, other: Self) => bool { *self == other }
-        compare(*self, other: Self) => Ordering {
-            if *self < other { Ordering::Less }
-            else if *self > other { Ordering::Greater }
-            else { Ordering::Equal }
-        }
-        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
-        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
-    }
     conform $T to Default { default() => Self { 0 } }
     conform $T to Hash {
         hash(*self) => u64 { mix64(<u64>*self) }
@@ -45,16 +32,6 @@ macro signed_integer($T: type) => {
 }
 
 macro unsigned_integer($T: type) => {
-    conform $T to Ord {
-        equals(*self, other: Self) => bool { *self == other }
-        compare(*self, other: Self) => Ordering {
-            if *self < other { Ordering::Less }
-            else if *self > other { Ordering::Greater }
-            else { Ordering::Equal }
-        }
-        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
-        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
-    }
     conform $T to Default { default() => Self { 0 } }
     conform $T to Hash {
         hash(*self) => u64 { mix64(<u64>*self) }
@@ -65,9 +42,6 @@ macro unsigned_integer($T: type) => {
 }
 
 macro float_ops($T: type) => {
-    conform $T to Eq {
-        equals(*self, other: Self) => bool { *self == other }
-    }
     conform $T to Default { default() => Self { 0.0 } }
     conform $T to Hash {
         hash(*self) => u64 {
@@ -96,24 +70,6 @@ unsigned_integer$(usize);
 
 float_ops$(f32);
 float_ops$(f64);
-
-conform str to Eq {
-    equals(*self, other: Self) => bool {
-        if self.size != other.size {
-            return false;
-        }
-        a := <*[]u8>self;
-        b := <*[]u8>other;
-        mut i : i32 = 0;
-        while i < self.size {
-            if a[i] != b[i] {
-                return false;
-            }
-            i = i + 1;
-        }
-        true
-    }
-}
 
 conform str to Hash {
     hash(*self) => u64 {

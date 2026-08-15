@@ -60,6 +60,16 @@ test-core-only: build-core-only
     ./target/core_only
     ! readelf -rW target/core.o | rg 'Standard(Output|Error|Input)|GlobalAllocator'
 
+# Ranges are ordinary `core` values, so this needs nothing but `core` -- which
+# is itself the assertion that range iteration implies no allocator and no
+# platform glue. `range_demo` returns a distinct exit code per failed case.
+build-range: build-core
+    ./target/debug/omgc -v examples/range_demo/ --extern=core:runtime/core/ -o target/range_demo.o
+    cc -Wl,--gc-sections target/range_demo.o target/core.o -o target/range_demo
+
+test-range: build-range
+    ./target/range_demo
+
 # Only `main` in the root module may receive the bare C entry symbol; a child
 # module's identically named function remains normally mangled. Compiled with
 # no `--extern` at all, so this also covers a package that never registers

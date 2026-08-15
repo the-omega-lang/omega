@@ -262,6 +262,20 @@ literal is always validated through `char::from_u32` at parse time, so no
 real `char` value can ever land in that hole in the first place — the
 interval-exhaustiveness checker just doesn't need to know it exists.
 
+That argument holds only because nothing ever *synthesizes* a `char` by
+counting. It is exactly why `char` has no `core::range::Successor`
+conformance and cannot be iterated as a range (`for c in 'a'..<'z'` is
+rejected): stepping a `char` by one would walk straight into the surrogate
+hole and manufacture the very value this reasoning assumes cannot exist —
+and `std::string::String`'s hand-rolled UTF-8 encoder would then emit
+invalid UTF-8 from a perfectly ordinary-looking loop. Rust meets the same
+wall and solves it by having `Step for char` skip `0x800` at the boundary
+instead of adding one. Doing that here needs a checked `u32 -> char`
+conversion the language does not have yet: casting *into* `char` accepts
+only `char` and `u8` sources. Whenever that conversion lands,
+`conform char to Successor` is purely additive — until then this note and
+the exhaustiveness abstraction above stand or fall together.
+
 `char`, `bool`, and every pointer type (`*T`/`*mut T`) also support
 arithmetic/bitwise ops (`+ - * / % & | ^ << >>`, and unary `~`) — each
 non-numeric operand implicitly **coerces** to a real numeric type first

@@ -26,7 +26,7 @@
 # never receives core's ambient-prelude treatment.
 import alloc::alloc;
 import alloc::free;
-import cmp::Eq;
+import extern::core::cmp::Eq;
 import hash::Hash;
 
 # Hidden (module-scoped) top-level declaration, `internal` fields -- see

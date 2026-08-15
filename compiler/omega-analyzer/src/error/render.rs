@@ -143,8 +143,11 @@ impl AnalysisErrorKind {
                 d.with_label(span, "slicing a 'comp'-bound unsized array is not supported")
             }
             Self::RangeNotAllowedHere => d
-                .with_label(span, "a standalone range isn't a value")
-                .with_help("ranges are only meaningful as a `for` loop's own iterator source, e.g. `for i in a..<b { ... }`"),
+                .with_label(span, "bare `..` has no type to determine its bounds")
+                .with_note("inside an index or match pattern, `..` is contextual; as a value it needs a bound or an expected `Range<T>` type"),
+            Self::RangeNeedsBounded { r#type } => d
+                .with_label(span, format!("open ranges over `{type}` need `Bounded`"))
+                .with_help("supply both bounds, or conform the element type to `core::range::Bounded`"),
             Self::EmptyArrayLiteral => d
                 .with_label(span, "cannot infer what `[]` holds")
                 .with_note("an array literal's type comes from its first element"),
@@ -504,15 +507,6 @@ impl AnalysisErrorKind {
                      `conform <source> to ToIterator<{expected}>`",
                     available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
                 )),
-            Self::ForLoopRangeMissingStart => d
-                .with_label(span, "no principled value to start counting from")
-                .with_help("write an explicit start, e.g. `for i in 0..<10 { ... }`"),
-            Self::ForLoopRangeElementNotSupported { r#type } => d
-                .with_label(span, format!("`{type}` has no `+= 1` step to count with"))
-                .with_note("a range-driven `for` loop needs a real integer type (`i8`..`i64`/`isize`, `u8`..`u64`/`usize`)"),
-            Self::ForLoopRangeBoundTypeMismatch { expected, found } => d
-                .with_label(span, format!("expected `{expected}`, found `{found}`"))
-                .with_note("Omega has no implicit conversions; a range's start and end must have exactly the same type"),
             Self::NoSuchSpecFunction { spec, function } => d.with_label(
                 span,
                 format!("no function `{}` on spec `{}`", function.as_ref(), spec.as_ref()),

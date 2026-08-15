@@ -141,12 +141,9 @@ pub enum AnalysisErrorKind {
     /// own comment on this); narrow and likely never hit in practice, but
     /// rejected explicitly rather than silently mishandled.
     CompPointerSliceNotSupported,
-    /// A standalone range (`a..<b`/`a..=b`/`a..`) reached ordinary
-    /// expression analysis directly -- legal *only* as a range-driven
-    /// `for` loop's own direct iterator source (`Analyzer::analyze_for`
-    /// intercepts that one shape before ever reaching here); there is no
-    /// general-purpose Range value type to be one anywhere else.
+    /// Bare `..` has no type source outside an index or pattern.
     RangeNotAllowedHere,
+    RangeNeedsBounded { r#type: ResolvedType },
     /// `[]` -- there's no element to infer the array's item type from.
     EmptyArrayLiteral,
     /// An array literal's elements don't all share the same resolved type
@@ -707,27 +704,6 @@ pub enum AnalysisErrorKind {
         expected: ResolvedType,
         available: Vec<ResolvedType>,
     },
-    /// `for i in ..b { }` / bare `for i in .. { }` -- a range-driven `for`
-    /// loop with no start has no principled value to begin counting from
-    /// (unlike a slice's own missing start, which unambiguously means 0).
-    ForLoopRangeMissingStart,
-    /// `for i in a..<b { }` where `a`'s own resolved type isn't a real,
-    /// steppable integer kind (`ResolvedType::numeric_kind`'s `Signed`/
-    /// `Unsigned` cases) -- deliberately narrower than a `match`
-    /// scrutinee's own `integer_domain` gate: `bool` has no arithmetic at
-    /// all, and `char + 1` coerces to `u32` (see `01-primitives.md`'s
-    /// "char, bool, and pointer arithmetic"), so neither can drive this
-    /// loop's own internal `$i += 1` without a type mismatch.
-    ForLoopRangeElementNotSupported {
-        r#type: ResolvedType,
-    },
-    /// `for i in a..<b { }` where `b`'s resolved type doesn't exactly match
-    /// `a`'s -- this language has no implicit numeric conversions anywhere
-    /// else either.
-    ForLoopRangeBoundTypeMismatch {
-        expected: ResolvedType,
-        found: ResolvedType,
-    },
     /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
     /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction {
@@ -1025,10 +1001,7 @@ impl fmt::Display for AnalysisErrorKind {
                 r#type
             ),
             Self::MissingSliceEnd => {
-                write!(
-                    f,
-                    "a slice over an unsized array must have an explicit end bound"
-                )
+                write!(f, "there is no length here to infer a range end from")
             }
             Self::CompPointerSliceNotSupported => {
                 write!(f, "slicing a 'comp'-bound unsized array is not supported")
@@ -1036,9 +1009,10 @@ impl fmt::Display for AnalysisErrorKind {
             Self::RangeNotAllowedHere => {
                 write!(
                     f,
-                    "a standalone range is only allowed as a 'for' loop's own iterator source"
+                    "bare '..' has no context here"
                 )
             }
+            Self::RangeNeedsBounded { r#type } => write!(f, "open range needs Bounded for '{type}'"),
             Self::EmptyArrayLiteral => {
                 write!(f, "cannot infer the element type of an empty array literal")
             }
@@ -1469,18 +1443,6 @@ impl fmt::Display for AnalysisErrorKind {
                 "for-loop source produces no '{expected}' elements (it produces: {})",
                 available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
             ),
-            Self::ForLoopRangeMissingStart => {
-                write!(f, "this range-driven 'for' loop has no start")
-            }
-            Self::ForLoopRangeElementNotSupported { r#type } => {
-                write!(f, "cannot count over a value of type '{type}'")
-            }
-            Self::ForLoopRangeBoundTypeMismatch { expected, found } => {
-                write!(
-                    f,
-                    "mismatched types: expected '{expected}', found '{found}'"
-                )
-            }
             Self::NoSuchSpecFunction { spec, function } => {
                 write!(
                     f,

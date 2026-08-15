@@ -1,5 +1,80 @@
 # `for` .. `in` loops
 
+## Ranges
+
+```
+r := 1..<10;          # a value: Range<i32>, [1, 10)
+for value in r { }    # iterated through ToIterator, like anything else
+for value in 1..=10 { }
+```
+
+Expression-position `a..<b`, `a..=b`, `a..`, and `..<b` construct a tangible
+`core::range::Range<T>` value — inert data with `start`, `end` and an
+`inclusive` flag, freely stored, copied, passed and returned. `for` obtains a
+separate `RangeIterator<T>` cursor from it through the ordinary
+`ToIterator`/`Iterator` protocol, so there is **no range-specific machinery in
+the compiler at all**: a range is iterable for exactly the reason a `List` is.
+Because the range and the cursor are different types, iterating a range twice
+counts twice — the value never carries iteration state.
+
+`..` is the *contextual* range operator: it is the spelling for "nothing is
+written on this side — work it out from where I am". `..<` (end excluded) and
+`..=` (end included) are different tokens, and both always carry a written
+end.
+
+Which side is inferred is independent of which token you use:
+
+```
+a..<b   a..=b   # both bounds written
+..<b    ..=b    # start inferred, end written
+a..             # start written, end inferred
+..              # both inferred
+```
+
+An end bound may never follow `..`, so `a..b` and `..5` are both rejected, for
+the same reason: an end turned up after the token that means "no bound here".
+Writing an end at all — with or without a start — takes `..<` or `..=`,
+because a range naming its end has to say whether the end is in it.
+
+An inferred side resolves according to where the range is written:
+
+| Position | An inferred side means |
+|---|---|
+| expression | the element type's domain limit, via `core::range::Bounded` |
+| index (`&items[5..]`) | the container's own length |
+| match pattern | the arm's unmatched remainder |
+
+Contextual inference always wins over domain inference: `&items[5..]` is "from
+5 to the end of `items`", never "to `usize::MAX`". That is also why slicing a
+`*[?]T` with an inferred end is an error — an unsized base carries no length
+to infer from. One consequence worth stating plainly: a *stored* range cannot
+express "the rest of a container", because "the rest" is a property of the
+container, not of the range. `r := 5..; &items[r]` means `items[5..=usize::MAX]`,
+which is out of bounds.
+
+Bare `..` infers both sides at once, so on its own it has no type source and
+is rejected (`a := ..;`). It is meaningful only where something supplies the
+missing information — an index, a match arm, or an expected `Range<T>`.
+
+### Which types can be ranged over
+
+`Range<T>` is constructible for any `T`. Iterating one needs
+`T: core::range::Successor` (`greater_than`, `equals`, `successor`), and an
+inferred bound additionally needs `T: core::range::Bounded`. `core` conforms
+every integer type to both, so user types are on exactly equal footing — a
+custom index type that conforms is range-iterable with no compiler
+involvement.
+
+`successor` returns `Option<Self>`, yielding `None` at the type's maximum.
+That is what lets `low..=255u8` terminate without ever computing `255 + 1`.
+
+Floats are deliberately excluded: `f32`/`f64` conform to `Eq` but have no
+total order (see [`core::cmp`](13-core-library.md)), so they get no
+`Successor`. `char` is excluded for a different reason — its successor must
+skip the UTF-16 surrogate block `0xD800..=0xDFFF`, which needs a checked
+`u32 -> char` conversion the language does not have yet. Both build a `Range`
+value and fail only when iterated.
+
 ```
 struct MyCustomStringIterator {
     exposed current: *u8;

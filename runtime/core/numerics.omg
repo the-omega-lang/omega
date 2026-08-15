@@ -5,21 +5,47 @@
 # genuinely different member set -- not just three copies of one template.
 #
 # Primitive functions carry ordinary visibility modifiers. The separate
-# conform blocks below give each numeric type nominal conformance to the
-# exposed comparison/default/hash/display specs.
+# conform blocks below give integer types nominal conformance to core's
+# comparison and range-iteration specs.
 #
 # Every bare numeric literal compared or combined with `*self` is cast to
 # `Self` explicitly (`<Self>0`, not `0`) -- an untyped literal here would
 # otherwise default to `i32`, which only happens to already match `Self`
 # for one of the twelve types this file instantiates.
 #
-# `isize`/`usize` deliberately get no `min_value`/`max_value`-style bounds
-# anywhere in here: their width is target-dependent, so a literal bound
-# baked in here would silently be wrong on a target this exact toolchain
-# wasn't built assuming. Nothing below needs to know any type's width to
-# be correct.
+# `usize`/`isize` bounds are derived from all-ones bit patterns rather than
+# width-dependent literals, so they stay correct on every target.
 
-macro signed_integer($T: type) => {
+import cmp::Eq;
+import cmp::Ord;
+import cmp::Ordering;
+import option::Option;
+import range::Bounded;
+import range::Successor;
+
+macro signed_integer($T: type, $MAX: expr) => {
+    conform $T to Ord {
+        equals(*self, other: Self) => bool { *self == other }
+        compare(*self, other: Self) => Ordering {
+            if *self < other { Ordering::Less }
+            else if *self > other { Ordering::Greater }
+            else { Ordering::Equal }
+        }
+        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
+        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+    }
+    conform $T to Successor {
+        greater_than(*self, other: Self) => bool { *self > other }
+        equals(*self, other: Self) => bool { *self == other }
+        successor(*self) => Option<Self> {
+            if *self == <Self>$MAX { Option<Self>::None }
+            else { Option<Self>::Some { value = *self + <Self>1; } }
+        }
+    }
+    conform $T to Bounded {
+        min() => Self { ~<Self>$MAX }
+        max() => Self { <Self>$MAX }
+    }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
             if *self < lo { lo } else if *self > hi { hi } else { *self }
@@ -51,7 +77,29 @@ macro signed_integer($T: type) => {
     }
 }
 
-macro unsigned_integer($T: type) => {
+macro unsigned_integer($T: type, $MAX: expr) => {
+    conform $T to Ord {
+        equals(*self, other: Self) => bool { *self == other }
+        compare(*self, other: Self) => Ordering {
+            if *self < other { Ordering::Less }
+            else if *self > other { Ordering::Greater }
+            else { Ordering::Equal }
+        }
+        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
+        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+    }
+    conform $T to Successor {
+        greater_than(*self, other: Self) => bool { *self > other }
+        equals(*self, other: Self) => bool { *self == other }
+        successor(*self) => Option<Self> {
+            if *self == <Self>$MAX { Option<Self>::None }
+            else { Option<Self>::Some { value = *self + <Self>1; } }
+        }
+    }
+    conform $T to Bounded {
+        min() => Self { <Self>0 }
+        max() => Self { <Self>$MAX }
+    }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
             if *self < lo { lo } else if *self > hi { hi } else { *self }
@@ -80,6 +128,12 @@ macro unsigned_integer($T: type) => {
 }
 
 macro float_ops($T: type) => {
+    # `Eq` but deliberately no `Ord`: `NaN` has no correct position in a total
+    # order (see `core::cmp`). Equality alone is exactly what IEEE 754 gives
+    # honestly, so that is exactly what is claimed here.
+    conform $T to Eq {
+        equals(*self, other: Self) => bool { *self == other }
+    }
     primitive $T {
         # IEEE 754 equality (`NaN != NaN`, `-0.0 == 0.0`) reflects the type
         # honestly rather than papering over it -- `Ord` is deliberately
@@ -100,17 +154,25 @@ macro float_ops($T: type) => {
     }
 }
 
-signed_integer$(i8);
-signed_integer$(i16);
-signed_integer$(i32);
-signed_integer$(i64);
-signed_integer$(isize);
+signed_integer$(i8, 127i8);
+signed_integer$(i16, 32767i16);
+signed_integer$(i32, 2147483647i32);
+signed_integer$(i64, 9223372036854775807i64);
+# `isize`/`usize` go through the same macro as every other width, so they
+# keep the identical inherent method set -- hand-expanding either one here
+# would silently drop its `primitive` block. Their `$MAX` is derived from an
+# all-ones pattern instead of a literal: `~<usize>0` is every bit set at
+# whatever width the target actually uses, and shifting it right by one
+# (logically, since it is unsigned) clears the sign bit to give the signed
+# maximum. Both stay correct on a target this toolchain wasn't built
+# assuming; a baked literal would not.
+signed_integer$(isize, ((~<usize>0) >> 1usize));
 
-unsigned_integer$(u8);
-unsigned_integer$(u16);
-unsigned_integer$(u32);
-unsigned_integer$(u64);
-unsigned_integer$(usize);
+unsigned_integer$(u8, 255u8);
+unsigned_integer$(u16, 65535u16);
+unsigned_integer$(u32, 4294967295u32);
+unsigned_integer$(u64, 18446744073709551615u64);
+unsigned_integer$(usize, ~<usize>0);
 
 float_ops$(f32);
 float_ops$(f64);

@@ -154,6 +154,22 @@ A range sliced off a `*[?]T` must have an explicit end (`MissingSliceEnd`
 otherwise) — unlike `SizedArray`/`Slice`/`Str`, it has no length anywhere
 to default a missing one to; both `start` and `end` are ordinary
 expressions (no requirement that either be a compile-time constant).
+
+That rule is one case of a general one. An index is a **contextual**
+position: an inferred bound there means *this container's* own length, and
+contextual inference always takes precedence over the domain inference the
+same syntax gets in expression position. `&items[5..]` is "index 5 to the end
+of `items`", never `5..=usize::MAX`. A base with no length simply has no
+context to infer from, which is what `MissingSliceEnd` reports.
+
+The practical consequence is that an index range stays *syntax* — it is not a
+`core::range::Range<T>` value, and a range value cannot substitute for one:
+`r := 5..; &items[r]` means `items[5..=usize::MAX]` and is out of bounds,
+because "the rest" is a property of the container rather than of the range.
+See [`for` .. `in` loops](18-for-in-loops.md) for the expression-position
+side. Note that `..` is only ever the spelling for "no bound written here":
+`&arr[..<n]` and `&arr[n..]` are both fine, but an end may never follow `..`
+itself, so `&arr[..2]` and `&arr[1..3]` are equally rejected.
 Mutability follows the pointer's own: `*mut [?]T` produces `*mut []T`,
 widening to `*[]T` for free at any ordinary assignment/argument/return
 site the same way `*mut T → *T` already does.

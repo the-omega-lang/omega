@@ -17,10 +17,13 @@ pub enum RangeEnd {
     /// covers `..=`'s identical requirement) -- an open-ended exclusive
     /// range has nothing to exclude.
     Exclusive(ExpressionNode),
-    /// `..` -- no end, ever. What it actually means is inferred entirely
-    /// by whichever position consumes it: a slice's own container length,
-    /// a `match` arm's own unmatched remainder, or a range-driven `for`
-    /// loop's own element-type domain.
+    /// `..` -- no end, ever. `..` is the *inference* operator: it says
+    /// "work this side out", so `a..b` is a syntax error in every position
+    /// (`ParseErrorKind::OpenRangeHasEnd`), not a third spelling alongside
+    /// `..<`/`..=`. What it infers depends on where it appears -- a slice's
+    /// own container length, a `match` arm's unmatched remainder, or, in
+    /// ordinary expression position, the element type's own domain limit
+    /// through `core::range::Bounded`.
     Open,
 }
 
@@ -39,21 +42,31 @@ impl RangeEnd {
 
 /// One range, in the single grammar shared by slicing (`base[range]`),
 /// `match` range-patterns
-/// (`omega_parser::ast::expression::match_expr::Pattern::Range`), and --
-/// legal only as a `for` loop's own direct iterator source -- a
-/// standalone range expression
-/// (`omega_parser::ast::expression::Expression::Range`).
+/// (`omega_parser::ast::expression::match_expr::Pattern::Range`), and
+/// ordinary expression position
+/// (`omega_parser::ast::expression::Expression::Range`), which builds a real
+/// `core::range::Range<T>` value.
 ///
 /// - `..=b`  -- `[MIN, b]`
 /// - `a..=b` -- `[a, b]`
 /// - `..<b`  -- `[MIN, b)`
 /// - `a..<b` -- `[a, b)`
-/// - `..`    -- fully open; inferred both ends
+/// - `..`    -- fully open; both ends inferred
 /// - `a..`   -- `[a, inferred]`
 ///
 /// `start` is independently optional from `end` in every case above.
-/// There is no way to spell a fully-open *inclusive* range the old
-/// `...`/`a...` way did -- that shape is now exclusively bare `..`/`a..`.
+///
+/// What is *not* in that list is an end bound following bare `..`, in either
+/// of its shapes: neither `a..b` nor `..5` parses anywhere
+/// (`ParseErrorKind::OpenRangeHasEnd`). `..` is the spelling for "no bound
+/// written on this side", so an end after it is a contradiction. Writing an
+/// end at all -- with a start, as `a..<b`, or without one, as `..<b` -- uses
+/// `..<`/`..=`, which are separate tokens rather than `..` with something
+/// appended.
+///
+/// The grammar is identical in all three positions; what differs is only
+/// what an *inferred* side resolves to, which is the consuming position's
+/// own question (see `RangeEnd::Open`).
 #[derive(Debug, Clone)]
 pub struct RangeExpr {
     pub start: Option<ExpressionNode>,
