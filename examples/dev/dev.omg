@@ -1289,6 +1289,12 @@ main(argc : i32, argv : *[?]*u8) => i32 {
         println$("my_range iteration:", i);
     }
 
+    print$("alphabet: ");
+    for c in 'A'..='Z' {
+        print$(c);
+    }
+    println$();
+
     return 69;
 }
 
