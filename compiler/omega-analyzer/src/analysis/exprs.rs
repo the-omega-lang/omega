@@ -730,6 +730,17 @@ impl<'r> Analyzer<'r> {
             self.with_reveal_bypass(was_reveal, node_id, span, |this| {
                 this.analyze_place(base.id, base.span, place, None)
             })?;
+        // Taking a binding's address uses it, whatever happens to the pointer
+        // afterwards. `analyze_place` only marks a root used when the place
+        // has projections (see its comment there) -- deliberately, so a
+        // genuinely write-only `n = 5` still warns -- but `&n` is a
+        // projection-less place that is unambiguously a *read*: it produces
+        // the binding's address, and anything can be done through it.
+        //
+        // Without this, `a := 5; p := &a; *p` reported `unused variable 'a'`.
+        if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
+            self.context.mark_used(decl_id);
+        }
         // `&comp_binding` -- `&mut` on one is impossible (a `comp` binding
         // is never `mutable`, so `require_mutable_place` below rejects it
         // with the same diagnostic any other immutable binding's `&mut`
@@ -837,6 +848,14 @@ impl<'r> Analyzer<'r> {
         // `base` too (including, notably, an unsuffixed literal
         // `base` -- `-100` is exactly as adaptable as `100`).
         let checked_base = self.analyze_expr(base, expected)?;
+        if checked_base.r#type == ResolvedType::Char {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CharArithmeticNotAllowed { op: "-".to_string() },
+            );
+            return None;
+        }
         // Signed ints and floats only -- matching Rust, unary `-` on
         // an unsigned integer (or `bool`/`char`, neither of which is
         // numeric at all) is rejected rather than silently wrapping.
@@ -865,10 +884,10 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Unary `~`, transparent to its own result type exactly like
-    /// `analyze_negate` -- except, unlike `analyze_negate`, `char`/pointer
-    /// operands first coerce to their `arithmetic_repr` (see
-    /// `Self::coerce_for_unary_op`), so `~some_char` is legal and produces a
-    /// `u32`. `bool` is deliberately not given the same treatment: unlike
+    /// `analyze_negate` -- pointers first coerce to their `arithmetic_repr`
+    /// (see `Self::coerce_for_unary_op`). `char` deliberately does not: its
+    /// codepoint must be cast explicitly before arithmetic. `bool` is
+    /// deliberately not given either treatment: unlike
     /// `& | ^` (native on `bool`, see `analyze_binary_op`), bitwise-NOT of
     /// `bool`'s `0`/`1` representation doesn't stay within `{0,1}` (`~0u8 ==
     /// 255`), so there is no sound native meaning for it to have.
@@ -883,6 +902,14 @@ impl<'r> Analyzer<'r> {
         // `Negate`'s arm just above -- `~` is transparent to its own
         // result type.
         let checked_base = self.analyze_expr(base, expected)?;
+        if checked_base.r#type == ResolvedType::Char {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CharArithmeticNotAllowed { op: "~".to_string() },
+            );
+            return None;
+        }
         let checked_base = Self::coerce_for_unary_op(checked_base);
         let bitnotable = matches!(
             checked_base.r#type.numeric_kind(),
@@ -1229,12 +1256,40 @@ impl<'r> Analyzer<'r> {
         checked_left: CheckedExprNode,
         checked_right: CheckedExprNode,
     ) -> Option<CheckedExprNode> {
-        // Coerce a `char`/pointer operand to its `arithmetic_repr` first --
+        // These checks use the source types, before pointer coercion erases
+        // their identity into `usize`.
+        if !op.is_comparison()
+            && (checked_left.r#type == ResolvedType::Char
+                || checked_right.r#type == ResolvedType::Char)
+        {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::CharArithmeticNotAllowed {
+                    op: op.symbol().to_string(),
+                },
+            );
+            return None;
+        }
+        if matches!(checked_left.r#type, ResolvedType::Pointer { .. })
+            && matches!(checked_right.r#type, ResolvedType::Pointer { .. })
+            && !op.is_comparison()
+            && op != BinaryOp::Sub
+        {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::PointerPairArithmetic { op },
+            );
+            return None;
+        }
+
+        // Coerce pointer operands to their `arithmetic_repr` first --
         // see `Self::coerce_for_binary_op`'s doc comment for exactly which
         // op/type combinations coerce. Everything below this line only ever
         // sees the coerced types, so it needs no further special-casing for
-        // either: a coerced `char`'s `u32`/a coerced pointer's `usize`
-        // already has a real `numeric_kind`, same as any other operand.
+        // pointer's `usize` already has a real `numeric_kind`, same as any
+        // other operand.
         let checked_left = self.coerce_for_binary_op(op, checked_left);
         let checked_right = self.coerce_for_binary_op(op, checked_right);
 
@@ -1361,7 +1416,7 @@ impl<'r> Analyzer<'r> {
     /// unchanged) for anything with no `arithmetic_repr` at all (every
     /// genuinely numeric type, `bool`, structs, ...).
     ///
-    /// `char` only coerces for a non-comparison op: comparing two `char`s
+    /// `char` has no arithmetic representation. Comparing two `char`s
     /// directly, uncoerced, is what lets codegen's `MirExpr::BinaryOp` arm
     /// keep special-casing `Char` as its own 4-byte unsigned scalar (see its
     /// existing comment there) instead of ever seeing a coerced `u32` pair
@@ -1369,10 +1424,7 @@ impl<'r> Analyzer<'r> {
     /// for a comparison -- which is what makes `*mut T == *T` type-check for
     /// free: both sides become a plain `usize`, so pointee type and
     /// mutability never enter the equality check at all.
-    fn coerce_for_binary_op(&self, op: BinaryOp, operand: CheckedExprNode) -> CheckedExprNode {
-        if op.is_comparison() && operand.r#type == ResolvedType::Char {
-            return operand;
-        }
+    fn coerce_for_binary_op(&self, _op: BinaryOp, operand: CheckedExprNode) -> CheckedExprNode {
         match operand.r#type.arithmetic_repr() {
             Some(repr) => Self::coerce_to(operand, repr),
             None => operand,

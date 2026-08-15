@@ -388,16 +388,13 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
     )));
 }
 
-// --- element types that are deliberately not steppable --------------------
+// --- element types and their range protocol -------------------------------
 
-/// `char` has no `Successor` conformance: its successor must skip the UTF-16
-/// surrogate hole (`0xD800..=0xDFFF`), which needs a checked `u32 -> char`
-/// conversion the language does not yet have. Until then this must fail as an
-/// ordinary missing conformance, not as an internal error.
+/// `char` uses the ordinary `Successor` protocol. Its implementation skips
+/// the UTF-16 surrogate hole rather than doing raw codepoint arithmetic.
 #[test]
-fn char_is_not_range_iterable() {
-    let package = TestPackage::new("main() => i32 { for c in 'a'..<'z' { } 0 }");
-    assert!(!package.expect_errors().is_empty());
+fn char_is_range_iterable() {
+    TestPackage::new("main() => i32 { for c in 'a'..<'z' { } 0 }").expect_ok();
 }
 
 /// Floats have `Eq` but no total order and no successor, so they build a
@@ -509,3 +506,29 @@ fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
         &ParseErrorKind::OpenRangeHasEnd
     ));
 }
+
+// --- chars use the same range protocol, with a scalar-value successor -----
+
+#[test]
+fn char_ranges_compile_through_the_ordinary_successor_protocol() {
+    TestPackage::new(
+        r#"
+        import extern::core::cmp::Ord;
+        import extern::core::option::Option;
+        needs_ord<T: Ord>(value: T) => T { value }
+        main() => i32 {
+            mut count := 0;
+            for c in 'a'..='z' {
+                needs_ord(c);
+                count = count + 1;
+            }
+            count
+        }
+        "#,
+    )
+    .expect_ok();
+}
+
+// `char`'s own surface -- its constructor, classifiers and arithmetic rules --
+// lives in `tests/char.rs`; the pointer-pair operator rule lives in
+// `tests/pointer_arithmetic.rs`. Only range behaviour belongs here.

@@ -103,6 +103,17 @@ pub enum AnalysisErrorKind {
         op: BinaryOp,
         r#type: ResolvedType,
     },
+    /// Arithmetic and bitwise operators have no meaning for Unicode scalar
+    /// values. `char` remains comparable, but its codepoint must be cast
+    /// explicitly before arithmetic.
+    CharArithmeticNotAllowed {
+        op: String,
+    },
+    /// Two pointers may be compared or subtracted for their byte distance;
+    /// every other pointer-pair arithmetic operation is meaningless.
+    PointerPairArithmetic {
+        op: BinaryOp,
+    },
     /// A unary `-` operand isn't a signed integer or float.
     InvalidNegateOperand {
         r#type: ResolvedType,
@@ -973,6 +984,14 @@ impl fmt::Display for AnalysisErrorKind {
                 "cannot apply '{}' to a value of type '{}'",
                 op.symbol(),
                 r#type
+            ),
+            Self::CharArithmeticNotAllowed { op } => {
+                write!(f, "cannot apply '{op}' to a value of type 'char'")
+            }
+            Self::PointerPairArithmetic { op } => write!(
+                f,
+                "cannot apply '{}' to two pointer values",
+                op.symbol()
             ),
             Self::InvalidNegateOperand { r#type } => {
                 write!(f, "cannot negate a value of type '{}'", r#type)

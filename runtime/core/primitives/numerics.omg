@@ -38,13 +38,13 @@ macro signed_integer($T: type, $MAX: expr) => {
         greater_than(*self, other: Self) => bool { *self > other }
         equals(*self, other: Self) => bool { *self == other }
         successor(*self) => Option<Self> {
-            if *self == <Self>$MAX { Option<Self>::None }
+            if *self == $MAX { Option<Self>::None }
             else { Option<Self>::Some { value = *self + <Self>1; } }
         }
     }
     conform $T to Bounded {
-        min() => Self { ~<Self>$MAX }
-        max() => Self { <Self>$MAX }
+        min() => Self { ~$MAX }
+        max() => Self { $MAX }
     }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
@@ -92,13 +92,13 @@ macro unsigned_integer($T: type, $MAX: expr) => {
         greater_than(*self, other: Self) => bool { *self > other }
         equals(*self, other: Self) => bool { *self == other }
         successor(*self) => Option<Self> {
-            if *self == <Self>$MAX { Option<Self>::None }
+            if *self == $MAX { Option<Self>::None }
             else { Option<Self>::Some { value = *self + <Self>1; } }
         }
     }
     conform $T to Bounded {
         min() => Self { <Self>0 }
-        max() => Self { <Self>$MAX }
+        max() => Self { $MAX }
     }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
@@ -166,7 +166,7 @@ signed_integer$(i64, 9223372036854775807i64);
 # (logically, since it is unsigned) clears the sign bit to give the signed
 # maximum. Both stay correct on a target this toolchain wasn't built
 # assuming; a baked literal would not.
-signed_integer$(isize, ((~<usize>0) >> 1usize));
+signed_integer$(isize, <isize>((~<usize>0) >> 1usize));
 
 unsigned_integer$(u8, 255u8);
 unsigned_integer$(u16, 65535u16);

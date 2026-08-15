@@ -114,6 +114,13 @@ impl AnalysisErrorKind {
                 .with_note("only values with a memory location (variables, fields, indexes, dereferences) have an address"),
             Self::InvalidBinaryOperand { op, r#type } => d
                 .with_label(span, format!("`{}` requires numeric operands, but this is `{}`", op.symbol(), r#type)),
+            Self::CharArithmeticNotAllowed { op } => d
+                .with_label(span, format!("`{op}` is not defined for `char`"))
+                .with_help("cast the character explicitly before arithmetic, for example `<u32>c + 1`"),
+            Self::PointerPairArithmetic { op } => d
+                .with_label(span, format!("`{}` is not defined between two pointers", op.symbol()))
+                .with_note("only `-` and comparisons are defined between two pointers")
+                .with_help("cast to `usize` if raw address arithmetic is intended"),
             Self::InvalidNegateOperand { r#type } => d
                 .with_label(span, format!("this has type `{}`", r#type))
                 .with_note("unary `-` requires a signed integer or a float"),
@@ -414,13 +421,20 @@ impl AnalysisErrorKind {
             Self::UnionLiteralTooManyFields { r#union, fields } => d
                 .with_label(span, format!("{} set, but a union literal may only set one", field_list(fields)))
                 .with_help(format!("`{}`'s fields overlap the same storage; pick exactly one", r#union.as_ref())),
-            Self::InvalidCast { from, to } => d
-                .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
-                .with_note(
+            Self::InvalidCast { from, to } => {
+                let d = d
+                    .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
+                    .with_note(
                     "casts are only supported between numeric types, pointers, \
                      the str/byte-slice family (*str, *[u8], *[i8]), and into a \
                      spec object (spec *Spec) when the source genuinely implements it",
-                ),
+                    );
+                if *to == ResolvedType::Char && from.numeric_kind().is_some() {
+                    d.with_help("use `char::from_u32` for a checked Unicode scalar conversion")
+                } else {
+                    d
+                }
+            }
             Self::CastToMutablePointer { from, to } => d
                 .with_label(span, format!("cannot cast '{from}' to '{to}'"))
                 .with_help("a cast can only target a mutable pointer/slice/str if the source is already mutable"),

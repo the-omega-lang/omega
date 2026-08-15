@@ -101,7 +101,7 @@ grammar).
 `bool` supports `== != & | ^` directly, staying `bool` (no `numeric_kind`
 of its own is needed for these — see [primitives](01-primitives.md)'s
 "`char`, `bool`, and pointer arithmetic" section for the full story,
-including why `char` and pointers work differently, coercing to a numeric
+including why `char` stays comparison-only while pointers coerce to a numeric
 type instead of staying native). This is sound specifically because
 `bool` is *closed* under all five: combining two valid `bool`s (`0`/`1`)
 any of those ways is still a valid `bool`.
@@ -175,11 +175,10 @@ committed to elsewhere:
    resolved type becomes `expected` for the right operand** — the exact
    same "earliest position is the anchor" rule `if`-expression branches
    already use (see below), not a new inference philosophy. For a
-   non-comparison op, the anchor is left's type *after* the `char`/pointer
-   coercion described in [primitives](01-primitives.md), not before —
-   `some_char + 1` needs the bare `1` to adapt to `u32` (what `some_char`
-   is about to become), not to `char` (which isn't numeric, so it would
-   just fall back to `1`'s own default of `i32` and then mismatch).
+   non-comparison op, the anchor is left's type *after* any pointer coercion
+   described in [primitives](01-primitives.md), not before — a bare integer
+   on the right of a pointer operation adapts to `usize` rather than falling
+   back to its own default `i32` and then mismatching.
 
 Both rules are safe unconditionally: `expected` is never a coercion
 mechanism anywhere in this language, only a hint consulted by genuinely
@@ -194,10 +193,10 @@ a genuine mismatch it wouldn't have accepted before.
 - `char` has comparison (`== != < <= > >=`) and can be used as a `match`
   scrutinee, including ranges (`'A'..='Z'`) — see
   [primitives](01-primitives.md) and
-  [enums & pattern matching](05-enums-and-pattern-matching.md). Arithmetic/
-  bitwise ops and casts are supported too, but by coercing to `u32` first
-  (never back to `char` implicitly) — see [primitives](01-primitives.md)'s
-  "`char`, `bool`, and pointer arithmetic" section.
+  [enums & pattern matching](05-enums-and-pattern-matching.md). Arithmetic
+  and bitwise ops are rejected; cast explicitly to `u32` when codepoint
+  arithmetic is intended — see [primitives](01-primitives.md)'s "`char`,
+  `bool`, and pointer arithmetic" section.
 - Binary-op literal narrowing is **earliest-wins, not most-specific-wins**
   — matching the identical, already-accepted trade-off `if`-expression
   branches make (`if true { 8 } else { 7u16 }` doesn't retroactively

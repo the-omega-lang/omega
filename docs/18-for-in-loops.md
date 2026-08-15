@@ -70,10 +70,9 @@ That is what lets `low..=255u8` terminate without ever computing `255 + 1`.
 
 Floats are deliberately excluded: `f32`/`f64` conform to `Eq` but have no
 total order (see [`core::cmp`](13-core-library.md)), so they get no
-`Successor`. `char` is excluded for a different reason — its successor must
-skip the UTF-16 surrogate block `0xD800..=0xDFFF`, which needs a checked
-`u32 -> char` conversion the language does not have yet. Both build a `Range`
-value and fail only when iterated.
+`Successor`. `char` does conform: its successor skips the UTF-16 surrogate
+block (`U+D7FF` steps to `U+E000`), so character ranges use the same ordinary
+protocol as integer ranges.
 
 ```
 struct MyCustomStringIterator {
@@ -286,12 +285,11 @@ A start is mandatory (`for i in ..b { }`/bare `for i in .. { }` are both
 no principled value to begin counting from) and decides the loop
 variable's own type, which must be a real, steppable integer kind
 (`i8`..`i64`/`isize`, `u8`..`u64`/`usize` — `ForLoopRangeElementNotSupported`
-otherwise). `char`/`bool` are deliberately excluded even though both have
-an `integer_domain()` and are legal `match`-range bounds: `bool` has no
-arithmetic at all, and `char + 1` coerces to `u32` (see
-[primitives](01-primitives.md)'s "`char`, `bool`, and pointer arithmetic"),
-so neither can drive this loop's own internal counter without a type
-mismatch. An explicit end's type must match the start's exactly
+otherwise). `char`/`bool` are deliberately excluded from this legacy
+counter-based loop even though both have an `integer_domain()` and are legal
+`match`-range bounds: `bool` has no arithmetic at all, and `char` deliberately
+requires `Successor`-based `for .. in` iteration rather than arithmetic
+stepping. An explicit end's type must match the start's exactly
 (`ForLoopRangeBoundTypeMismatch` otherwise — no implicit conversions here
 either); an open end (`a..`) implicitly uses the element type's own
 `integer_domain().1` (its real maximum).

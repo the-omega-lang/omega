@@ -1,23 +1,112 @@
-# `core::primitives::char` -- `char`'s declaration site.
+# `core::primitives::char` -- Unicode scalar values and their core behavior.
 #
-# A Unicode scalar value: a 4-byte decoded codepoint, never a byte and never a
-# UTF-16 code unit. Its domain is `0..=0x10FFFF` with the surrogate block
-# `0xD800..=0xDFFF` excluded -- so unlike every other built-in, `char` carries
-# a **validity invariant**, and not every bit pattern of its width is a value.
-#
-# That invariant is why the casts are asymmetric. Every `char` converts *out*
-# to an integer (`<i32>c`, `<u32>c`), because every scalar value is a valid
-# integer. Converting *in* is allowed only from `u8`, whose every value is a
-# valid scalar value; `<char>some_u32` is refused, because most `u32`s are not
-# codepoints and there is no checked conversion to offer instead yet.
-#
-# It is also why arithmetic on a `char` yields `u32` and never comes back:
-# `c + 1` is a number, not a character, and no implicit path leads from that
-# number back to a `char` where it could smuggle in a surrogate.
-#
-# The block is empty because everything `char` wants is currently blocked on
-# that missing conversion -- `from_u32`, a `chars()` decoder, `Successor` (and
-# so ranges), case mapping. Inspecting methods (`is_ascii`, `is_digit`,
-# `len_utf8`) need nothing new and belong here whenever someone writes them.
-# See `docs/01-primitives.md`.
-primitive char { }
+# `char::from_u32` is the supported checked path from a computed codepoint.
+# It rejects values outside Unicode and UTF-16 surrogates. It is deliberately
+# not claimed as an enforcement boundary: Omega's honest pointer casts can
+# still reinterpret an arbitrary `u32` as a `char`.
+
+import root::cmp::Ord;
+import root::cmp::Ordering;
+import root::option::Option;
+import root::range::Bounded;
+import root::range::Successor;
+
+primitive char {
+    exposed from_u32(value: u32) => Option<char> {
+        if value > 0x10FFFFu32 {
+            return Option<char>::None;
+        }
+        if value >= 0xD800u32 {
+            if value <= 0xDFFFu32 {
+                return Option<char>::None;
+            }
+        }
+        # This is an ordinary pointer reinterpretation, after the checks
+        # above have established that the bit pattern is a Unicode scalar.
+        Option<char>::Some { value = *<*char>&value; }
+    }
+
+    exposed is_ascii(*self) => bool { <u32>*self <= 0x7Fu32 }
+    exposed is_digit(*self) => bool {
+        cp := <u32>*self;
+        if cp < 0x30u32 { false } else { cp <= 0x39u32 }
+    }
+    # ASCII-only classifiers: full Unicode tables intentionally do not live
+    # in freestanding core.
+    exposed is_alphabetic(*self) => bool {
+        cp := <u32>*self;
+        if cp >= 0x41u32 {
+            if cp <= 0x5Au32 { return true; }
+        }
+        if cp >= 0x61u32 { cp <= 0x7Au32 } else { false }
+    }
+    exposed is_whitespace(*self) => bool {
+        cp := <u32>*self;
+        if cp == 0x20u32 { return true; }
+        if cp >= 0x09u32 { cp <= 0x0Du32 } else { false }
+    }
+    exposed len_utf8(*self) => usize {
+        cp := <u32>*self;
+        if cp < 0x80u32 { 1usize }
+        else if cp < 0x800u32 { 2usize }
+        else if cp < 0x10000u32 { 3usize }
+        else { 4usize }
+    }
+    # These two reinterpret directly rather than going through `from_u32`:
+    # the result is always ASCII, so it is a scalar value by construction and
+    # there is nothing a check could reject.
+    exposed to_ascii_uppercase(*self) => char {
+        mut cp := <u32>*self;
+        if cp >= 0x61u32 {
+            if cp <= 0x7Au32 {
+                cp = cp - 0x20u32;
+                return *<*char>&cp;
+            }
+        }
+        *self
+    }
+    exposed to_ascii_lowercase(*self) => char {
+        mut cp := <u32>*self;
+        if cp >= 0x41u32 {
+            if cp <= 0x5Au32 {
+                cp = cp + 0x20u32;
+                return *<*char>&cp;
+            }
+        }
+        *self
+    }
+}
+
+conform char to Ord {
+    equals(*self, other: Self) => bool { *self == other }
+    compare(*self, other: Self) => Ordering {
+        if *self < other { Ordering::Less }
+        else if *self > other { Ordering::Greater }
+        else { Ordering::Equal }
+    }
+}
+
+conform char to Successor {
+    greater_than(*self, other: Self) => bool { *self > other }
+    equals(*self, other: Self) => bool { *self == other }
+    successor(*self) => Option<Self> {
+        cp := <u32>*self;
+        if cp == 0x10FFFFu32 { return Option<char>::None; }
+        if cp == 0xD7FFu32 { return char::from_u32(0xE000u32); }
+        char::from_u32(cp + 1u32)
+    }
+}
+
+conform char to Bounded {
+    min() => Self { <char>0u8 }
+    # `0x10FFFF` is `char::MAX` -- a constant this file can see is a scalar
+    # value, so there is nothing to check at runtime. Routing it through
+    # `from_u32` would force an `else` branch that cannot be reached and has
+    # no honest value to return: the only candidates for "the maximum" would
+    # be a wrong answer, and `<char>0u8` in particular is the *minimum*,
+    # which would silently inverted-empty every open-ended `char` range.
+    max() => Self {
+        cp := 0x10FFFFu32;
+        *<*char>&cp
+    }
+}

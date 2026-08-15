@@ -70,6 +70,16 @@ build-range: build-core
 test-range: build-range
     ./target/range_demo
 
+# `char`'s semantics need execution to mean anything -- whether `from_u32`
+# actually rejects a surrogate, whether `Successor` skips the hole. Needs only
+# `core`, which is also the assertion that none of it pulls in an allocator.
+build-char: build-core
+    ./target/debug/omgc -v examples/char_demo/ --extern=core:runtime/core/ -o target/char_demo.o
+    cc -Wl,--gc-sections target/char_demo.o target/core.o -o target/char_demo
+
+test-char: build-char
+    ./target/char_demo
+
 # Only `main` in the root module may receive the bare C entry symbol; a child
 # module's identically named function remains normally mangled. Compiled with
 # no `--extern` at all, so this also covers a package that never registers

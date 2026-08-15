@@ -298,29 +298,21 @@ patterns (`'A'..='Z'`), the same shared range grammar
 `integer_domain()` (what `match` exhaustiveness treats as "the whole
 domain") is `0..=0x10FFFF` (`char::MAX`) — the same real range Rust's
 `char` occupies. This doesn't carve out the surrogate hole
-(`0xD800..=0xDFFF`), which is sound rather than an oversight: a `char`
-literal is always validated through `char::from_u32` at parse time, so no
-real `char` value can ever land in that hole in the first place — the
-interval-exhaustiveness checker just doesn't need to know it exists.
+(`0xD800..=0xDFFF`): an honest pointer reinterpretation can manufacture such
+a value, so the continuous interval is a conservative approximation that can
+only require extra coverage, never accept an incomplete match.
 
-That argument holds only because nothing ever *synthesizes* a `char` by
-counting. It is exactly why `char` has no `core::range::Successor`
-conformance and cannot be iterated as a range (`for c in 'a'..<'z'` is
-rejected): stepping a `char` by one would walk straight into the surrogate
-hole and manufacture the very value this reasoning assumes cannot exist —
-and `std::string::String`'s hand-rolled UTF-8 encoder would then emit
-invalid UTF-8 from a perfectly ordinary-looking loop. Rust meets the same
-wall and solves it by having `Step for char` skip `0x800` at the boundary
-instead of adding one. Doing that here needs a checked `u32 -> char`
-conversion the language does not have yet: casting *into* `char` accepts
-only `char` and `u8` sources. Whenever that conversion lands,
-`conform char to Successor` is purely additive — until then this note and
-the exhaustiveness abstraction above stand or fall together.
+`char::from_u32` is the supported checked constructor: it rejects values above
+`0x10FFFF` and surrogates. It is not an enforcement boundary; pointer casts
+are intentionally still able to bypass it. `char` conforms to `Successor` and
+skips the surrogate block when iterated, so `U+D7FF` steps to `U+E000` and
+`for c in 'a'..='z'` uses the ordinary range protocol.
 
-`char` and every pointer type (`*T`/`*mut T`) also support arithmetic/bitwise
-ops (`+ - * / % & | ^ << >>`, and unary `~`) — each
-non-numeric operand implicitly **coerces** to a real numeric type first
-(`ResolvedType::arithmetic_repr`): `char` to `u32`, a pointer to `usize`.
+`char` supports comparisons only. Arithmetic, bitwise operators, and unary
+`~` are rejected; cast explicitly (`<u32>c + 1`) when codepoint arithmetic is
+actually intended. Pointers still coerce to `usize` for their deliberately
+byte-wise arithmetic, but only comparison and pointer subtraction are defined
+between two pointers. Pointer-plus/minus-integer operations remain unscaled.
 
 `bool` does **not** belong to that group, despite sharing some operator
 spellings: it has no `arithmetic_repr`, so it never decays to an integer and
@@ -329,16 +321,9 @@ whole operator set is `==`/`!=` and `&`/`|`/`^`. Since this language has no
 `&&`/`||`/`!`, those three *are* `bool`'s logical operators — they evaluate
 both operands rather than short-circuiting, which is the one thing to know
 before putting a call on the right-hand side of one.
-The **result is that numeric type, never cast back implicitly** —
-`some_char + 1` is a `u32`, not a `char`, and `some_char += 1` still
-doesn't type-check (there's no implicit path back into `char`). This is
-what keeps arithmetic sound despite `char` having no validating
-constructor yet (see below): there is no way for it to ever produce an
-invalid codepoint *as a `char`* — only ever more arithmetic on a plain,
-unconstrained `u32`. `char + char` and `pointer + pointer` are both
-allowed (not unsound, just unusual) — the result's different type from
-either operand is itself already a strong signal that something numeric,
-not "`char`-shaped", happened. A pointer coerces even for `==`/`!=`, which
+Pointer arithmetic produces `usize`, never a pointer implicitly. `char +
+char` and `pointer + pointer` are rejected. A pointer coerces even for
+`==`/`!=`, which
 is what makes comparing a `*mut T` against a `*T` type-check for free:
 both sides become a plain `usize`, so pointee type and mutability never
 enter the comparison at all.
@@ -356,13 +341,9 @@ Casting follows the same asymmetry Rust's own `as` does: `char`/`bool`
 both cast *out* to any numeric type freely, but only one direction casts
 back *in* — `u8 -> char` (every byte is a valid codepoint) — and nothing
 at all casts into `bool` (no implicit "nonzero is true"). Any other
-integer into `char` (an arbitrary `u32`, say) is still rejected: this
-compiler has no fallible/validating constructor yet
-(`char::from_u32`-equivalent) to catch a codepoint that isn't a valid
-Unicode scalar value, and a plain cast allowing it would silently violate
-`char`'s own invariant. That's **future work**, not solved narrowly here —
-noted so it doesn't get silently "fixed" by just widening the cast rules
-later without thinking through the validity question again.
+integer into `char` (an arbitrary `u32`, say) is still rejected. Use
+`char::from_u32`, the supported validating constructor; pointer reinterprets
+remain an intentional bypass in this systems-language model.
 
 ## Layout, packing, and `sizeof`
 

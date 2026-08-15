@@ -226,11 +226,9 @@ match c {
 } else { 0 }
 ```
 
-A `char` range is only ever meaningful as a `match` pattern — `char` has
-no arithmetic, so unlike an integer range there's no sensible notion of
-"step" or iteration over one (and, correspondingly, `char`/`bool` are
-*not* legal range-driven `for`-loop element types even though both have
-an `integer_domain()` — see [`for`..`in` loops](18-for-in-loops.md)).
+A `char` range is meaningful both as a `match` pattern and as an iterated
+range. Its `Successor` implementation skips UTF-16 surrogates, so iteration
+never produces them; `bool` remains ineligible for range-driven `for` loops.
 
 ### The `..` catch-all arm
 

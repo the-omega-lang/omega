@@ -837,28 +837,18 @@ impl ResolvedType {
 
     /// The numeric type a non-numeric operand implicitly *coerces* to for an
     /// arithmetic or bitwise op (`+ - * / % & | ^ << >>` binary, `~` unary) --
-    /// `None` for anything with no such stand-in, including `Bool` (see
+    /// `None` for anything with no such stand-in, including `Char` and `Bool` (see
     /// `Analyzer::analyze_binary_op`'s doc comment for why `Bool` is handled
     /// natively instead of through this) and everything else that simply
     /// isn't arithmetic-eligible at all (structs, functions, ...).
     ///
-    /// The coerced value is always this returned type, *never* cast back to
-    /// `self` implicitly -- `some_char + 1` is a `u32`, not a `char`, and
-    /// `some_char += 1` still doesn't type-check (the result would need an
-    /// explicit cast back to assign into a `char` place). This is what keeps
-    /// `Char`'s coercion sound despite `Char` having no validating
-    /// constructor yet (see its own doc comment): there is no path back into
-    /// `Char` from arbitrary arithmetic, only ever further arithmetic on a
-    /// plain, unconstrained `u32`.
-    ///
     /// The chosen representative always matches the exact scalar
-    /// `layout::Leaf` codegen already stores the type as (`Char` as
-    /// `Leaf::I32`, a pointer as `Leaf::Ptr`, both target-pointer-width) --
+    /// `layout::Leaf` codegen already stores the type as (a pointer as
+    /// `Leaf::Ptr`, target-pointer-width) --
     /// so the coercion is always a same-width `CastKind::Reinterpret`, free
     /// at runtime, purely a compile-time relabeling.
     pub fn arithmetic_repr(&self) -> Option<ResolvedType> {
         match self {
-            Self::Char => Some(ResolvedType::U32),
             Self::Pointer { .. } => Some(ResolvedType::USize),
             _ => None,
         }
@@ -954,11 +944,10 @@ impl ResolvedType {
     ///
     /// `Char`'s domain is `0..=0x10FFFF` (`char::MAX`), the full range of a
     /// Unicode scalar value -- it does *not* carve out the surrogate hole
-    /// (`0xD800..=0xDFFF`), which is fine, not unsound: a real `char` value
-    /// can never actually land in that hole in the first place (char
-    /// literals are validated through `char::from_u32` at parse time), so
-    /// this interval abstraction just doesn't know about a gap nothing can
-    /// ever fall into. A match covering the full `0..=0x10FFFF` range is
+    /// (`0xD800..=0xDFFF`). Pointer reinterprets can manufacture such a
+    /// value, so this is deliberately a conservative interval abstraction:
+    /// it may demand an arm for an unsupported value, but it never accepts
+    /// an incomplete match. A match covering the full `0..=0x10FFFF` range is
     /// correctly recognized as exhaustive; it just can't (today) recognize
     /// a match that covers the domain *around* the hole without touching
     /// it as exhaustive without an `else` -- a minor conservatism, not a

@@ -69,6 +69,11 @@ compiled object: definitions from `core.o` must be linked when used.
   `is_empty`, `as_bytes`, `starts_with`, `ends_with`, and `contains`.
   Equality, hashing, and display of `str` are standard-library
   conformances.
+- **`core::primitives::char`** supplies `from_u32`, ASCII classifiers/case
+  mapping, UTF-8 encoded length, and the `Ord`/`Successor`/`Bounded`
+  conformances used by generic range iteration. The alphabetic and whitespace
+  classifiers are intentionally ASCII-only; Unicode tables do not belong in
+  freestanding core.
 
 ## Platform capabilities
 

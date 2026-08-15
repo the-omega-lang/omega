@@ -74,20 +74,29 @@ new one is found.
   `*str` and `*[]u8`/`*[]i8` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
   [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
-- **`char`/pointer arithmetic and `bool` logical-not are fixed; casting an
-  arbitrary integer into `char`/`bool` and the `!` operator are still not
-  implemented.** `char`/pointers now get arithmetic/bitwise ops (and
-  casting out to any numeric type) by coercing to `u32`/`usize` first,
-  never back implicitly; `bool` now gets native `== != & | ^`. What's
-  still missing: casting an arbitrary integer *into* `char` (only `u8` is
-  guaranteed to produce a valid codepoint, so only that direction is
-  allowed — a real validating path, e.g. a fallible `char::from_u32`-style
-  constructor, is deliberate future work, not solved narrowly here), and
-  a `!` (logical-not) operator for `bool` (a real, if small, language
-  feature — a new parser token plus a new `Expression`/`HirExpr`/
-  `CheckedExpr`/`MirExpr` variant — left for a dedicated follow-up rather
-  than folded into an otherwise analyzer-only change).
-  [primitives.md](01-primitives.md), [control-flow.md](03-control-flow.md)
+- **`char`'s classifiers are ASCII-only, not Unicode.** `is_alphabetic`,
+  `is_whitespace` and `to_ascii_*` cover the ASCII range and nothing beyond
+  it; a `char` above `0x7F` is reported as neither alphabetic nor whitespace
+  regardless of what Unicode says. Full classification needs property tables,
+  which do not belong in a freestanding `core` without a decision about where
+  that data lives and what it costs in code size. The names are deliberately
+  honest about the `to_ascii_*` half; the `is_*` half is the one that could
+  mislead. [primitives.md](01-primitives.md)
+- **`char`'s validity is a supported path, not an enforced invariant.**
+  `char::from_u32` rejects out-of-range values and UTF-16 surrogates, and the
+  direct `<char>some_u32` cast stays refused — but a pointer reinterpretation
+  (`*<*char>&some_u32`) still produces an arbitrary bit pattern as a `char`,
+  from any package. This is accepted rather than fixed: closing it means
+  restricting pointer casts, which contradicts the honest-address model. It
+  is recorded because several comments would otherwise be tempted to claim a
+  `char` is always valid — the true statement is that the supported path
+  always produces a valid one. [primitives.md](01-primitives.md)
+- **There is no `!` (logical-not) operator for `bool`.** `& | ^` are `bool`'s
+  logical operators (non-short-circuiting, since `&&`/`||` do not exist
+  either), and negation is written `if x { false } else { true }` — see
+  `core::cmp`'s `not_equals`. Adding `!` is a real if small language feature:
+  a new parser token plus a new `Expression`/`HirExpr`/`CheckedExpr`/`MirExpr`
+  variant. [control-flow.md](03-control-flow.md)
 - **`std::fmt`'s float output is fixed-precision, not round-trip** — six
   fractional digits, with a scientific fallback below `1e-6` and at or above
   `1e19` whose normalization loop (repeated multiply/divide by ten) is itself

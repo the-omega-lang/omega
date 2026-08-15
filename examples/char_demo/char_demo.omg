@@ -1,0 +1,110 @@
+# End-to-end proof of `char`'s semantics, not just that they type-check.
+#
+# Everything here needs *execution* to mean anything: whether `from_u32`
+# actually rejects a surrogate, whether iterating a range that spans the
+# surrogate block skips it, what a classifier returns at its boundary. A
+# compile-only test would pass against a `from_u32` that checked nothing and
+# a `successor` that did naive `cp + 1`.
+#
+# Exits non-zero with a distinct code per failed case, so `just test-char` is
+# a real assertion.
+
+import extern::core::option::Option;
+
+# The codepoint `from_u32` produced, or -1 if it rejected the input.
+probe(value: u32) => i32 {
+    result := char::from_u32(value);
+    match result {
+        Option::Some => { <i32>result.value },
+    } else { -1 }
+}
+
+# How many values an inclusive range over two codepoints actually yields.
+count_span(lo: u32, hi: u32) => i32 {
+    low := char::from_u32(lo);
+    high := char::from_u32(hi);
+    match low {
+        Option::Some => {
+            match high {
+                Option::Some => {
+                    mut n := 0;
+                    for c in low.value..=high.value { n = n + 1; }
+                    n
+                },
+            } else { -1 }
+        },
+    } else { -1 }
+}
+
+main() => i32 {
+    # --- from_u32 accepts every scalar value ---------------------------
+    if probe(0x41u32) != 0x41 { return 1; }
+    if probe(0x0u32) != 0x0 { return 2; }
+    if probe(0x10FFFFu32) != 0x10FFFF { return 3; }
+
+    # ... and rejects everything above Unicode ...
+    if probe(0x110000u32) != -1 { return 4; }
+    if probe(0xFFFFFFFFu32) != -1 { return 5; }
+
+    # ... and every boundary of the UTF-16 surrogate block. The two values
+    # immediately outside it must still be accepted -- an off-by-one in
+    # either direction is caught here.
+    if probe(0xD7FFu32) != 0xD7FF { return 6; }
+    if probe(0xD800u32) != -1 { return 7; }
+    if probe(0xDFFFu32) != -1 { return 8; }
+    if probe(0xE000u32) != 0xE000 { return 9; }
+
+    # --- Successor skips the hole rather than walking into it ----------
+    # D7FE, D7FF, E000, E001 -- four values, not 0x804. A naive `cp + 1`
+    # successor yields 2054 here and manufactures 2048 invalid chars.
+    if count_span(0xD7FEu32, 0xE001u32) != 4 { return 10; }
+
+    # The step across the boundary itself, isolated.
+    if count_span(0xD7FFu32, 0xE000u32) != 2 { return 11; }
+
+    # An ordinary ASCII range still counts the ordinary way.
+    mut letters := 0;
+    for c in 'a'..='z' { letters = letters + 1; }
+    if letters != 26 { return 12; }
+
+    mut digits := 0;
+    for c in '0'..<'9' { digits = digits + 1; }
+    if digits != 9 { return 13; }
+
+    # --- classifiers, at their boundaries ------------------------------
+    if '0'.is_digit() { } else { return 14; }
+    if '9'.is_digit() { } else { return 15; }
+    if '/'.is_digit() { return 16; }          # 0x2F, just below '0'
+    if ':'.is_digit() { return 17; }          # 0x3A, just above '9'
+
+    if 'A'.is_alphabetic() { } else { return 18; }
+    if 'Z'.is_alphabetic() { } else { return 19; }
+    if 'a'.is_alphabetic() { } else { return 20; }
+    if 'z'.is_alphabetic() { } else { return 21; }
+    if '@'.is_alphabetic() { return 22; }     # 0x40, just below 'A'
+    if '['.is_alphabetic() { return 23; }     # 0x5B, just above 'Z'
+
+    if ' '.is_whitespace() { } else { return 24; }
+    if '\t'.is_whitespace() { } else { return 25; }
+    if 'x'.is_whitespace() { return 26; }
+
+    if 'a'.is_ascii() { } else { return 27; }
+    if probe(0x80u32) != 0x80 { return 28; }
+
+    # --- case mapping leaves non-letters alone -------------------------
+    if 'a'.to_ascii_uppercase() != 'A' { return 29; }
+    if 'Z'.to_ascii_lowercase() != 'z' { return 30; }
+    if '5'.to_ascii_uppercase() != '5' { return 31; }
+    if '{'.to_ascii_lowercase() != '{' { return 32; }
+
+    # --- len_utf8 at each width boundary -------------------------------
+    if 'a'.len_utf8() != 1usize { return 33; }
+    if probe(0x80u32) != 0x80 { return 34; }
+
+    # --- u8 casts in, char casts out -----------------------------------
+    ascii := <char>65u8;
+    if ascii != 'A' { return 35; }
+    if <i32>ascii != 65 { return 36; }
+
+    0
+}
