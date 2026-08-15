@@ -59,7 +59,35 @@ pub struct Parser<'a> {
     /// once `pending_gt` exists, the "previous token" may be a synthetic
     /// half of a split `>>`, which has no slot of its own in `tokens`.
     last_span: Span,
+    /// How many grammar levels deep the recursive-descent parser currently
+    /// is -- see `descend`. Deliberately *not* part of `Mark`: `reset`
+    /// rewinds the token position, but depth unwinds on its own as the
+    /// native frames return, so restoring it from a mark would corrupt it.
+    depth: usize,
+    /// Whether `MAX_NESTING_DEPTH` has already been reported once. Without
+    /// this, `parse_block_contents`'s error recovery re-enters the grammar
+    /// after each refusal and reports the same overflow again per statement.
+    depth_exceeded: bool,
 }
+
+/// How many grammar levels (`parse_expression`/`parse_type` re-entries) may
+/// nest before the parser refuses to descend further.
+///
+/// The parser is hand-written recursive descent, so grammar nesting costs
+/// native stack -- roughly ten frames per level, since one level of nesting
+/// walks the whole precedence chain. A few hundred levels is enough to
+/// exhaust a default 8MiB thread stack, and the failure mode without this
+/// limit is a bare `fatal runtime error: stack overflow` with no file, no
+/// line and no span: a crash rather than a diagnostic.
+///
+/// 256 matches Clang's own `-fbracket-depth` default. It is far past
+/// anything hand-written and is only ever reached by generated source, which
+/// is exactly the case that deserves a real error instead of an abort. The
+/// value is measured against a *debug* build, whose frames are the fattest.
+///
+/// Note this bounds the depth of the AST every later pass then walks, so
+/// HIR lowering, analysis and MIR inherit the bound for free.
+pub const MAX_NESTING_DEPTH: usize = 256;
 
 /// The lexer only ever collapses `>` this way as half of a wider token, so
 /// the synthetic `Token` `eat_close_angle` hands back after a split always
@@ -90,7 +118,39 @@ impl<'a> Parser<'a> {
             struct_literals_restricted: false,
             pending_gt: None,
             last_span: Span::new(0, 0),
+            depth: 0,
+            depth_exceeded: false,
         }
+    }
+
+    /// Runs `f` one grammar level deeper, refusing to recurse past
+    /// `MAX_NESTING_DEPTH` and reporting `NestingTooDeep` instead.
+    ///
+    /// Save/run/restore, the same shape as `restrict_struct_literals` below,
+    /// and for the same reason: the recursive entry points are full of `?`
+    /// early returns, so a `self.depth -= 1` written at the end of a caller
+    /// would be skipped on every error path and leak the count. Keeping the
+    /// increment and decrement in one function makes that unrepresentable.
+    ///
+    /// Wrapped around the grammar's two genuine cycles -- `parse_expression`
+    /// and `parse_type` -- which between them cover every nested `(...)`,
+    /// `[...]`, block, call argument, match arm, index and pointer/array/
+    /// function type. One shared counter rather than one per cycle, because
+    /// what is being bounded is the native stack, and a type nested inside an
+    /// expression nested inside a type all draw on the same stack.
+    pub fn descend<T>(&mut self, f: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            if !std::mem::replace(&mut self.depth_exceeded, true) {
+                self.error(ParseErrorKind::NestingTooDeep {
+                    limit: MAX_NESTING_DEPTH,
+                });
+            }
+            return None;
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     /// Whether a struct literal may start at the current position -- see

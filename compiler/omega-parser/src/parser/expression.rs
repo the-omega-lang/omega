@@ -45,8 +45,14 @@ use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::par
 /// matching Rust's precedence rather than C's -- C famously binds `&`/`|`
 /// looser than `==`, so `a & b == c` silently means `a & (b == c)`; putting
 /// the bitwise ops above comparison here avoids that footgun entirely.
+///
+/// This is one of the grammar's two genuine cycles (the other is
+/// `parse_type`), so it carries the nesting guard: every nested `(...)`,
+/// `[...]`, block, call argument, match arm and index re-enters here, which
+/// is what lets a single `descend` bound the parser's native stack use. See
+/// `Parser::descend` and `MAX_NESTING_DEPTH`.
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
-    parse_range_or_expression(p)
+    p.descend(parse_range_or_expression)
 }
 
 /// Plain `=` and every "operate and assign" form (`+= -= *= /= %= &= |= ^=
@@ -1249,4 +1255,96 @@ pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
         }
     };
     Some(CodeblockExpr { statements, tail })
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use crate::SourceModule;
+    use crate::diagnostics::ParseErrorKind;
+    use crate::parser::MAX_NESTING_DEPTH;
+
+    /// Parsing at (or near) `MAX_NESTING_DEPTH` genuinely needs more native
+    /// stack than a default test thread has -- cargo's harness threads get
+    /// roughly 2MiB, and the limit is calibrated against the much larger
+    /// stack `omgc` runs its real work on. So these cases run on an
+    /// explicitly sized thread, the same mitigation `omgc::main` uses.
+    ///
+    /// That this is necessary *is* the point of the limit: nesting costs
+    /// stack, the cost is bounded but not small, and the bound is what turns
+    /// the failure into a diagnostic rather than an abort.
+    fn on_a_deep_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread panicked")
+    }
+
+    fn nested_parens(depth: usize) -> String {
+        format!("f() => i32 {{ x := {}1{}; x }}", "(".repeat(depth), ")".repeat(depth))
+    }
+
+    fn nested_pointers(depth: usize) -> String {
+        format!("f(p: {}i32) => void {{ }}", "*[?]".repeat(depth))
+    }
+
+    fn nesting_errors(source: &str) -> usize {
+        match SourceModule::parse(source) {
+            Ok(_) => 0,
+            Err(errors) => errors
+                .iter()
+                .filter(|e| matches!(e.kind, ParseErrorKind::NestingTooDeep { .. }))
+                .count(),
+        }
+    }
+
+    /// Just inside the limit still parses -- the guard must not take away
+    /// headroom that real (or generated) programs already had.
+    #[test]
+    fn nesting_just_inside_the_limit_is_accepted() {
+        // Two levels of slack: the function body's own block and the walrus
+        // value each consume one before the parentheses start.
+        let source = nested_parens(MAX_NESTING_DEPTH - 2);
+        assert!(on_a_deep_stack(move || SourceModule::parse(&source).is_ok()));
+    }
+
+    /// ... and past it, a diagnostic instead of a stack overflow. Before this
+    /// guard the process aborted with `fatal runtime error: stack overflow`:
+    /// no file, no line, no span.
+    #[test]
+    fn nesting_past_the_limit_is_a_diagnostic() {
+        let source = nested_parens(MAX_NESTING_DEPTH + 8);
+        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    }
+
+    /// Types recurse entirely within `parse_type` (`*[?]*[?]T` never reaches
+    /// expression parsing), so they need the guard independently -- one
+    /// shared counter, two call sites.
+    #[test]
+    fn deeply_nested_types_are_bounded_too() {
+        let source = nested_pointers(MAX_NESTING_DEPTH + 8);
+        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    }
+
+    /// Reported once per module, not once per recovery attempt: block-level
+    /// error recovery re-enters the grammar after each refusal, so without
+    /// the latch every following statement reports the same overflow again.
+    #[test]
+    fn the_nesting_limit_is_reported_once() {
+        let deep = "(".repeat(MAX_NESTING_DEPTH + 8) + "1" + &")".repeat(MAX_NESTING_DEPTH + 8);
+        let source = format!("f() => i32 {{ a := {deep}; b := {deep}; c := {deep}; 0 }}");
+        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    }
+
+    /// The property the original stack-overflow diagnosis got wrong: block
+    /// parsing is a `loop`, so a long *sequence* of statements costs no stack
+    /// at all and must never trip a depth limit. This runs on the ordinary
+    /// test stack deliberately -- 20k statements need no headroom whatsoever.
+    #[test]
+    fn a_long_statement_sequence_is_not_nesting() {
+        let body = "acc = acc + 1;\n".repeat(20_000);
+        let source = format!("f() => i32 {{ mut acc := 0;\n{body}acc }}");
+        assert!(SourceModule::parse(&source).is_ok());
+    }
 }

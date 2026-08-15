@@ -7,15 +7,32 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// `omega-parser`'s grammar is a hand-written recursive-descent parser,
-/// including a few genuinely stack-recursive shapes (e.g. `CodeblockExpr`'s
-/// body parser recurses one native stack frame per statement in a block --
-/// see its doc comment). A single large `main()` like
-/// `examples/dev/dev.omg`'s can get deep enough to exceed the platform's
-/// default thread stack (commonly 8MiB), so the real work runs on a
-/// dedicated thread with a much larger stack instead of the process's main
-/// thread -- the same mitigation real-world recursive-descent compilers
-/// commonly use, rather than a change to the grammar itself.
+/// The whole pipeline recurses over the AST -- a hand-written
+/// recursive-descent parser, then HIR lowering, analysis and MIR, all of
+/// which walk nested expressions and types with native recursion. So
+/// *grammar nesting depth* costs native stack, and enough of it exceeds the
+/// platform's default thread stack (commonly 8MiB). The length of a statement
+/// *sequence* does not: `parse_block_contents` is an ordinary `loop`, and
+/// 20,000 sequential statements parse fine on a default stack. There is a
+/// test pinning that, because an earlier diagnosis had it backwards and
+/// blamed per-statement recursion that does not exist.
+///
+/// Depth is bounded at the front door by `omega_parser::parser::
+/// MAX_NESTING_DEPTH`, which reports `NestingTooDeep` instead of letting the
+/// process die with a bare `fatal runtime error: stack overflow` -- no file,
+/// no line, no span. That bounds AST depth for every later pass too.
+///
+/// This large stack is still required, and is not redundant with that limit.
+/// Measured: an expression the parser accepts at ~250 levels still overflows
+/// an 8MiB stack *after* parsing, because the later passes spend
+/// considerably more stack per AST level than parsing does. Shrinking this
+/// number therefore means either dropping `MAX_NESTING_DEPTH` well below
+/// Clang's comparable default of 256, or giving lowering and analysis their
+/// own depth accounting. Until one of those happens the limit buys the
+/// diagnostic and this buys the headroom; they are not substitutes.
+///
+/// The reservation is virtual -- Linux commits stack pages lazily, so a
+/// compile that never recurses deeply never touches most of it.
 fn main() {
     std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)

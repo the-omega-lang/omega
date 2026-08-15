@@ -91,6 +91,10 @@ impl ParseError {
             ParseErrorKind::OpenRangeHasEnd => d
                 .with_label(self.span, "an open range ('..') can't have an end")
                 .with_help("did you mean `..=end` (inclusive) or `..<end` (exclusive)?"),
+            ParseErrorKind::NestingTooDeep { limit } => d
+                .with_label(self.span, format!("nesting goes deeper than {limit} levels here"))
+                .with_note("the parser is recursive descent, so each level of nesting costs native stack -- this limit turns what would be a stack overflow into a diagnostic")
+                .with_help("this is far past anything hand-written; if the source is generated, emit intermediate bindings instead of one deeply nested expression"),
             ParseErrorKind::AnnotationNotAllowedHere => d
                 .with_label(self.span, "this item can't carry annotations")
                 .with_help("annotations are only allowed on structs, enums, unions, and functions"),
@@ -217,6 +221,11 @@ pub enum ParseErrorKind {
     /// range-driven `for` loop's body) -- `..` never takes an end at all;
     /// this almost always means `..=`/`..<` was meant instead.
     OpenRangeHasEnd,
+    /// Grammar nesting exceeded `parser::MAX_NESTING_DEPTH`. Reported once
+    /// per module rather than per offending token: the parser refuses to
+    /// descend, and block-level error recovery would otherwise re-enter and
+    /// re-report the same overflow for every remaining statement.
+    NestingTooDeep { limit: usize },
     /// One or more `@name(...)` annotations directly above an item that has
     /// nowhere to store them -- only structs, enums, unions, and functions
     /// (top-level or member) carry an `annotations` list at all; annotating
@@ -326,6 +335,9 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::OpenRangeHasEnd => {
                 write!(f, "an open range ('..') can't have an end")
+            }
+            Self::NestingTooDeep { limit } => {
+                write!(f, "expression or type nests more than {limit} levels deep")
             }
             Self::AnnotationNotAllowedHere => {
                 write!(

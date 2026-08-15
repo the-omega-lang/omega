@@ -13,8 +13,14 @@ use crate::parser::{Parser, parse_path};
 /// so `*[]T`/`*mut []T`/`*[?]T`/`*mut [?]T` all fall out of the ordinary
 /// pointer grammar recursing back into this function for its pointee,
 /// with no special-casing needed in the parser at all.
+///
+/// The second of the grammar's two cycles (the other is `parse_expression`),
+/// and so the second `descend` site: `*[?]*[?]T` recurses entirely within
+/// types and never passes through expression parsing, so the expression
+/// guard alone would not bound it. Both share one counter -- see
+/// `Parser::descend`.
 pub fn parse_type(p: &mut Parser) -> Option<Type> {
-    match p.peek() {
+    p.descend(|p| match p.peek() {
         TokenKind::Star => parse_pointer_type(p),
         TokenKind::LBracket => parse_bracket_type(p),
         TokenKind::LParen => parse_function_type(p),
@@ -24,7 +30,7 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
             p.error(ParseErrorKind::Expected { expected: "a type", found: p.peek().describe() });
             None
         }
-    }
+    })
 }
 
 /// `*T` or `*mut T` -- `mut` is a contextual keyword here (see
