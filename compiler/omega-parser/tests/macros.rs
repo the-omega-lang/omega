@@ -267,3 +267,9 @@ fn negative_macro_cases_report_the_new_diagnostics() {
             .contains("expects at least 1 argument(s)")
     );
 }
+
+#[test]
+fn import_in_a_macro_body_is_rejected_at_definition_time() {
+    let errors = SourceModule::parse("macro m() => { import io::Write; }").unwrap_err();
+    assert!(errors.iter().any(|error| error.to_string().contains("imports are not allowed in macro bodies")));
+}

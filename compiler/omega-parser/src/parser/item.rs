@@ -461,12 +461,13 @@ fn parse_item_walrus(
     comp: bool,
     visibility: Visibility,
 ) -> Option<WalrusStmt> {
-    let ident = p.expect_ident()?;
+    let (ident, origin) = p.expect_ident_with_origin()?;
     p.expect(&TokenKind::ColonEq, "':='");
     let value = parse_expression(p)?;
     p.expect_terminator(&TokenKind::Semi, "';'");
     Some(WalrusStmt {
         ident,
+        origin,
         value,
         mutable,
         comp,

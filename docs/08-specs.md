@@ -149,7 +149,7 @@ out: spec *mut Write)`, what `*self` actually means depends on what `Self` is:
 substitution re-stamps `*self` rather than wrapping it (see
 `Context::resolve_pointer_type`) — writing `&"hi"` by hand would produce a
 pointer to a pointer. This is precisely why `std::io`'s print macros can
-spell `Display::fmt($args, &mut omega_print_out)` at all: a macro cannot know
+spell `Display::fmt($args, &mut out)` at all: a macro cannot know
 which of these shapes its argument is, so the adaptation has to happen in the
 compiler rather than in the macro body.
 

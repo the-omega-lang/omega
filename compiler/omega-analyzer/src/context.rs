@@ -73,7 +73,7 @@ pub struct ScopeContext {
     /// bindings in a deterministic (declaration) order rather than
     /// `HashMap`'s per-process-random one -- insertion order already *is*
     /// declaration order here, so this gets that for free.
-    pub declared_variables: IndexMap<Ident, VarBinding>,
+    pub declared_variables: IndexMap<(Ident, Origin), VarBinding>,
     /// `IndexMap`, not `HashMap` -- `Context::similar_type_name` (the "did
     /// you mean" candidate source for an unrecognized type name) iterates
     /// every scope's `defined_types` and picks the first candidate on an
@@ -100,11 +100,16 @@ impl ScopeContext {
     /// name-keyed stack-slot map, which only coincidentally caught
     /// same-function redeclaration and never caught it for parameters at
     /// all).
-    pub fn declare(&mut self, ident: Ident, binding: VarBinding) -> Result<(), (Ident, Span)> {
-        if let Some(existing) = self.declared_variables.get(&ident) {
+    pub fn declare(
+        &mut self,
+        ident: Ident,
+        origin: Origin,
+        binding: VarBinding,
+    ) -> Result<(), (Ident, Span)> {
+        if let Some(existing) = self.declared_variables.get(&(ident.clone(), origin)) {
             return Err((ident, existing.span));
         }
-        self.declared_variables.insert(ident, binding);
+        self.declared_variables.insert((ident, origin), binding);
         Ok(())
     }
 }
@@ -161,11 +166,22 @@ impl Context {
     }
 
     // Finder functions
-    pub fn find_variable(&self, ident: &Ident) -> Option<&VarBinding> {
-        self.scopes
+    pub fn find_variable(&self, ident: &Ident, origin: Origin) -> Option<&VarBinding> {
+        let found = self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.declared_variables.get(ident))
+            .find_map(|scope| scope.declared_variables.get(&(ident.clone(), origin)));
+        // `self` is an implicit receiver binding synthesized by lowering,
+        // not a lexical declaration token. Like type-side `Self`, it must
+        // remain available inside a macro-generated method body.
+        found.or_else(|| {
+            (ident.as_ref() == "self").then(|| {
+                self.scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.declared_variables.get(&(ident.clone(), Origin::default())))
+            })?
+        })
     }
 
     /// "De-assumes" a proof the instant a mutable reference to `ident`'s
@@ -179,11 +195,22 @@ impl Context {
     /// `ResolvedType::accepts`'s doc comment for why this -- rather than
     /// ever letting a *mutable* pointer/slice widen implicitly -- is how
     /// this compiler closes that aliasing hole.
-    pub fn widen_variable(&mut self, ident: &Ident) {
+    pub fn widen_variable(&mut self, ident: &Ident, origin: Origin) {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.declared_variables.get_mut(ident) {
+            if let Some(binding) = scope.declared_variables.get_mut(&(ident.clone(), origin)) {
                 binding.r#type = binding.r#type.widened();
                 return;
+            }
+        }
+        if ident.as_ref() == "self" {
+            for scope in self.scopes.iter_mut().rev() {
+                if let Some(binding) = scope
+                    .declared_variables
+                    .get_mut(&(ident.clone(), Origin::default()))
+                {
+                    binding.r#type = binding.r#type.widened();
+                    return;
+                }
             }
         }
     }
@@ -234,7 +261,12 @@ impl Context {
     /// most similar to `target`, if any is close enough -- the "did you
     /// mean" candidate for an undefined-variable diagnostic.
     pub fn similar_variable_name(&self, target: &Ident) -> Option<Ident> {
-        best_match(target, self.scopes.iter().flat_map(|scope| scope.declared_variables.keys()))
+        best_match(
+            target,
+            self.scopes
+                .iter()
+                .flat_map(|scope| scope.declared_variables.keys().map(|(ident, _)| ident)),
+        )
     }
 
     /// The visible type name most similar to `target` -- builtins and
@@ -292,6 +324,9 @@ impl Context {
         path: &Path,
         module_path: &[Ident],
     ) -> Result<Vec<Ident>, TypeResolutionError> {
+        let resolution_module = resolver
+            .macro_origin_module(path.origin)
+            .unwrap_or_else(|| module_path.to_vec());
         if path.is_unqualified() {
             // `ImportTarget::Item`'s own eagerly-resolved snapshot is
             // deliberately ignored here, same as `resolve_named_type`'s
@@ -299,18 +334,31 @@ impl Context {
             // *path*; every caller re-resolves through `resolver` itself
             // afterward (with its own real `indirect`/args), never trusting
             // a cached snapshot built with someone else's assumptions.
-            match resolver.resolve_import_alias(module_path, &path.head).map_err(TypeResolutionError::ModuleResolution)? {
+            match resolver
+                .resolve_import_alias(&resolution_module, &path.head)
+                .map_err(TypeResolutionError::ModuleResolution)?
+            {
                 Some(ImportTarget::GenericItem(absolute)) => return Ok(absolute),
                 Some(ImportTarget::Item(absolute, _)) => return Ok(absolute),
                 _ => {}
             }
-            Ok(module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect())
+            Ok(resolution_module
+                .iter()
+                .cloned()
+                .chain(std::iter::once(path.head.clone()))
+                .collect())
         } else {
-            match resolver.resolve_import_alias(module_path, &path.head).map_err(TypeResolutionError::ModuleResolution)? {
+            match resolver
+                .resolve_import_alias(&resolution_module, &path.head)
+                .map_err(TypeResolutionError::ModuleResolution)?
+            {
                 Some(ImportTarget::Module(target)) => Ok(target.into_iter().chain(path.tail.iter().cloned()).collect()),
                 _ => Err(TypeResolutionError::ModuleNotImported {
                     name: path.head.clone(),
-                    similar: best_match(&path.head, resolver.import_alias_names(module_path).iter()),
+                    similar: best_match(
+                        &path.head,
+                        resolver.import_alias_names(&resolution_module).iter(),
+                    ),
                 }),
             }
         }
@@ -401,6 +449,9 @@ impl Context {
         indirect: bool,
         bypass: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
+        let resolution_module = resolver
+            .macro_origin_module(path.origin)
+            .unwrap_or_else(|| module_path.to_vec());
         let resolved = {
             if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect, bypass)? {
                 resolved
@@ -436,7 +487,7 @@ impl Context {
                     // `InProgress`, which is exactly the case this
                     // exists to catch.
                     let alias = resolver
-                        .resolve_import_alias(module_path, &path.head)
+                        .resolve_import_alias(&resolution_module, &path.head)
                         .map_err(TypeResolutionError::ModuleResolution)?;
                     if let Some(ImportTarget::Item(_, ResolvedItem::Value { .. })) = alias {
                         return Err(TypeResolutionError::NotAType(vec![path.head.clone()]));
@@ -445,9 +496,13 @@ impl Context {
                         Some(ImportTarget::Item(absolute, _))
                         | Some(ImportTarget::GenericItem(absolute))
                         | Some(ImportTarget::Module(absolute)) => absolute,
-                        None => module_path.iter().cloned().chain(std::iter::once(path.head.clone())).collect(),
+                        None => resolution_module
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(path.head.clone()))
+                            .collect(),
                     };
-                    match resolver.resolve_item(module_path, &absolute, &[], indirect, bypass) {
+                    match resolver.resolve_item(&resolution_module, &absolute, &[], indirect, bypass) {
                         Ok(ResolvedItem::Type(t)) => t,
                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => return Err(TypeResolutionError::NotAType(absolute)),
                         // The implicit own-module fallback missing isn't
@@ -468,9 +523,9 @@ impl Context {
                         // not `Option<T>` -- never reaches that function at
                         // all.
                         Err(ResolveError::UnknownItem { .. }) => {
-                            match resolver.ambient_core_candidates(module_path, &path.head) {
+                            match resolver.ambient_core_candidates(&resolution_module, &path.head) {
                                 Ok(Some(ambient_absolute)) => {
-                                    match resolver.resolve_item(module_path, &ambient_absolute, &[], indirect, bypass) {
+                                    match resolver.resolve_item(&resolution_module, &ambient_absolute, &[], indirect, bypass) {
                                         Ok(ResolvedItem::Type(t)) => t,
                                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                                             return Err(TypeResolutionError::NotAType(ambient_absolute));
@@ -481,8 +536,8 @@ impl Context {
                                 Ok(None) => {
                                     let similar = self
                                         .similar_type_name(&path.head)
-                                        .or_else(|| best_match(&path.head, resolver.import_alias_names(module_path).iter()))
-                                        .or_else(|| resolver.similar_item_name(module_path, &path.head, ItemNamespace::Type));
+                                        .or_else(|| best_match(&path.head, resolver.import_alias_names(&resolution_module).iter()))
+                                        .or_else(|| resolver.similar_item_name(&resolution_module, &path.head, ItemNamespace::Type));
                                     return Err(TypeResolutionError::UnrecognizedNamedType {
                                         name: path.head.clone(),
                                         similar,
@@ -500,7 +555,7 @@ impl Context {
                 // is resolved across modules by `resolver`, never locally.
                 let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
-                    .resolve_item(module_path, &absolute, &[], indirect, bypass)
+                    .resolve_item(&resolution_module, &absolute, &[], indirect, bypass)
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
@@ -523,13 +578,16 @@ impl Context {
         indirect: bool,
         bypass: bool,
     ) -> Result<ResolvedType, TypeResolutionError> {
+        let resolution_module = resolver
+            .macro_origin_module(path.origin)
+            .unwrap_or_else(|| module_path.to_vec());
         let resolved = {
             let resolved_args = args
                 .into_iter()
                 .map(|arg| self.resolve_type(arg, resolver, module_path, true, bypass))
                 .collect::<Result<Vec<_>, _>>()?;
             let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
-            let result = resolver.resolve_item(module_path, &absolute, &resolved_args, indirect, bypass);
+            let result = resolver.resolve_item(&resolution_module, &absolute, &resolved_args, indirect, bypass);
             // An unqualified name that doesn't resolve to anything local
             // gets one more try against every exposed name in `core`'s own
             // tree -- see `ModuleResolver::ambient_core_candidates`'s doc
@@ -537,9 +595,9 @@ impl Context {
             // hardcoded table this used to be).
             let result = match (&result, path.is_unqualified()) {
                 (Err(ResolveError::UnknownItem { .. }), true) => {
-                    match resolver.ambient_core_candidates(module_path, &path.head) {
+                    match resolver.ambient_core_candidates(&resolution_module, &path.head) {
                         Ok(Some(ambient_absolute)) => {
-                            resolver.resolve_item(module_path, &ambient_absolute, &resolved_args, indirect, bypass)
+                            resolver.resolve_item(&resolution_module, &ambient_absolute, &resolved_args, indirect, bypass)
                         }
                         Ok(None) => result,
                         Err(e) => Err(e),
@@ -684,7 +742,11 @@ impl Context {
         bypass: bool,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {
         let Some((variant_name, prefix_tail)) = path.tail.split_last() else { return Ok(None) };
-        let prefix = Type::Named(Path { head: path.head.clone(), tail: prefix_tail.to_vec() });
+        let prefix = Type::Named(Path {
+            head: path.head.clone(),
+            tail: prefix_tail.to_vec(),
+            origin: path.origin,
+        });
         let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, indirect, bypass) else {
             return Ok(None);
         };

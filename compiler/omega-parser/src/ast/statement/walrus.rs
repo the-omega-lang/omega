@@ -1,5 +1,5 @@
 use crate::ast::expression::ExpressionNode;
-use crate::ast::identifier::Ident;
+use crate::ast::identifier::{Ident, Origin};
 use crate::ast::visibility::Visibility;
 
 /// `ident := value;` -- "declare and assign", with `ident`'s type inferred
@@ -13,6 +13,7 @@ use crate::ast::visibility::Visibility;
 #[derive(Debug, Clone)]
 pub struct WalrusStmt {
     pub ident: Ident,
+    pub origin: Origin,
     pub value: ExpressionNode,
     /// `true` only for `mut ident := value;`. See
     /// `omega_analyzer::context::VarBinding::mutable`.

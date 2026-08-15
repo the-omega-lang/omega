@@ -169,7 +169,11 @@ impl<'a> Parser<'a> {
     pub fn advance(&mut self) -> Token {
         if let Some(span) = self.pending_gt.take() {
             self.last_span = span;
-            return Token { kind: TokenKind::Gt, span };
+            return Token {
+                kind: TokenKind::Gt,
+                span,
+                origin: crate::ast::identifier::Origin::default(),
+            };
         }
         let tok = self.tokens[self.pos].clone();
         if !matches!(tok.kind, TokenKind::Eof) {
@@ -276,15 +280,21 @@ impl<'a> Parser<'a> {
 
     /// Consumes the current token if it's an `Ident`, returning its name;
     /// otherwise records an `Expected` error and returns `None`.
-    pub fn expect_ident(&mut self) -> Option<crate::ast::identifier::Ident> {
+    pub fn expect_ident_with_origin(
+        &mut self,
+    ) -> Option<(crate::ast::identifier::Ident, crate::ast::identifier::Origin)> {
         if let TokenKind::Ident(name) = self.peek() {
             let name = name.clone();
-            self.advance();
-            Some(crate::ast::identifier::Ident(name))
+            let origin = self.advance().origin;
+            Some((crate::ast::identifier::Ident(name), origin))
         } else {
             self.error(ParseErrorKind::Expected { expected: "an identifier", found: self.peek().describe() });
             None
         }
+    }
+
+    pub fn expect_ident(&mut self) -> Option<crate::ast::identifier::Ident> {
+        self.expect_ident_with_origin().map(|(ident, _)| ident)
     }
 
     pub fn error(&mut self, kind: ParseErrorKind) {
@@ -302,7 +312,7 @@ impl<'a> Parser<'a> {
 /// (maximal munch), so there's no risk of it being mistaken for two bare
 /// `:`s here.
 pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
-    let head = p.expect_ident()?;
+    let (head, origin) = p.expect_ident_with_origin()?;
     let mut tail = Vec::new();
     while p.check(&TokenKind::ColonColon) {
         p.advance();
@@ -311,7 +321,7 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
             None => break,
         }
     }
-    Some(crate::ast::identifier::Path { head, tail })
+    Some(crate::ast::identifier::Path { head, tail, origin })
 }
 
 /// `self` / `mut self` / `*self` / `*mut self` -- the four ways a member

@@ -79,7 +79,7 @@ use omega_hir::{
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
-    ExprPath, Ident, NumberBase, NumberExpr, Path, SelfMode, Span, Type, Visibility,
+    ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, SelfMode, Span, Type, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -273,6 +273,46 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
 }
 
 impl<'r> Analyzer<'r> {
+    /// The lexical module for a written path. Macro-body paths are authored
+    /// by their definition module; ordinary and substituted paths remain in
+    /// the module currently being analyzed.
+    pub(super) fn path_module(&self, path: &Path) -> Vec<Ident> {
+        self.resolver
+            .macro_origin_module(path.origin)
+            .unwrap_or_else(|| self.module_path.clone())
+    }
+
+    /// Checks a resolved macro-body dependency against the macro's own
+    /// declared visibility. Resolution still uses the definition module;
+    /// this prevents a wider macro interface from exposing a narrower item.
+    pub(super) fn check_macro_dependency_visibility(
+        &mut self,
+        id: HirId,
+        span: Span,
+        path: &Path,
+        absolute: &[Ident],
+    ) -> bool {
+        let Some(macro_visibility) = self.resolver.macro_origin_visibility(path.origin) else {
+            return true;
+        };
+        let Some(item_visibility) = self.resolver.declared_item_visibility(absolute) else {
+            return true;
+        };
+        if item_visibility >= macro_visibility {
+            return true;
+        }
+        self.error(
+            id,
+            span,
+            AnalysisErrorKind::MacroDependencyTooPrivate {
+                item: absolute.last().expect("absolute item path has a name").clone(),
+                macro_visibility,
+                item_visibility,
+            },
+        );
+        false
+    }
+
     /// Imports are no longer pre-resolved and pre-bound here: an `import`
     /// alias resolves lazily, the first time some name lookup that isn't
     /// satisfied locally actually needs to know what it means (see
@@ -511,12 +551,14 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         ident: &Ident,
+        origin: Origin,
         r#type: ResolvedType,
         storage: Storage,
         mutable: bool,
     ) -> Option<()> {
         self.declare_binding_impl(
             ident,
+            origin,
             VarBinding {
                 decl_id: id,
                 storage,
@@ -540,10 +582,11 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         ident: &Ident,
+        origin: Origin,
         r#type: ResolvedType,
         value: crate::resolved_type::ConstValue,
     ) -> Option<()> {
-        self.declare_binding(id, span, ident, r#type, Storage::Comp, false)?;
+        self.declare_binding(id, span, ident, origin, r#type, Storage::Comp, false)?;
         self.context.set_comp_value(id, value);
         Some(())
     }
@@ -558,12 +601,14 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         ident: &Ident,
+        origin: Origin,
         r#type: ResolvedType,
         storage: Storage,
         mutable: bool,
     ) -> Option<()> {
         self.declare_binding_impl(
             ident,
+            origin,
             VarBinding {
                 decl_id: id,
                 storage,
@@ -579,9 +624,14 @@ impl<'r> Analyzer<'r> {
 
     /// Adds one binding to the current scope, rejecting a name that scope
     /// already binds.
-    fn declare_binding_impl(&mut self, ident: &Ident, binding: VarBinding) -> Option<()> {
+    fn declare_binding_impl(
+        &mut self,
+        ident: &Ident,
+        origin: Origin,
+        binding: VarBinding,
+    ) -> Option<()> {
         let (id, span) = (binding.decl_id, binding.span);
-        match self.context.current_scope().declare(ident.clone(), binding) {
+        match self.context.current_scope().declare(ident.clone(), origin, binding) {
             Ok(()) => Some(()),
             Err((name, previous)) => {
                 self.error(
@@ -652,6 +702,29 @@ impl<'r> Analyzer<'r> {
                     .ambient_core_candidates(&self.module_path, single)?
                 {
                     Some(ambient) => self.resolve_item_checked(&ambient, type_args, true),
+                    None => result,
+                }
+            }
+            _ => result,
+        }
+    }
+
+    /// The definition-site equivalent of
+    /// `resolve_item_checked_with_ambient_fallback`.  Macro-authored paths
+    /// must use the macro's module as both their lookup root and visibility
+    /// accessor; a caller's `reveal` must not leak into a macro body.
+    fn resolve_item_with_ambient_from(
+        &mut self,
+        accessor: &[Ident],
+        prefix: &[Ident],
+        absolute: &[Ident],
+        type_args: &[ResolvedType],
+    ) -> Result<ResolvedItem, ResolveError> {
+        let result = self.resolver.resolve_item(accessor, absolute, type_args, true, false);
+        match (prefix, &result) {
+            ([single], Err(ResolveError::UnknownItem { .. })) => {
+                match self.resolver.ambient_core_candidates(accessor, single)? {
+                    Some(ambient) => self.resolver.resolve_item(accessor, &ambient, type_args, true, false),
                     None => result,
                 }
             }

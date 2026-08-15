@@ -29,11 +29,13 @@
 //! code does or doesn't support is discovered the same way it would be for
 //! hand-written code.
 
+use crate::ast::identifier::{ExpansionId, Origin};
 use crate::ast::statement::walrus::WalrusStmt;
 use crate::diagnostics::ParseError;
 use crate::lexer::{Token, TokenKind};
 use crate::parser::Parser;
 use crate::prelude::*;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -42,6 +44,85 @@ use std::fmt;
 /// produces a clean [`MacroError::ExpansionLimitExceeded`] instead of a
 /// stack overflow.
 const MAX_EXPANSIONS: u32 = 256;
+
+/// Driver-owned provenance for macro expansions. It lives for one compilation
+/// so expansion ids remain unique across every module expanded in that run.
+#[derive(Debug, Default)]
+pub struct ExpansionState {
+    next_id: u32,
+    origins: HashMap<ExpansionId, ExpansionOrigin>,
+    environments: HashMap<Vec<Ident>, HashMap<Ident, MacroDefinitionStmt>>,
+}
+
+#[derive(Debug, Clone)]
+struct ExpansionOrigin {
+    defining_module: Vec<Ident>,
+    macro_visibility: Visibility,
+}
+
+impl ExpansionState {
+    pub fn defining_module(&self, origin: Origin) -> Option<&[Ident]> {
+        origin
+            .0
+            .and_then(|id| self.origins.get(&id).map(|entry| entry.defining_module.as_slice()))
+    }
+
+    pub fn macro_visibility(&self, origin: Origin) -> Option<Visibility> {
+        origin.0.and_then(|id| self.origins.get(&id).map(|entry| entry.macro_visibility))
+    }
+
+    fn fresh_origin(&mut self, def: &MacroDefinitionStmt) -> Origin {
+        let id = ExpansionId(self.next_id);
+        self.next_id += 1;
+        self.origins.insert(
+            id,
+            ExpansionOrigin {
+                defining_module: def.defining_module.clone(),
+                macro_visibility: def.visibility,
+            },
+        );
+        Origin(Some(id))
+    }
+
+    pub fn register_environment(
+        &mut self,
+        module: &[Ident],
+        definitions: &HashMap<Ident, MacroDefinitionStmt>,
+    ) {
+        self.environments
+            .insert(module.to_vec(), definitions.clone());
+    }
+
+    fn definition_environment(
+        &self,
+        module: &[Ident],
+    ) -> Option<HashMap<Ident, MacroDefinitionStmt>> {
+        self.environments.get(module).cloned()
+    }
+
+    /// The macro environment an invocation resolves in, chosen by where its
+    /// name token was *written*: a body-emitted invocation resolves in the
+    /// emitting macro's defining module, one that arrived through argument
+    /// substitution keeps `ambient` (the environment of the module being
+    /// expanded). Selecting per invocation rather than swapping the
+    /// environment for a whole expanded subtree is what keeps a macro
+    /// invocation passed *as an argument* resolvable -- it was written by the
+    /// caller, so it must resolve there.
+    fn environment_for<'a>(
+        &'a self,
+        origin: Origin,
+        ambient: &'a HashMap<Ident, MacroDefinitionStmt>,
+    ) -> Cow<'a, HashMap<Ident, MacroDefinitionStmt>> {
+        match self
+            .defining_module(origin)
+            .map(|module| module.to_vec())
+            .and_then(|module| self.definition_environment(&module))
+        {
+            Some(env) => Cow::Owned(env),
+            None => Cow::Borrowed(ambient),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum MacroError {
@@ -215,14 +296,27 @@ pub fn expand(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
 ) -> Result<SourceModule, MacroError> {
-    let (own, items) = collect_definitions(module.nodes)?;
+    let mut state = ExpansionState::default();
+    expand_with_origins(module, imported, &[], &mut state)
+}
+
+/// Expands one module while recording where every body-emitted token was
+/// written. The ordinary [`expand`] wrapper is retained for parser-only tests.
+pub fn expand_with_origins(
+    module: SourceModule,
+    imported: &HashMap<Ident, MacroDefinitionStmt>,
+    module_path: &[Ident],
+    state: &mut ExpansionState,
+) -> Result<SourceModule, MacroError> {
+    let (own, items) = collect_definitions(module.nodes, module_path)?;
     let mut defs = imported.clone();
     defs.extend(own);
+    state.register_environment(module_path, &defs);
     for def in defs.values() {
         validate_definition(def)?;
     }
     let mut budget = MAX_EXPANSIONS;
-    let nodes = expand_item_list(items, &defs, &mut budget)?;
+    let nodes = expand_item_list(items, &defs, &mut budget, state)?;
     Ok(SourceModule { nodes })
 }
 
@@ -230,15 +324,17 @@ pub fn expand(
 /// name outright) and everything else, in original order.
 fn collect_definitions(
     nodes: Vec<ItemNode>,
+    module_path: &[Ident],
 ) -> Result<(HashMap<Ident, MacroDefinitionStmt>, Vec<ItemNode>), MacroError> {
     let mut defs = HashMap::new();
     let mut items = Vec::new();
     for node in nodes {
         match node.item {
-            Item::MacroDefinition(def) => {
+            Item::MacroDefinition(mut def) => {
                 if defs.contains_key(&def.name) {
                     return Err(MacroError::DuplicateMacroDefinition { name: def.name });
                 }
+                def.defining_module = module_path.to_vec();
                 defs.insert(def.name.clone(), def);
             }
             other => items.push(ItemNode {
@@ -326,31 +422,32 @@ fn expand_item_list(
     nodes: Vec<ItemNode>,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<Vec<ItemNode>, MacroError> {
     let mut result = Vec::with_capacity(nodes.len());
     for node in nodes {
         match node.item {
             Item::MacroInvocation(inv) => {
-                result.extend(expand_items_invocation(&inv, node.span, defs, budget)?);
+                result.extend(expand_items_invocation(&inv, node.span, defs, budget, state)?);
             }
             Item::FunctionDefinition(f) => result.push(ItemNode {
-                item: Item::FunctionDefinition(expand_function_def(f, defs, budget)?),
+                item: Item::FunctionDefinition(expand_function_def(f, defs, budget, state)?),
                 span: node.span,
             }),
             Item::Struct(s) => result.push(ItemNode {
-                item: Item::Struct(expand_struct_def(s, defs, budget)?),
+                item: Item::Struct(expand_struct_def(s, defs, budget, state)?),
                 span: node.span,
             }),
             Item::Enum(e) => result.push(ItemNode {
-                item: Item::Enum(expand_enum_def(e, defs, budget)?),
+                item: Item::Enum(expand_enum_def(e, defs, budget, state)?),
                 span: node.span,
             }),
             Item::Union(u) => result.push(ItemNode {
-                item: Item::Union(expand_union_def(u, defs, budget)?),
+                item: Item::Union(expand_union_def(u, defs, budget, state)?),
                 span: node.span,
             }),
             Item::Spec(sp) => result.push(ItemNode {
-                item: Item::Spec(expand_spec_def(sp, defs, budget)?),
+                item: Item::Spec(expand_spec_def(sp, defs, budget, state)?),
                 span: node.span,
             }),
             Item::Gap(gap) => result.push(ItemNode {
@@ -361,7 +458,7 @@ fn expand_item_list(
                 glue.functions = glue
                     .functions
                     .into_iter()
-                    .map(|f| expand_function_def(f, defs, budget))
+                    .map(|f| expand_function_def(f, defs, budget, state))
                     .collect::<Result<_, _>>()?;
                 result.push(ItemNode {
                     item: Item::Glue(glue),
@@ -372,7 +469,7 @@ fn expand_item_list(
                 conform.functions = conform
                     .functions
                     .into_iter()
-                    .map(|f| expand_function_def(f, defs, budget))
+                    .map(|f| expand_function_def(f, defs, budget, state))
                     .collect::<Result<_, _>>()?;
                 result.push(ItemNode {
                     item: Item::Conform(conform),
@@ -383,7 +480,7 @@ fn expand_item_list(
                 primitive.functions = primitive
                     .functions
                     .into_iter()
-                    .map(|f| expand_function_def(f, defs, budget))
+                    .map(|f| expand_function_def(f, defs, budget, state))
                     .collect::<Result<_, _>>()?;
                 result.push(ItemNode {
                     item: Item::Primitive(primitive),
@@ -398,13 +495,13 @@ fn expand_item_list(
             }
             Item::Walrus(w) => result.push(ItemNode {
                 item: Item::Walrus(WalrusStmt {
-                    value: expand_expr(w.value, defs, budget)?,
+                    value: expand_expr(w.value, defs, budget, state)?,
                     ..w
                 }),
                 span: node.span,
             }),
             Item::DeclarationWithInit(decl, value) => result.push(ItemNode {
-                item: Item::DeclarationWithInit(decl, expand_expr(value, defs, budget)?),
+                item: Item::DeclarationWithInit(decl, expand_expr(value, defs, budget, state)?),
                 span: node.span,
             }),
             Item::MacroDefinition(def) => {
@@ -427,13 +524,18 @@ fn expand_items_invocation(
     call_span: Span,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<Vec<ItemNode>, MacroError> {
-    let def = defs
+    // Owned so the environment borrow ends before `substitute_invocation`
+    // takes `state` mutably.
+    let def = state
+        .environment_for(inv.origin, defs)
         .get(&inv.name)
+        .cloned()
         .ok_or_else(|| MacroError::UnknownMacro {
             name: inv.name.clone(),
         })?;
-    let tokens = substitute_invocation(def, &inv.args, call_span, budget)?;
+    let tokens = substitute_invocation(&def, &inv.args, call_span, budget, state)?;
     let padded = with_eof(&tokens);
     let mut p = Parser::new(&padded);
     let nodes = crate::parser::item::parse_source_module(&mut p);
@@ -445,7 +547,7 @@ fn expand_items_invocation(
             errors: join_errors(&errors),
         });
     }
-    expand_item_list(nodes, defs, budget)
+    expand_item_list(nodes, defs, budget, state)
 }
 
 /// Expands one expression-position invocation, recursing into the (possibly
@@ -463,13 +565,18 @@ fn expand_expr_invocation(
     call_span: Span,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<ExpressionNode, MacroError> {
-    let def = defs
+    // Owned so the environment borrow ends before `substitute_invocation`
+    // takes `state` mutably.
+    let def = state
+        .environment_for(inv.origin, defs)
         .get(&inv.name)
+        .cloned()
         .ok_or_else(|| MacroError::UnknownMacro {
             name: inv.name.clone(),
         })?;
-    let tokens = substitute_invocation(def, &inv.args, call_span, budget)?;
+    let tokens = substitute_invocation(&def, &inv.args, call_span, budget, state)?;
     let padded = with_eof(&tokens);
     let mut p = Parser::new(&padded);
     let parsed = crate::parser::expression::parse_expression(&mut p);
@@ -490,7 +597,7 @@ fn expand_expr_invocation(
             });
         }
     };
-    expand_expr(node, defs, budget)
+    expand_expr(node, defs, budget, state)
 }
 
 /// Expands a whole-statement invocation through the ordinary block-content
@@ -501,13 +608,18 @@ fn expand_statements_invocation(
     call_span: Span,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<Vec<StatementNode>, MacroError> {
-    let def = defs
+    // Owned so the environment borrow ends before `substitute_invocation`
+    // takes `state` mutably.
+    let def = state
+        .environment_for(inv.origin, defs)
         .get(&inv.name)
+        .cloned()
         .ok_or_else(|| MacroError::UnknownMacro {
             name: inv.name.clone(),
         })?;
-    let tokens = substitute_invocation(def, &inv.args, call_span, budget)?;
+    let tokens = substitute_invocation(&def, &inv.args, call_span, budget, state)?;
     let padded = with_eof(&tokens);
     let mut p = Parser::new(&padded);
     let parsed = p.allow_struct_literals(crate::parser::expression::parse_block_contents);
@@ -534,7 +646,7 @@ fn expand_statements_invocation(
             statement: Statement::Expression(*tail),
         });
     }
-    expand_statement_list(cb.statements, defs, budget)
+    expand_statement_list(cb.statements, defs, budget, state)
 }
 
 /// Validates argument count and each argument's shape against its
@@ -547,6 +659,7 @@ fn substitute_invocation(
     args: &[Vec<Token>],
     call_span: Span,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<Vec<Token>, MacroError> {
     let fixed_len = def.signature.fixed.len();
     let expected = if def.signature.variadic.is_some() {
@@ -584,10 +697,12 @@ fn substitute_invocation(
             .insert(param.name.clone(), Binding::Many(&args[fixed_len..]));
     }
     let mut out = Vec::new();
+    let origin = state.fresh_origin(def);
     render(
         &def.body,
         &bindings,
         def.signature.variadic.as_ref().map(|p| &p.name),
+        origin,
         &mut out,
     );
     // `Span` has no file identity. Macro definitions can come from an
@@ -600,6 +715,7 @@ fn substitute_invocation(
         .map(|token| Token {
             kind: token.kind,
             span: call_span,
+            origin: token.origin,
         })
         .collect())
 }
@@ -660,6 +776,7 @@ fn render(
     body: &[MacroBodyPiece],
     bindings: &Bindings<'_>,
     variadic: Option<&Ident>,
+    origin: Origin,
     out: &mut Vec<Token>,
 ) {
     for piece in body {
@@ -673,7 +790,11 @@ fn render(
                     Binding::One(tokens) => out.extend(tokens.iter().cloned()),
                     Binding::Many(_) => unreachable!("variadics outside repetition are rejected"),
                 },
-                _ => out.push(token.clone()),
+                _ => {
+                    let mut token = token.clone();
+                    token.origin = origin;
+                    out.push(token);
+                }
             },
             MacroBodyPiece::Repetition(rep) => {
                 let name = variadic.expect("repetitions without a variadic parameter are rejected");
@@ -685,11 +806,13 @@ fn render(
                 for (index, element) in elements.iter().enumerate() {
                     if index != 0 {
                         if let Some(separator) = &rep.separator {
-                            out.push(separator.clone());
+                            let mut separator = separator.clone();
+                            separator.origin = origin;
+                            out.push(separator);
                         }
                     }
                     let one = bindings.with_element(name, element);
-                    render(&rep.body, &one, variadic, out);
+                    render(&rep.body, &one, variadic, origin, out);
                 }
             }
         }
@@ -709,6 +832,7 @@ fn with_eof(tokens: &[Token]) -> Vec<Token> {
     out.push(Token {
         kind: TokenKind::Eof,
         span: eof_span,
+        origin: Origin::default(),
     });
     out
 }
@@ -725,9 +849,10 @@ fn expand_function_def(
     f: FunctionDefinitionStmt,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<FunctionDefinitionStmt, MacroError> {
     Ok(FunctionDefinitionStmt {
-        codeblock: expand_codeblock(f.codeblock, defs, budget)?,
+        codeblock: expand_codeblock(f.codeblock, defs, budget, state)?,
         ..f
     })
 }
@@ -736,11 +861,12 @@ fn expand_struct_def(
     s: StructStmt,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<StructStmt, MacroError> {
     let functions = s
         .functions
         .into_iter()
-        .map(|f| expand_function_def(f, defs, budget))
+        .map(|f| expand_function_def(f, defs, budget, state))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(StructStmt { functions, ..s })
 }
@@ -749,11 +875,12 @@ fn expand_union_def(
     u: UnionStmt,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<UnionStmt, MacroError> {
     let functions = u
         .functions
         .into_iter()
-        .map(|f| expand_function_def(f, defs, budget))
+        .map(|f| expand_function_def(f, defs, budget, state))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(UnionStmt { functions, ..u })
 }
@@ -762,6 +889,7 @@ fn expand_enum_def(
     e: EnumStmt,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<EnumStmt, MacroError> {
     let variants = e
         .variants
@@ -770,7 +898,7 @@ fn expand_enum_def(
             let args = v
                 .args
                 .into_iter()
-                .map(|a| expand_expr(a, defs, budget))
+                .map(|a| expand_expr(a, defs, budget, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(EnumVariantStmt { args, ..v })
         })
@@ -778,7 +906,7 @@ fn expand_enum_def(
     let functions = e
         .functions
         .into_iter()
-        .map(|f| expand_function_def(f, defs, budget))
+        .map(|f| expand_function_def(f, defs, budget, state))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(EnumStmt {
         variants,
@@ -791,6 +919,7 @@ fn expand_spec_def(
     sp: SpecStmt,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<SpecStmt, MacroError> {
     let functions = sp
         .functions
@@ -798,7 +927,7 @@ fn expand_spec_def(
         .map(|f| {
             let body = f
                 .body
-                .map(|b| expand_codeblock(b, defs, budget))
+                .map(|b| expand_codeblock(b, defs, budget, state))
                 .transpose()?;
             Ok(SpecFunctionStmt { body, ..f })
         })
@@ -810,11 +939,12 @@ fn expand_codeblock(
     cb: CodeblockExpr,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<CodeblockExpr, MacroError> {
-    let statements = expand_statement_list(cb.statements, defs, budget)?;
+    let statements = expand_statement_list(cb.statements, defs, budget, state)?;
     let tail = cb
         .tail
-        .map(|t| expand_expr(*t, defs, budget).map(Box::new))
+        .map(|t| expand_expr(*t, defs, budget, state).map(Box::new))
         .transpose()?;
     Ok(CodeblockExpr { statements, tail })
 }
@@ -823,12 +953,13 @@ fn expand_statement_list(
     statements: Vec<StatementNode>,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<Vec<StatementNode>, MacroError> {
     let mut result = Vec::with_capacity(statements.len());
     for node in statements {
         match node.statement {
             Statement::MacroInvocation(inv) => {
-                result.extend(expand_statements_invocation(&inv, node.span, defs, budget)?)
+                result.extend(expand_statements_invocation(&inv, node.span, defs, budget, state)?)
             }
             statement => result.push(expand_stmt_node(
                 StatementNode {
@@ -837,6 +968,7 @@ fn expand_statement_list(
                 },
                 defs,
                 budget,
+                state,
             )?),
         }
     }
@@ -847,20 +979,21 @@ fn expand_if(
     if_expr: IfExpr,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<IfExpr, MacroError> {
     let branches = if_expr
         .branches
         .into_iter()
         .map(|(cond, block)| {
             Ok((
-                expand_expr(cond, defs, budget)?,
-                expand_codeblock(block, defs, budget)?,
+                expand_expr(cond, defs, budget, state)?,
+                expand_codeblock(block, defs, budget, state)?,
             ))
         })
         .collect::<Result<Vec<_>, MacroError>>()?;
     let else_branch = if_expr
         .else_branch
-        .map(|b| expand_codeblock(b, defs, budget))
+        .map(|b| expand_codeblock(b, defs, budget, state))
         .transpose()?;
     Ok(IfExpr {
         branches,
@@ -872,9 +1005,10 @@ fn expand_stmt_node(
     node: StatementNode,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<StatementNode, MacroError> {
     let span = node.span;
-    let statement = expand_statement(node.statement, defs, budget)?;
+    let statement = expand_statement(node.statement, defs, budget, state)?;
     Ok(StatementNode { statement, span })
 }
 
@@ -882,6 +1016,7 @@ fn expand_statement(
     statement: Statement,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<Statement, MacroError> {
     Ok(match statement {
         Statement::MacroInvocation(_) => {
@@ -889,51 +1024,51 @@ fn expand_statement(
         }
         Statement::Declaration(decl) => Statement::Declaration(decl),
         Statement::DeclarationWithInit(decl, value) => {
-            Statement::DeclarationWithInit(decl, expand_expr(value, defs, budget)?)
+            Statement::DeclarationWithInit(decl, expand_expr(value, defs, budget, state)?)
         }
         Statement::ExternDeclaration(decl) => Statement::ExternDeclaration(decl),
-        Statement::Expression(expr) => Statement::Expression(expand_expr(expr, defs, budget)?),
+        Statement::Expression(expr) => Statement::Expression(expand_expr(expr, defs, budget, state)?),
         Statement::Return(ret) => Statement::Return(ReturnStmt {
-            return_value: expand_expr(ret.return_value, defs, budget)?,
+            return_value: expand_expr(ret.return_value, defs, budget, state)?,
         }),
         Statement::Break => Statement::Break,
         Statement::Continue => Statement::Continue,
         Statement::Walrus(w) => Statement::Walrus(WalrusStmt {
-            value: expand_expr(w.value, defs, budget)?,
+            value: expand_expr(w.value, defs, budget, state)?,
             ..w
         }),
         Statement::While(w) => Statement::While(WhileStmt {
-            condition: expand_expr(w.condition, defs, budget)?,
-            body: expand_codeblock(w.body, defs, budget)?,
+            condition: expand_expr(w.condition, defs, budget, state)?,
+            body: expand_codeblock(w.body, defs, budget, state)?,
         }),
         Statement::Loop(l) => Statement::Loop(LoopStmt {
-            body: expand_codeblock(l.body, defs, budget)?,
+            body: expand_codeblock(l.body, defs, budget, state)?,
         }),
         Statement::For(f) => {
             let f = *f;
             Statement::For(Box::new(ForStmt {
                 init: f
                     .init
-                    .map(|s| expand_statement(s, defs, budget))
+                    .map(|s| expand_statement(s, defs, budget, state))
                     .transpose()?,
                 condition: f
                     .condition
-                    .map(|c| expand_expr(c, defs, budget))
+                    .map(|c| expand_expr(c, defs, budget, state))
                     .transpose()?,
-                post: f.post.map(|p| expand_expr(p, defs, budget)).transpose()?,
-                body: expand_codeblock(f.body, defs, budget)?,
+                post: f.post.map(|p| expand_expr(p, defs, budget, state)).transpose()?,
+                body: expand_codeblock(f.body, defs, budget, state)?,
             }))
         }
         Statement::ForIn(f) => {
             let f = *f;
             Statement::ForIn(Box::new(ForInStmt {
-                iterator: expand_expr(f.iterator, defs, budget)?,
-                body: expand_codeblock(f.body, defs, budget)?,
+                iterator: expand_expr(f.iterator, defs, budget, state)?,
+                body: expand_codeblock(f.body, defs, budget, state)?,
                 ..f
             }))
         }
         Statement::Defer(d) => Statement::Defer(DeferStmt {
-            body: Box::new(expand_statement(*d.body, defs, budget)?),
+            body: Box::new(expand_statement(*d.body, defs, budget, state)?),
         }),
     })
 }
@@ -948,10 +1083,11 @@ fn expand_expr(
     node: ExpressionNode,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<ExpressionNode, MacroError> {
     let span = node.span;
     if let Expression::MacroInvocation(inv) = node.expression {
-        let expanded = expand_expr_invocation(&inv, span, defs, budget)?;
+        let expanded = expand_expr_invocation(&inv, span, defs, budget, state)?;
         return Ok(ExpressionNode {
             expression: expanded.expression,
             span,
@@ -964,59 +1100,59 @@ fn expand_expr(
         Expression::FieldAccess(access) => {
             let access = *access;
             Expression::FieldAccess(Box::new(FieldAccessExpr {
-                base: expand_expr(access.base, defs, budget)?,
+                base: expand_expr(access.base, defs, budget, state)?,
                 field: access.field,
             }))
         }
         Expression::Index(index) => {
             let index = *index;
             Expression::Index(Box::new(IndexExpr {
-                base: expand_expr(index.base, defs, budget)?,
-                index: expand_expr(index.index, defs, budget)?,
+                base: expand_expr(index.base, defs, budget, state)?,
+                index: expand_expr(index.index, defs, budget, state)?,
             }))
         }
         Expression::Deref(deref) => {
             let deref = *deref;
             Expression::Deref(Box::new(DerefExpr {
-                base: expand_expr(deref.base, defs, budget)?,
+                base: expand_expr(deref.base, defs, budget, state)?,
             }))
         }
         Expression::AddressOf(addr) => {
             let addr = *addr;
             Expression::AddressOf(Box::new(AddressOfExpr {
-                base: expand_expr(addr.base, defs, budget)?,
+                base: expand_expr(addr.base, defs, budget, state)?,
                 mutable: addr.mutable,
             }))
         }
         Expression::Negate(neg) => {
             let neg = *neg;
             Expression::Negate(Box::new(NegateExpr {
-                base: expand_expr(neg.base, defs, budget)?,
+                base: expand_expr(neg.base, defs, budget, state)?,
             }))
         }
         Expression::BitNot(not) => {
             let not = *not;
             Expression::BitNot(Box::new(BitNotExpr {
-                base: expand_expr(not.base, defs, budget)?,
+                base: expand_expr(not.base, defs, budget, state)?,
             }))
         }
         Expression::Reveal(reveal) => {
             let reveal = *reveal;
             Expression::Reveal(Box::new(RevealExpr {
-                base: expand_expr(reveal.base, defs, budget)?,
+                base: expand_expr(reveal.base, defs, budget, state)?,
             }))
         }
         Expression::Comp(comp) => {
             let comp = *comp;
             Expression::Comp(Box::new(CompExpr {
-                base: expand_expr(comp.base, defs, budget)?,
+                base: expand_expr(comp.base, defs, budget, state)?,
             }))
         }
         Expression::Cast(cast) => {
             let cast = *cast;
             Expression::Cast(Box::new(CastExpr {
                 target: cast.target,
-                base: expand_expr(cast.base, defs, budget)?,
+                base: expand_expr(cast.base, defs, budget, state)?,
             }))
         }
         // No `base` expression to recurse into, and a bare `Type` can never
@@ -1027,21 +1163,21 @@ fn expand_expr(
         Expression::Increment(incr) => {
             let incr = *incr;
             Expression::Increment(Box::new(IncrementExpr {
-                base: expand_expr(incr.base, defs, budget)?,
+                base: expand_expr(incr.base, defs, budget, state)?,
             }))
         }
         Expression::Decrement(decr) => {
             let decr = *decr;
             Expression::Decrement(Box::new(DecrementExpr {
-                base: expand_expr(decr.base, defs, budget)?,
+                base: expand_expr(decr.base, defs, budget, state)?,
             }))
         }
         Expression::BinaryOp(bin) => {
             let bin = *bin;
             Expression::BinaryOp(Box::new(BinaryOpExpr {
-                left: expand_expr(bin.left, defs, budget)?,
+                left: expand_expr(bin.left, defs, budget, state)?,
                 op: bin.op,
-                right: expand_expr(bin.right, defs, budget)?,
+                right: expand_expr(bin.right, defs, budget, state)?,
             }))
         }
         Expression::Number(n) => Expression::Number(n),
@@ -1049,36 +1185,36 @@ fn expand_expr(
         Expression::ByteString(s) => Expression::ByteString(s),
         Expression::Bool(b) => Expression::Bool(b),
         Expression::Char(c) => Expression::Char(c),
-        Expression::Codeblock(cb) => Expression::Codeblock(expand_codeblock(cb, defs, budget)?),
-        Expression::If(if_expr) => Expression::If(Box::new(expand_if(*if_expr, defs, budget)?)),
+        Expression::Codeblock(cb) => Expression::Codeblock(expand_codeblock(cb, defs, budget, state)?),
+        Expression::If(if_expr) => Expression::If(Box::new(expand_if(*if_expr, defs, budget, state)?)),
         Expression::FunctionCall(call) => Expression::FunctionCall(FunctionCallExpr {
-            callee: Box::new(expand_expr(*call.callee, defs, budget)?),
+            callee: Box::new(expand_expr(*call.callee, defs, budget, state)?),
             args: call
                 .args
                 .into_iter()
-                .map(|a| expand_expr(a, defs, budget))
+                .map(|a| expand_expr(a, defs, budget, state))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         Expression::Assignment(assign) => {
             let assign = *assign;
             Expression::Assignment(Box::new(AssignmentExpr {
-                target: expand_expr(assign.target, defs, budget)?,
-                value: Box::new(expand_expr(*assign.value, defs, budget)?),
+                target: expand_expr(assign.target, defs, budget, state)?,
+                value: Box::new(expand_expr(*assign.value, defs, budget, state)?),
             }))
         }
         Expression::CompoundAssign(assign) => {
             let assign = *assign;
             Expression::CompoundAssign(Box::new(CompoundAssignExpr {
-                target: expand_expr(assign.target, defs, budget)?,
+                target: expand_expr(assign.target, defs, budget, state)?,
                 op: assign.op,
-                value: Box::new(expand_expr(*assign.value, defs, budget)?),
+                value: Box::new(expand_expr(*assign.value, defs, budget, state)?),
             }))
         }
         Expression::ArrayLiteral(lit) => Expression::ArrayLiteral(ArrayLiteralExpr {
             elements: lit
                 .elements
                 .into_iter()
-                .map(|e| expand_expr(e, defs, budget))
+                .map(|e| expand_expr(e, defs, budget, state))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         Expression::StructLiteral(lit) => Expression::StructLiteral(StructLiteralExpr {
@@ -1090,7 +1226,7 @@ fn expand_expr(
                     Ok(StructLiteralField {
                         name: f.name,
                         name_span: f.name_span,
-                        value: expand_expr(f.value, defs, budget)?,
+                        value: expand_expr(f.value, defs, budget, state)?,
                     })
                 })
                 .collect::<Result<Vec<_>, MacroError>>()?,
@@ -1098,12 +1234,12 @@ fn expand_expr(
         Expression::Slice(s) => {
             let s = *s;
             Expression::Slice(Box::new(SliceExpr {
-                base: expand_expr(s.base, defs, budget)?,
-                range: expand_range(s.range, defs, budget)?,
+                base: expand_expr(s.base, defs, budget, state)?,
+                range: expand_range(s.range, defs, budget, state)?,
             }))
         }
-        Expression::Match(m) => Expression::Match(Box::new(expand_match(*m, defs, budget)?)),
-        Expression::Range(r) => Expression::Range(Box::new(expand_range(*r, defs, budget)?)),
+        Expression::Match(m) => Expression::Match(Box::new(expand_match(*m, defs, budget, state)?)),
+        Expression::Range(r) => Expression::Range(Box::new(expand_range(*r, defs, budget, state)?)),
     };
     Ok(ExpressionNode { expression, span })
 }
@@ -1112,16 +1248,17 @@ fn expand_range(
     range: RangeExpr,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<RangeExpr, MacroError> {
     let end = match range.end {
-        RangeEnd::Inclusive(e) => RangeEnd::Inclusive(expand_expr(e, defs, budget)?),
-        RangeEnd::Exclusive(e) => RangeEnd::Exclusive(expand_expr(e, defs, budget)?),
+        RangeEnd::Inclusive(e) => RangeEnd::Inclusive(expand_expr(e, defs, budget, state)?),
+        RangeEnd::Exclusive(e) => RangeEnd::Exclusive(expand_expr(e, defs, budget, state)?),
         RangeEnd::Open => RangeEnd::Open,
     };
     Ok(RangeExpr {
         start: range
             .start
-            .map(|e| expand_expr(e, defs, budget))
+            .map(|e| expand_expr(e, defs, budget, state))
             .transpose()?,
         end,
         span: range.span,
@@ -1132,26 +1269,27 @@ fn expand_match(
     match_expr: MatchExpr,
     defs: &HashMap<Ident, MacroDefinitionStmt>,
     budget: &mut u32,
+    state: &mut ExpansionState,
 ) -> Result<MatchExpr, MacroError> {
-    let scrutinee = expand_expr(match_expr.scrutinee, defs, budget)?;
+    let scrutinee = expand_expr(match_expr.scrutinee, defs, budget, state)?;
     let arms = match_expr
         .arms
         .into_iter()
         .map(|arm| {
             let pattern = match arm.pattern {
-                Pattern::Value(v) => Pattern::Value(expand_expr(v, defs, budget)?),
-                Pattern::Range(r) => Pattern::Range(expand_range(r, defs, budget)?),
+                Pattern::Value(v) => Pattern::Value(expand_expr(v, defs, budget, state)?),
+                Pattern::Range(r) => Pattern::Range(expand_range(r, defs, budget, state)?),
             };
             Ok(MatchArm {
                 pattern,
-                body: expand_expr(arm.body, defs, budget)?,
+                body: expand_expr(arm.body, defs, budget, state)?,
                 span: arm.span,
             })
         })
         .collect::<Result<Vec<_>, MacroError>>()?;
     let else_branch = match_expr
         .else_branch
-        .map(|b| expand_codeblock(b, defs, budget))
+        .map(|b| expand_codeblock(b, defs, budget, state))
         .transpose()?;
     Ok(MatchExpr {
         scrutinee,

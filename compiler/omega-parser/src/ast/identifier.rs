@@ -1,6 +1,17 @@
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Ident(pub String);
 
+/// A unique macro-expansion identity. It is deliberately opaque: parser and
+/// analyzer code only use it to ask the driver which module authored a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExpansionId(pub u32);
+
+/// The macro invocation that emitted a token, if any. Text written directly
+/// in a module has the default caller origin; substituted macro arguments
+/// retain the origin they already carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Origin(pub Option<ExpansionId>);
+
 impl AsRef<str> for Ident {
     fn as_ref(&self) -> &str {
         &self.0
@@ -21,15 +32,37 @@ impl std::fmt::Display for Ident {
 /// all carry a `Path` instead of an `Ident` now -- one shape to resolve,
 /// whether or not it turns out to need a cross-module lookup (see
 /// `omega_analyzer::resolver`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Path {
     pub head: Ident,
     pub tail: Vec<Ident>,
+    pub origin: Origin,
+}
+
+// Origin is resolution provenance, not syntax. Structural comparisons of
+// paths/types intentionally keep their longstanding text-only meaning.
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.head == other.head && self.tail == other.tail
+    }
+}
+
+impl Eq for Path {}
+
+impl std::hash::Hash for Path {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.head.hash(state);
+        self.tail.hash(state);
+    }
 }
 
 impl From<Ident> for Path {
     fn from(ident: Ident) -> Self {
-        Self { head: ident, tail: vec![] }
+        Self {
+            head: ident,
+            tail: vec![],
+            origin: Origin::default(),
+        }
     }
 }
 

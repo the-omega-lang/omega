@@ -132,7 +132,10 @@ impl<'r> Analyzer<'r> {
         // `declared_variables` is an `IndexMap` (see `ScopeContext`'s doc
         // comment) specifically so this walk visits bindings in declaration
         // order for free -- no sort needed here.
-        for (name, binding) in &scope.declared_variables {
+        for ((name, origin), binding) in &scope.declared_variables {
+            if origin.0.is_some() {
+                continue;
+            }
             if binding.narrowed || (is_params && name.as_ref() == "self") {
                 continue;
             }
@@ -213,6 +216,7 @@ impl<'r> Analyzer<'r> {
             decl.id,
             decl.span,
             &decl.ident,
+            decl.origin,
             resolved_type.clone(),
             Storage::Local,
             decl.mutable,
@@ -270,7 +274,7 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
             let value = self.eval_comp(w.id, &checked_value)?;
-            self.declare_comp_binding(w.id, w.span, &w.ident, r#type, value)?;
+            self.declare_comp_binding(w.id, w.span, &w.ident, w.origin, r#type, value)?;
             return Some(vec![]);
         }
 
@@ -278,6 +282,7 @@ impl<'r> Analyzer<'r> {
             w.id,
             w.span,
             &w.ident,
+            w.origin,
             r#type.clone(),
             Storage::Local,
             w.mutable,
@@ -646,6 +651,7 @@ impl<'r> Analyzer<'r> {
                 iter_id,
                 f.span,
                 &Ident("$iter".to_string()),
+                Origin::default(),
                 iter_type.clone(),
                 Storage::Local,
                 true,
@@ -755,6 +761,7 @@ impl<'r> Analyzer<'r> {
                 i_id,
                 f.span,
                 &Ident("$i".to_string()),
+                Origin::default(),
                 element_type.clone(),
                 Storage::Local,
                 true,
@@ -796,6 +803,7 @@ impl<'r> Analyzer<'r> {
                     more_id,
                     f.span,
                     &Ident("$more".to_string()),
+                    Origin::default(),
                     ResolvedType::Bool,
                     Storage::Local,
                     true,
@@ -917,6 +925,7 @@ impl<'r> Analyzer<'r> {
                 f.id,
                 f.span,
                 &f.binding,
+                Origin::default(),
                 element_type.clone(),
                 Storage::Local,
                 f.mutable,
@@ -1122,6 +1131,7 @@ impl<'r> Analyzer<'r> {
                 next_id,
                 f.span,
                 &Ident("$next".to_string()),
+                Origin::default(),
                 next_type.clone(),
                 Storage::Local,
                 false,
@@ -1211,6 +1221,7 @@ impl<'r> Analyzer<'r> {
             next_id,
             f.span,
             &Ident("$next".to_string()),
+            Origin::default(),
             refined,
             Storage::Local,
             false,
@@ -1252,6 +1263,7 @@ impl<'r> Analyzer<'r> {
             next_id,
             f.span,
             &Ident("$next".to_string()),
+            Origin::default(),
             refined.clone(),
             Storage::Local,
             false,
@@ -1285,6 +1297,7 @@ impl<'r> Analyzer<'r> {
                 f.id,
                 f.span,
                 &f.binding,
+                Origin::default(),
                 value_type.clone(),
                 Storage::Local,
                 f.mutable,

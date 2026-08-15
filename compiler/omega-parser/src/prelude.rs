@@ -31,7 +31,7 @@ pub use crate::ast::expression::{
     struct_literal::{StructLiteralExpr, StructLiteralField},
 };
 pub use crate::ast::generics::GenericParam;
-pub use crate::ast::identifier::{ExprPath, Ident, Path};
+pub use crate::ast::identifier::{ExpansionId, ExprPath, Ident, Origin, Path};
 pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{

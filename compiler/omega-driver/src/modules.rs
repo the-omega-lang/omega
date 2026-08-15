@@ -110,6 +110,10 @@ pub(crate) struct ModuleStore {
     asts: HashMap<ModulePath, Rc<SourceModule>>,
     /// Each module's own raw macro definitions, derived from `asts`.
     macro_defs: HashMap<ModulePath, Rc<HashMap<Ident, MacroDefinitionStmt>>>,
+    /// Definition-site provenance for all macro invocations expanded in this
+    /// compilation. Kept beside the parsed modules because ids are assigned
+    /// while a source module is turned into HIR.
+    macro_expansions: omega_parser::macros::ExpansionState,
     /// Recorded the moment a file is read -- before parsing is even
     /// attempted, so a module that fails to parse can still render its own
     /// error snippets. Deliberately not part of `ParsedModule`, which only
@@ -141,6 +145,17 @@ impl ModuleStore {
 
     pub fn hir(&self, path: &[Ident]) -> Rc<HirModule> {
         self.parsed(path).hir.clone()
+    }
+
+    pub fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<ModulePath> {
+        self.macro_expansions.defining_module(origin).map(ToOwned::to_owned)
+    }
+
+    pub fn macro_origin_visibility(
+        &self,
+        origin: omega_parser::prelude::Origin,
+    ) -> Option<omega_parser::prelude::Visibility> {
+        self.macro_expansions.macro_visibility(origin)
     }
 
     /// A module's index, which is present for every module anything has
@@ -243,13 +258,18 @@ impl Driver {
                 let mut definitions = HashMap::new();
                 for node in &ast.nodes {
                     if let Item::MacroDefinition(definition) = &node.item {
-                        definitions.insert(definition.name.clone(), definition.clone());
+                        let mut definition = definition.clone();
+                        definition.defining_module = path.to_vec();
+                        definitions.insert(definition.name.clone(), definition);
                     }
                 }
                 definitions
             }
         };
         let definitions = Rc::new(definitions);
+        self.modules
+            .macro_expansions
+            .register_environment(path, definitions.as_ref());
         self.modules
             .macro_defs
             .insert(path.to_vec(), definitions.clone());
@@ -400,7 +420,13 @@ impl Driver {
                             message: "building macro environment failed".into(),
                         }
                     })?;
-                let ast = omega_parser::macros::expand((*ast).clone(), &macros).map_err(|e| {
+                let ast = omega_parser::macros::expand_with_origins(
+                    (*ast).clone(),
+                    &macros,
+                    path,
+                    &mut self.modules.macro_expansions,
+                )
+                .map_err(|e| {
                     self.modules
                         .failures
                         .insert(path.to_vec(), LoadFailure::MacroExpansion(e));

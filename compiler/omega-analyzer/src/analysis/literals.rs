@@ -347,8 +347,9 @@ impl<'r> Analyzer<'r> {
             }
             let type_args = self.resolve_generic_arg_list(node_id, span, path)?;
             let prefix = &segments[..=path.args_at];
-            let absolute = self.generic_prefix_absolute(node_id, span, prefix)?;
-            let resolved = match self.resolve_item_checked_with_ambient_fallback(prefix, &absolute, &type_args) {
+            let absolute = self.generic_prefix_absolute(node_id, span, &path.path, prefix)?;
+            let accessor = self.path_module(&path.path);
+            let resolved = match self.resolve_item_with_ambient_from(&accessor, prefix, &absolute, &type_args) {
                 Ok(ResolvedItem::Type(t)) => t,
                 Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(

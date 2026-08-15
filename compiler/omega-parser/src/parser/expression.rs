@@ -711,10 +711,11 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
 fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     use crate::ast::identifier::ExprPath;
 
-    let head = p.expect_ident()?;
+    let (head, origin) = p.expect_ident_with_origin()?;
     let mut path = crate::ast::identifier::Path {
         head,
         tail: Vec::new(),
+        origin,
     };
     let mut generic_args = Vec::new();
     let mut args_at = 0;

@@ -171,6 +171,7 @@ impl<'r> Analyzer<'r> {
         let spec_path = Path {
             head: spec_segments[0].clone(),
             tail: spec_segments[1..].to_vec(),
+            origin: path.origin,
         };
         let absolute = match self.context.resolve_absolute_item_path(
             &mut *self.resolver,
@@ -775,8 +776,8 @@ impl<'r> Analyzer<'r> {
                     self.require_mutable_place(id, span, &place.root, &checked, mutable)?;
                     // De-assumption, exactly like an explicit `&mut`: a
                     // writable alias to the receiver exists for this call.
-                    if let Some((ident, ..)) = self.narrowable_place(&place) {
-                        self.context.widen_variable(&ident);
+                    if let Some((ident, origin, ..)) = self.narrowable_place(&place) {
+                        self.context.widen_variable(&ident, origin);
                     }
                 }
                 // Widened for the same reason an explicit `&`/`&mut` widens:
@@ -1142,7 +1143,8 @@ impl<'r> Analyzer<'r> {
         // function -- a real resolution failure here isn't this function's
         // to report; it's left for whichever fallback path ends up actually
         // needing this same alias to surface it.
-        let alias = self.resolve_alias(&path.head).ok().flatten();
+        let accessor = self.path_module(path);
+        let alias = self.resolver.resolve_import_alias(&accessor, &path.head).ok().flatten();
         if matches!(alias, Some(ImportTarget::Module(_))) {
             return Intercepted::Declined;
         }
@@ -1259,14 +1261,14 @@ impl<'r> Analyzer<'r> {
         // alias check -- a real resolution failure here isn't this
         // function's to report; it's left for whichever fallback path
         // ends up actually needing this same alias to surface it.
-        let alias = self.resolve_alias(&path.head).ok().flatten();
+        let accessor = self.path_module(path);
+        let alias = self.resolver.resolve_import_alias(&accessor, &path.head).ok().flatten();
         let absolute: Vec<Ident> = match &alias {
             Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::GenericItem(absolute)) => {
                 absolute.clone()
             }
             Some(ImportTarget::Module(_)) => return Intercepted::Declined,
-            None => self
-                .module_path
+            None => accessor
                 .iter()
                 .cloned()
                 .chain(std::iter::once(path.head.clone()))
@@ -1274,6 +1276,7 @@ impl<'r> Analyzer<'r> {
         };
 
         let Some((real_absolute, sig)) = self.generic_static_function_signature_with_ambient(
+            &accessor,
             std::slice::from_ref(&path.head),
             &absolute,
             member,
@@ -1288,6 +1291,7 @@ impl<'r> Analyzer<'r> {
             node_id,
             span,
             call,
+            &accessor,
             std::slice::from_ref(&path.head),
             &real_absolute,
             member,
@@ -1308,6 +1312,7 @@ impl<'r> Analyzer<'r> {
     /// that failed to find anything locally.
     fn generic_static_function_signature_with_ambient(
         &mut self,
+        accessor: &[Ident],
         prefix: &[Ident],
         absolute: &[Ident],
         function_name: &Ident,
@@ -1321,7 +1326,7 @@ impl<'r> Analyzer<'r> {
         let [single] = prefix else { return None };
         let ambient = self
             .resolver
-            .ambient_core_candidates(&self.module_path, single)
+            .ambient_core_candidates(accessor, single)
             .ok()
             .flatten()?;
         let sig = self
@@ -1342,6 +1347,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        accessor: &[Ident],
         prefix: &[Ident],
         owner_absolute: &[Ident],
         member: &Ident,
@@ -1380,7 +1386,8 @@ impl<'r> Analyzer<'r> {
                 }
             };
 
-        let owner_type = match self.resolve_item_checked_with_ambient_fallback(
+        let owner_type = match self.resolve_item_with_ambient_from(
+            accessor,
             prefix,
             owner_absolute,
             &type_args,
@@ -1553,7 +1560,9 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         };
 
-        if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
+        if path.is_unqualified()
+            && self.context.find_variable(&path.head, path.origin).is_some()
+        {
             return Intercepted::Declined;
         }
 
@@ -1828,22 +1837,24 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         };
 
-        if path.is_unqualified() && self.context.find_variable(&path.head).is_some() {
+        if path.is_unqualified()
+            && self.context.find_variable(&path.head, path.origin).is_some()
+        {
             return Intercepted::Declined;
         }
 
+        let accessor = self.path_module(path);
         let absolute: Vec<Ident> = if path.is_unqualified() {
-            match self.resolve_alias(&path.head).ok().flatten() {
+            match self.resolver.resolve_import_alias(&accessor, &path.head).ok().flatten() {
                 Some(ImportTarget::GenericItem(absolute)) => absolute,
-                _ => self
-                    .module_path
+                _ => accessor
                     .iter()
                     .cloned()
                     .chain(std::iter::once(path.head.clone()))
                     .collect(),
             }
         } else {
-            match self.resolve_alias(&path.head).ok().flatten() {
+            match self.resolver.resolve_import_alias(&accessor, &path.head).ok().flatten() {
                 Some(ImportTarget::Module(target)) => target
                     .into_iter()
                     .chain(path.tail.iter().cloned())
@@ -1858,7 +1869,7 @@ impl<'r> Analyzer<'r> {
             Err(_) => return Intercepted::Declined,
         };
 
-        Intercepted::Claimed(self.finish_generic_call(node_id, span, call, &absolute, &sig))
+        Intercepted::Claimed(self.finish_generic_call(node_id, span, call, &accessor, &absolute, &sig))
     }
 
     /// The actual work behind `resolve_generic_call`, once it's confirmed
@@ -1870,6 +1881,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        accessor: &[Ident],
         absolute: &[Ident],
         sig: &GenericSignature,
     ) -> Option<CheckedExprNode> {
@@ -1889,7 +1901,7 @@ impl<'r> Analyzer<'r> {
         };
 
         let (fn_type, storage, decl_id) =
-            match self.resolve_item_checked(absolute, &type_args, true) {
+            match self.resolver.resolve_item(accessor, absolute, &type_args, true, false) {
                 Ok(ResolvedItem::Value {
                     r#type: ResolvedType::Function(fn_type),
                     storage,

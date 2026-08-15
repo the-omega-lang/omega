@@ -234,6 +234,13 @@ pub enum AnalysisErrorKind {
     /// across modules -- unknown module/item, not visible, or a cycle. See
     /// `crate::resolver::ModuleResolver`.
     ModuleResolution(crate::resolver::ResolveError),
+    /// A macro's public interface is wider than an item it references from
+    /// its body. The item must be at least as visible as the macro.
+    MacroDependencyTooPrivate {
+        item: Ident,
+        macro_visibility: omega_parser::prelude::Visibility,
+        item_visibility: omega_parser::prelude::Visibility,
+    },
     /// A qualified path resolved to a type (a struct), not a value, in a
     /// position that requires a value (e.g. calling it, or using it as a
     /// place).
@@ -1080,6 +1087,11 @@ impl fmt::Display for AnalysisErrorKind {
             Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
             Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
             Self::ModuleResolution(e) => write!(f, "{e}"),
+            Self::MacroDependencyTooPrivate { item, macro_visibility, item_visibility } => write!(
+                f,
+                "macro-visible item '{}' is {} but its macro is {}",
+                item.as_ref(), item_visibility, macro_visibility
+            ),
             Self::NotAValue(path) => write!(f, "'{}' is a type, not a value", join(path)),
             Self::UnresolvedGenericParam(ident) => write!(
                 f,

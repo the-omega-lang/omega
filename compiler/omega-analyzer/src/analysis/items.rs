@@ -92,6 +92,7 @@ impl<'r> Analyzer<'r> {
             decl.id,
             decl.span,
             &decl.ident,
+            decl.origin,
             resolved_type.clone(),
             storage,
             decl.mutable,
@@ -280,7 +281,15 @@ impl<'r> Analyzer<'r> {
             // reported here.
             _ => self.recognize_top_level_literal(raw_value, &r#type)?,
         };
-        self.declare_binding(id, span, ident, r#type.clone(), Storage::Global, mutable)?;
+        self.declare_binding(
+            id,
+            span,
+            ident,
+            Origin::default(),
+            r#type.clone(),
+            Storage::Global,
+            mutable,
+        )?;
         Some(CheckedDeclaration {
             id,
             span,
@@ -409,6 +418,7 @@ impl<'r> Analyzer<'r> {
             extern_decl.id,
             extern_decl.span,
             &extern_decl.ident,
+            Origin::default(),
             resolved_type.clone(),
             storage,
             false,
@@ -440,6 +450,7 @@ impl<'r> Analyzer<'r> {
             param.id,
             param.span,
             &param.ident,
+            param.origin,
             resolved_type.clone(),
             Storage::Parameter,
             false,

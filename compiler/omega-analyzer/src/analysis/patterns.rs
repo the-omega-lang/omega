@@ -25,8 +25,8 @@ impl<'r> Analyzer<'r> {
         let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
 
-        let (scrutinee_read, prelude_stmts, narrow_binding) = if let Some((ident, decl_id, storage, mutable)) = narrow_target {
-            (checked_scrutinee.clone(), Vec::new(), Some((ident, decl_id, storage, mutable)))
+        let (scrutinee_read, prelude_stmts, narrow_binding) = if let Some((ident, origin, decl_id, storage, mutable)) = narrow_target {
+            (checked_scrutinee.clone(), Vec::new(), Some((ident, origin, decl_id, storage, mutable)))
         } else {
             let target = CheckedPlace {
                 root: CheckedPlaceRoot::Variable { decl_id: node_id, storage: Storage::Local, r#type: scrutinee_type.clone() },
@@ -93,7 +93,10 @@ impl<'r> Analyzer<'r> {
     /// identity (`decl_id`/`storage`) is what gets shadow-declared (match
     /// narrowing) or widened in place (`Context::widen_variable`, `&mut`'s
     /// de-assumption).
-    pub(super) fn narrowable_place(&self, place: &HirPlace) -> Option<(Ident, HirId, Storage, bool)> {
+    pub(super) fn narrowable_place(
+        &self,
+        place: &HirPlace,
+    ) -> Option<(Ident, Origin, HirId, Storage, bool)> {
         if !place.projections.is_empty() {
             return None;
         }
@@ -101,8 +104,15 @@ impl<'r> Analyzer<'r> {
         if !expr_path.generic_args.is_empty() || !expr_path.path.is_unqualified() {
             return None;
         }
-        let binding = self.context.find_variable(&expr_path.path.head)?;
-        Some((expr_path.path.head.clone(), binding.decl_id, binding.storage, binding.mutable))
+        let origin = expr_path.path.origin;
+        let binding = self.context.find_variable(&expr_path.path.head, origin)?;
+        Some((
+            expr_path.path.head.clone(),
+            origin,
+            binding.decl_id,
+            binding.storage,
+            binding.mutable,
+        ))
     }
 
     /// `narrowable_place`, but for a scrutinee expression rather than an
@@ -110,7 +120,10 @@ impl<'r> Analyzer<'r> {
     /// `HirExprNode` (it doesn't have to be a place at all, see
     /// `analyze_match`'s doc comment), so this just unwraps the one shape
     /// that's ever narrowable before delegating.
-    fn narrowable_scrutinee(&self, scrutinee: &HirExprNode) -> Option<(Ident, HirId, Storage, bool)> {
+    fn narrowable_scrutinee(
+        &self,
+        scrutinee: &HirExprNode,
+    ) -> Option<(Ident, Origin, HirId, Storage, bool)> {
         let HirExpr::Place(place) = &Self::strip_reveal(scrutinee).1.expr else { return None };
         self.narrowable_place(place)
     }
@@ -141,7 +154,7 @@ impl<'r> Analyzer<'r> {
         m: &HirMatch,
         scrutinee_type: &ResolvedType,
         scrutinee_read: &CheckedExprNode,
-        narrow_binding: Option<(Ident, HirId, Storage, bool)>,
+        narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         // `through_pointer` is the scrutinee's own pointer mutability when
         // matching through one -- narrowing only ever refines the pointee,
@@ -211,13 +224,21 @@ impl<'r> Analyzer<'r> {
             let condition = Self::tag_variant_condition(&tag_read, &tag_type, &cell, variant_index, node_id, arm.pattern.span());
 
             self.context.enter_scope();
-            if let Some((ident, decl_id, storage, mutable)) = &narrow_binding {
+            if let Some((ident, origin, decl_id, storage, mutable)) = &narrow_binding {
                 let refined = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
                 let narrowed = match through_pointer {
                     Some(pointer_mutable) => ResolvedType::Pointer { pointee: Box::new(refined), mutable: pointer_mutable },
                     None => refined,
                 };
-                self.declare_narrowed_binding(*decl_id, arm.span, ident, narrowed, *storage, *mutable);
+                self.declare_narrowed_binding(
+                    *decl_id,
+                    arm.span,
+                    ident,
+                    *origin,
+                    narrowed,
+                    *storage,
+                    *mutable,
+                );
             }
             let body = self.analyze_match_arm_body(&arm.body);
             self.context.leave_scope();

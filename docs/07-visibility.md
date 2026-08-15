@@ -12,6 +12,12 @@ ordering is meaningful, not just a derive of convenience: see the spec rule
 below). `exposed`/`internal`/`reveal` are contextual keywords (recognized
 by identifier text, like `mut`), not reserved words.
 
+An item referenced by a macro body must be at least as visible as the macro
+itself. An `exposed` macro therefore cannot smuggle a hidden or `internal`
+dependency into another package; an `internal` macro may use `internal` items
+from its package. This is checked at the macro definition's resolution site,
+not relaxed by the caller's `reveal`.
+
 - **`exposed`** — visible from anywhere.
 - **`internal`** — visible anywhere within the same top-level package (same
   root module path segment), regardless of nesting depth. This is Rust

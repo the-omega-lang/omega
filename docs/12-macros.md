@@ -88,7 +88,7 @@ A macro body is never type-checked or syntax-checked on its own. It is
 checked only after substitution at a concrete invocation site, exactly like
 hand-written code. There is no macro-specific type checking pass.
 
-## Why no gensym/hygiene machinery exists
+## Definition-site hygiene
 
 Unlike Rust's own mangling scheme, `omega-mangle`'s v0 grammar deliberately
 has no disambiguator-index for macro expansion. Expanded items go through
@@ -97,19 +97,25 @@ once a symbol's full signature is part of its mangled name, genuinely
 distinct declarations cannot collide. This is possible because macro
 expansion has no closures and no per-invocation hygiene scope to disambiguate.
 
-That reasoning covers *declarations*. It does not cover **locals a
-statement-position expansion introduces**, which are spliced into the caller's
-own block and therefore participate in ordinary lexical scoping: an argument
-expression that names a caller variable will bind to a macro-introduced local
-of the same name instead. Wrapping a macro body in `{ }` stops the local from
-*leaking* outward, but it does not stop it from *capturing* inward — the block
-is exactly the scope the argument is substituted into.
+Omega tracks the author of each expansion token. A path or local introduced by
+a macro body resolves in the macro's definition module and lexical scope;
+tokens substituted for a `$parameter` keep the caller's origin and resolve in
+the caller's scope. This prevents macro locals from capturing an argument and
+lets a macro use its own imports without making them part of every caller's
+interface.
 
-There is no mechanism that prevents this, so a macro that must introduce a
-local picks a name a caller is unlikely to write. `std::io`'s print macros use
-an `omega_print_` prefix for precisely this reason; a plainer `out` shadowed
-any caller-supplied `out` passed as an argument, which is a real bug that a
-real program hit (`examples/dev/dev.omg` prints a `*str` named `out`).
+That applies to *macro names* as well, and selection is per invocation rather
+than per expansion. A nested invocation written in a body resolves in the
+body's defining module, while one that arrives inside a substituted argument —
+`println$("sum: ", sum_macro$(3, 4))`, where `println` is `std`'s and
+`sum_macro` is the caller's — was written by the caller and resolves there.
+
+This is deliberately a narrow hygiene rule. Declarations remain ordinary
+declarations, so generated items still follow normal redeclaration rules.
+Generic parameters and `Self` are substitution-bound rather than lexical
+bindings, and are intentionally not origin-partitioned. An `import` in a
+macro body is rejected: it would otherwise mutate the caller's namespace too
+late to affect the already definition-site-resolved body.
 
 ## Where it's actually used
 
@@ -125,5 +131,6 @@ visibility modifiers as ordinary items. Invocation resolution is local
 definitions first, explicitly imported macros second, then exposed `core`
 macros as an ambient fallback. Visibility is not transitive: an imported
 module's imports are not re-exported. A nested invocation emitted by a macro
-resolves at the call site; generated imports also arrive too late to add
-macros to that expansion environment.
+resolves in that macro's definition environment. Macro bodies cannot contain
+`import`: their own paths already use the definition module, while mutating
+the caller's import namespace would be incoherent.

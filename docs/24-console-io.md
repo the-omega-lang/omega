@@ -105,12 +105,12 @@ marker, format each argument through `Display`, and flush before the expansion
 ends. They are concatenative (`println$("count=", count)`), not format-string
 based. There is no implicit flush at program exit.
 
-Omega macros are textual and unhygienic. The expansion refers to `Display`,
-`Write`, `BufWriter`, and the relevant `Stdout`/`Stderr` marker, so callers
-using a print macro import those names as well as the macro. The expansion's
-locals use `omega_print_*` names to reduce accidental capture. A conforming
-method is reached with the spec-qualified `Display::fmt`, which lets literals
-and temporaries use the normal receiver adaptation rules.
+Print macros resolve their own `Display`, `Write`, `BufWriter`, and
+`Stdout`/`Stderr` references in `std::io`; callers need import only the macro
+itself. Their `buf`, `sink`, and `out` locals are hygienic, while each supplied
+argument remains in the caller's scope. A conforming method is reached with
+the spec-qualified `Display::fmt`, which lets literals and temporaries use the
+normal receiver adaptation rules.
 
 Build the hosted integration examples with:
 

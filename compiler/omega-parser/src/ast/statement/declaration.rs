@@ -1,10 +1,11 @@
-use crate::ast::identifier::Ident;
+use crate::ast::identifier::{Ident, Origin};
 use crate::ast::r#type::Type;
 use crate::ast::visibility::Visibility;
 
 #[derive(Debug, Clone)]
 pub struct DeclarationStmt {
     pub ident: Ident,
+    pub origin: Origin,
     pub r#type: Type,
     /// `true` only for a statement-position `mut ident: Type;` -- always
     /// `false` for a struct/enum field or an ordinary function parameter,

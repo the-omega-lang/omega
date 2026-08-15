@@ -77,6 +77,25 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Resolves a path's first segment in the scope where that path was
+    /// written. A macro-body path therefore sees its definition module's
+    /// imports, while substituted source still sees the caller's imports.
+    pub(super) fn resolve_path_alias_or_error(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &Path,
+    ) -> Option<Option<ImportTarget>> {
+        let module = self.path_module(path);
+        match self.resolver.resolve_import_alias(&module, &path.head) {
+            Ok(target) => Some(target),
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
+
     /// The alias (of any kind -- module, item, or generic item) this
     /// module's own `import` statements bind that's most similar to
     /// `target` -- the "did you mean" suggestion for a reference that named
@@ -107,10 +126,15 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
+        written_path: &Path,
+        accessor: &[Ident],
         absolute: Vec<Ident>,
         unqualified: Option<&Ident>,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
+        if !self.check_macro_dependency_visibility(node_id, span, written_path, &absolute) {
+            return None;
+        }
         // A bare (uncalled) reference to an overloaded name -- `resolve_item`
         // would otherwise silently resolve it to whichever candidate the
         // driver happens to index first (see `ModuleResolver::resolve_item`'s
@@ -173,7 +197,7 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        match self.resolve_item_checked(&absolute, &[], true) {
+        match self.resolver.resolve_item(accessor, &absolute, &[], true, false) {
             Ok(ResolvedItem::Value {
                 r#type,
                 storage,
@@ -202,7 +226,7 @@ impl<'r> Analyzer<'r> {
                 // resolver holds a module-wide name list.
                 let similar = self.context.similar_variable_name(&name).or_else(|| {
                     self.resolver
-                        .similar_item_name(&self.module_path, &name, ItemNamespace::Value)
+                        .similar_item_name(accessor, &name, ItemNamespace::Value)
                 });
                 self.error(
                     node_id,
@@ -314,7 +338,7 @@ impl<'r> Analyzer<'r> {
         // exactly the same lazy-alias treatment `Context::resolve_type`
         // gives an unqualified `Type::Named` -- see its own comment for why
         // this can no longer be caught by `find_defined_type` above.
-        let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
+        let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
         if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.resolve_type_member(node_id, span, &t, &path.tail);
         }
@@ -326,7 +350,7 @@ impl<'r> Analyzer<'r> {
                 absolute
             }
             _ => self
-                .module_path
+                .path_module(path)
                 .iter()
                 .cloned()
                 .chain(std::iter::once(path.head.clone()))
@@ -425,8 +449,9 @@ impl<'r> Analyzer<'r> {
 
         let type_args = self.resolve_generic_arg_list(node_id, span, expr_path)?;
         let prefix = &segments[..=expr_path.args_at];
-        let absolute = self.generic_prefix_absolute(node_id, span, prefix)?;
-        match self.resolve_item_checked_with_ambient_fallback(prefix, &absolute, &type_args) {
+        let absolute = self.generic_prefix_absolute(node_id, span, &expr_path.path, prefix)?;
+        let accessor = self.path_module(&expr_path.path);
+        match self.resolve_item_with_ambient_from(&accessor, prefix, &absolute, &type_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None
@@ -488,42 +513,51 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
+        written_path: &Path,
         prefix: &[Ident],
     ) -> Option<Vec<Ident>> {
+        let module = self.path_module(written_path);
         if let [single] = prefix {
             if let Some(ImportTarget::GenericItem(absolute)) =
-                self.resolve_alias_or_error(node_id, span, single)?
+                match self.resolver.resolve_import_alias(&module, single) {
+                    Ok(alias) => Some(alias),
+                    Err(error) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                        None
+                    }
+                }?
             {
                 return Some(absolute);
             }
             return Some(
-                self.module_path
+                module
                     .iter()
                     .cloned()
                     .chain(std::iter::once(single.clone()))
                     .collect(),
             );
         }
-        let path = omega_parser::prelude::Path {
-            head: prefix[0].clone(),
-            tail: prefix[1..].to_vec(),
-        };
-        match self.resolve_alias_or_error(node_id, span, &path.head)? {
-            Some(ImportTarget::Module(target)) => Some(
+        let head = &prefix[0];
+        match self.resolver.resolve_import_alias(&module, head) {
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+            Ok(Some(ImportTarget::Module(target))) => Some(
                 target
                     .into_iter()
-                    .chain(path.tail.iter().cloned())
+                    .chain(prefix[1..].iter().cloned())
                     .collect(),
             ),
-            _ => {
-                let similar_module = self.similar_import_alias(&path.head);
+            Ok(_) => {
+                let similar_module = best_match(head, self.resolver.import_alias_names(&module).iter());
                 self.error(
                     node_id,
                     span,
                     AnalysisErrorKind::UndefinedPathHead {
-                        name: path.head.clone(),
+                        name: head.clone(),
                         similar_module,
-                        similar_type: self.context.similar_type_name(&path.head),
+                        similar_type: self.context.similar_type_name(head),
                     },
                 );
                 None

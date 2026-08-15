@@ -322,42 +322,42 @@ exposed to_string<T: Display>(value: T) => String {
 
 exposed macro print($args: expr...) => {
     {
-        mut omega_print_buf: [256]u8;
-        mut omega_print_sink := Stdout {};
-        mut omega_print_out := BufWriter<Stdout>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
-        $...(){ Display::fmt($args, &mut omega_print_out); }
-        omega_print_out.flush();
+        mut buf: [256]u8;
+        mut sink := Stdout {};
+        mut out := BufWriter<Stdout>::new(&mut sink, &mut buf[0..]);
+        $...(){ Display::fmt($args, &mut out); }
+        out.flush();
     }
 }
 
 exposed macro println($args: expr...) => {
     {
-        mut omega_print_buf: [256]u8;
-        mut omega_print_sink := Stdout {};
-        mut omega_print_out := BufWriter<Stdout>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
-        $...(){ Display::fmt($args, &mut omega_print_out); }
-        Write::write(&mut omega_print_out, b"\n");
-        omega_print_out.flush();
+        mut buf: [256]u8;
+        mut sink := Stdout {};
+        mut out := BufWriter<Stdout>::new(&mut sink, &mut buf[0..]);
+        $...(){ Display::fmt($args, &mut out); }
+        Write::write(&mut out, b"\n");
+        out.flush();
     }
 }
 
 exposed macro eprint($args: expr...) => {
     {
-        mut omega_print_buf: [256]u8;
-        mut omega_print_sink := Stderr {};
-        mut omega_print_out := BufWriter<Stderr>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
-        $...(){ Display::fmt($args, &mut omega_print_out); }
-        omega_print_out.flush();
+        mut buf: [256]u8;
+        mut sink := Stderr {};
+        mut out := BufWriter<Stderr>::new(&mut sink, &mut buf[0..]);
+        $...(){ Display::fmt($args, &mut out); }
+        out.flush();
     }
 }
 
 exposed macro eprintln($args: expr...) => {
     {
-        mut omega_print_buf: [256]u8;
-        mut omega_print_sink := Stderr {};
-        mut omega_print_out := BufWriter<Stderr>::new(&mut omega_print_sink, &mut omega_print_buf[0..]);
-        $...(){ Display::fmt($args, &mut omega_print_out); }
-        Write::write(&mut omega_print_out, b"\n");
-        omega_print_out.flush();
+        mut buf: [256]u8;
+        mut sink := Stderr {};
+        mut out := BufWriter<Stderr>::new(&mut sink, &mut buf[0..]);
+        $...(){ Display::fmt($args, &mut out); }
+        Write::write(&mut out, b"\n");
+        out.flush();
     }
 }

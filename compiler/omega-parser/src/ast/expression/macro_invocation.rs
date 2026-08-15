@@ -1,4 +1,4 @@
-use crate::ast::identifier::Ident;
+use crate::ast::identifier::{Ident, Origin};
 use crate::lexer::Token;
 
 /// `name$(arg, ...)` -- a macro invocation. Shared verbatim between all
@@ -21,4 +21,14 @@ use crate::lexer::Token;
 pub struct MacroInvocationExpr {
     pub name: Ident,
     pub args: Vec<Vec<Token>>,
+    /// Where the *name token* was written, which is what decides the macro
+    /// environment this invocation resolves in -- the same "resolve where
+    /// written" rule every other name obeys. An invocation emitted by a macro
+    /// body carries that macro's expansion origin and resolves in its defining
+    /// module; one that arrived inside a substituted argument keeps the
+    /// caller's origin and resolves in the caller's module. Without this the
+    /// two are indistinguishable after re-parsing, and a perfectly ordinary
+    /// `println$("x: ", other_macro$(1, 2))` fails, because the argument's
+    /// invocation gets looked up in `std::io` instead of where it was written.
+    pub origin: Origin,
 }

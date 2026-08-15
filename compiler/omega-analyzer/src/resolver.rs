@@ -4,7 +4,7 @@ use crate::resolved_type::{
     ResolvedSpecType, ResolvedType,
 };
 use omega_hir::HirId;
-use omega_parser::prelude::{Ident, Type, Visibility};
+use omega_parser::prelude::{Ident, Origin, Type, Visibility};
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -298,6 +298,19 @@ impl std::error::Error for ResolveError {}
 /// this crate never sees a filesystem or a cache, only ever asks these two
 /// questions.
 pub trait ModuleResolver {
+    /// The module that authored tokens emitted by this macro invocation.
+    /// `None` means the path was written directly in the module being
+    /// analyzed. Keeping this query on the resolver lets parser provenance
+    /// stay an opaque id rather than coupling the parser to driver modules.
+    fn macro_origin_module(&self, origin: Origin) -> Option<Vec<Ident>>;
+
+    /// The visibility declared on the macro that emitted `origin`, when this
+    /// is a macro-authored token.
+    fn macro_origin_visibility(&self, origin: Origin) -> Option<Visibility>;
+
+    /// An item's declared visibility, without applying an accessor check.
+    fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility>;
+
     /// What `alias` means as an import in `module_path`, resolved lazily and
     /// memoized per `(module_path, alias)` pair (not per whole module) --
     /// the fix for a real false-cycle bug a whole-module-granular version of

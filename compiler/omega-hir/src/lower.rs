@@ -50,6 +50,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span: node.span,
                 ident: w.ident.clone(),
+                origin: w.origin,
                 value: self.lower_expr(&w.value),
                 mutable: w.mutable,
                 comp: w.comp,
@@ -187,6 +188,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span,
                 ident: w.ident.clone(),
+                origin: w.origin,
                 value: self.lower_expr(&w.value),
                 mutable: w.mutable,
                 comp: w.comp,
@@ -249,6 +251,7 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             ident: decl.ident.clone(),
+            origin: decl.origin,
             r#type: decl.r#type.clone(),
             mutable: decl.mutable,
             visibility: decl.visibility,
@@ -428,6 +431,7 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             ident: Ident("self".to_string()),
+            origin: omega_parser::prelude::Origin::default(),
             r#type,
             visibility: Visibility::default(),
         })
@@ -450,6 +454,7 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             ident: self_ident.clone(),
+            origin: omega_parser::prelude::Origin::default(),
             value: HirExprNode {
                 id: self.ids.next(),
                 span,
@@ -570,6 +575,7 @@ impl Lowerer {
             id: self.ids.next(),
             span,
             ident: param.ident.clone(),
+            origin: param.origin,
             r#type: param.r#type.clone(),
             visibility: param.visibility,
         }
@@ -637,6 +643,7 @@ impl Lowerer {
                 id: self.ids.next(),
                 span: h.span,
                 ident: h.ident.clone(),
+                origin: omega_parser::prelude::Origin::default(),
                 r#type: h.r#type.clone(),
                 visibility: h.visibility,
             })

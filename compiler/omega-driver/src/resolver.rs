@@ -145,6 +145,22 @@ impl Driver {
 }
 
 impl ModuleResolver for Driver {
+    fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<Vec<Ident>> {
+        self.modules.macro_origin_module(origin)
+    }
+
+    fn macro_origin_visibility(
+        &self,
+        origin: omega_parser::prelude::Origin,
+    ) -> Option<Visibility> {
+        self.modules.macro_origin_visibility(origin)
+    }
+
+    fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility> {
+        let (name, module) = absolute_path.split_last()?;
+        self.declared_visibility(module, name)
+    }
+
     fn resolve_import_alias(
         &mut self,
         module_path: &[Ident],

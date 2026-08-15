@@ -1054,7 +1054,13 @@ impl<'r> Analyzer<'r> {
                 Some((root, r#type, false))
             }
             HirPlaceRoot::Path(expr_path) if expr_path.path.is_unqualified() => {
-                self.resolve_unqualified_root(node_id, span, &expr_path.path.head, expected)
+                self.resolve_unqualified_root(
+                    node_id,
+                    span,
+                    &expr_path.path.head,
+                    expr_path.path.origin,
+                    expected,
+                )
             }
             // A qualified root -- either module-qualified (`mymodule::thing::
             // foo`, head an imported module alias) or type-qualified
@@ -1065,14 +1071,22 @@ impl<'r> Analyzer<'r> {
             // most precise error it can determine.
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
-                let alias = self.resolve_alias_or_error(node_id, span, &path.head)?;
+                let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
                 let (root, r#type, mutable) = match alias {
                     Some(ImportTarget::Module(target)) => {
                         let absolute: Vec<Ident> = target
                             .into_iter()
                             .chain(path.tail.iter().cloned())
                             .collect();
-                        self.resolve_qualified_value(node_id, span, absolute, None, expected)?
+                        self.resolve_qualified_value(
+                            node_id,
+                            span,
+                            path,
+                            &self.path_module(path),
+                            absolute,
+                            None,
+                            expected,
+                        )?
                     }
                     // A type-qualified member (`MyEnum::Variant`, a static
                     // function, ...) is never itself an assignable place --
@@ -1108,9 +1122,10 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         ident: &Ident,
+        origin: Origin,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
-        if let Some(binding) = self.context.find_variable(ident) {
+        if let Some(binding) = self.context.find_variable(ident, origin) {
             let root = CheckedPlaceRoot::Variable {
                 decl_id: binding.decl_id,
                 storage: binding.storage,
@@ -1123,7 +1138,9 @@ impl<'r> Analyzer<'r> {
         // claimed here before the alias path below can eagerly commit to one
         // arbitrary candidate (the same problem `resolve_bare_overload_
         // candidates` exists to avoid for a *call*).
-        if let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(ident) {
+        if origin.0.is_none()
+            && let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(ident)
+        {
             let (root, r#type) =
                 self.resolve_bare_overload_root(node_id, span, &absolute, candidates, expected)?;
             return Some((root, r#type, false));
@@ -1141,7 +1158,17 @@ impl<'r> Analyzer<'r> {
         // module alias referenced this way, like no alias at all, falls
         // through to the implicit own-module assumption --
         // `resolve_qualified_value` reports whichever precise error fits.
-        let alias = self.resolve_alias_or_error(node_id, span, ident)?;
+        let resolution_module = self
+            .resolver
+            .macro_origin_module(origin)
+            .unwrap_or_else(|| self.module_path.clone());
+        let alias = match self.resolver.resolve_import_alias(&resolution_module, ident) {
+            Ok(alias) => alias,
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                return None;
+            }
+        };
         if let Some(ImportTarget::Item(
             _,
             ResolvedItem::Value {
@@ -1162,8 +1189,7 @@ impl<'r> Analyzer<'r> {
         let (absolute, unqualified) = match alias {
             Some(ImportTarget::GenericItem(absolute)) => (absolute, None),
             _ => {
-                let absolute = self
-                    .module_path
+                let absolute = resolution_module
                     .iter()
                     .cloned()
                     .chain(std::iter::once(ident.clone()))
@@ -1171,7 +1197,15 @@ impl<'r> Analyzer<'r> {
                 (absolute, Some(ident))
             }
         };
-        self.resolve_qualified_value(node_id, span, absolute, unqualified, expected)
+        self.resolve_qualified_value(
+            node_id,
+            span,
+            &Path { head: ident.clone(), tail: vec![], origin },
+            &resolution_module,
+            absolute,
+            unqualified,
+            expected,
+        )
     }
 
     /// A bare reference to an overloaded name. Nothing about the name alone

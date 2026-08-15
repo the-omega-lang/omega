@@ -67,4 +67,6 @@ pub struct MacroDefinitionStmt {
     pub name: Ident,
     pub signature: MacroSignature,
     pub body: Vec<MacroBodyPiece>,
+    /// Filled in by the driver while collecting a module's macro environment.
+    pub defining_module: Vec<Ident>,
 }

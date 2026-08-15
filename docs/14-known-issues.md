@@ -225,48 +225,12 @@ deliberate limitations and one coverage gap.
   having no re-export concept, and it is what keeps the pre-pass acyclic, but
   it means a package cannot curate a macro surface the way it can't curate an
   item surface. [macros.md](12-macros.md), [visibility.md](07-visibility.md)
-- **A macro body's nested invocations resolve at the call site, not the
-  definition site**, because expansion is textual splicing into the caller's
-  environment. A macro exported from one package therefore cannot call a
-  helper macro that the caller cannot also see, and the resulting
-  `UnknownMacro` names the *inner* macro with no indication that it came from
-  an expansion. The fix is a per-definition home environment carried
-  alongside each `MacroDefinitionStmt`. [macros.md](12-macros.md)
-- **Every *item* a macro body names must also be imported by the caller**, for
-  the same reason as the entry above: the body is spliced into the caller's
-  module and resolved there, so a macro cannot carry its own dependencies.
-  Newly load-bearing now that the print macros live in `std` rather than the
-  ambient `core` prelude — `import extern::std::io::println;` alone does not
-  make `println$` usable, and the caller must additionally import `BufWriter`,
-  `Stdout`/`Stderr`, `Write`, and `Display` (five import lines for one macro).
-  The diagnostics are also poor: the missing names are reported at a composite
-  span past the end of the file, and the cascade ends with `cannot find
-  'omega_print_out' in this scope … a name with a similar spelling exists:
-  'omega_print_buf'`, naming an expansion-internal local the author never
-  wrote. The same per-definition home environment that would fix nested macro
-  resolution is the fix here too, applied to item names.
-  [macros.md](12-macros.md), [console-io.md](24-console-io.md)
 - **Importing a macro leaves a spurious `unused import` warning.** Macro
   names are resolved and consumed by the pre-pass in `omega-driver`'s
   `Driver::macro_env`, entirely before HIR exists, so the ordinary
   import-usage tracking never observes the use and reports the import as
   dead. Every cross-package macro import warns today.
   [macros.md](12-macros.md), [visibility.md](07-visibility.md)
-- **A macro-generated `import` contributes no macros.** Item-position
-  expansion can emit a real `Item::Import`, but macro resolution already ran
-  against the file's hand-written imports by then. Deliberate and documented,
-  not a bug to fix locally — the alternative is expanding to a fixpoint.
-  [macros.md](12-macros.md)
-- **A statement-position expansion's locals capture caller expressions of the
-  same name.** The expansion is spliced into the caller's block, so an
-  argument naming a caller variable binds to a macro-introduced local that
-  shadows it. Wrapping the body in `{ }` prevents the local from leaking out
-  but not from capturing in — that block is the scope the argument lands in.
-  Hit for real: the print macros originally named their writer `out`,
-  which silently shadowed the `*str out` in `examples/dev/main.omg` and made
-  `println$(..., out)` fail with `no field 'fmt' on 'Writer'`. Worked around
-  with an `omega_print_` prefix, which is a convention, not a guarantee. A
-  real fix is gensym or a hygiene scope. [macros.md](12-macros.md)
 
 ## Compiler internals
 
@@ -407,17 +371,19 @@ need a breaking change to fix — full writeups in
   local first" — selected in `require_mutable_place` before the
   `through_pointer` test, plus a correction to that doc comment.
   [specs.md](08-specs.md)
-- **Taking a slice of a local array doesn't count as a use of that array**,
-  so `mut b : [8]u8; s := &mut b[0..]; s[0] = 1u8;` warns `unused variable`
-  for *both* `b` and `s`. Writing through a slice isn't tracked as a read of
-  its base either. Previously obscure; now unavoidable, because
-  `std::io`'s `println`/`print`/`eprint`/`eprintln` all declare a
-  `mut omega_print_buf : [256]u8;` in their expansion, so **every print
-  statement emits a spurious unused-variable warning**. Compounded by the
-  composite-span issue below, the label points past the end of the file. The
-  fix is in the analyzer's use-tracking (a slice/`&mut` of a place is a use of
-  that place), not in `std::io`.
-  [console-io.md](24-console-io.md)
+- **Type-level capture remains possible in macro-generated declarations.**
+  Generic parameters and `Self` intentionally ignore macro origin, because
+  they are substitution-bound rather than lexical bindings. A generated type
+  parameter can therefore still capture a same-named type from a substituted
+  argument. There is no in-tree instance; partitioning these bindings would
+  break the `Self` uses in the primitive conformance macros.
+  [macros.md](12-macros.md)
+- **Macro-authored unused locals are not linted.** Expansion spans are anchored
+  at the invocation and carry no source-file identity, so reporting the lint
+  would misleadingly blame the caller. Locals introduced by a macro are
+  intentionally excluded from `unused variable`; caller-origin arguments are
+  still use-tracked normally.
+  [macros.md](12-macros.md)
 
 ## Control flow
 

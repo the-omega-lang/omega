@@ -1,5 +1,6 @@
 use crate::ast::expression::number::{NumberBase, NumberExpr};
 use crate::ast::identifier::Ident;
+use crate::ast::identifier::Origin;
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 
 /// One lexical unit -- everything the parser sees is one of these; comments
@@ -248,6 +249,7 @@ impl TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
+    pub origin: Origin,
 }
 
 const KEYWORDS: &[(&str, TokenKind)] = &[
@@ -400,6 +402,7 @@ impl<'a> Lexer<'a> {
                 Ok(kind) => self.tokens.push(Token {
                     kind,
                     span: self.span_from(start),
+                    origin: Origin::default(),
                 }),
                 Err(err) => self.errors.push(err),
             }
@@ -407,6 +410,7 @@ impl<'a> Lexer<'a> {
         self.tokens.push(Token {
             kind: TokenKind::Eof,
             span: Span::new(self.pos, self.pos),
+            origin: Origin::default(),
         });
     }
 

@@ -7,7 +7,7 @@ use crate::ids::HirId;
 pub use omega_parser::prelude::{BinaryOp, ImportRoot};
 use omega_parser::prelude::{
     ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, SelfMode, Span, StringExpr,
-    Type, Visibility,
+    Origin, Type, Visibility,
 };
 
 /// A lowered `@name(args)` annotation -- mechanical clone of `omega_parser`'s
@@ -105,6 +105,7 @@ pub struct HirDeclaration {
     pub id: HirId,
     pub span: Span,
     pub ident: Ident,
+    pub origin: Origin,
     pub r#type: Type,
     /// See `omega_parser::ast::statement::declaration::DeclarationStmt::mutable`.
     pub mutable: bool,
@@ -133,6 +134,7 @@ pub struct HirParam {
     pub id: HirId,
     pub span: Span,
     pub ident: Ident,
+    pub origin: Origin,
     pub r#type: Type,
     /// See `DeclarationStmt::visibility`'s doc comment -- meaningful for a
     /// struct/union/enum-header/enum-dynamic/enum-variant field, left at
@@ -505,6 +507,7 @@ pub struct HirWalrusDeclaration {
     pub id: HirId,
     pub span: Span,
     pub ident: Ident,
+    pub origin: Origin,
     pub value: HirExprNode,
     /// See `omega_parser::ast::statement::walrus::WalrusStmt::mutable`.
     pub mutable: bool,

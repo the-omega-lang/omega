@@ -194,6 +194,10 @@ impl AnalysisErrorKind {
             Self::BreakOutsideLoop => d.with_label(span, "cannot `break` outside of a `while`/`for` loop"),
             Self::ContinueOutsideLoop => d.with_label(span, "cannot `continue` outside of a `while`/`for` loop"),
             Self::ModuleResolution(e) => resolve_error_diagnostic(e, Some(span)),
+            Self::MacroDependencyTooPrivate { item, macro_visibility, item_visibility } => d
+                .with_label(span, format!("`{item}` is only {item_visibility}"))
+                .with_note(format!("the macro that names it is {macro_visibility}"))
+                .with_help("make the item at least as visible as the macro, or reduce the macro's visibility"),
             Self::NotAValue(_) => d
                 .with_label(span, "expected a value, found a type")
                 .with_note("a struct's name refers to the type itself; only its instances hold values"),

@@ -10,12 +10,12 @@ use crate::parser::Parser;
 
 /// `name$(arg, ...)`, shared by item, statement, and expression position.
 pub fn parse_macro_invocation(p: &mut Parser) -> Option<MacroInvocationExpr> {
-    let name = p.expect_ident()?;
+    let (name, origin) = p.expect_ident_with_origin()?;
     p.expect(&TokenKind::Dollar, "'$'");
     p.expect(&TokenKind::LParen, "'('");
     let args = parse_macro_args(p)?;
     p.expect(&TokenKind::RParen, "')'");
-    Some(MacroInvocationExpr { name, args })
+    Some(MacroInvocationExpr { name, args, origin })
 }
 
 /// Captures comma-separated raw argument token runs. This is deliberately the
@@ -89,6 +89,7 @@ pub fn parse_macro_definition(
         name,
         signature,
         body,
+        defining_module: vec![],
     })
 }
 
@@ -172,6 +173,10 @@ fn parse_macro_body(p: &mut Parser, in_repetition: bool) -> Option<Vec<MacroBody
                     return None;
                 }
                 body.push(MacroBodyPiece::Repetition(parse_repetition(p)?));
+            }
+            TokenKind::Import => {
+                p.error_at(p.peek_span(), ParseErrorKind::ImportInMacroBody);
+                body.push(MacroBodyPiece::Token(p.advance()));
             }
             TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
                 depth += 1;

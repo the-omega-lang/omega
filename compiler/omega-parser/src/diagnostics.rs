@@ -128,6 +128,10 @@ impl ParseError {
                 .with_label(self.span, "a separator is exactly one non-bracket token"),
             ParseErrorKind::NestedMacroRepetition => d
                 .with_label(self.span, "a repetition cannot contain another repetition"),
+            ParseErrorKind::ImportInMacroBody => d
+                .with_label(self.span, "imports are not allowed in macro bodies")
+                .with_note("macro-body names resolve in the macro's definition module")
+                .with_help("import this name beside the macro definition instead"),
         }
     }
 }
@@ -258,6 +262,9 @@ pub enum ParseErrorKind {
     VariadicMacroParamNotLast,
     InvalidMacroSeparator,
     NestedMacroRepetition,
+    /// An `import` in a macro body would mutate the caller's namespace even
+    /// though the body's own paths are definition-site resolved.
+    ImportInMacroBody,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -367,6 +374,7 @@ impl fmt::Display for ParseErrorKind {
                 f,
                 "macro repetitions can't nest; a macro has at most one variadic parameter"
             ),
+            Self::ImportInMacroBody => write!(f, "imports are not allowed in macro bodies"),
         }
     }
 }

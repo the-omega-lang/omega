@@ -784,8 +784,8 @@ impl<'r> Analyzer<'r> {
             // enclosing scope) can no longer trust a narrower type
             // than the plain one -- this is the actual "de-assume a
             // proof once a mutable reference has been taken" step.
-            if let Some((ident, ..)) = self.narrowable_place(place) {
-                self.context.widen_variable(&ident);
+            if let Some((ident, origin, ..)) = self.narrowable_place(place) {
+                self.context.widen_variable(&ident, origin);
             }
             place_type.widened()
         } else {
@@ -800,9 +800,9 @@ impl<'r> Analyzer<'r> {
             // a different variant once the arm ends -- so that case
             // still widens, exactly as before this distinction
             // existed (see `VarBinding::narrowed`).
-            let narrowed_shadow = self.narrowable_place(place).is_some_and(|(ident, ..)| {
+            let narrowed_shadow = self.narrowable_place(place).is_some_and(|(ident, origin, ..)| {
                 self.context
-                    .find_variable(&ident)
+                    .find_variable(&ident, origin)
                     .is_some_and(|b| b.narrowed)
             });
             if narrowed_shadow {

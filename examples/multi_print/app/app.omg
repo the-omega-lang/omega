@@ -2,10 +2,6 @@
 # prints. See `printlib.omg` for what this is actually asserting.
 import extern::printlib::announce;
 import extern::std::io::println;
-import extern::std::io::BufWriter;
-import extern::std::io::Stdout;
-import extern::std::io::Write;
-import extern::std::fmt::Display;
 
 main() => i32 {
     announce();

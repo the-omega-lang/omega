@@ -240,11 +240,12 @@ fn parse_walrus_or_declaration(
 /// meaningful in statement/item position) is applied by the caller
 /// afterward; struct/enum fields and parameters never check for one at all.
 pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
-    let ident = p.expect_ident()?;
+    let (ident, origin) = p.expect_ident_with_origin()?;
     p.expect(&TokenKind::Colon, "':'");
     let r#type = crate::parser::r#type::parse_type(p)?;
     Some(DeclarationStmt {
         ident,
+        origin,
         r#type,
         mutable: false,
         visibility: Visibility::default(),
@@ -270,11 +271,12 @@ fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {
 /// Always `mutable: false`/`comp: false` here -- see `parse_declaration`'s
 /// identical note; both are applied by the caller afterward.
 fn parse_walrus(p: &mut Parser) -> Option<WalrusStmt> {
-    let ident = p.expect_ident()?;
+    let (ident, origin) = p.expect_ident_with_origin()?;
     p.expect(&TokenKind::ColonEq, "':='");
     let value = parse_expression(p)?;
     Some(WalrusStmt {
         ident,
+        origin,
         value,
         mutable: false,
         comp: false,
