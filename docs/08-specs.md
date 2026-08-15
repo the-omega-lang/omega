@@ -440,12 +440,26 @@ primitive<T> []T {
 }
 ```
 
-`primitive Target { ... }` defines inherent methods for compiler-provided
-types that cannot contain their own declaration bodies. It is restricted to
-the `core` package and to scalar, `bool`, `char`, `str`, and generic slice
-targets; `void` is not a valid target. Exactly one primitive block may target
-each concrete type. Functions carry ordinary visibility modifiers and are
-called like inherent methods.
+`primitive Target { ... }` is a compiler-provided type's **declaration site**
+in `core` -- those types cannot contain their own declaration bodies, so this
+is where they exist in the language's own source. Attaching inherent methods
+is what a block is usually *for*, but not what it *is*: an empty block is a
+complete declaration, and every built-in has one. That is the point of
+allowing exactly one block per concrete type.
+
+It is restricted to the `core` package, and to scalar, `bool`, `char`, `void`,
+`never`, `str`, and generic slice targets. Type *constructors* (`*T`, `[N]T`,
+`[?]T`) have none, since they are not single types; `[]T`'s generic block is
+the one exception. `void` and `never` carry no methods -- neither has a value
+to call one on -- and are declared for the same reason as the rest: so that
+reading `core` answers which types this language has, without anyone
+consulting the compiler's source. A primitive target is deliberately a
+different set from a *conform* target (see `Analyzer::resolve_primitive_target`):
+a struct is conformable but is not a primitive, and `void`/`never` are
+primitives that nothing can conform.
+
+Functions carry ordinary visibility modifiers and are called like inherent
+methods.
 
 Primitive methods and spec conformance are deliberately separate. Only core
 adds inherent primitive methods, but a package that owns a spec or its target

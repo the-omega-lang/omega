@@ -216,7 +216,11 @@ impl Driver {
                 substitution,
                 (primitive.id, primitive.span),
                 |analyzer| {
-                    analyzer.resolve_conform_target(primitive.id, primitive.span, &primitive.target)
+                    analyzer.resolve_primitive_target(
+                        primitive.id,
+                        primitive.span,
+                        &primitive.target,
+                    )
                 },
             );
             self.diagnostics.record_warnings(module, run.warnings);
@@ -310,10 +314,24 @@ impl Driver {
         Some(entry)
     }
 
+    /// Every built-in type gets a `primitive` block as its *declaration
+    /// site* in `core`, whether or not it has any methods to attach. That is
+    /// what the one-block-per-target rule is for: reading `core` should
+    /// answer "which types does this language have" without consulting the
+    /// compiler's own source.
+    ///
+    /// `Void` and `Never` are included even though neither can have a
+    /// callable `*self` method -- neither has a value to call one on. Their
+    /// blocks exist to be declarations, and to give their semantics somewhere
+    /// to be documented in Omega rather than only in `docs/`. Type
+    /// *constructors* (`*T`, `[N]T`, `[?]T`) are still excluded: they are not
+    /// single types, and `[]T` is already covered by the generic slice form.
     fn primitive_target_allowed(target: &ResolvedType) -> bool {
         matches!(
             target,
-            ResolvedType::Bool
+            ResolvedType::Void
+                | ResolvedType::Never
+                | ResolvedType::Bool
                 | ResolvedType::Char
                 | ResolvedType::I8
                 | ResolvedType::I16

@@ -12,7 +12,7 @@
 #
 # `pop_back`/`pop_front` return `Option<T>` rather than `List<T>`'s out-
 # pointer/`bool` convention -- no existing Omega precedent to match here
-# (unlike `List<T>`, which mirrors `core::slices::SliceImpl<T>`), so this
+# (unlike `List<T>`, which mirrors `core::primitives::slices::SliceImpl<T>`), so this
 # follows Rust's own `VecDeque`/`LinkedList` API shape instead, matching
 # node-chasing's own non-hot-path character.
 

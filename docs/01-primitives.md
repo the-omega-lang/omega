@@ -317,10 +317,18 @@ only `char` and `u8` sources. Whenever that conversion lands,
 `conform char to Successor` is purely additive — until then this note and
 the exhaustiveness abstraction above stand or fall together.
 
-`char`, `bool`, and every pointer type (`*T`/`*mut T`) also support
-arithmetic/bitwise ops (`+ - * / % & | ^ << >>`, and unary `~`) — each
+`char` and every pointer type (`*T`/`*mut T`) also support arithmetic/bitwise
+ops (`+ - * / % & | ^ << >>`, and unary `~`) — each
 non-numeric operand implicitly **coerces** to a real numeric type first
 (`ResolvedType::arithmetic_repr`): `char` to `u32`, a pointer to `usize`.
+
+`bool` does **not** belong to that group, despite sharing some operator
+spellings: it has no `arithmetic_repr`, so it never decays to an integer and
+`true + true` is rejected outright, as are `<`, the shifts, and `~`. Its
+whole operator set is `==`/`!=` and `&`/`|`/`^`. Since this language has no
+`&&`/`||`/`!`, those three *are* `bool`'s logical operators — they evaluate
+both operands rather than short-circuiting, which is the one thing to know
+before putting a call on the right-hand side of one.
 The **result is that numeric type, never cast back implicitly** —
 `some_char + 1` is a `u32`, not a `char`, and `some_char += 1` still
 doesn't type-check (there's no implicit path back into `char`). This is

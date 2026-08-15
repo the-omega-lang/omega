@@ -109,6 +109,47 @@ fn requirements_are_same(
 }
 
 impl<'r> Analyzer<'r> {
+    /// A `primitive Target { ... }` block's own target.
+    ///
+    /// Deliberately *not* `resolve_conform_target`, which this used to reuse.
+    /// The two answer different questions: a conform target is a type that can
+    /// own an implementation of a spec, while a primitive target is a built-in
+    /// type's **declaration site** in `core`. Those sets genuinely differ at
+    /// both ends -- a struct is conformable but is not a primitive, and
+    /// `void`/`never` are primitives that nothing could ever conform (there is
+    /// no value to implement a spec method on).
+    ///
+    /// Borrowing the conformance gate meant the stricter rule always won, so
+    /// `ConformanceRegistry::primitive_target_allowed` could never widen past
+    /// it -- which is why `void` was rejected with "conform target is not a
+    /// concrete type", a diagnostic about a construct the author never wrote.
+    /// `allow_never` is set for the same reason: `never` is barred from
+    /// ordinary type positions, but its declaration site is not one.
+    pub fn resolve_primitive_target(
+        &mut self,
+        id: HirId,
+        span: Span,
+        target: &Type,
+    ) -> Option<ResolvedType> {
+        if let Type::Named(path) = target
+            && path.is_unqualified()
+            && path.head.as_ref() == "str"
+        {
+            return Some(ResolvedType::Str { mutable: false });
+        }
+        if let Type::InferredArray(item) = target {
+            let item = self.resolve_type_or_error(id, span, item, true)?;
+            return Some(ResolvedType::Slice {
+                item: Box::new(item),
+                mutable: false,
+            });
+        }
+        // Whether this particular built-in may carry a block is
+        // `primitive_target_allowed`'s question, asked by the caller against
+        // the resolved type; all this has to do is resolve it.
+        self.resolve_type_or_error_checked(id, span, target, true, true)
+    }
+
     pub fn resolve_conform_target(
         &mut self,
         id: HirId,

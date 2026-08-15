@@ -1318,3 +1318,74 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
         "expected EmptyPackage, got {errors:?}"
     );
 }
+
+/// Compiles `core_source` *as* the `core` package, which is where every
+/// `primitive` block has to live. Returns the result so a test can assert
+/// either acceptance or a specific diagnostic.
+fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
+    let core = TestPackage::new(core_source);
+    let local = TestPackage::new("main() => i32 { 0 }");
+    let result = Driver::new(
+        local.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("core".to_string()),
+            dir: core.0.clone(),
+        }],
+    )
+    .expect("construct driver with core extern")
+    .compile(&[Ident("main".to_string())]);
+    drop(core);
+    result
+}
+
+/// A `primitive` block is a declaration site, not merely a place to hang
+/// methods: an empty body is a complete declaration, and every built-in has
+/// one in `core` (see `runtime/core/primitives.omg`).
+#[test]
+fn an_empty_primitive_block_is_a_valid_declaration() {
+    compile_as_core("primitive char { }\nprimitive bool { }")
+        .expect("an empty primitive block must be accepted");
+}
+
+/// `void` and `never` have no values, so neither can ever carry a callable
+/// method -- but both are real built-in types, so both get a declaration
+/// site. `never` is otherwise barred from every type position; this is the
+/// single exception.
+#[test]
+fn void_and_never_have_declaration_sites() {
+    compile_as_core("primitive void { }\nprimitive never { }")
+        .expect("`void`/`never` must be declarable");
+}
+
+/// The primitive-target set is deliberately *not* the conform-target set: a
+/// struct can own a conformance but is not a built-in, so it has no
+/// declaration site to claim. Before the two were separated, `primitive`
+/// reused `resolve_conform_target` and the stricter rule silently won --
+/// which is what made `void` report "conform target is not a concrete type"
+/// for a `conform` the author never wrote.
+#[test]
+fn a_struct_is_not_a_primitive_target() {
+    let Err(errors) = compile_as_core("struct S { x: i32; }\nprimitive S { }") else {
+        panic!("a struct must not be a primitive target");
+    };
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::PrimitiveTargetNotAllowed { .. }
+    )));
+}
+
+/// ... and the other end of that split: `void` is declarable but nothing can
+/// conform it, because there is no value to implement a method on.
+#[test]
+fn void_is_declarable_but_not_conformable() {
+    let Err(errors) = compile_as_core(
+        "exposed spec Show { show(*self) => i32; }\nconform void to Show { show(*self) => i32 { 0 } }",
+    ) else {
+        panic!("`void` must not be conformable");
+    };
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ConformTargetNotAType
+    )));
+}

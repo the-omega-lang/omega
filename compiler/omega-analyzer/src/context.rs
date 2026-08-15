@@ -656,7 +656,7 @@ impl Context {
             // unrelated substitution: `*mut T` with `T = *str` must stay a
             // genuine pointer-to-a-pointer (`Pointer{pointee: Str}`),
             // never collapsed into `*mut str` -- confirmed a real bug, not
-            // a hypothetical one, via `core::slices`'s own `SliceImpl<T>::
+            // a hypothetical one, via `core::primitives::slices`'s own `SliceImpl<T>::
             // first(*self, out: *mut T)` called with `T = *str`.
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self" => {
                 match self.resolve_named_type(path, resolver, module_path, true, bypass)? {

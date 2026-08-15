@@ -36,16 +36,36 @@ compiled object: definitions from `core.o` must be linked when used.
   `str` conformances live in core because range iteration depends on them.
 - **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
   and `ToIterator<T>`, the protocols behind `for`.
-- **`core::numerics`** supplies only inherent scalar operations: `clamp`,
+- **`core::primitives`** is where every built-in type is declared. A
+  `primitive` block is a type's declaration site, not merely somewhere to hang
+  methods on it, so **every** built-in has one — including `void` and `never`,
+  whose blocks are empty because neither has a value to call a method on.
+  Reading this module answers "which types does this language have" without
+  anyone opening the compiler:
+
+  | Module | Declares |
+  |---|---|
+  | `core::primitives::numerics` | `i8`–`i64`/`isize`, `u8`–`u64`/`usize`, `f32`/`f64` |
+  | `core::primitives::strings` | `str` |
+  | `core::primitives::slices` | `[]T` |
+  | `core::primitives::char` | `char` |
+  | `core::primitives::bool` | `bool` |
+  | `core::primitives::valueless` | `void`, `never` |
+
+  Type *constructors* (`*T`, `[N]T`, `[?]T`) have no block, since they are not
+  single types; `[]T`'s generic block is the one exception. Note the deliberate
+  mirror with `std::primitives`: `core::primitives` **declares** the built-ins,
+  `std::primitives` **conforms** them to the specs `std` owns.
+- **`core::primitives::numerics`** supplies only inherent scalar operations: `clamp`,
   `pow`, `abs`, `signum`, `is_even`/`is_odd`, `is_negative`/`is_positive`,
   `is_power_of_two`, and `is_nan`. It does not attach comparison, defaulting,
   hash, or formatting conformances — `min`/`max` in particular are `Ord`
-  methods and live in `std::cmp`.
-- **`core::slices`** supplies inherent operations on `*[]T`, including
+  methods and live in `core::cmp`.
+- **`core::primitives::slices`** supplies inherent operations on `*[]T`, including
   `is_empty` and bounds-checked out-parameter access. The out-parameter/
   `bool` form is intentional for this hot, allocation-free API; it is not a
   replacement for `Option<T>` everywhere.
-- **`core::strings`** supplies inherent byte-oriented `str` operations:
+- **`core::primitives::strings`** supplies inherent byte-oriented `str` operations:
   `is_empty`, `as_bytes`, `starts_with`, `ends_with`, and `contains`.
   Equality, hashing, and display of `str` are standard-library
   conformances.

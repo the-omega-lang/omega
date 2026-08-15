@@ -234,7 +234,7 @@ pub(crate) fn glued_symbol(
 ///
 /// Deliberately carries **no module path**, unlike an ordinary
 /// `method_symbol`. A primitive's target has no declaring module of its own
-/// — `core::strings` is merely where someone wrote the block — and exactly
+/// — `core::primitives::strings` is merely where someone wrote the block — and exactly
 /// one `primitive` block may exist per target program-wide, so the target
 /// alone is already a unique owner. Including the module would make the
 /// symbol depend on which `core` submodule the declaration happens to sit

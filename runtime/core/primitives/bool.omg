@@ -1,0 +1,12 @@
+# `core::primitives::bool` -- `bool`'s declaration site.
+#
+# One bit of information, stored in one byte. Its operators are `==`/`!=` and
+# `&`/`|`/`^` -- and since this language has no `&&`/`||`/`!`, those three
+# *are* its logical operators, evaluating both operands rather than
+# short-circuiting.
+#
+# Ordering (`<`), arithmetic (`+`), the shifts and `~` are all rejected:
+# `bool` has no `arithmetic_repr`, so unlike `char` and pointers it never
+# decays to an integer to make an operator work. It is a truth value, not a
+# zero-or-one.
+primitive bool { }

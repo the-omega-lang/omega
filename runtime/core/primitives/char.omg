@@ -1,0 +1,23 @@
+# `core::primitives::char` -- `char`'s declaration site.
+#
+# A Unicode scalar value: a 4-byte decoded codepoint, never a byte and never a
+# UTF-16 code unit. Its domain is `0..=0x10FFFF` with the surrogate block
+# `0xD800..=0xDFFF` excluded -- so unlike every other built-in, `char` carries
+# a **validity invariant**, and not every bit pattern of its width is a value.
+#
+# That invariant is why the casts are asymmetric. Every `char` converts *out*
+# to an integer (`<i32>c`, `<u32>c`), because every scalar value is a valid
+# integer. Converting *in* is allowed only from `u8`, whose every value is a
+# valid scalar value; `<char>some_u32` is refused, because most `u32`s are not
+# codepoints and there is no checked conversion to offer instead yet.
+#
+# It is also why arithmetic on a `char` yields `u32` and never comes back:
+# `c + 1` is a number, not a character, and no implicit path leads from that
+# number back to a `char` where it could smuggle in a surrogate.
+#
+# The block is empty because everything `char` wants is currently blocked on
+# that missing conversion -- `from_u32`, a `chars()` decoder, `Successor` (and
+# so ranges), case mapping. Inspecting methods (`is_ascii`, `is_digit`,
+# `len_utf8`) need nothing new and belong here whenever someone writes them.
+# See `docs/01-primitives.md`.
+primitive char { }

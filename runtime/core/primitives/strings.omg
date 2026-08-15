@@ -1,4 +1,4 @@
-# `core::strings` -- `str`'s own inherent methods, plus its `Eq` conformance.
+# `core::primitives::strings` -- `str`'s own inherent methods, plus its `Eq` conformance.
 # `str` is already a sized (byte count, not character count -- see `.size`
 # below) fat pointer (`Context::resolve_pointer_type`'s `*str`), never
 # null-terminated, so everything here works off `.size` and byte comparisons
@@ -11,7 +11,7 @@
 # may conform it. Hashing and formatting conformances for `str` stay in `std`
 # for exactly the same reason, since `std` still owns those specs.
 
-import cmp::Eq;
+import root::cmp::Eq;
 
 conform str to Eq {
     equals(*self, other: Self) => bool {

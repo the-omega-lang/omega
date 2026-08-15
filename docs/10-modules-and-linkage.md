@@ -54,8 +54,8 @@ named for the directory's physical basename and placed directly in that
 directory; everything else in the directory is a child module:
 
 ```
-runtime/core/option.omg     # core::option
-runtime/core/strings.omg    # core::strings
+runtime/core/option.omg                # core::option
+runtime/core/primitives/strings.omg    # core::primitives::strings
 ```
 
 The same convention already applies to a nested directory-shaped module:

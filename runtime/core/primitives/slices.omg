@@ -1,4 +1,4 @@
-# `core::slices` -- `*[]T`'s own methods, for any element type `T`.
+# `core::primitives::slices` -- `*[]T`'s own methods, for any element type `T`.
 # The primitive target is bare (`[]T`, no leading `*`); each function's
 # self mode supplies the pointer. One instantiation is generated per concrete `T` a program
 # actually uses, deduplicated across translation units the same way any

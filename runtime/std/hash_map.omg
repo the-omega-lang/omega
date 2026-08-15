@@ -17,7 +17,7 @@
 #   defer map.free();
 #
 # `insert`/`get`/`remove` all return `Option<V>` -- no existing Omega
-# precedent to match (unlike `List<T>`, which mirrors `core::slices`), so
+# precedent to match (unlike `List<T>`, which mirrors `core::primitives::slices`), so
 # this follows Rust's own `HashMap` API shape instead, matching this
 # type's own heavier, non-hot-path character.
 

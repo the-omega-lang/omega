@@ -12,7 +12,7 @@
 #   list := List<i32>::new();
 #   defer list.free();
 #
-# Fallible, possibly-out-of-bounds access follows `core::slices::
+# Fallible, possibly-out-of-bounds access follows `core::primitives::slices::
 # SliceImpl<T>`'s own out-pointer/`bool` convention (`get`/`pop`/`set`)
 # rather than `Option<T>` -- `List<T>` is the growable version of the same
 # hot-path, no-allocation-on-read concept `*[]T` already is, and should

@@ -589,7 +589,7 @@ impl AnalysisErrorKind {
                 .with_note(format!("this spec belongs to package '{}'", spec_package.as_ref()))
                 .with_help("declare the blanket alongside that spec, or implement a package-local spec instead"),
             Self::PrimitiveOutsideCore => d.with_label(span, "primitive blocks belong to the core package"),
-            Self::PrimitiveTargetNotAllowed { .. } => d.with_label(span, "only built-in scalar, str, and slice types are allowed"),
+            Self::PrimitiveTargetNotAllowed { .. } => d.with_label(span, "only built-in scalar, `bool`, `char`, `void`, `never`, `str`, and slice types are allowed"),
             Self::DuplicatePrimitiveTarget { previous, .. } => d
                 .with_label(span, "this primitive target already has a declaration block")
                 .with_secondary_label(*previous, "the first block is here"),

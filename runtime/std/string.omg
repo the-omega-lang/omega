@@ -78,7 +78,7 @@ exposed struct String {
 
     # A real, borrowed `*str` view of this string's current contents --
     # `List<u8>::as_slice`'s own `*[]u8` reinterpreted, the same free
-    # fat-pointer-to-fat-pointer cast `core::strings` itself relies on.
+    # fat-pointer-to-fat-pointer cast `core::primitives::strings` itself relies on.
     exposed as_str(*self) => *str {
         <*str>self.bytes.as_slice()
     }
