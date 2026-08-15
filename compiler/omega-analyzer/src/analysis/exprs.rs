@@ -13,7 +13,7 @@ impl<'r> Analyzer<'r> {
     /// unsuffixed literals. Everything else ignores it entirely -- this is
     /// deliberately *not* full bidirectional inference, just enough top-down
     /// context for a literal whose own type isn't pinned by an explicit
-    /// suffix to adapt instead of defaulting to i32/f64.
+    /// suffix to adapt instead of defaulting to i32/f32.
     ///
     /// Every form with any real work of its own gets a named method below;
     /// the arms that stay inline here are the ones whose whole analysis *is*
@@ -1514,7 +1514,7 @@ impl<'r> Analyzer<'r> {
     /// Some(&target_type)` -- the same treatment a plain assignment's value
     /// already gets (`HirExpr::Assignment`'s arm) -- so `a *= 5` adapts an
     /// unsuffixed literal `5` to `a`'s own type rather than defaulting to
-    /// `i32`/`f64` and then failing `analyze_binary_op`'s "operands must
+    /// `i32`/`f32` and then failing `analyze_binary_op`'s "operands must
     /// match exactly" check.
     fn analyze_compound_assign(
         &mut self,

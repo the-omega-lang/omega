@@ -31,7 +31,7 @@ enum LiteralTarget {
 /// fit this candidate" check (a rejected candidate must never push a
 /// speculative error). `kind` is whatever concrete numeric type the caller
 /// already decided on (explicit suffix, inferred from context, or the
-/// plain i32/f64 default) -- this never picks the type itself, only
+/// plain i32/f32 default) -- this never picks the type itself, only
 /// validates the literal's digits against it.
 pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue, ()> {
     match kind {
@@ -806,11 +806,20 @@ impl<'r> Analyzer<'r> {
     /// literal's own -- `Float` iff the literal was written with a
     /// fractional part, never the other way around (an int-kind literal
     /// never silently becomes a float, only a same-family width/signedness
-    /// adapts) -- else today's plain i32/f64 default (mirroring Rust's own
-    /// literal defaults). An explicit suffix always wins outright and never
-    /// reaches this at all (see `analyze_number`).
+    /// adapts) -- else the plain `i32`/`f32` default. An explicit suffix
+    /// always wins outright and never reaches this at all (see
+    /// `analyze_number`).
+    ///
+    /// `f32`, deliberately unlike C's `double` and Rust's `f64`: Omega treats
+    /// embedded as a first-class target, and the FPUs on the parts it aims at
+    /// (Cortex-M4F/M7 and friends) are single-precision only -- an unsuffixed
+    /// `1.0` defaulting to `f64` there silently pulls in software emulation,
+    /// which is exactly the kind of invisible cost this language exists to
+    /// refuse. Write `1.0f64` (or annotate the binding) for double precision;
+    /// note that a C variadic still promotes `f32` to `double` at the call
+    /// boundary, as its ABI requires.
     fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>) -> ResolvedType {
-        let default = if n.fractional_part.is_some() { ResolvedType::F64 } else { ResolvedType::I32 };
+        let default = if n.fractional_part.is_some() { ResolvedType::F32 } else { ResolvedType::I32 };
         let Some(expected) = expected else { return default };
         let Some(kind) = expected.numeric_kind() else { return default };
         if matches!(kind, NumericKind::Float(_)) == n.fractional_part.is_some() {

@@ -1671,7 +1671,7 @@ impl<'r> Analyzer<'r> {
     /// silently (no errors for a candidate that turns out not to win): a
     /// candidate is viable iff every argument fits its corresponding
     /// parameter, and its *score* is how many adaptable-literal arguments
-    /// needed a type other than their own natural default (`i32`/`f64`) to
+    /// needed a type other than their own natural default (`i32`/`f32`) to
     /// fit -- 0 for "every literal stayed at its default." The unique
     /// minimum-score viable candidate wins; zero viable candidates is
     /// `NoMatchingOverload`, two or more tied at the minimum is
@@ -1776,7 +1776,7 @@ impl<'r> Analyzer<'r> {
 
     /// Whether an `adaptable_literal` argument fits `target` for overload-
     /// viability purposes, and -- if so -- whether `target` is exactly the
-    /// literal's own natural default type (`i32`/`f64`); see
+    /// literal's own natural default type (`i32`/`f32`); see
     /// `resolve_overload`'s doc comment for how the result is used.
     /// `None` if it doesn't fit at all (wrong numeric kind/family, or out
     /// of range for `target`'s width). Deliberately silent -- never pushes

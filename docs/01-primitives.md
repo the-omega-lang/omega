@@ -49,6 +49,37 @@ real C-ABI aggregate-passing implementation (see the caveat at the bottom).
 | enum | `[tag][header][dynamic fields][payload]`, each region flattened the same way |
 | `spec *T` (dynamic dispatch) | two pointers |
 
+## Number literal defaults
+
+An unsuffixed number literal takes its type from context when there is one —
+the expected type of the parameter, binding, field or operand it appears in —
+adapting only within its own family (a literal written without a fractional
+part never silently becomes a float, or vice versa). An explicit suffix
+(`5u8`, `1.0f64`) always wins outright and is never inferred over.
+
+With no context to adapt to, the defaults are **`i32`** and **`f32`**:
+
+```
+n := 5;            # i32
+x := 1.0;          # f32
+y := 1.0f64;       # f64, written explicitly
+z : f64 = 1.0;     # f64, adapted from the annotation
+```
+
+The float default is deliberately `f32`, unlike C's `double` and Rust's
+`f64`. Omega treats embedded as a first-class target, and the FPUs on the
+parts it aims at — Cortex-M4F, M7 and similar — are single-precision only.
+An unsuffixed `1.0` meaning `f64` there quietly pulls in software emulation:
+a large, slow call where the source looks like arithmetic. That is precisely
+the invisible cost this language exists to refuse, so the default is the one
+the hardware can actually execute, and double precision is opt-in.
+
+Two consequences worth knowing. Passing a float to a C variadic still
+promotes it to `double` at the call boundary, because the C ABI requires
+that — the default changes what `1.0` *is*, not how it crosses into C. And
+`f32` carries roughly 7 decimal digits against `f64`'s 15, so code that wants
+the wider type must say so; it will not be inferred as a convenience.
+
 ## `never`: not a conventional type
 
 `never` is a function/method/extern/gap's own declared return type,
