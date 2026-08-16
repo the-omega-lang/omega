@@ -478,9 +478,10 @@ impl<'r> Analyzer<'r> {
         &mut self,
         sp: &HirSpecDef,
     ) -> Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
+        let module = self.module_path.clone();
         sp.dependencies
             .iter()
-            .filter_map(|dep| self.resolve_spec_dependency_cell(sp.id, sp.span, dep, false))
+            .filter_map(|dep| self.resolve_spec_dependency_cell(sp.id, sp.span, dep, false, &module))
             .collect()
     }
 
@@ -509,6 +510,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         ty: &Type,
         ambient_fallback: bool,
+        module: &[Ident],
     ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
         let (path, raw_args) = match ty {
             Type::Generic(path, args) => (path, args.clone()),
@@ -527,7 +529,7 @@ impl<'r> Analyzer<'r> {
         let absolute = match self.context.resolve_absolute_item_path(
             &mut *self.resolver,
             path,
-            &self.module_path,
+            module,
         ) {
             Ok(a) => a,
             Err(e) => {
@@ -548,7 +550,7 @@ impl<'r> Analyzer<'r> {
         } else if ambient_fallback && path.is_unqualified() {
             let ambient_path = match self
                 .resolver
-                .ambient_core_candidates(&self.module_path, &path.head)
+                .ambient_core_candidates(module, &path.head)
             {
                 Ok(Some(ambient_path)) => ambient_path,
                 Ok(None) => {
@@ -668,6 +670,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         raw: &RawSpecFunctionSig,
         substitution: &[(Ident, ResolvedType)],
+        module: &[Ident],
     ) -> Option<(
         ResolvedFunctionType,
         Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
@@ -676,7 +679,7 @@ impl<'r> Analyzer<'r> {
             let mut params = Vec::with_capacity(raw.params.len());
             let mut ok = true;
             for p in &raw.params {
-                match this.resolve_type_or_error(id, span, &p.r#type, true) {
+                match this.resolve_type_or_error_in(id, span, &p.r#type, true, module) {
                     Some(r) => params.push((p.ident.clone(), r)),
                     None => ok = false,
                 }
@@ -684,11 +687,11 @@ impl<'r> Analyzer<'r> {
             let mut return_type_bound = None;
             let return_type = match &raw.return_type {
                 Type::SpecStatic(bound) => {
-                    match this.resolve_spec_dependency_cell(id, span, bound, true) {
+                    match this.resolve_spec_dependency_cell(id, span, bound, true, module) {
                         Some((cell, raw_args)) => {
                             let resolved_args: Option<Vec<ResolvedType>> = raw_args
                                 .iter()
-                                .map(|a| this.resolve_type_or_error(id, span, a, true))
+                                .map(|a| this.resolve_type_or_error_in(id, span, a, true, module))
                                 .collect();
                             match resolved_args {
                                 Some(args) => {
@@ -701,7 +704,7 @@ impl<'r> Analyzer<'r> {
                         None => None,
                     }
                 }
-                other => this.resolve_return_type_or_error(id, span, other, true),
+                other => this.resolve_return_type_or_error_in(id, span, other, true, module),
             };
             if !ok {
                 return None;
@@ -766,12 +769,13 @@ impl<'r> Analyzer<'r> {
         self_type: &ResolvedType,
         out: &mut Vec<FlattenedSpecFn>,
     ) -> Option<()> {
-        let (spec_id, spec_name, spec_visibility, generics, dependencies, functions) = {
+        let (spec_id, spec_name, spec_visibility, spec_module, generics, dependencies, functions) = {
             let s = spec.borrow();
             (
                 s.id,
                 s.name.clone(),
                 s.visibility,
+                s.module_path.clone(),
                 s.generics.clone(),
                 s.dependencies.clone(),
                 s.functions.clone(),
@@ -789,12 +793,17 @@ impl<'r> Analyzer<'r> {
         // now that `substitution` (this spec's own generics, now concrete)
         // is available, exactly the same `with_substitution` treatment
         // `resolve_raw_spec_fn_type` gives a raw function signature just
-        // below.
+        // below. Everything a spec declares resolves against its *own*
+        // module (`spec_module`), never the caller's -- the flatten runs in
+        // whatever module happens to be asking, and definition-site
+        // resolution is what makes a foreign spec's function types
+        // (`fmt(*self, out: spec *mut Write)` in `std::io`) resolvable from
+        // anywhere else.
         for (member_spec, member_raw_args) in &dependencies {
             let member_args: Vec<ResolvedType> = self.with_substitution(&substitution, |this| {
                 member_raw_args
                     .iter()
-                    .map(|a| this.resolve_type_or_error(id, span, a, true))
+                    .map(|a| this.resolve_type_or_error_in(id, span, a, true, &spec_module))
                     .collect::<Option<Vec<_>>>()
             })?;
             self.flatten_spec_into(id, span, member_spec, &member_args, self_type, out)?;
@@ -802,7 +811,7 @@ impl<'r> Analyzer<'r> {
 
         for (name, raw) in &functions {
             let (fn_type, return_type_bound) =
-                self.resolve_raw_spec_fn_type(id, span, raw, &substitution)?;
+                self.resolve_raw_spec_fn_type(id, span, raw, &substitution, &spec_module)?;
             // Identity dedup only: the same spec, at the same type
             // arguments, contributing the same declaration twice (a diamond
             // alias). Same name from a *different* spec, or a different

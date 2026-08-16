@@ -1,5 +1,5 @@
 use omega_analyzer::checked::{CheckedItem, ExternFunctionKind};
-use omega_analyzer::error::AnalysisErrorKind;
+use omega_analyzer::error::{AnalysisErrorKind, TypeResolutionError};
 use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver, ExternRoot};
 use omega_parser::{macros::MacroError, prelude::Ident};
@@ -386,6 +386,199 @@ fn widening_and_unrelated_spec_object_casts_are_rejected() {
         kind,
         AnalysisErrorKind::SpecObjectCastImpossible { .. }
     )));
+}
+
+/// The fully-qualified spelling resolves the case rung 1 diagnoses: a type
+/// conforming to two specs that each declare the same static function.
+#[test]
+fn a_fully_qualified_spec_call_resolves_an_ambiguous_static() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec P { make() => Self; label(*self) => i32; }
+        exposed spec Q { make() => Self; label(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to P {
+            make() => Self { S { v = 1; } }
+            label(*self) => i32 { self.v }
+        }
+        conform S to Q {
+            make() => Self { S { v = 2; } }
+            label(*self) => i32 { self.v }
+        }
+        via_p() => i32 { (<S : P>::make()).v }
+        via_q() => i32 { (<S : Q>::make()).v }
+        label_p(s: *S) => i32 { <S : P>::label(s) }
+        main() => i32 {
+            s := S { v = 3; };
+            via_p() + via_q() + label_p(&s)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("the fully-qualified spelling works for statics and instance methods");
+}
+
+/// The ambiguity diagnostic names the candidate specs and prints the
+/// qualified spelling for each.
+#[test]
+fn an_ambiguous_conforming_static_names_the_candidates_and_their_spelling() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec P { make() => Self; }
+        exposed spec Q { make() => Self; }
+        struct S { exposed v: i32; }
+        conform S to P { make() => Self { S { v = 1; } } }
+        conform S to Q { make() => Self { S { v = 2; } } }
+        main() => i32 { (S::make()).v }
+        "#,
+    );
+    let errors = compile_errors(&package, "an ambiguous conforming static must be diagnosed");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::AmbiguousConformanceStatic { specs, .. }
+            if specs.len() == 2
+    )));
+}
+
+/// The negative shapes of the qualified form: a written spec that isn't a
+/// spec, a target that doesn't conform, and a function the spec doesn't
+/// declare -- each named specifically, never a parse error.
+#[test]
+fn fully_qualified_spec_call_negatives_name_their_cause() {
+    let not_a_spec = TestPackage::new(
+        r#"
+        exposed spec P { make() => Self; }
+        struct S { exposed v: i32; }
+        struct NotASpec { exposed v: i32; }
+        conform S to P { make() => Self { S { v = 1; } } }
+        main() => i32 { (<S : NotASpec>::make()).v }
+        "#,
+    );
+    let errors = compile_errors(&not_a_spec, "a non-spec in the qualified pair must be named");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(name))
+            if name.as_ref() == "NotASpec"
+    )));
+
+    let no_conform = TestPackage::new(
+        r#"
+        exposed spec P { make() => Self; }
+        struct S { exposed v: i32; }
+        main() => i32 { (<S : P>::make()).v }
+        "#,
+    );
+    let errors = compile_errors(
+        &no_conform,
+        "a target that doesn't conform must report the missing conformance",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+            type_name,
+            spec,
+            ..
+        }) if type_name == "S" && spec.as_ref() == "P"
+    )));
+
+    let no_function = TestPackage::new(
+        r#"
+        exposed spec P { make() => Self; }
+        struct S { exposed v: i32; }
+        conform S to P { make() => Self { S { v = 1; } } }
+        main() => i32 { (<S : P>::nonexistent()).v }
+        "#,
+    );
+    let errors = compile_errors(
+        &no_function,
+        "a function the spec lacks must name the spec that lacks it",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::NoSuchSpecFunction { spec, function }
+            if spec.as_ref() == "P" && function.as_ref() == "nonexistent"
+    )));
+}
+
+/// `Spec::static_fn()` without any expected type names the two spellings
+/// that do work instead of reporting a bogus argument count.
+#[test]
+fn a_receiverless_spec_call_without_an_expected_type_says_self_is_undetermined() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Bounded { min() => Self; max() => Self; }
+        struct S { exposed v: i32; }
+        conform S to Bounded {
+            min() => Self { S { v = 0; } }
+            max() => Self { S { v = 1; } }
+        }
+        main() => i32 { x := Bounded::min(); x.v }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "a receiverless spec call with no expected type must not report an argument count",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::SpecStaticNeedsExpectedType { spec, function }
+            if spec.as_ref() == "Bounded" && function.as_ref() == "min"
+    )));
+    assert!(!has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::WrongArgumentCount { .. }
+    )));
+}
+
+/// A receiverless spec function whose declared return type is not exactly
+/// `Self` cannot take `Self` from the expected type -- rejected, not
+/// guessed.
+#[test]
+fn a_receiverless_spec_call_with_a_non_self_return_is_uninferable() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec F { n() => usize; }
+        struct S { exposed v: i32; }
+        conform S to F { n() => usize { 7usize } }
+        main() => i32 { x : usize = F::n(); <i32>x }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "a return type that doesn't name Self must be rejected, not guessed",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::SpecStaticReturnNotSelf { spec, function, .. }
+            if spec.as_ref() == "F" && function.as_ref() == "n"
+    )));
+}
+
+/// A receiverless spec call with an expected type works when the return
+/// type is exactly `Self` -- the `x : char = Bounded::min();` shape -- and
+/// in argument position.
+#[test]
+fn a_receiverless_spec_call_takes_self_from_the_expected_type() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Bounded { min() => Self; max() => Self; }
+        struct S { exposed v: i32; }
+        conform S to Bounded {
+            min() => Self { S { v = 0; } }
+            max() => Self { S { v = 1; } }
+        }
+        takes(s: S) => i32 { s.v }
+        main() => i32 {
+            lo : S = Bounded::min();
+            hi := takes(Bounded::max());
+            lo.v + hi
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a receiverless spec call resolves Self from the expected type");
 }
 
 #[test]

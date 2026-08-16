@@ -77,7 +77,7 @@ impl<'r> Analyzer<'r> {
                 branches,
                 else_branch,
             }) => self.analyze_if(id, span, branches, else_branch.as_ref(), expected),
-            HirExpr::FunctionCall(call) => self.analyze_call(id, span, call),
+            HirExpr::FunctionCall(call) => self.analyze_call(id, span, call, expected),
             HirExpr::Assignment(assignment) => self.analyze_assignment(id, span, assignment),
             HirExpr::CompoundAssign(HirCompoundAssign { target, op, value }) => {
                 self.analyze_compound_assign(id, span, target, *op, value)
@@ -533,6 +533,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         // Tried in priority order; the first to claim the call answers it.
         let interceptors: [Interceptor<'r>; 5] = [
@@ -543,7 +544,7 @@ impl<'r> Analyzer<'r> {
             Self::resolve_generic_static_call,
         ];
         for intercept in interceptors {
-            if let Intercepted::Claimed(result) = intercept(self, node_id, span, call) {
+            if let Intercepted::Claimed(result) = intercept(self, node_id, span, call, expected) {
                 return result;
             }
         }

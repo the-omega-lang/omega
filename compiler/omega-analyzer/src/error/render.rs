@@ -544,6 +544,23 @@ impl AnalysisErrorKind {
                      existing section is a real offset",
                 )
                 .with_help("keep the concrete pointer (`&value`) and coerce it to the wanted spec directly"),
+            Self::SpecStaticNeedsExpectedType { spec, function } => d
+                .with_label(span, format!("nothing at this call site names the implementing type"))
+                .with_note(format!("'{spec}::{function}' is receiverless, so 'Self' can only come from the expected type"))
+                .with_help(format!(
+                    "write the type explicitly: `<Type : {spec}>::{function}()`, or call it as \
+                     `Type::{function}()` when unambiguous"
+                )),
+            Self::SpecStaticReturnNotSelf { spec, function, .. } => d
+                .with_label(span, format!("'Self' cannot be inferred from the expected type here"))
+                .with_note(format!(
+                    "'{spec}::{function}' does not return exactly 'Self', so the expected type \
+                     never names the implementing type"
+                ))
+                .with_help(format!(
+                    "write the type explicitly: `<Type : {spec}>::{function}()`, or call it as \
+                     `Type::{function}()` when unambiguous"
+                )),
             Self::ConformToAliasSpec { alias } => d
                 .with_label(span, format!("`{alias}` is a spec alias, not a declaration"))
                 .with_help(format!(
@@ -619,12 +636,30 @@ impl AnalysisErrorKind {
             Self::DuplicatePrimitiveTarget { previous, .. } => d
                 .with_label(span, "this primitive target already has a declaration block")
                 .with_secondary_label(*previous, "the first block is here"),
-            Self::AmbiguousConformanceStatic { specs, .. } => d
-                .with_label(span, "more than one conforming spec provides this static function")
-                .with_note(format!("provided by: {}", specs.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", "))),
-            Self::MethodNotInScope { method, spec } => d
+            Self::AmbiguousConformanceStatic {
+                target,
+                function,
+                specs,
+            } => {
+                let mut d = d
+                    .with_label(span, "more than one conforming spec provides this static function")
+                    .with_note(format!(
+                        "declared by: {}",
+                        specs.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
+                    ));
+                for spec in specs {
+                    d = d.with_note(format!(
+                        "candidate: `<{target} : {spec}>::{function}()`"
+                    ));
+                }
+                d.with_help("name the one you mean with the fully-qualified spelling")
+            }
+            Self::MethodNotInScope { method, spec, r#type } => d
                 .with_label(span, format!("'{}' is supplied by '{}'", method.as_ref(), spec.as_ref()))
-                .with_help(format!("call '{}::{}(value, ...)', or add a generic bound that includes '{}'", spec.as_ref(), method.as_ref(), spec.as_ref())),
+                .with_help(format!(
+                    "call '<{type} : {spec}>::{method}(value, ...)', or add a generic bound that \
+                     includes '{spec}'",
+                )),
             Self::MultipleGluesForGap { glues, .. } => d
                 .with_label(span, "this gap has more than one glue implementation")
                 .with_note(format!(

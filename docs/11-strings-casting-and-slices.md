@@ -227,4 +227,6 @@ between `Slice{U8}` and `Str`.
   `<i32>len`) — bind the cast to a local first (`n := <i32>len;
   &ptr[0..<n]`) rather than writing it inline in the range. `..=`/`..`
   don't share this ambiguity (neither ends in a bare `<`), so `0..=<i32>len`
-  parses as written.
+  parses as written. A fully-qualified spec call
+  (`0..<<S : P>::min()`) lands in the same trap, with the same
+  workaround -- bind to a local first.

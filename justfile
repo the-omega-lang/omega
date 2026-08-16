@@ -93,6 +93,17 @@ build-spec-dispatch: build-core
 test-spec-dispatch: build-spec-dispatch
     ./target/spec_dispatch
 
+# The three-tier spec-function call ladder (`S::fn()` / `P::fn(...)` /
+# `<S : P>::fn(...)`) is assertion-heavy for the same reason: which
+# conform's body a spelling reaches is a runtime fact. Needs `std` for the
+# real `Default::default()` case; everything else is `core`-only.
+build-spec-calls: build-core build-std
+    ./target/debug/omgc -v examples/spec_calls/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/spec_calls.o
+    cc -Wl,--gc-sections target/spec_calls.o target/core.o target/std.o -o target/spec_calls
+
+test-spec-calls: build-spec-calls
+    ./target/spec_calls
+
 # Only `main` in the root module may receive the bare C entry symbol; a child
 # module's identically named function remains normally mangled. Compiled with
 # no `--extern` at all, so this also covers a package that never registers

@@ -752,6 +752,25 @@ pub enum AnalysisErrorKind {
         from: Ident,
         to: Ident,
     },
+    /// `Spec::static_fn()` where nothing determines `Self` -- there is no
+    /// expected type at the call site to take it from, and the bare
+    /// spelling has no other place to read it. The fully-qualified form
+    /// (`<Type : Spec>::fn()`) or an unambiguous `Type::fn()` names it
+    /// instead.
+    SpecStaticNeedsExpectedType {
+        spec: Ident,
+        function: Ident,
+    },
+    /// `Spec::static_fn()` where the declared return type is not exactly
+    /// `Self`, so even an expected type cannot pin down which type
+    /// implements the spec (`=> usize` never mentions it; `=> Option<Self>`
+    /// would need return-type unification nothing else needs yet). The
+    /// fully-qualified form names the type explicitly.
+    SpecStaticReturnNotSelf {
+        spec: Ident,
+        function: Ident,
+        return_type: String,
+    },
     /// `conform Target to Alias` -- an alias names a conjunction, satisfied
     /// by conforming each member separately, never by one block conformed to
     /// the alias itself.
@@ -872,6 +891,10 @@ pub enum AnalysisErrorKind {
     MethodNotInScope {
         method: Ident,
         spec: Ident,
+        /// The receiver's own type -- the concrete half of the
+        /// fully-qualified spelling the renderer suggests
+        /// (`<Type : Spec>::method(recv, ...)`).
+        r#type: ResolvedType,
     },
     /// Two or more different `glue` declarations implement the same gap --
     /// exactly one glue is allowed per gap, project-wide. Anchored at the
@@ -1510,6 +1533,24 @@ impl fmt::Display for AnalysisErrorKind {
                     to = to.as_ref(),
                 )
             }
+            Self::SpecStaticNeedsExpectedType { spec, function } => {
+                write!(
+                    f,
+                    "cannot determine which type implements '{spec}' for '{function}' -- there \
+                     is no expected type here to take 'Self' from",
+                    spec = spec.as_ref(),
+                    function = function.as_ref(),
+                )
+            }
+            Self::SpecStaticReturnNotSelf { spec, function, return_type } => {
+                write!(
+                    f,
+                    "cannot determine which type implements '{spec}' for '{function}' -- its \
+                     return type '{return_type}' does not say which type implements it",
+                    spec = spec.as_ref(),
+                    function = function.as_ref(),
+                )
+            }
             Self::ConformToAliasSpec { alias } => {
                 write!(
                     f,
@@ -1619,7 +1660,7 @@ impl fmt::Display for AnalysisErrorKind {
                     function.as_ref()
                 )
             }
-            Self::MethodNotInScope { method, spec } => {
+            Self::MethodNotInScope { method, spec, .. } => {
                 write!(
                     f,
                     "method '{}' comes from spec '{}' but is not in this bound context",

@@ -39,6 +39,7 @@ mod stmts;
 mod visibility;
 
 pub use specs::PendingSpecMethod;
+use specs::FlattenedSpecFn;
 
 // Shared across submodules' own `use super::*`.
 use calls::{CalleeResolution, Intercepted, Interceptor, ResolvedCallee};
@@ -79,7 +80,8 @@ use omega_hir::{
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
-    ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, SelfMode, Span, Type, Visibility,
+    ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span,
+    Type, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -772,6 +774,58 @@ impl<'r> Analyzer<'r> {
         self.resolve_type_or_error_checked(id, span, typ, indirect, true)
     }
 
+    /// `resolve_return_type_or_error`, resolved against an explicit module
+    /// -- see `resolve_type_or_error_in`'s doc comment (definition-site
+    /// resolution for a spec's own raw signatures).
+    pub(crate) fn resolve_return_type_or_error_in(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        indirect: bool,
+        module: &[Ident],
+    ) -> Option<ResolvedType> {
+        self.resolve_type_or_error_checked_in(id, span, typ, indirect, true, module)
+    }
+
+    fn resolve_type_or_error_checked_in(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        indirect: bool,
+        allow_never: bool,
+        module: &[Ident],
+    ) -> Option<ResolvedType> {
+        let resolved = self.resolve_type_or_error_in(id, span, typ, indirect, module)?;
+        // A bare spec name (`ResolvedType::Spec`) is never a valid value
+        // type -- see `TypeResolutionError::SpecUsedAsValueType`'s doc
+        // comment. Every position that legitimately wants one (a conform
+        // declaration, a generic bound, `spec *Foo`'s own pointee) goes through
+        // `resolve_spec_reference`, which calls `resolve_type_or_error_raw`
+        // directly instead of this wrapper -- so every other caller (which
+        // is every caller reached through here) is asking for an actual
+        // value type, and a bare spec is always a mistake.
+        if let ResolvedType::Spec(spec) = &resolved {
+            let name = spec.borrow().name.clone();
+            self.error(
+                id,
+                span,
+                AnalysisErrorKind::UnresolvedType(TypeResolutionError::SpecUsedAsValueType(name)),
+            );
+            return None;
+        }
+        if !allow_never && resolved == ResolvedType::Never {
+            self.error(
+                id,
+                span,
+                AnalysisErrorKind::UnresolvedType(TypeResolutionError::NeverNotAllowedHere),
+            );
+            return None;
+        }
+        Some(resolved)
+    }
+
     fn resolve_type_or_error_checked(
         &mut self,
         id: HirId,
@@ -821,11 +875,29 @@ impl<'r> Analyzer<'r> {
         typ: &Type,
         indirect: bool,
     ) -> Option<ResolvedType> {
+        let module = self.module_path.clone();
+        self.resolve_type_or_error_in(id, span, typ, indirect, &module)
+    }
+
+    /// `resolve_type_or_error_raw`, resolved against an explicit module --
+    /// the definition-site resolution a spec's own raw function signature
+    /// needs when the flatten runs from a caller's module (`Analyzer::
+    /// flatten_spec_into`): a spec's types are written in the spec's own
+    /// module and resolve there, wherever the spec happens to be *used*
+    /// from.
+    pub(crate) fn resolve_type_or_error_in(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        indirect: bool,
+        module: &[Ident],
+    ) -> Option<ResolvedType> {
         let bypass = !self.reveal_stack.is_empty();
         match self.context.resolve_type(
             typ.to_owned(),
             &mut *self.resolver,
-            &self.module_path,
+            module,
             indirect,
             bypass,
         ) {

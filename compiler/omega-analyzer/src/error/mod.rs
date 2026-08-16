@@ -32,6 +32,40 @@ fn join(path: &[Ident]) -> String {
         .join("::")
 }
 
+/// A raw (unresolved) `Type` spelled back for a diagnostic -- the same
+/// shapes a reader writes, not a resolved-type `Display` (which never
+/// applies here; the type never resolved, by definition). ~25 lines of
+/// mechanical mirroring, kept here rather than on `Type` itself because
+/// nothing else needs it.
+pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
+    use omega_parser::prelude::Type;
+    match ty {
+        Type::Named(path) => join(&path.segments()),
+        Type::Generic(path, args) => {
+            let args: Vec<String> = args.iter().map(raw_type_display).collect();
+            format!("{}<{}>", join(&path.segments()), args.join(", "))
+        }
+        Type::Pointer(inner, mutable) => {
+            format!("*{}{}", if *mutable { "mut " } else { "" }, raw_type_display(inner))
+        }
+        Type::UnknownSizeArray(inner) => format!("*[?]{}", raw_type_display(inner)),
+        Type::InferredArray(inner) => format!("[]{}", raw_type_display(inner)),
+        Type::SizedArray(inner, size) => format!("[{}]{}", size, raw_type_display(inner)),
+        Type::Function(f) => {
+            let params: Vec<String> = f
+                .params
+                .iter()
+                .map(|(name, ty)| format!("{}: {}", name.as_ref(), raw_type_display(ty)))
+                .collect();
+            format!("({}) => {}", params.join(", "), raw_type_display(&f.return_type))
+        }
+        Type::SpecObject(inner, mutable) => {
+            format!("spec *{}{}", if *mutable { "mut " } else { "" }, raw_type_display(inner))
+        }
+        Type::SpecStatic(inner) => format!("spec {}", raw_type_display(inner)),
+    }
+}
+
 /// Renders a possibly-generic name for a diagnostic -- `"Name"` when
 /// `type_args` is empty, `"Name<Arg1, Arg2>"` otherwise. Exists because
 /// `ResolvedType::Struct`/`Spec`'s own `Display` deliberately stays bare

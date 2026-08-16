@@ -15,8 +15,13 @@ pub(super) enum Intercepted {
 /// One call-shape interceptor: peeks at a call and either claims it or
 /// declines. Written as a function pointer so the interceptors can be listed
 /// in priority order at the call site.
-pub(super) type Interceptor<'r> =
-    fn(&mut Analyzer<'r>, HirId, Span, &HirFunctionCall) -> Intercepted;
+pub(super) type Interceptor<'r> = fn(
+    &mut Analyzer<'r>,
+    HirId,
+    Span,
+    &HirFunctionCall,
+    Option<&ResolvedType>,
+) -> Intercepted;
 
 /// A member call's receiver (`base` in `base.method(args)`), resolved once:
 /// the place it came from -- needed to check writability and to de-assume a
@@ -147,6 +152,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let HirExpr::Place(callee_place) = &Self::strip_reveal(&call.callee).1.expr else {
             return Intercepted::Declined;
@@ -157,6 +163,11 @@ impl<'r> Analyzer<'r> {
         let HirPlaceRoot::Path(expr_path) = &callee_place.root else {
             return Intercepted::Declined;
         };
+        if let Some(qualified) = &expr_path.qualified_spec {
+            return self.resolve_fully_qualified_spec_call(
+                node_id, span, call, expr_path, qualified,
+            );
+        }
         let path = &expr_path.path;
         let segments = path.segments();
         let Some((method_name, spec_segments)) = segments.split_last() else {
@@ -206,6 +217,42 @@ impl<'r> Analyzer<'r> {
             };
             args
         };
+        // The declared function shape decides whether a receiver is even
+        // part of this call -- looked up *before* any receiver is demanded
+        // (a receiverless spec function, `Bounded::min()`, has no first
+        // argument to look at). Resolved with a placeholder `Self` purely to
+        // read `self_mode`; the conformance's own method below is
+        // authoritative, resolved with the real target.
+        let Some(flattened) =
+            self.flatten_spec(node_id, span, &spec, &spec_args, &ResolvedType::Void)
+        else {
+            return Intercepted::Claimed(None);
+        };
+        let Some(declared) = flattened.iter().find(|f| &f.name == method_name) else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        if declared.fn_type.self_mode.is_none() {
+            // A receiverless spec function: `Self` can only come from the
+            // expected type (`x : char = Bounded::min();`).
+            return self.resolve_static_spec_call(
+                node_id,
+                span,
+                call,
+                &spec,
+                &spec_args,
+                method_name,
+                declared,
+                expected,
+            );
+        }
         let Some(first) = call.args.first() else {
             self.error(
                 node_id,
@@ -278,6 +325,419 @@ impl<'r> Analyzer<'r> {
                 self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
                 return Intercepted::Claimed(None);
             }
+        };
+        let candidates: Vec<_> = conformance_methods
+            .into_iter()
+            .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_some())
+            .map(|(_, method)| method)
+            .collect();
+        if candidates.is_empty() {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                },
+            );
+            return Intercepted::Claimed(None);
+        }
+        let signatures: Vec<_> = candidates
+            .iter()
+            .map(|method| (method.decl_id, method.fn_type.clone()))
+            .collect();
+        let (winner, checked_args) = if candidates.len() == 1 {
+            let method = &candidates[0];
+            if call.args.len() != method.fn_type.params.len() {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::WrongArgumentCount {
+                        expected: method.fn_type.params.len(),
+                        found: call.args.len(),
+                    },
+                );
+                return Intercepted::Claimed(None);
+            }
+            let mut checked_args = Vec::with_capacity(call.args.len());
+            let mut ok = true;
+            let receiver = Receiver {
+                place: receiver_place.clone(),
+                checked: checked_receiver.clone(),
+                r#type: receiver_type.clone(),
+                mutable: receiver_mutable,
+            };
+            let adapted_first = match self.adapt_self_argument(
+                &call.callee,
+                receiver,
+                method.fn_type.self_mode.expect("filtered above"),
+            ) {
+                Some(adapted) => adapted,
+                None => return Intercepted::Claimed(None),
+            };
+            for (index, (arg, (_, expected))) in
+                call.args.iter().zip(&method.fn_type.params).enumerate()
+            {
+                let checked = if index == 0 {
+                    adapted_first.clone()
+                } else if let Some(checked) = self.analyze_expr(arg, Some(expected)) {
+                    checked
+                } else {
+                    ok = false;
+                    continue;
+                };
+                let checked = self.coerce_to_expected(Some(expected), checked);
+                if !expected.accepts(&checked.r#type) {
+                    self.error(
+                        arg.id,
+                        arg.span,
+                        AnalysisErrorKind::ArgumentTypeMismatch {
+                            expected: expected.clone(),
+                            found: checked.r#type.clone(),
+                        },
+                    );
+                    ok = false;
+                }
+                checked_args.push(checked);
+            }
+            if !ok {
+                return Intercepted::Claimed(None);
+            }
+            (0, checked_args)
+        } else {
+            let Some((winner, checked_args)) =
+                self.resolve_overload(node_id, span, method_name, &signatures, &call.args)
+            else {
+                return Intercepted::Claimed(None);
+            };
+            (winner, checked_args)
+        };
+        let method = candidates[winner].clone();
+        Intercepted::Claimed(Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            method.decl_id,
+            Storage::Function,
+            method.fn_type,
+            checked_args,
+        )))
+    }
+
+    /// `<Type : Spec>::function(...)` -- the fully-qualified spec-function
+    /// call, the third rung of the `S::fn()` / `P::fn()` / `<S : P>::fn()`
+    /// ladder. Both halves of the function's identity are written in the
+    /// path, so nothing is inferred: the target type is the written `Type`,
+    /// and the spec (with its type arguments) is the written `Spec`. Works
+    /// for **both** static and instance spec functions -- whether the first
+    /// argument is a receiver is decided by the resolved function's own
+    /// declared `self` mode, not by the call's shape, which is exactly what
+    /// lets `<S : P>::make()` resolve a case `S::make()` diagnoses as
+    /// ambiguous and `P::make()` misparses as a receiver-taking call.
+    fn resolve_fully_qualified_spec_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+        expr_path: &ExprPath,
+        qualified: &QualifiedSpecPath,
+    ) -> Intercepted {
+        // The parser guarantees the qualified path is exactly
+        // `function` -- one segment, no expression-level generic args (the
+        // spec's own type arguments live inside `qualified.spec`).
+        debug_assert!(expr_path.path.tail.is_empty() && expr_path.generic_args.is_empty());
+        let method_name = expr_path.path.head.clone();
+
+        let Some((spec, spec_args)) =
+            self.resolve_spec_reference(node_id, span, &qualified.spec)
+        else {
+            // The failure was already reported -- `NotASpec` naming the
+            // written spec, or an unresolved type.
+            return Intercepted::Claimed(None);
+        };
+        let Some(target) = self.resolve_type_or_error(node_id, span, &qualified.target, true)
+        else {
+            return Intercepted::Claimed(None);
+        };
+
+        let Some(flattened) = self.flatten_spec(node_id, span, &spec, &spec_args, &ResolvedType::Void)
+        else {
+            return Intercepted::Claimed(None);
+        };
+        let Some(declared) = flattened.iter().find(|f| &f.name == &method_name) else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        if declared.fn_type.self_mode.is_none() {
+            return self.resolve_static_spec_call(
+                node_id,
+                span,
+                call,
+                &spec,
+                &spec_args,
+                &method_name,
+                declared,
+                Some(&target),
+            );
+        }
+        self.resolve_instance_spec_call(
+            node_id,
+            span,
+            call,
+            &spec,
+            &spec_args,
+            &method_name,
+            Some(&target),
+        )
+    }
+
+    /// The conformance methods for one `(target, spec, spec_args)` --
+    /// shared by every spec-qualified call shape, since all three select
+    /// the same way: a direct entry, or -- for a spec alias, never itself
+    /// conformed to -- the members' own entries, with `SpecNotImplemented`
+    /// when neither exists. `None` means the failure was already reported.
+    fn spec_call_conformance_methods(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+    ) -> Option<Vec<(Ident, ResolvedMethod)>> {
+        match self.resolver.conformance_for(target, spec, spec_args) {
+            Ok(Some(conform)) => Some(conform.methods),
+            Ok(None)
+                if self
+                    .type_implements_spec(node_id, span, target, spec, spec_args, false)
+                    .is_ok() =>
+            {
+                match self.resolver.conformances_for_type(target) {
+                    Ok(conformances) => Some(
+                        conformances
+                            .into_iter()
+                            .flat_map(|conform| conform.methods)
+                            .collect(),
+                    ),
+                    Err(err) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                        None
+                    }
+                }
+            }
+            Ok(None) => {
+                let missing = spec
+                    .borrow()
+                    .functions
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+                        type_name: target.to_string(),
+                        spec: spec.borrow().name.clone(),
+                        missing,
+                    }),
+                );
+                None
+            }
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                None
+            }
+        }
+    }
+
+    /// The receiverless half of a spec-qualified call -- `Spec::static_fn()`
+    /// or `<S : Spec>::static_fn(...)`. On the bare spelling the target can
+    /// only come from the expected type, and that is only meaningful when
+    /// the declared return type is exactly `Self` (anything else never
+    /// names the implementing type, so no expected type could ever pin it
+    /// down). Both failures get a dedicated diagnostic naming the two
+    /// spellings that do work, never a bogus argument count.
+    fn resolve_static_spec_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+        method_name: &Ident,
+        declared: &FlattenedSpecFn,
+        target: Option<&ResolvedType>,
+    ) -> Intercepted {
+        let Some(target) = target else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::SpecStaticNeedsExpectedType {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        let returns_self = matches!(
+            &declared.raw.return_type,
+            Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self"
+        );
+        if !returns_self {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::SpecStaticReturnNotSelf {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                    return_type: crate::error::raw_type_display(&declared.raw.return_type),
+                },
+            );
+            return Intercepted::Claimed(None);
+        }
+        let Some(conformance_methods) =
+            self.spec_call_conformance_methods(node_id, span, target, spec, spec_args)
+        else {
+            return Intercepted::Claimed(None);
+        };
+        let candidates: Vec<_> = conformance_methods
+            .into_iter()
+            .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_none())
+            .map(|(_, method)| method)
+            .collect();
+        if candidates.is_empty() {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoSuchSpecFunction {
+                    spec: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                },
+            );
+            return Intercepted::Claimed(None);
+        }
+        let signatures: Vec<_> = candidates
+            .iter()
+            .map(|method| (method.decl_id, method.fn_type.clone()))
+            .collect();
+        let (winner, checked_args) = if candidates.len() == 1 {
+            let method = &candidates[0];
+            if call.args.len() != method.fn_type.params.len() {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::WrongArgumentCount {
+                        expected: method.fn_type.params.len(),
+                        found: call.args.len(),
+                    },
+                );
+                return Intercepted::Claimed(None);
+            }
+            let mut checked_args = Vec::with_capacity(call.args.len());
+            let mut ok = true;
+            for (arg, (_, expected)) in call.args.iter().zip(&method.fn_type.params) {
+                let Some(checked) = self.analyze_expr(arg, Some(expected)) else {
+                    ok = false;
+                    continue;
+                };
+                let checked = self.coerce_to_expected(Some(expected), checked);
+                if !expected.accepts(&checked.r#type) {
+                    self.error(
+                        arg.id,
+                        arg.span,
+                        AnalysisErrorKind::ArgumentTypeMismatch {
+                            expected: expected.clone(),
+                            found: checked.r#type.clone(),
+                        },
+                    );
+                    ok = false;
+                }
+                checked_args.push(checked);
+            }
+            if !ok {
+                return Intercepted::Claimed(None);
+            }
+            (0, checked_args)
+        } else {
+            let Some((winner, checked_args)) =
+                self.resolve_overload(node_id, span, method_name, &signatures, &call.args)
+            else {
+                return Intercepted::Claimed(None);
+            };
+            (winner, checked_args)
+        };
+        let method = candidates[winner].clone();
+        Intercepted::Claimed(Some(self.checked_call(
+            node_id,
+            span,
+            &call.callee,
+            method.decl_id,
+            Storage::Function,
+            method.fn_type,
+            checked_args,
+        )))
+    }
+
+    /// The receiver-taking half of a spec-qualified call, shared by the
+    /// `Spec::method(recv, ...)` spelling (target read off the receiver)
+    /// and the `<S : Spec>::method(recv, ...)` spelling (target written,
+    /// receiver still adapted the ordinary way). Everything else is exactly
+    /// the old `Spec::method(recv, ...)` path: the receiver is resolved as
+    /// a *place*, once, before any conformance is selected --
+    /// `conformance_for` needs its type, and `adapt_self_argument` needs
+    /// the place itself. An argument that is not already a place (a
+    /// literal, a struct expression, a call result) is wrapped in
+    /// `HirPlaceRoot::Expr`, the same shape `synthesize_method_call` builds
+    /// for an arbitrary receiver, so `Display::fmt(42, w)` auto-refs
+    /// identically to `(42).fmt(w)` rather than being handed to a `*self`
+    /// parameter unadapted.
+    fn resolve_instance_spec_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+        method_name: &Ident,
+        target_override: Option<&ResolvedType>,
+    ) -> Intercepted {
+        let Some(first) = call.args.first() else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::WrongArgumentCount {
+                    expected: 1,
+                    found: 0,
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        let receiver_place = match &Self::strip_reveal(first).1.expr {
+            HirExpr::Place(place) => place.clone(),
+            _ => HirPlace {
+                root: HirPlaceRoot::Expr(Box::new(first.clone())),
+                projections: vec![],
+            },
+        };
+        let Some((checked_receiver, receiver_type, receiver_mutable)) =
+            self.analyze_place(first.id, first.span, &receiver_place, None)
+        else {
+            return Intercepted::Claimed(None);
+        };
+        let target = match target_override {
+            Some(target) => target.clone(),
+            None => receiver_type.autoderef().clone(),
+        };
+        let Some(conformance_methods) =
+            self.spec_call_conformance_methods(node_id, span, &target, spec, spec_args)
+        else {
+            return Intercepted::Claimed(None);
         };
         let candidates: Vec<_> = conformance_methods
             .into_iter()
@@ -505,6 +965,7 @@ impl<'r> Analyzer<'r> {
                                 AnalysisErrorKind::MethodNotInScope {
                                     method: field.clone(),
                                     spec: conform.spec.borrow().name.clone(),
+                                    r#type: receiver_type.clone(),
                                 },
                             );
                             return None;
@@ -1156,6 +1617,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        _expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
@@ -1275,6 +1737,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        _expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
@@ -1584,6 +2047,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        _expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
@@ -1861,6 +2325,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
+        _expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;

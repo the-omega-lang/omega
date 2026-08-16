@@ -301,10 +301,42 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
 /// `<Type>base` -- same binding tightness as `parse_unary`'s other
 /// prefixes (right-associative via recursing into `parse_unary` again for
 /// `base`), just with a whole type between the operator's `<`/`>` instead
-/// of one token.
+/// of one token. Also `<Type : Spec>::function`, the fully-qualified
+/// spec-function path: distinguished from a cast purely by the `:` right
+/// after the first type (no type contains one), so a single-token lookahead
+/// after the already-parsed type decides, with no backtracking -- and `<`
+/// begins either form only in prefix position, so infix `a < b` is
+/// untouched.
 fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
     p.advance(); // '<'
     let target = crate::parser::r#type::parse_type(p)?;
+    if p.eat(&TokenKind::Colon) {
+        let spec = crate::parser::r#type::parse_type(p)?;
+        p.expect_close_angle("'>'");
+        p.expect(&TokenKind::ColonColon, "'::'");
+        let (function, origin) = p.expect_ident_with_origin()?;
+        let span = start.to(p.last_span());
+        let path = ExpressionNode {
+            expression: Expression::Path(crate::ast::identifier::ExprPath {
+                path: crate::ast::identifier::Path {
+                    head: function,
+                    tail: Vec::new(),
+                    origin,
+                },
+                generic_args: Vec::new(),
+                args_at: 0,
+                qualified_spec: Some(crate::ast::identifier::QualifiedSpecPath {
+                    target,
+                    spec,
+                }),
+            }),
+            span,
+        };
+        // The `(...)` call (and any further postfix) attaches to the path,
+        // exactly like an ordinary callee's would -- `<S : P>::make()` is a
+        // call, so the arguments are part of this same expression.
+        return parse_postfix_loop(p, path);
+    }
     p.expect_close_angle("'>'");
     let base = parse_unary(p)?;
     let span = start.to(base.span);
@@ -318,7 +350,15 @@ fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
 /// via a post-primary loop (the old grammar's `foldl_with(postfix.repeated())`
 /// translates directly).
 fn parse_postfix(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut expr = parse_primary(p)?;
+    let expr = parse_primary(p)?;
+    parse_postfix_loop(p, expr)
+}
+
+/// The shared postfix loop, split out of `parse_postfix` so a
+/// fully-qualified spec path (already parsed, not a primary) can hand its
+/// callee in for `(...)`/`.field`/`[index]` attachment -- see
+/// `parse_cast`'s qualified branch.
+fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<ExpressionNode> {
     loop {
         match p.peek() {
             TokenKind::Dot => {
@@ -787,6 +827,7 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
         path,
         generic_args,
         args_at,
+        qualified_spec: None,
     })
 }
 

@@ -136,6 +136,37 @@ deliberate limitations and one coverage gap.
   `ResolvedFunctionType`) is complete; only this guard stands between it and
   working, and it should be lifted the day variadic definitions exist.
 
+- **A generic function whose only type parameter appears in its return type
+  cannot be called.** There is nothing to infer from and no way to say it
+  explicitly:
+
+  ```
+  lowest<T: Bounded>() => T { T::min() }
+  x : i32 = lowest();     # error: cannot infer type parameter 'T'
+                          #        from this call's arguments
+  ```
+
+  `T::min()` in the *body* is fine; the *call* is what fails. `expected` is
+  now threaded through `analyze_call`'s interceptor pipeline (it was added
+  for `Spec::static_fn()` -- `x : char = Bounded::min();`, see
+  [specs](08-specs.md)'s three-tier ladder), but
+  `resolve_generic_static_call` deliberately ignores it: using it there is
+  a separate change to a separate inference source, kept out so a
+  call-resolution regression can be bisected to the threading rather than
+  to a new inference. Omega also has no explicit generic-argument syntax
+  at a call site to fall back on.
+
+  Two workarounds, both compromises, both verified: give the parameter a
+  default (`lowest<T: Bounded = i32>()`, which pins the type rather than
+  inferring it), or add a parameter purely to infer from
+  (`lowest_like<T: Bounded>(hint: T)`).
+
+  Closing the gap is a change to `resolve_generic_static_call` alone: unify
+  the call's declared return type against `expected` to solve the owner's
+  type parameters, the same `unify_generic_type` machinery already used for
+  argument-driven deduction. [generics.md](06-generics.md),
+  [specs.md](08-specs.md)
+
 - **A generic parameter cannot be inferred from a slice argument.**
   `f<T>(x: *T)` called with a `*[]u8` reports "cannot infer type parameter
   'T' from this call's arguments", and `f<[?]u8>(...)` is not valid syntax

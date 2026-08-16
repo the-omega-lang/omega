@@ -153,10 +153,54 @@ to Eq`, `conform<T> []T to Eq`) parse and register but no call can reach
 them; see [known-issues.md](14-known-issues.md).
 
 Conforming instance methods do not become globally callable as ordinary
-inherent methods. They are available through a generic bound (`T: Animal`),
-or explicitly as `Animal::make_sound(&dog)`. A conforming static function is
-called as `Target::function(...)`; two conformances providing the same static
-call are diagnosed as ambiguous.
+inherent methods. A conforming method is named one of three ways -- a
+three-tier ladder, each rung supplying more of the function's identity:
+
+| Form | Supplies | Resolves when |
+|---|---|---|
+| `S::make()` | the type | unambiguous (exactly one conform provides it) |
+| `P::make(...)` | the spec | `Self` inferable from context |
+| `<S : P>::make(...)` | **both** | **always** |
+
+The first rung is the ordinary `Type::function(...)` path (a generic
+bound `T: Animal` with receiver syntax is the other, softer spelling).
+The second is `Spec::function(...)`: for an *instance* function the
+receiver is the first argument (`Animal::make_sound(&dog)`); for a
+*receiverless* function (`Bounded::min()`, `Default::default()`) the
+implementing type is taken from the expected type, Rust's `let x: Foo =
+Default::default()` shape -- the form `std::default::Default` exists to be
+used with. That inference only ever runs when the function's declared
+return type is exactly `Self`; a return type that doesn't name the
+implementing type (`=> usize`, `=> Option<Self>`) is a dedicated
+diagnostic, never a guess, and so is a bare `Bounded::min()` with no
+expected type at all. The third rung writes both halves and always
+resolves -- it is the disambiguation for the case rung 1 diagnoses:
+
+```
+conform S to P { make() => Self { ... } }
+conform S to Q { make() => Self { ... } }
+
+S::make()    → error: conforming static function 'S::make' is ambiguous
+             = note: declared by: P, Q
+             = help: name the one you mean: `<S : P>::make()` or `<S : Q>::make()`
+```
+
+`<S : P>::make()` reads "the type `S`, viewed through spec `P`" -- the same
+`<...>` a cast already uses for a type representation, and the same `:`
+every other declaration already uses (subject on the left, constraint on
+the right). It works for instance functions too (`<Dog : Animal>::
+make_sound(&dog)`), where the receiver is still adapted exactly as in the
+second rung; whether the first argument is a receiver at all is decided by
+the resolved function's own declared `self` mode, never by the call's
+shape. The spec half may be generic (`<S : P<i32>>::make()`), and the
+vtable-narrowing cast `<spec *A>x` from the dynamic-dispatch section is
+the same notation at work on a `spec *` object.
+
+A language that can diagnose a conflict must be able to express the
+resolution -- rung 3 is that guarantee, and its diagnostics teach it:
+`AmbiguousConformanceStatic` names the candidate specs and prints the
+qualified spelling for each, and `MethodNotInScope` suggests
+`<Type : Spec>::method(recv, ...)` alongside the bound it names.
 
 ### Receiver adaptation in a spec-qualified call
 

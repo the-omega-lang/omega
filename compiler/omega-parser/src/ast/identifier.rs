@@ -93,17 +93,40 @@ impl Path {
 /// inside that type, which resolution validates -- structurally this just
 /// records where the `<...>` was written (`args_at`, a 0-based segment
 /// index, 0 = `path.head`).
+///
+/// `qualified_spec` is the fully-qualified spec-function form
+/// (`<Type : Spec>::function(...)`): the whole function identity written
+/// out, so nothing needs inferring. The path itself then carries just the
+/// function name; both halves of the identity live in the pair (see
+/// `QualifiedSpecPath`'s own doc comment).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprPath {
     pub path: Path,
     pub generic_args: Vec<crate::ast::r#type::Type>,
     /// Only meaningful when `generic_args` is non-empty.
     pub args_at: usize,
+    /// `Some((target, spec))` for `<Type : Spec>::function(...)` -- see
+    /// `QualifiedSpecPath`. `None` for every ordinary path.
+    pub qualified_spec: Option<QualifiedSpecPath>,
+}
+
+/// The `<Type : Spec>` head of a fully-qualified spec-function path:
+/// the type being viewed through the spec -- "the type `target`, viewed
+/// through spec `spec`" -- reading the same way every other `:` in the
+/// language does (subject on the left, constraint on the right: `x: i32`,
+/// `T: Ord`). Both halves stay raw (`Type`s), resolved together when the
+/// call resolves. This is the one spelling that always resolves, whatever
+/// the ambiguity -- the last rung of the three-tier ladder
+/// `S::fn()` / `P::fn()` / `<S : P>::fn()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedSpecPath {
+    pub target: crate::ast::r#type::Type,
+    pub spec: crate::ast::r#type::Type,
 }
 
 impl From<Path> for ExprPath {
     fn from(path: Path) -> Self {
-        Self { path, generic_args: vec![], args_at: 0 }
+        Self { path, generic_args: vec![], args_at: 0, qualified_spec: None }
     }
 }
 
