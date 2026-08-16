@@ -87,8 +87,6 @@ conform char to Ord {
 }
 
 conform char to Successor {
-    greater_than(*self, other: Self) => bool { *self > other }
-    equals(*self, other: Self) => bool { *self == other }
     successor(*self) => Option<Self> {
         cp := <u32>*self;
         if cp == 0x10FFFFu32 { return Option<char>::None; }

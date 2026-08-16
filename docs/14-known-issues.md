@@ -106,6 +106,29 @@ new one is found.
 
 ## Conformance and specs (`conform` / `primitive`)
 
+- **Calling an *inherited* spec method through the deriving spec's bound
+  compiles but fails to link.** A conform block for a dependent spec supplies
+  the whole flattened chain, and registers every method under the spec that
+  was *conformed to* — but a call site resolves the method to the spec that
+  *declared* it, and the two mangle differently. Minimal repro:
+
+  ```
+  same<T: Ord>(a: T, b: T) => bool { a.equals(b) }
+  main() => i32 { if same(1, 1) { 0 } else { 1 } }
+  ```
+
+  `equals` is declared on `Eq`; `i32`'s `conform i32 to Ord { equals; … }`
+  emits `…Xl3Ord6equals…`; the call emits a reference to `…Xl2Eq6equals…`,
+  which nothing defines. Clean compile, `undefined reference` at link.
+
+  A spec's *own* methods are unaffected (`compare`, `greater_than` link
+  fine), so the workaround is to route through one of those — which is why
+  `core::range`'s `RangeIterator::next` calls
+  `compare(other).is_eq()` rather than the more readable `equals(other)`.
+  This is a mangling/resolution mismatch, not a missing emission: the method
+  exists, under the other name.
+
+
 Every issue tracked here through plan 0005 is now fixed and verified; see
 [specs.md](08-specs.md) for the resulting behaviour. What remains are two
 deliberate limitations and one coverage gap.

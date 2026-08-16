@@ -333,13 +333,21 @@ fn a_user_type_conforming_to_successor_is_range_iterable() {
         r#"
         import extern::core::range::Successor;
         import extern::core::range::Bounded;
+        import extern::core::cmp::Ord;
+        import extern::core::cmp::Ordering;
         import extern::core::option::Option;
 
         struct PageIndex { exposed value: i32; }
 
-        conform PageIndex to Successor {
-            greater_than(*self, other: Self) => bool { self.value > other.value }
+        conform PageIndex to Ord {
             equals(*self, other: Self) => bool { self.value == other.value }
+            compare(*self, other: Self) => Ordering {
+                if self.value < other.value { Ordering::Less }
+                else if self.value > other.value { Ordering::Greater }
+                else { Ordering::Equal }
+            }
+        }
+        conform PageIndex to Successor {
             successor(*self) => Option<PageIndex> {
                 if self.value == 2147483647 { return Option<PageIndex>::None; }
                 Option<PageIndex>::Some { value = PageIndex { value = self.value + 1; }; }
@@ -370,12 +378,20 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
     let package = TestPackage::new(
         r#"
         import extern::core::range::Successor;
+        import extern::core::cmp::Ord;
+        import extern::core::cmp::Ordering;
         import extern::core::option::Option;
 
         struct P { exposed v: i32; }
-        conform P to Successor {
-            greater_than(*self, other: Self) => bool { self.v > other.v }
+        conform P to Ord {
             equals(*self, other: Self) => bool { self.v == other.v }
+            compare(*self, other: Self) => Ordering {
+                if self.v < other.v { Ordering::Less }
+                else if self.v > other.v { Ordering::Greater }
+                else { Ordering::Equal }
+            }
+        }
+        conform P to Successor {
             successor(*self) => Option<P> { Option<P>::Some { value = P { v = self.v + 1; }; } }
         }
 

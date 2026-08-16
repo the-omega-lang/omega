@@ -16,6 +16,11 @@
 # its `Copy` and left an `exhausted` flag contaminating equality. Splitting
 # the value from the cursor avoids the whole class of problem.
 
+import cmp::Ord;
+# `Ord` brings `compare` into scope at every `Steppable` instantiation, and
+# its return type has to be nameable here even though this file never spells
+# it: `Ordering` is part of the bound's own surface.
+import cmp::Ordering;
 import iterator::Iterator;
 import iterator::ToIterator;
 import option::Option;
@@ -33,26 +38,29 @@ exposed struct RangeIterator<T> {
     internal done: bool;
 }
 
-# The whole interface a range cursor needs from its element type:
-# `greater_than` to recognize an inverted (empty) range up front, `equals` to
-# recognize the final element, and `successor` to step. `successor` returns
-# `None` at the type's upper bound, which is what lets an inclusive
-# full-domain range terminate without ever computing MAX + 1 -- the same job
-# the old `$more` desugaring flag did, now expressed in the type.
+# Stepping, and nothing else. `successor` returns `None` at the type's upper
+# bound, which is what lets an inclusive full-domain range terminate without
+# ever computing MAX + 1 -- the same job the old `$more` desugaring flag did,
+# now expressed in the type.
 #
-# Deliberately *not* `Successor : Ord`, even though a successor is only
-# meaningful over a total order. Omega flattens an inherited spec's methods
-# into the derived spec's own conform block (this is why `conform T to Ord`
-# supplies `Eq`'s `equals` inline rather than needing a separate `conform T
-# to Eq`). Inheriting here would therefore force every range element type to
-# restate its entire ordering *inside* its `Successor` block, duplicating the
-# `conform T to Ord` that is the canonical place to declare it. Three
-# self-contained methods is the smaller cost.
+# This deliberately declares no comparison of its own. A range cursor does
+# need ordering -- to recognize an inverted (empty) range, and to recognize
+# the final element -- but that is `Ord`'s job, and a `Successor` that
+# redeclared `greater_than`/`equals` would be a second, independent ordering
+# that could silently disagree with the type's real one. The cursor asks for
+# both capabilities through `Steppable` below instead.
 exposed spec Successor {
-    greater_than(*self, other: Self) => bool;
-    equals(*self, other: Self) => bool;
     successor(*self) => Option<Self>;
 }
+
+# What iterating a range actually requires: stepping *and* ordering. Written
+# as an alias because a bound names exactly one spec (`T: Ord + Successor` is
+# not syntax today), and because the alternative -- `spec Successor : Ord` --
+# would force every element type to restate its whole ordering inside its
+# `Successor` block, since conforming to a dependent spec must supply the
+# flattened chain. An alias bound has neither problem: `conform T to Ord` and
+# `conform T to Successor` stay separate, ordinary declarations.
+exposed spec Steppable = Successor | Ord;
 
 # The element type's own domain limits, needed only when a bound is left to
 # be inferred (`1..`, `..<10`). Separate from `Successor` on purpose: a type
@@ -64,7 +72,7 @@ exposed spec Bounded {
     max() => Self;
 }
 
-conform<T: Successor> Range<T> to ToIterator<T> {
+conform<T: Steppable> Range<T> to ToIterator<T> {
     to_iterator(*self) => RangeIterator<T> {
         RangeIterator {
             current = self.start;
@@ -75,16 +83,22 @@ conform<T: Successor> Range<T> to ToIterator<T> {
     }
 }
 
-conform<T: Successor> RangeIterator<T> to Iterator<T> {
+conform<T: Steppable> RangeIterator<T> to Iterator<T> {
     next(*mut self) => Option<T> {
         if self.done {
             return Option<T>::None;
         }
         value := self.current;
-        # `equals`, not `==`: the built-in operator is numeric-only, so using
-        # it here would quietly restrict ranges to primitives and defeat the
-        # whole point of bounding on a spec.
-        if self.current.equals(self.end) {
+        # `compare(...).is_eq()` rather than `==` or `equals`. Not `==`: the
+        # built-in operator is numeric-only, so it would quietly restrict
+        # ranges to primitives and defeat the point of bounding on a spec.
+        # Not `equals` either, though that reads better: `equals` is declared
+        # on `Eq` and reaching it through an `Ord` bound compiles but fails to
+        # *link* -- a conform block supplying it inline registers it under
+        # `Ord` while the call site mangles it as `Eq`. See
+        # docs/14-known-issues.md; `compare` is `Ord`'s own method and is
+        # unaffected.
+        if self.current.compare(self.end).is_eq() {
             self.done = true;
             if self.inclusive {
                 return Option<T>::Some { value = value; };
