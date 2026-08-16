@@ -200,33 +200,18 @@ value itself (plausible whenever you want the numeric tag for
 logging/serialization/FFI alongside a match), exhaustiveness checking gets
 categorically weaker with no warning that anything changed.
 
-### Silent order-dependent resolution when two specs provide conflicting defaults for the same signature
+### ~~Silent order-dependent resolution when two specs provide conflicting defaults for the same signature~~ — fixed
 
-`flatten_spec_into`'s dedup rule (`analysis.rs:1096-1178`) compares candidates
-by `fn_type` only — params/return/self_mode, never the body. When two *different*
-specs each supply a default body for the same name+ signature, the code takes
-the `existing.default_body.is_some() && new.default_body.is_some()` branch and
-just `continue`s, keeping whichever was flattened first:
-
-```
-exposed spec Left  { greet(*self) => i32 { 1 } }
-exposed spec Right { greet(*self) => i32 { 2 } }
-spec BothDefaults = Left | Right;
-
-struct Both { value: i32; }
-conform Both to BothDefaults {}
-# BothDefaults::greet(&both) silently returns 1 (Left's default) -- no ConflictingSpecFunctions,
-# no ambiguity error, no diagnostic of any kind
-```
-`ConflictingSpecFunctions` only fires on an actual type mismatch, never on a
-body mismatch at identical signature — which means the "same name + identical
-signature → assume it's the same function" comment justifying the dedup (`
-analysis.rs:1076`) is stated as an assumption but never actually verified; the
-compiler structurally can't tell whether it's true. This is the one entry in
-this file that plausibly *should* just become a `ConflictingSpecFunctions` check
-(compare default bodies structurally, or require an explicit override whenever
-two dependency defaults collide) — unlike the other entries, there's no real
-design tension pulling the other way.
+`flatten_spec_into` used to dedup by name only, comparing candidates by
+`fn_type` and silently keeping whichever same-named entry was flattened
+first — two specs each supplying a default body for the same name +
+signature never conflicted, and the first one won. Fixed at the root by the
+spec-composition redesign: a requirement's identity is now `(spec, name)`,
+nothing is deduplicated by name (see [specs](08-specs.md)'s "Identity"
+section), and the two defaults are now genuinely *different functions* — a
+call that can't tell them apart is an ambiguity error (static dispatch
+through a conjunction bound, or `AmbiguousSpecObjectMethod` through a
+`spec *` object), not a silent pick.
 
 ### Packed-by-default layout's safety argument is single-target, but `\--target` already offers a second target
 

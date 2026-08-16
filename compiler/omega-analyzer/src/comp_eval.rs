@@ -722,6 +722,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 span,
                 CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"),
             )),
+            // A `spec *` object is never a comp value at all (a vtable has
+            // no compile-time meaning, see `CompErrorKind::DynamicDispatch`),
+            // so this can only ever be unreachable in practice -- kept
+            // explicit rather than folded into the numeric catch-all below,
+            // which would misdescribe what was attempted.
+            CastKind::SpecNarrow { .. } => Err(self.err(span, CompErrorKind::DynamicDispatch)),
             _ => {
                 let ConstValue::Number(n) = base else {
                     return Err(self.err(

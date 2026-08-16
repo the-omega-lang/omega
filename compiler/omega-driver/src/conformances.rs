@@ -8,7 +8,7 @@ use omega_analyzer::resolved_type::{
     ResolvedBound, ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
 use omega_diagnostics::Span;
-use omega_hir::{HirConformDef, HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
+use omega_hir::{HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem, HirPrimitiveDef};
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -21,14 +21,6 @@ pub(crate) enum ConformanceOrigin {
     Blanket,
     Generic,
     Concrete,
-}
-
-/// Whether an entry declares methods itself or merely exposes methods from a
-/// spec dependency of a declared conformance.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ConformanceRole {
-    Derived,
-    Declared,
 }
 
 /// What registration should do after it has compared a candidate with the
@@ -57,13 +49,20 @@ pub(crate) struct ConformanceEntry {
     /// checked before registration, then seed the conform bodies alongside
     /// the spec this block itself implements.
     pub bounds: Vec<ResolvedBound>,
+    /// The conform's own declared bounds, exactly as written -- one
+    /// `(concrete, spec, spec_args)` per member, before any bound-context
+    /// seeding. This is what blanket precedence compares (a bound-set
+    /// subset test; see `compare_conformance_precedence`) and what
+    /// `bound_context_for` uses to admit derived conformances. Distinct
+    /// from `bounds` above (the fully seeded analyzer context) on purpose:
+    /// the two answer different questions.
+    pub declared_bounds: Vec<ResolvedBound>,
     pub origin: ConformanceOrigin,
-    pub role: ConformanceRole,
 }
 
 impl ConformanceEntry {
-    pub fn precedence(&self) -> (ConformanceOrigin, ConformanceRole) {
-        (self.origin, self.role)
+    pub fn precedence(&self) -> ConformanceOrigin {
+        self.origin
     }
 
     pub fn monomorphized(&self) -> bool {
@@ -164,6 +163,53 @@ pub(crate) struct Primitives {
 }
 
 impl Driver {
+    /// Marks every import alias a raw bound `Type` references -- a bound's
+    /// spec names only ever resolve at *instantiation* time, which the
+    /// declaring package's own standalone build may never do (a blanket
+    /// template nobody in that package materializes). Without this, that
+    /// package's own build reports `UnusedImport` on the very import that
+    /// binds the bound's name -- a false positive by construction, now that
+    /// a bound is the primary spelling for a spec reference (`T: Successor +
+    /// Ord`). Purely a lint bookkeeping fix: nothing resolves, nothing
+    /// errors; an alias that isn't actually an import (a local type, a
+    /// module) is simply not marked.
+    pub(crate) fn mark_bound_type_imports(&mut self, module: &[Ident], generics: &[HirGenericParam]) {
+        fn walk(this: &mut Driver, module: &[Ident], ty: &Type) {
+            match ty {
+                Type::Named(path) => {
+                    if path.is_unqualified() {
+                        let _ = this.import_entry(module, &path.head);
+                    }
+                }
+                Type::Generic(path, args) => {
+                    if path.is_unqualified() {
+                        let _ = this.import_entry(module, &path.head);
+                    }
+                    for arg in args {
+                        walk(this, module, arg);
+                    }
+                }
+                Type::Pointer(inner, _)
+                | Type::InferredArray(inner)
+                | Type::UnknownSizeArray(inner)
+                | Type::SizedArray(inner, _)
+                | Type::SpecObject(inner, _) => walk(this, module, inner),
+                Type::Function(f) => {
+                    for (_, param) in &f.params {
+                        walk(this, module, param);
+                    }
+                    walk(this, module, &f.return_type);
+                }
+                Type::SpecStatic(_) => {}
+            }
+        }
+        for param in generics {
+            for bound in &param.bounds {
+                walk(self, module, bound);
+            }
+        }
+    }
+
     pub(crate) fn collect_primitive_signatures(&mut self, paths: &[ModulePath]) {
         for module in paths {
             let declarations: Vec<_> = self
@@ -386,8 +432,7 @@ impl Driver {
     ) -> Option<Vec<(Ident, ResolvedType)>> {
         let ResolvedType::Slice { item, .. } = actual else {
             return None;
-        };
-        let Type::InferredArray(raw_item) = &primitive.target else {
+        };        let Type::InferredArray(raw_item) = &primitive.target else {
             return None;
         };
         let Type::Named(path) = raw_item.as_ref() else {
@@ -419,6 +464,13 @@ impl Driver {
                 })
                 .collect();
             for conform in declarations {
+                // Bound-position spec references only ever resolve when the
+                // template is instantiated -- which a package's own
+                // standalone build may never do -- so mark their import
+                // aliases as used right here, at the declaration, or the
+                // package's own build reports `UnusedImport` on an import
+                // that genuinely binds the bound's name.
+                self.mark_bound_type_imports(module, &conform.generics);
                 let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics) else {
                     self.diagnostics.error(
                         module,
@@ -514,6 +566,25 @@ impl Driver {
         );
         self.diagnostics.record_warnings(module, spec_run.warnings);
         let spec_reference = spec_run.result?;
+        // A spec alias is a name for a conjunction, never a contract of its
+        // own: `conform T to Alias` is rejected outright rather than
+        // flattening its members into one block (which was never its
+        // semantics -- an alias is satisfied by conforming each member
+        // separately). Nothing downstream ever needs to wonder about an
+        // alias-named entry again.
+        if spec_reference.0.borrow().is_alias {
+            self.diagnostics.error(
+                module,
+                AnalysisError::new(
+                    conform.id,
+                    conform.span,
+                    AnalysisErrorKind::ConformToAliasSpec {
+                        alias: spec_reference.0.borrow().name.clone(),
+                    },
+                ),
+            );
+            return None;
+        }
         let type_args: Vec<_> = conform
             .generics
             .iter()
@@ -566,7 +637,7 @@ impl Driver {
             return None;
         }
         self.conformances.in_progress.push(in_progress);
-        let bounds = match self.check_generic_bounds(
+        let (bounds, declared_bounds) = match self.check_generic_bounds(
             module,
             (conform.id, conform.span),
             &conform.generics,
@@ -633,8 +704,8 @@ impl Driver {
             pending: vec![],
             substitution: method_substitution.clone(),
             bounds: bounds.clone(),
+            declared_bounds: declared_bounds.clone(),
             origin,
-            role: ConformanceRole::Declared,
         };
         // Keep the established diagnostic order: an illegal foreign conform
         // is rejected for violating the orphan rule, even if an imported
@@ -676,55 +747,13 @@ impl Driver {
             pending,
             substitution: method_substitution,
             bounds,
+            declared_bounds,
             origin,
-            role: ConformanceRole::Declared,
         };
         if !self.register_conformance(entry.clone()) {
             return None;
         }
-        self.register_derived_conformances(&entry);
         Some(entry)
-    }
-
-    fn register_derived_conformances(&mut self, entry: &ConformanceEntry) {
-        let run = self.with_analyzer(
-            &entry.module,
-            &entry.substitution,
-            (entry.id, entry.span),
-            |analyzer| {
-                analyzer.transitive_spec_dependencies(
-                    entry.id,
-                    entry.span,
-                    &entry.target,
-                    &entry.spec,
-                    &entry.spec_args,
-                    &entry.methods,
-                )
-            },
-        );
-        self.diagnostics.record_warnings(&entry.module, run.warnings);
-        let Some(transitive) = run.result else {
-            return;
-        };
-        for (spec, spec_args, methods) in transitive {
-            let derived = ConformanceEntry {
-                module: entry.module.clone(),
-                id: entry.id,
-                span: entry.span,
-                target: entry.target.clone(),
-                spec,
-                spec_args,
-                methods,
-                method_ids: vec![],
-                functions: vec![],
-                pending: vec![],
-                substitution: entry.substitution.clone(),
-                bounds: entry.bounds.clone(),
-                origin: entry.origin,
-                role: ConformanceRole::Derived,
-            };
-            self.register_conformance(derived);
-        }
     }
 
     fn check_conformance_orphan(&mut self, entry: &ConformanceEntry) -> bool {
@@ -798,13 +827,6 @@ impl Driver {
         match Self::compare_conformance_precedence(entry, &existing) {
             Some(Ordering::Greater) => RegistrationDecision::Replace(index),
             Some(Ordering::Less) => RegistrationDecision::Ignore,
-            // A derived entry stands in for a spec dependency rather than
-            // declaring anything, so an unordered clash with one is never the
-            // author's mistake: two conforms sharing a dependency each derive
-            // the same key. It still *competes* above, though -- a stand-in
-            // from `conform Foo to Derived` is specific to `Foo` and must
-            // displace a blanket that only matched `Foo` incidentally.
-            _ if entry.role == ConformanceRole::Derived => RegistrationDecision::Ignore,
             Some(Ordering::Equal) => {
                 self.diagnostics.error(
                     &entry.module,
@@ -838,41 +860,47 @@ impl Driver {
         }
     }
 
+    /// Compares two declarations competing for the same `(target, spec,
+    /// args)` key. Outside the blanket-vs-blanket arm this is the plain
+    /// origin ordering (a concrete conform beats a generic template
+    /// instantiation, which beats a blanket) -- the author's explicit
+    /// declaration is always more specific than a derivation.
+    ///
+    /// Two *blankets* are ordered by their declared bound sets instead: a
+    /// strict superset of bounds is more specific (its applicability
+    /// predicate is narrower), a strict subset less so, and incomparable
+    /// sets (`{A, B}` vs `{A, C}`) are genuinely ambiguous -- reported by the
+    /// caller as `AmbiguousConformance`, never silently picked. Equal sets
+    /// fall through to the ordinary `DuplicateConformance` handling. An
+    /// *unbounded* blanket (`conform<T> T to Spec`) accepts every type, so
+    /// it is strictly less specific than one that filters by any bound -- the
+    /// empty bound set is a subset of every other, the degenerate case of
+    /// the same rule. Without this the two collided as
+    /// `DuplicateConformance`.
     fn compare_conformance_precedence(
         candidate: &ConformanceEntry,
         incumbent: &ConformanceEntry,
     ) -> Option<Ordering> {
         if candidate.origin == ConformanceOrigin::Blanket
             && incumbent.origin == ConformanceOrigin::Blanket
-            && candidate.role == ConformanceRole::Declared
-            && incumbent.role == ConformanceRole::Declared
         {
-            let candidate_bound = candidate.bounds.first().map(|(_, spec, _)| spec.clone());
-            let incumbent_bound = incumbent.bounds.first().map(|(_, spec, _)| spec.clone());
-            return match (candidate_bound, incumbent_bound) {
-                (Some(candidate_bound), Some(incumbent_bound)) => {
-                    let mut candidate_dependencies = Vec::new();
-                    Self::transitive_dependency_ids(&candidate_bound, &mut candidate_dependencies);
-                    let mut incumbent_dependencies = Vec::new();
-                    Self::transitive_dependency_ids(&incumbent_bound, &mut incumbent_dependencies);
-                    let candidate_contains_incumbent =
-                        candidate_dependencies.contains(&incumbent_bound.borrow().id);
-                    let incumbent_contains_candidate =
-                        incumbent_dependencies.contains(&candidate_bound.borrow().id);
-                    match (candidate_contains_incumbent, incumbent_contains_candidate) {
-                        (true, false) => Some(Ordering::Greater),
-                        (false, true) => Some(Ordering::Less),
-                        (true, true) => Some(Ordering::Equal),
-                        (false, false) => None,
-                    }
-                }
-                // An *unbounded* blanket (`conform<T> T to Spec`) accepts every
-                // type, so it is strictly less specific than one that filters by
-                // a bound -- the empty bound set is a subset of every other.
-                // Without this the two collided as `DuplicateConformance`.
-                (Some(_), None) => Some(Ordering::Greater),
-                (None, Some(_)) => Some(Ordering::Less),
-                (None, None) => Some(Ordering::Equal),
+            let key = |bound: &ResolvedBound| {
+                let (_, spec, args) = bound;
+                (spec.borrow().id, args.clone())
+            };
+            let candidate_bounds: Vec<_> = candidate.declared_bounds.iter().map(key).collect();
+            let incumbent_bounds: Vec<_> = incumbent.declared_bounds.iter().map(key).collect();
+            let candidate_subset_of_incumbent = candidate_bounds
+                .iter()
+                .all(|bound| incumbent_bounds.contains(bound));
+            let incumbent_subset_of_candidate = incumbent_bounds
+                .iter()
+                .all(|bound| candidate_bounds.contains(bound));
+            return match (candidate_subset_of_incumbent, incumbent_subset_of_candidate) {
+                (true, false) => Some(Ordering::Less),
+                (false, true) => Some(Ordering::Greater),
+                (true, true) => Some(Ordering::Equal),
+                (false, false) => None,
             };
         }
         Some(candidate.precedence().cmp(&incumbent.precedence()))
@@ -927,11 +955,12 @@ impl Driver {
     /// Every spec reachable from `spec` through `dependencies`, by id,
     /// including `spec` itself. Ids only -- a membership test needs no
     /// per-dependency type arguments (which are raw at a declaration; see
-    /// `ResolvedSpecType::dependencies`). Mirrors
-    /// `Analyzer::transitive_dependency_ids`, which does the same walk for
-    /// conformance; both must agree or a bound would admit a method that
-    /// conformance rejects.
-    fn transitive_dependency_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut Vec<HirId>) {
+    /// The spec ids reachable from `spec` through its alias-member list
+    /// (`dependencies` -- which, since provisioning's removal, only an
+    /// alias ever populates), including `spec` itself. Ids only: this is a
+    /// membership test, so the per-member type arguments never need
+    /// resolving here.
+    fn alias_member_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut Vec<HirId>) {
         let (id, dependencies) = {
             let spec = spec.borrow();
             (spec.id, spec.dependencies.clone())
@@ -940,37 +969,61 @@ impl Driver {
             return;
         }
         out.push(id);
-        for (dependency, _) in dependencies {
-            Self::transitive_dependency_ids(&dependency, out);
+        for (member, _) in dependencies {
+            Self::alias_member_ids(&member, out);
         }
     }
 
     /// What a `T: Spec` bound puts into the analyzer's bound context: the
-    /// declared bound itself, plus every conform already registered on
-    /// `concrete` whose spec lies in `spec`'s transitive dependencies.
+    /// declared bound itself, plus -- for an alias bound -- every conform
+    /// already registered on `concrete` whose spec is one of the alias's
+    /// members, plus every *template-derived* conform on `concrete` whose
+    /// own declared bound set is a subset of the item's declared bounds.
     ///
-    /// The transitive part is what makes an **aggregate** bound work at all. A
-    /// pure alias (`spec MySpec = Dummy | Mammal`) is never itself conformed to,
-    /// so `(concrete, MySpec)` has no entry and a receiver call under
-    /// `T: MySpec` would find nothing -- even though `conform Wolf to Mammal`
-    /// already registered every method the alias names.
+    /// The alias part is what makes an aggregate bound work at all: a pure
+    /// alias (`spec AB = A + B`) is never itself conformed to, so
+    /// `(concrete, AB)` has no entry and a receiver call under `T: AB`
+    /// would find nothing -- even though `conform T to A` and `conform T to
+    /// B` already registered every method the alias names.
     ///
-    /// Restricted to those, never "every conform on the type": seeding
-    /// the latter is what previously let `x.secret()` resolve under
-    /// `T: Speak` merely because someone wrote `conform Dog to Secret`, which
-    /// voids the guarantee `conform` exists to provide.
+    /// The derived part is what makes a blanket's methods reachable under a
+    /// bound: `conform<T: Ord> T to Eq` means every `T: Ord` type is also
+    /// `Eq`, so a body bounded on `Ord` alone may call `equals` -- the
+    /// conform is *entailed* by the bound set, exactly like the alias
+    /// members are. Restricted to template-derived entries (a blanket or
+    /// generic-template instantiation, never a hand-written concrete
+    /// `conform`), and to those whose declared bounds the current item's
+    /// own bounds already guarantee: seeding anything wider is what
+    /// previously let `x.secret()` resolve under `T: Speak` merely because
+    /// someone wrote `conform Dog to Secret`, which voids the guarantee
+    /// `conform` exists to provide.
     pub(crate) fn bound_context_for(
         &mut self,
         concrete: &ResolvedType,
         spec: Rc<RefCell<ResolvedSpecType>>,
         spec_args: Vec<ResolvedType>,
+        declared: &[ResolvedBound],
     ) -> Vec<(ResolvedType, Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
         let mut permitted = Vec::new();
-        Self::transitive_dependency_ids(&spec, &mut permitted);
+        Self::alias_member_ids(&spec, &mut permitted);
         let mut seeds = vec![(concrete.clone(), spec, spec_args)];
         for entry in self.conformances_for_type(concrete) {
             if permitted.contains(&entry.spec.borrow().id) {
-                seeds.push((entry.target, entry.spec, entry.spec_args));
+                seeds.push((entry.target.clone(), entry.spec.clone(), entry.spec_args.clone()));
+                continue;
+            }
+            if entry.origin == ConformanceOrigin::Concrete {
+                continue;
+            }
+            let declared_keys: Vec<_> = declared
+                .iter()
+                .map(|(_, spec, args)| (spec.borrow().id, args.clone()))
+                .collect();
+            let entailed = entry.declared_bounds.iter().all(|(_, bound, args)| {
+                declared_keys.contains(&(bound.borrow().id, args.clone()))
+            });
+            if entailed {
+                seeds.push((entry.target.clone(), entry.spec.clone(), entry.spec_args.clone()));
             }
         }
         seeds

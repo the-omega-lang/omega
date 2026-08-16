@@ -16,7 +16,6 @@ use crate::ast::statement::{
     union::UnionStmt,
     walrus::WalrusStmt,
 };
-use crate::ast::r#type::Type;
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
@@ -508,9 +507,9 @@ pub fn parse_function_definition(
     })
 }
 
-/// `<T, U: Bound, ...>` -- optional, at least one name if present. Each
-/// name may carry a single optional spec bound (`T: Animal`) -- see
-/// `GenericParam`'s doc comment for why only one is ever parsed here.
+/// `<T, U: Bound + Bound2, ...>` -- optional, at least one name if present.
+/// Each name may carry zero or more `+`-separated spec bounds (`T: Animal +
+/// Display`) -- see `GenericParam`'s doc comment.
 fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
     if !p.eat(&TokenKind::Lt) {
         return Some(Vec::new());
@@ -534,10 +533,16 @@ fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
 fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<GenericParam> {
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
-    let bound = if p.eat(&TokenKind::Colon) {
-        Some(crate::parser::r#type::parse_type(p)?)
+    // `+` after a type in bound position is unambiguous -- no type contains
+    // `+` -- so the whole `A + B + C` conjunction is parsed greedily here.
+    let bounds = if p.eat(&TokenKind::Colon) {
+        let mut bounds = vec![crate::parser::r#type::parse_type(p)?];
+        while p.eat(&TokenKind::Plus) {
+            bounds.push(crate::parser::r#type::parse_type(p)?);
+        }
+        bounds
     } else {
-        None
+        Vec::new()
     };
     let default = if p.eat(&TokenKind::Eq) {
         Some(crate::parser::r#type::parse_type(p)?)
@@ -556,21 +561,9 @@ fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<Generi
     }
     Some(GenericParam {
         ident,
-        bound,
+        bounds,
         default,
     })
-}
-
-/// A spec declaration's optional `: Dep, Dep, ...` dependency list.
-fn parse_optional_dependencies(p: &mut Parser) -> Option<Vec<Type>> {
-    if !p.eat(&TokenKind::Colon) {
-        return Some(Vec::new());
-    }
-    let mut specs = vec![crate::parser::r#type::parse_type(p)?];
-    while p.eat(&TokenKind::Comma) {
-        specs.push(crate::parser::r#type::parse_type(p)?);
-    }
-    Some(specs)
 }
 
 /// `self` / `mut self` / `*self` / `*mut self` (optionally followed by `,
@@ -758,10 +751,13 @@ pub fn parse_union_def(
     })
 }
 
-/// `spec Name<T, ...> : Dep, Dep { functions }` (declaration form) or
-/// `spec Name<T, ...> = Dep | Dep | Dep;` (alias form). The leading `:`/`=`
-/// token disambiguates the forms; both parse a type list afterward, with
-/// different separators and terminators.
+/// `spec Name<T, ...> { functions }` (declaration form) or
+/// `spec Name<T, ...> = Member + Member;` (alias form). The leading `=` token
+/// disambiguates the forms; an alias's member list is `+`-separated, the same
+/// separator a generic bound conjunction uses. The old `spec Name : Dep, Dep`
+/// provisioning form no longer exists in the grammar at all -- a `:` after
+/// the name is a targeted `SpecDependenciesRemoved` error (see
+/// `parse_spec_def`'s declaration arm).
 pub fn parse_spec_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -773,7 +769,7 @@ pub fn parse_spec_def(
 
     if p.eat(&TokenKind::Eq) {
         let mut dependencies = vec![crate::parser::r#type::parse_type(p)?];
-        while p.eat(&TokenKind::Pipe) {
+        while p.eat(&TokenKind::Plus) {
             dependencies.push(crate::parser::r#type::parse_type(p)?);
         }
         if p.check(&TokenKind::LBrace) {
@@ -793,7 +789,19 @@ pub fn parse_spec_def(
         });
     }
 
-    let dependencies = parse_optional_dependencies(p)?;
+    // `:` here is the removed provisioning form (`spec X : A, B`) --
+    // reported with a dedicated error naming both replacements rather than
+    // left to the ordinary "'{'" expectation, then skipped so the rest of
+    // the file still parses.
+    if p.check(&TokenKind::Colon) {
+        p.error(ParseErrorKind::SpecDependenciesRemoved);
+        while matches!(
+            p.peek(),
+            TokenKind::Colon | TokenKind::Comma | TokenKind::Ident(_) | TokenKind::Lt
+        ) {
+            p.advance();
+        }
+    }
     p.expect(&TokenKind::LBrace, "'{'");
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
@@ -807,7 +815,7 @@ pub fn parse_spec_def(
         ident,
         visibility,
         generics,
-        dependencies,
+        dependencies: Vec::new(),
         functions,
         is_alias: false,
         annotations,

@@ -92,6 +92,302 @@ fn bound_and_spec_qualified_dispatch_compile() {
         .expect("both conformance call forms should compile");
 }
 
+/// `<T: A + B>` genuinely requires both specs: a type conforming to only
+/// one is rejected, naming the *missing* member specifically.
+#[test]
+fn a_conjunction_bound_requires_every_member() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        struct Half { exposed value: i32; }
+        conform Half to A { a(*self) => i32 { self.value } }
+
+        use_both<T: A + B>(value: *T) => i32 { value.a() + value.b() }
+        main() => i32 {
+            half := Half { value = 1; };
+            use_both(&half)
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "a conjunction bound must require both specs",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+            spec, ..
+        }) if spec.as_ref() == "B"
+    )));
+}
+
+/// A three-way conjunction is checked the same way: every member must hold.
+#[test]
+fn a_three_way_conjunction_bound_requires_all_members() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec C { c(*self) => i32; }
+        struct Full { exposed value: i32; }
+        conform Full to A { a(*self) => i32 { self.value } }
+        conform Full to B { b(*self) => i32 { self.value } }
+        conform Full to C { c(*self) => i32 { self.value } }
+
+        use_all<T: A + B + C>(value: *T) => i32 { value.a() + value.b() + value.c() }
+        main() => i32 {
+            full := Full { value = 1; };
+            use_all(&full)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a type conforming to all three members must satisfy the conjunction");
+}
+
+/// An inline conjunction and an alias naming the same members are the same
+/// bound: both admit a type conforming to each member, and neither admits
+/// one conforming to a subset.
+#[test]
+fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
+    let source = r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        spec AB = A + B;
+        struct Full { exposed value: i32; }
+        conform Full to A { a(*self) => i32 { self.value } }
+        conform Full to B { b(*self) => i32 { self.value } }
+
+        use_alias<T: AB>(value: *T) => i32 { value.a() + value.b() }
+        use_inline<T: A + B>(value: *T) => i32 { value.a() + value.b() }
+        main() => i32 {
+            full := Full { value = 1; };
+            use_alias(&full) + use_inline(&full)
+        }
+        "#;
+    let package = TestPackage::new(source);
+    package
+        .compile()
+        .expect("an alias bound and the identical inline conjunction admit the same types");
+
+    let missing_b = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        spec AB = A + B;
+        struct Half { exposed value: i32; }
+        conform Half to A { a(*self) => i32 { self.value } }
+
+        use_alias<T: AB>(value: *T) => i32 { value.a() }
+        main() => i32 {
+            half := Half { value = 1; };
+            use_alias(&half)
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &missing_b,
+        "a type conforming to only one member must not satisfy the alias",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+            spec,
+            missing,
+            ..
+        }) if spec.as_ref() == "AB" && missing.contains(&Ident("b".to_string()))
+    )));
+}
+
+/// A blanket bounded on a conjunction applies only to types satisfying every
+/// member.
+#[test]
+fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec Sum { sum(*self) => i32; }
+        conform<T: A + B> T to Sum {
+            sum(*self) => i32 { self.a() + self.b() }
+        }
+        struct Full { exposed value: i32; }
+        conform Full to A { a(*self) => i32 { self.value } }
+        conform Full to B { b(*self) => i32 { self.value } }
+
+        use_sum<T: Sum>(value: *T) => i32 { value.sum() }
+        main() => i32 {
+            full := Full { value = 2; };
+            use_sum(&full)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a blanket bounded on a conjunction must apply to a type with both");
+}
+
+/// A spec alias names a conjunction, never a contract of its own --
+/// `conform T to <alias>` is rejected, directing the author to conform each
+/// member separately.
+#[test]
+fn a_spec_alias_is_not_conformable() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        spec AB = A + B;
+        struct Full { exposed value: i32; }
+        conform Full to AB {
+            a(*self) => i32 { self.value }
+            b(*self) => i32 { self.value }
+        }
+        main() => i32 { 0 }
+        "#,
+    );
+    let errors = compile_errors(&package, "conforming to an alias must fail");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ConformToAliasSpec { alias } if alias.as_ref() == "AB"
+    )));
+
+    // Satisfying the same combination through separate conforms stays legal.
+    let split = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        spec AB = A + B;
+        struct Full { exposed value: i32; }
+        conform Full to A { a(*self) => i32 { self.value } }
+        conform Full to B { b(*self) => i32 { self.value } }
+        use_ab<T: AB>(value: *T) => i32 { value.a() + value.b() }
+        main() => i32 {
+            full := Full { value = 2; };
+            use_ab(&full)
+        }
+        "#,
+    );
+    split
+        .compile()
+        .expect("an alias is satisfied by conforming each member separately");
+}
+
+/// Two specs may declare the same name and signature, and those are
+/// different functions. Each bound admits exactly its own spec's methods --
+/// neither a bound context nor conformance checking may let one spec's
+/// declaration satisfy the other's requirement.
+#[test]
+fn same_named_spec_functions_keep_their_own_spec_identity() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { tag(*self) => i32; }
+        exposed spec B { tag(*self) => i32; }
+        struct Thing { exposed a: i32; exposed b: i32; }
+        conform Thing to A { tag(*self) => i32 { self.a } }
+        conform Thing to B { tag(*self) => i32 { self.b } }
+
+        via_a<T: A>(x: *T) => i32 { x.tag() }
+        via_b<T: B>(x: *T) => i32 { x.tag() }
+        main() => i32 {
+            t := Thing { a = 1; b = 2; };
+            via_a(&t) + via_b(&t)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("each spec's same-named function must resolve to its own conform");
+}
+
+/// A `spec *AB` object over a conjunction, where both members declare the
+/// same function name, must *reject* the colliding call -- matching what
+/// static dispatch through a conjunction bound already does -- rather than
+/// silently picking the first section's slot.
+#[test]
+fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { tag(*self) => i32; }
+        exposed spec B { tag(*self) => i32; }
+        spec AB = A + B;
+        struct Thing { exposed a: i32; exposed b: i32; }
+        conform Thing to A { tag(*self) => i32 { self.a } }
+        conform Thing to B { tag(*self) => i32 { self.b } }
+
+        via_ab(x: spec *AB) => i32 { x.tag() }
+        main() => i32 {
+            t := Thing { a = 1; b = 2; };
+            via_ab(&t)
+        }
+        "#,
+    );
+    let errors = compile_errors(&package, "a colliding method through a conjunction object must not silently pick");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::AmbiguousSpecObjectMethod { function, specs }
+            if function.as_ref() == "tag" && specs.len() == 2
+    )));
+}
+
+/// The disambiguation: a narrowing cast onto one member's section selects
+/// that member's body. The offset is structural (A is the first member --
+/// offset 0 -- while B sits after A's own slots), and both directions must
+/// compile.
+#[test]
+fn a_narrowing_cast_disambiguates_a_conjunction_object() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { tag(*self) => i32; }
+        exposed spec B { tag(*self) => i32; }
+        spec AB = A + B;
+        struct Thing { exposed a: i32; exposed b: i32; }
+        conform Thing to A { tag(*self) => i32 { self.a } }
+        conform Thing to B { tag(*self) => i32 { self.b } }
+
+        via_a(x: spec *AB) => i32 { (<spec *A>x).tag() }
+        via_b(x: spec *AB) => i32 { (<spec *B>x).tag() }
+        main() => i32 {
+            t := Thing { a = 1; b = 2; };
+            via_a(&t) + via_b(&t)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a narrowing cast onto either member's section must compile");
+}
+
+/// Widening (`<spec *AB>` from a `spec *A`) and cross-spec casts between
+/// unrelated objects are rejected: there is no vtable section to invent.
+#[test]
+fn widening_and_unrelated_spec_object_casts_are_rejected() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { tag(*self) => i32; }
+        exposed spec B { tag(*self) => i32; }
+        exposed spec C { tag(*self) => i32; }
+        spec AB = A + B;
+        struct Thing { exposed a: i32; }
+        conform Thing to A { tag(*self) => i32 { self.a } }
+        conform Thing to B { tag(*self) => i32 { self.a } }
+        conform Thing to C { tag(*self) => i32 { self.a } }
+
+        widen(x: spec *A) => spec *AB { <spec *AB>x }
+        main() => i32 {
+            t := Thing { a = 1; };
+            widen(&t).tag()
+        }
+        "#,
+    );
+    let errors = compile_errors(&package, "a widening spec-object cast must fail");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::SpecObjectCastImpossible { .. }
+    )));
+}
+
 #[test]
 fn conforming_instance_method_is_not_in_concrete_scope() {
     let package = TestPackage::new(
@@ -200,19 +496,17 @@ fn dependency_conformances_satisfy_the_dependency_bound() {
     let package = TestPackage::new(
         r#"
         exposed spec Animal { sound(*self) => i32; }
-        exposed spec Mammal : Animal { fur(*self) => i32; }
+        exposed spec Mammal { fur(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Mammal {
-            sound(*self) => i32 { self.value }
-            fur(*self) => i32 { 1 }
-        }
+        conform Dog to Animal { sound(*self) => i32 { self.value } }
+        conform Dog to Mammal { fur(*self) => i32 { 1 } }
         call<T: Animal>(value: *T) => i32 { value.sound() }
         main() => i32 { dog := Dog { value = 4; }; call(&dog) }
         "#,
     );
     package
         .compile()
-        .expect("a direct conform must register its transitive dependencies");
+        .expect("a bound is satisfied by the conform named for its own spec");
 }
 
 #[test]
@@ -635,23 +929,21 @@ fn a_superseded_blanket_body_is_not_type_checked() {
 fn a_more_specific_blanket_bound_wins() {
     let package = TestPackage::new(
         r#"
-        exposed spec Eq { eq(*self) => bool; }
-        exposed spec Ord : Eq { cmp(*self) => i32; }
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to Ord {
-            eq(*self) => bool { true }
-            cmp(*self) => i32 { self.value }
-        }
-        conform<T: Eq> T to Show { show(*self) => i32 { 1 } }
-        conform<T: Ord> T to Show { show(*self) => i32 { 2 } }
+        conform Number to A { a(*self) => i32 { self.value } }
+        conform Number to B { b(*self) => i32 { self.value } }
+        conform<T: A> T to Show { show(*self) => i32 { 1 } }
+        conform<T: A + B> T to Show { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
         main() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
     let program = package
         .compile()
-        .expect("the Ord-bounded blanket should supersede the Eq-bounded blanket");
+        .expect("the A + B-bounded blanket should supersede the A-bounded blanket");
     let bodies = program
         .modules
         .iter()
@@ -691,34 +983,62 @@ fn a_bounded_blanket_wins_over_an_unbounded_one() {
     assert_eq!(bodies, 1, "only the bounded blanket may emit a body");
 }
 
-/// `conform Foo to Derived` derives a `Foo: Base` stand-in, and that stand-in
-/// is specific to `Foo` -- it must displace a blanket that only matched `Foo`
-/// incidentally, *even when the blanket registered first*. `conform Gen to
-/// Producer` below exists purely to force `Foo: Base` to be proven (and so the
-/// blanket to materialize at `Foo`) before the explicit block is reached.
-/// Registration used to bail out early for any derived entry, so `Base::b`
-/// silently ran the blanket's body while the hand-written one was discarded --
-/// no diagnostic, wrong code.
+/// Incomparable bound sets (`{A, B}` vs `{A, C}`) are genuinely ambiguous --
+/// reported as `AmbiguousConformance`, never an arbitrary pick.
 #[test]
-fn a_derived_stand_in_displaces_a_blanket_registered_before_it() {
+fn incomparable_blanket_bound_sets_are_ambiguous() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec C { c(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct Number { exposed value: i32; }
+        conform Number to A { a(*self) => i32 { self.value } }
+        conform Number to B { b(*self) => i32 { self.value } }
+        conform Number to C { c(*self) => i32 { self.value } }
+        conform<T: A + B> T to Show { show(*self) => i32 { 1 } }
+        conform<T: A + C> T to Show { show(*self) => i32 { 2 } }
+        call<T: Show>(value: *T) => i32 { value.show() }
+        main() => i32 { value := Number { value = 7; }; call(&value) }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "neither conjunction blanket is more specific than the other",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::AmbiguousConformance { .. }
+    )));
+}
+
+/// A blanket that only matches `Foo` incidentally must never displace the
+/// author's explicit `conform Foo to Base` -- *even when the blanket
+/// registered first*. `conform Gen to Producer` below exists purely to force
+/// `Foo: Base` to be proven (and so the blanket to materialize at `Foo`)
+/// before the explicit block is reached. Registration used to keep whichever
+/// entry arrived first, so `Base::b` silently ran the blanket's body while
+/// the hand-written one was discarded -- no diagnostic, wrong code.
+#[test]
+fn an_explicit_conform_displaces_a_blanket_registered_before_it() {
     let package = TestPackage::new(
         r#"
         exposed spec Marker { mark(*self) => i32; }
         exposed spec Base { b(*self) => i32; }
-        exposed spec Derived : Base { d(*self) => i32; }
         exposed spec Producer { make(*self) => spec Base; }
         struct Foo { exposed value: i32; }
         struct Gen { exposed value: i32; }
         conform Foo to Marker { mark(*self) => i32 { 7 } }
         conform<T: Marker> T to Base { b(*self) => i32 { 111 } }
         conform Gen to Producer { make(*self) => Foo { Foo { value = 1; } } }
-        conform Foo to Derived { b(*self) => i32 { 222 } d(*self) => i32 { 3 } }
+        conform Foo to Base { b(*self) => i32 { 222 } }
         main() => i32 { value := Foo { value = 1; }; Base::b(&value) }
         "#,
     );
     let program = package
         .compile()
-        .expect("an explicit conform's dependency stand-in must win over a blanket");
+        .expect("an explicit conform must win over a blanket, whatever the registration order");
     let bodies: Vec<_> = program
         .modules
         .iter()
@@ -875,11 +1195,12 @@ fn generic_conform_bounds_expand_spec_aliases() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
-        exposed spec B : A { b(*self) => i32 { 2 } }
-        spec AB = A | B;
+        exposed spec B { b(*self) => i32 { 2 } }
+        spec AB = A + B;
         exposed spec Sum { sum(*self) => i32; }
         struct Value { exposed value: i32; }
-        conform Value to B { a(*self) => i32 { self.value } }
+        conform Value to A { a(*self) => i32 { self.value } }
+        conform Value to B { }
 
         struct Buf<T> { exposed inner: *T; }
         conform<T: AB> Buf<T> to Sum {
@@ -998,20 +1319,21 @@ fn distinct_generic_spec_conformances_emit_distinct_bodies() {
 // containing characters the mangling scheme excludes.
 
 /// A bound on a spec *alias* must reach the conformances satisfying its members.
-/// `transitive_spec_dependencies` registers derived entries walking downward
-/// (spec -> its dependencies), which is the wrong direction for an alias:
-/// `AB` depends on `A`/`B`, so no entry is ever registered under `AB` itself.
-/// This is `examples/dev`'s `accepts_myspec<T: MySpec>`, which stopped
-/// compiling entirely.
+/// An alias is never itself conformed to (it is rejected outright), so no
+/// entry is ever registered under `AB` itself -- a bound on `AB` must resolve
+/// through the entries registered for its *members*. This is `examples/dev`'s
+/// `accepts_myspec<T: MySpec>`, which stopped compiling entirely under a
+/// narrower seeding rule.
 #[test]
 fn a_bound_on_a_spec_alias_reaches_its_members_conformances() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
-        exposed spec B : A { b(*self) => i32 { 2 } }
-        spec AB = A | B;
+        exposed spec B { b(*self) => i32 { 2 } }
+        spec AB = A + B;
         struct Foo { exposed v: i32; }
-        conform Foo to B { a(*self) => i32 { 1 } }
+        conform Foo to A { a(*self) => i32 { 1 } }
+        conform Foo to B { }
 
         use_alias<T: AB>(x: *T) => i32 { x.a() + x.b() }
         main() => i32 { f := Foo { v = 0; }; use_alias(&f) }
@@ -1047,55 +1369,6 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
 
 /// A directly-written conform must win over the derived stand-in a *different*
 /// conform's transitive dependencies registered for the same `(target, spec)`.
-/// Previously the derived entry sat ahead of it in `entries`, so `Base::b`
-/// silently called `Derived`'s body while the explicit block was emitted and
-/// never reached -- wrong code, no diagnostic. Asserted in both declaration
-/// orders, since the bug was order-dependent.
-#[test]
-fn an_explicit_conform_wins_over_a_derived_dependency_entry() {
-    for (first, second) in [
-        (
-            "conform Foo to Derived { b(*self) => i32 { 1 } }",
-            "conform Foo to Base { b(*self) => i32 { 99 } }",
-        ),
-        (
-            "conform Foo to Base { b(*self) => i32 { 99 } }",
-            "conform Foo to Derived { b(*self) => i32 { 1 } }",
-        ),
-    ] {
-        let package = TestPackage::new(&format!(
-            r#"
-            exposed spec Base {{ b(*self) => i32; }}
-            exposed spec Derived : Base {{ d(*self) => i32 {{ 1 }} }}
-            struct Foo {{ exposed v: i32; }}
-            {first}
-            {second}
-            main() => i32 {{ f := Foo {{ v = 0; }}; Base::b(&f) }}
-            "#
-        ));
-        let program = package.compile().expect("both conformances are legal");
-        // Only declaration-level correctness is checkable here: a direct
-        // conform landing on a key a derived stand-in already holds must be
-        // *accepted* (it is not a `DuplicateConformance` -- the author wrote one
-        // `Base` block), and each block still emits its own body.
-        //
-        // Which body a `Base::b(&f)` call actually reaches is a runtime fact
-        // this harness cannot observe -- it produces a `CompiledProgram`, and
-        // both bodies were emitted before the fix too, the explicit one dead.
-        // That half is verified by executing the reproducer; see
-        // `docs/14-known-issues.md`'s note on the coverage gap.
-        let bodies = program
-            .modules
-            .iter()
-            .flat_map(|(_, module)| &module.items)
-            .filter(
-                |item| matches!(item, CheckedItem::FunctionDefinition(f) if f.name.as_ref() == "b"),
-            )
-            .count();
-        assert_eq!(bodies, 2, "one body per conform block, no more");
-    }
-}
-
 /// A slice target can be conformed, and reached. Declaring one used to compile
 /// while every call failed with `expected '**[]u8'`: `Self` bound to the
 /// `Slice` had no re-stamping arm, so `*self` wrapped instead of re-stamping
@@ -1387,5 +1660,93 @@ fn void_is_declarable_but_not_conformable() {
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::ConformTargetNotAType
+    )));
+}
+
+/// A genuine conformance cycle must stay rejected. This is the behaviour the
+/// `Conformances::in_progress` guard exists for, and it is the control for the
+/// test below.
+#[test]
+fn a_genuine_conformance_cycle_is_rejected() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform<T: B> T to A { a(*self) => i32 { 1 } }
+        conform<T: A> T to B { b(*self) => i32 { 2 } }
+        use_a<T: A>(t: T) => i32 { t.a() }
+        main() => i32 { use_a(S { v = 0; }) }
+        "#,
+    );
+    let errors = compile_errors(&package, "a genuine cycle must be rejected");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ConformanceCycle { .. }
+    )));
+}
+
+/// **Known bug, pinned deliberately** — see the "chain of two blanket
+/// derivations is misreported as a cycle" entry in `docs/14-known-issues.md`.
+///
+/// `A -> B -> C` terminates; there is no cycle. The guard fires because
+/// proving `S: C` needs `S: B`, which is itself mid-materialization, and it
+/// cannot tell re-entry from circularity. This asserts the *wrong* answer on
+/// purpose so the bug is discoverable rather than folklore.
+///
+/// **When this test starts failing, the bug is fixed.** Replace the assertion
+/// with the real expectation (the program compiles and `use_c` returns 3) and
+/// delete the known-issues entry.
+#[test]
+fn a_blanket_chain_is_currently_misreported_as_a_cycle() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec C { c(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to A { a(*self) => i32 { 1 } }
+        conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }
+        conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }
+        use_c<T: C>(t: T) => i32 { t.c() }
+        main() => i32 { use_c(S { v = 0; }) }
+        "#,
+    );
+    let errors = compile_errors(&package, "known bug: the chain is misread as cyclic");
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::ConformanceCycle { .. }
+        )),
+        "the blanket-chain bug may have been fixed -- see docs/14-known-issues.md"
+    );
+}
+
+/// The other conservative case from that same review: an alias bound and its
+/// inline spelling describe the same set but do not compare as equal, so a
+/// type satisfying both gets an ambiguity rather than a duplicate diagnosis.
+/// Errors rather than selecting silently, so this is pinned as acceptable —
+/// but see `docs/14-known-issues.md` if it should become a duplicate.
+#[test]
+fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec AB = A + B;
+        exposed spec X { x(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to A { a(*self) => i32 { 0 } }
+        conform S to B { b(*self) => i32 { 0 } }
+        conform<T: AB> T to X { x(*self) => i32 { 1 } }
+        conform<T: A + B> T to X { x(*self) => i32 { 2 } }
+        use_x<T: X>(t: T) => i32 { t.x() }
+        main() => i32 { use_x(S { v = 0; }) }
+        "#,
+    );
+    let errors = compile_errors(&package, "alias vs inline must not silently pick");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::AmbiguousConformance { .. }
     )));
 }

@@ -657,15 +657,6 @@ pub enum AnalysisErrorKind {
     },
     /// Two specs (`first_spec`/`second_spec`, reached through transitive
     /// dependency flattening) both require a function
-    /// named `name`, but with different signatures -- unlike two identical
-    /// requirements (silently deduplicated, per the language's own "same
-    /// name and signature -> one implementation" rule), a genuine mismatch
-    /// is ambiguous: no single method could satisfy both.
-    ConflictingSpecFunctions {
-        name: Ident,
-        first_spec: Ident,
-        second_spec: Ident,
-    },
     /// A `spec T` (static-dispatch) return-type function's own body returns
     /// two genuinely different concrete types across its exit points
     /// (`return`s plus a possible tail expression) -- Rust's `impl Trait`
@@ -741,6 +732,31 @@ pub enum AnalysisErrorKind {
     /// plumbing behind it is already complete.
     VariadicSpecFunctionUnsatisfiable {
         name: Ident,
+    },
+    /// A method call through a `spec *Spec` object where two of the spec's
+    /// members (an alias of two specs declaring the same function name)
+    /// could be meant -- static dispatch through a conjunction bound already
+    /// rejects this shape, so dynamic dispatch must too rather than silently
+    /// picking the first slot. The candidate specs are named; a narrowing
+    /// cast (`<spec *A>x`) disambiguates.
+    AmbiguousSpecObjectMethod {
+        function: Ident,
+        specs: Vec<Ident>,
+    },
+    /// A cast between two `spec *Spec` fat pointers that isn't a narrowing
+    /// onto one of the source object's own spec sections. Only narrowing is
+    /// offered: a widening cast (`<spec *AB>` from `spec *A`) has no section
+    /// to invent, and a cast between unrelated specs would be a vtable
+    /// reinterpretation with no offset to apply.
+    SpecObjectCastImpossible {
+        from: Ident,
+        to: Ident,
+    },
+    /// `conform Target to Alias` -- an alias names a conjunction, satisfied
+    /// by conforming each member separately, never by one block conformed to
+    /// the alias itself.
+    ConformToAliasSpec {
+        alias: Ident,
     },
     // -- annotations --
     /// `@some_unknown_name(...)` -- not a recognized annotation at all
@@ -1410,17 +1426,6 @@ impl fmt::Display for AnalysisErrorKind {
                 generic_name(spec, spec_type_args),
                 function.as_ref()
             ),
-            Self::ConflictingSpecFunctions {
-                name,
-                first_spec,
-                second_spec,
-            } => write!(
-                f,
-                "conflicting requirements for '{}' from specs '{}' and '{}'",
-                name.as_ref(),
-                first_spec.as_ref(),
-                second_spec.as_ref()
-            ),
             Self::AmbiguousSpecReturnType {
                 function,
                 first,
@@ -1482,6 +1487,35 @@ impl fmt::Display for AnalysisErrorKind {
                     f,
                     "spec function '{}' is variadic, which no implementor could satisfy",
                     name.as_ref()
+                )
+            }
+            Self::AmbiguousSpecObjectMethod { function, specs } => {
+                let specs: Vec<&str> = specs.iter().map(|s| s.as_ref()).collect();
+                write!(
+                    f,
+                    "ambiguous method '{}' through a spec object -- declared by {}; \
+                     narrow the object with a cast (`<spec *{}>x`) to pick one",
+                    function.as_ref(),
+                    specs.join(", "),
+                    specs.first().map_or("<spec>", |s| *s)
+                )
+            }
+            Self::SpecObjectCastImpossible { from, to } => {
+                write!(
+                    f,
+                    "cannot cast `spec *{from}` to `spec *{to}` -- only narrowing onto one of \
+                     the object's own specs is possible; widenings and cross-spec casts have no \
+                     vtable section to point at",
+                    from = from.as_ref(),
+                    to = to.as_ref(),
+                )
+            }
+            Self::ConformToAliasSpec { alias } => {
+                write!(
+                    f,
+                    "cannot conform to spec alias '{}' -- an alias names a combination of specs \
+                     and is not itself implementable; conform to each member separately",
+                    alias.as_ref()
                 )
             }
             Self::UnknownAnnotation { name } => {

@@ -67,16 +67,15 @@ pub enum HirItem {
     Import(HirImport),
 }
 
-/// One `<...>` generic parameter -- a name, plus an optional single spec
-/// bound and an optional default, both kept as a raw, unresolved `Type`
+/// One `<...>` generic parameter -- a name, plus zero or more `+`-separated
+/// spec bounds and an optional default, all kept as raw, unresolved `Type`s
 /// (resolved per-instantiation, the same way every other type reference in
 /// HIR is). See `omega_parser::ast::generics::GenericParam`'s doc comment
-/// for why only one bound is ever carried, and for `default`'s
-/// trailing-only rule.
+/// for the bound-set semantics, and for `default`'s trailing-only rule.
 #[derive(Debug, Clone)]
 pub struct HirGenericParam {
     pub ident: Ident,
-    pub bound: Option<Type>,
+    pub bounds: Vec<Type>,
     pub default: Option<Type>,
 }
 
@@ -292,6 +291,8 @@ pub struct HirSpecDef {
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
+    /// The alias form's member list (`spec Alias = A + B;`), empty for a
+    /// declaration -- see `SpecStmt::dependencies`'s doc comment.
     pub dependencies: Vec<Type>,
     pub functions: Vec<HirSpecFunction>,
     /// See `SpecStmt::is_alias`'s doc comment.

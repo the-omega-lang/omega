@@ -21,17 +21,26 @@ pub(super) struct FlattenedSpecFn {
     /// this is actually consulted.
     pub(super) return_type_bound: Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub(super) raw: RawSpecFunctionSig,
+    /// The spec that *declares* this function, by `HirId` -- two different
+    /// specs may declare the same name and signature, and those are
+    /// **different functions**. `(spec_id, type_args, name)` is the
+    /// requirement's full identity, keyed on by both conformance checking
+    /// (`type_implements_spec`'s alias branch) and vtable slot construction
+    /// -- a bare name no longer identifies a method, now that one spec can
+    /// flatten two colliding declarations side by side.
+    pub(super) spec_id: HirId,
+    /// The declaring spec's name, kept for diagnostics (`MissingSpecFunction`
+    /// names it) -- never for identity.
     pub(super) spec_name: Ident,
     /// The visibility of whichever spec directly declares this function
     /// (`spec_name`'s own `ResolvedSpecType::visibility`) -- a spec
     /// function has no per-function modifier of its own (see
-    /// `SpecFunctionStmt`), it always inherits its declaring spec's. This
-    /// is inherited by the conforming method. Tracked per function rather than
-    /// read once off the top-level conform target, because a dependency spec
-    /// (`spec Mammal : Animal`) can have
-    /// a different visibility than the spec that depends on it -- each
-    /// function keeps the visibility of the spec that actually declared
-    /// it, exactly the same way `spec_name` already does.
+    /// `SpecFunctionStmt`), it always inherits its declaring spec's.
+    /// Tracked per function because an alias member can have a different
+    /// visibility than the alias itself -- each function keeps the
+    /// visibility of the spec that actually declared it, exactly the same
+    /// way `spec_name` already does. This is inherited by the conforming
+    /// method.
     pub(super) visibility: Visibility,
     /// `Self` + the owning spec's own generics, bound to concrete types --
     /// exactly what resolved `fn_type` above, kept around so a queued
@@ -42,14 +51,16 @@ pub(super) struct FlattenedSpecFn {
 }
 
 impl FlattenedSpecFn {
-    /// `spec_name`'s own concrete type arguments -- `substitution` always
-    /// starts with `("Self", self_type)` followed by the declaring spec's
-    /// generics in declaration order (see where `substitution` is built in
-    /// `Analyzer::flatten_spec_into`), so this is just that leading `Self`
-    /// entry dropped. Lets a diagnostic naming `spec_name` (e.g.
-    /// `MissingSpecFunction`) show *which* instantiation it's about --
-    /// `"Consumer<*u8>"`, not just `"Consumer"` -- when the same spec is
-    /// implemented more than once at different type arguments.
+    /// The declaring spec's own concrete type arguments -- `substitution`
+    /// always starts with `("Self", self_type)` followed by the declaring
+    /// spec's generics in declaration order (see where `substitution` is
+    /// built in `Analyzer::flatten_spec_into`), so this is just that
+    /// leading `Self` entry dropped. Part of the requirement's identity
+    /// (`spec_id`, these args, `name`) -- the same spec implemented at two
+    /// different type arguments is two different requirements, and a
+    /// diagnostic naming `spec_name` (e.g. `MissingSpecFunction`) can also
+    /// show *which* instantiation it's about -- `"Consumer<*u8>"`, not just
+    /// `"Consumer"`.
     pub(super) fn type_args(&self) -> Vec<ResolvedType> {
         self.substitution[1..]
             .iter()
@@ -77,35 +88,6 @@ pub struct PendingSpecMethod {
     pub return_type_bound: Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub raw: RawSpecFunctionSig,
     pub substitution: Vec<(Ident, ResolvedType)>,
-}
-
-/// Whether two requirements under the same name are the *same* requirement
-/// (safe to silently dedup, per point 5 of the language design) rather than
-/// a genuine conflict -- `self_mode`/`is_variadic`/`params` always compare
-/// structurally, exactly as plain `ResolvedFunctionType` equality already
-/// did; only the return type's comparison branches: ordinary `ResolvedType`
-/// equality when neither side is `spec`-bound (100% of today's behavior),
-/// or same-bound-spec-and-args when both are, via `ResolvedSpecType`'s own
-/// nominal (id-based) `PartialEq`. A `SpecBound` paired with a `Concrete`
-/// requirement under the same name is never considered the same (a real
-/// conflict, reported as `ConflictingSpecFunctions`).
-fn requirements_are_same(
-    a_fn_type: &ResolvedFunctionType,
-    a_bound: &Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
-    b_fn_type: &ResolvedFunctionType,
-    b_bound: &Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
-) -> bool {
-    match (a_bound, b_bound) {
-        (None, None) => a_fn_type == b_fn_type,
-        (Some((spec_a, args_a)), Some((spec_b, args_b))) => {
-            a_fn_type.self_mode == b_fn_type.self_mode
-                && a_fn_type.is_variadic == b_fn_type.is_variadic
-                && a_fn_type.params == b_fn_type.params
-                && *spec_a.borrow() == *spec_b.borrow()
-                && args_a == args_b
-        }
-        _ => false,
-    }
 }
 
 impl<'r> Analyzer<'r> {
@@ -381,8 +363,8 @@ impl<'r> Analyzer<'r> {
     /// happens here at all (deferred to `flatten_spec`, once a concrete
     /// implementor's `Self` is known). Checks only for a duplicate name
     /// among the spec's own functions -- a genuine signature conflict
-    /// between *dependencies* is a `flatten_spec`-time concern instead
-    /// (only detectable once both sides are resolved with a concrete
+    /// between an alias's *members* is a `flatten_spec`-time concern
+    /// instead (only detectable once both sides are resolved with a concrete
     /// `Self`).
     /// Also resolves `sp.annotations` -- folded in here, not a separate
     /// function, because this is the one
@@ -478,20 +460,20 @@ impl<'r> Analyzer<'r> {
         (functions, annotations)
     }
 
-    /// Resolves a spec's own declared dependency list (`spec Mammal :
-    /// Animal, Dummy`) to their cells, keeping each dependency's own type
-    /// arguments **raw** (unresolved `Type`, not `ResolvedType`). Unlike
-    /// `resolve_spec_reference` (used wherever a concrete reference's args
-    /// are already resolvable -- a generic bound or conform declaration),
-    /// this runs at the *depending* spec's own declaration, before its own
-    /// generics are ever bound to anything concrete -- resolving a
-    /// dependency's args here would fail for exactly the case that matters
-    /// (`spec Foo<T> : Bar<T>`), the same way `resolve_spec_functions`
-    /// already stays raw for the identical reason. Only *which* spec each
-    /// dependency names is resolved eagerly here, via `ModuleResolver::
-    /// spec_declaration` (an args-independent lookup); the args themselves
-    /// are resolved later, in `flatten_spec_into`, once `Self` + this
-    /// spec's own generics are already bound in a pushed scope there.
+    /// Resolves a spec's own alias member list (`spec AB = A + B`) to their
+    /// cells, keeping each member's own type arguments **raw** (unresolved
+    /// `Type`, not `ResolvedType`). Unlike `resolve_spec_reference` (used
+    /// wherever a concrete reference's args are already resolvable -- a
+    /// generic bound or conform declaration), this runs at the alias's own
+    /// declaration, before its own generics are ever bound to anything
+    /// concrete -- resolving a member's args here would fail for exactly the
+    /// case that matters (`spec Foo<T> = Bar<T> + Baz;`), the same way
+    /// `resolve_spec_functions` already stays raw for the identical reason.
+    /// Only *which* spec each member names is resolved eagerly here, via
+    /// `ModuleResolver::spec_declaration` (an args-independent lookup); the
+    /// args themselves are resolved later, in `flatten_spec_into`, once
+    /// `Self` + this spec's own generics are already bound in a pushed scope
+    /// there. Always empty for a non-alias declaration.
     pub fn resolve_spec_dependencies(
         &mut self,
         sp: &HirSpecDef,
@@ -736,20 +718,32 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// The full, ordered, deduplicated set of functions `spec<type_args>`
-    /// requires from an implementor of type `self_type` -- walks
-    /// `dependencies` depth-first (each dependency's own requirements
-    /// appear before this spec's own, matching read-order intuition),
-    /// substituting `Self -> self_type` and this spec's own generics ->
-    /// `type_args` into every raw signature along the way. Two entries
-    /// sharing a name must resolve to *structurally identical*
-    /// `ResolvedFunctionType`s (point 5 of the user's design: "the type
-    /// will only implement it once... the compiler may assume the same
-    /// function for both") -- silently deduplicated when they match,
-    /// `ConflictingSpecFunctions` when they don't. This one ordered list is
-    /// also dynamic dispatch's vtable slot order (`Codegen`'s vtable
-    /// builder walks it identically) -- see [[omega-enums-design]]/the
-    /// spec design plan for why one flattening serves both purposes.
+    /// The full, ordered set of functions `spec<type_args>` requires from an
+    /// implementor of type `self_type` -- walks the alias members
+    /// depth-first (each member's own requirements appear before the next
+    /// member's, and this spec's own functions come last, matching
+    /// read-order intuition), substituting `Self -> self_type` and this
+    /// spec's own generics -> `type_args` into every raw signature along the
+    /// way. An ordinary (non-alias) spec's flatten is just its own function
+    /// list.
+    ///
+    /// **Nothing is merged.** Two specs may declare the same name and
+    /// signature, and those are different functions: every entry keeps its
+    /// declaring spec's identity (`FlattenedSpecFn::spec_id` + its own type
+    /// args), so `A::tag` and `B::tag` flatten side by side as two distinct
+    /// requirements. The one remaining dedup is *identity* dedup: the same
+    /// spec reaching the flatten twice (a diamond alias, `X = A + B; Y = A +
+    /// C; Z = X + Y`) contributes each of `A`'s functions once, keyed on
+    /// `(spec_id, type_args, name)`.
+    ///
+    /// This one ordered list is also dynamic dispatch's vtable slot order
+    /// (`Codegen`'s vtable builder walks it identically) -- see
+    /// [[omega-enums-design]]/the spec design plan for why one flattening
+    /// serves both purposes. Because members are flattened block-by-block
+    /// (never interleaved), the list is naturally **sectioned** per spec:
+    /// an alias `AB = A + B`'s flatten is `[A's slots][B's slots]`, which is
+    /// what makes a `spec *AB` object's narrowing cast (`<spec *A>x`) a
+    /// constant offset onto the vtable.
     pub(super) fn flatten_spec(
         &mut self,
         id: HirId,
@@ -772,9 +766,10 @@ impl<'r> Analyzer<'r> {
         self_type: &ResolvedType,
         out: &mut Vec<FlattenedSpecFn>,
     ) -> Option<()> {
-        let (spec_name, spec_visibility, generics, dependencies, functions) = {
+        let (spec_id, spec_name, spec_visibility, generics, dependencies, functions) = {
             let s = spec.borrow();
             (
+                s.id,
                 s.name.clone(),
                 s.visibility,
                 s.generics.clone(),
@@ -789,67 +784,34 @@ impl<'r> Analyzer<'r> {
                 .chain(generics.iter().cloned().zip(type_args.iter().cloned()))
                 .collect();
 
-        // Each dependency's own type args are still raw at this point (see
+        // Each alias member's own type args are still raw at this point (see
         // `ResolvedSpecType::dependencies`'s doc comment) -- resolved here,
         // now that `substitution` (this spec's own generics, now concrete)
         // is available, exactly the same `with_substitution` treatment
         // `resolve_raw_spec_fn_type` gives a raw function signature just
         // below.
-        for (dep_spec, dep_raw_args) in &dependencies {
-            let dep_args: Vec<ResolvedType> = self.with_substitution(&substitution, |this| {
-                dep_raw_args
+        for (member_spec, member_raw_args) in &dependencies {
+            let member_args: Vec<ResolvedType> = self.with_substitution(&substitution, |this| {
+                member_raw_args
                     .iter()
                     .map(|a| this.resolve_type_or_error(id, span, a, true))
                     .collect::<Option<Vec<_>>>()
             })?;
-            self.flatten_spec_into(id, span, dep_spec, &dep_args, self_type, out)?;
+            self.flatten_spec_into(id, span, member_spec, &member_args, self_type, out)?;
         }
 
         for (name, raw) in &functions {
             let (fn_type, return_type_bound) =
                 self.resolve_raw_spec_fn_type(id, span, raw, &substitution)?;
-            if let Some(existing_index) = out.iter().position(|f| &f.name == name) {
-                let existing = &out[existing_index];
-                if !requirements_are_same(
-                    &existing.fn_type,
-                    &existing.return_type_bound,
-                    &fn_type,
-                    &return_type_bound,
-                ) {
-                    self.error(
-                        id,
-                        span,
-                        AnalysisErrorKind::ConflictingSpecFunctions {
-                            name: name.clone(),
-                            first_spec: existing.spec_name.clone(),
-                            second_spec: spec_name.clone(),
-                        },
-                    );
-                    return None;
-                }
-                // Same signature, already present -- ordinarily a silent
-                // dedup (point 5 of the language design: one implementation
-                // serves every spec that required it). But if the earlier
-                // occurrence came from a bare *requirement* (no default
-                // body -- typically a dependency, like `Dummy`'s own
-                // `dummy`) and this one provides an actual default (a
-                // dependent spec satisfying its own dependency, like
-                // `Mammal`'s `dummy`), this later, more-specific default
-                // must win -- an implementor should never be asked for a
-                // function its own declared spec already gave it a body
-                // for, just because that spec happened to flatten a bare
-                // requirement first.
-                if existing.raw.default_body.is_none() && raw.default_body.is_some() {
-                    out[existing_index] = FlattenedSpecFn {
-                        name: name.clone(),
-                        fn_type,
-                        return_type_bound,
-                        raw: raw.clone(),
-                        spec_name: spec_name.clone(),
-                        visibility: spec_visibility,
-                        substitution: substitution.clone(),
-                    };
-                }
+            // Identity dedup only: the same spec, at the same type
+            // arguments, contributing the same declaration twice (a diamond
+            // alias). Same name from a *different* spec, or a different
+            // instantiation, is a distinct requirement and is kept.
+            if out.iter().any(|existing| {
+                existing.spec_id == spec_id
+                    && existing.type_args() == *type_args
+                    && existing.name == *name
+            }) {
                 continue;
             }
             out.push(FlattenedSpecFn {
@@ -857,6 +819,7 @@ impl<'r> Analyzer<'r> {
                 fn_type,
                 return_type_bound,
                 raw: raw.clone(),
+                spec_id,
                 spec_name: spec_name.clone(),
                 visibility: spec_visibility,
                 substitution: substitution.clone(),
@@ -896,11 +859,12 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Every spec reachable from `spec` through `dependencies`, by id,
+    /// The spec ids reachable from `spec` through its alias-member list,
     /// including `spec` itself. Ids only: this is a membership test, so the
-    /// per-dependency type arguments (raw at a declaration, see
-    /// `ResolvedSpecType::dependencies`) never need resolving here.
-    fn transitive_dependency_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut HashSet<HirId>) {
+    /// per-member type arguments (raw at a declaration, see
+    /// `ResolvedSpecType::dependencies`) never need resolving here. Only an
+    /// *alias* ever has members; for an ordinary spec this is just `{spec}`.
+    fn alias_member_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut HashSet<HirId>) {
         let (id, dependencies) = {
             let spec = spec.borrow();
             (spec.id, spec.dependencies.clone())
@@ -908,8 +872,8 @@ impl<'r> Analyzer<'r> {
         if !out.insert(id) {
             return;
         }
-        for (dependency, _) in dependencies {
-            Self::transitive_dependency_ids(&dependency, out);
+        for (member, _) in dependencies {
+            Self::alias_member_ids(&member, out);
         }
     }
 
@@ -929,22 +893,18 @@ impl<'r> Analyzer<'r> {
                 .map(|(_, method)| method.decl_id)
                 .collect()),
             // No entry registered under this exact spec. That does *not* mean
-            // `ty` fails to implement it: an **aggregate** spec -- a pure
-            // alias (`spec MySpec = Dummy | Mammal`), or any spec whose own
-            // requirements are all supplied by its dependencies -- is
-            // satisfied by conforming its *members*, and nobody ever writes
-            // `conform Wolf to MySpec` for one. `transitive_spec_dependencies`
-            // registers derived entries walking *downward* (a conform's spec
-            // to that spec's dependencies), which is the wrong direction for
-            // this: `MySpec` depends on `Mammal`, not the reverse.
+            // `ty` fails to implement it: a spec **alias** (`spec AB = A +
+            // B`) is satisfied by conforming its *members*, and nobody ever
+            // writes `conform T to AB` for one (it is rejected outright --
+            // see `AnalysisErrorKind::ConformToAliasSpec`).
             //
             // So satisfy it the only way that is decidable here -- map
             // `spec`'s own flattened requirements onto the methods `ty`'s
             // registry entries already provide. Restricted to entries whose
-            // spec lies in `spec`'s transitive dependencies, so an unrelated
-            // conform that happens to share a signature can never contribute:
-            // this is conformance, not method lookup, and it must not become
-            // a second way for a foreign spec's method to count.
+            // spec is one of the alias's members, so an unrelated conform
+            // that happens to share a signature can never contribute: this
+            // is conformance, not method lookup, and it must not become a
+            // second way for a foreign spec's method to count.
             //
             // The resulting order is `flatten_spec`'s, which is also the
             // vtable slot order (see `CheckedSpecCoerce::slots`).
@@ -954,7 +914,7 @@ impl<'r> Analyzer<'r> {
                     return Err(vec![]);
                 };
                 let mut permitted = HashSet::new();
-                Self::transitive_dependency_ids(spec, &mut permitted);
+                Self::alias_member_ids(spec, &mut permitted);
                 let candidates = match self.resolver.conformances_for_type(ty) {
                     Ok(entries) => entries,
                     Err(error) => {
@@ -962,17 +922,36 @@ impl<'r> Analyzer<'r> {
                         return Err(vec![]);
                     }
                 };
-                let available: Vec<(Ident, ResolvedMethod)> = candidates
-                    .into_iter()
-                    .filter(|entry| permitted.contains(&entry.spec.borrow().id))
-                    .flat_map(|entry| entry.methods)
-                    .collect();
+                // Each available method keeps its *entry's* spec identity
+                // and type arguments -- a requirement is matched against
+                // exactly the spec that declared it, so a same-named method
+                // on an unrelated spec can never satisfy it (this is the
+                // identity that used to be lost: `Ord`'s inline `equals`
+                // stood in for `Eq`'s requirement, and the two mangled
+                // differently).
+                let available: Vec<(HirId, Vec<ResolvedType>, Ident, ResolvedMethod)> =
+                    candidates
+                        .into_iter()
+                        .filter(|entry| permitted.contains(&entry.spec.borrow().id))
+                        .flat_map(|entry| {
+                            let spec_id = entry.spec.borrow().id;
+                            let spec_args = entry.spec_args.clone();
+                            entry
+                                .methods
+                                .into_iter()
+                                .map(move |(name, method)| {
+                                    (spec_id, spec_args.clone(), name, method)
+                                })
+                        })
+                        .collect();
 
                 let mut slots = Vec::with_capacity(requirements.len());
                 let mut missing = Vec::new();
                 for requirement in &requirements {
-                    let found = available.iter().position(|(name, method)| {
-                        *name == requirement.name
+                    let found = available.iter().position(|(spec_id, spec_args, name, method)| {
+                        *spec_id == requirement.spec_id
+                            && *spec_args == requirement.type_args()
+                            && *name == requirement.name
                             && self.fn_satisfies_requirement(
                                 id,
                                 span,
@@ -982,7 +961,7 @@ impl<'r> Analyzer<'r> {
                             )
                     });
                     match found {
-                        Some(index) => slots.push(available[index].1.decl_id),
+                        Some(index) => slots.push(available[index].3.decl_id),
                         None => missing.push(requirement.name.clone()),
                     }
                 }
@@ -993,128 +972,6 @@ impl<'r> Analyzer<'r> {
                 Err(vec![])
             }
         }
-    }
-
-    /// The transitive specs a direct `conform Target to Spec<Args>` also
-    /// satisfies. Dependency arguments stay raw on a spec declaration, so
-    /// this is deliberately resolved under the same `Self`/generic binding
-    /// as `flatten_spec`, rather than walked by the driver as plain syntax.
-    /// Each returned method list is restricted to that dependency's own
-    /// flattened requirements, ready to become a derived registry entry.
-    pub fn transitive_spec_dependencies(
-        &mut self,
-        id: HirId,
-        span: Span,
-        target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
-        direct_methods: &[(Ident, ResolvedMethod)],
-    ) -> Option<Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>, Vec<(Ident, ResolvedMethod)>)>>
-    {
-        let mut transitive = Vec::new();
-        let mut visited = HashSet::new();
-        self.transitive_spec_dependencies_into(
-            id,
-            span,
-            target,
-            spec,
-            spec_args,
-            direct_methods,
-            &mut visited,
-            &mut transitive,
-        )?;
-        Some(transitive)
-    }
-
-    fn transitive_spec_dependencies_into(
-        &mut self,
-        id: HirId,
-        span: Span,
-        target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
-        direct_methods: &[(Ident, ResolvedMethod)],
-        visited: &mut HashSet<(HirId, Vec<ResolvedType>)>,
-        out: &mut Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>, Vec<(Ident, ResolvedMethod)>)>,
-    ) -> Option<()> {
-        let (generics, dependencies) = {
-            let spec = spec.borrow();
-            (spec.generics.clone(), spec.dependencies.clone())
-        };
-        let substitution: Vec<(Ident, ResolvedType)> = std::iter::once((
-            Ident("Self".to_string()),
-            target.clone(),
-        ))
-        .chain(generics.into_iter().zip(spec_args.iter().cloned()))
-        .collect();
-
-        for (dependency, raw_args) in dependencies {
-            let args = self.with_substitution(&substitution, |this| {
-                raw_args
-                    .iter()
-                    .map(|arg| this.resolve_type_or_error(id, span, arg, true))
-                    .collect::<Option<Vec<_>>>()
-            })?;
-            let dependency_id = dependency.borrow().id;
-            if !visited.insert((dependency_id, args.clone())) {
-                continue;
-            }
-
-            let requirements = self.flatten_spec(id, span, &dependency, &args, target)?;
-            // Every requirement must be matched, in `flatten_spec`'s order --
-            // that order *is* the vtable slot order, so a short list would
-            // silently misalign slots rather than fail. `filter_map` used to
-            // drop unmatched entries and register the remainder; a derived
-            // entry with fewer methods than its spec requires is worse than
-            // no derived entry at all, because `type_implements_spec` maps
-            // whatever it finds straight to slots.
-            //
-            // Matched with `fn_satisfies_requirement`, not `fn_type ==`: a
-            // `=> spec Bound<...>` requirement is satisfied by any concrete
-            // return type implementing the bound (see
-            // `FlattenedSpecFn::return_type_bound`), which exact equality
-            // rejects outright.
-            let mut methods = Vec::with_capacity(requirements.len());
-            let mut complete = true;
-            for requirement in &requirements {
-                let found = direct_methods.iter().position(|(name, method)| {
-                    *name == requirement.name
-                        && self.fn_satisfies_requirement(
-                            id,
-                            span,
-                            &method.fn_type,
-                            &requirement.fn_type,
-                            &requirement.return_type_bound,
-                        )
-                });
-                match found {
-                    Some(index) => methods.push(direct_methods[index].clone()),
-                    None => {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-            // Not an error: the direct conform was already checked against
-            // its own spec, so an unmatched dependency requirement means this
-            // dependency simply is not fully covered here. Registering
-            // nothing lets `type_implements_spec`'s own transitive-dependency search answer
-            // instead, with the full picture.
-            if complete {
-                out.push((dependency.clone(), args.clone(), methods));
-            }
-            self.transitive_spec_dependencies_into(
-                id,
-                span,
-                target,
-                &dependency,
-                &args,
-                direct_methods,
-                visited,
-                out,
-            )?;
-        }
-        Some(())
     }
 
     /// Checks a single generic bound (`T: Animal`) against the concrete

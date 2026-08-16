@@ -340,7 +340,6 @@ fn a_user_type_conforming_to_successor_is_range_iterable() {
         struct PageIndex { exposed value: i32; }
 
         conform PageIndex to Ord {
-            equals(*self, other: Self) => bool { self.value == other.value }
             compare(*self, other: Self) => Ordering {
                 if self.value < other.value { Ordering::Less }
                 else if self.value > other.value { Ordering::Greater }
@@ -384,7 +383,6 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
 
         struct P { exposed v: i32; }
         conform P to Ord {
-            equals(*self, other: Self) => bool { self.v == other.v }
             compare(*self, other: Self) => Ordering {
                 if self.v < other.v { Ordering::Less }
                 else if self.v > other.v { Ordering::Greater }

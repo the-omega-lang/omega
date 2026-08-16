@@ -624,7 +624,7 @@ impl Driver {
             None => {}
         }
 
-        if generic_params.iter().any(|g| g.bound.is_some()) {
+        if generic_params.iter().any(|g| !g.bounds.is_empty()) {
             self.check_item_generic_bounds(&key, index, &generic_params, &type_args)?;
         }
 
@@ -717,11 +717,17 @@ impl Driver {
         Ok(padded)
     }
 
-    /// Checks every bound generic parameter (`T: Animal`) against the
-    /// concrete argument it was instantiated with, returning exactly the
-    /// analyzer-bound context those satisfied bounds establish. Both named
-    /// generic items and generic `conform` templates use this path: a bound
-    /// means the same thing at either instantiation site.
+    /// Checks every bound generic parameter (`T: Animal + Display`) against
+    /// the concrete argument it was instantiated with, returning exactly the
+    /// analyzer-bound context those satisfied bounds establish, plus the
+    /// declared bound set itself (one `(concrete, spec, spec_args)` triple
+    /// per member) -- the latter is what blanket-precedence and
+    /// bound-context derivation both compare, and it is deliberately kept
+    /// apart from the context (which also contains seeded entries). Both
+    /// named generic items and generic `conform` templates use this path: a
+    /// bound means the same thing at either instantiation site. A
+    /// conjunction requires *every* member to hold; the first unsatisfied
+    /// one is the one reported, by name.
     ///
     /// `None` means resolving a bound recorded its own ordinary analysis
     /// error. `Some(Err(_))` is the structured `SpecNotImplemented` case,
@@ -732,39 +738,51 @@ impl Driver {
         owner: (HirId, Span),
         generic_params: &[HirGenericParam],
         type_args: &[ResolvedType],
-    ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
+    ) -> Option<Result<(Vec<ResolvedBound>, Vec<ResolvedBound>), ResolveError>> {
         let substitution: Vec<(Ident, ResolvedType)> = generic_params
             .iter()
             .map(|g| g.ident.clone())
             .zip(type_args.iter().cloned())
             .collect();
-        let mut resolved_bounds = Vec::new();
 
+        // Every bound is checked first, so the complete declared bound set is
+        // known before any bound context is built -- a derived-conformance
+        // seed (see `bound_context_for`) is admitted against the *whole*
+        // conjunction, never against one member in isolation.
+        let mut declared = Vec::new();
         for (param, concrete) in generic_params.iter().zip(type_args) {
-            let Some(bound) = param.bound.clone() else {
-                continue;
-            };
-            let run = self.with_analyzer(module, &substitution, owner, |analyzer| {
-                analyzer.check_generic_bound(owner.0, owner.1, &bound, concrete)
-            });
-            if run.failed {
-                return None;
-            }
-            match run.result {
-                Some(Ok((spec, spec_args))) => {
-                    resolved_bounds.extend(self.bound_context_for(concrete, spec, spec_args));
+            for bound in &param.bounds {
+                let run = self.with_analyzer(module, &substitution, owner, |analyzer| {
+                    analyzer.check_generic_bound(owner.0, owner.1, bound, concrete)
+                });
+                if run.failed {
+                    return None;
                 }
-                Some(Err((spec, missing))) => {
-                    return Some(Err(ResolveError::SpecNotImplemented {
-                        type_name: concrete.to_string(),
-                        spec,
-                        missing,
-                    }));
+                match run.result {
+                    Some(Ok((spec, spec_args))) => {
+                        declared.push((concrete.clone(), spec, spec_args));
+                    }
+                    Some(Err((spec, missing))) => {
+                        return Some(Err(ResolveError::SpecNotImplemented {
+                            type_name: concrete.to_string(),
+                            spec,
+                            missing,
+                        }));
+                    }
+                    None => {}
                 }
-                None => {}
             }
         }
-        Some(Ok(resolved_bounds))
+        let mut resolved_bounds = Vec::new();
+        for (concrete, spec, spec_args) in &declared {
+            resolved_bounds.extend(self.bound_context_for(
+                concrete,
+                spec.clone(),
+                spec_args.clone(),
+                &declared,
+            ));
+        }
+        Some(Ok((resolved_bounds, declared)))
     }
 
     /// Stores the bound context for a named generic item after the shared
@@ -780,7 +798,7 @@ impl Driver {
         let owner = item_id_span(&hir.items[index]);
         let resolved_bounds =
             match self.check_generic_bounds(&key.module, owner, generic_params, type_args) {
-                Some(Ok(bounds)) => bounds,
+                Some(Ok((bounds, _))) => bounds,
                 Some(Err(error)) => return Err(error),
                 None => return Err(key.failed()),
             };
@@ -1127,6 +1145,7 @@ impl Driver {
             module_path: module_path.to_vec(),
             type_args: vec![],
             is_object_safe,
+            is_alias: sp.is_alias,
             dependencies,
             functions,
             suppress: annotations.suppress,

@@ -10,7 +10,7 @@
 
 use crate::error::{CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
-use crate::conformances::{ConformanceOrigin, ConformanceRole};
+use crate::conformances::ConformanceOrigin;
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::annotations::ManglingMode;
@@ -24,7 +24,7 @@ use omega_analyzer::error::{
 };
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
-use omega_hir::{HirEnumDef, HirGlueDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
+use omega_hir::{HirEnumDef, HirGenericParam, HirGlueDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -469,6 +469,34 @@ impl Driver {
         for path in local {
             self.ensure_module_indexed(path).map_err(fatal)?;
 
+            // Bound-position spec references only resolve at instantiation
+            // time, which this package's own build may never do for a given
+            // template -- mark their import aliases as used at declaration
+            // time so `UnusedImport` doesn't report the import that binds a
+            // bound's name.
+            let generic_bounds: Vec<(Vec<Ident>, Vec<HirGenericParam>)> = self
+                .modules
+                .parsed(path)
+                .hir
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let generics = match item {
+                        HirItem::FunctionDefinition(f) => Some(&f.generics),
+                        HirItem::Struct(s) => Some(&s.generics),
+                        HirItem::Enum(e) => Some(&e.generics),
+                        HirItem::Union(u) => Some(&u.generics),
+                        HirItem::Spec(sp) => Some(&sp.generics),
+                        HirItem::Primitive(p) => Some(&p.generics),
+                        _ => None,
+                    };
+                    Some((path.clone(), generics?.clone()))
+                })
+                .collect();
+            for (module, generics) in &generic_bounds {
+                self.mark_bound_type_imports(module, generics);
+            }
+
             // Items are visited in declaration order (the index preserves it)
             // because this sweep mints globally-sequential synthetic ids as a
             // side effect: a random visit order would bake a different id
@@ -640,7 +668,6 @@ impl Driver {
             .iter()
             .filter(|entry| {
                 entry.module == path
-                    && entry.role == ConformanceRole::Declared
                     // A concrete conformance owned by an extern package is
                     // defined by that package's object, never by whichever
                     // consumer happened to need it. Generic conformances are
@@ -797,12 +824,7 @@ impl Driver {
                 .entries
                 .iter()
                 .find(|entry| {
-                    // Same `!derived` filter `check_conformance_bodies` applies:
-                    // a derived entry owns no body, so it can never become
-                    // `emitted` and would otherwise keep this loop finding
-                    // work that produces nothing, forever.
-                    entry.role == ConformanceRole::Declared
-                        && !self.conformances.emitted.contains(&(
+                    !self.conformances.emitted.contains(&(
                             entry.target.clone(),
                             entry.spec.borrow().id,
                             entry.spec_args.clone(),

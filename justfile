@@ -80,6 +80,19 @@ build-char: build-core
 test-char: build-char
     ./target/char_demo
 
+# Spec composition is assertion-heavy precisely because so much of it is
+# *selection* -- which blanket wins, which spec's same-named body a call
+# reaches, which vtable section a narrowing cast lands on. None of that is
+# observable at compile time, so this demo asserts each case by execution and
+# returns a distinct exit code per failed one. Needs only `core`: specs,
+# blankets and narrowing casts must imply no allocator and no platform glue.
+build-spec-dispatch: build-core
+    ./target/debug/omgc -v examples/spec_dispatch/ --extern=core:runtime/core/ -o target/spec_dispatch.o
+    cc -Wl,--gc-sections target/spec_dispatch.o target/core.o -o target/spec_dispatch
+
+test-spec-dispatch: build-spec-dispatch
+    ./target/spec_dispatch
+
 # Only `main` in the root module may receive the bare C entry symbol; a child
 # module's identically named function remains normally mangled. Compiled with
 # no `--extern` at all, so this also covers a package that never registers

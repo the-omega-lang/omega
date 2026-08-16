@@ -123,6 +123,10 @@ impl ParseError {
             ParseErrorKind::DefaultGenericParamNotTrailing { name } => d
                 .with_label(self.span, format!("`{name}` has no default, but an earlier parameter does"))
                 .with_help("once one generic parameter has a default, every parameter after it must too"),
+            ParseErrorKind::SpecDependenciesRemoved => d
+                .with_label(self.span, "spec provisioning was removed from the language")
+                .with_note("a spec declares what its implementer provides, never a list of other specs to also satisfy")
+                .with_help("name the combination with an alias (`spec X = A + B;`) or spell the conjunction at the bound (`<T: A + B>`), and conform each member separately"),
             ParseErrorKind::MacroInvocationNotAllowedAfterDefer => d
                 .with_label(self.span, "this invocation could expand to several statements")
                 .with_help("write `defer { name$(...); }`"),
@@ -267,6 +271,12 @@ pub enum ParseErrorKind {
     DefaultGenericParamNotTrailing {
         name: Ident,
     },
+    /// The removed `spec Name : Dep, Dep` provisioning form. A spec is a
+    /// contract about what an implementer provides, never a list of other
+    /// specs to also satisfy -- name the combination with an alias
+    /// (`spec Name = A + B;`) or spell the conjunction at the bound
+    /// (`<T: A + B>`), and conform each member separately.
+    SpecDependenciesRemoved,
     MacroInvocationNotAllowedAfterDefer,
     VariadicMacroParamNotLast,
     InvalidMacroSeparator,
@@ -368,6 +378,12 @@ impl fmt::Display for ParseErrorKind {
                 write!(
                     f,
                     "generic parameter '{name}' has no default, but an earlier one does"
+                )
+            }
+            Self::SpecDependenciesRemoved => {
+                write!(
+                    f,
+                    "spec provisioning (`spec Name : Dep, Dep`) was removed from the language"
                 )
             }
             Self::MacroInvocationNotAllowedAfterDefer => write!(

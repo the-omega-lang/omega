@@ -11,43 +11,45 @@ use crate::ast::visibility::Visibility;
 /// forms:
 ///
 /// ```text
-/// spec Name<T, ...> : Dep1, Dep2 {
+/// spec Name<T, ...> {
 ///     required(self) => T;
 ///     with_default(self) => T { self.required() }
 /// }
 ///
-/// spec Alias<T, ...> = Dep1 | Dep2;
+/// spec Alias<T, ...> = Member1 + Member2;
 /// ```
 ///
-/// The declaration form (`:`, with a `{}` body) lists zero or more
-/// dependency specs (other specs this one requires/extends -- a type
-/// implementing this spec must also satisfy each of them) plus its own
-/// function members, each either *required* (no body -- every implementor
-/// must provide one) or *default* (a body, using this same `dependencies`
-/// syntax for what's available on `self`; overridable per implementor).
+/// The declaration form (`{...}` body) lists the spec's own function
+/// members, each either *required* (no body -- every implementor must
+/// provide one) or *default* (a body; overridable per implementor). A spec
+/// declares nothing else: what a default body may call on `self` is exactly
+/// this spec's own requirements and defaults, unless a `conform` block's
+/// own bounds put more in scope.
 ///
-/// The alias form (`=`, `|`-separated, no body) is pure union sugar for
-/// "requires all of these" with no functions of its own -- both forms are
-/// carried in the same `dependencies`/`functions` shape (an alias just has
-/// `functions: vec![]`), since resolution treats them identically: flatten
-/// `dependencies` transitively, then this spec's own `functions`. Kept as
-/// two parser-level entry points purely for the clearer `=`/`:` syntax the
-/// user sees; see `parser::item::parse_spec_def`.
-///
+/// The alias form (`=`, `+`-separated, no body) is pure conjunction sugar
+/// for "requires all of these" with no functions of its own -- `functions`
+/// is always empty for an alias. An alias is a *name*, never a contract:
+/// it is not itself conformable (see
+/// `AnalysisErrorKind::ConformToAliasSpec`), it is satisfied by conforming
+/// each member separately. See `parser::item::parse_spec_def`.
 #[derive(Debug, Clone)]
 pub struct SpecStmt {
     pub ident: Ident,
     /// `exposed`/`internal`/(default `Hidden`).
     pub visibility: Visibility,
     pub generics: Vec<GenericParam>,
+    /// The alias form's member list (`spec Alias = A + B;`), carried in
+    /// this same field. Always empty for the declaration form -- a spec
+    /// declaration has no dependencies, and never did beyond the removed
+    /// provisioning form. See `is_alias`.
     pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,
-    /// `true` for the `=`/`|`-separated alias form (`spec Alias = A | B;`),
-    /// `false` for the ordinary `:`/`{}` declaration form -- both are
-    /// carried in this same struct shape (see the type's own doc comment),
-    /// so this is the one thing that actually tells them apart. An alias
-    /// has no function list of its own; what it means for conformance is
-    /// resolved during analysis (`Analyzer::flatten_spec`), not here.
+    /// `true` for the `=`/`+`-separated alias form (`spec Alias = A + B;`),
+    /// `false` for the ordinary `{}` declaration form -- both are carried in
+    /// this same struct shape (see the type's own doc comment), so this is
+    /// the one thing that actually tells them apart. An alias has no
+    /// function list of its own; what it means for a bound is resolved
+    /// during analysis (`Analyzer::flatten_spec`), not here.
     pub is_alias: bool,
     /// `@suppress` -- the only annotation a spec accepts (see
     /// `omega_analyzer::annotations::ItemKind::Spec`); validated during

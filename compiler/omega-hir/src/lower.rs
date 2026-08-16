@@ -370,7 +370,7 @@ impl Lowerer {
                 *next += 1;
                 generics.push(HirGenericParam {
                     ident: fresh.clone(),
-                    bound: Some((**bound).clone()),
+                    bounds: vec![(**bound).clone()],
                     default: None,
                 });
                 *ty = Type::Named(fresh.into());
@@ -476,7 +476,7 @@ impl Lowerer {
             .iter()
             .map(|g| HirGenericParam {
                 ident: g.ident.clone(),
-                bound: g.bound.clone(),
+                bounds: g.bounds.clone(),
                 default: g.default.clone(),
             })
             .collect()

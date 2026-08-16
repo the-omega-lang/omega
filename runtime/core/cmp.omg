@@ -67,14 +67,21 @@ exposed spec Eq {
     }
 }
 
-# `: Eq` -- anything with a total order can also be checked for equality
-# (`compare(a, b).is_eq()`), so every `Ord` implementor is required to
-# provide `Eq` too; `less_than`/`greater_than`/`min`/`max` all come free
-# from `compare` alone, though an implementor is free to override any of
-# them with a more direct definition (see `core::primitives::numerics`, which does,
-# purely for speed -- the defaults here are what make the interface usable
-# on their own).
-exposed spec Ord : Eq {
+# `Ord` declares nothing but its own ordering requirements -- no `: Eq`, and
+# no other spec's requirements folded in. Spec provisioning no longer exists
+# in the language: a spec is a contract about what an implementer provides,
+# never a list of other specs to also satisfy. The `Ord`-implies-`Eq`
+# convenience is expressed as a blanket *derivation* below instead, which
+# puts the constraint on the derivation that needs it rather than on every
+# implementer -- and a concrete type wanting a faster `equals` writes a
+# direct `conform T to Eq`, which beats the blanket under the ordinary
+# precedence rules.
+#
+# `less_than`/`greater_than`/`min`/`max` all come free from `compare` alone,
+# though an implementor is free to override any of them with a more direct
+# definition (see `core::primitives::numerics`, which does, purely for speed
+# -- the defaults here are what make the interface usable on their own).
+exposed spec Ord {
     compare(*self, other: Self) => Ordering;
 
     less_than(*self, other: Self) => bool {
@@ -100,4 +107,12 @@ exposed spec Ord : Eq {
     max(*self, other: Self) => Self {
         if self.greater_or_equal(other) { *self } else { other }
     }
+}
+
+# The one blanket that used to be twelve inline `equals` methods: anything
+# with a total order can also be checked for equality, since
+# `compare(a, b).is_eq()` decides it. A type wanting a faster `equals`
+# writes a concrete `conform T to Eq`, which beats this blanket.
+conform<T: Ord> T to Eq {
+    equals(*self, other: Self) => bool { self.compare(other).is_eq() }
 }

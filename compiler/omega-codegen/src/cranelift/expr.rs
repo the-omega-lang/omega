@@ -1209,6 +1209,16 @@ impl Codegen {
                     CastKind::FloatToInt { signed: false } => vec![builder.ins().fcvt_to_uint_sat(target_ir, base_leaves[0])],
                     CastKind::FloatExtend => vec![builder.ins().fpromote(target_ir, base_leaves[0])],
                     CastKind::FloatTruncate => vec![builder.ins().fdemote(target_ir, base_leaves[0])],
+                    // A narrowing spec-object cast: `[data_ptr, vtable_ptr]`
+                    // stays `[data_ptr, vtable_ptr]` -- the data half is
+                    // untouched, the vtable half moves onto the target
+                    // spec's own section by a compile-time-constant offset
+                    // (in *slots*, multiplied by the pointer width here).
+                    CastKind::SpecNarrow { slot_offset } => {
+                        let byte_offset = slot_offset as i64 * self.pointer_bytes() as i64;
+                        let vtable = builder.ins().iadd_imm(base_leaves[1], byte_offset);
+                        vec![base_leaves[0], vtable]
+                    }
                 }
             }
 

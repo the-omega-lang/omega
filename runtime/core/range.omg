@@ -17,10 +17,6 @@
 # the value from the cursor avoids the whole class of problem.
 
 import cmp::Ord;
-# `Ord` brings `compare` into scope at every `Steppable` instantiation, and
-# its return type has to be nameable here even though this file never spells
-# it: `Ordering` is part of the bound's own surface.
-import cmp::Ordering;
 import iterator::Iterator;
 import iterator::ToIterator;
 import option::Option;
@@ -47,20 +43,13 @@ exposed struct RangeIterator<T> {
 # need ordering -- to recognize an inverted (empty) range, and to recognize
 # the final element -- but that is `Ord`'s job, and a `Successor` that
 # redeclared `greater_than`/`equals` would be a second, independent ordering
-# that could silently disagree with the type's real one. The cursor asks for
-# both capabilities through `Steppable` below instead.
+# that could silently disagree with the type's real one. The cursor's
+# conformances below ask for both capabilities directly, with the inline
+# conjunction bound `T: Successor + Ord` -- the `Steppable` alias this file
+# used to define existed only because inline bounds were not spellable.
 exposed spec Successor {
     successor(*self) => Option<Self>;
 }
-
-# What iterating a range actually requires: stepping *and* ordering. Written
-# as an alias because a bound names exactly one spec (`T: Ord + Successor` is
-# not syntax today), and because the alternative -- `spec Successor : Ord` --
-# would force every element type to restate its whole ordering inside its
-# `Successor` block, since conforming to a dependent spec must supply the
-# flattened chain. An alias bound has neither problem: `conform T to Ord` and
-# `conform T to Successor` stay separate, ordinary declarations.
-exposed spec Steppable = Successor | Ord;
 
 # The element type's own domain limits, needed only when a bound is left to
 # be inferred (`1..`, `..<10`). Separate from `Successor` on purpose: a type
@@ -72,7 +61,7 @@ exposed spec Bounded {
     max() => Self;
 }
 
-conform<T: Steppable> Range<T> to ToIterator<T> {
+conform<T: Successor + Ord> Range<T> to ToIterator<T> {
     to_iterator(*self) => RangeIterator<T> {
         RangeIterator {
             current = self.start;
@@ -83,22 +72,13 @@ conform<T: Steppable> Range<T> to ToIterator<T> {
     }
 }
 
-conform<T: Steppable> RangeIterator<T> to Iterator<T> {
+conform<T: Successor + Ord> RangeIterator<T> to Iterator<T> {
     next(*mut self) => Option<T> {
         if self.done {
             return Option<T>::None;
         }
         value := self.current;
-        # `compare(...).is_eq()` rather than `==` or `equals`. Not `==`: the
-        # built-in operator is numeric-only, so it would quietly restrict
-        # ranges to primitives and defeat the point of bounding on a spec.
-        # Not `equals` either, though that reads better: `equals` is declared
-        # on `Eq` and reaching it through an `Ord` bound compiles but fails to
-        # *link* -- a conform block supplying it inline registers it under
-        # `Ord` while the call site mangles it as `Eq`. See
-        # docs/14-known-issues.md; `compare` is `Ord`'s own method and is
-        # unaffected.
-        if self.current.compare(self.end).is_eq() {
+        if self.current.equals(self.end) {
             self.done = true;
             if self.inclusive {
                 return Option<T>::Some { value = value; };

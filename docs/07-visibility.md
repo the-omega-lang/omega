@@ -106,7 +106,7 @@ block likewise cannot declare visibility; it inherits the matched
 requirement's visibility:
 
 ```
-internal spec Mammal : Animal { breathe(*self) => i32; }
+internal spec Mammal { breathe(*self) => i32; }
 
 struct Dog {}
 conform Dog to Mammal {
@@ -115,8 +115,9 @@ conform Dog to Mammal {
 ```
 
 `reveal` has no bearing on conformance checking. Each function's inherited
-visibility comes from its own declaring spec, including requirements reached
-through dependencies.
+visibility comes from its own declaring spec — including through an alias
+bound, where each member's requirements keep the visibility of the spec
+that actually declared them.
 
 **Why this is also checked at dynamic-dispatch coercion time, not just
 declaration time**: naively, "the implementor already satisfies the

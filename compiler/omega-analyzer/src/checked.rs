@@ -630,6 +630,18 @@ pub enum CastKind {
     },
     FloatExtend,
     FloatTruncate,
+    /// A narrowing cast between two `spec *Spec` fat pointers (`<spec *A>x`
+    /// where `x: spec *AB` and `A` is one of `AB`'s specs): both leaves stay
+    /// two leaves, and the data half is untouched -- only the vtable half is
+    /// adjusted by a *compile-time-constant* offset (`slot_offset` slots ×
+    /// pointer width), pointing at `A`'s own section of `AB`'s sectioned
+    /// vtable. Zero runtime cost, no lookup, no concrete type needed -- the
+    /// offset is a pure function of the two specs' declared shapes. Widening
+    /// (a `spec *A` into a `spec *AB`) has no such constant: there is no
+    /// section to invent, so it is rejected at analysis time
+    /// (`AnalysisErrorKind::SpecObjectCastImpossible`), never represented
+    /// here.
+    SpecNarrow { slot_offset: usize },
     /// The str/byte-slice family's only other cast direction: fat pointer
     /// (`*str`/`*[u8]`/`*[i8]`, `[ptr, len]`) down to a thin one (`*u8`/
     /// `*i8`) -- keeps the pointer leaf, discards the length leaf. There is

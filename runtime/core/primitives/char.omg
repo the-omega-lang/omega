@@ -78,7 +78,6 @@ primitive char {
 }
 
 conform char to Ord {
-    equals(*self, other: Self) => bool { *self == other }
     compare(*self, other: Self) => Ordering {
         if *self < other { Ordering::Less }
         else if *self > other { Ordering::Greater }

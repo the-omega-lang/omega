@@ -1028,25 +1028,95 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // `<spec *Spec>base` -- explicit dynamic-dispatch coercion. A
-        // third family, genuinely separate from both the numeric path and
-        // the byte-pointer family below (`SpecObject` has no `cast_class`
-        // either): unlike every other cast here, this one can only ever
-        // succeed by *proving* something (`pointee` genuinely implements
-        // `spec<type_args>`), not by a pure width/signedness computation,
-        // so it's checked and returned immediately rather than folding
-        // into `cast_kind`'s three-way `if`/`else`. Reuses exactly the
-        // same proof `coerce_to_expected` already runs for the *implicit*
-        // version of this same coercion (see its own doc comment) --
-        // explicit casting was previously the one direction that never
-        // worked at all (only 4 implicit-coercion sites did; see
-        // `docs/08-specs.md`'s "Coercion into `spec *T`" caveat).
+        // `<spec *Spec>base` -- explicit dynamic-dispatch coercion, and
+        // `<spec *A>x` -- a narrowing cast from one spec object to a spec
+        // that is a *member* of it. A third family, genuinely separate from
+        // both the numeric path and the byte-pointer family below
+        // (`SpecObject` has no `cast_class` either): unlike every other cast
+        // here, these can only ever succeed by *proving* something
+        // (`pointee` genuinely implements `spec<type_args>`, or `A` really
+        // is one of `x`'s specs), not by a pure width/signedness
+        // computation, so they're checked and returned immediately rather
+        // than folding into `cast_kind`'s three-way `if`/`else`. The
+        // coercion half reuses exactly the same proof `coerce_to_expected`
+        // already runs for the *implicit* version (see its own doc comment);
+        // the narrowing half is pure spec-structure arithmetic (a constant
+        // vtable offset -- see `CastKind::SpecNarrow`'s doc comment), which
+        // is what makes a colliding method name on a conjunction object
+        // disambiguable at all.
         if let ResolvedType::SpecObject {
             spec,
             type_args,
             mutable,
         } = &target_type
         {
+            if let ResolvedType::SpecObject {
+                spec: base_spec,
+                type_args: base_type_args,
+                mutable: base_mutable,
+            } = &checked_base.r#type
+            {
+                if *mutable && !*base_mutable {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::CastToMutablePointer {
+                            from: checked_base.r#type.clone(),
+                            to: target_type.clone(),
+                        },
+                    );
+                    return None;
+                }
+                let flattened = self.flatten_spec(
+                    node_id,
+                    span,
+                    base_spec,
+                    base_type_args,
+                    &ResolvedType::Void,
+                )?;
+                // The section offset is the position of the target's first
+                // slot in the source object's own flattened list -- the same
+                // ordered list the vtable was built from, so the two always
+                // agree. `(spec_id, type_args)` is what makes `spec *A` and
+                // `spec *A<u8>` distinct sections when a spec is a member at
+                // two different instantiations.
+                let target_spec_id = spec.borrow().id;
+                // Same spec, same instantiation: an identity (no-op) cast,
+                // section offset zero. Checked before the flatten search
+                // because an alias's own id never appears among its
+                // flattened members' entries.
+                let slot_offset = if target_spec_id == base_spec.borrow().id
+                    && *type_args == *base_type_args
+                {
+                    0
+                } else {
+                    let Some(slot_offset) = flattened
+                        .iter()
+                        .position(|f| f.spec_id == target_spec_id && f.type_args() == *type_args)
+                    else {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::SpecObjectCastImpossible {
+                                from: base_spec.borrow().name.clone(),
+                                to: spec.borrow().name.clone(),
+                            },
+                        );
+                        return None;
+                    };
+                    slot_offset
+                };
+                return Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    r#type: target_type.clone(),
+                    kind: CheckedExpr::Cast(CheckedCast {
+                        kind: CastKind::SpecNarrow { slot_offset },
+                        target_type,
+                        base: Box::new(checked_base),
+                    }),
+                });
+            }
             let ResolvedType::Pointer {
                 pointee,
                 mutable: base_mutable,

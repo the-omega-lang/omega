@@ -127,7 +127,7 @@ impl Driver {
 
     /// One import alias's own structural facts, or `None` when the module
     /// binds no such alias.
-    fn import_entry(
+    pub(crate) fn import_entry(
         &mut self,
         module_path: &[Ident],
         alias: &Ident,

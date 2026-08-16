@@ -2,14 +2,14 @@ use crate::ast::identifier::Ident;
 use crate::ast::r#type::Type;
 
 /// One `<...>` entry on a generic-bearing item (function, struct, union,
-/// enum, or spec): a name, plus an optional single spec bound (`T: Animal`)
-/// and an optional default (`T = i32`). `bound: None` is an ordinary
-/// duck-typed generic, resolved purely structurally, exactly as generics
-/// behaved before specs existed. A bound generic must nominally implement
-/// that spec (`conform Dog to Animal`) -- structural satisfaction alone never
-/// counts. Only one bound is ever parsed here (see `SpecStmt`'s doc comment
-/// for why): a function needing several unrelated specs at once names an
-/// alias spec instead of stacking bounds.
+/// enum, or spec): a name, plus zero or more spec bounds (`T: Animal +
+/// Display`) and an optional default (`T = i32`). An empty `bounds` list is
+/// an ordinary duck-typed generic, resolved purely structurally, exactly as
+/// generics behaved before specs existed. A bound generic must nominally
+/// implement every one of its specs (`conform Dog to Animal` and `conform
+/// Dog to Display` both) -- structural satisfaction alone never counts.
+/// `+` is the one separator: a conjunction names a *set* of requirements on
+/// the same implementor, never a sum type.
 ///
 /// `default` is the type used when a use site omits this parameter
 /// entirely. It may reference any earlier parameter in the same list
@@ -21,6 +21,6 @@ use crate::ast::r#type::Type;
 #[derive(Debug, Clone)]
 pub struct GenericParam {
     pub ident: Ident,
-    pub bound: Option<Type>,
+    pub bounds: Vec<Type>,
     pub default: Option<Type>,
 }

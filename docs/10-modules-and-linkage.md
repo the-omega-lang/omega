@@ -463,7 +463,7 @@ only had a match arm for `ImportTarget::GenericItem`; an imported ordinary
 (non-generic) item fell through to the "not imported, must be local"
 branch, which happened to still resolve correctly for *same-package*
 imports (the path it built was accidentally right) but broke for any
-cross-package alias, e.g. `spec Hashable = Hash | Eq;` failing to resolve
+cross-package alias, e.g. `spec Hashable = Hash + Eq;` failing to resolve
 `Eq` with "'Eq' is not a spec". Fixed by adding the missing
 `ImportTarget::Item` arm, mirroring `resolve_named_type`'s own
 already-correct handling of the same case.

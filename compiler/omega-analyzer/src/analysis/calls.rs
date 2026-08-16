@@ -1036,17 +1036,46 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         let self_placeholder = ResolvedType::Void;
         let flattened = self.flatten_spec(id, span, spec, type_args, &self_placeholder)?;
-        let Some(slot_index) = flattened.iter().position(|f| &f.name == field) else {
-            let spec_name = spec.borrow().name.clone();
-            self.error(
-                id,
-                span,
-                AnalysisErrorKind::NoSuchSpecFunction {
-                    spec: spec_name,
-                    function: field.clone(),
-                },
-            );
-            return None;
+        let matches: Vec<usize> = flattened
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| &f.name == field)
+            .map(|(index, _)| index)
+            .collect();
+        let slot_index = match matches.as_slice() {
+            [] => {
+                let spec_name = spec.borrow().name.clone();
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::NoSuchSpecFunction {
+                        spec: spec_name,
+                        function: field.clone(),
+                    },
+                );
+                return None;
+            }
+            [index] => *index,
+            // Two of this object's specs declare the same function name, and
+            // those are different functions -- a `spec *` object must not
+            // silently pick the first slot (static dispatch through a
+            // conjunction bound already rejects the identical shape). The
+            // narrowing cast of the next section is the disambiguation.
+            _ => {
+                let specs: Vec<Ident> = matches
+                    .iter()
+                    .map(|&index| flattened[index].spec_name.clone())
+                    .collect();
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::AmbiguousSpecObjectMethod {
+                        function: field.clone(),
+                        specs,
+                    },
+                );
+                return None;
+            }
         };
         let fn_type = flattened[slot_index].fn_type.clone();
         // params[0] is the synthesized self -- never counted against the

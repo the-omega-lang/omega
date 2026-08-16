@@ -106,29 +106,6 @@ new one is found.
 
 ## Conformance and specs (`conform` / `primitive`)
 
-- **Calling an *inherited* spec method through the deriving spec's bound
-  compiles but fails to link.** A conform block for a dependent spec supplies
-  the whole flattened chain, and registers every method under the spec that
-  was *conformed to* — but a call site resolves the method to the spec that
-  *declared* it, and the two mangle differently. Minimal repro:
-
-  ```
-  same<T: Ord>(a: T, b: T) => bool { a.equals(b) }
-  main() => i32 { if same(1, 1) { 0 } else { 1 } }
-  ```
-
-  `equals` is declared on `Eq`; `i32`'s `conform i32 to Ord { equals; … }`
-  emits `…Xl3Ord6equals…`; the call emits a reference to `…Xl2Eq6equals…`,
-  which nothing defines. Clean compile, `undefined reference` at link.
-
-  A spec's *own* methods are unaffected (`compare`, `greater_than` link
-  fine), so the workaround is to route through one of those — which is why
-  `core::range`'s `RangeIterator::next` calls
-  `compare(other).is_eq()` rather than the more readable `equals(other)`.
-  This is a mangling/resolution mismatch, not a missing emission: the method
-  exists, under the other name.
-
-
 Every issue tracked here through plan 0005 is now fixed and verified; see
 [specs.md](08-specs.md) for the resulting behaviour. What remains are two
 deliberate limitations and one coverage gap.
@@ -167,15 +144,14 @@ deliberate limitations and one coverage gap.
   reached through a generic bound: `Show::show(s)` works, `use_it<T: Show>(s)`
   does not. [generics](06-generics.md)
 
-- **Coverage gap: which conform body a call selects is not unit-testable.**
+- **Which conform body a call selects is only observable by execution.**
   `compiler/omega-driver/tests/conform.rs` produces a `CompiledProgram` and
-  cannot execute it, so
-  `an_explicit_conform_wins_over_a_derived_dependency_entry` asserts only
-  declaration-level facts. The bug it guards — a derived dependency entry
-  shadowing a later explicit conform, so `Base::b` silently ran `Derived`'s
-  body — emitted *both* bodies before and after the fix, making the emitted
-  set non-discriminating. Closing this needs a compile-and-run harness, which
-  only `just test-io`/`run-exec` provide today.
+  cannot execute it, so its precedence assertions are declaration-level
+  facts. The runtime half — which blanket's body actually ran, which spec's
+  same-named method a call reached, which vtable section a narrowing cast
+  landed on — is asserted by `just test-spec-dispatch`
+  (`examples/spec_dispatch`), which returns a distinct exit code per failed
+  case, in the same style as `test-range`.
 
 
 ## Gaps and glue
@@ -365,6 +341,45 @@ need a breaking change to fix — full writeups in
   conformance templates, `conform<T: Bound> T to Spec` is type-checked only
   once a concrete target satisfies its bound. An unused invalid body can
   therefore ship in a library until some consumer materializes it.
+
+- **A chain of two blanket derivations is misreported as a cycle.** Proving a
+  blanket's bound by materializing *another* blanket trips the recursion guard,
+  which cannot tell "re-entered while proving" from "genuinely circular":
+
+  ```
+  conform S to A { ... }
+  conform<T: A> T to B { ... }
+  conform<T: B> T to C { ... }
+  use_c(S)     # error: cyclic conformance while proving 'S: B'
+  ```
+
+  `A -> B -> C` terminates; there is no cycle. Isolated: a genuine cycle
+  (`conform<T: B> T to A` plus `conform<T: A> T to B`) is still correctly
+  rejected, a chain whose middle link is a *concrete* conformance works, and
+  two blankets with unrelated bounds work. It fires only when one blanket's
+  bound is supplied by another.
+
+  This matters more than its size suggests. Spec provisioning was removed in
+  favour of blanket derivation, so blankets are now *the* mechanism for "conforming
+  to X gives you Y" -- `core::cmp`'s `conform<T: Ord> T to Eq` is one link, and
+  the first second link anyone adds (say `conform<T: Eq> T to Hashable`) hits
+  this. The diagnostic also actively misleads: it tells an author their
+  non-cyclic code is cyclic, pointing at the wrong construct.
+
+  The guard (`Conformances::in_progress`) is deliberately conservative rather
+  than exact. A real fix needs it to distinguish a re-entrant *query* for a
+  conformance already being materialized from a true dependency cycle --
+  recording the in-progress `(target, spec)` chain and reporting only when the
+  chain closes on itself, rather than on any re-entry. [specs.md](08-specs.md)
+
+- **An alias bound and its inline spelling are not interchangeable in blanket
+  precedence.** `conform<T: AB> T to X` and `conform<T: A + B> T to X`, where
+  `spec AB = A + B;`, describe the same bound set but compare as incomparable,
+  so a type satisfying both gets `AmbiguousConformance` rather than a duplicate
+  diagnosis. Alias members are not expanded before the subset comparison.
+  Conservative -- it errors rather than selecting silently -- but it does
+  contradict the mental model that an alias is only a name for its members.
+  The same non-expansion applies to the derivation subset test. [specs.md](08-specs.md)
 
 - **Latent blanket overlap is diagnosed at use, not declaration.** The
   compiler intentionally does not try to prove whether arbitrary spec bounds

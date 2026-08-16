@@ -1,11 +1,12 @@
 # Specs
 
 Omega's interface/trait system: function-only contracts, static dispatch
-through generic bounds, dynamic dispatch through fat trait-object pointers,
-explicit conformance, and a core-only way to attach inherent methods to
-primitive types.
+through generic bounds (including inline conjunctions), dynamic dispatch
+through fat trait-object pointers, blanket derivations, explicit
+conformance, and a core-only way to attach inherent methods to primitive
+types.
 
-## Declaration, dependencies, defaults
+## Declaration, aliases, defaults
 
 ```
 exposed spec Animal {
@@ -17,42 +18,69 @@ exposed spec Animal {
     same_kind(*self, other: *Self) => bool { ... }        # default, uses Self
 }
 
-exposed spec Mammal : Animal, Dummy {         # depends on two other specs
-    dummy(*self) => void { ... }               # satisfies Dummy's own requirement
-}
-
-spec MySpec = Dummy | Mammal;                    # pure alias — no functions of its own
+spec MySpec = Animal + Dummy;                    # alias -- a name for a conjunction
 ```
 
 A function with a body is a *default*, used as-is unless a concrete
 implementor overrides it. `Self` inside a default body means "whatever
 concrete type is implementing this spec" — a `*Self` parameter becomes
-`*Dog` for `Dog`'s own instantiation, `*Cat` for `Cat`'s, and so on. A spec
-may itself depend on other specs (`spec Mammal : Animal, Dummy`); an
-implementor of `Mammal` must satisfy `Mammal`'s own requirements *plus*
-`Animal`'s and `Dummy`'s, and `Mammal`'s own defaults may freely call
-either dependency's functions on `self`. A spec can satisfy one of its own
-dependency's bare requirements with a default of its own — an implementor
-never has to provide it directly in that case.
+`*Dog` for `Dog`'s own instantiation, `*Cat` for `Cat`'s, and so on.
 
-Same name + identical resolved signature reached through two different
-paths (e.g. two dependencies both requiring it) → silently deduplicated
-into one requirement. Same name + a genuinely different signature →
-`ConflictingSpecFunctions`.
+A spec declares **nothing but its own functions**. The old *provisioning*
+form (`spec Mammal : Animal, Dummy { ... }`, where implementing `Mammal`
+also supplied `Animal`'s and `Dummy`'s methods inside `Mammal`'s own
+block) no longer exists in the language at all — writing `spec X : A` is
+a parse error pointing at the replacements. What provisioning was reaching
+for is expressed as a **blanket derivation** instead (see below), which
+puts the constraint on the derivation that needs it rather than on every
+implementer:
 
-A *generic* spec may forward its own still-abstract generics into a
-dependency's type arguments (`spec Labeled<T> : Container<T>`) — resolved
-lazily, alongside `Self`, once a concrete implementor is actually being
-checked, mirroring exactly how the spec's own functions are resolved.
-Identifying *which* spec a dependency names is still eager (needed for
-dynamic-dispatch vtable slot ordering, which has no resolver of its own to
-defer to) via a dedicated, args-independent spec lookup — see
-[generics](06-generics.md) for the full mechanism.
+```
+conform<T: Animal + Dummy> T to Mammal {
+    call_something_else(*self) => void { self.something_else() }
+}
+```
+
+`+` is the one separator for "these specs together", in exactly three
+positions, all meaning the same thing — a conjunction, satisfied by
+conforming each member separately:
+
+```
+spec X = A + B;          # 1. an alias: a name for the conjunction
+f<T: A + B>(...)         # 2. inline, at a generic bound
+conform<T: A + B> T ...  # 3. a blanket's own applicability predicate
+```
+
+An **alias** is a name, never a contract of its own: it is not conformable
+(`conform T to AB` is rejected with `ConformToAliasSpec`), it is satisfied
+by conforming each member separately, and it declares no functions. Its
+members are resolved eagerly at the alias's own declaration — only *which*
+spec each member names; a member's own type arguments (`spec Foo<T> = Bar<T>
++ Baz;`) stay raw until a concrete implementor is being checked, mirroring
+exactly how the spec's own functions are resolved.
 
 **Spec functions always receive `self` by pointer** (`*self`/`*mut self`)
 — by-value self is rejected at the spec's own definition
 (`SpecSelfMustBePointer`), since dynamic dispatch erases the concrete type
 to a bare data pointer with no size information to copy a value from.
+
+## Identity: `(spec, name)`, not name alone
+
+Two specs may declare the same function name and signature, and those are
+**different functions**. Nothing is deduplicated by name: every flattened
+requirement keeps its declaring spec's identity (`FlattenedSpecFn::spec_id`
+plus the spec's own type arguments), and conformance checking matches a
+requirement against exactly the spec that declared it — `A::tag` and
+`B::tag` are two independent requirements, each satisfied only by its own
+conform block, exactly as if they were differently named. The one remaining
+dedup is *identity* dedup (the same spec reaching one flatten twice through
+a diamond alias contributes each function once).
+
+This identity is what made the old "inherited spec method compiles but
+fails to link" bug (an `Ord`-supplied `equals` emitted under `Ord`'s
+mangling while the call site referenced `Eq`'s) structurally impossible:
+a method is always emitted under the spec that declared it, because it is
+only ever *matched* against that spec's requirement.
 
 ## Implementing
 
@@ -74,9 +102,11 @@ required function is `MissingSpecFunction`, and an extra function is
 body in this conform (or a spec default) does. A conform method has no
 visibility modifier; it inherits the requirement's visibility.
 
-Conformance is nominal. A concrete declaration is legal when either the target
-type or the spec belongs to the current package. A second equally-specific
-conform for the same `(target, spec, spec arguments)` is rejected.
+Conformance is nominal and opt-in: an all-defaults spec still needs an
+explicit (possibly empty) `conform T to X { }` block — structural
+satisfaction never counts. A concrete declaration is legal when either the
+target type or the spec belongs to the current package. A second equally
+specific conform for the same `(target, spec, spec arguments)` is rejected.
 
 ### Blanket conformances
 
@@ -88,18 +118,26 @@ conform<T: Numeric> T to Sum {
 
 This applies to every conformable `T` that satisfies `Numeric`; its body is
 monomorphized only when such a `T` is used through `Sum`. A concrete conform
-always wins over a matching blanket. Between two blankets, a bound with a
-transitive dependency on the other bound is more specific (`Ord : Eq` beats
-`Eq`); unrelated matching bounds are an `AmbiguousConformance` error rather
-than an arbitrary declaration-order choice. A blanket may also be written
-*unbounded* (`conform<T> T to Spec`), which accepts every conformable type and
-is therefore strictly less specific than any bounded blanket for the same spec.
+always wins over a matching blanket. Between two blankets, the declared
+**bound sets** are compared as sets: a strict *superset* of bounds is more
+specific (its applicability predicate is narrower), a strict subset less
+so, and incomparable sets (`{A, B}` vs `{A, C}`) are an
+`AmbiguousConformance` error rather than an arbitrary declaration-order
+choice. A blanket may also be written *unbounded* (`conform<T> T to Spec`),
+which accepts every conformable type and is therefore strictly less
+specific than any bounded blanket for the same spec — the empty bound set
+is a subset of every other, the degenerate case of the same rule.
 
-Precedence is decided at registration, so exactly one declaration ever owns a
-given `(target, spec, spec arguments)` and only the winner's body is emitted.
-That includes dependency stand-ins: `conform Foo to Derived` supplies `Foo`'s
-`Base` conformance, and being specific to `Foo` it beats a blanket that matched
-`Foo` only incidentally — regardless of which was registered first.
+Precedence is decided at registration, so exactly one declaration ever
+owns a given `(target, spec, spec arguments)` and only the winner's body
+is emitted — a superseded blanket's body is never even type-checked.
+
+A blanket is also what makes one spec's conformance *entail* another's
+under a bound: with `conform<T: Ord> T to Eq` in `core::cmp`, a body
+bounded on `T: Ord` alone may call `equals` — the bound context admits
+every template-derived conform whose own declared bounds are a subset of
+the item's bounds. (A hand-written concrete `conform T to Eq` for the same
+type still beats the blanket, so a faster `equals` remains expressible.)
 
 A blanket may implement only a spec declared by its own package. Since its
 target can be a foreign type, allowing a foreign spec would defeat the orphan
@@ -107,13 +145,12 @@ rule for every downstream package (`BlanketConformanceForeignSpec`).
 
 The target may be a named type, `str`, a primitive scalar, or a slice. A
 pointer, inline array, function, or spec-object target is rejected with
-`ConformTargetNotAType`. Conforming to a dependent spec registers conformance for its
-dependencies too (`conform Foo to Derived` supplies `Base`'s requirements as
-well); a spec *alias* as the conformed-to spec (`conform Foo to AB`, where `spec
-AB = A | B`) works, but a `T: AB` bound is **not** satisfied by conforming
-`A` and `B` separately. Slice targets (`conform []u8 to Eq`, `conform<T>
-[]T to Eq`) parse and register but no call can reach them. See
-[known-issues.md](14-known-issues.md)'s conformance section for all three.
+`ConformTargetNotAType`. A spec *alias* as the conformed-to spec
+(`conform Foo to AB`) is rejected with `ConformToAliasSpec` — an alias
+names a combination, and is satisfied by conforming each member separately
+(`conform Foo to A` and `conform Foo to B`). Slice targets (`conform []u8
+to Eq`, `conform<T> []T to Eq`) parse and register but no call can reach
+them; see [known-issues.md](14-known-issues.md).
 
 Conforming instance methods do not become globally callable as ordinary
 inherent methods. They are available through a generic bound (`T: Animal`),
@@ -231,6 +268,11 @@ that needed its own fix, not just the analyzer-side one above.
 make_sound_with_static_dispatch<T: Animal>(animal: *T) => void {
     puts(animal.make_sound());
 }
+
+use_both<T: Animal + Dummy>(animal: *T) => void {
+    animal.make_sound();
+    animal.something_else();          # requires the *conjunction* -- Animal alone is not enough
+}
 ```
 
 Because Omega's generics fully monomorphize (see [generics](06-generics.md)),
@@ -241,8 +283,21 @@ same call on a concrete unbound `Dog` is intentionally rejected with
 Nominal, not structural — `T: Animal` requires a real conform declaration;
 an unbound generic parameter still works by pure duck-typing as before.
 
-`T: SpecAlias` (`accepts_myspec<T: MySpec>`) requires everything every
-spec the alias expands to demands, all at once.
+A bound is a **conjunction**: `T: Animal + Dummy` requires a conform for
+every member, checked member-by-member (the first unsatisfied one is the
+one named, by its own spec). The same conjunction is spellable as an alias
+(`T: MySpec` where `spec MySpec = Animal + Dummy;`), which behaves
+identically — an alias bound expands to its members before checking, and
+its members' conforms seed the bound context.
+
+Because a bound's context also admits *derived* conforms (see "Blanket
+conformances" above), `T: Ord` alone is enough to call `equals` when
+`conform<T: Ord> T to Eq` exists — the blanket is entailed by the bound,
+exactly like an alias member is.
+
+A colliding method name through a conjunction bound (`T: A + B` where both
+`A` and `B` declare `tag`) is rejected as an ambiguous overload, exactly
+like any other ambiguous method call.
 
 ## Dynamic dispatch
 
@@ -272,6 +327,42 @@ explicit node at all.
 Coercion into `spec *T` happens at ordinary call arguments, assignment,
 declaration-with-init, explicit and tail `return`, struct-literal fields, and
 array-literal elements.
+
+### Sectioned vtables, ambiguity, and narrowing casts
+
+A `spec *Spec` object's vtable is **sectioned per spec**: for a conjunction
+object (`spec *AB` where `spec AB = A + B;`) the slot list is `[A's
+slots][B's slots]` — the spec's own flattened requirements, block by block,
+never merged. Because two specs may declare the same function name and those
+are different functions (see "Identity" above), a call through a
+conjunction object whose members both declare a name is **ambiguous**:
+
+```
+x: spec *AB = &thing;
+x.tag()             # error: AmbiguousSpecObjectMethod -- A::tag? B::tag?
+```
+
+Dynamic dispatch is held to the same standard static dispatch already
+meets (a conjunction *bound* with a colliding name is likewise rejected):
+never a silent first-slot pick.
+
+The disambiguation is a **narrowing cast**:
+
+```
+via_a(x: spec *AB) => i32 { (<spec *A>x).tag() }     # A's body
+via_b(x: spec *AB) => i32 { (<spec *B>x).tag() }     # B's body
+```
+
+`<spec *A>x` where `A` is one of `x`'s specs is a compile-time-known
+*offset* onto the sectioned vtable: the data half of the fat pointer is
+untouched and the vtable half is adjusted by a constant (the number of
+slots before `A`'s section, times the pointer width). Zero runtime cost, no
+lookup, no concrete type needed — the offset is a pure function of the two
+specs' declared shapes. Widening (`<spec *AB>` from a `spec *A`) is **not**
+offered: there is no section to invent, and the cast is rejected
+(`SpecObjectCastImpossible`) rather than fabricating a vtable. A
+same-spec cast is an identity (offset zero); a cast to a spec that isn't a
+member of the object is rejected the same way.
 
 ### Casting into a spec object
 
@@ -384,7 +475,7 @@ type each implementor happens to return," the identical reason Rust's own
 `SpecNotObjectSafe` diagnostic rather than a malformed vtable.
 `ResolvedSpecType::is_object_safe` is computed once, eagerly, the moment a
 spec's own signature is resolved (`false` the instant any of its own
-functions — or any dependency's — has a `spec T` return requirement), and
+functions — or any alias member's — has a `spec T` return requirement), and
 checked at the one place a `spec *T` type actually gets built.
 
 ### Return position, on an ordinary (non-spec) function

@@ -280,14 +280,15 @@ impl Hash for ResolvedEnumType {
 /// one identity to compare/hash against, exactly like a struct reference
 /// does.
 ///
-/// `dependencies` are already resolved (not raw) -- a spec's own dependency
-/// list needs no `Self`/generic substitution to know *which* specs it
-/// requires (only the functions those specs require need substitution,
-/// deferred to implementation time -- see `RawSpecFunctionSig`), so
-/// resolving them eagerly here is what makes dependency-cycle detection
-/// fall out of the ordinary `omega_driver::Driver::ensure_item`
-/// `InProgress`/cycle machinery for free, with no spec-specific cycle guard
-/// needed.
+/// `dependencies` are already resolved (not raw) -- an alias's member list
+/// needs no `Self`/generic substitution to know *which* specs it names
+/// (only the functions those specs require need substitution, deferred to
+/// implementation time -- see `RawSpecFunctionSig`), so resolving them
+/// eagerly here is what makes alias-cycle detection fall out of the
+/// ordinary `omega_driver::Driver::ensure_item` `InProgress`/cycle
+/// machinery for free, with no spec-specific cycle guard needed. Only an
+/// alias ever populates it: spec provisioning (`spec X : A, B`) no longer
+/// exists, so an ordinary declaration's member list is always empty.
 #[derive(Debug)]
 pub struct ResolvedSpecType {
     pub id: HirId,
@@ -311,12 +312,12 @@ pub struct ResolvedSpecType {
     /// Whether this spec can be used as a dynamic-dispatch trait object
     /// (`spec *Self`) at all -- `false` the instant any of `functions`
     /// declares a `spec T` (static-dispatch, no `*`) return type, directly
-    /// or transitively through a dependency (a vtable slot can't point at
-    /// "whichever concrete type each implementor happens to use" -- the
+    /// or transitively through an alias member (a vtable slot can't point
+    /// at "whichever concrete type each implementor happens to use" -- the
     /// exact reason Rust's `IntoIterator` isn't object-safe either).
     /// Computed once, eagerly, right where `functions`/`dependencies`
     /// themselves are first resolved (`omega_driver::Driver::
-    /// resolve_spec_declaration`) -- a dependency's own cell is always
+    /// resolve_spec_declaration`) -- a member's own cell is always
     /// already fully built by then, so this never needs its own
     /// resolution pass. Checked wherever a `Type::SpecObject` (`spec
     /// *Self`) actually resolves into a real `ResolvedType::SpecObject`
@@ -324,16 +325,23 @@ pub struct ResolvedSpecType {
     /// matters instead of scattered across every dynamic-dispatch call
     /// site.
     pub is_object_safe: bool,
-    /// Each dependency's own cell, resolved eagerly (see `ModuleResolver::
-    /// spec_declaration`), paired with its **raw**, unresolved type
-    /// arguments -- deliberately not `Vec<ResolvedType>`: resolving them
-    /// here, at this spec's own declaration, would need this spec's own
-    /// generics already bound to something concrete, which they never are
-    /// at this point (`spec Foo<T> : Bar<T>` -- `T` isn't concrete until a
-    /// real implementor is known). Resolved lazily instead, in
-    /// `Analyzer::flatten_spec_into`, once `Self` + this spec's own
-    /// generics *are* bound -- the exact same deferral `functions` (below)
-    /// already uses, for the identical reason.
+    /// Whether this spec is a pure alias (`spec X = A + B;`) rather than an
+    /// ordinary declaration. An alias is never itself conformable -- it
+    /// names a conjunction of other specs, satisfied by conforming each
+    /// member separately. Checked wherever a `conform Target to Spec`
+    /// declaration resolves (`AnalysisErrorKind::ConformToAliasSpec`).
+    pub is_alias: bool,
+    /// The alias form's members, each resolved eagerly (see
+    /// `ModuleResolver::spec_declaration`), paired with its **raw**,
+    /// unresolved type arguments -- deliberately not `Vec<ResolvedType>`:
+    /// resolving them here, at this spec's own declaration, would need this
+    /// spec's own generics already bound to something concrete, which they
+    /// never are at this point (`spec Foo<T> = Bar<T> + Baz;` -- `T` isn't
+    /// concrete until a real implementor is known). Resolved lazily
+    /// instead, in `Analyzer::flatten_spec_into`, once `Self` + this spec's
+    /// own generics *are* bound -- the exact same deferral `functions`
+    /// (below) already uses, for the identical reason. Always empty for a
+    /// non-alias declaration.
     pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
     /// This spec's own resolved `@suppress` list -- same shape and purpose

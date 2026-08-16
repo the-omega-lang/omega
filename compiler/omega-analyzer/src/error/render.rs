@@ -470,20 +470,6 @@ impl AnalysisErrorKind {
                     implementor.as_ref(),
                     function.as_ref()
                 )),
-            Self::ConflictingSpecFunctions { name, first_spec, second_spec } => d
-                .with_label(
-                    span,
-                    format!(
-                        "`{}` and `{}` both require `{}`, with different signatures",
-                        first_spec.as_ref(),
-                        second_spec.as_ref(),
-                        name.as_ref()
-                    ),
-                )
-                .with_help(format!(
-                    "give the implementing type its own `{}` method matching both",
-                    name.as_ref()
-                )),
             Self::AmbiguousSpecReturnType { function, first, second } => d
                 .with_label(span, format!("`{}` returns both `{first}` and `{second}`", function.as_ref()))
                 .with_help("a 'spec T' return type must resolve to exactly one concrete type across every exit point"),
@@ -538,6 +524,32 @@ impl AnalysisErrorKind {
                     "Omega has no variadic function definitions -- only `extern` declarations may be \
                      variadic -- so no `conform` block or spec default could ever supply a matching body",
                 ),
+            Self::AmbiguousSpecObjectMethod { function, specs } => {
+                let mut d = d.with_label(
+                    span,
+                    format!("`{function}` is declared by more than one of this object's specs"),
+                );
+                for spec in specs {
+                    d = d.with_note(format!("candidate: `{spec}::{function}`"));
+                }
+                d.with_help(format!(
+                    "narrow the object first (`<spec *{0}>x`), which picks {0}'s section of the vtable",
+                    specs[0].as_ref()
+                ))
+            }
+            Self::SpecObjectCastImpossible { from, to } => d
+                .with_label(span, format!("`{from}`'s vtable has no section for `{to}`"))
+                .with_note(
+                    "a spec object's vtable is sectioned per spec, and only narrowing onto an \
+                     existing section is a real offset",
+                )
+                .with_help("keep the concrete pointer (`&value`) and coerce it to the wanted spec directly"),
+            Self::ConformToAliasSpec { alias } => d
+                .with_label(span, format!("`{alias}` is a spec alias, not a declaration"))
+                .with_help(format!(
+                    "an alias names a combination of specs and is satisfied by conforming each member \
+                     separately, never by one block conformed to `{alias}` itself"
+                )),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
             }

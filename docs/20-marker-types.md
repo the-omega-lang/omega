@@ -6,9 +6,14 @@ spec Sink {
     flush(*mut self) => void;
 }
 
-marker NullSink : Sink {
+marker NullSink {
     exposed write(*mut self, bytes: *[]u8) => void { ... }
     exposed flush(*mut self) => void { ... }
+}
+
+conform NullSink to Sink {
+    write(*mut self, bytes: *[]u8) => void { ... }
+    flush(*mut self) => void { ... }
 }
 ```
 
@@ -16,9 +21,10 @@ marker NullSink : Sink {
 zero-sized-type answer to the "stateless singleton implementing a spec"
 pattern, and to a zero-sized placeholder type parameter (`HashSet<T>` over
 `HashMap<T, Unit>`). `NullSink` above can be constructed (`NullSink {}`),
-have its address taken, implement specs, and be used through ordinary
-pointers and `spec *Sink` dynamic dispatch — everything a struct instance
-can do — but declares no storage of its own, and `sizeof<NullSink>` is `0`.
+have its address taken, implement specs (via an ordinary `conform`, like
+any other type), and be used through ordinary pointers and `spec *Sink`
+dynamic dispatch — everything a struct instance can do — but declares no
+storage of its own, and `sizeof<NullSink>` is `0`.
 
 Note what a marker is *not* for: filling a platform gap. A `glue` block is
 its own declaration form and needs no type to hang its functions on — see
@@ -28,7 +34,7 @@ a gap's functions never do.
 ## Grammar: never has fields, structurally
 
 ```
-marker Name<T, ...> : Spec1, Spec2 {
+marker Name<T, ...> {
     method(*self) => T { ... }
 }
 ```

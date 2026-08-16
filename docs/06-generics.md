@@ -6,6 +6,8 @@
 struct MyNode<T> { value: T; next: *MyNode<T>; }
 fibo<T>(n: T) => T { ... }
 T: Animal            # generic bound (see specs.md)
+T: A + B             # a conjunction -- requires both specs
+spec AB = A + B;     # the same conjunction, named
 ```
 
 Omega's generics are **not type-erased**. A generic function/struct is
@@ -51,15 +53,29 @@ counter values across separate compiler processes.
 
 ```
 process<T: Animal>(value: T) => void { value.make_sound(); }
+process_both<T: Animal + Dummy>(value: T) => void { ... }
 ```
 
 Nominal, not structural — `T: Animal` requires an explicit `conform S to
 Animal` declaration; an unbound generic still works purely by duck-typing
 (whatever method the body calls just has to exist on whatever concrete type
-shows up). Bound-checking happens once, at instantiation, via
-`type_implements_spec` — in practice this only ever fires for a primitive
-type or a genuine caller mistake, since anything that already passed
-conformance checking has a complete method list by construction.
+shows up). A bound is a **conjunction**: `T: Animal + Dummy` requires a
+conform for every member, checked member-by-member at instantiation (the
+first unsatisfied member is the one named by `SpecNotImplemented`, never a
+combined guess). `+` is the same separator a spec alias uses, and an alias
+bound (`T: MySpec` where `spec MySpec = Animal + Dummy;`) is the identical
+check on the identical members — the alias is just a name for the
+conjunction, never a contract of its own (see [specs](08-specs.md)).
+
+Bound-checking happens once, at instantiation, via `type_implements_spec`
+— in practice this only ever fires for a primitive type or a genuine caller
+mistake, since anything that already passed conformance checking has a
+complete method list by construction. The satisfied bounds seed the body's
+*bound context*: the declared specs themselves, an alias's members'
+conforms, and every template-derived conform whose own declared bounds the
+item's bounds already guarantee (see [specs](08-specs.md)'s "Blanket
+conformances" — this is what makes `T: Ord` alone admit `equals` when
+`conform<T: Ord> T to Eq` exists).
 
 ## Inference: omitted type arguments, deduced wherever possible
 
@@ -230,32 +246,29 @@ Net effect: a generic enum is no longer restricted to plain data (bare
 variants only) — see [core library](13-core-library.md), whose
 `Option<T>`-avoidance rationale predates this fix.
 
-## Fixed: a generic spec forwarding its own generics into a dependency
+## Removed: spec provisioning (dependency lists on a spec declaration)
 
 ```
+# no longer legal (a parse error naming the replacements):
+spec Labeled<T> : Container<T> { describe(*self) => T { self.get() } }
+
+# the same derivation, expressed today -- the constraint sits on the
+# blanket that needs it, not on every implementer:
 exposed spec Container<T> { get(*self) => T; }
-exposed spec Labeled<T> : Container<T> { describe(*self) => T { self.get() } }
+exposed spec Labeled<T> { describe(*self) => T; }
+conform<C: Container<i32>> C to Labeled<i32> { describe(*self) => i32 { self.get() } }
 ```
 
-`spec Foo<T> : Bar<T>` (a generic spec's own still-abstract `T` forwarded
-into a dependency's type arguments) now works — previously `T` reported as
-an unrecognized name inside the dependency list, while `spec Foo<T> :
-Bar<i32>` (a concrete argument) already worked. Root cause: a dependency's
-type args used to be resolved *eagerly*, during the depending spec's own
-one-time, argument-free declaration pass, before `T` was ever bound
-anywhere — unlike a spec's own *functions*, which always correctly stayed
-raw/unresolved until a concrete implementor's `Self` + generics are known.
-
-The fix gives specs their own args-independent identity
-(`ModuleResolver::spec_declaration`, cached by `(module, name)` alone,
-mirroring the existing `generic_function_signature` precedent for "this
-item kind doesn't fit the ordinary args-bound lookup contract") — a
-spec's dependency *cell* is now resolved through this args-independent
-path, while its *type args* stay raw and are resolved lazily, alongside
-`Self`, once a concrete implementor is actually being checked. Ordinary
-spec references (bounds, conform declarations, `spec *T` object types) are
-completely unaffected — this only changes how a spec's own declared
-dependency list resolves.
+`spec Foo<T> : Bar<T>` (a spec "depending" on, i.e. *provisioning*, other
+specs) was removed from the language. A spec is a contract about what an
+implementer provides, never a list of other specs to also satisfy — the
+syntax borrowed Rust's `trait B: A` spelling without its meaning, and the
+two mechanisms for "these specs together" (provisioning and the alias
+`|`-form) are now one: the `+` conjunction, at a bound, in an alias, or on
+a blanket. A spec default that needs another spec's methods belongs in a
+blanket over the conjunction (`conform<T: Animal + Dummy> T to Mammal {
+... }`), which is exactly where the constraint can be written once instead
+of levied on every implementer. See [specs](08-specs.md).
 
 See also [control flow](03-control-flow.md) for untyped-literal narrowing
 across integer widths, now fixed for binary-op operands — that gap was
