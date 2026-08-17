@@ -67,6 +67,7 @@ ${BOLD}Version pins${RESET} ${DIM}(override via the environment, then rebuild)${
   CODEX_VERSION         ${CODEX_VERSION:-latest}
   OMP_VERSION           ${OMP_VERSION:-latest}
   OPENCODE_VERSION      ${OPENCODE_VERSION:-latest}
+  LLVM_VERSION          ${LLVM_VERSION:-21}
 
   ${DIM}e.g. RUST_VERSION=1.95.0 ./dev.sh rebuild${RESET}
 

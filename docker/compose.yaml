@@ -16,6 +16,7 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-latest}
         OMP_VERSION: ${OMP_VERSION:-latest}
         OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
+        LLVM_VERSION: ${LLVM_VERSION:-21}
         USER_UID: ${HOST_UID:-1000}
         USER_GID: ${HOST_GID:-1000}
     image: omega-dev:rust${RUST_VERSION:-1.94.1}-alpine${ALPINE_VERSION:-3.23}

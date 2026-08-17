@@ -54,6 +54,17 @@ Built from `alpine:3.23`:
 - **build-base / binutils / gdb** — `cc`, `as` and `ld`, which the `justfile`
   invokes directly to assemble `shims` and link the object files `omgc`
   emits.
+- **LLVM 21** (`llvm21-dev`, `llvm21-static`, `clang21`, `lld21`) — for the
+  second `omega-codegen` backend beside Cranelift. `llvm-config` and the rest
+  of the LLVM tools live under `/usr/lib/llvm21/bin`, which is on `PATH`, so
+  `llvm-sys` finds them without an `LLVM_SYS_<ver>_PREFIX` variable. The
+  static archives are not optional here: this toolchain is
+  `x86_64-unknown-linux-musl`, where Rust enables `crt-static` by default, so
+  LLVM gets linked statically either way. `clang` and `lld` come along as a
+  cross-assembler and cross-linker — one binary each for every target, where
+  binutils needs one build per target. This is much the largest thing in the
+  image: `/usr/lib/llvm21` alone measures 674 MB, around 700 MB with the
+  static system libraries.
 - **just** — the project's task runner.
 - **Claude Code**, installed with the native installer
   (`https://claude.ai/install.sh`) into the unprivileged user's `~/.local`.
@@ -94,7 +105,17 @@ CLAUDE_CODE_VERSION=2.1.220 ./dev.sh rebuild
 CODEX_VERSION=0.51.0 ./dev.sh rebuild
 OMP_VERSION=v17.2.12 ./dev.sh rebuild
 OPENCODE_VERSION=0.4.2 ./dev.sh rebuild
+LLVM_VERSION=20 ./dev.sh rebuild
 ```
+
+`LLVM_VERSION` is the odd one out: it is a bare *major* version, and it is
+pinned from two directions rather than one. It has to be a major Alpine
+packages — 3.23 carries 16, 20 and 21 — and simultaneously one the Rust
+bindings target, which is why it defaults to 21: that is Alpine's own default
+`llvm` meta package, and what both `llvm-sys` 211.x and inkwell's `llvm21-1`
+feature are built for. Changing it moves `PATH` and the apk package names
+together, so nothing else in the image needs touching, but the Rust-side
+version selection has to move with it.
 
 `CLAUDE_CODE_VERSION` takes whatever `claude install` takes: `stable` (the
 default), `latest`, or an exact version. `CODEX_VERSION` takes whatever
