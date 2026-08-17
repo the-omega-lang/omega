@@ -596,14 +596,18 @@ impl<'r> Analyzer<'r> {
     /// thing -- an assignment, `++`/`--`, an explicit `&mut`, and a `mut
     /// self` method call's implicit auto-ref are all, at bottom, "this
     /// place must be mutable" -- so the diagnostic (and the choice between
-    /// `NotMutableBinding`/`NotMutablePointer`, mirroring
+    /// `NotMutableBinding`/`NotMutablePointer`/`MutateTemporary`, mirroring
     /// `immutable_enum_member`'s pattern of inspecting the checked place's
     /// own projections) only needs writing once. `hir_root` is the
     /// *original* place's root, for naming the binding in
     /// `NotMutableBinding` -- only ever `None` when the reason is
-    /// definitely `NotMutablePointer` instead (a non-place root, e.g. a
-    /// freshly-constructed value, is never itself the *cause* of
-    /// immutability -- something dereferenced along the way always is).
+    /// definitely `NotMutablePointer`/`MutateTemporary` instead (a
+    /// non-place root, e.g. a freshly-constructed value: something
+    /// dereferenced along the way, or nothing at all -- a spec-qualified
+    /// call wraps a non-place receiver in `HirPlaceRoot::Expr` so it can be
+    /// adapted at all, producing a place with a non-path root and *no*
+    /// `Deref` projection, whose mutation would land in a discarded
+    /// temporary).
     pub(super) fn require_mutable_place(
         &mut self,
         node_id: HirId,
@@ -645,6 +649,13 @@ impl<'r> Analyzer<'r> {
             .any(|p| matches!(p, CheckedProjection::Deref { .. }));
         let kind = if through_pointer {
             AnalysisErrorKind::NotMutablePointer
+        } else if matches!(checked_place.root, CheckedPlaceRoot::Expr(_)) {
+            // A receiver that is not a place at all: `Bump::bump(make())`.
+            // The mutation would land in a freshly-produced value that is
+            // immediately discarded -- no pointer is involved, and no added
+            // `mut` can fix it, so `NotMutablePointer` (which names a
+            // pointer that does not appear in the source) would be a lie.
+            AnalysisErrorKind::MutateTemporary
         } else {
             match hir_root {
                 HirPlaceRoot::Path(p) if p.path.is_unqualified() => {

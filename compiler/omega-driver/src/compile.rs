@@ -304,7 +304,7 @@ impl Driver {
                         .iter()
                         .map(|function| {
                             analyzer
-                                .collect_function_signature(function, None)
+                                .collect_function_signature(function)
                                 .map(|(signature, _)| (function.clone(), signature))
                         })
                         .collect::<Option<Vec<_>>>()?;
@@ -695,7 +695,15 @@ impl Driver {
                 entry.spec.clone(),
                 entry.spec_args.clone(),
             )];
-            bounds.extend(entry.bounds.clone());
+            let keys_run = self.with_analyzer(
+                &entry.module,
+                &entry.substitution,
+                (entry.id, entry.span),
+                |a| a.expand_bound_set(entry.id, entry.span, &entry.declared_bounds),
+            );
+            self.diagnostics.record_warnings(&entry.module, keys_run.warnings);
+            let keys = keys_run.result;
+            bounds.extend(self.bound_context_over(&entry.declared_bounds, &keys));
             let owner = Self::conformance_owner(&entry);
             for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
                 let Some((_, method)) = entry

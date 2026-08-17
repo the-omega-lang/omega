@@ -258,6 +258,17 @@ pub enum AnalysisErrorKind {
     /// for this declared generic parameter -- it never appeared (in a
     /// structurally recognizable position) in any of the call's arguments.
     UnresolvedGenericParam(Ident),
+    /// The specific "couldn't infer" case whose cause deserves teaching:
+    /// `f<T>(x: *T)` called with a fat pointer (`*[]u8`/`*str`). A `Slice`/
+    /// `Str` carries a runtime length, so it can never match the thin
+    /// pointer `*T` -- and there is no `[]T` type for `T` to bind to (`[]T`
+    /// is not valid on its own). This is not an inference gap; the rule is
+    /// the point (a generic that must accept slices takes `x: T` by value,
+    /// which binds `T = *[]u8`, or spells the slice out as `x: *[]T`).
+    GenericParamFromFatPointer {
+        parameter: Ident,
+        found: ResolvedType,
+    },
     /// A generic struct/union/enum-variant literal (`Name { field = value;
     /// ... }`), or a bare enum unit-variant reference (`Enum::Variant`),
     /// was written with no explicit `<...>` type arguments, and neither the
@@ -574,6 +585,17 @@ pub enum AnalysisErrorKind {
     /// (a `*T` pointer stays unwritable no matter how the binding holding
     /// it was declared).
     NotMutablePointer,
+    /// A write to something that is not a place at all: the mutation would
+    /// land in a freshly-produced temporary that is immediately discarded.
+    /// Reachable from both shapes that produce a non-place root -- a
+    /// `*mut self` requirement against an rvalue receiver
+    /// (`Bump::bump(make())`) and an ordinary projected write through one
+    /// (`make().n = 5`) -- so its wording deliberately names neither a
+    /// receiver nor `*mut self`, which only one of the two has. Distinct
+    /// from `NotMutablePointer` (nothing is dereferenced here; naming a
+    /// pointer that does not appear in the source would be a lie) and from
+    /// `NotMutableBinding` (no binding to declare `mut`).
+    MutateTemporary,
 
     // -- unions --
     /// `Union { }` -- a union literal setting no field at all; unlike a
@@ -654,34 +676,6 @@ pub enum AnalysisErrorKind {
         spec: Ident,
         spec_type_args: Vec<ResolvedType>,
         function: Ident,
-    },
-    /// Two specs (`first_spec`/`second_spec`, reached through transitive
-    /// dependency flattening) both require a function
-    /// A `spec T` (static-dispatch) return-type function's own body returns
-    /// two genuinely different concrete types across its exit points
-    /// (`return`s plus a possible tail expression) -- Rust's `impl Trait`
-    /// rule: exactly *one* concrete type across the whole function, not
-    /// merely "each individually satisfies the bound." See
-    /// `Analyzer::infer_body_return_type`.
-    AmbiguousSpecReturnType {
-        function: Ident,
-        first: ResolvedType,
-        second: ResolvedType,
-    },
-    /// A `spec T`-returning function's body has no exit point at all to
-    /// infer a concrete type from (every path diverges without ever
-    /// `return`ing a value, and there's no tail expression either).
-    SpecReturnTypeUnconstrained {
-        function: Ident,
-    },
-    /// A `spec T`-returning function's body consistently returns one
-    /// concrete type, but that type doesn't actually implement the
-    /// declared bound.
-    SpecReturnTypeNotSatisfied {
-        function: Ident,
-        r#type: ResolvedType,
-        spec: Ident,
-        missing: Vec<Ident>,
     },
     /// `for x in y { ... }` where `y`'s type doesn't *nominally* declare
     /// `: ToIterator<T>` **or** `: Iterator<T>` directly -- even if it
@@ -870,7 +864,11 @@ pub enum AnalysisErrorKind {
     ConformanceCycle {
         target: String,
         spec: Ident,
-        declarations: Vec<Span>,
+        /// The goal chain that closes the cycle, outermost first, with the
+        /// re-entered goal repeated as the final link -- `(target string,
+        /// spec name, span)` per link. One `note:` is rendered per
+        /// consecutive pair ("proving 'S: A' requires 'S: B'").
+        chain: Vec<(String, Ident, Span)>,
     },
     BlanketConformanceForeignSpec {
         spec_package: Ident,
@@ -1129,6 +1127,11 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "cannot infer type parameter '{}' from this call's arguments",
                 ident.as_ref()
+            ),
+            Self::GenericParamFromFatPointer { parameter, .. } => write!(
+                f,
+                "cannot infer type parameter '{}' from this call's arguments",
+                parameter.as_ref()
             ),
             Self::UnresolvedLiteralGeneric { r#type, generics } => write!(
                 f,
@@ -1407,6 +1410,7 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "cannot mutate '{}': not declared 'mut'", ident.as_ref())
             }
             Self::NotMutablePointer => write!(f, "cannot mutate through an immutable pointer"),
+            Self::MutateTemporary => write!(f, "cannot mutate a temporary value"),
             Self::UnionLiteralMissingField { r#union } => {
                 write!(f, "union literal for '{}' sets no field", r#union.as_ref())
             }
@@ -1448,31 +1452,6 @@ impl fmt::Display for AnalysisErrorKind {
                 implementor.as_ref(),
                 generic_name(spec, spec_type_args),
                 function.as_ref()
-            ),
-            Self::AmbiguousSpecReturnType {
-                function,
-                first,
-                second,
-            } => write!(
-                f,
-                "'{}' returns two different types ('{first}' and '{second}') -- a 'spec T' return type needs exactly one concrete type",
-                function.as_ref()
-            ),
-            Self::SpecReturnTypeUnconstrained { function } => write!(
-                f,
-                "cannot infer '{}'s return type -- its body never returns a value",
-                function.as_ref()
-            ),
-            Self::SpecReturnTypeNotSatisfied {
-                function,
-                r#type,
-                spec,
-                ..
-            } => write!(
-                f,
-                "'{}' returns '{type}', which does not implement spec '{}'",
-                function.as_ref(),
-                spec.as_ref()
             ),
             Self::ForLoopSourceNotIterable { r#type } => {
                 write!(

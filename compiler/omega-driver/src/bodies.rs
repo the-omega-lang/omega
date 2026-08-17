@@ -218,12 +218,18 @@ impl Driver {
                     unreachable!("a function's own resolved item is always ResolvedType::Function");
                 };
                 let substitution = Self::substitution(&f.generics, &key.type_args);
-                let bounds = self
+                let declared = self
                     .items
-                    .generic_bounds
+                    .declared_bounds
                     .get(key)
                     .cloned()
                     .unwrap_or_default();
+                let keys_run = self.with_analyzer(&key.module, &substitution, (f.id, f.span), |a| {
+                    a.expand_bound_set(f.id, f.span, &declared)
+                });
+                self.diagnostics.record_warnings(&key.module, keys_run.warnings);
+                let keys = keys_run.result;
+                let bounds = self.bound_context_over(&declared, &keys);
                 let annotations = self
                     .items
                     .function_annotations
@@ -301,13 +307,22 @@ impl Driver {
         // methods are not a conform body, so nothing conformed onto this
         // type belongs in their scope -- see `check_conformance_bodies`, which
         // seeds a conform body with the one spec it conforms to, and
-        // `check_generic_bounds`, which seeds exactly the declared bound.
-        let bounds = self
+        // `check_generic_bounds`, which stores exactly the declared bound.
+        // The bound *context* (alias members, entailed derived conformances)
+        // is body-checking information, built here from that stored declared
+        // set rather than during signature resolution.
+        let declared = self
             .items
-            .generic_bounds
+            .declared_bounds
             .get(key)
             .cloned()
             .unwrap_or_default();
+        let keys_run = self.with_analyzer(&key.module, &substitution, owner, |a| {
+            a.expand_bound_set(owner.0, owner.1, &declared)
+        });
+        self.diagnostics.record_warnings(&key.module, keys_run.warnings);
+        let keys = keys_run.result;
+        let bounds = self.bound_context_over(&declared, &keys);
         let run = self.with_analyzer_in(&key.module, &substitution, &bounds, owner, check);
         run.result.map(|checked| CheckedBody {
             item: checked.assemble(key.type_args.clone()),
@@ -377,7 +392,7 @@ impl Driver {
         // type body inference either -- see the identical scope note on
         // `collect_methods`'s own call site.
         let checked = self.analyze(module_path, &[], (f.id, f.span), |a| {
-            a.collect_function_signature(f, None)
+            a.collect_function_signature(f)
         });
         let (fn_type, annotations) = checked.ok_or_else(|| ResolveError::ItemFailed {
             module: module_path.to_vec(),

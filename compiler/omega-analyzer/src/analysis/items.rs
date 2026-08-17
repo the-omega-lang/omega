@@ -562,19 +562,9 @@ impl<'r> Analyzer<'r> {
     /// information from anything that only ever sees the signature, which
     /// is exactly the bug `@mangling(disabled)` on an extern function used
     /// to have.
-    /// `return_type_override` is `Some` only for a `spec T` (static-
-    /// dispatch) return-type function, whose concrete return type has
-    /// already been discovered by `infer_body_return_type` before this ever
-    /// runs (see `omega_driver::Driver::resolve_spec_return_function`) --
-    /// `f.return_type` itself is `Type::SpecStatic` in that case, which
-    /// ordinary `resolve_type_or_error` has no concrete answer for (ordinary
-    /// type resolution rejects it outright -- see
-    /// `TypeResolutionError::SpecStaticNotAllowedHere`). `None` for every
-    /// other function, resolving `f.return_type` exactly as before.
     pub fn collect_function_signature(
         &mut self,
         f: &HirFunctionDef,
-        return_type_override: Option<ResolvedType>,
     ) -> Option<(
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
@@ -605,10 +595,7 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        let return_type = match return_type_override {
-            Some(r#type) => r#type,
-            None => self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true)?,
-        };
+        let return_type = self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true)?;
         let annotations = crate::annotations::resolve(
             self,
             f.id,
@@ -743,27 +730,13 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         self.context.enter_scope();
-        // `return_type_override: None`, unconditionally: a method whose
-        // return type is a bare `spec T` still gets
-        // `SpecStaticNotAllowedHere`, exactly as a free function did before
-        // `resolve_spec_return_function` existed.
-        //
-        // Inferring it here is *reachable* -- `infer_body_return_type` runs
-        // fine -- but not *correct*. It would check the method's body during
-        // the signature phase, while this very loop is still building the
-        // list that becomes the cell's `functions`: the owning type's method
-        // table is empty at that moment, so the body can see `Self`'s fields
-        // but none of its sibling methods, failing with `no field 'helper' on
-        // 'Zoo'` in either declaration order. A partially-populated cell
-        // reaching user code is a worse outcome than the missing feature.
-        //
-        // Doing this properly needs the inversion `resolve_spec_return_function`
-        // performs for a free function -- signature resolution deferred until
-        // after a throwaway body pass -- extended to run *after* the owning
-        // aggregate's other method signatures are known. That is a phase
-        // change in `compute_aggregate`, not a local override here.
+        // A method whose return type is a bare `spec T` gets
+        // `SpecStaticNotAllowedHere` from ordinary type resolution, exactly
+        // as a free function does -- a definition site names one concrete
+        // type, and the author knows which one (see
+        // `TypeResolutionError::SpecStaticNotAllowedHere`).
         let signatures =
-            self.analyze_all(functions, |this, f| this.collect_function_signature(f, None));
+            self.analyze_all(functions, |this, f| this.collect_function_signature(f));
         self.context.leave_scope();
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
@@ -1264,97 +1237,6 @@ impl<'r> Analyzer<'r> {
     /// `collect_function_signature`'s own doc comment).
     /// Discovers the one concrete return type a `spec Bound<...>` (static-
     /// dispatch, no `*`) return-type function's own body implies -- the
-    /// throwaway "pass 1" `omega_driver::Driver::resolve_spec_return_function`
-    /// runs before this function's real signature can be finalized at all
-    /// (there is no concrete `ResolvedType` to give `collect_function_
-    /// signature` otherwise). Binds params exactly like `check_function_body`
-    /// does (params never read `current_return_type`, so this is safe to do
-    /// without knowing the return type yet), then walks the body with
-    /// `inferring_return_type` set so every exit point's own resolved type is
-    /// merely *recorded* (see `HirStmt::Return`'s arm), never checked against
-    /// anything -- there is nothing to check against yet.
-    ///
-    /// Every candidate must be the exact same concrete `ResolvedType` --
-    /// Rust's `impl Trait` rule (one concrete type across the whole
-    /// function), not "each individually satisfies the bound" -- and that
-    /// unified type must itself implement `bound_spec<bound_type_args>`.
-    /// This method's own errors are only ever genuine ones (an ambiguity, an
-    /// unconstrained body, or a bound violation, on top of whatever ordinary
-    /// body-analysis already reports) -- the caller discards them on success
-    /// and keeps them only on failure, since a second, real pass
-    /// (`check_function_body`, once this concrete type is known) is what
-    /// actually gets cached and used everywhere.
-    pub fn infer_body_return_type(
-        &mut self,
-        f: &HirFunctionDef,
-        bound: &Type,
-    ) -> Option<ResolvedType> {
-        self.context.enter_scope();
-        self.analyze_all(&f.params, Self::analyze_param);
-
-        self.current_return_type = ResolvedType::Void;
-        self.loop_stack.clear();
-        self.in_defer_body = false;
-        self.inferring_return_type = true;
-        self.inferred_return_candidates.clear();
-        let body = self.analyze_block(&f.body, None);
-        self.inferring_return_type = false;
-
-        let scope = self.context.leave_scope();
-        self.warn_unused_bindings(scope, true);
-
-        let body = body?;
-        if let Some(tail_type) = Self::block_type(&body) {
-            self.inferred_return_candidates.push((f.span, tail_type));
-        }
-
-        let mut candidates = std::mem::take(&mut self.inferred_return_candidates);
-        if candidates.is_empty() {
-            self.error(
-                f.id,
-                f.span,
-                AnalysisErrorKind::SpecReturnTypeUnconstrained {
-                    function: f.name.clone(),
-                },
-            );
-            return None;
-        }
-        let (_, first) = candidates.remove(0);
-        for (span, candidate) in candidates {
-            if candidate != first {
-                self.error(
-                    f.id,
-                    span,
-                    AnalysisErrorKind::AmbiguousSpecReturnType {
-                        function: f.name.clone(),
-                        first: first.clone(),
-                        second: candidate,
-                    },
-                );
-                return None;
-            }
-        }
-        match self.check_generic_bound(f.id, f.span, bound, &first) {
-            // `bound` itself failed to resolve -- already an ordinary
-            // recorded error (see `check_generic_bound`'s own doc comment).
-            None => None,
-            Some(Ok(_)) => Some(first),
-            Some(Err((spec, missing))) => {
-                self.error(
-                    f.id,
-                    f.span,
-                    AnalysisErrorKind::SpecReturnTypeNotSatisfied {
-                        function: f.name.clone(),
-                        r#type: first,
-                        spec,
-                        missing,
-                    },
-                );
-                None
-            }
-        }
-    }
-
     pub fn check_function_body(
         &mut self,
         f: &HirFunctionDef,

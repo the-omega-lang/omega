@@ -352,16 +352,6 @@ impl<'r> Analyzer<'r> {
                     self.error(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer);
                     return None;
                 }
-                // See `Analyzer::infer_body_return_type` -- there is no
-                // concrete return type to check against yet, so this exit
-                // point's own (uncoerced) resolved type is just recorded as
-                // a candidate instead.
-                if self.inferring_return_type {
-                    let checked = self.analyze_expr(expr, None)?;
-                    self.inferred_return_candidates
-                        .push((expr.span, checked.r#type.clone()));
-                    return Some(vec![CheckedStmt::Return(checked)]);
-                }
                 let return_type = self.current_return_type.clone();
                 let checked = self.analyze_expr(expr, Some(&return_type))?;
                 let checked = self.coerce_to_expected(Some(&return_type), checked);

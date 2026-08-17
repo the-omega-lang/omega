@@ -310,10 +310,15 @@ pub(crate) struct ItemQueries {
     /// nothing may assume this map is complete any earlier. `IndexMap` for
     /// deterministic (discovery-order) merging.
     pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
-    /// The concrete conform contexts established by this instantiation's
-    /// generic bounds. Body analysis consults only these entries for
-    /// instance-method syntax supplied by a conformance.
-    pub generic_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
+    /// The *declared* bound sets established by this instantiation's generic
+    /// parameters, exactly as written -- one `(concrete, spec, spec_args)`
+    /// per member, **not** the bound context (which additionally contains
+    /// alias members and entailed derived conformances). Body analysis
+    /// consults these entries, expanding them through
+    /// `Driver::bound_context_for` when it builds the analyzer's bound
+    /// context -- see `check_generic_bounds`'s doc comment for why the
+    /// context is computed at body-check time instead of stored here.
+    pub declared_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
     /// Counter behind every synthetic `HirId`. Always paired with
     /// `SYNTHETIC_MODULE`, a module id the lowerer never produces, so these
     /// can never collide with a real per-file id.
@@ -375,21 +380,8 @@ pub(crate) struct ItemQueries {
     /// budget bounds *interpretation*, not this, a level below it) the
     /// moment it finds `key` already present here.
     pub body_in_progress: std::collections::HashSet<ItemKey>,
-    /// Keys currently having their own `spec T` (static-dispatch) return
-    /// type inferred from their body (see `Driver::resolve_spec_return_function`).
-    /// A plain top-level function's signature is ordinarily fully resolved
-    /// before any body anywhere is ever checked (`compile`'s whole-program
-    /// phase barrier) -- a `spec T`-returning function's signature can't be,
-    /// since discovering its own concrete return type means checking its
-    /// body *during* phase 1, out of the normal order. That inversion is
-    /// exactly what could recurse forever for two functions whose inference
-    /// calls each other (neither key is ever `InProgress` for *itself* the
-    /// way an ordinary same-key cycle would be caught by `state` above) --
-    /// this stack is a second, narrower cycle guard for that one case,
-    /// mirroring `spec_state`'s identical reasoning for why spec-declaration
-    /// resolution needs its own guard instead of relying on `state`.
-    spec_return_inference_stack: Vec<ItemKey>,
 }
+
 
 impl ItemQueries {
     /// A fresh, globally unique `HirId` for something with no HIR node of its
@@ -732,13 +724,24 @@ impl Driver {
     /// `None` means resolving a bound recorded its own ordinary analysis
     /// error. `Some(Err(_))` is the structured `SpecNotImplemented` case,
     /// whose caller chooses the appropriate declaration/use-site anchor.
+    ///
+    /// Returns only the *declared* bound set, one `(concrete, spec,
+    /// spec_args)` per member, exactly as written. The bound *context*
+    /// (alias members plus entailed derived conformances) is body-checking
+    /// information, deliberately not computed here -- see
+    /// `Driver::bound_context_for`, which the body-checking sites call
+    /// over the stored declared set. Computing it during signature
+    /// resolution made the query re-entrant: the context built a full
+    /// conformance sweep (`conformances_for_type`) in the middle of a
+    /// proof, which is what let a fourth unrelated blanket reproduce the
+    /// blanket-chain false cycle through a different door.
     pub(crate) fn check_generic_bounds(
         &mut self,
         module: &[Ident],
         owner: (HirId, Span),
         generic_params: &[HirGenericParam],
         type_args: &[ResolvedType],
-    ) -> Option<Result<(Vec<ResolvedBound>, Vec<ResolvedBound>), ResolveError>> {
+    ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
         let substitution: Vec<(Ident, ResolvedType)> = generic_params
             .iter()
             .map(|g| g.ident.clone())
@@ -746,8 +749,8 @@ impl Driver {
             .collect();
 
         // Every bound is checked first, so the complete declared bound set is
-        // known before any bound context is built -- a derived-conformance
-        // seed (see `bound_context_for`) is admitted against the *whole*
+        // known before anything consumes it -- a derived-conformance seed
+        // (see `bound_context_for`) is admitted against the *whole*
         // conjunction, never against one member in isolation.
         let mut declared = Vec::new();
         for (param, concrete) in generic_params.iter().zip(type_args) {
@@ -773,20 +776,13 @@ impl Driver {
                 }
             }
         }
-        let mut resolved_bounds = Vec::new();
-        for (concrete, spec, spec_args) in &declared {
-            resolved_bounds.extend(self.bound_context_for(
-                concrete,
-                spec.clone(),
-                spec_args.clone(),
-                &declared,
-            ));
-        }
-        Some(Ok((resolved_bounds, declared)))
+        Some(Ok(declared))
     }
 
-    /// Stores the bound context for a named generic item after the shared
-    /// checker has validated its concrete arguments.
+    /// Stores a named generic item's declared bound set after the shared
+    /// checker has validated its concrete arguments. The bound *context*
+    /// (alias members, entailed derived conformances) is built at body-check
+    /// time -- see `check_generic_bounds`'s doc comment for why.
     fn check_item_generic_bounds(
         &mut self,
         key: &ItemKey,
@@ -796,15 +792,15 @@ impl Driver {
     ) -> Result<(), ResolveError> {
         let hir = self.modules.hir(&key.module);
         let owner = item_id_span(&hir.items[index]);
-        let resolved_bounds =
+        let declared =
             match self.check_generic_bounds(&key.module, owner, generic_params, type_args) {
-                Some(Ok((bounds, _))) => bounds,
+                Some(Ok(declared)) => declared,
                 Some(Err(error)) => return Err(error),
                 None => return Err(key.failed()),
             };
         self.items
-            .generic_bounds
-            .insert(key.clone(), resolved_bounds);
+            .declared_bounds
+            .insert(key.clone(), declared);
         Ok(())
     }
 
@@ -931,22 +927,18 @@ impl Driver {
 
             HirItem::FunctionDefinition(f) => {
                 let id = self.items.identity_for(key, f.id);
-                if let Type::SpecStatic(bound) = &f.return_type {
-                    self.resolve_spec_return_function(key, f, id, bound, module, &substitution)?
-                } else {
-                    self.analyze(module, &substitution, (f.id, f.span), |a| {
-                        a.collect_function_signature(f, None)
-                    })
-                    .map(|(fn_type, annotations)| {
-                        self.items.function_annotations.insert(id, annotations);
-                        ResolvedItem::Value {
-                            r#type: ResolvedType::Function(fn_type),
-                            storage: Storage::Function,
-                            decl_id: id,
-                            mutable: false,
-                        }
-                    })
-                }
+                self.analyze(module, &substitution, (f.id, f.span), |a| {
+                    a.collect_function_signature(f)
+                })
+                .map(|(fn_type, annotations)| {
+                    self.items.function_annotations.insert(id, annotations);
+                    ResolvedItem::Value {
+                        r#type: ResolvedType::Function(fn_type),
+                        storage: Storage::Function,
+                        decl_id: id,
+                        mutable: false,
+                    }
+                })
             }
 
             HirItem::Struct(s) => {
@@ -1154,63 +1146,4 @@ impl Driver {
         Ok(Some(cell))
     }
 
-    /// A `spec T` (static-dispatch) return-type function's signature can't
-    /// be resolved the ordinary way at all -- `f.return_type` names a bound,
-    /// not a concrete type, so `collect_function_signature` has nothing to
-    /// give `resolve_type_or_error`. This eagerly infers the concrete return
-    /// type from the function's own body (`Analyzer::infer_body_return_type`)
-    /// *before* the signature can be considered resolved -- a genuine
-    /// inversion of the ordinary phase-1-before-phase-2 order, but a
-    /// contained one: once the concrete type is known, `collect_function_
-    /// signature` runs exactly as it always does (with the inferred type as
-    /// `return_type_override`), and the ordinary phase-2 sweep reads the
-    /// result back like any other function's -- no separate body cache is
-    /// needed, since (unlike a generic instantiation or an overload
-    /// candidate) an ordinary top-level function is already fully enumerable
-    /// by `compile`'s static per-module sweep.
-    ///
-    /// `spec_return_inference_stack` guards against exactly the recursion
-    /// this inversion opens up: two spec-return functions whose inference
-    /// calls each other would otherwise recurse forever, since neither
-    /// function's own key is ever `InProgress` (in the ordinary `ensure_item`
-    /// sense) for *itself* the way a same-key cycle would normally be caught
-    /// -- see `ItemQueries::spec_return_inference_stack`'s doc comment.
-    fn resolve_spec_return_function(
-        &mut self,
-        key: &ItemKey,
-        f: &HirFunctionDef,
-        id: HirId,
-        bound: &Type,
-        module: &[Ident],
-        substitution: &[(Ident, ResolvedType)],
-    ) -> Result<Option<ResolvedItem>, ResolveError> {
-        if self.items.spec_return_inference_stack.contains(key) {
-            return Err(ResolveError::SpecReturnTypeRecursion {
-                module: key.module.clone(),
-                item: key.name.clone(),
-            });
-        }
-        self.items.spec_return_inference_stack.push(key.clone());
-        let inferred = self.analyze(module, substitution, (f.id, f.span), |a| {
-            a.infer_body_return_type(f, bound)
-        });
-        self.items.spec_return_inference_stack.pop();
-
-        let Some(return_type) = inferred else {
-            return Ok(None);
-        };
-
-        let checked = self.analyze(module, substitution, (f.id, f.span), |a| {
-            a.collect_function_signature(f, Some(return_type))
-        });
-        Ok(checked.map(|(fn_type, annotations)| {
-            self.items.function_annotations.insert(id, annotations);
-            ResolvedItem::Value {
-                r#type: ResolvedType::Function(fn_type),
-                storage: Storage::Function,
-                decl_id: id,
-                mutable: false,
-            }
-        }))
-    }
 }

@@ -214,6 +214,17 @@ impl AnalysisErrorKind {
             Self::UnresolvedGenericParam(name) => d
                 .with_label(span, format!("cannot deduce `{}` from this call's arguments", name.as_ref()))
                 .with_note("a generic function's type parameters are deduced from its argument types only"),
+            Self::GenericParamFromFatPointer { parameter, found } => d
+                .with_label(span, format!("cannot deduce `{}` from this call's arguments", parameter.as_ref()))
+                .with_note(format!(
+                    "'{found}' is a slice — a pointer with a length — so it does not match the thin pointer '*{}'",
+                    parameter.as_ref()
+                ))
+                .with_help(format!(
+                    "take the value directly (`x: {}`), or spell the slice out (`x: *[]{}`)",
+                    parameter.as_ref(),
+                    parameter.as_ref()
+                )),
             Self::UnresolvedLiteralGeneric { r#type, generics } => {
                 let names = generics.iter().map(|g| format!("`{}`", g.as_ref())).collect::<Vec<_>>().join(", ");
                 d.with_label(span, format!("cannot infer type argument(s) {names} of `{type}` here"))
@@ -415,6 +426,10 @@ impl AnalysisErrorKind {
             Self::NotMutablePointer => d
                 .with_label(span, "this pointer's pointee is immutable")
                 .with_help("use `*mut T` instead of `*T`, and `&mut` to create one"),
+            Self::MutateTemporary => d
+                .with_label(span, "this value has no storage to write to")
+                .with_note("a write needs a place; a freshly-produced value is discarded at the end of the expression, so the write could never be observed")
+                .with_help("bind it to a `mut` local first"),
             Self::UnionLiteralMissingField { r#union } => d
                 .with_label(span, "no field set")
                 .with_help(format!("set exactly one of `{}`'s fields", r#union.as_ref())),
@@ -469,21 +484,6 @@ impl AnalysisErrorKind {
                     function.as_ref(),
                     implementor.as_ref(),
                     function.as_ref()
-                )),
-            Self::AmbiguousSpecReturnType { function, first, second } => d
-                .with_label(span, format!("`{}` returns both `{first}` and `{second}`", function.as_ref()))
-                .with_help("a 'spec T' return type must resolve to exactly one concrete type across every exit point"),
-            Self::SpecReturnTypeUnconstrained { function } => d
-                .with_label(span, format!("cannot infer a concrete type for `{}`", function.as_ref()))
-                .with_help("a 'spec T' return type needs at least one 'return' or tail expression to infer from"),
-            Self::SpecReturnTypeNotSatisfied { function, r#type, spec, missing } => d
-                .with_label(
-                    span,
-                    format!("`{}` returns `{type}`, which does not implement `{}`", function.as_ref(), spec.as_ref()),
-                )
-                .with_help(format!(
-                    "`{type}` is missing: {}",
-                    missing.iter().map(|m| m.as_ref()).collect::<Vec<_>>().join(", ")
                 )),
             Self::ForLoopSourceNotIterable { r#type } => d
                 .with_label(span, format!("`{type}` does not implement `ToIterator<T>` or `Iterator<T>`"))
@@ -618,12 +618,20 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("this conform overlaps another one for `{target}`"))
                 .with_secondary_label(*first, "the other matching conform is here")
                 .with_note(format!("neither conform is more specific for `{target}`")),
-            Self::ConformanceCycle { declarations, .. } => {
+            Self::ConformanceCycle { chain, .. } => {
                 let mut d = d.with_label(span, "this bound re-enters a conformance already being checked");
-                // The primary span is one of the participants by construction;
-                // labelling it twice just prints the same line under itself.
-                for declaration in declarations.iter().filter(|it| **it != span) {
-                    d = d.with_secondary_label(*declaration, "cycle participant");
+                // Each consecutive goal pair is one "requires" step; the
+                // final link repeats the first, showing the closure.
+                for pair in chain.windows(2) {
+                    let (from_target, from_spec, _) = &pair[0];
+                    let (to_target, to_spec, _) = &pair[1];
+                    d = d.with_note(format!(
+                        "proving '{}: {}' requires '{}: {}'",
+                        from_target,
+                        from_spec.as_ref(),
+                        to_target,
+                        to_spec.as_ref()
+                    ));
                 }
                 d
             }
@@ -739,7 +747,8 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
             .with_label(span, "not object-safe")
             .with_help("use a generic bound (`T: ...`) or `spec T` static dispatch instead"),
         TypeResolutionError::SpecStaticNotAllowedHere(_) => d
-            .with_label(span, "`spec ...` (static dispatch) is only allowed as a parameter type or a return type"),
+            .with_label(span, "`spec ...` (static dispatch) is not a concrete type, and a function definition must name one")
+            .with_help("name the concrete type this returns, or take the caller's choice as a bound generic parameter (`f<T: Animal>() => T`)"),
         TypeResolutionError::SpecUsedAsValueType(name) => d
             .with_label(span, "a spec has no size or representation on its own")
             .with_help(format!("use `spec *{0}`/`spec *mut {0}` for dynamic dispatch, or a generic bound (`T: {0}`)", name.as_ref())),
@@ -804,10 +813,6 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 "missing: {}",
                 missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ))
-        }
-        ResolveError::SpecReturnTypeRecursion { item, .. } => {
-            with_label(d, format!("`{}` recursively depends on its own inferred return type", item.as_ref()))
-                .with_help("give this function an explicit, concrete return type instead of 'spec T'")
         }
         ResolveError::AmbiguousAmbientName { name: _, candidates } => with_label(d, "ambiguous name".to_string())
             .with_note(format!("exposed by: {}", candidates.iter().map(|c| join(c)).collect::<Vec<_>>().join(", ")))

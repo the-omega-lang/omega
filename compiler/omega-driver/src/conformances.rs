@@ -12,6 +12,7 @@ use omega_hir::{HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem, 
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// The source form that produced a concrete conformance entry. Ordering is
@@ -45,18 +46,21 @@ pub(crate) struct ConformanceEntry {
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
     pub substitution: Vec<(Ident, ResolvedType)>,
-    /// Bounds declared by this conform's own generic parameters. These are
-    /// checked before registration, then seed the conform bodies alongside
-    /// the spec this block itself implements.
-    pub bounds: Vec<ResolvedBound>,
     /// The conform's own declared bounds, exactly as written -- one
     /// `(concrete, spec, spec_args)` per member, before any bound-context
-    /// seeding. This is what blanket precedence compares (a bound-set
-    /// subset test; see `compare_conformance_precedence`) and what
-    /// `bound_context_for` uses to admit derived conformances. Distinct
-    /// from `bounds` above (the fully seeded analyzer context) on purpose:
-    /// the two answer different questions.
+    /// seeding. The fully seeded analyzer context is deliberately *not*
+    /// stored: it is body-checking information, computed at body-check time
+    /// (see `check_generic_bounds`'s doc comment for why computing it during
+    /// signature resolution made conformance queries re-entrant).
     pub declared_bounds: Vec<ResolvedBound>,
+    /// `declared_bounds`' alias-expanded identity -- every `(spec id,
+    /// resolved args)` in the declared set, transitively expanded through
+    /// every alias, computed once where an analyzer is already in hand (see
+    /// `Analyzer::expand_bound_set`). This is what blanket precedence
+    /// compares and what `bound_context_for` uses to admit derived
+    /// conformances: an alias bound and its inline spelling must be
+    /// interchangeable everywhere.
+    pub declared_bound_keys: Vec<(HirId, Vec<ResolvedType>)>,
     pub origin: ConformanceOrigin,
 }
 
@@ -98,11 +102,26 @@ struct ConformanceTemplate {
     origin: ConformanceOrigin,
 }
 
+/// What one sweep through a target's matching templates accomplished.
+pub(crate) struct SweepOutcome {
+    /// At least one template was skipped because its goal was already on
+    /// the goal stack -- see `conformances_for_type` for what that means
+    /// for the `materialized` memo.
+    skipped_goal: bool,
+}
+
+/// One conformance proof currently in flight: "this template, instantiated
+/// at `target`, is being asked to produce `spec`". The stack of these is the
+/// recursion guard -- a goal re-entered while its own instantiation is still
+/// running is a genuine cycle, and only that (see `Driver::solve`).
+/// `spec_name` is `spec`'s display name, carried so the cycle chain can be
+/// rendered without re-resolving anything mid-error.
 #[derive(Clone)]
-struct InProgressConformance {
+struct ConformanceGoal {
     id: HirId,
     target: ResolvedType,
-    spec: Rc<RefCell<ResolvedSpecType>>,
+    spec: HirId,
+    spec_name: Ident,
     span: Span,
 }
 
@@ -122,9 +141,15 @@ pub(crate) struct Conformances {
     /// are parked before any materialization, so this is a sound memo rather
     /// than an order-dependent cache.
     materialized: Vec<ResolvedType>,
-    /// Active template checks, used to turn recursive blanket bounds into a
-    /// diagnostic instead of unbounded query recursion.
-    in_progress: Vec<InProgressConformance>,
+    /// Active conformance goals, used to turn recursive blanket bounds into
+    /// a diagnostic instead of unbounded query recursion.
+    goals: Vec<ConformanceGoal>,
+    /// `(target, spec)` pairs already reported as cyclic. The same closure
+    /// can be re-proved through a different door -- a bound check's alias
+    /// fallback re-asking a member spec while its own proof is still in
+    /// flight rediscovers the identical cycle -- and one diagnostic is
+    /// enough: the pair *is* the cycle.
+    reported_cycles: Vec<(ResolvedType, HirId)>,
     pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedType>)>,
 }
 
@@ -321,7 +346,7 @@ impl Driver {
                 let mut resolved = Vec::with_capacity(primitive.functions.len());
                 for function in &primitive.functions {
                     let (fn_type, annotations) =
-                        analyzer.collect_function_signature(function, None)?;
+                        analyzer.collect_function_signature(function)?;
                     resolved.push((fn_type, annotations));
                 }
                 analyzer.check_overload_duplicates(&primitive.functions, &resolved);
@@ -606,38 +631,13 @@ impl Driver {
         {
             return None;
         }
-        let in_progress = InProgressConformance {
-            id: conform.id,
-            target: target.lookup_key(),
-            spec: spec_reference.0.clone(),
-            span: conform.span,
-        };
-        if self.conformances.in_progress.iter().any(|active| {
-            active.id == in_progress.id && active.target == in_progress.target
-        }) {
-            self.diagnostics.error(
-                module,
-                AnalysisError::new(
-                    conform.id,
-                    conform.span,
-                    AnalysisErrorKind::ConformanceCycle {
-                        target: target.to_string(),
-                        spec: spec_reference.0.borrow().name.clone(),
-                        declarations: self
-                            .conformances
-                            .in_progress
-                            .iter()
-                            .filter(|active| active.target == target.lookup_key())
-                            .map(|active| active.span)
-                            .collect(),
-                    },
-                ),
-            );
-            self.conformances.failed.push((conform.id, target.lookup_key()));
-            return None;
-        }
-        self.conformances.in_progress.push(in_progress);
-        let (bounds, declared_bounds) = match self.check_generic_bounds(
+        // The recursion guard itself lives in `solve`: it pushes this
+        // instantiation's `(target, spec)` goal before calling in and skips
+        // any template whose goal is already in flight, so re-entry is
+        // impossible here -- only `conformance_for` can report a cycle,
+        // from outside, once the goal stack tells it the proof closed on
+        // itself.
+        let declared_bounds = match self.check_generic_bounds(
             module,
             (conform.id, conform.span),
             &conform.generics,
@@ -645,8 +645,18 @@ impl Driver {
         ) {
             Some(Ok(bounds)) => bounds,
             Some(Err(error)) => {
-                self.conformances.failed.push((conform.id, target.lookup_key()));
-                self.conformances.in_progress.pop();
+                // At the outermost goal (`solve`'s stack holds only this
+                // one) nothing else in flight could have caused the
+                // failure, so it is genuine and permanent -- worth memoizing
+                // in `failed`. A nested failure is *not*: the in-flight
+                // proof above it may itself fail and unwind, and the same
+                // template may be re-asked later from a clean stack. (This
+                // is what keeps the already-fixed duplicate-
+                // `SpecNotImplemented` behaviour intact while making a
+                // nested failure retryable.)
+                if self.conformances.goals.len() == 1 {
+                    self.conformances.failed.push((conform.id, target.lookup_key()));
+                }
                 // A blanket's bound is its applicability predicate: a
                 // non-`Animal` type simply does not receive
                 // `conform<T: Animal> T ...`. Generic constructor
@@ -666,12 +676,12 @@ impl Driver {
                 return None;
             }
             None => {
-                self.conformances.failed.push((conform.id, target.lookup_key()));
-                self.conformances.in_progress.pop();
+                if self.conformances.goals.len() == 1 {
+                    self.conformances.failed.push((conform.id, target.lookup_key()));
+                }
                 return None;
             }
         };
-        self.conformances.in_progress.pop();
         // Instantiating one template twice at the same target is not a
         // duplicate conform -- `conformances_for_type` re-walks every matching
         // template on each call, so without this the *second* lookup for a
@@ -688,6 +698,15 @@ impl Driver {
         }
         let mut method_substitution = substitution.to_vec();
         method_substitution.push((Ident("Self".to_string()), target.clone()));
+        // The declared set's alias-expanded identity, computed once here
+        // where an analyzer is already in hand -- both blanket precedence
+        // and derived-conformance admission compare on this, so an alias
+        // bound and its inline spelling are interchangeable everywhere.
+        let keys_run = self.with_analyzer(module, &substitution, (conform.id, conform.span), |a| {
+            a.expand_bound_set(conform.id, conform.span, &declared_bounds)
+        });
+        self.diagnostics.record_warnings(module, keys_run.warnings);
+        let declared_bound_keys = keys_run.result;
         // Resolve precedence before checking the potentially expensive body.
         // In particular, a blanket superseded by an explicit conform must not
         // surface diagnostics from a body that can never be emitted.
@@ -703,8 +722,8 @@ impl Driver {
             functions: vec![],
             pending: vec![],
             substitution: method_substitution.clone(),
-            bounds: bounds.clone(),
             declared_bounds: declared_bounds.clone(),
+            declared_bound_keys: declared_bound_keys.clone(),
             origin,
         };
         // Keep the established diagnostic order: an illegal foreign conform
@@ -746,8 +765,8 @@ impl Driver {
             functions: conform.functions.clone(),
             pending,
             substitution: method_substitution,
-            bounds,
             declared_bounds,
+            declared_bound_keys,
             origin,
         };
         if !self.register_conformance(entry.clone()) {
@@ -884,18 +903,17 @@ impl Driver {
         if candidate.origin == ConformanceOrigin::Blanket
             && incumbent.origin == ConformanceOrigin::Blanket
         {
-            let key = |bound: &ResolvedBound| {
-                let (_, spec, args) = bound;
-                (spec.borrow().id, args.clone())
-            };
-            let candidate_bounds: Vec<_> = candidate.declared_bounds.iter().map(key).collect();
-            let incumbent_bounds: Vec<_> = incumbent.declared_bounds.iter().map(key).collect();
-            let candidate_subset_of_incumbent = candidate_bounds
+            // Both sides compare their *alias-expanded* key sets
+            // (`declared_bound_keys`), so `T: AB` and `T: A + B` describe
+            // the same set and compare as equal.
+            let candidate_subset_of_incumbent = candidate
+                .declared_bound_keys
                 .iter()
-                .all(|bound| incumbent_bounds.contains(bound));
-            let incumbent_subset_of_candidate = incumbent_bounds
+                .all(|bound| incumbent.declared_bound_keys.contains(bound));
+            let incumbent_subset_of_candidate = incumbent
+                .declared_bound_keys
                 .iter()
-                .all(|bound| candidate_bounds.contains(bound));
+                .all(|bound| candidate.declared_bound_keys.contains(bound));
             return match (candidate_subset_of_incumbent, incumbent_subset_of_candidate) {
                 (true, false) => Some(Ordering::Less),
                 (false, true) => Some(Ordering::Greater),
@@ -912,7 +930,6 @@ impl Driver {
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedType],
     ) -> Option<ConformanceEntry> {
-        self.materialize(target);
         let matches = |entry: &&ConformanceEntry| {
             entry.target == target.lookup_key()
                 && entry.spec.borrow().id == spec.borrow().id
@@ -921,9 +938,46 @@ impl Driver {
         if let Some(entry) = self.conformances.entries.iter().find(matches) {
             return Some(entry.clone());
         }
-        if let Some(active) = self.conformances.in_progress.iter().find(|active| {
-            active.target == target.lookup_key() && active.spec.borrow().id == spec.borrow().id
-        }) {
+        // Goal-directed proving: instantiate only the templates that can
+        // produce *this* spec, then look again. A goal still on the stack
+        // after that means this query re-entered its own proof -- a genuine
+        // cycle, reported with the chain that closes it. (An unsatisfied
+        // but acyclic query leaves nothing on the stack and reports nothing
+        // here; its own diagnostic came from wherever the failure was.)
+        self.solve(target, Some(&spec.borrow().id));
+        if let Some(entry) = self.conformances.entries.iter().find(matches) {
+            return Some(entry.clone());
+        }
+        if let Some(active) = self
+            .conformances
+            .goals
+            .iter()
+            .find(|goal| goal.target == target.lookup_key() && goal.spec == spec.borrow().id)
+        {
+            if self
+                .conformances
+                .reported_cycles
+                .iter()
+                .any(|(t, id)| *t == target.lookup_key() && *id == spec.borrow().id)
+            {
+                return None;
+            }
+            self.conformances
+                .reported_cycles
+                .push((target.lookup_key(), spec.borrow().id));
+            let mut chain: Vec<(String, Ident, Span)> = self
+                .conformances
+                .goals
+                .iter()
+                .map(|goal| {
+                    (
+                        goal.target.to_string(),
+                        goal.spec_name.clone(),
+                        goal.span,
+                    )
+                })
+                .collect();
+            chain.push((target.to_string(), spec.borrow().name.clone(), active.span));
             self.diagnostics.error(
                 &self
                     .conformances
@@ -938,40 +992,12 @@ impl Driver {
                     AnalysisErrorKind::ConformanceCycle {
                         target: target.to_string(),
                         spec: spec.borrow().name.clone(),
-                        declarations: self
-                            .conformances
-                            .in_progress
-                            .iter()
-                            .filter(|candidate| candidate.target == target.lookup_key())
-                            .map(|candidate| candidate.span)
-                            .collect(),
+                        chain,
                     },
                 ),
             );
         }
         None
-    }
-
-    /// Every spec reachable from `spec` through `dependencies`, by id,
-    /// including `spec` itself. Ids only -- a membership test needs no
-    /// per-dependency type arguments (which are raw at a declaration; see
-    /// The spec ids reachable from `spec` through its alias-member list
-    /// (`dependencies` -- which, since provisioning's removal, only an
-    /// alias ever populates), including `spec` itself. Ids only: this is a
-    /// membership test, so the per-member type arguments never need
-    /// resolving here.
-    fn alias_member_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut Vec<HirId>) {
-        let (id, dependencies) = {
-            let spec = spec.borrow();
-            (spec.id, spec.dependencies.clone())
-        };
-        if out.contains(&id) {
-            return;
-        }
-        out.push(id);
-        for (member, _) in dependencies {
-            Self::alias_member_ids(&member, out);
-        }
     }
 
     /// What a `T: Spec` bound puts into the analyzer's bound context: the
@@ -1002,10 +1028,10 @@ impl Driver {
         concrete: &ResolvedType,
         spec: Rc<RefCell<ResolvedSpecType>>,
         spec_args: Vec<ResolvedType>,
-        declared: &[ResolvedBound],
+        declared_keys: &[(HirId, Vec<ResolvedType>)],
     ) -> Vec<(ResolvedType, Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
-        let mut permitted = Vec::new();
-        Self::alias_member_ids(&spec, &mut permitted);
+        let mut permitted = HashSet::new();
+        Analyzer::alias_member_ids(&spec, &mut permitted);
         let mut seeds = vec![(concrete.clone(), spec, spec_args)];
         for entry in self.conformances_for_type(concrete) {
             if permitted.contains(&entry.spec.borrow().id) {
@@ -1015,13 +1041,13 @@ impl Driver {
             if entry.origin == ConformanceOrigin::Concrete {
                 continue;
             }
-            let declared_keys: Vec<_> = declared
+            // Both sides compare alias-expanded key sets: the candidate's
+            // stored `declared_bound_keys` against the item's own expanded
+            // `declared_keys`.
+            let entailed = entry
+                .declared_bound_keys
                 .iter()
-                .map(|(_, spec, args)| (spec.borrow().id, args.clone()))
-                .collect();
-            let entailed = entry.declared_bounds.iter().all(|(_, bound, args)| {
-                declared_keys.contains(&(bound.borrow().id, args.clone()))
-            });
+                .all(|bound| declared_keys.contains(bound));
             if entailed {
                 seeds.push((entry.target.clone(), entry.spec.clone(), entry.spec_args.clone()));
             }
@@ -1029,8 +1055,39 @@ impl Driver {
         seeds
     }
 
+    /// `bound_context_for` over a whole declared set -- the body-checking
+    /// sites' shared fold (a generic function's own body, an aggregate
+    /// instantiation's inherent methods, a conform body).
+    pub(crate) fn bound_context_over(
+        &mut self,
+        declared: &[ResolvedBound],
+        declared_keys: &[(HirId, Vec<ResolvedType>)],
+    ) -> Vec<(ResolvedType, Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
+        let mut context = Vec::new();
+        for (concrete, spec, spec_args) in declared {
+            context.extend(self.bound_context_for(
+                concrete,
+                spec.clone(),
+                spec_args.clone(),
+                declared_keys,
+            ));
+        }
+        context
+    }
+
     pub(crate) fn conformances_for_type(&mut self, target: &ResolvedType) -> Vec<ConformanceEntry> {
-        self.materialize(target);
+        let key = target.lookup_key();
+        if !self.conformances.materialized.contains(&key) {
+            let outcome = self.solve(target, None);
+            // A partial sweep is not a complete one: if any template was
+            // skipped because its goal was already in flight, every
+            // template has *not* been considered, so the memo must not
+            // claim it has -- the next query re-sweeps and picks up
+            // whatever the interrupted proof left behind.
+            if !outcome.skipped_goal {
+                self.conformances.materialized.push(key);
+            }
+        }
         self.conformances
             .entries
             .iter()
@@ -1039,33 +1096,127 @@ impl Driver {
             .collect()
     }
 
-    /// Instantiates each matching template at most once for one concrete
-    /// target. Templates are all parked before this can run, so a cached
-    /// target cannot miss a declaration from a later module.
-    fn materialize(&mut self, target: &ResolvedType) {
-        let key = target.lookup_key();
-        if self.conformances.materialized.contains(&key) {
-            return;
-        }
+    /// The single place a template is ever instantiated for a target.
+    /// `Some(spec)` restricts the sweep to templates that can produce that
+    /// spec -- the demand path, which makes proving goal-directed: each
+    /// goal pulls in precisely the templates it needs, instead of
+    /// instantiating every template on the type (which is what let one
+    /// blanket's bound check fire mid-sweep and start a *second* template
+    /// while the first was still in flight -- the false-cycle bug).
+    /// `None` sweeps every matching template -- the "all conformances of
+    /// this type" path, kept as-is for the queries that genuinely want it.
+    ///
+    /// A template whose `(target, spec)` goal is already on the stack is
+    /// skipped **silently** -- only `conformance_for` reports, and only
+    /// when the goal it asked for is still in flight once `solve` returns.
+    pub(crate) fn solve(
+        &mut self,
+        target: &ResolvedType,
+        spec: Option<&HirId>,
+    ) -> SweepOutcome {
         let templates = self.conformances.templates.clone();
+        let mut skipped_goal = false;
         for template in templates {
-            if self.conformances.in_progress.iter().any(|active| {
-                active.id == template.conform.id && active.target == target.lookup_key()
-            }) {
+            let Some(substitution) = Self::match_conform_target(&template.conform, target) else {
+                continue;
+            };
+            // A template whose own bound check already failed at this
+            // target is permanently non-applicable here; skip it without
+            // re-running any analysis.
+            if self
+                .conformances
+                .failed
+                .iter()
+                .any(|(id, failed)| *id == template.conform.id && *failed == target.lookup_key())
+            {
                 continue;
             }
-            if let Some(substitution) = Self::match_conform_target(&template.conform, target) {
+            let Some((produced, _)) = self.template_spec(&template, &substitution) else {
+                // The produced spec does not resolve. The demand path skips
+                // silently (it cannot match a spec it cannot resolve); the
+                // full sweep still instantiates and reports -- see
+                // `template_spec`'s doc comment.
+                if spec.is_some() {
+                    continue;
+                }
                 self.instantiate_conformance(
                     &template.module,
                     &template.conform,
                     &substitution,
                     template.origin,
                 );
+                continue;
+            };
+            let spec_id = produced.borrow().id;
+            let spec_name = produced.borrow().name.clone();
+            if let Some(wanted) = spec
+                && spec_id != *wanted
+            {
+                continue;
             }
+            if self
+                .conformances
+                .goals
+                .iter()
+                .any(|goal| goal.target == target.lookup_key() && goal.spec == spec_id)
+            {
+                skipped_goal = true;
+                continue;
+            }
+            self.conformances.goals.push(ConformanceGoal {
+                id: template.conform.id,
+                target: target.lookup_key(),
+                spec: spec_id,
+                spec_name,
+                span: template.conform.span,
+            });
+            self.instantiate_conformance(
+                &template.module,
+                &template.conform,
+                &substitution,
+                template.origin,
+            );
+            self.conformances.goals.pop();
         }
-        if !self.conformances.materialized.contains(&key) {
-            self.conformances.materialized.push(key);
-        }
+        SweepOutcome { skipped_goal }
+    }
+
+    /// Resolves a matched template's spec reference with its generics
+    /// already bound. The substitution is required because a generic
+    /// template's spec arguments may reference its own generics
+    /// (`conform<K, V> HashMap<K, V> to ToIterator<KeyValue<K, V>>`): at
+    /// park time there is nothing to bind them to, so the spec cannot be
+    /// resolved then -- once the target has *matched*, the substitution
+    /// pins every generic and the spec resolves exactly.
+    ///
+    /// Failures are silent here on purpose: `solve`'s demand path uses this
+    /// as a pure filter, and the real path (`instantiate_conformance`)
+    /// re-resolves the same reference and reports whatever went wrong. A
+    /// template whose spec name does not resolve is consequently skipped
+    /// without a diagnostic by the demand path alone; any full sweep for
+    /// the type still instantiates it and reports (see
+    /// `a_template_whose_spec_does_not_resolve_reports` in
+    /// `tests/conform.rs`).
+    fn template_spec(
+        &mut self,
+        template: &ConformanceTemplate,
+        substitution: &[(Ident, ResolvedType)],
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
+        self.with_analyzer(
+            &template.module,
+            substitution,
+            (template.conform.id, template.conform.span),
+            |analyzer| {
+                analyzer.probe(|a| {
+                    a.resolve_spec_reference(
+                        template.conform.id,
+                        template.conform.span,
+                        &template.conform.spec,
+                    )
+                })
+            },
+        )
+        .result
     }
 
     /// The first of `conform`'s own generic parameters that appears nowhere in

@@ -106,84 +106,62 @@ new one is found.
 
 ## Conformance and specs (`conform` / `primitive`)
 
-Every issue tracked here through plan 0005 is now fixed and verified; see
-[specs.md](08-specs.md) for the resulting behaviour. What remains are two
-deliberate limitations and one coverage gap.
+Every issue tracked here through plan 0014 is now fixed and verified; see
+[specs.md](08-specs.md) for the resulting behaviour — goal-directed
+conformance proving (blanket chains resolve in any declaration order, and a
+genuine cycle prints the chain that closes it), alias-transparent bounds
+(`T: AB` and `T: A + B` are interchangeable in precedence and in bound
+contexts), return-type-driven generic inference (a generic named only in a
+call's expected type is inferred from it, for free functions and generic
+statics alike), and the two diagnostics that no longer name constructs the
+author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
+`GenericParamFromFatPointer` for a thin `*T` against a slice). What remains:
 
-- **A `spec T` return type on a *method* is rejected, not inferred**
-  (`SpecStaticNotAllowedHere`). Only a plain, non-overloaded top-level
-  function infers its return type from its own body, via
-  `Driver::resolve_spec_return_function`'s phase inversion.
+- **Blanket conform bodies are checked lazily**, and a blanket emits a body
+  for every type it is *materialized* against, not every type that calls it.
+  Goal-directed proving has reduced the materialization set — a type is only
+  ever swept for the specs something actually asked about, so an unrelated
+  blanket is no longer instantiated just because the type was queried for
+  some other spec — but the real fix is demand-driven conformance emission
+  rather than registration-driven; that is a change to how
+  `check_conformance_bodies` is scheduled, not a local tweak. Not a
+  correctness or binary-size problem: codegen puts each function in its own
+  section and every link uses `--gc-sections`, so dead copies never reach
+  the executable. [specs.md](08-specs.md)
 
-  Inferring it for a method is *reachable* but wrong: `collect_methods` would
-  have to check the body during the signature phase, while the loop building
-  the owning type's `functions` list is still running, so the body sees
-  `Self`'s fields but none of its sibling methods — failing with
-  `no field 'helper' on 'Zoo'` in either declaration order. That was
-  implemented once and reverted: a partially-populated cell reaching user code
-  is worse than the missing feature. Doing it properly means extending the
-  same inversion to run *after* the owning aggregate's other method signatures
-  are known, which is a phase change in `compute_aggregate`, not a local
-  override. [specs.md](08-specs.md)
+  **Measured**: `target/core.o` went from 226 defined symbols to 204 across
+  plan 0014 — the 22 removed are `Eq::equals`/`Eq::not_equals` for the 11
+  scalars, bodies `core::cmp`'s `conform<T: Ord> T to Eq` used to emit for
+  every scalar the compilation happened to query, and which `core` itself
+  never calls. This is a *reduction*, not a regression: a downstream package
+  that does call one materializes the blanket itself and emits its own weak
+  copy, which links and runs (verified). Anyone re-running an
+  `nm --defined-only` comparison against a pre-0014 object file should
+  expect this difference and no other; `target/std.o` is unchanged at 91.
 
-- **A variadic spec function is rejected at its declaration**
-  (`VariadicSpecFunctionUnsatisfiable`). Omega has no variadic function
-  *definitions* — only `extern` declarations may be variadic, for C interop —
-  so neither a `conform` block nor a spec default can supply a matching body,
-  and every implementor would otherwise fail with a bare
-  `MissingSpecFunction` naming a function it has no syntax to write. The
-  `is_variadic` plumbing behind it (HIR, `RawSpecFunctionSig`, the resolved
-  `ResolvedFunctionType`) is complete; only this guard stands between it and
-  working, and it should be lifted the day variadic definitions exist.
-
-- **A generic function whose only type parameter appears in its return type
-  cannot be called.** There is nothing to infer from and no way to say it
-  explicitly:
-
-  ```
-  lowest<T: Bounded>() => T { T::min() }
-  x : i32 = lowest();     # error: cannot infer type parameter 'T'
-                          #        from this call's arguments
-  ```
-
-  `T::min()` in the *body* is fine; the *call* is what fails. `expected` is
-  now threaded through `analyze_call`'s interceptor pipeline (it was added
-  for `Spec::static_fn()` -- `x : char = Bounded::min();`, see
-  [specs](08-specs.md)'s three-tier ladder), but
-  `resolve_generic_static_call` deliberately ignores it: using it there is
-  a separate change to a separate inference source, kept out so a
-  call-resolution regression can be bisected to the threading rather than
-  to a new inference. Omega also has no explicit generic-argument syntax
-  at a call site to fall back on.
-
-  Two workarounds, both compromises, both verified: give the parameter a
-  default (`lowest<T: Bounded = i32>()`, which pins the type rather than
-  inferring it), or add a parameter purely to infer from
-  (`lowest_like<T: Bounded>(hint: T)`).
-
-  Closing the gap is a change to `resolve_generic_static_call` alone: unify
-  the call's declared return type against `expected` to solve the owner's
-  type parameters, the same `unify_generic_type` machinery already used for
-  argument-driven deduction. [generics.md](06-generics.md),
+- **Latent blanket overlap is diagnosed at use, not declaration.** The
+  compiler intentionally does not try to prove whether arbitrary spec bounds
+  overlap. Two unrelated blankets become an `AmbiguousConformance` only when
+  a concrete type satisfies both; this avoids rejecting declarations that
+  can never apply together, at the cost of a downstream diagnostic.
   [specs.md](08-specs.md)
 
-- **A generic parameter cannot be inferred from a slice argument.**
-  `f<T>(x: *T)` called with a `*[]u8` reports "cannot infer type parameter
-  'T' from this call's arguments", and `f<[?]u8>(...)` is not valid syntax
-  either. Nothing to do with conformance — it reproduces with no spec or
-  conform in the program — but it is what stops a slice conform from being
-  reached through a generic bound: `Show::show(s)` works, `use_it<T: Show>(s)`
-  does not. [generics](06-generics.md)
-
-- **Which conform body a call selects is only observable by execution.**
-  `compiler/omega-driver/tests/conform.rs` produces a `CompiledProgram` and
-  cannot execute it, so its precedence assertions are declaration-level
-  facts. The runtime half — which blanket's body actually ran, which spec's
-  same-named method a call reached, which vtable section a narrowing cast
-  landed on — is asserted by `just test-spec-dispatch`
-  (`examples/spec_dispatch`), which returns a distinct exit code per failed
-  case, in the same style as `test-range`.
-
+- **Design note: definition-site `spec T` return types are removed.**
+  `make() => spec Animal { ... }` is now `SpecStaticNotAllowedHere` on a
+  free function and a method alike, deliberately — the syntax promises "some
+  unknown type implementing XYZ", which is true of a spec *declaration*
+  (each implementor answers differently) and false at a definition site
+  (one body, one type, known to its author), and its only benefit was
+  hiding a name. The removed machinery was a phase inversion (body analysis
+  during the signature phase); the rule is now uniform: a return type is
+  either written concretely, or chosen by the *caller* through an ordinary
+  generic parameter (`f<T: Animal>() => T`). The spec-declaration position
+  (`to_iterator(*self) => spec Iterator<T>`) and the parameter position
+  (unchanged sugar) both stay — see [specs.md](08-specs.md). Reopening this
+  would need a compiler that can afford body analysis during the signature
+  phase in every compilation module; until then the workarounds are to name
+  the concrete type or take a bound generic parameter.
+  [specs.md](08-specs.md)
 
 ## Gaps and glue
 
@@ -357,51 +335,201 @@ need a breaking change to fix — full writeups in
   address). A bare, projection-less `n = 5` is deliberately still a pure
   write, so `UnusedVariable` keeps firing on write-only bindings.
 
-- **An unsatisfied generic-`conform` bound is reported once per conformance
-  lookup, not once per declaration.** `Driver::instantiate_conformance` checks the
-  template's own bounds before its memoization guard, and a failed check
-  registers no entry, so every later `conformances_for_type` call for the same
-  target re-runs the check and re-reports. `conform<T: W> Buf<T> to W` against
-  a `Buf<NotW>` that is also coerced to `spec *mut W` prints the identical
-  `SpecNotImplemented` twice. The anchor and wording are correct; only the
-  count is wrong. The fix is either a per-`(conform id, target)` "already
-  reported" set in `Conformances`, or general diagnostic de-duplication — both
-  wider than the conform path itself. [specs.md](08-specs.md)
+- **Latent blanket overlap is diagnosed at use, not declaration.** The
+  compiler intentionally does not try to prove whether arbitrary spec bounds
+  overlap. Two unrelated blankets become an `AmbiguousConformance` only when
+  a concrete type satisfies both; this avoids rejecting declarations that
+  can never apply together, at the cost of a downstream diagnostic.
+  [specs.md](08-specs.md)
 
-- **Blanket conform bodies are checked lazily.** Like existing generic
-  conformance templates, `conform<T: Bound> T to Spec` is type-checked only
-  once a concrete target satisfies its bound. An unused invalid body can
-  therefore ship in a library until some consumer materializes it.
+- **Design note: definition-site `spec T` return types are removed.**
+  `make() => spec Animal { ... }` is now `SpecStaticNotAllowedHere` on a
+  free function and a method alike, deliberately — the syntax promises "some
+  unknown type implementing XYZ", which is true of a spec *declaration*
+  (each implementor answers differently) and false at a definition site
+  (one body, one type, known to its author), and its only benefit was
+  hiding a name. The removed machinery was a phase inversion (body analysis
+  during the signature phase); the rule is now uniform: a return type is
+  either written concretely, or chosen by the *caller* through an ordinary
+  generic parameter (`f<T: Animal>() => T`). The spec-declaration position
+  (`to_iterator(*self) => spec Iterator<T>`) and the parameter position
+  (unchanged sugar) both stay — see [specs.md](08-specs.md). Reopening this
+  would need a compiler that can afford body analysis during the signature
+  phase in every compilation module; until then the workarounds are to name
+  the concrete type or take a bound generic parameter.
+  [specs.md](08-specs.md)
 
-- **A chain of two blanket derivations is misreported as a cycle.** Proving a
-  blanket's bound by materializing *another* blanket trips the recursion guard,
-  which cannot tell "re-entered while proving" from "genuinely circular":
+## Gaps and glue
 
-  ```
-  conform S to A { ... }
-  conform<T: A> T to B { ... }
-  conform<T: B> T to C { ... }
-  use_c(S)     # error: cyclic conformance while proving 'S: B'
-  ```
+- **No default-bodied `gap` function** — every gap function must
+  currently be a bare requirement; a body is rejected outright
+  ([gaps-and-glue.md](21-gaps-and-glue.md)).
+- **No "override" or test-only glue concept** — a second `glue` for the
+  same gap is always a hard error project-wide, with no way to shadow one
+  intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
+- **`MultipleGluesForGap` cannot point at the conflicting glue blocks.**
+  The error is anchored at the *gap*'s declaration (correctly — neither
+  glue is more at fault), and names each conflicting glue as
+  `<module path>#<internal HirId>`, e.g. `plat#1, other#1`. Within a single
+  module that degrades to `t#3, t#7`, which names nothing a reader can act
+  on. The real fix is a secondary diagnostic label at each glue's own span,
+  and those spans are in *different files* from the primary — the renderer
+  only supports same-file secondary labels today (`Redeclaration`'s
+  `previous: Option<Span>` is the only precedent). Resolving it means
+  either cross-file labels in `omega-diagnostics`, or having
+  `Driver::sweep_gaps` emit one additional `CompileError::Analysis` per
+  glue site in that glue's own module. Left alone because the choice
+  between those is a diagnostics-subsystem design decision, not a local fix.
+- **`@suppress(unfilled_gap)` is unreachable.** Every warning's rendering
+  ends with the generic "suppress this with `@suppress(<slug>)`" note, so
+  `UnfilledGap` advertises it — but `gap` is a first-class declaration that
+  takes no annotations at all, so following the advice is now a hard parse
+  error. It never worked before either: `Driver::sweep_gaps` constructs the
+  warning directly rather than going through `Analyzer::warn`, which is the
+  only thing that consults `@suppress`. Fixing it means either giving
+  `HirGapDef` an annotation list (which the gap/glue plan deliberately
+  avoided, to keep anything downstream from branching on gap-level
+  metadata) or teaching the whole-program sweeps to honour suppression and
+  suppressing the note when a warning kind has no suppressible anchor.
+  [gaps-and-glue.md](21-gaps-and-glue.md)
 
-  `A -> B -> C` terminates; there is no cycle. Isolated: a genuine cycle
-  (`conform<T: B> T to A` plus `conform<T: A> T to B`) is still correctly
-  rejected, a chain whose middle link is a *concrete* conformance works, and
-  two blankets with unrelated bounds work. It fires only when one blanket's
-  bound is supplied by another.
+## Visibility
 
-  This matters more than its size suggests. Spec provisioning was removed in
-  favour of blanket derivation, so blankets are now *the* mechanism for "conforming
-  to X gives you Y" -- `core::cmp`'s `conform<T: Ord> T to Eq` is one link, and
-  the first second link anyone adds (say `conform<T: Eq> T to Hashable`) hits
-  this. The diagnostic also actively misleads: it tells an author their
-  non-cyclic code is cyclic, pointing at the wrong construct.
+- **No re-export / `pub use`-equivalent.** Matches the language having no
+  re-export concept at all today. [visibility.md](07-visibility.md)
 
-  The guard (`Conformances::in_progress`) is deliberately conservative rather
-  than exact. A real fix needs it to distinguish a re-entrant *query* for a
-  conformance already being materialized from a true dependency cycle --
-  recording the in-progress `(target, spec)` chain and reporting only when the
-  chain closes on itself, rather than on any re-entry. [specs.md](08-specs.md)
+## Macros
+
+- **A node built from a macro expansion gets a composite span running from
+  the call site to the definition site, and statement position makes it
+  visible in ordinary diagnostics.** Every token keeps its own real
+  originating span (deliberately — there is no render-to-text-and-relex
+  round trip), so a node built from a mix of call-site argument tokens and
+  definition-site body tokens spans both. `expand_expr` hides this for
+  expression position by pinning the invocation's own call-site span back
+  onto the outer node, but a statement-position expansion has no equivalent:
+  the spliced statements and their expressions keep the composite spans the
+  re-parse produced. `just build-exe` on `examples/dev/main.omg`
+  demonstrates it — the `unused return value` warning for
+  `call_each$(puts, ...)` at line 769 renders a label stretching to the
+  macro's own definition at line 1495, ~700 lines of elided snippet for a
+  one-line statement. Not fixed here because the honest fix is a single
+  span policy shared by all three positions (item position has the same
+  latent problem), which is a design decision rather than a local patch:
+  either remap every span in an expansion to the call site (losing the
+  ability to point inside a macro body at all) or give `Span` a notion of
+  expansion provenance so the renderer can show both. Pinning only the
+  top-level statement node would fix the demonstrated case while leaving
+  every nested expression inside an expansion still wrong.
+  [macros.md](12-macros.md)
+- **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
+  documents.** `macros.rs`'s budget is spent one unit per invocation and
+  reports `ExpansionLimitExceeded` at 256, but each expansion costs roughly
+  twenty stack frames (the recursive-descent re-parse plus `expand_expr`'s
+  own very large frame), so `macro a() => { a$() }` aborts on a stack
+  overflow before the budget runs out on a 2 MiB thread stack — it only
+  reports cleanly with `RUST_MIN_STACK` raised. Pre-existing: reproduced
+  identically on the baseline commit with the old `a!()` syntax. Statement
+  position adds a second recursion path (`expand_statements_invocation`)
+  with the same shape. The fix is a *depth* limit rather than (or as well
+  as) a total-expansion budget. [macros.md](12-macros.md)
+- **Duplicate macro parameter names are silently accepted**, e.g.
+  `macro m($a: expr, $a: expr)`; bindings are a `HashMap`, so the later
+  parameter wins and the earlier one becomes unreferenceable. The same
+  applies when a fixed parameter and the variadic share a name, where the
+  variadic's `Many` binding shadows the fixed `One`. Pre-existing (the flat
+  `Vec<MacroParam>` model had it too); the fix is one duplicate check in
+  `parse_macro_signature` plus a `ParseErrorKind` variant.
+  [macros.md](12-macros.md)
+- **A repetition separator is not restricted to tokens that can survive
+  substitution.** `parse_repetition` only rejects brackets and multi-token
+  separators, so `$...($x){ ... }` or `$...($){ ... }` parses, emits the
+  `$name`/`$` token literally, and fails much later with a confusing
+  expansion-site parse error rather than at the definition. Low impact
+  (nobody writes it deliberately), but the diagnostic points at the wrong
+  place. [macros.md](12-macros.md)
+- **Macro visibility is not transitive.** A module's macro environment is
+  built from its *own* import statements and each target's *own* definitions;
+  an imported module's imports are never followed. This matches the language
+  having no re-export concept, and it is what keeps the pre-pass acyclic, but
+  it means a package cannot curate a macro surface the way it can't curate an
+  item surface. [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+- **Importing a macro leaves a spurious `unused import` warning.** Macro
+  names are resolved and consumed by the pre-pass in `omega-driver`'s
+  `Driver::macro_env`, entirely before HIR exists, so the ordinary
+  import-usage tracking never observes the use and reports the import as
+  dead. Every cross-package macro import warns today.
+  [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+
+## Compiler internals
+
+Shape problems in `omega-driver` and `omega-analyzer` that work today but each
+need a breaking change to fix — full writeups in
+[design-review.md](17-design-review.md#compiler-architecture).
+
+- **Overloading needs a whole parallel item pipeline** (two extra caches,
+  two extra sweeps, two extra resolver methods) purely because the item
+  query key can't name one candidate of an overload group — which also
+  makes generic overloads structurally impossible. Confirmed: a generic and
+  non-generic overload of the same name (`f(x: i32)` / `f<T>(x: T)`) doesn't
+  just get rejected, it fails with an opaque, rootless diagnostic
+  (`ResolveError::ItemFailed` firing with no primary error ever shown) —
+  likely `ensure_overload_signature` resolving a generic candidate's own
+  signature with an empty substitution list.
+- ~~**Two independent pending-spec-method queues**~~ — **fixed.** With
+  conformance living only in the conform registry, an aggregate queues
+  nothing, so the `ItemKey`-keyed queue was deleted outright rather than
+  unified; `ConformanceEntry::pending` is the only one left.
+- **A directory sharing its package root's name is skipped without saying
+  so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
+  `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
+  exists to de-duplicate. The *consequence* is now diagnosed —
+  a package that ends up with no modules is `CompileError::EmptyPackage`,
+  which names the expected root file and tells an old-layout package what to
+  move (it previously panicked on `compile`'s "always includes at least the
+  entry module" expectation). What remains is that nothing reports the skipped
+  directory itself, so a package with both a root file *and* a same-named
+  subdirectory still loses the subdirectory quietly. Full writeup in
+  [modules and linkage](10-modules-and-linkage.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
+- **`ResolveError::Cycle` carries a chain it never populates** — it always
+  prints one module, so the rendered message implies a cycle it never
+  shows.
+- **Module paths and item paths are the same untyped `Vec<Ident>`**, so
+  nothing prevents confusing the two.
+- **Diagnostic scoping for scanned (extern/`core`) modules is three ad-hoc
+  lists** with four different outcomes and no stated policy.
+- **A node's identity is threaded as a bare `(HirId, Span)` pair** through
+  ~60 analyzer signatures, with nothing tying the two together.
+- **`reveal`'s bypass must be re-activated by every operand position
+  individually**, with no backstop — three positions have now been fixed
+  one at a time.
+
+## Design debt worth watching
+
+- Every new `Expression`/`HirExpr`/`CheckedExpr` variant needs updates
+  across up to five separate exhaustive matches spread over multiple
+  crates (macro expansion, prelude re-exports, HIR lowering, defer-id
+  collection, codegen emission) — the compiler catches every miss as a
+  hard exhaustiveness error, so nothing is silently skipped, but budget
+  for it when adding new expression forms.
+
+## Diagnostics
+
+- ~~**A method call's receiver, and any write through a projection, did not
+  count as reads**~~ — **fixed.** `Context::mark_used` was reached from a
+  single site (`analyze_expr`'s `HirExpr::Place` arm), which a *receiver*
+  never goes through — it is analyzed as a place instead — and which a
+  projected write (`*out = 5`, `s.v = 5`) does not reach either. So a
+  parameter used only as a receiver, or only as an out-pointer, reported
+  `UnusedParameter`: `write_bool(out: spec *mut Write, …)` used `out` twice
+  and still warned, and `List::pop(*mut self, out: *mut T)` did too.
+  Long-standing and not spec-object-specific — a concrete `d.get()` warned
+  identically — but the stdio redesign made it unmissable, since every
+  `write_*` helper uses its `out` parameter only as a receiver. Marked now in
+  `resolve_callee` (receivers) and in `analyze_place` when the place has at
+  least one projection (a projection must load its root to compute an
+  address). A bare, projection-less `n = 5` is deliberately still a pure
+  write, so `UnusedVariable` keeps firing on write-only bindings.
 
 - **An alias bound and its inline spelling are not interchangeable in blanket
   precedence.** `conform<T: AB> T to X` and `conform<T: A + B> T to X`, where
@@ -418,53 +546,6 @@ need a breaking change to fix — full writeups in
   concrete type satisfies both; this avoids rejecting declarations that can
   never apply together, at the cost of a downstream diagnostic.
 
-- **A blanket emits a body for every type it is *materialized* against, not
-  every type that calls it.** `Driver::materialize` runs whenever any
-  conformance question is asked about a type — a bound check, a spec-qualified
-  path, a `for..in` source — and `check_conformance_bodies` emits a body for
-  every registered entry, with no reachability test. So in a program with
-  `conform<T> T to Sum` where only `A` ever calls `Sum::sum`, but `B` and `C`
-  are queried because they conform to some *other* spec, all three get a
-  `Sum::sum` body in the object file. Measured, not theorised.
-
-  Not a correctness or binary-size problem: codegen puts each function in its
-  own section (`ObjectBuilder::per_function_section`) and every link uses
-  `--gc-sections`, so the dead copies never reach the executable. It costs
-  object size and compile time, proportional to (types queried × matching
-  blankets), and unbounded blankets are the worst case since their bound
-  filters nothing. The real fix is demand-driven conformance emission rather
-  than registration-driven; that is a change to how `check_conformance_bodies`
-  is scheduled, not a local tweak. [specs.md](08-specs.md)
-
-- **A `*mut self` requirement against an rvalue receiver reports
-  `NotMutablePointer`, and the invariant that made that correct no longer
-  holds.** `Bump::bump(make())`, where `bump(*mut self)` and `make()` returns
-  by value, is correctly *rejected* — the mutation would land in a temporary
-  that is immediately discarded — but the message is `cannot mutate through
-  an immutable pointer`, naming a pointer that does not appear in the source
-  and that no added `mut` can fix.
-
-  `Analyzer::require_mutable_place` (`analysis/places.rs`) picks between
-  `NotMutableBinding` and `NotMutablePointer` by asking whether the checked
-  place has a `Deref` projection, falling through to `NotMutablePointer` for
-  any root that isn't an unqualified path. Its own doc comment states the
-  assumption that justified that fallback: "a non-place root, e.g. a
-  freshly-constructed value, is never itself the *cause* of immutability --
-  something dereferenced along the way always is." **That is no longer
-  true.** Spec-qualified calls now wrap a non-place receiver in
-  `HirPlaceRoot::Expr` so it can be adapted at all (see
-  `Analyzer::adapt_self_argument`), producing a place with a non-path root
-  and *no* `Deref` projection — the exact shape the assumption excluded.
-
-  Pre-existing in the sense that a receiver-position call on an rvalue
-  reaches the same arm, but newly *reachable* in ordinary code: a
-  spec-qualified call is the normal way to invoke a conforming method, and its
-  receiver is an ordinary argument expression that anyone may write as a call
-  or a literal. The fix is a third `AnalysisErrorKind` for the not-a-place
-  case — "`*mut self` needs a place to mutate; bind the value to a `mut`
-  local first" — selected in `require_mutable_place` before the
-  `through_pointer` test, plus a correction to that doc comment.
-  [specs.md](08-specs.md)
 - **Type-level capture remains possible in macro-generated declarations.**
   Generic parameters and `Self` intentionally ignore macro origin, because
   they are substitution-bound rather than lexical bindings. A generated type

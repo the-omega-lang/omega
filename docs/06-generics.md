@@ -22,10 +22,11 @@ and a generic instantiation's symbol name can be a pure function of
 
 A parameter typed `spec Spec` (no `*`, Rust's `impl Trait`) is sugar for
 exactly this: an implicit, freshly-named bound generic parameter,
-desugared away before analysis ever sees it. `spec Spec` also has two
-return-position meanings (a spec's own associated-type-like requirement;
-an ordinary function's body-inferred return type) — see
-[specs](08-specs.md)'s own `spec T` section for the full story.
+desugared away before analysis ever sees it. `spec Spec` also has a
+return-position meaning inside a spec's own function declaration (the
+associated-type-like requirement); at a *definition* site it is rejected
+outright — see [specs](08-specs.md)'s own `spec T` section for the full
+story.
 
 ## Cross-compilation sharing: weak linkage
 
@@ -136,14 +137,9 @@ reference.
   inference at once is a distinct, separable piece of work; today this
   falls back to the same `GenericArgCountMismatch` calling any of them
   with explicit generics omitted always produced.
-- **A zero-argument static factory inferred from `expected` alone** (e.g.
-  a hypothetical `x : List<i32> = List::empty();`) — `analyze_call`'s
-  interceptor pipeline doesn't thread an `expected` type through today; a
-  real, separable follow-up if a use case comes up. A declared **default**
-  (see below) covers the common instance of this gap (`List<T = i32>` lets
-  `List::empty()` work with no `expected` needed at all), but an
-  undefaulted generic with no arguments to infer from is still exactly
-  this unfixed case.
+- **Generic *methods*** (a method-shaped call on a generic receiver) remain
+  outside call-site inference, by design; see "Fixed: generic struct/enum
+  methods" below.
 
 ## Default type arguments
 
@@ -180,7 +176,7 @@ same padding starting from zero explicit arguments — it becomes valid
 shorthand automatically the moment every one of a type's generics has a
 default, with no separate mechanism needed.
 
-### Precedence in a function call: explicit > default > inference
+### Precedence in a function call: expected type > explicit > default > inference
 
 ```
 add<T = u64>(a: T, b: T) => T { a + b }
@@ -191,27 +187,53 @@ sum3 := add(10, 20u32);   # error        (a defaults T to u64; b's own u32 suffi
 ```
 
 A generic function/static-call's arguments are still analyzed left to
-right (`Analyzer::infer_generic_args`, replacing the old "analyze
-everything, then unify" two-phase shape `finish_generic_call` used to
-have), but now each argument is analyzed *against* whatever's already
-known about its own parameter's generic: an earlier argument's own pin, or
-— if nothing has pinned it yet and the parameter's generic has a declared
+right (`Analyzer::infer_generic_args`), but now each argument is analyzed
+*against* whatever's already known about its own parameter's generic: the
+call's own **expected type**, seeded *first* by unifying the function's
+declared return type against it (the outermost constraint, the same order
+literal inference already uses — a literal consults `expected` before
+probing its own fields); then an earlier argument's own pin; then — if
+nothing has pinned it yet and the parameter's generic has a declared
 default — that default, threaded in as this argument's `expected` type the
 same way an `if`-branch or a binary operand's own anchor already works
 (see [control flow](03-control-flow.md)). A bare/adaptable literal takes
 the hint; an argument with its own explicit type (a suffix, or an
-already-concretely-typed expression) always ignores `expected` and wins
-outright, exactly as before — which is what makes `sum2`'s `b` adapt to
-`u32` while `sum3`'s `b` instead conflicts with the `u64` `a` already
-locked in, caught by the same, unchanged final argument-type check every
-ordinary call already had. No separate bookkeeping for "was this pinned by
-a default" is needed: whichever way an argument's real type ends up, it's
-what permanently pins the generic.
+already-concretely-typed expression) always ignores `expected` — which is
+what makes `sum2`'s `b` adapt to `u32` while `sum3`'s `b` instead
+conflicts with the `u64` `a` already locked in, caught by the same,
+unchanged final argument-type check every ordinary call already had. The
+expected-type seed wins over argument-driven inference by design (it is
+the outermost constraint), so an argument that genuinely conflicts with it
+is a type error — never a silent override. No separate bookkeeping for
+"was this pinned by a default" is needed: whichever way an argument's real
+type ends up, it's what permanently pins the generic.
 
-A generic that never appears in any parameter at all (return-type-only, or
-every generic on a zero-argument call like `MyExampleList::new()` above)
-has nothing to thread `expected` through — it's left unbound by the
-argument loop and picked up by the same struct/enum/union-side default
+This covers **both** free generic functions and generic-type statics, and
+it is the mechanism behind "the caller chooses the return type": a generic
+named only in a function's return type (`lowest<T: Bounded>() => T`,
+`identity<T>(x: T) => T`, or a static `empty() => Self` on a generic
+owner) is now callable wherever the call sits in an expected-type position
+— a declaration annotation, a tail return, an explicit `return`, an
+argument, an `if` branch, an array-literal element:
+
+```
+lowest<T: Bounded>() => T { T::min() }
+x : i32 = lowest();        # T = i32, from the expected type
+y : i64 = identity(5);     # T = i64: the seed reaches the literal argument
+boxed : List<i64> = List::empty();   # owner generics from `expected`
+```
+
+This is now the **only** way a return type is chosen by anything other
+than the definition: definition-site `spec T` return types (body-inferred
+"some unknown type implementing XYZ") were removed outright — a return
+type is either written concretely, or chosen by the caller through an
+ordinary generic parameter (see [specs](08-specs.md)).
+
+A generic that never appears in any parameter at all *and* has no expected
+type to seed from (return-type-only with no surrounding context, or every
+generic on a zero-argument call like `MyExampleList::new()` in a
+context-free position) has nothing to infer from — it's left unbound by
+the argument loop and picked up by the same struct/enum/union-side default
 padding described above, once the call's owner type is resolved.
 
 Struct/union/enum **literal** construction (`Box { value = 7; }`) gets the

@@ -522,7 +522,7 @@ spec's own signature is resolved (`false` the instant any of its own
 functions — or any alias member's — has a `spec T` return requirement), and
 checked at the one place a `spec *T` type actually gets built.
 
-### Return position, on an ordinary (non-spec) function
+### Return position, on an ordinary (non-spec) function: rejected
 
 ```
 make_dog() => spec Animal {
@@ -530,39 +530,26 @@ make_dog() => spec Animal {
 }
 ```
 
-The concrete return type is *inferred from the function's own body* —
-every `return`/tail exit point must resolve to the exact same concrete
-type (Rust's `impl Trait` rule: one concrete type, not merely "each
-individually satisfies the bound"), which must itself implement the
-declared bound. This is the most involved of the three: it inverts the
-compiler's ordinary signature-before-body ordering (`collect_function_
-signature` has no concrete type to give `resolve_type_or_error` for a
-`spec T` return type at all), so the driver eagerly body-checks such a
-function — twice: a throwaway probe pass to discover the concrete type
-(`Analyzer::infer_body_return_type`, `expected = None` throughout, its own
-diagnostics discarded on success), then the ordinary, unmodified
-`check_function_body` once the type is known, which is what's actually
-cached and used everywhere (`Driver::resolve_spec_return_function`).
-Diverges to `AmbiguousSpecReturnType` (two different concrete types
-across exit points), `SpecReturnTypeUnconstrained` (no exit point to infer
-from at all), or an ordinary bound-violation diagnostic, as appropriate.
+This is a **compile error** (`SpecStaticNotAllowedHere`). The rule, stated
+once: **`spec T` in return position always means "declared bound, concrete
+type written by the implementor", never "inferred from the body".**
 
-Two functions whose inference calls each other would otherwise recurse
-forever (neither one's *own* signature key is ever `InProgress` for
-itself the way ordinary same-key recursion is caught) — guarded by a
-dedicated stack (`SpecReturnTypeRecursion`), independent of (and more
-general than) the ordinary single-key cycle guard. In practice, ordinary
-call resolution's own `InProgress` tracking already catches this first
-(as a generic cyclic-dependency error) for any recursion reachable through
-a normal function call, since callee-signature resolution for *any*
-function funnels through the same query the dedicated guard backstops.
-
-Struct, enum, and union methods use the same body probe during method
-signature collection — but the probe runs while the owning type's cell is
-still being populated, so such a body can read `self`'s fields and cannot
-call the type's other methods (see
-[known-issues.md](14-known-issues.md)). Overloaded free functions remain
-outside this rule.
+The syntax promises "I return some unknown type that implements XYZ" —
+which is true of a *spec declaration* (each implementor answers
+differently, so the declaration genuinely cannot name one type) and false
+at a definition site: one body, one specific type, known to its author.
+Hiding that name is all the syntax ever bought there, and the machinery it
+needed was never cheap — discovering the concrete type from the body means
+checking the body *before* the signature, an inversion of the compiler's
+ordinary phase-1-before-phase-2 order. That inversion was removed outright
+(`Driver::resolve_spec_return_function`, `Analyzer::infer_body_return_type`
+and their state are gone), making the pipeline shorter and the rule
+uniform: a return type is either written concretely, or chosen by the
+*caller* through an ordinary generic parameter (`f<T: Animal>() => T` —
+see [generics](06-generics.md) for the call-site precedence that drives
+it). The parameter position is unchanged sugar (desugared into a bound
+generic parameter at HIR lowering), and `=> spec *AB` — a genuine fat
+pointer return — is unrelated to this rule and still compiles.
 
 ## Primitive methods
 
@@ -619,16 +606,36 @@ effect of adding methods.
   `mangle::vtable_symbol`.
 - **Only `core` can add inherent methods to primitives.** Any package allowed
   by the orphan rule can conform a concrete target to a spec.
-- **A spec function may not be variadic.** `f(*self, ...)` is rejected at the
-  spec's own declaration (`VariadicSpecFunctionUnsatisfiable`): Omega has no
-  variadic function *definitions* — only `extern` declarations may be
-  variadic — so no `conform` block or spec default could ever supply a
-  matching body. The plumbing behind it is complete; the guard lifts when
-  variadic definitions exist. See [known-issues.md](14-known-issues.md).
-- **A `spec T` return type is not inferred on a method**, only on a plain
-  top-level function — a method gets `SpecStaticNotAllowedHere`. A conform
+- **Variadic spec functions are not planned**, not a limitation. `f(*self,
+  ...)` is rejected at the spec's own declaration
+  (`VariadicSpecFunctionUnsatisfiable`): Omega has no variadic function
+  *definitions* — only `extern` declarations may be variadic, for C varargs
+  interop — so no `conform` block or spec default could ever supply a
+  matching body, and nothing else in the language is scheduled to support
+  `...`. Not banned forever, just unscheduled; the `is_variadic` plumbing
+  behind the guard is complete, and the guard lifts the day variadic
+  definitions exist.
+- **A definition-site `spec T` return type is rejected** — the same
+  `SpecStaticNotAllowedHere` on a free function and a method alike (see
+  "Return position, on an ordinary (non-spec) function" above). A conform
   method satisfying a `=> spec Bound<...>` requirement declares its own
   *concrete* return type (`std::list`'s `to_iterator(*self) =>
   ListIterator<T>`), which is checked against the bound.
+- **Conformance proving is goal-directed.** Proving `T: Spec` instantiates
+  only the blanket/generic templates that can produce *that* spec, never
+  every template matching the type; each proof pulls in precisely the
+  templates it needs, so a chain of blanket derivations
+  (`conform S to A`, `conform<T: A> T to B`, `conform<T: B> T to C`)
+  resolves in any declaration order, and a cycle is reported only when the
+  goal stack closes on itself — with the chain that closes it. A bound
+  *context* (alias members, entailed derived conformances) is body-checking
+  information, computed when a body is checked, never in the middle of a
+  proof.
+- **An alias bound and its inline spelling are interchangeable everywhere.**
+  `T: AB` and `T: A + B` describe the same set: they compare equal in
+  blanket precedence (so the two spellings of the same blanket are a
+  `DuplicateConformance`), each entails the other's derived conformances in
+  a bound context, and a generic alias (`Both<T> = Iter<T> + Eq`) expands
+  with its arguments substituted.
 - Generic primitive and conform templates are instantiated lazily for the
   concrete target types a compilation uses.

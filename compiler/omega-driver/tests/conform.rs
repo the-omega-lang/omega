@@ -1334,10 +1334,15 @@ fn generic_conform_bounds_seed_the_body_context() {
         .expect("a conform generic bound must both validate and seed its body context");
 }
 
-/// An unsatisfied conform bound must be rejected when the template is
-/// instantiated, before a conformance entry or its vtable can exist. The
-/// conform declaration, not the caller that happened to trigger discovery,
-/// owns the bad promise and therefore owns the diagnostic.
+/// An unsatisfied generic-conform bound must not produce a conformance or
+/// vtable. Proving is goal-directed now (`Driver::solve`): a template is
+/// only instantiated when its own produced spec is demanded -- or when a
+/// full sweep of the type runs -- so the bound failure is reported at the
+/// declaration when that happens. Here, `Show::show(&buf)` demands `Show`
+/// for `Buf<NotW>`, and the declaration is the anchor. (A query for some
+/// *other* spec -- e.g. a `spec *W` cast -- no longer sweeps the unrelated
+/// `Show` template; that shape is rejected at its own site instead, see
+/// `an_unrelated_spec_query_does_not_report_a_foreign_blanket_bound`.)
 #[test]
 fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
     let source = r#"
@@ -1347,11 +1352,10 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
         struct Buf<T> { exposed inner: *T; }
         conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
 
-        as_w(value: *Buf<NotW>) => spec *W { value }
         main() => i32 {
             value := NotW { value = 0; };
             buf := Buf<NotW> { inner = &value; };
-            as_w(&buf).w()
+            Show::show(&buf)
         }
         "#;
     let package = TestPackage::new(source);
@@ -1378,6 +1382,42 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
         })
         .expect("the conform bound failure is reported as SpecNotImplemented");
     assert_eq!(error.span.start, expected_start);
+}
+
+/// Goal-direction's deliberate diagnostic consequence: asking for a spec a
+/// template does *not* produce no longer instantiates it, so a foreign
+/// template's own bound failure is not reported by a query that has nothing
+/// to do with it. The program is still rejected -- the cast's own site
+/// reports that the value does not coerce -- but the declaration-level
+/// `SpecNotImplemented` belongs to the demand path for `Show` itself (see
+/// `generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration`).
+#[test]
+fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec W { w(*self) => i32; }
+        exposed spec Show { show(*self) => i32; }
+        struct NotW { exposed value: i32; }
+        struct Buf<T> { exposed inner: *T; }
+        conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
+        as_w(value: *Buf<NotW>) => spec *W { value }
+        main() => i32 {
+            value := NotW { value = 0; };
+            buf := Buf<NotW> { inner = &value; };
+            as_w(&buf).w()
+        }
+        "#,
+    );
+    let errors = compile_errors(&package, "the failing cast must still be rejected");
+    assert!(
+        !has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::ModuleResolution(
+                omega_analyzer::resolver::ResolveError::SpecNotImplemented { .. }
+            )
+        )),
+        "a query for an unrelated spec must not report the Show template's bound failure"
+    );
 }
 
 /// A conform bound may name an aggregate spec alias. The shared bound checker
@@ -1681,6 +1721,33 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
     );
 }
 
+/// The free-function sibling: definition-site `spec T` returns were removed
+/// outright, so `make() => spec Animal` is the same `SpecStaticNotAllowedHere`
+/// a method gets -- the syntax promises "some unknown type implementing XYZ",
+/// which is true of a spec *declaration* (each implementor answers
+/// differently) and false at a definition site (one body, one type, known to
+/// its author).
+#[test]
+fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Animal { speak(*self) => i32; }
+        struct Dog { exposed v: i32; }
+        conform Dog to Animal { speak(*self) => i32 { self.v } }
+        make() => spec Animal { Dog { v = 1; } }
+        main() => i32 { Animal::speak(&make()) }
+        "#,
+    );
+    let errors = compile_errors(&package, "a `spec T`-returning free function must be rejected");
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::UnresolvedType(TypeResolutionError::SpecStaticNotAllowedHere(_))
+        )),
+        "the definition-site `spec T` return must be rejected as SpecStaticNotAllowedHere"
+    );
+}
+
 /// An annotation naming an element type the source does not produce is a
 /// mismatch, not an ambiguity -- it used to render as an ambiguity over an
 /// empty candidate list, naming neither the requested nor the available type.
@@ -1879,19 +1946,53 @@ fn a_genuine_conformance_cycle_is_rejected() {
     )));
 }
 
-/// **Known bug, pinned deliberately** — see the "chain of two blanket
-/// derivations is misreported as a cycle" entry in `docs/14-known-issues.md`.
-///
-/// `A -> B -> C` terminates; there is no cycle. The guard fires because
-/// proving `S: C` needs `S: B`, which is itself mid-materialization, and it
-/// cannot tell re-entry from circularity. This asserts the *wrong* answer on
-/// purpose so the bug is discoverable rather than folklore.
-///
-/// **When this test starts failing, the bug is fixed.** Replace the assertion
-/// with the real expectation (the program compiles and `use_c` returns 3) and
-/// delete the known-issues entry.
+/// A chain of two blanket derivations (`S: A` -> `S: B` -> `S: C`)
+/// terminates; there is no cycle. Previously misreported as
+/// `ConformanceCycle` in one declaration order only: proving one blanket's
+/// bound re-entered the *other* blanket's in-flight sweep, and the old
+/// guard could not tell re-entry from circularity -- order-dependent, which
+/// is strictly worse than conservative. Goal-directed solving
+/// (`Driver::solve`) instantiates only the templates a goal can actually
+/// use, so proving `S: C` pulls in `S: B` pulls in `S: A`, and no
+/// declaration order changes that.
 #[test]
-fn a_blanket_chain_is_currently_misreported_as_a_cycle() {
+fn a_blanket_chain_compiles_in_either_declaration_order() {
+    for swap in [false, true] {
+        let package = TestPackage::new(&format!(
+            r#"
+            exposed spec A {{ a(*self) => i32; }}
+            exposed spec B {{ b(*self) => i32; }}
+            exposed spec C {{ c(*self) => i32; }}
+            struct S {{ exposed v: i32; }}
+            conform S to A {{ a(*self) => i32 {{ 1 }} }}
+            {}
+            {}
+            use_c<T: C>(t: T) => i32 {{ t.c() }}
+            main() => i32 {{ use_c(S {{ v = 0; }}) }}
+            "#,
+            if swap {
+                "conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }"
+            } else {
+                "conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }"
+            },
+            if swap {
+                "conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }"
+            } else {
+                "conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }"
+            },
+        ));
+        package
+            .compile()
+            .expect("the blanket chain compiles in either declaration order");
+    }
+}
+
+/// The same chain with a *concrete* middle link (`S: A` and `S: B` written
+/// out, only `B -> C` derived) -- this always worked, and must keep
+/// working: goal-direction must not have broken the ordinary derivation
+/// step.
+#[test]
+fn a_blanket_chain_with_a_concrete_middle_link_still_works() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
@@ -1899,27 +2000,79 @@ fn a_blanket_chain_is_currently_misreported_as_a_cycle() {
         exposed spec C { c(*self) => i32; }
         struct S { exposed v: i32; }
         conform S to A { a(*self) => i32 { 1 } }
-        conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }
+        conform S to B { b(*self) => i32 { self.v + 1 } }
         conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }
         use_c<T: C>(t: T) => i32 { t.c() }
         main() => i32 { use_c(S { v = 0; }) }
         "#,
     );
-    let errors = compile_errors(&package, "known bug: the chain is misread as cyclic");
+    package
+        .compile()
+        .expect("a blanket chain with a concrete middle link compiles");
+}
+
+/// A fourth blanket, bounded on the chain's *middle* spec, coexists with
+/// the chain. This is the case that fails if the bound context is still
+/// computed mid-proof: proving `S: B`'s bound used to sweep *every*
+/// template on `S` -- including this unrelated blanket -- and instantiate
+/// it mid-sweep, reproducing the false cycle through a different door. The
+/// context is now body-checking information (`check_generic_bounds` stores
+/// only the declared set; `bound_context_for` runs at body-check time), so
+/// a proof never sweeps.
+#[test]
+fn a_fourth_blanket_bounded_on_the_middle_spec_compiles() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec C { c(*self) => i32; }
+        exposed spec X { x(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to A { a(*self) => i32 { 1 } }
+        conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }
+        conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }
+        conform<T: B> T to X { x(*self) => i32 { self.b() + 10 } }
+        use_c<T: C>(t: T) => i32 { t.c() }
+        use_x<T: X>(t: T) => i32 { t.x() }
+        main() => i32 { use_c(S { v = 0; }) + use_x(S { v = 0; }) }
+        "#,
+    );
+    package
+        .compile()
+        .expect("an unrelated fourth blanket does not disturb the chain");
+}
+
+/// A generic template whose spec name does not resolve is skipped silently
+/// by the *demand* path (it cannot match a spec it cannot resolve), so the
+/// diagnostic must survive through the full sweep -- here, a method lookup
+/// on the instantiated type. If this ever stops compiling, a realistic
+/// program has lost the diagnostic: stop and report.
+#[test]
+fn a_template_whose_spec_does_not_resolve_still_reports_not_a_spec() {
+    let package = TestPackage::new(
+        r#"
+        struct Plain { exposed v: i32; }
+        struct Wrapper<T> { exposed v: T; }
+        conform<T> Wrapper<T> to Plain { }
+        main() => i32 { w := Wrapper { v = 1; }; w.nothing_here() }
+        "#,
+    );
+    let errors = compile_errors(&package, "the non-spec conform target must be reported");
     assert!(
         has_analysis_error(&errors, |kind| matches!(
             kind,
-            AnalysisErrorKind::ConformanceCycle { .. }
+            AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(name))
+                if name.as_ref() == "Plain"
         )),
-        "the blanket-chain bug may have been fixed -- see docs/14-known-issues.md"
+        "expected NotASpec naming the template's non-spec target"
     );
 }
 
-/// The other conservative case from that same review: an alias bound and its
-/// inline spelling describe the same set but do not compare as equal, so a
-/// type satisfying both gets an ambiguity rather than a duplicate diagnosis.
-/// Errors rather than selecting silently, so this is pinned as acceptable —
-/// but see `docs/14-known-issues.md` if it should become a duplicate.
+/// An alias bound and its inline spelling describe the same set, so two
+/// blankets over the same spec with those spellings compare as *equal* and
+/// collide as `DuplicateConformance` -- never as ambiguous. Previously the
+/// sets did not compare equal (alias members were not expanded before the
+/// subset comparison), which produced a bogus `AmbiguousConformance`.
 #[test]
 fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
     let package = TestPackage::new(
@@ -1937,9 +2090,277 @@ fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
         main() => i32 { use_x(S { v = 0; }) }
         "#,
     );
-    let errors = compile_errors(&package, "alias vs inline must not silently pick");
+    let errors = compile_errors(&package, "alias vs inline must compare as equal");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::AmbiguousConformance { .. }
+        AnalysisErrorKind::DuplicateConformance { .. }
     )));
+}
+
+/// The bound-context half of alias transparency: a blanket declared with an
+/// *alias* bound must be reached from an inline bound context, and the
+/// reverse -- both `use_x` bodies call a method the blanket provides.
+#[test]
+fn an_alias_bound_and_its_inline_spelling_are_interchangeable_in_bound_contexts() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec AB = A + B;
+        exposed spec X { x(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to A { a(*self) => i32 { 1 } }
+        conform S to B { b(*self) => i32 { 2 } }
+        conform<T: AB> T to X { x(*self) => i32 { 10 } }
+        use_inline<T: A + B>(t: T) => i32 { t.x() }
+        use_alias<T: AB>(t: T) => i32 { t.x() }
+        main() => i32 { use_inline(S { v = 0; }) + use_alias(S { v = 0; }) }
+        "#,
+    );
+    package
+        .compile()
+        .expect("alias-declared blanket must be reachable under an inline bound and back");
+}
+
+/// The same transparency through a blanket declared with the *inline*
+/// spelling, reached from an alias bound context.
+#[test]
+fn an_inline_blanket_is_reachable_under_an_alias_bound() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        exposed spec AB = A + B;
+        exposed spec X { x(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to A { a(*self) => i32 { 1 } }
+        conform S to B { b(*self) => i32 { 2 } }
+        conform<T: A + B> T to X { x(*self) => i32 { 10 } }
+        use_alias<T: AB>(t: T) => i32 { t.x() }
+        main() => i32 { use_alias(S { v = 0; }) }
+        "#,
+    );
+    package
+        .compile()
+        .expect("inline-declared blanket must be reachable under an alias bound");
+}
+
+/// A *generic* alias expands with its arguments substituted: `Both<T>`'s
+/// member `Eq<T>` must expand to `Eq<i32>` for the bound `Both<i32>`, so a
+/// blanket declared over the inline spelling with `i32` compares equal and
+/// both bodies resolve through the expansion.
+#[test]
+fn a_generic_alias_bound_expands_with_its_arguments_substituted() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Iter<T> { next(*self) => i32; }
+        exposed spec Eq { equals(*self, other: *Self) => bool; }
+        exposed spec Both<T> = Iter<T> + Eq;
+        exposed spec X { x(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to Iter<i32> { next(*self) => i32 { self.v } }
+        conform S to Eq { equals(*self, other: *S) => bool { false } }
+        conform<T: Both<i32>> T to X { x(*self) => i32 { 1 } }
+        conform<T: Iter<i32> + Eq> T to X { x(*self) => i32 { 2 } }
+        use_x<T: X>(t: T) => i32 { t.x() }
+        main() => i32 { use_x(S { v = 0; }) }
+        "#,
+    );
+    let errors = compile_errors(&package, "the generic alias expands with its arguments");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::DuplicateConformance { .. }
+    )));
+}
+
+/// A generic function whose only type parameter appears in its return type
+/// is callable from every expected-type position: the declared return type
+/// is unified against `expected` to seed the substitution, then ordinary
+/// argument-driven inference runs unchanged. Declaration annotation, tail
+/// return, explicit `return`, argument position, and `if` branch are all
+/// the same single mechanism.
+#[test]
+fn a_return_type_only_generic_is_inferred_from_the_expected_type() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Bounded { min() => Self; }
+        struct Small { exposed v: i32; }
+        struct Big { exposed v: i64; }
+        conform Small to Bounded { min() => Self { Small { v = 1; } } }
+        conform Big to Bounded { min() => Self { Big { v = 2; } } }
+
+        lowest<T: Bounded>() => T { T::min() }
+        take_small(x: Small) => i32 { x.v }
+        take_big(x: Big) => i64 { x.v }
+        tail_return() => Small { lowest() }
+        explicit_return() => Small { return lowest(); }
+        branch(cond: bool) => Small { if cond { lowest() } else { Small { v = 9; } } }
+
+        main() => i64 {
+            a : Small = lowest();
+            b : Big = lowest();
+            c := take_small(tail_return());
+            d := take_small(explicit_return());
+            e := take_small(branch(true));
+            f := take_big(lowest());
+            <i64>a.v + b.v + <i64>c + <i64>d + <i64>e + f
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("return-type-only generic infers from expected");
+}
+
+/// A generic type's static function infers its owner generics from the
+/// expected type, whether the return type is written `Self` (rewritten to
+/// the owner's own generic spelling) or written out (`Box<T>`).
+#[test]
+fn a_generic_static_infers_owner_generics_from_the_expected_type() {
+    let package = TestPackage::new(
+        r#"
+        struct BoxSelf<T> { exposed v: T; exposed empty() => Self { BoxSelf { v = 0; } } }
+        struct BoxOut<T> { exposed v: T; exposed empty() => BoxOut<T> { BoxOut { v = 0; } } }
+        main() => i32 {
+            a : BoxSelf<i32> = BoxSelf::empty();
+            b : BoxOut<i64> = BoxOut::empty();
+            a.v + <i32>b.v
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("generic static infers owner generics from expected");
+}
+
+/// The seeded substitution flows into per-argument inference, so an untyped
+/// literal argument adapts to the expected type (`y : i64 = identity(5)`),
+/// the same precedence order `infer_literal_type_args` already uses.
+#[test]
+fn the_expected_type_seed_adapts_untyped_literal_arguments() {
+    let package = TestPackage::new(
+        r#"
+        identity<T>(x: T) => T { x }
+        main() => i64 { y : i64 = identity(5); y }
+        "#,
+    );
+    package
+        .compile()
+        .expect("expected type adapts the literal argument");
+}
+
+/// The seed wins over argument-driven inference by design, but a genuine
+/// conflict is still rejected by the unchanged final argument check --
+/// never silently accepted, only ever a differently-worded error.
+#[test]
+fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
+    let package = TestPackage::new(
+        r#"
+        struct Small { exposed v: i32; }
+        identity<T>(x: T) => T { x }
+        main() => i64 { y : i64 = identity(Small { v = 1; }); y }
+        "#,
+    );
+    let errors = compile_errors(&package, "the seed/argument conflict must be rejected");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ArgumentTypeMismatch { .. }
+    )));
+}
+
+/// `Bump::bump(make())` -- a `*mut self` requirement against an rvalue
+/// receiver -- is rejected with the dedicated temporary diagnostic, not
+/// `NotMutablePointer`: no pointer appears in the source, and no added
+/// `mut` could fix it.
+#[test]
+fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Bumpable { bump(*mut self) => void; }
+        struct Bump { exposed n: i32; }
+        conform Bump to Bumpable { bump(*mut self) => void { self.n = self.n + 1; } }
+        make() => Bump { Bump { n = 0; } }
+        main() => i32 { Bumpable::bump(make()); 0 }
+        "#,
+    );
+    let errors = compile_errors(&package, "an rvalue receiver must be rejected");
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::MutateTemporary
+        )),
+        "expected MutateTemporary, not NotMutablePointer"
+    );
+}
+
+/// The *other* shape that produces a non-place root: an ordinary projected
+/// write through an rvalue (`make().n = 5`), with no receiver and no `*mut
+/// self` anywhere. Pinned alongside the receiver case because the two share
+/// one diagnostic, and its wording must stay true of both -- it previously
+/// named a receiver and `*mut self`, neither of which appears here.
+#[test]
+fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
+    let package = TestPackage::new(
+        r#"
+        struct Bump { exposed n: i32; }
+        make() => Bump { Bump { n = 0; } }
+        main() => i32 { make().n = 5; 0 }
+        "#,
+    );
+    let errors = compile_errors(&package, "a write into an rvalue must be rejected");
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::MutateTemporary
+        )),
+        "expected MutateTemporary for a projected write through a temporary"
+    );
+}
+
+/// `f<T>(x: *T)` against a fat pointer reports the rule-teaching
+/// diagnostic: `*T` is a thin pointer, a slice carries a length, and there
+/// is no `[]T` type for `T` to bind to. Both `*[]u8`-shaped slices and
+/// `*str` reach it.
+#[test]
+fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Show { show(*self) => i32; }
+        use_it<T: Show>(x: *T) => i32 { 1 }
+        main() => i32 {
+            arr := [1, 2, 3];
+            slice := &arr[0..<3];
+            use_it(slice)
+        }
+        "#,
+    );
+    let errors = compile_errors(&package, "the fat-pointer inference failure must be reported");
+    assert!(
+        has_analysis_error(&errors, |kind| matches!(
+            kind,
+            AnalysisErrorKind::GenericParamFromFatPointer { .. }
+        )),
+        "expected the dedicated fat-pointer diagnostic"
+    );
+}
+
+/// The by-value form binds `T = *[]T` and compiles -- the slice rule is
+/// unchanged; only the *inference* diagnostic is new.
+#[test]
+fn a_by_value_generic_still_binds_a_slice() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Show { show(*self) => i32; }
+        conform<T> []T to Show { show(*self) => i32 { 1 } }
+        use_it<T: Show>(s: T) => i32 { 1 }
+        main() => i32 {
+            arr := [1, 2, 3];
+            slice := &arr[0..<3];
+            use_it(slice)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("the by-value form binds the slice type parameter");
 }

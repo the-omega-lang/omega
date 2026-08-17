@@ -176,20 +176,6 @@ pub struct Analyzer<'r> {
     /// (module-wide) rule, since it's compared against a single type's
     /// identity, not a module path. See `Analyzer::check_member_visibility`.
     current_owner: Option<HirId>,
-    /// Set only during `infer_body_return_type`'s throwaway "discover this
-    /// `spec T`-returning function's own concrete return type" pass. While
-    /// `true`, `HirStmt::Return`'s arm records each exit point's own
-    /// resolved type into `inferred_return_candidates` instead of
-    /// coercing/comparing it against `current_return_type` -- there is
-    /// nothing concrete to compare against yet (that's the entire point of
-    /// this pass). `false` for every ordinary body check.
-    inferring_return_type: bool,
-    /// Every `return <expr>;`'s own span + resolved type, collected only
-    /// while `inferring_return_type` is set -- read back by
-    /// `infer_body_return_type` once the body finishes, alongside the
-    /// body's own tail-position type (if any), to unify into one concrete
-    /// return type.
-    inferred_return_candidates: Vec<(Span, ResolvedType)>,
     /// Field/variant usage recorded from `comp`-evaluated subtrees this
     /// `Analyzer` run interpreted (see `eval_comp`) -- they collapse into a
     /// `CheckedExpr::Const` and never reach the final `CheckedModule`, so
@@ -391,8 +377,6 @@ impl<'r> Analyzer<'r> {
             suppressed: vec![],
             reveal_stack: vec![],
             current_owner: None,
-            inferring_return_type: false,
-            inferred_return_candidates: vec![],
             field_usage: crate::dead_code::FieldUsage::default(),
             bounds: bounds.to_vec(),
         }
@@ -438,6 +422,26 @@ impl<'r> Analyzer<'r> {
             self.warnings
                 .push(AnalysisWarning::new(node_id, span, kind));
         }
+    }
+
+    /// Runs `f` and discards every diagnostic it produced -- a speculative
+    /// question whose failure is not this query's to report; the real path
+    /// re-derives and reports it. Snapshots and truncates the *sink*, not
+    /// per-diagnostic state, so everything pushed while `f` ran (errors,
+    /// warnings, and anything a pushed error records on the side) is gone
+    /// afterwards, exactly as if the probe never happened.
+    ///
+    /// Deliberately *not* retrofitted onto `classify_for_in_source` or
+    /// `probe_literal_type_args`: those keep diagnostics on outright
+    /// failure, which is a different contract -- this is discard-everything,
+    /// for questions whose only consumer is the return value.
+    pub fn probe<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let errors = self.errors.len();
+        let warnings = self.warnings.len();
+        let result = f(self);
+        self.errors.truncate(errors);
+        self.warnings.truncate(warnings);
+        result
     }
 
     // Small generic fold used everywhere a list of HIR nodes is analyzed
@@ -939,28 +943,33 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Infers `generics` from `params`/`args`, analyzed strictly left to
-    /// right -- the machinery behind "explicit type > declared default >
-    /// inference," the precedence rule a generic function/static-call
-    /// argument follows. Shared by `Analyzer::finish_generic_call`,
-    /// `finish_generic_static_call`, and `probe_literal_type_args`
-    /// (matched by field name there instead of position, but otherwise the
-    /// identical per-slot shape).
+    /// right -- the machinery behind "expected type > explicit type >
+    /// declared default > inference," the precedence rule a generic
+    /// function/static-call argument follows (the expected type seeds the
+    /// substitution *before* any argument is analyzed, the same order
+    /// `infer_literal_type_args` already uses for struct literals). Shared
+    /// by `Analyzer::finish_generic_call` and `finish_generic_static_call`;
+    /// `probe_literal_type_args` keeps the identical per-slot shape (matched
+    /// by field name there instead of position) with its own empty seed.
     ///
-    /// Before each argument is analyzed, `expected_for_generic_param`
-    /// substitutes its raw declared type against whatever's already bound
-    /// (from an earlier argument in this same call) or, for a still-unbound
-    /// generic with its own declared default, that default -- giving
-    /// `analyze_expr` a real `expected` a bare literal can adapt to, the
-    /// same "earliest position is the anchor" precedent `if`-branches and
-    /// binary operands already use (see `docs/03-control-flow.md`). The
-    /// argument's own *actual* resolved type -- not the tentative
-    /// `expected` -- is what `unify_generic_type` then permanently pins the
-    /// generic to: an explicit suffix/type on the argument always wins over
-    /// `expected` regardless (see `analyze_number`), so this never needs to
-    /// track "was this pinned by a default" separately from an ordinary
-    /// argument-driven pin. A later argument whose own explicit type
-    /// conflicts with an already-pinned generic is left to the caller's
-    /// own, unchanged final `accepts` loop to reject.
+    /// `seed` is the substitution this inference starts from -- every entry
+    /// behaves exactly like a generic already pinned by an earlier
+    /// argument. Before each argument is analyzed,
+    /// `expected_for_generic_param` substitutes its raw declared type
+    /// against whatever's already bound (the seed, then earlier arguments in
+    /// this same call) or, for a still-unbound generic with its own declared
+    /// default, that default -- giving `analyze_expr` a real `expected` a
+    /// bare literal can adapt to, the same "earliest position is the
+    /// anchor" precedent `if`-branches and binary operands already use (see
+    /// `docs/03-control-flow.md`). The argument's own *actual* resolved type
+    /// -- not the tentative `expected` -- is what `unify_generic_type` then
+    /// permanently pins the generic to: an explicit suffix/type on the
+    /// argument always wins over `expected` regardless (see
+    /// `analyze_number`), so this never needs to track "was this pinned by
+    /// a default" separately from an ordinary argument-driven pin. A later
+    /// argument whose own explicit type conflicts with an already-pinned
+    /// generic is left to the caller's own, unchanged final `accepts` loop
+    /// to reject.
     ///
     /// Returns every argument, checked, plus the resulting (possibly
     /// partial) substitution -- a generic that never appears in any
@@ -974,8 +983,9 @@ impl<'r> Analyzer<'r> {
         defaults: &[Option<Type>],
         params: &[Type],
         args: &[HirExprNode],
+        seed: HashMap<Ident, ResolvedType>,
     ) -> Option<(Vec<CheckedExprNode>, HashMap<Ident, ResolvedType>)> {
-        let mut subst = HashMap::new();
+        let mut subst = seed;
         let mut checked_args = Vec::with_capacity(args.len());
         for (raw_type, arg) in params.iter().zip(args) {
             let expected = self

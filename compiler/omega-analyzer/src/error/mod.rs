@@ -127,14 +127,16 @@ pub enum TypeResolutionError {
     /// dynamic-dispatch trait object.
     SpecNotObjectSafe(Ident),
     /// `spec Foo` (no `*`, static dispatch) written somewhere other than a
-    /// parameter type or a function's own return type -- the only two
-    /// positions this sugar is defined for (see `Type::SpecStatic`'s doc
-    /// comment). Reaching ordinary `resolve_type` with this shape at all
-    /// means neither the parameter-position desugaring (HIR lowering) nor
-    /// the return-position special-casing (`resolve_raw_spec_fn_type`/
-    /// the driver's spec-return inference) ever ran -- i.e. a position this
-    /// sugar was never meant to reach (a local variable annotation, a
-    /// struct field, an array element, ...).
+    /// parameter type or a return type inside a spec's own function
+    /// declaration -- the only two positions this sugar is defined for
+    /// (see `Type::SpecStatic`'s doc comment). Reaching ordinary
+    /// `resolve_type` with this shape at all means neither the
+    /// parameter-position desugaring (HIR lowering) nor the
+    /// spec-declaration-position handling (`resolve_raw_spec_fn_type`)
+    /// ever ran -- i.e. a position this sugar was never meant to reach (a
+    /// local variable annotation, a struct field, an array element, or --
+    /// since definition-site inference was removed -- an ordinary
+    /// function's or method's return type).
     SpecStaticNotAllowedHere(Ident),
     /// A bare spec name (`Animal`, no `spec *`/`spec` prefix) resolved
     /// somewhere a value's actual type is required -- a variable's
@@ -208,7 +210,7 @@ impl fmt::Display for TypeResolutionError {
             Self::SpecStaticNotAllowedHere(name) => {
                 write!(
                     f,
-                    "'spec {}' is only allowed as a parameter type or a function's own return type",
+                    "'spec {}' is only allowed as a parameter type, or as a return type inside a spec's own function declaration",
                     name.as_ref()
                 )
             }

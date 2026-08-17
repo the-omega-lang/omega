@@ -17,7 +17,7 @@ use omega_analyzer::resolver::{
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
-use omega_parser::prelude::{Ident, Visibility};
+use omega_parser::prelude::{FunctionType, Ident, Path, Type, Visibility};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -321,6 +321,7 @@ impl ModuleResolver for Driver {
             generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             defaults: f.generics.iter().map(|g| g.default.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
+            return_type: f.return_type.clone(),
         }))
     }
 
@@ -424,6 +425,11 @@ impl ModuleResolver for Driver {
             owner_defaults: owner_generics.iter().map(|g| g.default.clone()).collect(),
             function_generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
+            return_type: rewrite_self_return(
+                &f.return_type,
+                name,
+                &owner_generics.iter().map(|g| g.ident.clone()).collect::<Vec<_>>(),
+            ),
         }))
     }
 
@@ -539,6 +545,37 @@ impl ModuleResolver for Driver {
             .collect())
     }
 
+    fn conformances_for_specs(
+        &mut self,
+        target: &ResolvedType,
+        spec_ids: &[HirId],
+    ) -> Result<Vec<ResolvedConformance>, ResolveError> {
+        // Goal-directed: `solve` per requested spec instantiates only the
+        // templates that can produce it, never the whole type's template
+        // set. The entries are then filtered down to exactly the requested
+        // specs -- a template producing a *different* spec under this type
+        // may still have been swept before (and registered its entry), but
+        // must not contribute here.
+        for id in spec_ids {
+            self.solve(target, Some(id));
+        }
+        Ok(self
+            .conformances
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.target == target.lookup_key()
+                    && spec_ids.contains(&entry.spec.borrow().id)
+            })
+            .map(|entry| ResolvedConformance {
+                target: entry.target.clone(),
+                spec: entry.spec.clone(),
+                spec_args: entry.spec_args.clone(),
+                methods: entry.methods.clone(),
+            })
+            .collect())
+    }
+
     /// `decl_id`'s owning item, found via `items.decl_id_owner` (populated
     /// by `ItemQueries::identity_for`, the one place a function/method's
     /// identity is ever decided) then body-checked (or served from cache)
@@ -592,5 +629,66 @@ impl ModuleResolver for Driver {
     /// resolve_item` -> `Storage::Comp` path first).
     fn resolve_comp_value(&mut self, decl_id: HirId) -> Option<ConstValue> {
         self.items.comp_values.get(&decl_id).cloned()
+    }
+}
+
+/// Rewrites a `Self` leaf in a static function's declared return type to
+/// the owner's own generic spelling (`Self` -> `Box<T>`, written
+/// `Type::Generic` of the owner name path with each owner generic as an
+/// unqualified `Named` leaf), recursing through the same shapes
+/// `unify_generic_type` walks -- pointers, sized/inferred/unknown-size
+/// arrays, spec objects, function types, generic applications. Needed so
+/// `=> Self` unifies against an expected `Box<i32>` exactly the same way a
+/// written `=> Box<T>` does: `unify_generic_type` only binds a `Named`
+/// leaf whose name is one of the generics, and `Self` is not in that list
+/// -- it is the whole *application*, not a parameter.
+fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
+    match ty {
+        Type::Named(path)
+            if path.is_unqualified() && &path.head == &Ident("Self".to_string()) =>
+        {
+            Type::Generic(
+                Path::from(owner.clone()),
+                owner_generics
+                    .iter()
+                    .map(|generic| Type::Named(Path::from(generic.clone())))
+                    .collect(),
+            )
+        }
+        Type::Pointer(inner, mutable) => {
+            Type::Pointer(Box::new(rewrite_self_return(inner, owner, owner_generics)), *mutable)
+        }
+        Type::InferredArray(inner) => {
+            Type::InferredArray(Box::new(rewrite_self_return(inner, owner, owner_generics)))
+        }
+        Type::UnknownSizeArray(inner) => {
+            Type::UnknownSizeArray(Box::new(rewrite_self_return(inner, owner, owner_generics)))
+        }
+        Type::SizedArray(inner, n) => {
+            Type::SizedArray(Box::new(rewrite_self_return(inner, owner, owner_generics)), n.clone())
+        }
+        Type::SpecObject(inner, mutable) => {
+            Type::SpecObject(Box::new(rewrite_self_return(inner, owner, owner_generics)), *mutable)
+        }
+        Type::SpecStatic(inner) => {
+            Type::SpecStatic(Box::new(rewrite_self_return(inner, owner, owner_generics)))
+        }
+        Type::Generic(path, args) => Type::Generic(
+            path.clone(),
+            args.iter()
+                .map(|arg| rewrite_self_return(arg, owner, owner_generics))
+                .collect(),
+        ),
+        Type::Function(f) => Type::Function(FunctionType {
+            params: f
+                .params
+                .iter()
+                .map(|(name, param)| (name.clone(), rewrite_self_return(param, owner, owner_generics)))
+                .collect(),
+            return_type: Box::new(rewrite_self_return(&f.return_type, owner, owner_generics)),
+            is_variadic: f.is_variadic,
+            self_mode: f.self_mode,
+        }),
+        other => other.clone(),
     }
 }

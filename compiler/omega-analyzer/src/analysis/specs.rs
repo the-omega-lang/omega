@@ -221,7 +221,7 @@ impl<'r> Analyzer<'r> {
         let requirements = self.flatten_spec(id, span, &spec, &spec_args, target)?;
         self.context.enter_scope();
         let signatures = self.analyze_all(functions, |this, function| {
-            this.collect_function_signature(function, None)
+            this.collect_function_signature(function)
         });
         self.context.leave_scope();
         let signatures = signatures?;
@@ -873,7 +873,9 @@ impl<'r> Analyzer<'r> {
     /// per-member type arguments (raw at a declaration, see
     /// `ResolvedSpecType::dependencies`) never need resolving here. Only an
     /// *alias* ever has members; for an ordinary spec this is just `{spec}`.
-    fn alias_member_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut HashSet<HirId>) {
+    /// Public as the single shared implementation -- `omega_driver`'s
+    /// `bound_context_for` membership test uses it too.
+    pub fn alias_member_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut HashSet<HirId>) {
         let (id, dependencies) = {
             let spec = spec.borrow();
             (spec.id, spec.dependencies.clone())
@@ -883,6 +885,82 @@ impl<'r> Analyzer<'r> {
         }
         for (member, _) in dependencies {
             Self::alias_member_ids(&member, out);
+        }
+    }
+
+    /// Expands a declared bound set through every alias it names: for each
+    /// bound, emit the `(spec.id, resolved args)` keys of the specs the
+    /// bound actually *requires* -- every non-alias member, transitively --
+    /// with a member's raw type arguments resolved under the *alias's* own
+    /// generics bound to the bound's arguments (and `Self` bound to the
+    /// bound's concrete type), against the alias's own module. Mirrors
+    /// exactly what `flatten_spec_into` does for the same data, for the
+    /// same reason: an alias is only a name for its members, so `T: AB`
+    /// and `T: A + B` must be interchangeable everywhere the bound set is
+    /// compared or tested for entailment (blanket precedence,
+    /// derived-conformance admission).
+    ///
+    /// The alias's *own* id deliberately never appears: nothing ever
+    /// conforms to an alias (`ConformToAliasSpec`), so it is never a
+    /// distinct requirement -- only its leaves are. Including it would make
+    /// `{AB, A, B}` and `{A, B}` compare as "more specific" instead of
+    /// equal, the exact asymmetry this exists to remove.
+    pub fn expand_bound_set(
+        &mut self,
+        id: HirId,
+        span: Span,
+        bounds: &[ResolvedBound],
+    ) -> Vec<(HirId, Vec<ResolvedType>)> {
+        let mut out: Vec<(HirId, Vec<ResolvedType>)> = Vec::new();
+        for (concrete, spec, spec_args) in bounds {
+            self.expand_bound_into(id, span, concrete, spec, spec_args, &mut out);
+        }
+        out
+    }
+
+    fn expand_bound_into(
+        &mut self,
+        id: HirId,
+        span: Span,
+        concrete: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[ResolvedType],
+        out: &mut Vec<(HirId, Vec<ResolvedType>)>,
+    ) {
+        let (generics, dependencies, module) = {
+            let s = spec.borrow();
+            (
+                s.generics.clone(),
+                s.dependencies.clone(),
+                s.module_path.clone(),
+            )
+        };
+        if dependencies.is_empty() {
+            let key = (spec.borrow().id, spec_args.to_vec());
+            if !out.contains(&key) {
+                out.push(key);
+            }
+            return;
+        }
+        let self_ident = Ident("Self".to_string());
+        let substitution: Vec<(Ident, ResolvedType)> =
+            std::iter::once((self_ident, concrete.clone()))
+                .chain(generics.iter().cloned().zip(spec_args.iter().cloned()))
+                .collect();
+        for (member, member_raw_args) in &dependencies {
+            let Some(member_args): Option<Vec<ResolvedType>> =
+                self.with_substitution(&substitution, |this| {
+                    member_raw_args
+                        .iter()
+                        .map(|a| this.resolve_type_or_error_in(id, span, a, true, &module))
+                        .collect::<Option<Vec<_>>>()
+                })
+            else {
+                // The member's own arguments failed to resolve -- already
+                // reported; this bound simply contributes no expansion.
+                continue;
+            };
+            self.expand_bound_into(id, span, concrete, member, &member_args, out);
         }
     }
 
@@ -924,7 +1002,8 @@ impl<'r> Analyzer<'r> {
                 };
                 let mut permitted = HashSet::new();
                 Self::alias_member_ids(spec, &mut permitted);
-                let candidates = match self.resolver.conformances_for_type(ty) {
+                let member_ids: Vec<HirId> = permitted.iter().copied().collect();
+                let candidates = match self.resolver.conformances_for_specs(ty, &member_ids) {
                     Ok(entries) => entries,
                     Err(error) => {
                         self.error(id, span, AnalysisErrorKind::ModuleResolution(error));

@@ -230,3 +230,30 @@ between `Slice{U8}` and `Str`.
   parses as written. A fully-qualified spec call
   (`0..<<S : P>::min()`) lands in the same trap, with the same
   workaround -- bind to a local first.
+
+## `[]T` is not a type; `*T` is always thin
+
+The rule, stated once, because generic inference makes it load-bearing:
+
+- **`[]T` is not a type.** It is legal syntax in exactly one place — a
+  declaration's array-literal-initializer annotation, where it infers a
+  length (`abc : []i8 = [10, 20, 30];`) — and is rejected everywhere else
+  (`'[]T' is not valid on its own`).
+- **`*[]T` is a fat pointer** — a data pointer *plus* a runtime length —
+  the one spelling that reaches `ResolvedType::Slice`.
+- **`*T` is always thin.** A type parameter never changes a pointer's
+  representation; there is no `?Sized`-style opt-out, because that would
+  make a parameter's cost depend on a type argument — the hidden cost this
+  language refuses.
+
+The inference consequence is a diagnostic, not a gap: `f<T>(x: *T)` called
+with a `*[]u8` reports `GenericParamFromFatPointer` — "`*[]u8` is a slice,
+a pointer with a length, so it does not match the thin pointer `*T`" —
+instead of the bare "cannot infer", because there is nothing for `T` to
+bind to (`T = []u8` would require `[]u8` to be a type, and it isn't). The
+way to write that generic is `x: T` by value, which binds `T = *[]u8`
+(and compiles — a slice is a perfectly ordinary value type), or `x: *[]T`,
+which spells the slice out and stays fat. The accepted cost of taking `x:
+T`: a generic that must accept *both* aggregates and slices takes the
+aggregate by value, which copies it — the trade for no hidden
+representation switching.

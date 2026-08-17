@@ -407,11 +407,11 @@ impl Context {
             // A bare `spec Foo` reaching ordinary type resolution at all
             // means it's sitting somewhere this sugar was never defined for
             // -- see `Type::SpecStatic`'s doc comment. The two legitimate
-            // positions (a parameter type, a function's own return type)
-            // are both intercepted *before* `resolve_type` is ever called
-            // on this shape (HIR-lowering desugaring for the former,
-            // `resolve_raw_spec_fn_type`/the driver's spec-return inference
-            // for the latter).
+            // positions (a parameter type, and a return type inside a
+            // spec's own function declaration) are both intercepted *before*
+            // `resolve_type` is ever called on this shape (HIR-lowering
+            // desugaring for the former, `resolve_raw_spec_fn_type`/
+            // `is_object_safe` for the latter).
             Type::SpecStatic(pointee) => {
                 let name = match pointee.as_ref() {
                     Type::Named(path) | Type::Generic(path, _) => path.head.clone(),

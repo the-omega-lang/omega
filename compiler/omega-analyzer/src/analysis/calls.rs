@@ -1737,7 +1737,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        _expected: Option<&ResolvedType>,
+        expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
@@ -1788,6 +1788,7 @@ impl<'r> Analyzer<'r> {
             &real_absolute,
             member,
             &sig,
+            expected,
         ))
     }
 
@@ -1829,6 +1830,64 @@ impl<'r> Analyzer<'r> {
         Some((ambient, sig))
     }
 
+    /// Builds the inference seed from the call's expected type: unify the
+    /// signature's declared return type against `expected` into a fresh
+    /// map, widening every seeded entry. The precedence this creates --
+    /// **expected type > argument-driven inference > declared default** --
+    /// is deliberate and matches `infer_literal_type_args`'s existing
+    /// order (a literal consults `expected` before probing its own
+    /// fields): the expected type is the outermost constraint, so it seeds
+    /// first, and an argument's own explicit type is left to the unchanged
+    /// final `accepts` loop to reject any genuine mismatch.
+    ///
+    /// Widening applies exactly the same rule `resolve_inferred_type_args`
+    /// applies to every deduced type: a caller's enum-variant refinement
+    /// (`T = MyEnum::Second`) must never mint a spurious instantiation.
+    fn seed_from_expected(
+        expected: Option<&ResolvedType>,
+        generics: &[Ident],
+        return_type: &Type,
+    ) -> HashMap<Ident, ResolvedType> {
+        let mut seed = HashMap::new();
+        if let Some(expected) = expected {
+            unify_generic_type(generics, return_type, expected, &mut seed);
+            for resolved in seed.values_mut() {
+                *resolved = resolved.widened();
+            }
+        }
+        seed
+    }
+
+    /// Scans the raw parameter types against the checked argument types for
+    /// a `Type::Pointer(Type::Named(g))` -- `g` an *unbound* generic --
+    /// matched against a `ResolvedType::Slice` or `ResolvedType::Str`: the
+    /// thin-pointer-against-fat-pointer inference failure, which has its own
+    /// teaching diagnostic rather than the bare "cannot infer" one.
+    fn fat_pointer_generic_mismatch(
+        generics: &[Ident],
+        params: &[Type],
+        args: &[CheckedExprNode],
+        subst: &HashMap<Ident, ResolvedType>,
+    ) -> Option<(Ident, ResolvedType)> {
+        for (raw, arg) in params.iter().zip(args) {
+            let Type::Pointer(inner, _) = raw else { continue };
+            let Type::Named(path) = inner.as_ref() else { continue };
+            if !path.is_unqualified()
+                || !generics.contains(&path.head)
+                || subst.contains_key(&path.head)
+            {
+                continue;
+            }
+            if matches!(
+                arg.r#type,
+                ResolvedType::Slice { .. } | ResolvedType::Str { .. }
+            ) {
+                return Some((path.head.clone(), arg.r#type.clone()));
+            }
+        }
+        None
+    }
+
     /// The actual work behind `resolve_generic_static_call`, once it's
     /// confirmed `call`'s callee genuinely names a single-candidate static
     /// function on a generic type at `owner_absolute` -- split out so
@@ -1844,12 +1903,14 @@ impl<'r> Analyzer<'r> {
         owner_absolute: &[Ident],
         member: &Ident,
         sig: &GenericStaticFunctionSignature,
+        expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         let (checked_args, subst) = self.infer_generic_args(
             &sig.owner_generics,
             &sig.owner_defaults,
             &sig.params,
             &call.args,
+            Self::seed_from_expected(expected, &sig.owner_generics, &sig.return_type),
         )?;
 
         let type_args =
@@ -1863,17 +1924,30 @@ impl<'r> Analyzer<'r> {
                         .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
                         .map(|(g, _)| g.clone())
                         .collect();
-                    self.error(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::UnresolvedLiteralGeneric {
-                            r#type: owner_absolute
-                                .last()
-                                .cloned()
-                                .expect("an absolute path always has a last segment"),
-                            generics: missing,
-                        },
-                    );
+                    if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
+                        &sig.owner_generics,
+                        &sig.params,
+                        &checked_args,
+                        &subst,
+                    ) {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
+                        );
+                    } else {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::UnresolvedLiteralGeneric {
+                                r#type: owner_absolute
+                                    .last()
+                                    .cloned()
+                                    .expect("an absolute path always has a last segment"),
+                                generics: missing,
+                            },
+                        );
+                    }
                     return None;
                 }
             };
@@ -2325,7 +2399,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        _expected: Option<&ResolvedType>,
+        expected: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
@@ -2363,7 +2437,9 @@ impl<'r> Analyzer<'r> {
             Err(_) => return Intercepted::Declined,
         };
 
-        Intercepted::Claimed(self.finish_generic_call(node_id, span, call, &accessor, &absolute, &sig))
+        Intercepted::Claimed(self.finish_generic_call(
+            node_id, span, call, &accessor, &absolute, &sig, expected,
+        ))
     }
 
     /// The actual work behind `resolve_generic_call`, once it's confirmed
@@ -2378,18 +2454,37 @@ impl<'r> Analyzer<'r> {
         accessor: &[Ident],
         absolute: &[Ident],
         sig: &GenericSignature,
+        expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let (checked_args, subst) =
-            self.infer_generic_args(&sig.generics, &sig.defaults, &sig.params, &call.args)?;
+        let (checked_args, subst) = self.infer_generic_args(
+            &sig.generics,
+            &sig.defaults,
+            &sig.params,
+            &call.args,
+            Self::seed_from_expected(expected, &sig.generics, &sig.return_type),
+        )?;
 
         let type_args = match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {
             Ok(type_args) => type_args,
             Err(generic) => {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::UnresolvedGenericParam(generic),
-                );
+                if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
+                    &sig.generics,
+                    &sig.params,
+                    &checked_args,
+                    &subst,
+                ) {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
+                    );
+                } else {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedGenericParam(generic),
+                    );
+                }
                 return None;
             }
         };

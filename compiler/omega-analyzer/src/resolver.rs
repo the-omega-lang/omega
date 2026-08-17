@@ -147,19 +147,6 @@ pub enum ResolveError {
         spec: Ident,
     },
     /// `item` (in `module`) is a `spec T`-returning function whose own
-    /// return-type inference (see `omega_driver::Driver::
-    /// resolve_spec_return_function`) transitively calls back into itself
-    /// before its own signature is done -- the mutual-recursion analog of
-    /// `SpecDependencyCycle` above, needed for the identical reason: this
-    /// inference bypasses the ordinary phase-1-before-phase-2 barrier that
-    /// makes an *ordinary* function's own self-recursion safe (its
-    /// signature is always `Done` before any body, including its own, is
-    /// ever checked -- not true here, since discovering *this* signature
-    /// requires checking this body first).
-    SpecReturnTypeRecursion {
-        module: Vec<Ident>,
-        item: Ident,
-    },
     /// A bare, unqualified name matched more than one `core` submodule's
     /// own exposed top-level item, while resolving core's ambient-prelude
     /// fallback (`ModuleResolver::ambient_core_candidates`) -- unlike every
@@ -269,12 +256,6 @@ impl fmt::Display for ResolveError {
                     spec.as_ref()
                 )
             }
-            Self::SpecReturnTypeRecursion { module, item } => write!(
-                f,
-                "cannot infer '{}::{}'s 'spec T' return type: it recursively depends on itself",
-                join(module),
-                item.as_ref()
-            ),
             Self::AmbiguousAmbientName { name, candidates } => write!(
                 f,
                 "'{}' is ambiguous: it's exposed by more than one core module ({})",
@@ -572,6 +553,19 @@ pub trait ModuleResolver {
         target: &ResolvedType,
     ) -> Result<Vec<ResolvedConformance>, ResolveError>;
 
+    /// The conformances of `target` whose spec is one of `spec_ids` --
+    /// goal-directed, unlike `conformances_for_type`'s full sweep: only the
+    /// templates that can produce one of these specs are ever instantiated.
+    /// This is what `Analyzer::type_implements_spec`'s alias fallback uses,
+    /// so satisfying a spec alias from inside a proof can never trigger a
+    /// full sweep mid-proof (which is what used to reproduce the blanket
+    /// false cycle through a different door).
+    fn conformances_for_specs(
+        &mut self,
+        target: &ResolvedType,
+        spec_ids: &[HirId],
+    ) -> Result<Vec<ResolvedConformance>, ResolveError>;
+
     /// A `comp` evaluation's one hook into the driver (see
     /// `crate::comp_eval::CompFunctionResolver`, which this trait re-exposes
     /// through `omega_driver::Driver`'s own `ModuleResolver` impl, matching
@@ -635,6 +629,12 @@ pub struct GenericSignature {
     /// resolution (explicit > default > inference).
     pub defaults: Vec<Option<Type>>,
     pub params: Vec<Type>,
+    /// The declared return type, raw and unresolved -- `Analyzer::
+    /// finish_generic_call` unifies it against the call's expected type to
+    /// seed the substitution, so a generic whose only type parameter appears
+    /// in its return type (`lowest<T: Bounded>() => T`) can be called from
+    /// an expected-type position (`x : i32 = lowest();`).
+    pub return_type: Type,
 }
 
 /// See `ModuleResolver::generic_literal_signature`.
@@ -665,4 +665,11 @@ pub struct GenericStaticFunctionSignature {
     /// instead of quietly assuming none exist.
     pub function_generics: Vec<Ident>,
     pub params: Vec<Type>,
+    /// The declared return type, raw and unresolved, with any `Self` leaf
+    /// rewritten to the owner's own generic spelling (`=> Self` becomes
+    /// `=> Box<T>`) -- see `rewrite_self_return` in `omega_driver`'s
+    /// `resolver.rs` for why. `Analyzer::finish_generic_static_call`
+    /// unifies this against the call's expected type to seed the owner's
+    /// substitution (`a : Box<i32> = Box::empty();`).
+    pub return_type: Type,
 }
