@@ -317,10 +317,11 @@ between two pointers. Pointer-plus/minus-integer operations remain unscaled.
 `bool` does **not** belong to that group, despite sharing some operator
 spellings: it has no `arithmetic_repr`, so it never decays to an integer and
 `true + true` is rejected outright, as are `<`, the shifts, and `~`. Its
-whole operator set is `==`/`!=` and `&`/`|`/`^`. Since this language has no
-`&&`/`||`/`!`, those three *are* `bool`'s logical operators — they evaluate
-both operands rather than short-circuiting, which is the one thing to know
-before putting a call on the right-hand side of one.
+operator set is `==`/`!=`, `&`/`|`/`^`, the short-circuiting `&&`/`||`, and
+unary `!`. `&`/`|`/`^` evaluate both operands; `&&`/`||` evaluate the right
+one only when the left does not already decide the answer. Both forms are
+available deliberately — the spelling is what tells a reader whether a call
+on the right-hand side runs.
 Pointer arithmetic produces `usize`, never a pointer implicitly. `char +
 char` and `pointer + pointer` are rejected. A pointer coerces even for
 `==`/`!=`, which
@@ -333,9 +334,9 @@ enter the comparison at all.
 under all five (any combination of `0`/`1` is still `0`/`1`). Arithmetic
 and shifts are still not offered on `bool` (`true + true` has no meaning
 to fall back on), and neither is unary `~` (bitwise-NOT of `bool`'s `0`/`1`
-representation does *not* stay within `{0,1}` the way `& | ^` do). A
-logical-not (`!`) operator to complete this story doesn't exist in the
-language at all yet — see the caveat below.
+representation does *not* stay within `{0,1}` the way `& | ^` do). Unary
+`!` completes the story and is `bool`-only: it is analysed as `x ^ true`,
+which is exactly why it stays inside `{0,1}` where `~` would not.
 
 Casting follows the same asymmetry Rust's own `as` does: `char`/`bool`
 both cast *out* to any numeric type freely, but only one direction casts
@@ -396,13 +397,11 @@ own leaf sizes.
   Cranelift itself grows real vararg support, or this compiler grows its
   own workaround (rejecting the shape at compile time, or routing such
   calls through a small correctly-ABI'd shim, both still open).
-- **There is no `!` (logical-not) operator at all.** `bool` gets native
-  `== != & | ^` (see above), which covers *combining* two `bool`s, but
-  negating one still has no spelling — adding `!` is a real, if small,
-  language feature (a new parser token plus a new `Expression`/`HirExpr`/
-  `CheckedExpr`/`MirExpr` variant, each needing its own codegen arm), not
-  an analyzer-only change like the rest of this section, so it's left as
-  deliberate future work rather than folded in here.
+- ~~**There is no `!` (logical-not) operator at all.**~~ — **added.** `bool`
+  now has `!`, `&&` and `||` alongside `&`/`|`/`^`. All three desugar during
+  analysis (`!x` to `x ^ true`; `&&`/`||` to the `if`-expressions that were
+  previously written by hand), so no `CheckedExpr`, MIR or codegen variant
+  was needed for any of them.
 - **`isize`/`usize` width is target-dependent by design** — nothing in
   `core` bakes in a `min_value`/`max_value` bound for them, since any
   literal bound would silently be wrong on a target this toolchain wasn't

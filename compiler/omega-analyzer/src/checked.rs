@@ -705,10 +705,13 @@ pub struct CheckedArrayLiteral {
 /// `item_type` is
 /// `base`'s element type, carried the same way `CheckedProjection::Index`'s
 /// is, so codegen never has to re-derive it from `base`'s type. `inclusive`
-/// mirrors `omega_hir::HirRange`'s -- when `true` and `end` is present,
-/// codegen includes `end` itself in the slice (see
-/// `omega_parser::ast::range::RangeExpr`'s doc comment for the range
-/// grammar).
+/// is `omega_hir::HirRange::inclusive()`'s answer, flattened back out
+/// alongside an `Option` end -- when `true` and `end` is present, codegen
+/// includes `end` itself in the slice (see `omega_parser::prelude::
+/// RangeExpr`'s doc comment for the range grammar). That flattening is the
+/// same shape `HirRangeEnd` deliberately replaced one layer up, and is
+/// recorded in `docs/14-known-issues.md` rather than fixed here: the fix
+/// belongs with `omega-analyzer`'s own refactor pass.
 #[derive(Debug, Clone)]
 pub struct CheckedSlice {
     pub base: CheckedPlace,

@@ -494,9 +494,9 @@ impl ModuleResolver for Driver {
                 }
                 HirItem::Gap(_) => namespace == ItemNamespace::Value,
                 HirItem::FunctionDefinition(_)
-                | HirItem::Declaration(_)
-                | HirItem::DeclarationWithInit(..)
-                | HirItem::Walrus(_)
+                | HirItem::Declaration { .. }
+                | HirItem::DeclarationWithInit { .. }
+                | HirItem::Walrus { .. }
                 | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
                 HirItem::Glue(_)
                 | HirItem::Conform(_)
@@ -683,7 +683,10 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
             params: f
                 .params
                 .iter()
-                .map(|(name, param)| (name.clone(), rewrite_self_return(param, owner, owner_generics)))
+                .map(|p| omega_parser::prelude::Param {
+                    r#type: rewrite_self_return(&p.r#type, owner, owner_generics),
+                    ..p.clone()
+                })
                 .collect(),
             return_type: Box::new(rewrite_self_return(&f.return_type, owner, owner_generics)),
             is_variadic: f.is_variadic,

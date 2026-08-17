@@ -1,4 +1,4 @@
-use crate::ast::expression::number::{NumberBase, NumberExpr};
+use crate::ast::expression::{NumberBase, NumberExpr};
 use crate::ast::identifier::Ident;
 use crate::ast::identifier::Origin;
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
@@ -101,6 +101,11 @@ pub enum TokenKind {
     DotDot,
     PlusPlus,
     MinusMinus,
+    /// `&&` -- short-circuiting logical AND. Unlike `&`, the right operand
+    /// is evaluated only when the left is `true`; see `LogicalOp`.
+    AmpAmp,
+    /// `||` -- short-circuiting logical OR; see `LogicalOp`.
+    PipePipe,
     /// `<<` -- see `BinaryOp::Shl`.
     Shl,
     /// `>>` -- see `BinaryOp::Shr`.
@@ -140,8 +145,13 @@ pub enum TokenKind {
     Pipe,
     /// `^` -- see `BinaryOp::BitXor`.
     Caret,
-    /// `~base` -- unary bitwise-not; see `BitNotExpr`.
+    /// `~base` -- unary bitwise-not on an integer; see `BitNotExpr`.
     Tilde,
+    /// `!base` -- unary logical-not on a `bool`; see `NotExpr`. Distinct
+    /// from `Tilde`: `~` is a bit pattern operation and is rejected on
+    /// `bool` (flipping `0`/`1`'s bits leaves `{0,1}`), while `!` is
+    /// defined only on `bool`.
+    Not,
     /// `@` -- leads an item annotation (`@inline(always)`); see
     /// `parser::item::parse_annotations`.
     At,
@@ -162,6 +172,92 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
+    /// The exact source spelling of a fixed token. Payload-bearing tokens and
+    /// end-of-input have no fixed spelling.
+    pub fn spelling(&self) -> Option<&'static str> {
+        match self {
+            Self::Ident(_)
+            | Self::Number(_)
+            | Self::Str(_)
+            | Self::ByteStr(_)
+            | Self::Char(_)
+            | Self::Metavar(_)
+            | Self::Eof => None,
+            Self::True => Some("true"),
+            Self::False => Some("false"),
+            Self::If => Some("if"),
+            Self::Else => Some("else"),
+            Self::Match => Some("match"),
+            Self::Extern => Some("extern"),
+            Self::Import => Some("import"),
+            Self::Return => Some("return"),
+            Self::Struct => Some("struct"),
+            Self::Enum => Some("enum"),
+            Self::Union => Some("union"),
+            Self::Spec => Some("spec"),
+            Self::While => Some("while"),
+            Self::Loop => Some("loop"),
+            Self::For => Some("for"),
+            Self::Break => Some("break"),
+            Self::Continue => Some("continue"),
+            Self::Defer => Some("defer"),
+            Self::Macro => Some("macro"),
+            Self::DotDotDot => Some("..."),
+            Self::ColonColon => Some("::"),
+            Self::FatArrow => Some("=>"),
+            Self::ColonEq => Some(":="),
+            Self::EqEq => Some("=="),
+            Self::NotEq => Some("!="),
+            Self::AmpAmp => Some("&&"),
+            Self::PipePipe => Some("||"),
+            Self::LtEq => Some("<="),
+            Self::GtEq => Some(">="),
+            Self::DotDotEq => Some("..="),
+            Self::DotDotLt => Some("..<"),
+            Self::DotDot => Some(".."),
+            Self::PlusPlus => Some("++"),
+            Self::MinusMinus => Some("--"),
+            Self::Shl => Some("<<"),
+            Self::Shr => Some(">>"),
+            Self::PlusEq => Some("+="),
+            Self::MinusEq => Some("-="),
+            Self::StarEq => Some("*="),
+            Self::SlashEq => Some("/="),
+            Self::PercentEq => Some("%="),
+            Self::AmpEq => Some("&="),
+            Self::PipeEq => Some("|="),
+            Self::CaretEq => Some("^="),
+            Self::ShlEq => Some("<<="),
+            Self::ShrEq => Some(">>="),
+            Self::Dollar => Some("$"),
+            Self::Percent => Some("%"),
+            Self::Amp => Some("&"),
+            Self::Star => Some("*"),
+            Self::Plus => Some("+"),
+            Self::Comma => Some(","),
+            Self::Minus => Some("-"),
+            Self::Dot => Some("."),
+            Self::Slash => Some("/"),
+            Self::Colon => Some(":"),
+            Self::Semi => Some(";"),
+            Self::Lt => Some("<"),
+            Self::Eq => Some("="),
+            Self::Gt => Some(">"),
+            Self::Pipe => Some("|"),
+            Self::Caret => Some("^"),
+            Self::Tilde => Some("~"),
+            Self::Not => Some("!"),
+            Self::At => Some("@"),
+            Self::Question => Some("?"),
+            Self::LParen => Some("("),
+            Self::RParen => Some(")"),
+            Self::LBracket => Some("["),
+            Self::RBracket => Some("]"),
+            Self::LBrace => Some("{"),
+            Self::RBrace => Some("}"),
+        }
+    }
+
     /// A short, human-readable name for "found X" diagnostics.
     pub fn describe(&self) -> String {
         match self {
@@ -171,76 +267,8 @@ impl TokenKind {
             Self::ByteStr(_) => "a binary string literal".to_string(),
             Self::Char(_) => "a character literal".to_string(),
             Self::Metavar(s) => format!("'${s}'"),
-            Self::True => "'true'".to_string(),
-            Self::False => "'false'".to_string(),
-            Self::If => "'if'".to_string(),
-            Self::Else => "'else'".to_string(),
-            Self::Match => "'match'".to_string(),
-            Self::Extern => "'extern'".to_string(),
-            Self::Import => "'import'".to_string(),
-            Self::Return => "'return'".to_string(),
-            Self::Struct => "'struct'".to_string(),
-            Self::Enum => "'enum'".to_string(),
-            Self::Union => "'union'".to_string(),
-            Self::Spec => "'spec'".to_string(),
-            Self::While => "'while'".to_string(),
-            Self::Loop => "'loop'".to_string(),
-            Self::For => "'for'".to_string(),
-            Self::Break => "'break'".to_string(),
-            Self::Continue => "'continue'".to_string(),
-            Self::Defer => "'defer'".to_string(),
-            Self::Macro => "'macro'".to_string(),
-            Self::DotDotDot => "'...'".to_string(),
-            Self::ColonColon => "'::'".to_string(),
-            Self::FatArrow => "'=>'".to_string(),
-            Self::ColonEq => "':='".to_string(),
-            Self::EqEq => "'=='".to_string(),
-            Self::NotEq => "'!='".to_string(),
-            Self::LtEq => "'<='".to_string(),
-            Self::GtEq => "'>='".to_string(),
-            Self::DotDotEq => "'..='".to_string(),
-            Self::DotDotLt => "'..<'".to_string(),
-            Self::DotDot => "'..'".to_string(),
-            Self::PlusPlus => "'++'".to_string(),
-            Self::MinusMinus => "'--'".to_string(),
-            Self::Shl => "'<<'".to_string(),
-            Self::Shr => "'>>'".to_string(),
-            Self::PlusEq => "'+='".to_string(),
-            Self::MinusEq => "'-='".to_string(),
-            Self::StarEq => "'*='".to_string(),
-            Self::SlashEq => "'/='".to_string(),
-            Self::PercentEq => "'%='".to_string(),
-            Self::AmpEq => "'&='".to_string(),
-            Self::PipeEq => "'|='".to_string(),
-            Self::CaretEq => "'^='".to_string(),
-            Self::ShlEq => "'<<='".to_string(),
-            Self::ShrEq => "'>>='".to_string(),
-            Self::Dollar => "'$'".to_string(),
-            Self::Percent => "'%'".to_string(),
-            Self::Amp => "'&'".to_string(),
-            Self::Star => "'*'".to_string(),
-            Self::Plus => "'+'".to_string(),
-            Self::Comma => "','".to_string(),
-            Self::Minus => "'-'".to_string(),
-            Self::Dot => "'.'".to_string(),
-            Self::Slash => "'/'".to_string(),
-            Self::Colon => "':'".to_string(),
-            Self::Semi => "';'".to_string(),
-            Self::Lt => "'<'".to_string(),
-            Self::Eq => "'='".to_string(),
-            Self::Gt => "'>'".to_string(),
-            Self::Pipe => "'|'".to_string(),
-            Self::Caret => "'^'".to_string(),
-            Self::Tilde => "'~'".to_string(),
-            Self::At => "'@'".to_string(),
-            Self::Question => "'?'".to_string(),
-            Self::LParen => "'('".to_string(),
-            Self::RParen => "')'".to_string(),
-            Self::LBracket => "'['".to_string(),
-            Self::RBracket => "']'".to_string(),
-            Self::LBrace => "'{'".to_string(),
-            Self::RBrace => "'}'".to_string(),
             Self::Eof => "end of input".to_string(),
+            _ => format!("'{}'", self.spelling().expect("fixed token has a spelling")),
         }
     }
 }
@@ -252,34 +280,10 @@ pub struct Token {
     pub origin: Origin,
 }
 
-const KEYWORDS: &[(&str, TokenKind)] = &[
-    ("true", TokenKind::True),
-    ("false", TokenKind::False),
-    ("if", TokenKind::If),
-    ("else", TokenKind::Else),
-    ("match", TokenKind::Match),
-    ("extern", TokenKind::Extern),
-    ("import", TokenKind::Import),
-    ("return", TokenKind::Return),
-    ("struct", TokenKind::Struct),
-    ("enum", TokenKind::Enum),
-    ("union", TokenKind::Union),
-    ("spec", TokenKind::Spec),
-    ("while", TokenKind::While),
-    ("loop", TokenKind::Loop),
-    ("for", TokenKind::For),
-    ("break", TokenKind::Break),
-    ("continue", TokenKind::Continue),
-    ("defer", TokenKind::Defer),
-    ("macro", TokenKind::Macro),
-];
 
-/// Tried longest-first so e.g. `...` is never mistaken for `..` + `.`, and
-/// `:=` is never mistaken for `:` + `=`.
+/// Multi-character punctuation. `scan_punct` selects the longest matching
+/// spelling, so table order cannot affect maximal-munch behavior.
 const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
-    // The three-char range/variadic forms must all precede the two-char
-    // `..` below -- maximal-munch here is first-match-wins by list order,
-    // not by length (same convention `<<=`/`<<` below already follows).
     ("...", TokenKind::DotDotDot),
     ("..=", TokenKind::DotDotEq),
     ("..<", TokenKind::DotDotLt),
@@ -293,9 +297,6 @@ const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
     (">=", TokenKind::GtEq),
     ("++", TokenKind::PlusPlus),
     ("--", TokenKind::MinusMinus),
-    // The 3-char shift-assign forms must precede their 2-char `<<`/`>>`
-    // prefixes below -- maximal-munch here is first-match-wins by list
-    // order, not by length.
     ("<<=", TokenKind::ShlEq),
     (">>=", TokenKind::ShrEq),
     ("<<", TokenKind::Shl),
@@ -305,6 +306,8 @@ const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
     ("*=", TokenKind::StarEq),
     ("/=", TokenKind::SlashEq),
     ("%=", TokenKind::PercentEq),
+    ("&&", TokenKind::AmpAmp),
+    ("||", TokenKind::PipePipe),
     ("&=", TokenKind::AmpEq),
     ("|=", TokenKind::PipeEq),
     ("^=", TokenKind::CaretEq),
@@ -478,7 +481,7 @@ impl<'a> Lexer<'a> {
 
     fn scan_token(&mut self, c: char, start: usize) -> Result<TokenKind, ParseError> {
         match c {
-            '$' if self.peek_at(1).is_some_and(is_ident_start) => self.scan_metavar(),
+            '$' if self.peek_at(1).is_some_and(is_ident_start) => Ok(self.scan_metavar()),
             '$' => {
                 self.advance();
                 Ok(TokenKind::Dollar)
@@ -534,32 +537,48 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
         let text = &self.source[start..self.pos];
-        for (word, kind) in KEYWORDS {
-            if text == *word {
-                return kind.clone();
-            }
+        match text {
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "match" => TokenKind::Match,
+            "extern" => TokenKind::Extern,
+            "import" => TokenKind::Import,
+            "return" => TokenKind::Return,
+            "struct" => TokenKind::Struct,
+            "enum" => TokenKind::Enum,
+            "union" => TokenKind::Union,
+            "spec" => TokenKind::Spec,
+            "while" => TokenKind::While,
+            "loop" => TokenKind::Loop,
+            "for" => TokenKind::For,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "defer" => TokenKind::Defer,
+            "macro" => TokenKind::Macro,
+            _ => TokenKind::Ident(text.to_string()),
         }
-        TokenKind::Ident(text.to_string())
     }
 
-    fn scan_metavar(&mut self) -> Result<TokenKind, ParseError> {
+    fn scan_metavar(&mut self) -> TokenKind {
         self.advance(); // '$'
         let name_start = self.pos;
         self.advance();
         while self.peek().is_some_and(is_ident_continue) {
             self.advance();
         }
-        Ok(TokenKind::Metavar(
-            self.source[name_start..self.pos].to_string(),
-        ))
+        TokenKind::Metavar(self.source[name_start..self.pos].to_string())
     }
 
     fn scan_punct(&mut self, start: usize) -> Result<TokenKind, ParseError> {
-        for (op, kind) in MULTI_CHAR_PUNCT {
-            if self.starts_with(op) {
-                self.pos += op.len();
-                return Ok(kind.clone());
-            }
+        let matched = MULTI_CHAR_PUNCT
+            .iter()
+            .filter(|(op, _)| self.starts_with(op))
+            .max_by_key(|(op, _)| op.len());
+        if let Some((op, kind)) = matched {
+            self.pos += op.len();
+            return Ok(kind.clone());
         }
         let c = self
             .peek()
@@ -581,6 +600,7 @@ impl<'a> Lexer<'a> {
             '|' => TokenKind::Pipe,
             '^' => TokenKind::Caret,
             '~' => TokenKind::Tilde,
+            '!' => TokenKind::Not,
             '@' => TokenKind::At,
             '?' => TokenKind::Question,
             _ => {
@@ -946,6 +966,83 @@ impl<'a> Lexer<'a> {
                     ParseErrorKind::InvalidUnicodeEscape(hex),
                 )
             })
+    }
+}
+
+/// `spelling()` and the scanners must stay one fact: every fixed token's
+/// spelling has to lex back to that same token, as *one* token. This is what
+/// makes deriving `describe()` from `spelling()` safe, and it catches a
+/// maximal-munch mistake directly -- `<<=` lexing as `<` `<=` fails here.
+///
+/// The witness list below is written independently of the tables it checks,
+/// on purpose: a test that read the same table it verifies would agree with
+/// any edit, including a wrong one.
+#[cfg(test)]
+mod spelling_tests {
+    use super::{MULTI_CHAR_PUNCT, TokenKind, lex};
+
+    /// Lexes `source`, asserting it produced exactly one token, and returns
+    /// it.
+    fn sole_token(source: &str) -> TokenKind {
+        let lexed = lex(source);
+        assert!(
+            lexed.errors.is_empty(),
+            "`{source}` must lex cleanly, got {:?}",
+            lexed.errors
+        );
+        let kinds: Vec<&TokenKind> = lexed
+            .tokens
+            .iter()
+            .map(|t| &t.kind)
+            .filter(|k| !matches!(k, TokenKind::Eof))
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            1,
+            "`{source}` must lex as exactly one token, got {kinds:?}"
+        );
+        kinds[0].clone()
+    }
+
+    /// Every fixed token this crate can produce, as source text. Keywords
+    /// come from `scan_ident`'s match, punctuation from `scan_punct`'s
+    /// single-character match; the multi-character forms are checked against
+    /// `MULTI_CHAR_PUNCT` itself in the test below.
+    const FIXED: &[&str] = &[
+        "true", "false", "if", "else", "match", "extern", "import", "return", "struct", "enum",
+        "union", "spec", "while", "loop", "for", "break", "continue", "defer", "macro", "%", "&",
+        "*", "+", ",", "-", ".", "/", ":", ";", "<", "=", ">", "|", "^", "~", "!", "@", "?", "(",
+        ")", "[", "]", "{", "}",
+    ];
+
+    #[test]
+    fn every_fixed_spelling_lexes_back_to_its_own_token() {
+        for text in FIXED {
+            let kind = sole_token(text);
+            assert_eq!(
+                kind.spelling(),
+                Some(*text),
+                "`{text}` lexed as {kind:?}, whose spelling disagrees"
+            );
+        }
+    }
+
+    #[test]
+    fn every_multi_char_punct_lexes_as_one_token() {
+        // Directly the maximal-munch guard: `<<=` must not lex as `<` `<=`,
+        // and `..=` must not lex as `..` `=`.
+        for (text, expected) in MULTI_CHAR_PUNCT {
+            let kind = sole_token(text);
+            assert_eq!(&kind, expected, "`{text}` lexed as {kind:?}");
+            assert_eq!(kind.spelling(), Some(*text));
+        }
+    }
+
+    #[test]
+    fn describe_agrees_with_spelling_for_fixed_tokens() {
+        for text in FIXED {
+            assert_eq!(sole_token(text).describe(), format!("'{text}'"));
+        }
     }
 }
 

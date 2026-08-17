@@ -841,7 +841,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let analyze_bound = |this: &mut Self,
-                             bound: &Option<Box<HirExprNode>>|
+                             bound: Option<&HirExprNode>|
          -> Option<Option<Box<CheckedExprNode>>> {
             let Some(bound) = bound else {
                 return Some(None);
@@ -860,8 +860,8 @@ impl<'r> Analyzer<'r> {
             Some(Some(Box::new(checked_bound)))
         };
 
-        let checked_start = analyze_bound(self, &range.start)?;
-        let checked_end = analyze_bound(self, &range.end)?;
+        let checked_start = analyze_bound(self, range.start.as_deref())?;
+        let checked_end = analyze_bound(self, range.end.expr())?;
         // A missing `start` always defaults to `0`, fine for every base
         // kind -- but a missing `end` only has something to default to
         // when `base_lacks_length` is `false` (`SizedArray`'s compile-time
@@ -892,7 +892,7 @@ impl<'r> Analyzer<'r> {
                 item_type,
                 start: checked_start,
                 end: checked_end,
-                inclusive: range.inclusive,
+                inclusive: range.inclusive(),
             }),
         })
     }

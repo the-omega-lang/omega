@@ -391,9 +391,13 @@ impl<'r> Analyzer<'r> {
         let mut seen: HashSet<Ident> = HashSet::new();
         for f in &sp.functions {
             if !seen.insert(f.name.clone()) {
+                // The function's name, not `f.span` -- a spec function's own
+                // span is the enclosing `spec` item's, so anchoring there
+                // underlines the whole declaration (see `HirSpecFunction::
+                // name_span`).
                 self.error(
                     f.id,
-                    f.span,
+                    f.name_span,
                     AnalysisErrorKind::Redeclaration {
                         name: f.name.clone(),
                         previous: None,
@@ -449,6 +453,9 @@ impl<'r> Analyzer<'r> {
                     decl_id: f.id,
                     name: f.name.clone(),
                     span: f.span,
+                    name_span: f.name_span,
+                    signature_span: f.signature_span,
+                    return_type_span: f.return_type_span,
                     self_mode: f.self_mode,
                     is_variadic: f.is_variadic,
                     params: f.params.clone(),

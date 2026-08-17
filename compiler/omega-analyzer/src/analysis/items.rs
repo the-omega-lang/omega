@@ -29,7 +29,7 @@ impl<'r> Analyzer<'r> {
             if let Some(previous) = seen.insert(function.name.clone(), function.span) {
                 self.error(
                     function.id,
-                    function.span,
+                    function.name_span,
                     AnalysisErrorKind::Redeclaration {
                         name: function.name.clone(),
                         previous: Some(previous),
@@ -498,10 +498,10 @@ impl<'r> Analyzer<'r> {
     fn analyze_struct_fields(&mut self, fields: &[HirParam]) -> Option<Vec<CheckedParam>> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
         self.analyze_all(fields, |this, field| {
-            if let Some(previous) = seen.insert(field.ident.clone(), field.span) {
+            if let Some(previous) = seen.insert(field.ident.clone(), field.name_span) {
                 this.error(
                     field.id,
-                    field.span,
+                    field.name_span,
                     AnalysisErrorKind::Redeclaration {
                         name: field.ident.clone(),
                         previous: Some(previous),
@@ -678,12 +678,17 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, t)| t)
                     .eq(sig_j.params.iter().map(|(_, t)| t));
                 if same_params {
+                    // Both labels anchor at the method *name*: a member
+                    // function's own `span` is its enclosing type's (see
+                    // `HirFunctionDef::span`), so using it here underlines
+                    // the whole struct twice over -- the exact defect
+                    // `name_span` exists to fix.
                     self.error(
                         functions[i].id,
-                        functions[i].span,
+                        functions[i].name_span,
                         AnalysisErrorKind::Redeclaration {
                             name: functions[i].name.clone(),
-                            previous: Some(functions[j].span),
+                            previous: Some(functions[j].name_span),
                         },
                     );
                     break;
@@ -696,10 +701,10 @@ impl<'r> Analyzer<'r> {
                     if same_rest {
                         self.error(
                             functions[i].id,
-                            functions[i].span,
+                            functions[i].name_span,
                             AnalysisErrorKind::AmbiguousSelfOverload {
                                 name: functions[i].name.clone(),
-                                previous: functions[j].span,
+                                previous: functions[j].name_span,
                             },
                         );
                         break;
@@ -1156,10 +1161,10 @@ impl<'r> Analyzer<'r> {
                 *ok = false;
                 continue;
             }
-            if let Some(previous) = seen.insert(field.ident.clone(), field.span) {
+            if let Some(previous) = seen.insert(field.ident.clone(), field.name_span) {
                 self.error(
                     field.id,
-                    field.span,
+                    field.name_span,
                     AnalysisErrorKind::Redeclaration {
                         name: field.ident.clone(),
                         previous: Some(previous),
@@ -1193,7 +1198,7 @@ impl<'r> Analyzer<'r> {
             if let Some(previous) = variants.get(&function.name) {
                 self.error(
                     function.id,
-                    function.span,
+                    function.name_span,
                     AnalysisErrorKind::Redeclaration {
                         name: function.name.clone(),
                         previous: Some(*previous),
@@ -1301,7 +1306,11 @@ impl<'r> Analyzer<'r> {
 
         let params = params?;
         let body = body?;
-        self.check_function_return(f.id, f.span, &fn_type.return_type, &body)?;
+        // Anchored at the declared return type, not the whole function: the
+        // mismatch is between what was *written* there and what the body
+        // produces, and `f.span` covers the entire definition (for a method,
+        // the entire enclosing struct).
+        self.check_function_return(f.id, f.return_type_span, &fn_type.return_type, &body)?;
 
         Some(CheckedFunctionDef {
             id,
@@ -1355,6 +1364,9 @@ impl<'r> Analyzer<'r> {
         let synthetic = HirFunctionDef {
             id: pending.raw.decl_id,
             span: pending.raw.span,
+            name_span: pending.raw.name_span,
+            signature_span: pending.raw.signature_span,
+            return_type_span: pending.raw.return_type_span,
             // Spec default methods carry no annotations of their own -- not
             // yet part of the language's spec-function grammar (see
             // `omega_analyzer::annotations`'s doc comment).

@@ -117,7 +117,7 @@ impl Driver {
     /// purpose for an instantiation) should use instead.
     pub(crate) fn check_item_body(&mut self, key: &ItemKey, item: &HirItem) -> Option<CheckedBody> {
         match item {
-            HirItem::Declaration(decl) => {
+            HirItem::Declaration { decl, .. } => {
                 let r#type = self.resolved_value_type(key);
                 let checked = CheckedDeclaration {
                     id: decl.id,
@@ -139,7 +139,7 @@ impl Driver {
             // `compute_item`'s `analyze_global_declaration_with_init`
             // call), just sourced from a `HirDeclaration` instead of a
             // `HirWalrusDeclaration`.
-            HirItem::DeclarationWithInit(decl, _) => {
+            HirItem::DeclarationWithInit { decl, .. } => {
                 let r#type = self.resolved_value_type(key);
                 let initial_value = self.items.global_initial_values.get(&decl.id).cloned();
                 let checked = CheckedDeclaration {
@@ -175,8 +175,8 @@ impl Driver {
             // spelled with `:=`... which the grammar doesn't actually
             // allow, so in practice this is always `Some` here -- see
             // `CheckedDeclaration::initial_value`'s doc comment).
-            HirItem::Walrus(w) if w.comp => None,
-            HirItem::Walrus(w) => {
+            HirItem::Walrus { walrus: w, .. } if w.comp => None,
+            HirItem::Walrus { walrus: w, .. } => {
                 let r#type = self.resolved_value_type(key);
                 let initial_value = self.items.global_initial_values.get(&w.id).cloned();
                 let checked = CheckedDeclaration {

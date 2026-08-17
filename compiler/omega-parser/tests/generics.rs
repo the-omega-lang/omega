@@ -1,7 +1,7 @@
-use omega_parser::prelude::Item;
 use omega_parser::SourceModule;
+use omega_parser::prelude::Item;
 
-fn function(source: &str) -> omega_parser::ast::statement::function_definition::FunctionDefinitionStmt {
+fn function(source: &str) -> omega_parser::prelude::FunctionDefinitionStmt {
     let module = SourceModule::parse(source).unwrap();
     let Item::FunctionDefinition(definition) = module.nodes.into_iter().next().unwrap().item else {
         panic!("expected function definition");

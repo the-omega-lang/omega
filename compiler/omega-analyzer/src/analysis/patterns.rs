@@ -519,13 +519,14 @@ impl<'r> Analyzer<'r> {
                     }
                     None => domain.0,
                 };
-                let hi = match &range.end {
+                let hi = match range.end.expr() {
                     Some(e) => {
                         let value = self.const_eval_pattern(e, scrutinee_type)?;
                         let n = Self::const_value_as_i128(&value);
-                        let op = if range.inclusive { BinaryOp::Le } else { BinaryOp::Lt };
+                        let inclusive = range.inclusive();
+                        let op = if inclusive { BinaryOp::Le } else { BinaryOp::Lt };
                         conditions.push(Self::value_cmp_condition(scrutinee_read, e.id, e.span, scrutinee_type, op, value));
-                        if range.inclusive { n } else { n - 1 }
+                        if inclusive { n } else { n - 1 }
                     }
                     None => domain.1,
                 };

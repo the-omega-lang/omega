@@ -1,3 +1,4 @@
+pub mod contextual;
 pub mod expression;
 pub mod item;
 pub mod macro_syntax;
@@ -110,7 +111,10 @@ impl<'a> Parser<'a> {
     /// `lexer::tokenize` always produces) -- `peek`/`advance` rely on being
     /// able to sit at that final index forever without going out of bounds.
     pub fn new(tokens: &'a [Token]) -> Self {
-        debug_assert!(matches!(tokens.last().map(|t| &t.kind), Some(TokenKind::Eof)));
+        debug_assert!(matches!(
+            tokens.last().map(|t| &t.kind),
+            Some(TokenKind::Eof)
+        ));
         Self {
             tokens,
             pos: 0,
@@ -244,7 +248,12 @@ impl<'a> Parser<'a> {
     }
 
     pub fn mark(&self) -> Mark {
-        Mark { pos: self.pos, error_count: self.errors.len(), pending_gt: self.pending_gt, last_span: self.last_span }
+        Mark {
+            pos: self.pos,
+            error_count: self.errors.len(),
+            pending_gt: self.pending_gt,
+            last_span: self.last_span,
+        }
     }
 
     pub fn reset(&mut self, mark: Mark) {
@@ -260,6 +269,35 @@ impl<'a> Parser<'a> {
     /// instead when any payload is acceptable.
     pub fn check(&self, kind: &TokenKind) -> bool {
         self.peek() == kind
+    }
+
+    pub fn at_contextual(&self, keyword: &str) -> bool {
+        self.at_contextual_at(0, keyword)
+    }
+
+    pub fn at_contextual_at(&self, offset: usize, keyword: &str) -> bool {
+        matches!(self.peek_at(offset), TokenKind::Ident(name) if name == keyword)
+    }
+
+    pub fn eat_contextual(&mut self, keyword: &str) -> bool {
+        if self.at_contextual(keyword) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn expect_contextual(&mut self, keyword: &'static str) -> bool {
+        if self.eat_contextual(keyword) {
+            true
+        } else {
+            self.error(ParseErrorKind::Expected {
+                expected: keyword,
+                found: self.peek().describe(),
+            });
+            false
+        }
     }
 
     /// Consumes the current token if it equals `kind`, with no error if it
@@ -280,7 +318,10 @@ impl<'a> Parser<'a> {
         if self.eat(kind) {
             true
         } else {
-            self.error(ParseErrorKind::Expected { expected, found: self.peek().describe() });
+            self.error(ParseErrorKind::Expected {
+                expected,
+                found: self.peek().describe(),
+            });
             false
         }
     }
@@ -297,7 +338,10 @@ impl<'a> Parser<'a> {
         let after_last = self.last_span().end;
         self.error_at(
             Span::new(after_last, after_last),
-            ParseErrorKind::Expected { expected, found: self.peek().describe() },
+            ParseErrorKind::Expected {
+                expected,
+                found: self.peek().describe(),
+            },
         );
         false
     }
@@ -333,7 +377,10 @@ impl<'a> Parser<'a> {
         if self.eat_close_angle() {
             true
         } else {
-            self.error(ParseErrorKind::Expected { expected, found: self.peek().describe() });
+            self.error(ParseErrorKind::Expected {
+                expected,
+                found: self.peek().describe(),
+            });
             false
         }
     }
@@ -342,13 +389,19 @@ impl<'a> Parser<'a> {
     /// otherwise records an `Expected` error and returns `None`.
     pub fn expect_ident_with_origin(
         &mut self,
-    ) -> Option<(crate::ast::identifier::Ident, crate::ast::identifier::Origin)> {
+    ) -> Option<(
+        crate::ast::identifier::Ident,
+        crate::ast::identifier::Origin,
+    )> {
         if let TokenKind::Ident(name) = self.peek() {
             let name = name.clone();
             let origin = self.advance().origin;
             Some((crate::ast::identifier::Ident(name), origin))
         } else {
-            self.error(ParseErrorKind::Expected { expected: "an identifier", found: self.peek().describe() });
+            self.error(ParseErrorKind::Expected {
+                expected: "an identifier",
+                found: self.peek().describe(),
+            });
             None
         }
     }
@@ -364,6 +417,56 @@ impl<'a> Parser<'a> {
     pub fn error_at(&mut self, span: Span, kind: ParseErrorKind) {
         self.errors.push(ParseError::new(span, kind));
     }
+}
+
+/// A binding declaration's leading `mut`/`comp` flags, once the *whole*
+/// `[mut] [comp] ident (':='|':')` shape has been confirmed and the
+/// modifiers consumed.
+///
+/// Both words are contextual keywords: they lead a binding here and are
+/// ordinary identifiers everywhere else (`comp` is also a prefix expression
+/// operator -- see `parser::expression::parse_unary`). Committing on the
+/// bare word would stop either being usable as a name, so nothing is
+/// consumed until the full shape matches -- the commit rule described in
+/// `parser::contextual`.
+///
+/// `mut comp x := ...` parses with both flags set and is rejected later by
+/// analysis (`AnalysisErrorKind::MutCompBinding`), not here.
+#[derive(Clone, Copy)]
+pub struct BindingPrefix {
+    pub mutable: bool,
+    pub comp: bool,
+}
+
+/// Consumes a leading `mut`/`comp` run if -- and only if -- a binding
+/// declaration genuinely follows it. Returns `None` (having consumed
+/// nothing) otherwise, including for a binding written with no modifiers at
+/// all, which both callers handle on their ordinary paths.
+///
+/// Shared by item and statement position, which had two verbatim copies of
+/// this lookahead and two near-identical explanations of it.
+pub fn parse_binding_prefix(p: &mut Parser) -> Option<BindingPrefix> {
+    let mut_offset = usize::from(p.at_contextual(contextual::MUT));
+    let comp_offset = usize::from(p.at_contextual_at(mut_offset, contextual::COMP));
+    if mut_offset + comp_offset == 0 {
+        return None;
+    }
+    let ident_offset = mut_offset + comp_offset;
+    if !matches!(p.peek_at(ident_offset), TokenKind::Ident(_))
+        || !matches!(
+            p.peek_at(ident_offset + 1),
+            TokenKind::ColonEq | TokenKind::Colon
+        )
+    {
+        return None;
+    }
+    for _ in 0..ident_offset {
+        p.advance();
+    }
+    Some(BindingPrefix {
+        mutable: mut_offset > 0,
+        comp: comp_offset > 0,
+    })
 }
 
 /// `a`, or `a::b::c` -- shared by type position, expression position, and
@@ -384,6 +487,57 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
     Some(crate::ast::identifier::Path { head, tail, origin })
 }
 
+/// Zero or more `name: Type` parameters, comma-separated.
+///
+/// A comma is only consumed when another parameter actually follows, so a
+/// trailing comma before `)` is left for the caller to reject rather than
+/// silently swallowed.
+///
+/// One production, shared by real definitions (`parser::item`) and
+/// function *types* (`parser::type`), which previously had two
+/// character-for-character identical copies differing only in element type.
+pub fn parse_param_decls(p: &mut Parser) -> Vec<crate::ast::r#type::Param> {
+    let mut params = Vec::new();
+    if !matches!(p.peek(), TokenKind::Ident(_)) {
+        return params;
+    }
+    while let Some(param) = parse_param_decl(p) {
+        params.push(param);
+        if matches!(p.peek(), TokenKind::Comma) && matches!(p.peek_at(1), TokenKind::Ident(_)) {
+            p.advance();
+        } else {
+            break;
+        }
+    }
+    params
+}
+
+fn parse_param_decl(p: &mut Parser) -> Option<crate::ast::r#type::Param> {
+    let (ident, origin) = p.expect_ident_with_origin()?;
+    let name_span = p.last_span();
+    p.expect(&TokenKind::Colon, "':'");
+    let r#type = crate::parser::r#type::parse_type(p)?;
+    Some(crate::ast::r#type::Param {
+        ident,
+        name_span,
+        span: name_span.to(p.last_span()),
+        origin,
+        r#type,
+    })
+}
+
+/// `self` / `mut self` / `*self` / `*mut self` (optionally followed by
+/// `, name: Type, ...`), or just `name: Type, ...` -- see `parse_self_mode`.
+pub fn parse_param_list(p: &mut Parser) -> (Option<crate::ast::self_mode::SelfMode>, Vec<crate::ast::r#type::Param>) {
+    match parse_self_mode(p) {
+        Some(mode) => {
+            let rest = if p.eat(&TokenKind::Comma) { parse_param_decls(p) } else { Vec::new() };
+            (Some(mode), rest)
+        }
+        None => (None, parse_param_decls(p)),
+    }
+}
+
 /// `self` / `mut self` / `*self` / `*mut self` -- the four ways a member
 /// function's `self` parameter can be spelled, shared by both parameter-list
 /// parsers (`parser::item::parse_param_list` for real function/method
@@ -393,6 +547,7 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
 /// parameter-list parsing untouched.
 pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode> {
     use crate::ast::self_mode::SelfMode;
+    use crate::parser::contextual::{MUT, SELF};
 
     // '*' can never legally start an ordinary `ident: Type` parameter (a
     // parameter always starts with its own name), so eating it here is
@@ -406,19 +561,13 @@ pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode
     // be eaten until `self` is confirmed at peek_at(1), because `mut` is a
     // legal ordinary identifier (e.g. an unrelated parameter literally
     // named `mut`) everywhere outside this exact position.
-    let mutable = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-        && matches!(p.peek_at(1), TokenKind::Ident(name) if name == "self")
-    {
+    let mutable = if p.at_contextual(MUT) && p.at_contextual_at(1, SELF) {
         p.advance(); // 'mut'
         true
     } else {
         false
     };
-    if let TokenKind::Ident(name) = p.peek()
-        && name == "self"
-    {
-        p.advance();
+    if p.eat_contextual(SELF) {
         return Some(match (by_pointer, mutable) {
             (false, false) => SelfMode::Value,
             (false, true) => SelfMode::MutValue,
@@ -427,7 +576,10 @@ pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode
         });
     }
     if by_pointer {
-        p.error(ParseErrorKind::Expected { expected: "'self' after '*'/'*mut'", found: p.peek().describe() });
+        p.error(ParseErrorKind::Expected {
+            expected: "'self' after '*'/'*mut'",
+            found: p.peek().describe(),
+        });
     }
     None
 }

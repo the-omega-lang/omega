@@ -108,11 +108,10 @@ pub struct ResolvedStructType {
     /// re-emitting the same annotation errors a second time.
     pub suppress: Vec<Ident>,
     /// `true` for a `marker` declaration -- see
-    /// `omega_parser::ast::statement::r#struct::StructStmt::is_marker`. The
-    /// *only* thing this changes anywhere in the analyzer/codegen: it's
-    /// what exempts this cell from the "a struct must have at least one
-    /// sized field" check (`Analyzer::signature_of_struct`) -- everything
-    /// else (conformance checking, method dispatch, generics,
+    /// `omega_parser::prelude::StructStmt::is_marker`. The only thing this
+    /// changes anywhere in the analyzer/codegen: it exempts this cell from the
+    /// "a struct must have at least one sized field" check (`Analyzer::signature_of_struct`) --
+    /// everything else (conformance checking, method dispatch, generics,
     /// dead-code tracking, spec/vtable coercion, layout) already works
     /// unmodified for a zero-field struct, which is deliberately why
     /// `marker` reuses this type wholesale instead of being a separate
@@ -376,6 +375,13 @@ pub struct RawSpecFunctionSig {
     pub decl_id: HirId,
     pub name: Ident,
     pub span: Span,
+    /// Carried alongside `span` so a queued default-method instantiation can
+    /// rebuild a `HirFunctionDef` with the spec function's *real* signature
+    /// spans rather than widening every diagnostic to the whole declaration
+    /// -- see `Analyzer::check_pending_spec_method`.
+    pub name_span: Span,
+    pub signature_span: Span,
+    pub return_type_span: Span,
     /// See `ResolvedFunctionType::self_mode`. Always `Pointer`/`MutPointer`
     /// in practice -- by-value self is rejected at spec signature
     /// resolution (`Analyzer::resolve_spec_functions`).

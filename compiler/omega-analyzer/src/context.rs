@@ -290,9 +290,9 @@ impl Context {
         let params = fntype
             .params
             .into_iter()
-            .map(|(ident, typ)| {
-                self.resolve_type(typ, resolver, module_path, true, bypass)
-                    .map(|resolved| (ident, resolved))
+            .map(|param| {
+                self.resolve_type(param.r#type, resolver, module_path, true, bypass)
+                    .map(|resolved| (param.ident, resolved))
             })
             .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
         Ok(ResolvedFunctionType {

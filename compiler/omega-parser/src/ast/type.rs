@@ -1,9 +1,41 @@
-use crate::ast::identifier::{Ident, Path};
+use crate::ast::identifier::{Ident, Origin, Path};
+use crate::diagnostics::Span;
 use crate::ast::self_mode::SelfMode;
+
+/// One `name: Type` parameter of a function, method, spec function, or
+/// function *type*.
+///
+/// A parameter and a struct field are written identically, but they are not
+/// the same thing: a field carries a visibility modifier and a parameter
+/// cannot. Fields therefore stay `DeclarationStmt`, and this node exists so
+/// the two parameter-list parsers -- one producing `DeclarationStmt`, one
+/// producing a bare `(Ident, Type)` pair -- become one.
+///
+/// Equality ignores the spans and the macro `origin`, matching `Path`'s own
+/// hand-written `PartialEq`: those are provenance, not syntax, and a
+/// function type's identity must not depend on where it was written.
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub ident: Ident,
+    /// The declared name only -- see `DeclarationStmt::name_span`.
+    pub name_span: Span,
+    /// The whole `name: Type`.
+    pub span: Span,
+    pub origin: Origin,
+    pub r#type: Type,
+}
+
+impl PartialEq for Param {
+    fn eq(&self, other: &Self) -> bool {
+        self.ident == other.ident && self.r#type == other.r#type
+    }
+}
+
+impl Eq for Param {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
-    pub params: Vec<(Ident, Type)>,
+    pub params: Vec<Param>,
     pub return_type: Box<Type>,
     pub is_variadic: bool,
     /// `None` for an ordinary function type; `Some` for a member-function

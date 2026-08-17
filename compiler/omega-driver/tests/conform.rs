@@ -2477,3 +2477,118 @@ fn lowered_mir_carries_symbols_and_linkage() {
         add.symbol
     );
 }
+
+/// Every span in `errors` whose kind matches, as the source text it covers.
+/// A diagnostic that underlines the right thing is the whole point of the
+/// span work; asserting the *text* is the only way to see that it does.
+fn error_texts(
+    source: &str,
+    errors: &[CompileError],
+    predicate: impl Fn(&AnalysisErrorKind) -> bool,
+) -> Vec<String> {
+    errors
+        .iter()
+        .flat_map(|error| match error {
+            CompileError::Analysis { errors, .. } => errors.clone(),
+            _ => Vec::new(),
+        })
+        .filter(|error| predicate(&error.kind))
+        .map(|error| source[error.span.start..error.span.end].to_string())
+        .collect()
+}
+
+/// D1: a diagnostic about a *member* used to underline the whole enclosing
+/// type, because a method/field carried no span of its own. Both the
+/// duplicate and the original must now point at just the name.
+#[test]
+fn a_duplicate_member_underlines_only_its_name() {
+    // Separate packages: a duplicate field stops the struct's analysis
+    // before its methods are ever compared.
+    for (source, name) in [
+        (
+            "struct Holder {\n    field: i32;\n    field: i32;\n}\nmain() => i32 { 0 }\n",
+            "field",
+        ),
+        (
+            "struct Holder {\n    v: i32;\n\n    method(*self) => i32 { 1 }\n    method(*self) => i32 { 2 }\n}\nmain() => i32 { 0 }\n",
+            "method",
+        ),
+    ] {
+        let package = TestPackage::new(source);
+        let errors = compile_errors(&package, "duplicate members must be rejected");
+        let texts = error_texts(source, &errors, |kind| {
+            matches!(kind, AnalysisErrorKind::Redeclaration { .. })
+        });
+        assert_eq!(
+            texts,
+            [name],
+            "a duplicate member's label must cover the name only"
+        );
+        // The secondary `first declared here` label too -- D1's complaint
+        // was that *both* labels covered the same enclosing declaration.
+        for error in errors.iter() {
+            let CompileError::Analysis { errors, .. } = error else {
+                continue;
+            };
+            for error in errors {
+                let AnalysisErrorKind::Redeclaration { previous, .. } = &error.kind else {
+                    continue;
+                };
+                let previous = previous.expect("a duplicate always has a first declaration");
+                assert_eq!(
+                    &source[previous.start..previous.end],
+                    name,
+                    "the `first declared here` label must cover the name only"
+                );
+            }
+        }
+    }
+}
+
+/// D2: a return-type mismatch used to underline the entire function body.
+/// It must cover the declared return type, at top level and in a method.
+#[test]
+fn a_return_type_mismatch_underlines_the_declared_type() {
+    let source = "\
+sum(a: i32, b: i32) => i32 {
+    a;
+    b;
+}
+struct Holder {
+    v: i32;
+
+    get(*self) => *mut i32 {
+        self.v;
+    }
+}
+main() => i32 { 0 }
+";
+    let package = TestPackage::new(source);
+    let errors = compile_errors(&package, "both return-type mismatches must be rejected");
+    let texts = error_texts(source, &errors, |kind| {
+        matches!(kind, AnalysisErrorKind::ReturnTypeMismatch { .. })
+    });
+    assert_eq!(
+        texts,
+        ["i32", "*mut i32"],
+        "the label must cover the whole declared return type and nothing else"
+    );
+}
+
+/// A duplicate *spec* function is the same defect one item kind over.
+#[test]
+fn a_duplicate_spec_function_underlines_only_its_name() {
+    let source = "\
+spec Sp {
+    m(*self) => i32;
+    m(*self) => i32;
+}
+main() => i32 { 0 }
+";
+    let package = TestPackage::new(source);
+    let errors = compile_errors(&package, "a duplicate spec function must be rejected");
+    let texts = error_texts(source, &errors, |kind| {
+        matches!(kind, AnalysisErrorKind::Redeclaration { .. })
+    });
+    assert_eq!(texts, ["m"]);
+}

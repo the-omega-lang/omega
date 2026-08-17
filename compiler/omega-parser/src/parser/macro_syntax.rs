@@ -1,6 +1,6 @@
-use crate::ast::expression::macro_invocation::MacroInvocationExpr;
+use crate::ast::expression::MacroInvocationExpr;
 use crate::ast::identifier::Ident;
-use crate::ast::statement::macro_definition::{
+use crate::ast::item::{
     FragmentKind, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition, MacroSignature,
 };
 use crate::ast::visibility::Visibility;
@@ -131,26 +131,20 @@ fn parse_macro_signature(p: &mut Parser) -> Option<MacroSignature> {
 }
 
 fn parse_fragment_kind(p: &mut Parser) -> Option<FragmentKind> {
-    match p.peek() {
-        TokenKind::Ident(name) if name == "expr" => {
-            p.advance();
-            Some(FragmentKind::Expr)
-        }
-        TokenKind::Ident(name) if name == "type" => {
-            p.advance();
-            Some(FragmentKind::Type)
-        }
-        TokenKind::Ident(name) if name == "ident" => {
-            p.advance();
-            Some(FragmentKind::Ident)
-        }
-        _ => {
-            p.error(ParseErrorKind::Expected {
-                expected: "'expr', 'type' or 'ident'",
-                found: p.peek().describe(),
-            });
-            None
-        }
+    use crate::parser::contextual::{EXPR, IDENT, TYPE};
+
+    if p.eat_contextual(EXPR) {
+        Some(FragmentKind::Expr)
+    } else if p.eat_contextual(TYPE) {
+        Some(FragmentKind::Type)
+    } else if p.eat_contextual(IDENT) {
+        Some(FragmentKind::Ident)
+    } else {
+        p.error(ParseErrorKind::Expected {
+            expected: "'expr', 'type' or 'ident'",
+            found: p.peek().describe(),
+        });
+        None
     }
 }
 

@@ -122,6 +122,16 @@ pub enum AnalysisErrorKind {
     InvalidBitNotOperand {
         r#type: ResolvedType,
     },
+    /// A unary `!` operand isn't a `bool`. Unlike `~`, `!` is defined only
+    /// on `bool` -- there is no integer fallback.
+    InvalidNotOperand {
+        r#type: ResolvedType,
+    },
+    /// An operand of `&&`/`||` isn't a `bool`.
+    InvalidLogicalOperand {
+        op: &'static str,
+        r#type: ResolvedType,
+    },
     /// A `& | ^ << >>` operand is a float -- there's no native instruction
     /// for any of these on floating-point operands.
     FloatBitwiseOperand,
@@ -1045,6 +1055,12 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::InvalidBitNotOperand { r#type } => {
                 write!(f, "cannot apply '~' to a value of type '{}'", r#type)
+            }
+            Self::InvalidNotOperand { r#type } => {
+                write!(f, "cannot apply '!' to a value of type '{}'", r#type)
+            }
+            Self::InvalidLogicalOperand { op, r#type } => {
+                write!(f, "'{}' requires 'bool' operands, found '{}'", op, r#type)
             }
             Self::FloatBitwiseOperand => {
                 write!(

@@ -35,6 +35,13 @@ pub struct Label {
     pub message: String,
 }
 
+/// One rendered diagnostic footer, preserving the construction order.
+#[derive(Debug, Clone)]
+pub enum Footer {
+    Note(String),
+    Help(String),
+}
+
 /// One complete, self-contained finding, structured so a renderer (not the
 /// error site) decides presentation: a headline `message`, any number of
 /// labeled source spans, and optional `note:`/`help:` footers. Built with
@@ -56,13 +63,17 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
     pub labels: Vec<Label>,
-    pub notes: Vec<String>,
-    pub helps: Vec<String>,
+    pub footers: Vec<Footer>,
 }
 
 impl Diagnostic {
     pub fn new(severity: Severity, message: impl Into<String>) -> Self {
-        Self { severity, message: message.into(), labels: Vec::new(), notes: Vec::new(), helps: Vec::new() }
+        Self {
+            severity,
+            message: message.into(),
+            labels: Vec::new(),
+            footers: Vec::new(),
+        }
     }
 
     pub fn error(message: impl Into<String>) -> Self {
@@ -76,25 +87,33 @@ impl Diagnostic {
     /// Adds the primary label -- where the `-->` header points. A diagnostic
     /// should have exactly one; with several, the first wins the header.
     pub fn with_label(mut self, span: Span, message: impl Into<String>) -> Self {
-        self.labels.push(Label { style: LabelStyle::Primary, span, message: message.into() });
+        self.labels.push(Label {
+            style: LabelStyle::Primary,
+            span,
+            message: message.into(),
+        });
         self
     }
 
     pub fn with_secondary_label(mut self, span: Span, message: impl Into<String>) -> Self {
-        self.labels.push(Label { style: LabelStyle::Secondary, span, message: message.into() });
+        self.labels.push(Label {
+            style: LabelStyle::Secondary,
+            span,
+            message: message.into(),
+        });
         self
     }
 
     /// A `= note:` footer -- factual context ("this language has no implicit
     /// conversions"), as opposed to `help`'s actionable advice.
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
-        self.notes.push(note.into());
+        self.footers.push(Footer::Note(note.into()));
         self
     }
 
     /// A `= help:` footer -- what the user can *do* about the problem.
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.helps.push(help.into());
+        self.footers.push(Footer::Help(help.into()));
         self
     }
 

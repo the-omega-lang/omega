@@ -1,3 +1,7 @@
+//! Omega's lexer, parser, macro expander, and syntax tree.
+//! [`prelude`] is this crate's supported surface; the module layout under
+//! [`ast`] and [`parser`] is an implementation detail.
+
 pub mod ast;
 pub mod diagnostics;
 pub mod highlight;
@@ -33,7 +37,7 @@ impl SourceModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::statement::Item;
+    use crate::ast::item::Item;
     use crate::diagnostics::ParseErrorKind;
 
     /// Every `ParseErrorKind` `source` reports, in order -- lets a negative
@@ -218,7 +222,157 @@ mod tests {
         assert!(matches!(
             errors("spec Show { show(*self) => i32; } struct S {} conform S : Show { show(*self) => i32 { 1 } }")
                 .as_slice(),
-            [ParseErrorKind::Expected { expected: "'to'", .. }, ..]
+            [ParseErrorKind::Expected { expected: "to", .. }, ..]
         ));
+    }
+    #[test]
+    fn chained_comparison_reports_its_own_error() {
+        assert!(matches!(
+            errors("a := b < c < d;").as_slice(),
+            [ParseErrorKind::ChainedComparison]
+        ));
+    }
+
+    /// A `glue` function may be neither generic nor `self`-taking. This has
+    /// its own error rather than reusing `Expected`, whose `found` field is
+    /// documented as built from a `TokenKind`, not prose.
+    #[test]
+    fn glue_rejects_generic_and_self_taking_functions() {
+        for source in [
+            "glue Foo { f<T>(x: T) => void { } }",
+            "glue Foo { f(*self) => void { } }",
+        ] {
+            assert!(
+                errors(source)
+                    .iter()
+                    .any(|e| matches!(e, ParseErrorKind::GlueFunctionShape { .. })),
+                "`{source}` should report GlueFunctionShape, got {:?}",
+                errors(source)
+            );
+        }
+    }
+
+    /// The names of the members the *last* item in `source` parsed, and how
+    /// many errors were reported. `SourceModule::parse` discards the tree
+    /// whenever anything failed, which is exactly what a recovery test needs
+    /// to see, so this drives the parser directly.
+    fn recovered_members(source: &str) -> (Vec<String>, usize) {
+        let (tokens, lex_errors) = lexer::tokenize(source);
+        let mut parser = parser::Parser::new(&tokens);
+        let nodes = parser::item::parse_source_module(&mut parser);
+        let error_count = lex_errors.len() + parser.into_errors().len();
+        let names: Vec<Ident> = match &nodes.last().expect("at least one item").item {
+            Item::Conform(c) => c.functions.iter().map(|f| f.ident.clone()).collect(),
+            Item::Primitive(pr) => pr.functions.iter().map(|f| f.ident.clone()).collect(),
+            Item::Gap(g) => g.functions.iter().map(|f| f.ident.clone()).collect(),
+            Item::Glue(g) => g.functions.iter().map(|f| f.ident.clone()).collect(),
+            Item::Struct(s) => s.functions.iter().map(|f| f.ident.clone()).collect(),
+            other => panic!("unexpected trailing item {other:?}"),
+        };
+        (
+            names.into_iter().map(|i| i.as_ref().to_string()).collect(),
+            error_count,
+        )
+    }
+
+    /// Every item body recovers per member: one malformed declaration
+    /// reports one error, and the members after it still parse. `conform`,
+    /// `primitive`, `gap` and `glue` used to abandon the whole item on the
+    /// first bad member while `struct`/`union`/`enum` recovered -- the same
+    /// mistake reported differently depending on which block it was in.
+    #[test]
+    fn every_item_body_recovers_per_member() {
+        // `?` is not a type, so `bad` is malformed; `good` must still land
+        // in the *same* item rather than being lost with it.
+        for source in [
+            "struct S { bad(*self) => ? { } good(*self) => i32 { 1 } }",
+            "spec Sp { m(*self) => i32; }\n\
+             struct S {}\n\
+             conform S to Sp { bad(*self) => ? { } good(*self) => i32 { 1 } }",
+            "primitive i32 { bad(*self) => ? { } good(*self) => i32 { 1 } }",
+            "gap G { bad() => ?; good() => i32; }",
+            "glue G { bad() => ? { } good() => i32 { 1 } }",
+        ] {
+            let (members, error_count) = recovered_members(source);
+            assert_eq!(
+                members,
+                ["good"],
+                "`{source}` should keep parsing after the bad member"
+            );
+            assert_eq!(
+                error_count, 1,
+                "`{source}` should report exactly one error, not cascade"
+            );
+        }
+    }
+
+    /// `ParseError::to_diagnostic` is now the single definition site for
+    /// every error's text, and `Display` reads its headline back from there.
+    /// The compiler still forces a *new* variant to be given an arm (that
+    /// match is exhaustive), but nothing forces the arm it gets to actually
+    /// say anything -- an arm returning a bare `Diagnostic::error("")` would
+    /// compile and render a blank error. This asserts the two properties
+    /// every arm must have: a non-empty headline, and at least one label to
+    /// anchor it.
+    #[test]
+    fn every_parse_error_renders_a_headline_and_a_label() {
+        use crate::ast::identifier::Ident;
+        use crate::diagnostics::{ParseError, Span};
+
+        let name = || Ident("f".to_string());
+        let kinds = [
+            ParseErrorKind::Expected {
+                expected: "a type",
+                found: "';'".to_string(),
+            },
+            ParseErrorKind::UnterminatedString,
+            ParseErrorKind::UnterminatedChar,
+            ParseErrorKind::UnterminatedComment,
+            ParseErrorKind::EvenMultilineStringDelimiter { count: 4 },
+            ParseErrorKind::UnterminatedGroup { open: '(' },
+            ParseErrorKind::UnterminatedGroup { open: '[' },
+            ParseErrorKind::UnterminatedGroup { open: '{' },
+            ParseErrorKind::InvalidCharacter('\u{7}'),
+            ParseErrorKind::InvalidUnicodeEscape("D800".to_string()),
+            ParseErrorKind::InvalidCharLiteral,
+            ParseErrorKind::StructLiteralNotAllowedHere,
+            ParseErrorKind::EnumFunctionBeforeSemi,
+            ParseErrorKind::EnumNotAllowedHere,
+            ParseErrorKind::StructNotAllowedHere,
+            ParseErrorKind::UnionNotAllowedHere,
+            ParseErrorKind::SpecNotAllowedHere,
+            ParseErrorKind::SpecAliasCannotDeclareFunctions,
+            ParseErrorKind::RangeMissingEnd,
+            ParseErrorKind::OpenRangeHasEnd,
+            ParseErrorKind::ChainedComparison,
+            ParseErrorKind::NestingTooDeep { limit: 64 },
+            ParseErrorKind::AnnotationNotAllowedHere,
+            ParseErrorKind::VisibilityNotAllowedHere,
+            ParseErrorKind::GapOrGlueVisibility,
+            ParseErrorKind::ConformMethodVisibility,
+            ParseErrorKind::PrimitiveVisibility,
+            ParseErrorKind::GapOrGlueGeneric,
+            ParseErrorKind::GapFunctionBody { name: name() },
+            ParseErrorKind::GapFunctionSelf { name: name() },
+            ParseErrorKind::GlueFunctionShape { name: name() },
+            ParseErrorKind::DefaultGenericParamNotTrailing { name: name() },
+            ParseErrorKind::SpecDependenciesRemoved,
+            ParseErrorKind::MacroInvocationNotAllowedAfterDefer,
+            ParseErrorKind::VariadicMacroParamNotLast,
+            ParseErrorKind::InvalidMacroSeparator,
+            ParseErrorKind::NestedMacroRepetition,
+            ParseErrorKind::ImportInMacroBody,
+        ];
+
+        for kind in kinds {
+            let rendered = ParseError::new(Span::new(0, 1), kind.clone()).to_diagnostic();
+            assert!(
+                !rendered.message.trim().is_empty(),
+                "{kind:?} renders no headline"
+            );
+            assert!(!rendered.labels.is_empty(), "{kind:?} renders no label");
+            // `Display` must agree with the headline it now reads back.
+            assert_eq!(kind.to_string(), rendered.message, "{kind:?}");
+        }
     }
 }

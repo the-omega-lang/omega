@@ -87,6 +87,8 @@ impl<'r> Analyzer<'r> {
             }
             HirExpr::Negate(base) => self.analyze_negate(id, span, base, expected),
             HirExpr::BitNot(base) => self.analyze_bit_not(id, span, base, expected),
+            HirExpr::Not(base) => self.analyze_not(id, span, base),
+            HirExpr::Logical(logical) => self.analyze_logical(id, span, logical),
             HirExpr::Increment(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Add),
             HirExpr::Decrement(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Sub),
             HirExpr::BinaryOp(bin) => self.analyze_binary_expr(id, span, bin, expected),
@@ -892,6 +894,119 @@ impl<'r> Analyzer<'r> {
     /// `& | ^` (native on `bool`, see `analyze_binary_op`), bitwise-NOT of
     /// `bool`'s `0`/`1` representation doesn't stay within `{0,1}` (`~0u8 ==
     /// 255`), so there is no sound native meaning for it to have.
+    /// `!base` -- desugared to `base ^ true` once `base` is known to be a
+    /// `bool`.
+    ///
+    /// `bool` is closed under `^` (see `docs/01-primitives.md`), and `^`
+    /// already has native analysis, MIR and codegen support on `bool`, so
+    /// the whole operator costs nothing downstream: there is no
+    /// `CheckedExpr::Not`, no `MirExpr` variant, and neither backend
+    /// changes. Type checking still happens *here*, so `!5` reports "`!`
+    /// requires a `bool`" rather than something about `^`.
+    fn analyze_not(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        base: &HirExprNode,
+    ) -> Option<CheckedExprNode> {
+        let checked_base = self.analyze_expr(base, Some(&ResolvedType::Bool))?;
+        if checked_base.r#type != ResolvedType::Bool {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidNotOperand {
+                    r#type: checked_base.r#type,
+                },
+            );
+            return None;
+        }
+        let truth = CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::Bool,
+            kind: CheckedExpr::Bool(true),
+        };
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::Bool,
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op: BinaryOp::BitXor,
+                left: Box::new(checked_base),
+                right: Box::new(truth),
+            }),
+        })
+    }
+
+    /// `a && b` / `a || b` -- desugared into the `if`-expression that has
+    /// always been the hand-written spelling for these:
+    ///
+    /// ```text
+    /// a && b   ==>   if a { b } else { false }
+    /// a || b   ==>   if a { true } else { b }
+    /// ```
+    ///
+    /// The short-circuit is therefore genuine control flow the whole way
+    /// down -- the same branch an `if` compiles to -- rather than an
+    /// operator each backend has to special-case. Both operands are checked
+    /// here, so `b`'s errors are reported even though it may not execute.
+    fn analyze_logical(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        logical: &omega_hir::HirLogical,
+    ) -> Option<CheckedExprNode> {
+        let op = match logical.op {
+            LogicalOp::And => "&&",
+            LogicalOp::Or => "||",
+        };
+        let operand = |this: &mut Self, side: &HirExprNode| {
+            let checked = this.analyze_expr(side, Some(&ResolvedType::Bool))?;
+            if checked.r#type != ResolvedType::Bool {
+                this.error(
+                    side.id,
+                    side.span,
+                    AnalysisErrorKind::InvalidLogicalOperand {
+                        op,
+                        r#type: checked.r#type.clone(),
+                    },
+                );
+                return None;
+            }
+            Some(checked)
+        };
+        let left = operand(self, &logical.left);
+        let right = operand(self, &logical.right);
+        let (left, right) = (left?, right?);
+
+        let literal = |value: bool| CheckedBlock {
+            stmts: Vec::new(),
+            tail: Some(Box::new(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: ResolvedType::Bool,
+                kind: CheckedExpr::Bool(value),
+            })),
+        };
+        let carry = |expr: CheckedExprNode| CheckedBlock {
+            stmts: Vec::new(),
+            tail: Some(Box::new(expr)),
+        };
+        let (then_branch, else_branch) = match logical.op {
+            LogicalOp::And => (carry(right), literal(false)),
+            LogicalOp::Or => (literal(true), carry(right)),
+        };
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: ResolvedType::Bool,
+            kind: CheckedExpr::If(CheckedIf {
+                branches: vec![(left, then_branch)],
+                else_branch: Some(else_branch),
+            }),
+        })
+    }
+
     fn analyze_bit_not(
         &mut self,
         node_id: HirId,
@@ -1863,7 +1978,7 @@ impl<'r> Analyzer<'r> {
             Some(expr) => Some(self.analyze_expr(expr, None)?),
             None => None,
         };
-        let checked_end = match (&range.end, &checked_start) {
+        let checked_end = match (range.end.expr(), &checked_start) {
             (Some(expr), Some(start)) => Some(self.analyze_expr(expr, Some(&start.r#type))?),
             (Some(expr), None) => Some(self.analyze_expr(expr, None)?),
             (None, _) => None,
@@ -1930,7 +2045,7 @@ impl<'r> Analyzer<'r> {
                             id,
                             span,
                             r#type: ResolvedType::Bool,
-                            kind: CheckedExpr::Bool(range.inclusive),
+                            kind: CheckedExpr::Bool(range.inclusive()),
                         },
                     },
                 ],

@@ -3,16 +3,17 @@ use crate::hir::{
     HirBlock, HirBreak, HirCast, HirConformDef, HirCompoundAssign, HirContinue, HirDeclaration,
     HirDefer, HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam,
-    HirGlueDef, HirIf, HirImport, HirItem, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam,
-    HirPattern, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirProjection, HirRange, HirSlice,
+    HirGlueDef, HirIf, HirImport, HirItem, HirLogical, HirLoop, HirMatch, HirMatchArm, HirModule, HirParam,
+    HirPattern, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirProjection, HirRange, HirRangeEnd, HirSlice,
     HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField,
     HirUnionDef, HirWalrusDeclaration, HirWhile,
 };
 use crate::ids::{HirIdGen, ModuleId};
 use omega_parser::prelude::{
+    Param,
     AnnotationArg, AnnotationNode, AnnotationValue, CodeblockExpr, DeclarationStmt, EnumStmt,
     Expression, ExpressionNode, ExternDeclarationStmt, FunctionDefinitionStmt, GenericParam, Ident,
-    Item, ItemNode, Path, Pattern, RangeExpr, SelfMode, SourceModule, Span, SpecFunctionStmt,
+    Item, ItemNode, Path, Pattern, RangeEnd, RangeExpr, SelfMode, SourceModule, Span, SpecFunctionStmt,
     SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt, Visibility,
 };
 
@@ -39,23 +40,27 @@ struct Lowerer {
 impl Lowerer {
     fn lower_item(&mut self, node: &ItemNode) -> HirItem {
         match &node.item {
-            Item::Declaration(decl) => {
-                HirItem::Declaration(self.lower_declaration(decl, node.span))
-            }
-            Item::DeclarationWithInit(decl, value) => HirItem::DeclarationWithInit(
-                self.lower_declaration(decl, node.span),
-                self.lower_expr(value),
-            ),
-            Item::Walrus(w) => HirItem::Walrus(HirWalrusDeclaration {
-                id: self.ids.next(),
-                span: node.span,
-                ident: w.ident.clone(),
-                origin: w.origin,
-                value: self.lower_expr(&w.value),
-                mutable: w.mutable,
-                comp: w.comp,
+            Item::Declaration(decl) => HirItem::Declaration {
+                decl: self.lower_declaration(decl, node.span),
+                visibility: decl.visibility,
+            },
+            Item::DeclarationWithInit(decl, value) => HirItem::DeclarationWithInit {
+                decl: self.lower_declaration(decl, node.span),
+                value: self.lower_expr(value),
+                visibility: decl.visibility,
+            },
+            Item::Walrus(w) => HirItem::Walrus {
                 visibility: w.visibility,
-            }),
+                walrus: HirWalrusDeclaration {
+                    id: self.ids.next(),
+                    span: node.span,
+                    ident: w.ident.clone(),
+                    origin: w.origin,
+                    value: self.lower_expr(&w.value),
+                    mutable: w.mutable,
+                    comp: w.comp,
+                },
+            },
             Item::ExternDeclaration(decl) => {
                 HirItem::ExternDeclaration(self.lower_extern_declaration(decl, node.span))
             }
@@ -76,11 +81,12 @@ impl Lowerer {
                     .map(|f| HirGapFunction {
                         id: self.ids.next(),
                         span: node.span,
+                        name_span: f.name_span,
                         name: f.ident.clone(),
                         params: f
                             .params
                             .iter()
-                            .map(|p| self.lower_param(p, node.span))
+                            .map(|p| self.lower_param(p))
                             .collect(),
                         return_type: f.return_type.clone(),
                     })
@@ -192,7 +198,6 @@ impl Lowerer {
                 value: self.lower_expr(&w.value),
                 mutable: w.mutable,
                 comp: w.comp,
-                visibility: Visibility::default(),
             })],
             Statement::While(w) => vec![HirStmt::While(HirWhile {
                 id: self.ids.next(),
@@ -237,9 +242,13 @@ impl Lowerer {
                 vec![HirStmt::Defer(HirDefer {
                     id: self.ids.next(),
                     span,
+                    // `defer <stmt>;` has no braces of its own -- the
+                    // synthetic block wrapping the deferred statement takes
+                    // the `defer` statement's span.
                     body: HirBlock {
                         stmts: body_stmts,
                         tail: None,
+                        span,
                     },
                 })]
             }
@@ -254,7 +263,6 @@ impl Lowerer {
             origin: decl.origin,
             r#type: decl.r#type.clone(),
             mutable: decl.mutable,
-            visibility: decl.visibility,
         }
     }
 
@@ -282,7 +290,11 @@ impl Lowerer {
             .flat_map(|s| self.lower_stmt(s))
             .collect();
         let tail = block.tail.as_ref().map(|e| Box::new(self.lower_expr(e)));
-        HirBlock { stmts, tail }
+        HirBlock {
+            stmts,
+            tail,
+            span: block.span,
+        }
     }
 
     /// `is_member` is `true` when lowering a struct/union/enum method, in
@@ -290,12 +302,6 @@ impl Lowerer {
     /// inserted here -- this needs no type information beyond the flag, so
     /// it belongs in lowering rather than semantic analysis, which used to
     /// do this ad hoc.
-    ///
-    /// Note: struct methods have no per-function span in the parser's AST
-    /// (only the enclosing `ItemNode`/`StatementNode` did, and
-    /// struct methods were never wrapped in one) -- `span` is the enclosing
-    /// struct's span in that case, an approximation but strictly better than
-    /// nothing.
     fn lower_function_def(
         &mut self,
         f: &FunctionDefinitionStmt,
@@ -306,7 +312,7 @@ impl Lowerer {
         if is_member && let Some(p) = self.self_param(f.self_mode, span) {
             params.push(p);
         }
-        params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
+        params.extend(f.params.iter().map(|p| self.lower_param(p)));
 
         let mut body = self.lower_block(&f.codeblock);
         if f.self_mode == Some(SelfMode::MutValue) {
@@ -319,6 +325,9 @@ impl Lowerer {
         HirFunctionDef {
             id: self.ids.next(),
             span,
+            name_span: f.name_span,
+            signature_span: f.signature_span,
+            return_type_span: f.return_type_span,
             annotations: Self::lower_annotations(&f.annotations),
             visibility: f.visibility,
             name: f.ident.clone(),
@@ -387,8 +396,8 @@ impl Lowerer {
                 }
             }
             Type::Function(f) => {
-                for (_, p) in f.params.iter_mut() {
-                    Self::replace_spec_static(p, next, generics);
+                for p in f.params.iter_mut() {
+                    Self::replace_spec_static(&mut p.r#type, next, generics);
                 }
                 Self::replace_spec_static(&mut f.return_type, next, generics);
             }
@@ -430,6 +439,9 @@ impl Lowerer {
         Some(HirParam {
             id: self.ids.next(),
             span,
+            // Synthetic -- there is no `self` token in the source to point
+            // at, so both spans are the enclosing function's.
+            name_span: span,
             ident: Ident("self".to_string()),
             origin: omega_parser::prelude::Origin::default(),
             r#type,
@@ -465,7 +477,6 @@ impl Lowerer {
             },
             mutable: true,
             comp: false,
-            visibility: Visibility::default(),
         })
     }
 
@@ -549,7 +560,7 @@ impl Lowerer {
         if let Some(p) = self.self_param(f.self_mode, span) {
             params.push(p);
         }
-        params.extend(f.params.iter().map(|p| self.lower_param(p, span)));
+        params.extend(f.params.iter().map(|p| self.lower_param(p)));
 
         let mut body = f.body.as_ref().map(|b| self.lower_block(b));
         if f.self_mode == Some(SelfMode::MutValue)
@@ -561,6 +572,9 @@ impl Lowerer {
         HirSpecFunction {
             id: self.ids.next(),
             span,
+            name_span: f.name_span,
+            signature_span: f.signature_span,
+            return_type_span: f.return_type_span,
             name: f.ident.clone(),
             self_mode: f.self_mode,
             params,
@@ -570,20 +584,43 @@ impl Lowerer {
         }
     }
 
-    fn lower_param(&mut self, param: &DeclarationStmt, span: Span) -> HirParam {
+    /// A function/spec/gap parameter.
+    ///
+    /// Separate from `lower_field` below because the AST distinguishes the
+    /// two -- a field carries a visibility modifier, a parameter cannot --
+    /// even though both still land in `HirParam` today. Merging those three
+    /// layers (`HirParam`, `CheckedParam`, and the analyzer's
+    /// `(Ident, ResolvedType, Visibility)` field triple) is recorded as one
+    /// unit of work in `docs/14-known-issues.md`; doing it here alone would
+    /// create a distinction that dies at the next layer.
+    fn lower_param(&mut self, param: &Param) -> HirParam {
         HirParam {
             id: self.ids.next(),
-            span,
+            span: param.span,
+            name_span: param.name_span,
             ident: param.ident.clone(),
             origin: param.origin,
             r#type: param.r#type.clone(),
-            visibility: param.visibility,
+            visibility: Visibility::default(),
+        }
+    }
+
+    /// A struct/union/enum field -- see `lower_param`.
+    fn lower_field(&mut self, field: &DeclarationStmt) -> HirParam {
+        HirParam {
+            id: self.ids.next(),
+            span: field.span,
+            name_span: field.name_span,
+            ident: field.ident.clone(),
+            origin: field.origin,
+            r#type: field.r#type.clone(),
+            visibility: field.visibility,
         }
     }
 
     fn lower_struct_def(&mut self, s: &StructStmt, span: Span) -> HirStructDef {
         let id = self.ids.next();
-        let fields = s.fields.iter().map(|f| self.lower_param(f, span)).collect();
+        let fields = s.fields.iter().map(|f| self.lower_field(f)).collect();
         let functions = s
             .functions
             .iter()
@@ -607,7 +644,7 @@ impl Lowerer {
     /// synthetic `self: *Self` inserted by `lower_function_def`.
     fn lower_union_def(&mut self, u: &UnionStmt, span: Span) -> HirUnionDef {
         let id = self.ids.next();
-        let fields = u.fields.iter().map(|f| self.lower_param(f, span)).collect();
+        let fields = u.fields.iter().map(|f| self.lower_field(f)).collect();
         let functions = u
             .functions
             .iter()
@@ -628,12 +665,10 @@ impl Lowerer {
 
     /// Same treatment as `lower_struct_def` -- member functions get their
     /// synthetic `self: *Self` inserted by `lower_function_def`, exactly
-    /// like a struct's. Header entries keep their own real spans (the parser
-    /// records them -- position-sensitive `tag` rules deserve precise
-    /// errors); variant body fields and the shared dynamic fields (no
-    /// position-sensitive rules of their own) inherit the enum's/their
-    /// variant's span, the same approximation struct fields make with their
-    /// struct's.
+    /// like a struct's. Every field here -- header entries, the shared
+    /// dynamic fields and each variant's body fields alike -- carries its
+    /// own real span, recorded by the parser (see `lower_param`); none of
+    /// them inherits the enum's or its variant's any more.
     fn lower_enum_def(&mut self, e: &EnumStmt, span: Span) -> HirEnumDef {
         let id = self.ids.next();
         let header = e
@@ -642,6 +677,7 @@ impl Lowerer {
             .map(|h| HirParam {
                 id: self.ids.next(),
                 span: h.span,
+                name_span: h.name_span,
                 ident: h.ident.clone(),
                 origin: omega_parser::prelude::Origin::default(),
                 r#type: h.r#type.clone(),
@@ -651,7 +687,7 @@ impl Lowerer {
         let dynamic_fields = e
             .dynamic_fields
             .iter()
-            .map(|f| self.lower_param(f, span))
+            .map(|f| self.lower_field(f))
             .collect();
         let variants = e
             .variants
@@ -664,7 +700,7 @@ impl Lowerer {
                 fields: v
                     .fields
                     .iter()
-                    .map(|f| self.lower_param(f, v.span))
+                    .map(|f| self.lower_field(f))
                     .collect(),
             })
             .collect();
@@ -688,6 +724,24 @@ impl Lowerer {
         }
     }
 
+    /// One lowered expression node.
+    ///
+    /// Every arm of `lower_expr` needs the same three fields, and writing
+    /// them out per arm made the id-minting *order* accidental: an arm that
+    /// bound its children in a preceding `let` minted the parent's id after
+    /// theirs, while an inline arm minted it before (Rust evaluates struct
+    /// fields in source order). Nothing depends on that order today, which
+    /// is exactly why it is worth making uniform now rather than after
+    /// something does -- here the parent's id is always minted last, after
+    /// its children.
+    fn node(&mut self, span: Span, expr: HirExpr) -> HirExprNode {
+        HirExprNode {
+            id: self.ids.next(),
+            span,
+            expr,
+        }
+    }
+
     fn lower_expr(&mut self, node: &ExpressionNode) -> HirExprNode {
         match &node.expression {
             Expression::Path(_)
@@ -695,44 +749,16 @@ impl Lowerer {
             | Expression::Index(_)
             | Expression::Deref(_) => {
                 let place = self.lower_place_chain(node);
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Place(place),
-                }
+                self.node(node.span, HirExpr::Place(place))
             }
-            Expression::Number(n) => HirExprNode {
-                id: self.ids.next(),
-                span: node.span,
-                expr: HirExpr::Number(n.clone()),
-            },
-            Expression::String(s) => HirExprNode {
-                id: self.ids.next(),
-                span: node.span,
-                expr: HirExpr::String(s.clone()),
-            },
-            Expression::ByteString(s) => HirExprNode {
-                id: self.ids.next(),
-                span: node.span,
-                expr: HirExpr::ByteString(s.clone()),
-            },
-            Expression::Bool(b) => HirExprNode {
-                id: self.ids.next(),
-                span: node.span,
-                expr: HirExpr::Bool(b.0),
-            },
-            Expression::Char(c) => HirExprNode {
-                id: self.ids.next(),
-                span: node.span,
-                expr: HirExpr::Char(c.0),
-            },
+            Expression::Number(n) => self.node(node.span, HirExpr::Number(n.clone())),
+            Expression::String(s) => self.node(node.span, HirExpr::String(s.clone())),
+            Expression::ByteString(s) => self.node(node.span, HirExpr::ByteString(s.clone())),
+            Expression::Bool(b) => self.node(node.span, HirExpr::Bool(b.0)),
+            Expression::Char(c) => self.node(node.span, HirExpr::Char(c.0)),
             Expression::Codeblock(cb) => {
                 let block = self.lower_block(cb);
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Codeblock(block),
-                }
+                self.node(node.span, HirExpr::Codeblock(block))
             }
             Expression::If(if_expr) => {
                 let branches = if_expr
@@ -741,141 +767,112 @@ impl Lowerer {
                     .map(|(cond, block)| (self.lower_expr(cond), self.lower_block(block)))
                     .collect();
                 let else_branch = if_expr.else_branch.as_ref().map(|b| self.lower_block(b));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::If(HirIf {
+                self.node(
+                    node.span,
+                    HirExpr::If(HirIf {
                         branches,
                         else_branch,
                     }),
-                }
+                )
             }
             Expression::FunctionCall(call) => {
                 let callee = Box::new(self.lower_expr(&call.callee));
                 let args = call.args.iter().map(|a| self.lower_expr(a)).collect();
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::FunctionCall(HirFunctionCall { callee, args }),
-                }
+                self.node(node.span, HirExpr::FunctionCall(HirFunctionCall { callee, args }))
             }
             Expression::Assignment(assign) => {
                 let target = Box::new(self.lower_expr(&assign.target));
                 let value = Box::new(self.lower_expr(&assign.value));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Assignment(HirAssignment { target, value }),
-                }
+                self.node(node.span, HirExpr::Assignment(HirAssignment { target, value }))
             }
             Expression::CompoundAssign(assign) => {
                 let target = Box::new(self.lower_expr(&assign.target));
                 let value = Box::new(self.lower_expr(&assign.value));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::CompoundAssign(HirCompoundAssign {
+                self.node(
+                    node.span,
+                    HirExpr::CompoundAssign(HirCompoundAssign {
                         target,
                         op: assign.op,
                         value,
                     }),
-                }
+                )
             }
             Expression::AddressOf(addr) => {
                 let base = Box::new(self.lower_expr(&addr.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::AddressOf(HirAddressOf {
+                self.node(
+                    node.span,
+                    HirExpr::AddressOf(HirAddressOf {
                         base,
                         mutable: addr.mutable,
                     }),
-                }
+                )
             }
             Expression::Reveal(reveal) => {
                 let base = Box::new(self.lower_expr(&reveal.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Reveal(base),
-                }
+                self.node(node.span, HirExpr::Reveal(base))
             }
             Expression::Comp(comp) => {
                 let base = Box::new(self.lower_expr(&comp.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Comp(base),
-                }
+                self.node(node.span, HirExpr::Comp(base))
             }
             Expression::Negate(neg) => {
                 let base = Box::new(self.lower_expr(&neg.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Negate(base),
-                }
+                self.node(node.span, HirExpr::Negate(base))
             }
             Expression::BitNot(not) => {
                 let base = Box::new(self.lower_expr(&not.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::BitNot(base),
-                }
+                self.node(node.span, HirExpr::BitNot(base))
+            }
+            Expression::Not(not) => {
+                let base = Box::new(self.lower_expr(&not.base));
+                self.node(node.span, HirExpr::Not(base))
+            }
+            Expression::Logical(logical) => {
+                let left = Box::new(self.lower_expr(&logical.left));
+                let right = Box::new(self.lower_expr(&logical.right));
+                self.node(
+                    node.span,
+                    HirExpr::Logical(HirLogical {
+                        op: logical.op,
+                        left,
+                        right,
+                    }),
+                )
             }
             Expression::Cast(cast) => {
                 let base = Box::new(self.lower_expr(&cast.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Cast(HirCast {
+                self.node(
+                    node.span,
+                    HirExpr::Cast(HirCast {
                         target: cast.target.clone(),
                         base,
                     }),
-                }
+                )
             }
-            Expression::Sizeof(sizeof) => HirExprNode {
-                id: self.ids.next(),
-                span: node.span,
-                expr: HirExpr::Sizeof(sizeof.r#type.clone()),
-            },
+            Expression::Sizeof(sizeof) => self.node(node.span, HirExpr::Sizeof(sizeof.r#type.clone())),
             Expression::Increment(incr) => {
                 let base = Box::new(self.lower_expr(&incr.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Increment(base),
-                }
+                self.node(node.span, HirExpr::Increment(base))
             }
             Expression::Decrement(decr) => {
                 let base = Box::new(self.lower_expr(&decr.base));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Decrement(base),
-                }
+                self.node(node.span, HirExpr::Decrement(base))
             }
             Expression::BinaryOp(bin) => {
                 let left = Box::new(self.lower_expr(&bin.left));
                 let right = Box::new(self.lower_expr(&bin.right));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::BinaryOp(HirBinaryOp {
+                self.node(
+                    node.span,
+                    HirExpr::BinaryOp(HirBinaryOp {
                         op: bin.op,
                         left,
                         right,
                     }),
-                }
+                )
             }
             Expression::ArrayLiteral(lit) => {
                 let elements = lit.elements.iter().map(|e| self.lower_expr(e)).collect();
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::ArrayLiteral(elements),
-                }
+                self.node(node.span, HirExpr::ArrayLiteral(elements))
             }
             Expression::StructLiteral(lit) => {
                 let fields = lit
@@ -887,31 +884,22 @@ impl Lowerer {
                         value: self.lower_expr(&f.value),
                     })
                     .collect();
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::StructLiteral(HirStructLiteral {
+                self.node(
+                    node.span,
+                    HirExpr::StructLiteral(HirStructLiteral {
                         path: lit.path.clone(),
                         fields,
                     }),
-                }
+                )
             }
             Expression::Slice(s) => {
                 let base = self.lower_place_chain(&s.base);
                 let range = self.lower_range(&s.range);
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Slice(HirSlice { base, range }),
-                }
+                self.node(node.span, HirExpr::Slice(HirSlice { base, range }))
             }
             Expression::Range(r) => {
                 let range = self.lower_range(r);
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Range(range),
-                }
+                self.node(node.span, HirExpr::Range(range))
             }
             Expression::Match(m) => {
                 let scrutinee = Box::new(self.lower_expr(&m.scrutinee));
@@ -925,15 +913,14 @@ impl Lowerer {
                     })
                     .collect();
                 let else_branch = m.else_branch.as_ref().map(|b| self.lower_block(b));
-                HirExprNode {
-                    id: self.ids.next(),
-                    span: node.span,
-                    expr: HirExpr::Match(HirMatch {
+                self.node(
+                    node.span,
+                    HirExpr::Match(HirMatch {
                         scrutinee,
                         arms,
                         else_branch,
                     }),
-                }
+                )
             }
             Expression::MacroInvocation(_) => unreachable!(
                 "macro invocations are replaced by their expansion by \
@@ -945,10 +932,14 @@ impl Lowerer {
     /// See `HirRange`'s doc comment -- shared, structural lowering for
     /// `HirSlice`, `HirPattern::Range`, and `HirExpr::Range` alike.
     fn lower_range(&mut self, range: &RangeExpr) -> HirRange {
+        let end = match &range.end {
+            RangeEnd::Inclusive(e) => HirRangeEnd::Inclusive(Box::new(self.lower_expr(e))),
+            RangeEnd::Exclusive(e) => HirRangeEnd::Exclusive(Box::new(self.lower_expr(e))),
+            RangeEnd::Open => HirRangeEnd::Open,
+        };
         HirRange {
             start: range.start.as_ref().map(|e| Box::new(self.lower_expr(e))),
-            end: range.end.end_expr().map(|e| Box::new(self.lower_expr(e))),
-            inclusive: range.inclusive(),
+            end,
             span: range.span,
         }
     }
@@ -965,7 +956,7 @@ impl Lowerer {
     /// `((a).b).c`) into one `HirPlace` with a flat `Vec<HirProjection>`, in
     /// source order. The parser itself has no idea any of this denotes an
     /// addressable location -- `FieldAccess`/`Index`/`Ident` are just plain
-    /// expression-forming constructs to it (see `omega_parser::ast::expression`).
+    /// expression-forming constructs to it (see `omega_parser::prelude::Expression`).
     /// Recognizing that a chain of them rooted in an identifier (or some other
     /// base expression) is a "place" is entirely this function's job, and it
     /// replaces `analyze_place`'s old "hacky mutation" approach of building

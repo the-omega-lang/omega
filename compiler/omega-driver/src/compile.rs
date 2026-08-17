@@ -350,9 +350,13 @@ impl Driver {
                             Some((function, actual))
                                 if !Self::same_glue_signature(&requirement.fn_type, actual) =>
                             {
+                                // The signature, not the whole `glue`
+                                // block: a glue member is never wrapped in
+                                // an `ItemNode`, so `function.span` is the
+                                // enclosing block's.
                                 errors.push(AnalysisError::new(
                                     function.id,
-                                    function.span,
+                                    function.signature_span,
                                     AnalysisErrorKind::GlueFunctionSignatureMismatch {
                                         gap: gap.name.clone(),
                                         function: name.clone(),
@@ -364,9 +368,11 @@ impl Driver {
                     }
                     for (function, _) in &functions {
                         if !gap.functions.iter().any(|(name, _)| *name == function.name) {
+                            // The name -- an unexpected member is an
+                            // identity problem, not a whole-block one.
                             errors.push(AnalysisError::new(
                                 function.id,
-                                function.span,
+                                function.name_span,
                                 AnalysisErrorKind::GlueExtraFunction {
                                     gap: gap.name.clone(),
                                     function: function.name.clone(),

@@ -220,8 +220,8 @@ impl Driver {
                 | Type::SizedArray(inner, _)
                 | Type::SpecObject(inner, _) => walk(this, module, inner),
                 Type::Function(f) => {
-                    for (_, param) in &f.params {
-                        walk(this, module, param);
+                    for param in &f.params {
+                        walk(this, module, &param.r#type);
                     }
                     walk(this, module, &f.return_type);
                 }

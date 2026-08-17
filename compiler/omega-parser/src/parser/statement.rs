@@ -1,9 +1,8 @@
 use crate::ast::expression::Expression;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{
-    Statement, StatementNode, declaration::DeclarationStmt, defer::DeferStmt,
-    extern_declaration::ExternDeclarationStmt, for_in_stmt::ForInStmt, for_stmt::ForStmt,
-    loop_stmt::LoopStmt, r#return::ReturnStmt, walrus::WalrusStmt, while_stmt::WhileStmt,
+    DeclarationStmt, DeferStmt, ExternDeclarationStmt, ForInStmt, ForStmt, LoopStmt, ReturnStmt,
+    Statement, StatementNode, WalrusStmt, WhileStmt,
 };
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
@@ -13,7 +12,7 @@ use crate::parser::expression::{
     parse_statement_leading_expression,
 };
 use crate::parser::macro_syntax::parse_macro_invocation;
-use crate::parser::{Parser, recovery};
+use crate::parser::{Parser, contextual, recovery};
 
 /// One statement, function-body scope. A deliberate cleanup from the old
 /// grammar's `terminal`/`nonterminal` *group* split (which needed
@@ -64,45 +63,8 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
 /// specifically to avoid double-consuming a terminator (see this module's
 /// top doc comment).
 fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
-    // `mut`/`comp` are both contextual keywords here (see `lexer::
-    // TokenKind`'s doc comment, exactly like `self`), each only recognized
-    // leading a binding declaration -- never anywhere else, so both stay
-    // usable as ordinary identifiers (and `comp` also as its own prefix
-    // *expression*, see `parser::expression::parse_unary`) in every other
-    // position. Only committed to once the *whole* `[mut] [comp] ident
-    // (':='/':')` shape is confirmed below -- a bare `comp foo();`
-    // statement (an expression, not a binding) never reaches this branch
-    // at all, since `foo` isn't followed by `:=`/`:`. `mut comp a := ...;`
-    // parses (both flags recognized) but is rejected during analysis
-    // (`AnalysisErrorKind::MutCompBinding`), not here -- see that type's
-    // doc comment for why a `comp` binding can never be `mut`.
-    let mut_offset = if matches!(p.peek(), TokenKind::Ident(name) if name == "mut") {
-        1
-    } else {
-        0
-    };
-    let comp_offset = if matches!(p.peek_at(mut_offset), TokenKind::Ident(name) if name == "comp") {
-        1
-    } else {
-        0
-    };
-    let ident_offset = mut_offset + comp_offset;
-    if (mut_offset > 0 || comp_offset > 0)
-        && matches!(p.peek_at(ident_offset), TokenKind::Ident(_))
-        && matches!(
-            p.peek_at(ident_offset + 1),
-            TokenKind::ColonEq | TokenKind::Colon
-        )
-    {
-        let mutable = mut_offset > 0;
-        let comp = comp_offset > 0;
-        if mutable {
-            p.advance(); // 'mut'
-        }
-        if comp {
-            p.advance(); // 'comp'
-        }
-        return parse_walrus_or_declaration(p, mutable, comp);
+    if let Some(prefix) = crate::parser::parse_binding_prefix(p) {
+        return parse_walrus_or_declaration(p, prefix.mutable, prefix.comp);
     }
     match p.peek() {
         TokenKind::Struct => {
@@ -241,10 +203,13 @@ fn parse_walrus_or_declaration(
 /// afterward; struct/enum fields and parameters never check for one at all.
 pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
     let (ident, origin) = p.expect_ident_with_origin()?;
+    let name_span = p.last_span();
     p.expect(&TokenKind::Colon, "':'");
     let r#type = crate::parser::r#type::parse_type(p)?;
     Some(DeclarationStmt {
         ident,
+        name_span,
+        span: name_span.to(p.last_span()),
         origin,
         r#type,
         mutable: false,
@@ -372,15 +337,9 @@ fn parse_for(p: &mut Parser) -> Option<Statement> {
 /// outside this one lookahead position, so it stays usable as an ordinary
 /// identifier everywhere else.
 fn is_for_in_lookahead(p: &mut Parser) -> bool {
-    let offset = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-    {
-        1
-    } else {
-        0
-    };
+    let offset = usize::from(p.at_contextual(contextual::MUT));
     matches!(p.peek_at(offset), TokenKind::Ident(_))
-        && (matches!(p.peek_at(offset + 1), TokenKind::Ident(name) if name == "in")
+        && (p.at_contextual_at(offset + 1, contextual::IN)
             || for_in_annotation_follows(p, offset + 1))
 }
 
@@ -398,7 +357,7 @@ fn for_in_annotation_follows(p: &Parser, colon_offset: usize) -> bool {
             TokenKind::Lt | TokenKind::LBracket | TokenKind::LParen => depth += 1,
             TokenKind::Gt | TokenKind::RBracket | TokenKind::RParen if depth > 0 => depth -= 1,
             TokenKind::Semi | TokenKind::LBrace | TokenKind::Eof => return false,
-            TokenKind::Ident(name) if depth == 0 && name == "in" => return true,
+            TokenKind::Ident(name) if depth == 0 && name == contextual::IN => return true,
             _ => {}
         }
         offset += 1;
@@ -409,14 +368,7 @@ fn for_in_annotation_follows(p: &Parser, colon_offset: usize) -> bool {
 /// `is_for_in_lookahead` has already confirmed the shape, so every
 /// `expect`/`advance` here is expected to succeed.
 fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
-    let mutable = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-    {
-        p.advance(); // 'mut'
-        true
-    } else {
-        false
-    };
+    let mutable = p.eat_contextual(contextual::MUT);
     let TokenKind::Ident(binding) = p.peek().clone() else {
         unreachable!("is_for_in_lookahead already confirmed this token is an identifier");
     };
@@ -450,8 +402,7 @@ fn parse_for_init(p: &mut Parser) -> Option<Statement> {
     // `mut` is a contextual keyword here too (see `parse_statement_content`'s
     // identical check) -- `for mut i := 0; ...` is by far the most common
     // reason to want a mutable loop-local at all.
-    let mutable = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
+    let mutable = if p.at_contextual(contextual::MUT)
         && matches!(p.peek_at(1), TokenKind::Ident(_))
         && matches!(p.peek_at(2), TokenKind::ColonEq | TokenKind::Colon)
     {

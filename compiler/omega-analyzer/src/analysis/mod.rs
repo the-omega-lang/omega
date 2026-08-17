@@ -77,7 +77,7 @@ use omega_hir::{
     HirExpr, HirExprNode, HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef,
     HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot,
     HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
+    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
     ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span,
@@ -202,9 +202,9 @@ pub struct Analyzer<'r> {
 /// this crate to share this with locally.
 pub fn item_name(item: &HirItem) -> Option<Ident> {
     match item {
-        HirItem::Declaration(d) => Some(d.ident.clone()),
-        HirItem::DeclarationWithInit(d, _) => Some(d.ident.clone()),
-        HirItem::Walrus(w) => Some(w.ident.clone()),
+        HirItem::Declaration { decl, .. } => Some(decl.ident.clone()),
+        HirItem::DeclarationWithInit { decl, .. } => Some(decl.ident.clone()),
+        HirItem::Walrus { walrus, .. } => Some(walrus.ident.clone()),
         HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
         HirItem::FunctionDefinition(f) => Some(f.name.clone()),
         HirItem::Struct(s) => Some(s.name.clone()),
@@ -226,9 +226,9 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
 /// default.
 pub fn item_visibility(item: &HirItem) -> Visibility {
     match item {
-        HirItem::Declaration(d) => d.visibility,
-        HirItem::DeclarationWithInit(d, _) => d.visibility,
-        HirItem::Walrus(w) => w.visibility,
+        HirItem::Declaration { visibility, .. } => *visibility,
+        HirItem::DeclarationWithInit { visibility, .. } => *visibility,
+        HirItem::Walrus { visibility, .. } => *visibility,
         HirItem::ExternDeclaration(d) => d.visibility,
         HirItem::FunctionDefinition(f) => f.visibility,
         HirItem::Struct(s) => s.visibility,
@@ -249,9 +249,9 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
 /// `Redeclaration` error against a duplicate name -- see `item_name`.
 pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
     match item {
-        HirItem::Declaration(d) => (d.id, d.span),
-        HirItem::DeclarationWithInit(d, _) => (d.id, d.span),
-        HirItem::Walrus(w) => (w.id, w.span),
+        HirItem::Declaration { decl, .. } => (decl.id, decl.span),
+        HirItem::DeclarationWithInit { decl, .. } => (decl.id, decl.span),
+        HirItem::Walrus { walrus, .. } => (walrus.id, walrus.span),
         HirItem::ExternDeclaration(d) => (d.id, d.span),
         HirItem::FunctionDefinition(f) => (f.id, f.span),
         HirItem::Struct(s) => (s.id, s.span),
@@ -1092,7 +1092,7 @@ impl<'r> Analyzer<'r> {
             Type::Function(f) => {
                 f.params
                     .iter()
-                    .all(|(_, p)| Self::generic_refs_resolvable(p, generics, defaults, subst))
+                    .all(|p| Self::generic_refs_resolvable(&p.r#type, generics, defaults, subst))
                     && Self::generic_refs_resolvable(&f.return_type, generics, defaults, subst)
             }
         }

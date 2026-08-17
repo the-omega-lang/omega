@@ -64,8 +64,8 @@ pub fn unify_generic_type(
             unify_generic_type(generics, inner, c, subst)
         }
         (Type::Function(f), ResolvedType::Function(c)) => {
-            for ((_, p), (_, cp)) in f.params.iter().zip(&c.params) {
-                unify_generic_type(generics, p, cp, subst);
+            for (p, (_, cp)) in f.params.iter().zip(&c.params) {
+                unify_generic_type(generics, &p.r#type, cp, subst);
             }
             unify_generic_type(generics, &f.return_type, &c.return_type, subst);
         }

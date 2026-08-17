@@ -1,7 +1,7 @@
 # Omega — technical documentation
 
-Omega is a statically-typed, compiled systems language (Cranelift backend,
-own hand-rolled lexer/parser/analyzer). This documentation tracks the
+Omega is a statically-typed, compiled systems language (Cranelift and
+LLVM backends, own hand-rolled lexer/parser/analyzer). This documentation tracks the
 language's **current** design and implementation state for an audience
 that already knows how compilers work — it explains *what* the syntax is,
 *why* it was built that way, and what's genuinely unfinished or unsound
@@ -45,7 +45,8 @@ New to the codebase — read roughly in this order:
 2. [Primitives & representation](01-primitives.md) — the type set, IR
    leaves, fat pointers.
 3. [Variables & mutability](02-variables-and-mutability.md)
-4. [Control flow](03-control-flow.md) — `if`/`while`/`for`/`loop`, no `&&`/`||`.
+4. [Control flow](03-control-flow.md) — `if`/`while`/`for`/`loop`,
+   `&&`/`||`/`!` and how they desugar.
 5. [Structs & unions](04-structs-and-unions.md)
 6. [Enums & pattern matching](05-enums-and-pattern-matching.md) — header/
    dynamic/body fields, `match`, ranges, refinement.
@@ -62,32 +63,36 @@ New to the codebase — read roughly in this order:
 13. [Macros](12-macros.md)
 14. [The core library](13-core-library.md)
 15. [Known issues tracker](14-known-issues.md)
-16. [The MIR, and how it reaches Cranelift](16-mir-and-codegen.md) — the
+16. [Parsing, macro expansion & the HIR](15-parsing-and-hir.md) — the front
+    half of the pipeline: the lexer/parser, why macro expansion sits between
+    two ASTs, why the HIR exists at all, the contextual-keyword registry,
+    and the span-ownership rule diagnostics depend on.
+17. [The MIR, and how it reaches Cranelift](16-mir-and-codegen.md) — the
     control-flow graph `omega-mir` builds between semantic analysis and
     codegen, why it exists (multi-backend support), and what's deliberately
     still a tree.
-17. [Design review](17-design-review.md) — unsoundness, inconsistencies, and
+18. [Design review](17-design-review.md) — unsoundness, inconsistencies, and
     rough edges found on a deeper audit pass; distinct from the known-issues
     tracker in that most entries here aren't bugs at all, just weak spots.
-18. [`for` .. `in` loops](18-for-in-loops.md) — the iteration protocol
+19. [`for` .. `in` loops](18-for-in-loops.md) — the iteration protocol
     (`Iterator<T>`/`ToIterator<T>`/`Option<T>`), how it desugars, and the
     one narrow ambient-name-resolution exception it needed.
-19. [Compile-time evaluation (`comp`)](19-compile-time-evaluation.md) — the
+20. [Compile-time evaluation (`comp`)](19-compile-time-evaluation.md) — the
     `comp` interpreter, no-storage `comp` bindings, and const promotion.
-20. [Zero-sized types (`marker`)](20-marker-types.md) — a data-free
+21. [Zero-sized types (`marker`)](20-marker-types.md) — a data-free
     declaration that can still implement specs, why `struct`/`union` must
     always hold real data, and what's already free vs. newly built.
-21. [Gaps and glue](21-gaps-and-glue.md) — how
+22. [Gaps and glue](21-gaps-and-glue.md) — how
     `core`/`std` declares a platform-specific capability (a heap
     allocator, first) with no portable implementation of its own, and how
     exactly one project-wide implementation gets wired to it, deferring an
     unfilled gap to the linker rather than whole-program reachability
     analysis.
-22. [`plat`: the default platform glue](22-platform-glue.md) — an
+23. [`plat`: the default platform glue](22-platform-glue.md) — an
     ordinary `--extern` package, not a special one, that fills `core`'s
     gaps; today just a single `libc`-backed heap allocator, with no
     platform-selection mechanism yet.
-23. [The standard library](23-standard-library.md) — `std`'s own data
+24. [The standard library](23-standard-library.md) — `std`'s own data
     structures (`List`, `LinkedList`, `String`, `HashMap`, `HashSet`),
     built the same way on every platform, on top of `core::platform`'s
     allocator gap alone.

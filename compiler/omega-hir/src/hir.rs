@@ -4,9 +4,9 @@ use crate::ids::HirId;
 // omega-parser directly, the same way they never need to spell `Ident`/
 // `Type` because they only ever go through field access, never pattern
 // match on those.
-pub use omega_parser::prelude::{BinaryOp, ImportRoot};
+pub use omega_parser::prelude::{BinaryOp, ImportRoot, LogicalOp};
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Path, SelfMode, Span, StringExpr,
+    ByteStringExpr, ExprPath, FunctionType, Ident, Param, NumberExpr, Path, SelfMode, Span, StringExpr,
     Origin, Type, Visibility,
 };
 
@@ -43,17 +43,29 @@ pub struct HirModule {
 
 #[derive(Debug, Clone)]
 pub enum HirItem {
-    Declaration(HirDeclaration),
-    /// `ident : Type = value;` -- see `omega_parser::ast::statement::
-    /// Item::DeclarationWithInit`'s doc comment. Reuses `HirDeclaration`
-    /// directly, exactly like `HirStmt::DeclarationWithInit` does at
-    /// local scope.
-    DeclarationWithInit(HirDeclaration, HirExprNode),
-    /// `[comp] ident := value;` -- see `omega_parser::ast::statement::
-    /// Item::Walrus`'s doc comment. Reuses `HirWalrusDeclaration` (the
-    /// local-statement node) directly -- `HirWalrusDeclaration::visibility`
-    /// is what's actually meaningful here.
-    Walrus(HirWalrusDeclaration),
+    /// A top-level global. `visibility` lives on the *item*, not on
+    /// `HirDeclaration`: the same node is also a function-body statement
+    /// (`HirStmt::Declaration`), where a visibility modifier cannot be
+    /// written and would be meaningless. Keeping it here makes that
+    /// structural instead of a doc comment saying "ignore this field at
+    /// local scope".
+    Declaration {
+        decl: HirDeclaration,
+        visibility: Visibility,
+    },
+    /// `ident : Type = value;` -- see `omega_parser::prelude::Item::
+    /// DeclarationWithInit`'s doc comment.
+    DeclarationWithInit {
+        decl: HirDeclaration,
+        value: HirExprNode,
+        visibility: Visibility,
+    },
+    /// `[comp] ident := value;` -- see `omega_parser::prelude::Item::
+    /// Walrus`'s doc comment.
+    Walrus {
+        walrus: HirWalrusDeclaration,
+        visibility: Visibility,
+    },
     ExternDeclaration(HirExternDeclaration),
     FunctionDefinition(HirFunctionDef),
     Struct(HirStructDef),
@@ -70,8 +82,8 @@ pub enum HirItem {
 /// One `<...>` generic parameter -- a name, plus zero or more `+`-separated
 /// spec bounds and an optional default, all kept as raw, unresolved `Type`s
 /// (resolved per-instantiation, the same way every other type reference in
-/// HIR is). See `omega_parser::ast::generics::GenericParam`'s doc comment
-/// for the bound-set semantics, and for `default`'s trailing-only rule.
+/// HIR is). See `omega_parser::prelude::GenericParam`'s doc comment for the
+/// bound-set semantics, and for `default`'s trailing-only rule.
 #[derive(Debug, Clone)]
 pub struct HirGenericParam {
     pub ident: Ident,
@@ -93,7 +105,7 @@ pub struct HirImport {
     /// `@suppress(...)` only -- see `omega_analyzer::annotations::
     /// ItemKind::Import`.
     pub annotations: Vec<HirAnnotation>,
-    /// See `omega_parser::ast::statement::import::ImportStmt::reveal`.
+    /// See `omega_parser::prelude::ImportStmt::reveal`.
     pub reveal: bool,
     pub root: ImportRoot,
     pub path: Path,
@@ -106,13 +118,8 @@ pub struct HirDeclaration {
     pub ident: Ident,
     pub origin: Origin,
     pub r#type: Type,
-    /// See `omega_parser::ast::statement::declaration::DeclarationStmt::mutable`.
+    /// See `omega_parser::prelude::DeclarationStmt::mutable`.
     pub mutable: bool,
-    /// See `DeclarationStmt::visibility` -- meaningful for a top-level
-    /// global (`HirItem::Declaration`), left at its default (`Hidden`) for
-    /// a local statement declaration (`HirStmt::Declaration`), which never
-    /// has one.
-    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +138,11 @@ pub struct HirExternDeclaration {
 #[derive(Debug, Clone)]
 pub struct HirParam {
     pub id: HirId,
+    /// The whole `name: Type`, from the parser's own node -- not the
+    /// enclosing declaration's span, which is what this used to inherit.
     pub span: Span,
+    /// The declared name only -- where a redeclaration diagnostic points.
+    pub name_span: Span,
     pub ident: Ident,
     pub origin: Origin,
     pub r#type: Type,
@@ -150,17 +161,22 @@ pub struct HirParam {
 pub struct HirFunctionDef {
     pub id: HirId,
     pub span: Span,
+    /// The function name only -- where an identity-level diagnostic
+    /// (declared twice, collides with a variant name) belongs.
+    pub name_span: Span,
+    /// The name through the declared return type, excluding the body.
+    pub signature_span: Span,
+    /// The declared return type only.
+    pub return_type_span: Span,
     /// `@inline(...)`/`@mangling(...)`/`@suppress(...)` -- see
     /// `omega_analyzer::annotations::resolve`.
     pub annotations: Vec<HirAnnotation>,
-    /// See `omega_parser::ast::statement::function_definition::
-    /// FunctionDefinitionStmt::visibility` -- applies identically whether
-    /// this is a top-level function or a struct/enum/union method.
+    /// See `omega_parser::prelude::FunctionDefinitionStmt::visibility` --
+    /// applies identically whether this is a top-level function or a struct/enum/union method.
     pub visibility: Visibility,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic function. See
-    /// `omega_parser::ast::statement::function_definition::
-    /// FunctionDefinitionStmt::generics`'s doc comment.
+    /// `omega_parser::prelude::FunctionDefinitionStmt::generics`'s doc comment.
     pub generics: Vec<HirGenericParam>,
     /// `None` for an ordinary, non-member function; `Some` for a
     /// struct/enum/union method -- see `SelfMode`.
@@ -178,7 +194,13 @@ impl HirFunctionDef {
         let params = self
             .params
             .iter()
-            .map(|p| (p.ident.clone(), p.r#type.clone()))
+            .map(|p| Param {
+                ident: p.ident.clone(),
+                name_span: p.name_span,
+                span: p.span,
+                origin: p.origin,
+                r#type: p.r#type.clone(),
+            })
             .collect::<Vec<_>>();
 
         FunctionType {
@@ -197,21 +219,20 @@ pub struct HirStructDef {
     /// `@packing(...)`/`@suppress(...)` -- see
     /// `omega_analyzer::annotations::resolve`.
     pub annotations: Vec<HirAnnotation>,
-    /// See `omega_parser::ast::statement::r#struct::StructStmt::visibility`.
+    /// See `omega_parser::prelude::StructStmt::visibility`.
     pub visibility: Visibility,
     pub name: Ident,
     /// `<T, U, ...>` -- empty for an ordinary, non-generic struct. See
-    /// `omega_parser::ast::statement::r#struct::StructStmt::generics`'s
-    /// doc comment.
+    /// `omega_parser::prelude::StructStmt::generics`'s doc comment.
     pub generics: Vec<HirGenericParam>,
     pub fields: Vec<HirParam>,
     pub functions: Vec<HirFunctionDef>,
-    /// See `omega_parser::ast::statement::r#struct::StructStmt::is_marker`.
+    /// See `omega_parser::prelude::StructStmt::is_marker`.
     pub is_marker: bool,
 }
 
-/// A C/Rust-style union -- see `omega_parser::ast::statement::union::
-/// UnionStmt`'s doc comment; structurally identical to `HirStructDef`
+/// A C/Rust-style union -- see `omega_parser::prelude::UnionStmt`'s doc
+/// comment; structurally identical to `HirStructDef`
 /// (fields overlap in storage instead of being laid out sequentially is
 /// entirely an analyzer/codegen concern, not a lowering one).
 #[derive(Debug, Clone)]
@@ -229,8 +250,8 @@ pub struct HirUnionDef {
     pub functions: Vec<HirFunctionDef>,
 }
 
-/// An omega-style enum -- see `omega_parser::ast::statement::r#enum::
-/// EnumStmt`'s doc comment for the full language shape. Carried raw like
+/// An omega-style enum -- see `omega_parser::prelude::EnumStmt`'s doc
+/// comment for the full language shape. Carried raw like
 /// every other HIR node: whether the header's first entry is a valid
 /// explicit tag, whether each variant's `args` are constants of the right
 /// types, and whether tags are unique are all analysis's questions.
@@ -276,8 +297,8 @@ pub struct HirEnumVariant {
     pub fields: Vec<HirParam>,
 }
 
-/// A `spec` -- see `omega_parser::ast::statement::spec::SpecStmt`'s doc
-/// comment for the full language shape (declaration vs. alias forms; both
+/// A `spec` -- see `omega_parser::prelude::SpecStmt`'s doc comment for the
+/// full language shape (declaration vs. alias forms; both
 /// lower to this one shape, an alias just has `functions: vec![]`).
 /// `dependencies` and each `HirSpecFunction`'s `params`/`return_type` are
 /// kept raw/unresolved, same philosophy as everywhere else in HIR -- a
@@ -287,7 +308,7 @@ pub struct HirEnumVariant {
 pub struct HirSpecDef {
     pub id: HirId,
     pub span: Span,
-    /// See `omega_parser::ast::statement::spec::SpecStmt::visibility`.
+    /// See `omega_parser::prelude::SpecStmt::visibility`.
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
@@ -309,6 +330,13 @@ pub struct HirSpecDef {
 pub struct HirSpecFunction {
     pub id: HirId,
     pub span: Span,
+    /// See `HirFunctionDef::name_span`.
+    pub name_span: Span,
+    /// The name through the declared return type, excluding any default
+    /// body -- see `HirFunctionDef::signature_span`.
+    pub signature_span: Span,
+    /// The declared return type only.
+    pub return_type_span: Span,
     pub name: Ident,
     /// `None` for an ordinary, non-member function; `Some` for a spec
     /// method -- see `SelfMode`. Always `Pointer`/`MutPointer` in practice
@@ -336,6 +364,8 @@ pub struct HirGapDef {
 pub struct HirGapFunction {
     pub id: HirId,
     pub span: Span,
+    /// See `HirFunctionDef::name_span`.
+    pub name_span: Span,
     pub name: Ident,
     pub params: Vec<HirParam>,
     pub return_type: Type,
@@ -433,10 +463,16 @@ pub struct HirContinue {
 pub struct HirBlock {
     pub stmts: Vec<HirStmt>,
     pub tail: Option<Box<HirExprNode>>,
+    /// The whole block, braces included -- see
+    /// `omega_parser::prelude::CodeblockExpr::span`. A block-level
+    /// diagnostic previously had nowhere to anchor and had to borrow the
+    /// enclosing item's span, which is the same defect `HirParam`/
+    /// `HirFunctionDef`'s spans fixed for members.
+    pub span: Span,
 }
 
 /// `while cond { body }` -- a statement, not an expression: see
-/// `omega_parser::ast::statement::while_stmt::WhileStmt`'s doc comment.
+/// `omega_parser::prelude::WhileStmt`'s doc comment.
 /// Self-identifying (`id`/`span`), like every other statement-shaped HIR
 /// node, since analysis needs somewhere to anchor a `NonBoolCondition` error
 /// that isn't attached to `condition`/`body` specifically.
@@ -448,9 +484,8 @@ pub struct HirWhile {
     pub body: HirBlock,
 }
 
-/// `loop { body }` -- see
-/// `omega_parser::ast::statement::loop_stmt::LoopStmt`'s doc comment for
-/// why this exists alongside `HirWhile` rather than being just another
+/// `loop { body }` -- see `omega_parser::prelude::LoopStmt`'s doc comment
+/// for why this exists alongside `HirWhile` rather than being just another
 /// condition shape: `Analyzer::stmt_diverges` can prove this always
 /// repeats (unless a `break` targeting it is found anywhere in `body`),
 /// which is what a `while`-based loop, even `while true { }`, deliberately
@@ -480,8 +515,8 @@ pub struct HirFor {
     pub body: HirBlock,
 }
 
-/// `for <mut>? binding in iterator { body }` -- see `omega_parser::ast::
-/// statement::for_in_stmt::ForInStmt`'s doc comment. Purely a mechanical,
+/// `for <mut>? binding in iterator { body }` -- see
+/// `omega_parser::prelude::ForInStmt`'s doc comment. Purely a mechanical,
 /// 1:1 lowering of the source syntax, same as `HirFor` -- every semantic
 /// decision (resolving `iterator`'s `ToIterator<T>` implementation,
 /// desugaring into the equivalent `while`/`match` form) belongs to
@@ -510,16 +545,10 @@ pub struct HirWalrusDeclaration {
     pub ident: Ident,
     pub origin: Origin,
     pub value: HirExprNode,
-    /// See `omega_parser::ast::statement::walrus::WalrusStmt::mutable`.
+    /// See `omega_parser::prelude::WalrusStmt::mutable`.
     pub mutable: bool,
-    /// See `omega_parser::ast::statement::walrus::WalrusStmt::comp`.
+    /// See `omega_parser::prelude::WalrusStmt::comp`.
     pub comp: bool,
-    /// See `omega_parser::ast::statement::walrus::WalrusStmt::visibility`
-    /// -- meaningful only for a top-level binding (`HirItem::Walrus`), left
-    /// at its default (`Hidden`) for a local statement declaration
-    /// (`HirStmt::WalrusDeclaration`), same treatment `HirDeclaration::
-    /// visibility` documents.
-    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone)]
@@ -540,8 +569,8 @@ pub enum HirExpr {
     Char(char),
     Codeblock(HirBlock),
     /// `if cond { ... } else if cond { ... } else { ... }` -- see
-    /// `omega_parser::ast::expression::if_expr::IfExpr`'s doc comment;
-    /// `branches` is always non-empty (the leading `if` is `branches[0]`).
+    /// `omega_parser::prelude::IfExpr`'s doc comment; `branches` is always
+    /// non-empty (the leading `if` is `branches[0]`).
     If(HirIf),
     FunctionCall(HirFunctionCall),
     Assignment(HirAssignment),
@@ -574,6 +603,15 @@ pub enum HirExpr {
     Negate(Box<HirExprNode>),
     /// `~base` -- see `Expression::BitNot`'s doc comment.
     BitNot(Box<HirExprNode>),
+    /// `!base` -- logical negation of a `bool`. See
+    /// `omega_parser::prelude::NotExpr`. Desugared by analysis into
+    /// `base ^ true`, so there is no `CheckedExpr`/MIR/codegen counterpart.
+    Not(Box<HirExprNode>),
+    /// `a && b` / `a || b` -- see `omega_parser::prelude::LogicalExpr`.
+    /// Desugared by analysis into the equivalent `if`-expression, which is
+    /// what makes the short-circuit real control flow rather than something
+    /// each backend has to special-case.
+    Logical(HirLogical),
     /// `++base`/`--base` -- `base` isn't guaranteed to be a place at this
     /// level, same treatment as `AddressOf`/`Assignment`'s target; see
     /// `Analyzer::analyze_incr_decr`, which both validates that and performs
@@ -596,7 +634,7 @@ pub enum HirExpr {
     Slice(HirSlice),
     /// `a..<b`/`a..=b`/`a..` in expression position -- legal only as a
     /// range-driven `for` loop's own direct iterator source (see
-    /// `omega_parser::ast::expression::Expression::Range`'s doc comment);
+    /// `omega_parser::prelude::Expression::Range`'s doc comment);
     /// reused unconditionally as `AnalysisErrorKind::RangeNotAllowedHere`
     /// everywhere else `Analyzer::analyze_expr` reaches this variant.
     Range(HirRange),
@@ -610,6 +648,14 @@ pub enum HirExpr {
     /// `sizeof<Type>` -- `Type` carried raw/unresolved, same philosophy as
     /// `Cast`'s `target`; no `base` at all (see `SizeofExpr`'s doc comment).
     Sizeof(Type),
+}
+
+/// See `HirExpr::Logical`.
+#[derive(Debug, Clone)]
+pub struct HirLogical {
+    pub op: LogicalOp,
+    pub left: Box<HirExprNode>,
+    pub right: Box<HirExprNode>,
 }
 
 /// See `HirExpr::Cast`.
@@ -655,21 +701,55 @@ pub struct HirSlice {
     pub range: HirRange,
 }
 
-/// See `omega_parser::ast::range::RangeExpr`'s doc comment for the range
+/// See `omega_parser::prelude::RangeExpr`'s doc comment for the range
 /// grammar itself -- shared, unchanged, between slicing (`HirSlice`),
 /// match range-patterns (`HirPattern::Range`), and a standalone range
-/// expression (`HirExpr::Range`). `end`/`inclusive` collapse `RangeExpr`'s
-/// own `RangeEnd` back to this simpler shape at lowering time (`Lowerer::
-/// lower_range`) -- `end: None` uniformly means "no end was written"
-/// (`RangeEnd::Open`), regardless of which of the three positions this
-/// came from; each position's own analysis decides what a missing end
-/// means for it.
+/// expression (`HirExpr::Range`). `end` keeps `RangeExpr`'s own three-way
+/// `RangeEnd` shape rather than flattening it (see `HirRangeEnd`);
+/// `HirRangeEnd::Open` uniformly means "no end was written", regardless of
+/// which of the three positions this came from, and each position's own
+/// analysis decides what a missing end means for it.
 #[derive(Debug, Clone)]
 pub struct HirRange {
     pub start: Option<Box<HirExprNode>>,
-    pub end: Option<Box<HirExprNode>>,
-    pub inclusive: bool,
+    pub end: HirRangeEnd,
     pub span: Span,
+}
+
+/// A range's end, mirroring `omega_parser::prelude::RangeEnd` rather than
+/// flattening it.
+///
+/// This deliberately does **not** collapse back to `end: Option<_>` plus
+/// `inclusive: bool`. That was the shape the parser's own `RangeEnd` doc
+/// comment records as rejected, because it makes "an inclusive range with no
+/// end" representable and then has to reject it at runtime. Lowering used to
+/// undo that guarantee on the way in, so HIR could hold a state the grammar
+/// cannot produce; keeping the enum means the impossible states stay
+/// impossible all the way down.
+#[derive(Debug, Clone)]
+pub enum HirRangeEnd {
+    /// `..=end`
+    Inclusive(Box<HirExprNode>),
+    /// `..<end`
+    Exclusive(Box<HirExprNode>),
+    /// `..` -- no end was written, in any position.
+    Open,
+}
+
+impl HirRangeEnd {
+    pub fn expr(&self) -> Option<&HirExprNode> {
+        match self {
+            Self::Inclusive(e) | Self::Exclusive(e) => Some(e),
+            Self::Open => None,
+        }
+    }
+
+    /// Whether the end bound is included. Bare `..` reports `true`, matching
+    /// `RangeEnd::inclusive` -- an inferred end is always the domain's last
+    /// value, never one past it.
+    pub fn inclusive(&self) -> bool {
+        matches!(self, Self::Inclusive(_) | Self::Open)
+    }
 }
 
 impl HirRange {
@@ -679,12 +759,17 @@ impl HirRange {
     /// genuine bare `..`. The one shape `Analyzer::analyze_value_match`/
     /// `analyze_enum_match` treat as a `match` catch-all arm.
     pub fn is_catch_all(&self) -> bool {
-        self.start.is_none() && self.end.is_none()
+        self.start.is_none() && matches!(self.end, HirRangeEnd::Open)
+    }
+
+    /// See `HirRangeEnd::inclusive`.
+    pub fn inclusive(&self) -> bool {
+        self.end.inclusive()
     }
 }
 
 /// `match scrutinee { pattern => body, ... } else { ... }` -- see
-/// `omega_parser::ast::expression::match_expr::MatchExpr`'s doc comment.
+/// `omega_parser::prelude::MatchExpr`'s doc comment.
 /// Carried raw, same philosophy as every other HIR node: whether each
 /// pattern is well-formed for the scrutinee's type, whether the arms are
 /// exhaustive, and any place-narrowing inside a matched arm are all
@@ -704,8 +789,8 @@ pub struct HirMatchArm {
     pub span: Span,
 }
 
-/// One arm's pattern -- see `omega_parser::ast::expression::match_expr::Pattern`'s
-/// doc comment; carried just as raw as everywhere else, telling a literal
+/// One arm's pattern -- see `omega_parser::prelude::Pattern`'s doc comment;
+/// carried just as raw as everywhere else, telling a literal
 /// apart from an `Enum::Variant` path is analysis's job.
 #[derive(Debug, Clone)]
 pub enum HirPattern {
@@ -724,7 +809,7 @@ impl HirPattern {
 
 /// The parser has no notion of "places"/lvalues -- it only knows `Ident`,
 /// `FieldAccess`, `Index`, and `Deref` as plain expression-forming
-/// constructs (see `omega_parser::ast::expression`). Lowering is what
+/// constructs (see `omega_parser::prelude::Expression`). Lowering is what
 /// recognizes a chain of those as denoting an addressable location and
 /// flattens it into this single shape: a root plus zero or more
 /// projections, in source order. A bare identifier is just a place with no
@@ -780,7 +865,7 @@ pub struct HirBinaryOp {
 #[derive(Debug, Clone)]
 pub struct HirAddressOf {
     pub base: Box<HirExprNode>,
-    /// See `omega_parser::ast::expression::address_of::AddressOfExpr::mutable`.
+    /// See `omega_parser::prelude::AddressOfExpr::mutable`.
     pub mutable: bool,
 }
 

@@ -106,31 +106,50 @@ type instead of staying native). This is sound specifically because
 `bool` is *closed* under all five: combining two valid `bool`s (`0`/`1`)
 any of those ways is still a valid `bool`.
 
-There is still **no `!` prefix operator in the grammar at all** (`!` only
-ever appears as part of `!=`), and
-still no arithmetic/shifts on `bool` (`true + true` has no meaning to fall
-back on) — see [primitives](01-primitives.md)'s caveats for why `!`
-specifically is a bigger addition than it looks (a new grammar token, not
-just an analyzer change) and is left as deliberate future work. Until then,
-negation is nested `if`-expressions:
+`bool` additionally has **`!`** (logical negation) and the two
+short-circuiting connectives **`&&`** and **`||`**. There is still no
+arithmetic or shifts on `bool` (`true + true` has no meaning to fall back
+on), and no `~` on `bool` either — see [primitives](01-primitives.md).
+
+The choice between `&` and `&&` is exactly the choice of whether the right
+operand is evaluated, and it is visible in the spelling:
 
 ```
-if x { false } else { true }          # NOT x
-if x { y } else { false }              # x AND y (short-circuits)
-if x { true } else { y }                # x OR y (short-circuits)
+a & b       # both sides always evaluated
+a && b      # b evaluated only if a is true
+a | b       # both sides always evaluated
+a || b      # b evaluated only if a is false
+!a          # negation
 ```
 
-`core::cmp`'s `Eq`/`Ord` default methods and every predicate in
-`core` are written this way. Comparison is also **non-associative**
-(`a == b == c` doesn't parse as chained comparison) and **binds looser than
-the bitwise operators** (Rust-style, not C-style) — so combining two
-comparisons with `&`/`|` needs full parenthesization: `(a >= x) & (a <= y)`,
-never `a >= x & a <= y`.
+All three desugar during analysis into forms the language already had, so
+they cost nothing downstream — there is no `CheckedExpr`, MIR or codegen
+representation of any of them:
+
+```
+!x       ==>  x ^ true
+x && y   ==>  if x { y } else { false }
+x || y   ==>  if x { true } else { y }
+```
+
+Those `if`-expression spellings remain valid, and are what `core::cmp`'s
+`Eq`/`Ord` default methods and every predicate in `core` were written with
+before the operators existed.
+
+Comparison is **non-associative** (`a == b == c` doesn't parse as chained
+comparison; it reports `comparison operators are non-associative`) and
+**binds looser than the bitwise operators** (Rust-style, not C-style) — so
+combining two comparisons with `&`/`|` needs full parenthesization,
+`(a >= x) & (a <= y)`, never `a >= x & a <= y`. `&&`/`||` sit on the *other*
+side of comparison, which is the whole reason they are their own tier:
+`a >= x && a <= y` needs no parentheses at all.
 
 ## Operator precedence (loosest to tightest)
 
 ```
 assignment (=, += , ...)
+logical or (||)
+logical and (&&)
 comparison (== != < > <= >=)      -- non-associative
 bitor (|)
 bitxor (^)
@@ -138,7 +157,7 @@ bitand (&)
 shift (<< >>)
 additive (+ -)
 multiplicative (* / %)
-unary (- * & &mut ~ reveal)
+unary (- ! * & &mut ~ ++ -- reveal comp)
 cast (<Type>expr)
 postfix (call, index/slice, field access)
 ```
@@ -147,7 +166,10 @@ Bitwise precedence deliberately follows *Rust's*, not C's — `a & b == c`
 parses as `(a & b) == c`, avoiding C's classic footgun. `&` stays
 dual-purpose (prefix = address-of, infix = bitwise-and), disambiguated
 purely by parser position, the same precedent `*`/`-` already set as both
-prefix and infix operators.
+prefix and infix operators. One cost of adding `&&`: a doubled address-of
+now needs the space (`& &p`, not `&&p`), and `a&&b` written without spaces
+is the logical connective rather than `a & (&b)` — see
+[known issues](14-known-issues.md).
 
 ## Untyped-literal inference in binary-op operands
 

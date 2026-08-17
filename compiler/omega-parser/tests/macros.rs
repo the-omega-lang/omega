@@ -10,7 +10,7 @@ fn expand(source: &str) -> SourceModule {
     macros::expand(SourceModule::parse(source).unwrap(), &HashMap::new()).unwrap()
 }
 
-fn macro_definition(source: &str) -> omega_parser::ast::statement::macro_definition::MacroDefinitionStmt {
+fn macro_definition(source: &str) -> omega_parser::prelude::MacroDefinitionStmt {
     let module = SourceModule::parse(source).unwrap();
     let Item::MacroDefinition(definition) = module.nodes.into_iter().next().unwrap().item else {
         panic!("expected macro definition");
@@ -28,10 +28,7 @@ fn imported_macro_definitions_merge_and_local_definitions_shadow() {
     assert_eq!(module.nodes.len(), 1);
 
     let module = macros::expand(
-        SourceModule::parse(
-            "macro make() => { local() => void {} } make$();",
-        )
-        .unwrap(),
+        SourceModule::parse("macro make() => { local() => void {} } make$();").unwrap(),
         &definitions,
     )
     .unwrap();
@@ -72,7 +69,7 @@ fn imported_macro_expansions_are_attributed_to_the_call_site() {
 
 #[test]
 fn macro_visibility_and_definition_expansion_are_reported() {
-    use omega_parser::ast::visibility::Visibility;
+    use omega_parser::prelude::Visibility;
 
     let exposed = macro_definition("exposed macro make() => {}");
     let internal = macro_definition("internal macro make() => {}");
@@ -201,7 +198,9 @@ fn fragment_validation_and_definition_validation_are_precise() {
         ),
     ] {
         let text = match SourceModule::parse(source) {
-            Ok(module) => macros::expand(module, &HashMap::new()).unwrap_err().to_string(),
+            Ok(module) => macros::expand(module, &HashMap::new())
+                .unwrap_err()
+                .to_string(),
             Err(errors) => errors.first().map(ToString::to_string).unwrap_or_default(),
         };
         assert!(text.contains(expected), "{text}");
@@ -247,7 +246,9 @@ fn negative_macro_cases_report_the_new_diagnostics() {
         ),
     ] {
         let text = match SourceModule::parse(source) {
-            Ok(module) => macros::expand(module, &HashMap::new()).unwrap_err().to_string(),
+            Ok(module) => macros::expand(module, &HashMap::new())
+                .unwrap_err()
+                .to_string(),
             Err(errors) => errors.first().map(ToString::to_string).unwrap_or_default(),
         };
         assert!(text.contains(expected), "{text}");
@@ -271,5 +272,9 @@ fn negative_macro_cases_report_the_new_diagnostics() {
 #[test]
 fn import_in_a_macro_body_is_rejected_at_definition_time() {
     let errors = SourceModule::parse("macro m() => { import io::Write; }").unwrap_err();
-    assert!(errors.iter().any(|error| error.to_string().contains("imports are not allowed in macro bodies")));
+    assert!(errors.iter().any(|error| {
+        error
+            .to_string()
+            .contains("imports are not allowed in macro bodies")
+    }));
 }

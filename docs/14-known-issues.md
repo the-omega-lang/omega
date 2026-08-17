@@ -74,6 +74,17 @@ new one is found.
 
 ## Types
 
+- **`Type` equality compares parameter *names*.** Inside `FunctionType`,
+  `params: Vec<Param>` and `Param`'s hand-written `PartialEq` compares
+  `ident` as well as `r#type`, so `(a: i32) => void` and `(b: i32) => void`
+  compare unequal. Harmless today — the analyzer compares `ResolvedType`,
+  never raw `Type` — but latent if raw `Type` equality ever becomes
+  load-bearing. `Param` already drops spans and `origin` from equality,
+  following `Path`'s precedent; whether the *name* belongs in a function
+  type's identity is the open question.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+
+
 - **`*str` is not actually guaranteed valid UTF-8** — casting between
   `*str` and `*[]u8`/`*[]i8` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
@@ -98,12 +109,13 @@ new one is found.
   `char` is always valid — the true statement is that the supported path
   always produces a valid one. [primitives.md](01-primitives.md)
 
-- **There is no `!` (logical-not) operator for `bool`.** `& | ^` are `bool`'s
-  logical operators (non-short-circuiting, since `&&`/`||` do not exist
-  either), and negation is written `if x { false } else { true }` — see
-  `core::cmp`'s `not_equals`. Adding `!` is a real if small language feature:
-  a new parser token plus a new `Expression`/`HirExpr`/`CheckedExpr`/`MirExpr`
-  variant. [control-flow.md](03-control-flow.md)
+- ~~**There is no `!` (logical-not) operator for `bool`**~~ — **fixed.**
+  `bool` now has `!`, `&&` and `||` alongside the existing `&`/`|`/`^`. It
+  turned out cheaper than the estimate here: all three desugar during
+  analysis into forms the language already had (`!x` to `x ^ true`, `&&`/`||`
+  to the `if`-expressions the idiom already used), so no `CheckedExpr`,
+  `MirExpr` or codegen variant was needed — only a token, a grammar tier and
+  an HIR node. [control-flow.md](03-control-flow.md)
 
 - **`std::fmt`'s float output is fixed-precision, not round-trip** — six
   fractional digits, with a scientific fallback below `1e-6` and at or above
@@ -283,6 +295,65 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
 
 ## Compiler internals
 
+- **Analyzer-synthesized nodes reuse their parent's `HirId`, and that is
+  only safe because nothing reads it.** Every desugaring that mints
+  `CheckedExprNode`s — `analyze_incr_decr`, `analyze_compound_assign`, and
+  the newer `analyze_not`/`analyze_logical` — stamps the *parent* node's
+  `HirId` onto each synthesized child, so a single lowered expression can
+  yield several checked nodes sharing one id. Verified safe today: nothing
+  in `omega-mir` or `omega-codegen` reads `CheckedExprNode::id`, and every
+  `HirId`-keyed map in the compiler is keyed on a *declaration* id, never an
+  expression id. **This is a live constraint, not an observation** — the
+  moment anything keys a map on an expression's id, or a diagnostic dedupes
+  by it, these desugarings start colliding silently. Worth settling
+  deliberately during the `omega-analyzer` pass: either mint fresh ids in
+  the analyzer, or state the invariant where it can be seen.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+
+- **Macro expansion still rebuilds the whole tree by value to recurse.**
+  `omega_parser::macros::Expander::expand_expr` was given a context struct
+  (so the `(defs, budget, state)` triple stopped being threaded by hand) and
+  had its per-arm unbox dance collapsed, but the traversal itself is
+  unchanged: every arm still reconstructs its node field-by-field purely to
+  descend into children, and `expand_struct_def`/`expand_union_def` remain
+  two character-identical functions. The intended shape was an in-place
+  `&mut` walk over a `children_mut` iterator, leaving explicit arms only for
+  the block-bearing variants (`Codeblock`, `If`, `Match`, `Slice`'s range).
+  Not done here because it is a genuine design change to the compiler's
+  single highest-risk file, and because `children_mut` would have exactly
+  one consumer — worth deciding on its own rather than as the tail of a
+  refactor. The cost of leaving it is ~70 lines of reconstruction that a new
+  `Expression` variant must be added to in two places instead of one.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+
+- **Three of the spans added by the span-ownership pass have no reader.**
+  `FunctionDefinitionStmt`/`SpecFunctionStmt`/`HirFunctionDef`/
+  `RawSpecFunctionSig::signature_span` is set by the parser and copied
+  through four structs across three crates, and nothing ever reads it; the
+  same is true of `CodeblockExpr::span` and the `HirBlock::span` it feeds.
+  They were added because the span-ownership rule (*a construct that can be
+  the subject of a diagnostic owns its span*) says they should exist, not
+  because a diagnostic needed them — the two that fixed real defects
+  (`name_span`, `return_type_span`) do have readers. Left in place rather
+  than deleted because the anchors that would use them are already written
+  down (see the three widened anchors under **Diagnostics**), so removing
+  them now would only mean re-adding them. **Decision needed:** either
+  narrow those anchors and consume these spans, or drop them and stop
+  carrying a field the pipeline does not use.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+
+- **`Display for ParseErrorKind` builds and discards a whole `Diagnostic`.**
+  Collapsing each parse error's definition to one site made
+  `ParseError::to_diagnostic` the only place that knows an error's text, and
+  `Display` now reads its headline back from there — which means formatting
+  an error clones the kind, allocates its labels and footers, and throws all
+  but `message` away. Correct, and only on the macro-expansion error path
+  where it is rare, but it is a real cost paid for a wording guarantee.
+  A `message_only` split inside `to_diagnostic` would remove it without
+  reintroducing a second definition site.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+
+
 Shape problems in `omega-driver` and `omega-analyzer` that work today but each
 need a breaking change to fix — full writeups in
 [design-review.md](17-design-review.md#compiler-architecture).
@@ -332,6 +403,37 @@ need a breaking change to fix — full writeups in
   one at a time.
 
 ## Design debt worth watching
+
+- **Parameters and aggregate fields are the same type at all three layers.**
+  `omega_hir::HirParam` carries a `visibility` that is meaningful only in
+  the field role and inert for a parameter; `omega_analyzer::CheckedParam`
+  serves both roles and carries no visibility at all; field visibility
+  travels separately as `Vec<(Ident, ResolvedType, Visibility)>` on
+  `ResolvedStructType`/`ResolvedUnionType`/`ResolvedEnumType`. Three
+  representations of one fact across two crates. Deliberately **not** split
+  during the parser/HIR refactor: introducing an `HirField` alone would
+  create a distinction that dies one layer later, when
+  `analyze_struct_fields` re-merges both roles into `CheckedParam`. Fix the
+  whole chain as one unit in the `omega-analyzer` pass.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+- **The contextual-keyword set grows with every feature, with no promotion
+  policy.** Eighteen words are now position-dependent keywords
+  (`parser::contextual`). Each one is a place where a lookahead can commit
+  too early and silently stop the word being usable as a name — three had
+  already done exactly that. The registry plus its generated test make the
+  set visible and guarded, but there is no stated rule for when a word
+  should graduate to a real reserved keyword instead.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+- **`CheckedSlice` still flattens a range end the way `HirRange` used to.**
+  `omega_hir::HirRange` now carries a three-way `HirRangeEnd`
+  (`Inclusive`/`Exclusive`/`Open`), so "an inclusive range with no end" is
+  unrepresentable in the HIR. `omega_analyzer::checked::CheckedSlice` still
+  carries `end: Option<CheckedExprNode>` plus `inclusive: bool` one layer
+  down, which has the same spare state — the analyzer just never builds it.
+  Not fixed with `HirRangeEnd` because the change reaches codegen's slice
+  emission in both backends, which is out of scope for a parser/HIR pass.
+  Fix with `omega-analyzer`'s own refactor.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
 
 - **Omega's calling convention is not the platform C ABI.** The largest
   piece of deliberate debt in the compiler, and it was *deliberately
@@ -441,6 +543,32 @@ need a breaking change to fix — full writeups in
 
 ## Diagnostics
 
+- **No error codes, and no machine-applicable suggestions.** `Diagnostic`
+  carries a message, labels, and `note:`/`help:` footers — there is no
+  `E0308`-style stable code to look up or search for, and no structured
+  "replace this span with this text" a tool could apply. Both are additive
+  later, but every error site is a place that would need revisiting, so the
+  shape is cheaper to decide early than late.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+- **A dangling annotation at end of file is silently dropped.** `@inline`
+  with no item after it reports only `expected a top-level item, found end
+  of input`; the annotation itself vanishes with no mention.
+  [annotations.md](09-annotations.md)
+- **Three anchors still point at more than the thing they are about.** The
+  span-ownership pass fixed every *member*-level diagnostic (a duplicate
+  field, method or spec function, and a return-type mismatch, all now
+  underline the name or the declared type). Three sites elsewhere still
+  widen: `omega_driver::Driver::check_overload_duplicates` anchors a
+  duplicate **top-level** function at `item_id_span`, which is the whole
+  definition including its body; and `parse_gap_def`/`parse_glue_def` anchor
+  `GapFunctionSelf`/`GapFunctionBody`/`GlueFunctionShape` at
+  `Parser::last_span()`, the member's closing brace, rather than at the
+  offending name. All three now have a real span available
+  (`HirFunctionDef::name_span`, `SpecFunctionStmt::name_span`); none was
+  changed here because none was part of the reproduced defect.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
+
+
 - ~~**A method call's receiver, and any write through a projection, did not
   count as reads**~~ — **fixed.** `Context::mark_used` was reached from a
   single site (`analyze_expr`'s `HirExpr::Place` arm), which a *receiver*
@@ -482,6 +610,54 @@ need a breaking change to fix — full writeups in
   [macros.md](12-macros.md)
 
 ## Control flow
+
+- **`&&`/`||` reject a `never`-typed operand, but the `if` form they desugar
+  to accepts one.** `flag && exit(1)` fails with `'&&' requires 'bool'
+  operands, found 'never'`, while the equivalent
+  `if flag { exit(1) } else { false }` compiles — so the operator is
+  strictly narrower than the desugaring it produces. This follows
+  `analyze_if`'s existing rule for a condition rather than being new, and
+  diverging-in-one-branch is rare in practice, but it is an inconsistency
+  between two spellings the docs present as equivalent.
+  [control-flow.md](03-control-flow.md)
+
+
+- **`bool` now has two spellings for each connective, and both are
+  supported.** `a & b` and `a && b` differ only in whether `b` is evaluated;
+  same for `|` and `||`. This is what C, C++ and Rust all do and what
+  programmers expect, but it is still two mechanisms for one concept — the
+  cleaner endpoint would be `&&`/`||`/`!` on `bool` and `&`/`|`/`^`/`~`
+  reserved for integers. That is a breaking change to any `core`/`std` code
+  using `&`/`|` on `bool`, so it was **not** taken unilaterally.
+  **Decision needed:** keep both, or drop `&`/`|`/`^` on `bool`.
+  [control-flow.md](03-control-flow.md)
+- **Chained comparison is permanently a syntax error.** `a < b < c` now
+  reports `comparison operators are non-associative` (it previously
+  surfaced as a confusing `expected ';'`), matching Rust. Python chains it
+  instead. **Decision needed:** is rejection the permanent answer, or should
+  chaining eventually mean the conjunction?
+  [control-flow.md](03-control-flow.md)
+- **`&&` took a spelling that already meant something.** Adding the `&&`
+  token silently changed the meaning of `a&&b` written without spaces: it
+  used to lex as `&` `&` and mean "bitwise-and `a` with the address of `b`"
+  — a program that compiles (an integer and a pointer both coerce for `&`,
+  see [primitives](01-primitives.md)) — and now parses as the logical
+  connective and fails type checking. `a & &b` with the space is unaffected,
+  and `||` has no such collision because `|` is infix-only. This was
+  accepted rather than designed: the same trade C and C++ make. **Decision
+  needed:** leave it (and say so in the docs), or require whitespace around
+  binary `&` so the two readings can never be confused.
+  [control-flow.md](03-control-flow.md)
+- **`comp <` and `reveal <` are always the operator, never a comparison.**
+  Both are contextual keywords, so `comp`/`reveal` are legal variable names,
+  and both commit to the prefix-operator reading as soon as something that
+  could be an operand follows. A leading `<` can begin a cast
+  (`comp <usize>N`, which has always been valid), so it must count as an
+  operand — which means a *variable* named `comp` can never be the left side
+  of a `<` comparison. No single-token lookahead separates the two readings.
+  **Decision needed:** accept the asymmetry, promote these two words to real
+  keywords, or give casts a spelling that does not start with `<`.
+  [parsing-and-hir.md](15-parsing-and-hir.md)
 
 - **A bare `return;` is a parse error**, so a `void` function cannot return
   early at all — `expected an expression, found ';'`. Every early exit in a

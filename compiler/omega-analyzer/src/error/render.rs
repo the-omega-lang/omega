@@ -127,6 +127,13 @@ impl AnalysisErrorKind {
             Self::InvalidBitNotOperand { r#type } => d
                 .with_label(span, format!("this has type `{}`", r#type))
                 .with_note("unary `~` requires a signed or unsigned integer"),
+            Self::InvalidNotOperand { r#type } => d
+                .with_label(span, format!("this has type `{}`", r#type))
+                .with_note("unary `!` requires a `bool`")
+                .with_help("`~` is the bitwise operator for integers; `!` is only defined on `bool`"),
+            Self::InvalidLogicalOperand { op, r#type } => d
+                .with_label(span, format!("this has type `{}`", r#type))
+                .with_note(format!("`{op}` requires both operands to be `bool`")),
             Self::FloatBitwiseOperand => d
                 .with_label(span, "bitwise/shift operators require integer operands")
                 .with_note("there is no native float bitwise/shift instruction"),

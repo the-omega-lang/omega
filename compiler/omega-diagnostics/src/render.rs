@@ -32,7 +32,7 @@
 //! percent of polish for a renderer that stays simple and can never
 //! produce a misaligned layout on pathological input.
 
-use crate::diagnostic::{Diagnostic, Label, LabelStyle, Severity};
+use crate::diagnostic::{Diagnostic, Footer, Label, LabelStyle, Severity};
 use crate::highlight::{Highlighter, TokenClass};
 use crate::source::SourceFile;
 use crate::span::Span;
@@ -58,7 +58,11 @@ const SYNTAX_COMMENT: &str = "\x1b[90m";
 /// the single place every color decision in this crate (and any caller
 /// reusing it) funnels through.
 pub fn paint(colors: bool, code: &str, text: &str) -> String {
-    if colors && !text.is_empty() { format!("{code}{text}{RESET}") } else { text.to_string() }
+    if colors && !text.is_empty() {
+        format!("{code}{text}{RESET}")
+    } else {
+        text.to_string()
+    }
 }
 
 /// How many display columns a tab expands to -- rustc uses 4 as well; the
@@ -77,7 +81,10 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(colors: bool) -> Self {
-        Self { colors, highlighter: None }
+        Self {
+            colors,
+            highlighter: None,
+        }
     }
 
     pub fn with_highlighter(mut self, highlighter: Box<dyn Highlighter>) -> Self {
@@ -99,19 +106,18 @@ impl Renderer {
             && !diagnostic.labels.is_empty()
         {
             width = self.render_snippet(&mut out, diagnostic, file);
-            if !diagnostic.notes.is_empty() || !diagnostic.helps.is_empty() {
+            if !diagnostic.footers.is_empty() {
                 out.push('\n');
                 self.push_empty_gutter(&mut out, width);
             }
         }
 
-        for note in &diagnostic.notes {
+        for footer in &diagnostic.footers {
             out.push('\n');
-            self.render_footer(&mut out, width, "note", note);
-        }
-        for help in &diagnostic.helps {
-            out.push('\n');
-            self.render_footer(&mut out, width, "help", help);
+            match footer {
+                Footer::Note(text) => self.render_footer(&mut out, width, "note", text),
+                Footer::Help(text) => self.render_footer(&mut out, width, "help", text),
+            }
         }
         out
     }
@@ -146,13 +152,26 @@ impl Renderer {
         labels.sort_by_key(|l| (l.span.start, l.span.end));
 
         let last_line = |l: &Label| file.line_of(l.span.end.saturating_sub(1).max(l.span.start));
-        let width = labels.iter().map(|l| digits(last_line(l))).max().unwrap_or(1);
+        let width = labels
+            .iter()
+            .map(|l| digits(last_line(l)))
+            .max()
+            .unwrap_or(1);
         // Every source line gets a 2-column bar area after the gutter when
         // any label is multi-line, so `|` continuation bars have somewhere
         // to live without shifting text between lines.
-        let pad = if labels.iter().any(|l| last_line(l) > file.line_of(l.span.start)) { 2 } else { 0 };
+        let pad = if labels
+            .iter()
+            .any(|l| last_line(l) > file.line_of(l.span.start))
+        {
+            2
+        } else {
+            0
+        };
 
-        let primary = d.primary_label().expect("render_snippet is only called with labels present");
+        let primary = d
+            .primary_label()
+            .expect("render_snippet is only called with labels present");
         let (loc_line, loc_col) = file.line_col(primary.span.start);
         out.push('\n');
         out.push_str(&" ".repeat(width));
@@ -166,7 +185,12 @@ impl Renderer {
             (Some(h), true) => h.highlight(file.source()),
             _ => Vec::new(),
         };
-        let ctx = SnippetCtx { file, width, pad, highlights };
+        let ctx = SnippetCtx {
+            file,
+            width,
+            pad,
+            highlights,
+        };
 
         let mut last_printed: Option<usize> = None;
         for label in labels {
@@ -214,15 +238,21 @@ impl Renderer {
     }
 
     /// `   |    ^^^^ message` under the given line.
-    fn render_single_underline(&self, out: &mut String, ctx: &SnippetCtx, label: &Label, severity: Severity, line: usize) {
-        let text = ctx.file.line_text(line);
-        let line_start = ctx.file.line_start(line);
-        let start = label.span.start.saturating_sub(line_start).min(text.len());
-        let end = label.span.end.saturating_sub(line_start).min(text.len());
-        let disp_start = display_col(text, start);
-        let marker_width = (display_col(text, end) - disp_start).max(1);
-
-        let marker = if label.style == LabelStyle::Primary { "^" } else { "-" };
+    fn render_single_underline(
+        &self,
+        out: &mut String,
+        ctx: &SnippetCtx,
+        label: &Label,
+        severity: Severity,
+        line: usize,
+    ) {
+        let (disp_start, disp_end) = label_columns(ctx.file, label.span, line);
+        let marker_width = (disp_end - disp_start).max(1);
+        let marker = if label.style == LabelStyle::Primary {
+            "^"
+        } else {
+            "-"
+        };
         let mut row = String::new();
         row.push_str(&" ".repeat(ctx.pad + disp_start));
         row.push_str(&marker.repeat(marker_width));
@@ -249,40 +279,53 @@ impl Renderer {
         end_line: usize,
     ) {
         let color = self.label_color(severity, label.style);
-        let marker = if label.style == LabelStyle::Primary { "^" } else { "-" };
+        let marker = if label.style == LabelStyle::Primary {
+            "^"
+        } else {
+            "-"
+        };
 
         out.push('\n');
         self.render_source_line(out, ctx, start_line, "  ");
 
         // ` ____^` -- caret under the span's first character, which sits 2
         // bar-area columns right of where its display column says.
-        let start_text = ctx.file.line_text(start_line);
-        let start_byte = label.span.start.saturating_sub(ctx.file.line_start(start_line)).min(start_text.len());
-        let caret_at = 2 + display_col(start_text, start_byte);
+        let (start_col, _) = label_columns(ctx.file, label.span, start_line);
+        let caret_at = 2 + start_col;
         out.push('\n');
         out.push_str(&self.paint(BLUE, &format!("{:>width$} | ", "", width = ctx.width)));
-        out.push_str(&self.paint(color, &format!(" {}{marker}", "_".repeat(caret_at.saturating_sub(1)))));
+        out.push_str(&self.paint(
+            color,
+            &format!(" {}{marker}", "_".repeat(caret_at.saturating_sub(1))),
+        ));
 
-        let body: Vec<usize> = if end_line - start_line > MAX_MULTILINE_LINES {
-            // First body line, elision marker (0 = sentinel), last two lines.
-            vec![start_line + 1, 0, end_line - 1, end_line]
+        let body: Vec<BodyRow> = if end_line - start_line > MAX_MULTILINE_LINES {
+            vec![
+                BodyRow::Source(start_line + 1),
+                BodyRow::Elision,
+                BodyRow::Source(end_line - 1),
+                BodyRow::Source(end_line),
+            ]
         } else {
-            (start_line + 1..=end_line).collect()
+            (start_line + 1..=end_line).map(BodyRow::Source).collect()
         };
-        for line in body {
+        for row in body {
             out.push('\n');
-            if line == 0 {
-                out.push_str(&self.paint(BLUE, &format!("{:<width$}", "...", width = ctx.width + 3)));
-                out.push_str(&self.paint(color, "|"));
-            } else {
-                self.render_source_line_with_open_bar(out, ctx, line, color);
+            match row {
+                BodyRow::Elision => {
+                    out.push_str(
+                        &self.paint(BLUE, &format!("{:<width$}", "...", width = ctx.width + 3)),
+                    );
+                    out.push_str(&self.paint(color, "|"));
+                }
+                BodyRow::Source(line) => {
+                    self.render_source_line_with_open_bar(out, ctx, line, color)
+                }
             }
         }
-
         // `|___^ message` -- caret under the span's last character.
-        let end_text = ctx.file.line_text(end_line);
-        let end_byte = label.span.end.saturating_sub(ctx.file.line_start(end_line)).min(end_text.len());
-        let caret_at = 2 + display_col(end_text, end_byte).saturating_sub(1);
+        let (_, end_col) = label_columns(ctx.file, label.span, end_line);
+        let caret_at = 2 + end_col.saturating_sub(1);
         let mut row = format!("|{}{marker}", "_".repeat(caret_at.saturating_sub(1)));
         if !label.message.is_empty() {
             row.push(' ');
@@ -296,7 +339,13 @@ impl Renderer {
     /// Like `render_source_line`, but the bar area's `|` is the label's own
     /// continuation bar, painted in the label's color rather than gutter
     /// blue.
-    fn render_source_line_with_open_bar(&self, out: &mut String, ctx: &SnippetCtx, line: usize, color: &str) {
+    fn render_source_line_with_open_bar(
+        &self,
+        out: &mut String,
+        ctx: &SnippetCtx,
+        line: usize,
+        color: &str,
+    ) {
         out.push_str(&self.paint(BLUE, &format!("{:>width$} | ", line, width = ctx.width)));
         out.push_str(&self.paint(color, "|"));
         out.push(' ');
@@ -370,6 +419,19 @@ struct SnippetCtx<'a> {
     highlights: Vec<(Span, TokenClass)>,
 }
 
+enum BodyRow {
+    Source(usize),
+    Elision,
+}
+
+fn label_columns(file: &SourceFile, span: Span, line: usize) -> (usize, usize) {
+    let text = file.line_text(line);
+    let line_start = file.line_start(line);
+    let start = span.start.saturating_sub(line_start).min(text.len());
+    let end = span.end.saturating_sub(line_start).min(text.len());
+    (display_col(text, start), display_col(text, end))
+}
+
 fn class_color(class: TokenClass) -> &'static str {
     match class {
         TokenClass::Keyword => SYNTAX_KEYWORD,
@@ -404,7 +466,11 @@ fn display_col(text: &str, byte_offset: usize) -> usize {
 }
 
 /// The sorted `highlights` entries overlapping `[line_start, line_end)`.
-fn line_highlights(highlights: &[(Span, TokenClass)], line_start: usize, line_end: usize) -> &[(Span, TokenClass)] {
+fn line_highlights(
+    highlights: &[(Span, TokenClass)],
+    line_start: usize,
+    line_end: usize,
+) -> &[(Span, TokenClass)] {
     let begin = highlights.partition_point(|(span, _)| span.end <= line_start);
     let count = highlights[begin..].partition_point(|(span, _)| span.start < line_end);
     &highlights[begin..begin + count]
@@ -462,7 +528,8 @@ error: `x` is already declared in this scope
     #[test]
     fn multiline_label() {
         let source = "v := if x {\n    1\n} else {\n    \"s\"\n};\n";
-        let d = Diagnostic::error("mismatched branch types").with_label(Span::new(5, 36), "branches disagree");
+        let d = Diagnostic::error("mismatched branch types")
+            .with_label(Span::new(5, 36), "branches disagree");
         assert_eq!(
             render_plain(&d, source),
             "\
@@ -482,7 +549,8 @@ error: mismatched branch types
     #[test]
     fn zero_width_span_at_eof() {
         let source = "main() => i32 {";
-        let d = Diagnostic::error("expected '}', found end of input").with_label(Span::new(15, 15), "expected '}'");
+        let d = Diagnostic::error("expected '}', found end of input")
+            .with_label(Span::new(15, 15), "expected '}'");
         assert_eq!(
             render_plain(&d, source),
             "\
@@ -516,7 +584,8 @@ error: two spots
 
     #[test]
     fn no_labels_renders_headline_and_footers_only() {
-        let d = Diagnostic::error("no such module 'foo'").with_help("expected foo.omg or foo/ in a search root");
+        let d = Diagnostic::error("no such module 'foo'")
+            .with_help("expected foo.omg or foo/ in a search root");
         assert_eq!(
             Renderer::new(false).render(&d, None),
             "\
@@ -531,8 +600,40 @@ error: no such module 'foo'
         let end = source.len() - 1; // last ';'
         let d = Diagnostic::error("big span").with_label(Span::new(0, end), "all of it");
         let rendered = render_plain(&d, &source);
-        assert!(rendered.contains("..."), "expected elision row:\n{rendered}");
-        assert!(!rendered.contains("line6"), "middle lines should be elided:\n{rendered}");
-        assert!(rendered.contains("line12"), "last line must render:\n{rendered}");
+        assert!(
+            rendered.contains("..."),
+            "expected elision row:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("line6"),
+            "middle lines should be elided:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("line12"),
+            "last line must render:\n{rendered}"
+        );
+    }
+    #[test]
+    fn footer_order_matches_constructor_order() {
+        let rendered = Renderer::new(false).render(
+            &Diagnostic::error("broken")
+                .with_help("fix it")
+                .with_note("context"),
+            None,
+        );
+        assert!(rendered.find("= help: fix it").unwrap() < rendered.find("= note: context").unwrap());
+    }
+
+    #[test]
+    fn same_line_labels_render_one_source_row_and_two_underlines() {
+        let source = "left right\n";
+        let rendered = render_plain(
+            &Diagnostic::error("two labels")
+                .with_label(Span::new(0, 4), "left")
+                .with_secondary_label(Span::new(5, 10), "right"),
+            source,
+        );
+        assert_eq!(rendered.matches("1 | left right").count(), 1);
+        assert_eq!(rendered.matches(" | ").count(), 3);
     }
 }

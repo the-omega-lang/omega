@@ -43,7 +43,7 @@ use conformances::Primitives;
 use diagnostics::Diagnostics;
 use items::ItemQueries;
 use modules::ModuleStore;
-use omega_parser::ast::statement::macro_definition::MacroDefinitionStmt;
+use omega_parser::prelude::MacroDefinitionStmt;
 use omega_analyzer::Target;
 use omega_parser::prelude::Ident;
 use resolver::ImportState;

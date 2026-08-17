@@ -15,8 +15,7 @@ use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
-use omega_parser::ast::statement::macro_definition::MacroDefinitionStmt;
-use omega_parser::ast::visibility::Visibility;
+use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ImportRoot, Item, ParseError, Path, SourceModule};
 use std::collections::HashMap;
@@ -672,10 +671,10 @@ impl Driver {
             HirItem::FunctionDefinition(f) => f.generics.clone(),
             HirItem::Spec(sp) => sp.generics.clone(),
             HirItem::Gap(_) => vec![],
-            HirItem::Declaration(_)
-            | HirItem::DeclarationWithInit(..)
+            HirItem::Declaration { .. }
+            | HirItem::DeclarationWithInit { .. }
             | HirItem::ExternDeclaration(_)
-            | HirItem::Walrus(_) => vec![],
+            | HirItem::Walrus { .. } => vec![],
             HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) | HirItem::Import(_) => {
                 unreachable!("unnamed items are never indexed into a module's items")
             }

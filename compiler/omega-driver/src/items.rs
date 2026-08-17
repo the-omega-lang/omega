@@ -823,7 +823,7 @@ impl Driver {
             .collect();
 
         let resolved = match item {
-            HirItem::Declaration(decl) => self
+            HirItem::Declaration { decl, .. } => self
                 .analyze(module, &substitution, (decl.id, decl.span), |a| {
                     a.analyze_declaration(decl, Storage::Global)
                 })
@@ -839,7 +839,7 @@ impl Driver {
             // as a non-`comp` `Walrus` below, just with a written-down
             // type instead of an inferred one. See `Analyzer::
             // analyze_global_declaration_with_init`'s own doc comment.
-            HirItem::DeclarationWithInit(decl, value) => self
+            HirItem::DeclarationWithInit { decl, value, .. } => self
                 .analyze(module, &substitution, (decl.id, decl.span), |a| {
                     a.analyze_global_declaration_with_init(decl, value)
                 })
@@ -877,7 +877,7 @@ impl Driver {
             // known value), the same as `HirItem::Declaration` above --
             // `analyze_global_walrus` builds the identical `CheckedDeclaration`
             // shape `analyze_declaration` does, just with `initial_value: Some`.
-            HirItem::Walrus(w) if w.comp => self
+            HirItem::Walrus { walrus: w, .. } if w.comp => self
                 .analyze(module, &substitution, (w.id, w.span), |a| {
                     a.analyze_comp_declaration(w)
                 })
@@ -890,7 +890,7 @@ impl Driver {
                         mutable: false,
                     }
                 }),
-            HirItem::Walrus(w) => self
+            HirItem::Walrus { walrus: w, .. } => self
                 .analyze(module, &substitution, (w.id, w.span), |a| {
                     a.analyze_global_walrus(w)
                 })

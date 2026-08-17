@@ -1,9 +1,8 @@
-use crate::ast::identifier::Ident;
+use crate::ast::expression::NumberBase;
 use crate::ast::r#type::{FunctionType, Type};
-use crate::ast::self_mode::SelfMode;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
-use crate::parser::{Parser, parse_path};
+use crate::parser::{Parser, contextual, parse_path};
 
 /// `*T` / `[N]T` / `[]T` / `[?]T` / `(params) => T` / `Path` / `Path<T,
 /// ...>` -- matches `Type::parser`'s original `choice((pointer, array,
@@ -27,7 +26,10 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
         TokenKind::Spec => parse_spec_object_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
         _ => {
-            p.error(ParseErrorKind::Expected { expected: "a type", found: p.peek().describe() });
+            p.error(ParseErrorKind::Expected {
+                expected: "a type",
+                found: p.peek().describe(),
+            });
             None
         }
     })
@@ -38,14 +40,7 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
 /// like `self`), checked by comparing an already-lexed `Ident`'s text.
 fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '*'
-    let mutable = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-    {
-        p.advance();
-        true
-    } else {
-        false
-    };
+    let mutable = p.eat_contextual(contextual::MUT);
     let inner = parse_type(p)?;
     Some(Type::Pointer(Box::new(inner), mutable))
 }
@@ -62,14 +57,7 @@ fn parse_spec_object_type(p: &mut Parser) -> Option<Type> {
         let inner = parse_named_type(p)?;
         return Some(Type::SpecStatic(Box::new(inner)));
     }
-    let mutable = if let TokenKind::Ident(name) = p.peek()
-        && name == "mut"
-    {
-        p.advance();
-        true
-    } else {
-        false
-    };
+    let mutable = p.eat_contextual(contextual::MUT);
     let inner = parse_named_type(p)?;
     Some(Type::SpecObject(Box::new(inner), mutable))
 }
@@ -113,16 +101,17 @@ fn parse_bracket_type(p: &mut Parser) -> Option<Type> {
 fn parse_array_size(p: &mut Parser) -> Option<String> {
     match p.peek() {
         TokenKind::Number(n)
-            if matches!(n.base, crate::ast::expression::number::NumberBase::Decimal)
-                && n.fractional_part.is_none()
-                && n.explicit_type.is_none() =>
+            if matches!(n.base, NumberBase::Decimal) && n.explicit_type.is_none() =>
         {
             let size = n.integer_part.clone();
             p.advance();
             Some(size)
         }
         _ => {
-            p.error(ParseErrorKind::Expected { expected: "an array size", found: p.peek().describe() });
+            p.error(ParseErrorKind::Expected {
+                expected: "an array size",
+                found: p.peek().describe(),
+            });
             None
         }
     }
@@ -130,7 +119,7 @@ fn parse_array_size(p: &mut Parser) -> Option<String> {
 
 fn parse_function_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '('
-    let (self_mode, params) = parse_param_list(p);
+    let (self_mode, params) = crate::parser::parse_param_list(p);
     let is_variadic = if p.eat(&TokenKind::Comma) {
         p.expect(&TokenKind::DotDotDot, "'...'");
         true
@@ -146,47 +135,6 @@ fn parse_function_type(p: &mut Parser) -> Option<Type> {
         is_variadic,
         self_mode,
     }))
-}
-
-/// `self` / `mut self` / `*self` / `*mut self` (optionally followed by `,
-/// ident: Type, ...`), or just `ident: Type, ...` -- see
-/// `crate::parser::parse_self_mode`.
-fn parse_param_list(p: &mut Parser) -> (Option<SelfMode>, Vec<(Ident, Type)>) {
-    match crate::parser::parse_self_mode(p) {
-        Some(mode) => {
-            let rest = if p.eat(&TokenKind::Comma) { parse_decl_list(p) } else { Vec::new() };
-            (Some(mode), rest)
-        }
-        None => (None, parse_decl_list(p)),
-    }
-}
-
-/// Zero or more `ident: Type` pairs, comma-separated -- a comma is only
-/// consumed if another decl actually follows, so a trailing comma before
-/// `)` is left unconsumed (a real parse error at the caller, matching the
-/// old grammar's plain `separated_by` -- which, without `.allow_trailing()`,
-/// doesn't tolerate one either) rather than silently swallowed.
-fn parse_decl_list(p: &mut Parser) -> Vec<(Ident, Type)> {
-    let mut decls = Vec::new();
-    if !matches!(p.peek(), TokenKind::Ident(_)) {
-        return decls;
-    }
-    while let Some(decl) = parse_type_decl(p) {
-        decls.push(decl);
-        if matches!(p.peek(), TokenKind::Comma) && matches!(p.peek_at(1), TokenKind::Ident(_)) {
-            p.advance();
-        } else {
-            break;
-        }
-    }
-    decls
-}
-
-fn parse_type_decl(p: &mut Parser) -> Option<(Ident, Type)> {
-    let ident = p.expect_ident()?;
-    p.expect(&TokenKind::Colon, "':'");
-    let ty = parse_type(p)?;
-    Some((ident, ty))
 }
 
 /// `Path`, or `Path<Type, ...>` -- `<` is unambiguous here: this grammar has

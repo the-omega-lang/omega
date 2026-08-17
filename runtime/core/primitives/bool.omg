@@ -1,9 +1,10 @@
 # `core::primitives::bool` -- `bool`'s declaration site.
 #
-# One bit of information, stored in one byte. Its operators are `==`/`!=` and
-# `&`/`|`/`^` -- and since this language has no `&&`/`||`/`!`, those three
-# *are* its logical operators, evaluating both operands rather than
-# short-circuiting.
+# One bit of information, stored in one byte. Its operators are `==`/`!=`,
+# `&`/`|`/`^`, the short-circuiting `&&`/`||`, and unary `!`. `&`/`|`/`^`
+# evaluate both operands; `&&`/`||` evaluate the right one only when the
+# left does not already decide the answer, so the spelling is what tells a
+# reader whether a call on the right-hand side runs.
 #
 # Ordering (`<`), arithmetic (`+`), the shifts and `~` are all rejected:
 # `bool` has no `arithmetic_repr`, so unlike pointers it never

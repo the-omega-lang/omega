@@ -1,35 +1,15 @@
 use crate::ast::expression::{
-    Expression, ExpressionNode,
-    address_of::AddressOfExpr,
-    array_literal::ArrayLiteralExpr,
-    assignment::AssignmentExpr,
-    binary_op::{BinaryOp, BinaryOpExpr},
-    bit_not::BitNotExpr,
-    bool_literal::BoolExpr,
-    byte_string::ByteStringExpr,
-    cast::CastExpr,
-    char_literal::CharExpr,
-    codeblock::CodeblockExpr,
-    comp::CompExpr,
-    compound_assign::CompoundAssignExpr,
-    deref::DerefExpr,
-    field_access::FieldAccessExpr,
-    function_call::FunctionCallExpr,
-    if_expr::IfExpr,
-    incr_decr::{DecrementExpr, IncrementExpr},
-    index::IndexExpr,
-    match_expr::{MatchArm, MatchExpr, Pattern},
-    negate::NegateExpr,
-    reveal::RevealExpr,
-    sizeof::SizeofExpr,
-    slice::SliceExpr,
-    string::StringExpr,
-    struct_literal::{StructLiteralExpr, StructLiteralField},
+    AddressOfExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr, BitNotExpr, BoolExpr,
+    ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr, CompoundAssignExpr, DecrementExpr,
+    DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
+    IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr,
+    Pattern, RevealExpr, SizeofExpr,
+    SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField,
 };
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
-use crate::parser::{Parser, macro_syntax::parse_macro_invocation, statement::parse_statement};
+use crate::parser::{Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement};
 
 /// The full expression grammar's single entry point. A deliberate hybrid,
 /// not one generic precedence-climbing loop for everything: assignment
@@ -59,7 +39,7 @@ pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
 /// <<= >>=`) share this one outer layer -- the latter just carries which
 /// `BinaryOp` it desugars through (see `CompoundAssignExpr`'s doc comment).
 fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
-    let target = parse_comparison(p)?;
+    let target = parse_logical_or(p)?;
     let op = match p.peek() {
         TokenKind::Eq => None,
         TokenKind::PlusEq => Some(BinaryOp::Add),
@@ -95,8 +75,66 @@ fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
 /// here (not a loop), matching Rust's own rule that `a < b < c` must be
 /// parenthesized rather than either chaining or silently meaning
 /// `(a < b) < c`.
+const BINARY_TIERS: &[&[(TokenKind, BinaryOp)]] = &[
+    &[(TokenKind::Pipe, BinaryOp::BitOr)],
+    &[(TokenKind::Caret, BinaryOp::BitXor)],
+    &[(TokenKind::Amp, BinaryOp::BitAnd)],
+    &[(TokenKind::Shl, BinaryOp::Shl), (TokenKind::Shr, BinaryOp::Shr)],
+    &[(TokenKind::Plus, BinaryOp::Add), (TokenKind::Minus, BinaryOp::Sub)],
+    &[
+        (TokenKind::Star, BinaryOp::Mul),
+        (TokenKind::Slash, BinaryOp::Div),
+        (TokenKind::Percent, BinaryOp::Rem),
+    ],
+];
+
+/// `a || b`, left-associative and looser than `&&` -- Rust's precedence, so
+/// `a || b && c` is `a || (b && c)`.
+///
+/// These two tiers sit between assignment and comparison, which is what
+/// makes `a < b && c < d` parse the obvious way without parentheses. They
+/// are separate from `BINARY_TIERS` because their right operand is
+/// conditionally evaluated: the table drives operators that always evaluate
+/// both sides, and folding these into it would quietly misrepresent them.
+fn parse_logical_or(p: &mut Parser) -> Option<ExpressionNode> {
+    let mut left = parse_logical_and(p)?;
+    while p.check(&TokenKind::PipePipe) {
+        p.advance();
+        let right = parse_logical_and(p)?;
+        let span = left.span.to(right.span);
+        left = ExpressionNode {
+            expression: Expression::Logical(Box::new(LogicalExpr {
+                op: LogicalOp::Or,
+                left,
+                right,
+            })),
+            span,
+        };
+    }
+    Some(left)
+}
+
+/// `a && b`, left-associative and tighter than `||`.
+fn parse_logical_and(p: &mut Parser) -> Option<ExpressionNode> {
+    let mut left = parse_comparison(p)?;
+    while p.check(&TokenKind::AmpAmp) {
+        p.advance();
+        let right = parse_comparison(p)?;
+        let span = left.span.to(right.span);
+        left = ExpressionNode {
+            expression: Expression::Logical(Box::new(LogicalExpr {
+                op: LogicalOp::And,
+                left,
+                right,
+            })),
+            span,
+        };
+    }
+    Some(left)
+}
+
 fn parse_comparison(p: &mut Parser) -> Option<ExpressionNode> {
-    let left = parse_bitor(p)?;
+    let left = parse_binary_tier(p, 0)?;
     let op = match p.peek() {
         TokenKind::EqEq => BinaryOp::Eq,
         TokenKind::NotEq => BinaryOp::Ne,
@@ -107,113 +145,38 @@ fn parse_comparison(p: &mut Parser) -> Option<ExpressionNode> {
         _ => return Some(left),
     };
     p.advance();
-    let right = parse_bitor(p)?;
+    let right = parse_binary_tier(p, 0)?;
+    if matches!(
+        p.peek(),
+        TokenKind::EqEq
+            | TokenKind::NotEq
+            | TokenKind::LtEq
+            | TokenKind::GtEq
+            | TokenKind::Lt
+            | TokenKind::Gt
+    ) {
+        p.error(ParseErrorKind::ChainedComparison);
+        p.advance();
+        parse_binary_tier(p, 0)?;
+    }
     let span = left.span.to(right.span);
-    Some(ExpressionNode {
-        expression: binary_op_expr(left, op, right),
-        span,
-    })
+    Some(ExpressionNode { expression: binary_op_expr(left, op, right), span })
 }
 
-fn parse_bitor(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut left = parse_bitxor(p)?;
-    while p.check(&TokenKind::Pipe) {
-        p.advance();
-        let right = parse_bitxor(p)?;
-        let span = left.span.to(right.span);
-        left = ExpressionNode {
-            expression: binary_op_expr(left, BinaryOp::BitOr, right),
-            span,
-        };
+fn parse_binary_tier(p: &mut Parser, tier: usize) -> Option<ExpressionNode> {
+    let mut left = if tier == BINARY_TIERS.len() {
+        parse_unary(p)?
+    } else {
+        parse_binary_tier(p, tier + 1)?
+    };
+    if tier == BINARY_TIERS.len() {
+        return Some(left);
     }
-    Some(left)
-}
-
-fn parse_bitxor(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut left = parse_bitand(p)?;
-    while p.check(&TokenKind::Caret) {
+    while let Some((_, op)) = BINARY_TIERS[tier].iter().find(|(kind, _)| p.check(kind)) {
         p.advance();
-        let right = parse_bitand(p)?;
+        let right = parse_binary_tier(p, tier + 1)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode {
-            expression: binary_op_expr(left, BinaryOp::BitXor, right),
-            span,
-        };
-    }
-    Some(left)
-}
-
-/// `&` here is always infix (bitwise-and) -- unlike `parse_unary`'s prefix
-/// `&`/`&mut` (address-of), disambiguated purely by position, the same way
-/// `*`/`-` already mean different things as a prefix vs. an infix operator.
-fn parse_bitand(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut left = parse_shift(p)?;
-    while p.check(&TokenKind::Amp) {
-        p.advance();
-        let right = parse_shift(p)?;
-        let span = left.span.to(right.span);
-        left = ExpressionNode {
-            expression: binary_op_expr(left, BinaryOp::BitAnd, right),
-            span,
-        };
-    }
-    Some(left)
-}
-
-fn parse_shift(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut left = parse_additive(p)?;
-    loop {
-        let op = match p.peek() {
-            TokenKind::Shl => BinaryOp::Shl,
-            TokenKind::Shr => BinaryOp::Shr,
-            _ => break,
-        };
-        p.advance();
-        let right = parse_additive(p)?;
-        let span = left.span.to(right.span);
-        left = ExpressionNode {
-            expression: binary_op_expr(left, op, right),
-            span,
-        };
-    }
-    Some(left)
-}
-
-fn parse_additive(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut left = parse_multiplicative(p)?;
-    loop {
-        let op = match p.peek() {
-            TokenKind::Plus => BinaryOp::Add,
-            TokenKind::Minus => BinaryOp::Sub,
-            _ => break,
-        };
-        p.advance();
-        let right = parse_multiplicative(p)?;
-        let span = left.span.to(right.span);
-        left = ExpressionNode {
-            expression: binary_op_expr(left, op, right),
-            span,
-        };
-    }
-    Some(left)
-}
-
-fn parse_multiplicative(p: &mut Parser) -> Option<ExpressionNode> {
-    let mut left = parse_unary(p)?;
-    loop {
-        let op = match p.peek() {
-            TokenKind::Star => BinaryOp::Mul,
-            TokenKind::Slash => BinaryOp::Div,
-            TokenKind::Percent => BinaryOp::Rem,
-            _ => break,
-        };
-        p.advance();
-        let right = parse_unary(p)?;
-        let span = left.span.to(right.span);
-        left = ExpressionNode {
-            expression: binary_op_expr(left, op, right),
-            span,
-        };
+        left = ExpressionNode { expression: binary_op_expr(left, *op, right), span };
     }
     Some(left)
 }
@@ -233,6 +196,7 @@ fn binary_op_expr(left: ExpressionNode, op: BinaryOp, right: ExpressionNode) -> 
 /// layer. Right-associative via plain recursion: `prefix.repeated()`'s old
 /// fold-right becomes just "the operand is itself a `parse_unary` call."
 fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
+    use crate::parser::contextual::{COMP, MUT, REVEAL};
     let start = p.peek_span();
     // `<Type>base` -- a bare `<` can never start a primary expression any
     // other way (it's only ever infix, in `parse_comparison`, or inside an
@@ -248,6 +212,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         AddressOf { mutable: bool },
         Negate,
         BitNot,
+        Not,
         Increment,
         Decrement,
         Reveal,
@@ -257,24 +222,13 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         TokenKind::PlusPlus => Prefix::Increment,
         TokenKind::MinusMinus => Prefix::Decrement,
         TokenKind::Star => Prefix::Deref,
-        // `&mut` -- `mut` is a contextual keyword here (see
-        // `lexer::TokenKind`'s doc comment), checked by comparing an
-        // already-lexed `Ident`'s text, exactly like `self`/pointer types'
-        // own `*mut` check.
-        TokenKind::Amp if matches!(p.peek_at(1), TokenKind::Ident(name) if name == "mut") => {
-            Prefix::AddressOf { mutable: true }
-        }
+        TokenKind::Amp if p.at_contextual_at(1, MUT) => Prefix::AddressOf { mutable: true },
         TokenKind::Amp => Prefix::AddressOf { mutable: false },
         TokenKind::Minus => Prefix::Negate,
         TokenKind::Tilde => Prefix::BitNot,
-        // `reveal` is a contextual keyword here too (same text-comparison
-        // pattern as `mut` above) -- see `RevealExpr`'s doc comment for why
-        // this sits at the same precedence tier as `Deref`/`AddressOf`
-        // rather than being restricted to place-shaped expressions.
-        TokenKind::Ident(name) if name == "reveal" => Prefix::Reveal,
-        // `comp` is a contextual keyword too (identical text-comparison
-        // pattern) -- see `CompExpr`'s doc comment.
-        TokenKind::Ident(name) if name == "comp" => Prefix::Comp,
+        TokenKind::Not => Prefix::Not,
+        TokenKind::Ident(_) if p.at_contextual(REVEAL) && operand_follows(p) => Prefix::Reveal,
+        TokenKind::Ident(_) if p.at_contextual(COMP) && operand_follows(p) => Prefix::Comp,
         _ => return parse_postfix(p),
     };
     p.advance();
@@ -290,6 +244,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         }
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
         Prefix::BitNot => Expression::BitNot(Box::new(BitNotExpr { base })),
+        Prefix::Not => Expression::Not(Box::new(NotExpr { base })),
         Prefix::Reveal => Expression::Reveal(Box::new(RevealExpr { base })),
         Prefix::Comp => Expression::Comp(Box::new(CompExpr { base })),
         Prefix::Increment => Expression::Increment(Box::new(IncrementExpr { base })),
@@ -325,10 +280,7 @@ fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
                 },
                 generic_args: Vec::new(),
                 args_at: 0,
-                qualified_spec: Some(crate::ast::identifier::QualifiedSpecPath {
-                    target,
-                    spec,
-                }),
+                qualified_spec: Some(crate::ast::identifier::QualifiedSpecPath { target, spec }),
             }),
             span,
         };
@@ -531,11 +483,36 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
 /// `Parser::restrict_struct_literals`). Without that gate `for i in 1.. { }`
 /// consumes its own loop body as the range's end bound.
 fn expression_starts_here(p: &Parser) -> bool {
-    if p.check(&TokenKind::LBrace) {
+    expression_starts_at(p, 0)
+}
+
+/// The commit rule for `reveal`/`comp`, the two prefix operators spelled as
+/// ordinary identifiers: they take the operator reading only when something
+/// that could actually *be* an operand follows. That is what keeps a *use*
+/// of a variable that merely shares their name working -- in `return comp;`
+/// nothing follows that could be an operand, so `comp` is the variable.
+///
+/// One token wider than `expression_starts_at`: a leading `<` begins a cast
+/// (`comp <usize>N`) or a qualified spec path, both of which `parse_unary`
+/// accepts as an operand. Range parsing must *not* treat `<` that way (`a..
+/// < b` compares against an open range), which is why this is a separate
+/// predicate rather than an extra arm in the shared table.
+///
+/// The cost is that `comp`/`reveal` followed by `<` is always read as the
+/// operator, so a variable of either name can never be the left side of a
+/// `<` comparison. That ambiguity is inherent to a single-token lookahead
+/// and is recorded in `docs/14-known-issues.md`.
+fn operand_follows(p: &Parser) -> bool {
+    expression_starts_at(p, 1) || matches!(p.peek_at(1), TokenKind::Lt)
+}
+
+/// Whether an expression could start `offset` tokens ahead.
+fn expression_starts_at(p: &Parser, offset: usize) -> bool {
+    if matches!(p.peek_at(offset), TokenKind::LBrace) {
         return p.struct_literals_allowed();
     }
     matches!(
-        p.peek(),
+        p.peek_at(offset),
         TokenKind::Ident(_)
             | TokenKind::Number(_)
             | TokenKind::Str(_)
@@ -551,6 +528,7 @@ fn expression_starts_here(p: &Parser) -> bool {
             | TokenKind::Star
             | TokenKind::Minus
             | TokenKind::Tilde
+            | TokenKind::Not
             | TokenKind::PlusPlus
             | TokenKind::MinusMinus
     )
@@ -745,7 +723,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
         // `lexer::TokenKind`'s doc comment), committed to only when
         // immediately followed by `<`; a variable actually named `sizeof`
         // used any other way still parses as a plain identifier below.
-        TokenKind::Ident(name) if name == "sizeof" && matches!(p.peek_at(1), TokenKind::Lt) => {
+        TokenKind::Ident(name) if name == contextual::SIZEOF && matches!(p.peek_at(1), TokenKind::Lt) => {
             p.advance(); // 'sizeof'
             p.advance(); // '<'
             let r#type = crate::parser::r#type::parse_type(p)?;
@@ -1081,11 +1059,164 @@ fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
     Some(Pattern::Value(value))
 }
 
+/// `{ stmt; stmt; ... tail }` -- at every position, tries the tail
+/// interpretation first (does a full expression parse here *and* get
+/// immediately followed by `}`?), falling back to "one ordinary statement"
+/// only if that fails -- matching the old grammar's own `tail_only`-before-
+/// `one_more_stmt` ordering exactly (needed so a trailing `if`/`{}`
+/// expression meant as the block's value isn't instead swallowed as just
+/// another statement, silently discarding it). `mark`/`reset` is the
+/// backtracking primitive this genuinely needs: an ordinary statement can
+/// itself start by parsing the very same expression grammar (e.g. an
+/// expression-statement), so there is no cheaper, backtracking-free way to
+/// tell "this is the tail" from "this is a statement" apart than trying the
+/// expression interpretation and checking what follows.
+pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
+    // Inside the block's own braces, struct literals are unambiguous again
+    // regardless of what position the block itself sits in.
+    p.allow_struct_literals(|p| {
+        let start = p.peek_span();
+        p.expect(&TokenKind::LBrace, "'{'");
+        let mut cb = parse_block_contents(p)?;
+        p.expect(&TokenKind::RBrace, "'}'");
+        // Braces included -- `parse_block_contents` only sees the interior,
+        // so it cannot compute this itself.
+        cb.span = start.to(p.last_span());
+        Some(cb)
+    })
+}
+
+/// Parses a block's statements and optional tail without consuming braces.
+/// This is shared with statement-position macro expansion so substituted
+/// tokens obey exactly the ordinary block grammar.
+pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
+    let start = p.peek_span();
+    let mut statements = Vec::new();
+    let tail = loop {
+        if p.check(&TokenKind::RBrace) || p.is_eof() {
+            break None;
+        }
+        let mark = p.mark();
+        if let Some(expr) = parse_statement_leading_expression(p)
+            && (p.check(&TokenKind::RBrace) || p.is_eof())
+        {
+            break Some(Box::new(expr));
+        }
+        p.reset(mark);
+        match parse_statement(p) {
+            Some(stmt) => statements.push(stmt),
+            None => crate::parser::recovery::synchronize_to_statement_boundary(p),
+        }
+    };
+    let span = start.to(p.last_span());
+    Some(CodeblockExpr {
+        statements,
+        tail,
+        span,
+    })
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use crate::SourceModule;
+    use crate::diagnostics::ParseErrorKind;
+    use crate::parser::MAX_NESTING_DEPTH;
+
+    /// Parsing at (or near) `MAX_NESTING_DEPTH` genuinely needs more native
+    /// stack than a default test thread has -- cargo's harness threads get
+    /// roughly 2MiB, and the limit is calibrated against the much larger
+    /// stack `omgc` runs its real work on. So these cases run on an
+    /// explicitly sized thread, the same mitigation `omgc::main` uses.
+    ///
+    /// That this is necessary *is* the point of the limit: nesting costs
+    /// stack, the cost is bounded but not small, and the bound is what turns
+    /// the failure into a diagnostic rather than an abort.
+    fn on_a_deep_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread panicked")
+    }
+
+    fn nested_parens(depth: usize) -> String {
+        format!(
+            "f() => i32 {{ x := {}1{}; x }}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        )
+    }
+
+    fn nested_pointers(depth: usize) -> String {
+        format!("f(p: {}i32) => void {{ }}", "*[?]".repeat(depth))
+    }
+
+    fn nesting_errors(source: &str) -> usize {
+        match SourceModule::parse(source) {
+            Ok(_) => 0,
+            Err(errors) => errors
+                .iter()
+                .filter(|e| matches!(e.kind, ParseErrorKind::NestingTooDeep { .. }))
+                .count(),
+        }
+    }
+
+    /// Just inside the limit still parses -- the guard must not take away
+    /// headroom that real (or generated) programs already had.
+    #[test]
+    fn nesting_just_inside_the_limit_is_accepted() {
+        // Two levels of slack: the function body's own block and the walrus
+        // value each consume one before the parentheses start.
+        let source = nested_parens(MAX_NESTING_DEPTH - 2);
+        assert!(on_a_deep_stack(move || SourceModule::parse(&source).is_ok()));
+    }
+
+    /// ... and past it, a diagnostic instead of a stack overflow. Before this
+    /// guard the process aborted with `fatal runtime error: stack overflow`:
+    /// no file, no line, no span.
+    #[test]
+    fn nesting_past_the_limit_is_a_diagnostic() {
+        let source = nested_parens(MAX_NESTING_DEPTH + 8);
+        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    }
+
+    /// Types recurse entirely within `parse_type` (`*[?]*[?]T` never reaches
+    /// expression parsing), so they need the guard independently -- one
+    /// shared counter, two call sites.
+    #[test]
+    fn deeply_nested_types_are_bounded_too() {
+        let source = nested_pointers(MAX_NESTING_DEPTH + 8);
+        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    }
+
+    /// Reported once per module, not once per recovery attempt: block-level
+    /// error recovery re-enters the grammar after each refusal, so without
+    /// the latch every following statement reports the same overflow again.
+    #[test]
+    fn the_nesting_limit_is_reported_once() {
+        let deep = "(".repeat(MAX_NESTING_DEPTH + 8) + "1" + &")".repeat(MAX_NESTING_DEPTH + 8);
+        let source = format!("f() => i32 {{ a := {deep}; b := {deep}; c := {deep}; 0 }}");
+        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    }
+
+    /// The property the original stack-overflow diagnosis got wrong: block
+    /// parsing is a `loop`, so a long *sequence* of statements costs no stack
+    /// at all and must never trip a depth limit. This runs on the ordinary
+    /// test stack deliberately -- 20k statements need no headroom whatsoever.
+    #[test]
+    fn a_long_statement_sequence_is_not_nesting() {
+        let body = "acc = acc + 1;\n".repeat(20_000);
+        let source = format!("f() => i32 {{ mut acc := 0;\n{body}acc }}");
+        assert!(SourceModule::parse(&source).is_ok());
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::SourceModule;
     use crate::ast::expression::Expression;
-    use crate::ast::statement::{Item, Statement};
+    use crate::ast::item::Item;
+    use crate::ast::statement::Statement;
     use crate::diagnostics::ParseErrorKind;
 
     /// The statements of `source`'s first (and only) function definition.
@@ -1249,143 +1380,74 @@ mod tests {
         assert!(matches!(stmts[0], Statement::Expression(_)));
         assert_eq!(stmts.len(), 2);
     }
-}
 
-/// `{ stmt; stmt; ... tail }` -- at every position, tries the tail
-/// interpretation first (does a full expression parse here *and* get
-/// immediately followed by `}`?), falling back to "one ordinary statement"
-/// only if that fails -- matching the old grammar's own `tail_only`-before-
-/// `one_more_stmt` ordering exactly (needed so a trailing `if`/`{}`
-/// expression meant as the block's value isn't instead swallowed as just
-/// another statement, silently discarding it). `mark`/`reset` is the
-/// backtracking primitive this genuinely needs: an ordinary statement can
-/// itself start by parsing the very same expression grammar (e.g. an
-/// expression-statement), so there is no cheaper, backtracking-free way to
-/// tell "this is the tail" from "this is a statement" apart than trying the
-/// expression interpretation and checking what follows.
-pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
-    // Inside the block's own braces, struct literals are unambiguous again
-    // regardless of what position the block itself sits in.
-    p.allow_struct_literals(|p| {
-        p.expect(&TokenKind::LBrace, "'{'");
-        let cb = parse_block_contents(p)?;
-        p.expect(&TokenKind::RBrace, "'}'");
-        Some(cb)
-    })
-}
-
-/// Parses a block's statements and optional tail without consuming braces.
-/// This is shared with statement-position macro expansion so substituted
-/// tokens obey exactly the ordinary block grammar.
-pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
-    let mut statements = Vec::new();
-    let tail = loop {
-        if p.check(&TokenKind::RBrace) || p.is_eof() {
-            break None;
-        }
-        let mark = p.mark();
-        if let Some(expr) = parse_statement_leading_expression(p)
-            && (p.check(&TokenKind::RBrace) || p.is_eof())
-        {
-            break Some(Box::new(expr));
-        }
-        p.reset(mark);
-        match parse_statement(p) {
-            Some(stmt) => statements.push(stmt),
-            None => crate::parser::recovery::synchronize_to_statement_boundary(p),
-        }
-    };
-    Some(CodeblockExpr { statements, tail })
-}
-
-#[cfg(test)]
-mod nesting_tests {
-    use crate::SourceModule;
-    use crate::diagnostics::ParseErrorKind;
-    use crate::parser::MAX_NESTING_DEPTH;
-
-    /// Parsing at (or near) `MAX_NESTING_DEPTH` genuinely needs more native
-    /// stack than a default test thread has -- cargo's harness threads get
-    /// roughly 2MiB, and the limit is calibrated against the much larger
-    /// stack `omgc` runs its real work on. So these cases run on an
-    /// explicitly sized thread, the same mitigation `omgc::main` uses.
-    ///
-    /// That this is necessary *is* the point of the limit: nesting costs
-    /// stack, the cost is bounded but not small, and the bound is what turns
-    /// the failure into a diagnostic rather than an abort.
-    fn on_a_deep_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-        std::thread::Builder::new()
-            .stack_size(64 * 1024 * 1024)
-            .spawn(f)
-            .expect("spawn test thread")
-            .join()
-            .expect("test thread panicked")
-    }
-
-    fn nested_parens(depth: usize) -> String {
-        format!("f() => i32 {{ x := {}1{}; x }}", "(".repeat(depth), ")".repeat(depth))
-    }
-
-    fn nested_pointers(depth: usize) -> String {
-        format!("f(p: {}i32) => void {{ }}", "*[?]".repeat(depth))
-    }
-
-    fn nesting_errors(source: &str) -> usize {
-        match SourceModule::parse(source) {
-            Ok(_) => 0,
-            Err(errors) => errors
-                .iter()
-                .filter(|e| matches!(e.kind, ParseErrorKind::NestingTooDeep { .. }))
-                .count(),
+    /// A fully-parenthesized rendering of an expression's operator tree --
+    /// the shape assertion below is unreadable written as nested `matches!`.
+    fn shape(expr: &Expression) -> String {
+        match expr {
+            Expression::BinaryOp(b) => format!(
+                "({} {:?} {})",
+                shape(&b.left.expression),
+                b.op,
+                shape(&b.right.expression)
+            ),
+            Expression::Path(p) => p.path.head.as_ref().to_string(),
+            other => format!("{other:?}"),
         }
     }
 
-    /// Just inside the limit still parses -- the guard must not take away
-    /// headroom that real (or generated) programs already had.
-    #[test]
-    fn nesting_just_inside_the_limit_is_accepted() {
-        // Two levels of slack: the function body's own block and the walrus
-        // value each consume one before the parentheses start.
-        let source = nested_parens(MAX_NESTING_DEPTH - 2);
-        assert!(on_a_deep_stack(move || SourceModule::parse(&source).is_ok()));
+    fn bound_shape(value: &str) -> String {
+        let stmts = body_statements(&format!("f() => void {{ v := {value}; }}"));
+        let Statement::Walrus(w) = &stmts[0] else {
+            panic!("expected a walrus statement")
+        };
+        shape(&w.value.expression)
     }
 
-    /// ... and past it, a diagnostic instead of a stack overflow. Before this
-    /// guard the process aborted with `fatal runtime error: stack overflow`:
-    /// no file, no line, no span.
+    /// The table-driven tier walk (`BINARY_TIERS`) must produce exactly the
+    /// grouping the six hand-written tier functions did. One expression
+    /// exercises every tier boundary at once, loosest to tightest.
     #[test]
-    fn nesting_past_the_limit_is_a_diagnostic() {
-        let source = nested_parens(MAX_NESTING_DEPTH + 8);
-        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    fn binary_tiers_group_loosest_to_tightest() {
+        assert_eq!(
+            bound_shape("a | b ^ c & d << e + f * g"),
+            "(a BitOr (b BitXor (c BitAnd (d Shl (e Add (f Mul g))))))"
+        );
     }
 
-    /// Types recurse entirely within `parse_type` (`*[?]*[?]T` never reaches
-    /// expression parsing), so they need the guard independently -- one
-    /// shared counter, two call sites.
+    /// The C footgun Omega deliberately avoids: comparison is *looser* than
+    /// the bitwise operators, so this is `(a & b) == c`, not `a & (b == c)`.
     #[test]
-    fn deeply_nested_types_are_bounded_too() {
-        let source = nested_pointers(MAX_NESTING_DEPTH + 8);
-        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    fn comparison_is_looser_than_the_bitwise_tiers() {
+        assert_eq!(bound_shape("a & b == c"), "((a BitAnd b) Eq c)");
     }
 
-    /// Reported once per module, not once per recovery attempt: block-level
-    /// error recovery re-enters the grammar after each refusal, so without
-    /// the latch every following statement reports the same overflow again.
+    /// Every tier is left-associative, which the shared walk must not have
+    /// turned into right-association.
     #[test]
-    fn the_nesting_limit_is_reported_once() {
-        let deep = "(".repeat(MAX_NESTING_DEPTH + 8) + "1" + &")".repeat(MAX_NESTING_DEPTH + 8);
-        let source = format!("f() => i32 {{ a := {deep}; b := {deep}; c := {deep}; 0 }}");
-        assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
+    fn binary_tiers_are_left_associative() {
+        assert_eq!(bound_shape("a - b - c"), "((a Sub b) Sub c)");
     }
 
-    /// The property the original stack-overflow diagnosis got wrong: block
-    /// parsing is a `loop`, so a long *sequence* of statements costs no stack
-    /// at all and must never trip a depth limit. This runs on the ordinary
-    /// test stack deliberately -- 20k statements need no headroom whatsoever.
+    /// `comp`/`reveal` commit only when an operand follows -- and a cast is
+    /// an operand. Without the `<` case, `comp <i32>5` reads as the
+    /// comparison chain `comp < i32 > 5`.
     #[test]
-    fn a_long_statement_sequence_is_not_nesting() {
-        let body = "acc = acc + 1;\n".repeat(20_000);
-        let source = format!("f() => i32 {{ mut acc := 0;\n{body}acc }}");
-        assert!(SourceModule::parse(&source).is_ok());
+    fn comp_and_reveal_accept_a_cast_operand() {
+        for word in ["comp", "reveal"] {
+            let stmts = body_statements(&format!("f() => void {{ v := {word} <i32>5; }}"));
+            let Statement::Walrus(w) = &stmts[0] else {
+                panic!("expected a walrus statement")
+            };
+            let inner = match &w.value.expression {
+                Expression::Comp(c) => &c.base.expression,
+                Expression::Reveal(r) => &r.base.expression,
+                other => panic!("`{word} <i32>5` must stay a prefix operator, got {other:?}"),
+            };
+            assert!(
+                matches!(inner, Expression::Cast(_)),
+                "`{word}`'s operand must be the cast"
+            );
+        }
     }
 }
