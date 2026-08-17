@@ -56,6 +56,21 @@ pub struct MirExternDeclaration {
     pub r#type: ResolvedType,
     /// See `CheckedExternDeclaration::mangling`'s doc comment.
     pub mangling: ManglingMode,
+    /// The final linker symbol -- decided once, at lowering (see
+    /// `crate::mangle`'s doc comment), so every backend links against the
+    /// identical name with no chance of drifting apart.
+    pub symbol: String,
+}
+
+/// A function's final linker linkage, decided during lowering: `Weak` for
+/// anything a second compilation can independently regenerate under the
+/// identical symbol (a generic instantiation, a monomorphized conform
+/// method -- the linker folds duplicate weak definitions silently),
+/// `Export` (strong) for everything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirLinkage {
+    Export,
+    Weak,
 }
 
 /// See `CheckedFunctionDef`'s doc comment -- every field here means exactly
@@ -75,6 +90,14 @@ pub struct MirFunctionDef {
     pub mangling: ManglingMode,
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
+    /// The final linker symbol -- decided once, at lowering, so every
+    /// backend declares the identical name (see `crate::mangle` and
+    /// `lower`). The `mangling`/`conformance_owner`/`primitive_target`
+    /// fields above are the *inputs* to that decision; this is its result.
+    pub symbol: String,
+    /// See `MirLinkage` -- the linkage half of the same once-only
+    /// decision.
+    pub linkage: MirLinkage,
     pub body: MirBody,
 }
 

@@ -3,216 +3,70 @@
 //! regardless of import direction.
 
 use super::Codegen;
-use crate::mangle;
 use cranelift_module::{DataDescription, Linkage, Module};
-use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::layout;
-use omega_analyzer::resolved_type::ResolvedType;
-use omega_mir::MirItem;
+use omega_mir::{MirItem, MirLinkage};
 use omega_parser::prelude::Ident;
 
-/// `Linkage::Export` (strong) for an ordinary item, `Linkage::Preemptible`
-/// (weak) for a generic instantiation -- `Preemptible` maps to a genuine
-/// weak ELF/Mach-O/COFF symbol (`cranelift-object`'s `translate_linkage`,
-/// `let weak = linkage == Linkage::Preemptible`), empirically confirmed to
-/// let a linker silently fold multiple independently-compiled definitions
-/// of the *same* symbol name into one, rather than erroring on "multiple
-/// definition" the way two strong symbols with the same name always
-/// would. Every separate `omgc` invocation that instantiates e.g.
-/// `CustomStruct<i32>` still fully regenerates its own copy locally
-/// (nothing here skips that -- there is no cross-process build cache),
-/// exactly like Rust/C++ generics: the deduplication happens once, at
-/// final link time, not at compile time. This is only sound because a
-/// generic instantiation's mangled symbol is a pure function of
-/// `(module_path, name, type_args)` -- two independent compilations of
-/// the exact same instantiation are therefore guaranteed to produce
-/// byte-identical bodies under the identical name, which is the actual
-/// precondition weak-symbol folding relies on (the linker trusts the
-/// name, it doesn't diff the bytes). An ordinary, non-generic symbol
+/// `MirLinkage`'s Cranelift counterpart -- the one remaining mapping from
+/// a MIR-carried fact to a backend-native value. `Preemptible` maps to a
+/// genuine weak ELF/Mach-O/COFF symbol (`cranelift-object`'s
+/// `translate_linkage`, `let weak = linkage == Linkage::Preemptible`),
+/// empirically confirmed to let a linker silently fold multiple
+/// independently-compiled definitions of the *same* symbol name into one,
+/// rather than erroring on "multiple definition" the way two strong
+/// symbols with the same name always would. Every separate `omgc`
+/// invocation that instantiates e.g. `CustomStruct<i32>` still fully
+/// regenerates its own copy locally (nothing here skips that -- there is
+/// no cross-process build cache), exactly like Rust/C++ generics: the
+/// deduplication happens once, at final link time, not at compile time.
+/// This is only sound because a generic instantiation's mangled symbol is
+/// a pure function of `(module_path, name, type_args)` -- two independent
+/// compilations of the exact same instantiation are therefore guaranteed
+/// to produce byte-identical bodies under the identical name, which is the
+/// actual precondition weak-symbol folding relies on (the linker trusts
+/// the name, it doesn't diff the bytes). An ordinary, non-generic symbol
 /// keeps strong linkage unconditionally -- two *different* object files
 /// defining the same non-generic symbol is always a genuine user error,
 /// and should still be a hard link error, not silently tolerated.
-fn linkage_for(type_args: &[ResolvedType]) -> Linkage {
-    if type_args.is_empty() {
-        Linkage::Export
-    } else {
-        Linkage::Preemptible
+fn cranelift_linkage(linkage: MirLinkage) -> Linkage {
+    match linkage {
+        MirLinkage::Export => Linkage::Export,
+        MirLinkage::Weak => Linkage::Preemptible,
     }
 }
 
 impl Codegen {
     /// Declares every function/method/extern in one item -- pass 1 of 2
     /// (see `update_all`).
-    fn declare_item(&mut self, item: &MirItem, path: &[Ident], entry: &[Ident]) {
+    fn declare_item(&mut self, item: &MirItem, path: &[Ident]) {
         match item {
             // Externs have no body to split across two passes -- fully
             // handled here, in one shot.
             MirItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
             MirItem::FunctionDefinition(f) => {
-                // A member function can never reach `Disabled` here --
-                // `omega_analyzer::annotations::resolve` hard-rejects
-                // `@mangling(disabled)` on a method (and on a generic
-                // function) before a `CheckedModule` (and therefore the
-                // `MirModule` lowered from it) can exist at all, so only a
-                // top-level, non-generic function ever gets here with
-                // `Disabled`.
-                //
-                // The program's literal entry point (`main`, in the entry
-                // module) keeps the bare, unmangled symbol the OS/linker
-                // looks for -- checked here, before a `Symbol` is even
-                // built, rather than inside `mangle::free_function_symbol`,
-                // which only ever needs to know how to name a real symbol.
-                // `main` is never itself generic, so `linkage_for` already
-                // gives it `Export`, same as today, with no special case
-                // needed beyond the name.
-                // `primitive_target` -- `Some` for a method declared in a
-                // `primitive Target { ... }` block --
-                // mangles like a struct/enum/union method (owned, via
-                // `method_symbol`) rather than an ordinary free function:
-                // the target's own `Display` stands in for the owner name a
-                // primitive doesn't otherwise have, avoiding a collision
-                // with an unrelated, same-named, same-`type_args`-shaped
-                // free function elsewhere in the same module.
-                let mangled = match (&f.mangling, &f.conformance_owner, &f.primitive_target) {
-                    (ManglingMode::Forced(name), _, _) => name.clone(),
-                    (
-                        ManglingMode::Glued {
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                        },
-                        _,
-                        _,
-                    ) => mangle::glued_symbol(
-                        spec_module_path,
-                        spec_name,
-                        function_name,
-                        &f.fn_type(),
-                    ),
-                    (ManglingMode::Disabled, _, _) => f.name.as_ref().to_string(),
-                    (ManglingMode::Enabled, _, _) if path == entry && f.name.as_ref() == "main" => {
-                        "main".to_string()
-                    }
-                    (ManglingMode::Enabled, Some(owner), _) => {
-                        mangle::encode(&mangle::conformance_method_symbol(
-                            &owner.target,
-                            &owner.spec_name,
-                            &owner.spec_args,
-                            &f.name,
-                            &f.fn_type(),
-                        ))
-                    }
-                    (ManglingMode::Enabled, None, Some(target)) => mangle::encode(
-                        &mangle::primitive_method_symbol(target, &f.name, &f.fn_type()),
-                    ),
-                    (ManglingMode::Enabled, None, None) => mangle::encode(
-                        &mangle::free_function_symbol(path, &f.name, &f.type_args, &f.fn_type()),
-                    ),
-                };
-                // A conform method's genericity lives in its *target*
-                // (`Self`), never in its own parameter list, so `f.type_args`
-                // is empty for `conform<W> BufWriter<W> to Write` at
-                // `W = Stdout` just as it is for `conform Stdout to Write`.
-                // Asking `linkage_for` alone would make both strong, and the
-                // first is emitted independently by every package that uses
-                // it -- two packages both calling `println$` then failed to
-                // link with a `multiple definition` of
-                // `BufWriter<Stdout>::Write::write`. `monomorphized` is the
-                // conform counterpart of a non-empty `type_args`; see
-                // `ConformanceOwner::monomorphized`.
-                let linkage = match &f.conformance_owner {
-                    Some(owner) if owner.monomorphized => Linkage::Preemptible,
-                    _ => linkage_for(&f.type_args),
-                };
-                self.declare_function_def(f, mangled, linkage);
+                // The symbol and linkage were decided once, at lowering
+                // (`MirFunctionDef::symbol`/`linkage`) -- the mangling
+                // dispatch that used to live here moved to
+                // `omega_mir::lower` verbatim, so a second backend can
+                // never disagree with this one about what a function is
+                // called or how strongly it's defined.
+                self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
             }
             MirItem::Struct(s) => {
                 for f in &s.functions {
-                    let mangled = match &f.mangling {
-                        // `@mangling(disabled)` is rejected on methods at
-                        // analysis time (`ManglingDisabledOnMethod`), but
-                        // `@mangling(force = "...")` is deliberately allowed
-                        // there -- see `ManglingMode::Forced`'s doc comment.
-                        ManglingMode::Forced(name) => name.clone(),
-                        ManglingMode::Glued {
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                        } => mangle::glued_symbol(
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                            &f.fn_type(),
-                        ),
-                        ManglingMode::Disabled => unreachable!(
-                            "'@mangling(disabled)' is rejected on methods at analysis time"
-                        ),
-                        ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
-                            path,
-                            &s.name,
-                            &s.type_args,
-                            &f.name,
-                            &f.fn_type(),
-                        )),
-                    };
-                    self.declare_function_def(f, mangled, linkage_for(&s.type_args));
+                    self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
                 }
             }
             MirItem::Enum(e) => {
                 for f in &e.functions {
-                    let mangled = match &f.mangling {
-                        ManglingMode::Forced(name) => name.clone(),
-                        ManglingMode::Glued {
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                        } => mangle::glued_symbol(
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                            &f.fn_type(),
-                        ),
-                        ManglingMode::Disabled => unreachable!(
-                            "'@mangling(disabled)' is rejected on methods at analysis time"
-                        ),
-                        ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
-                            path,
-                            &e.name,
-                            &e.type_args,
-                            &f.name,
-                            &f.fn_type(),
-                        )),
-                    };
-                    self.declare_function_def(f, mangled, linkage_for(&e.type_args));
+                    self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
                 }
             }
             MirItem::Union(u) => {
                 for f in &u.functions {
-                    let mangled = match &f.mangling {
-                        ManglingMode::Forced(name) => name.clone(),
-                        ManglingMode::Glued {
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                        } => mangle::glued_symbol(
-                            spec_module_path,
-                            spec_name,
-                            function_name,
-                            &f.fn_type(),
-                        ),
-                        ManglingMode::Disabled => unreachable!(
-                            "'@mangling(disabled)' is rejected on methods at analysis time"
-                        ),
-                        ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
-                            path,
-                            &u.name,
-                            &u.type_args,
-                            &f.name,
-                            &f.fn_type(),
-                        )),
-                    };
-                    self.declare_function_def(f, mangled, linkage_for(&u.type_args));
+                    self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
                 }
             }
             // A top-level global (`ident: Type;`, `Storage::Global`) --
@@ -237,7 +91,7 @@ impl Codegen {
             // not by object-file memory protection, exactly like a local's
             // stack slot is never protected either.
             MirItem::Declaration(decl) => {
-                let symbol = mangle::encode(&mangle::global_symbol(path, &decl.ident));
+                let symbol = omega_mir::mangle::global_symbol_string(path, &decl.ident);
                 let total = layout::total_bytes(&decl.r#type, self.pointer_bytes());
                 let data_id = self
                     .module
@@ -297,12 +151,11 @@ impl Codegen {
     pub(super) fn update_all(
         &mut self,
         modules: Vec<(Vec<Ident>, omega_mir::MirModule)>,
-        entry: &[Ident],
         extern_functions: Vec<ExternFunctionRef>,
     ) {
         for (path, module) in &modules {
             for item in &module.items {
-                self.declare_item(item, path, entry);
+                self.declare_item(item, path);
             }
         }
         for extern_fn in &extern_functions {

@@ -806,10 +806,11 @@ impl<'r> Analyzer<'r> {
                     root: CheckedPlaceRoot::Expr(Box::new(CheckedExprNode {
                         id: node_id,
                         span,
-                        r#type,
+                        r#type: r#type.clone(),
                         kind: CheckedExpr::Const(value),
                     })),
                     projections: vec![],
+                    r#type,
                 }
             } else {
                 // Inline (`SizedArray`) storage -- needs a real address to
@@ -832,8 +833,9 @@ impl<'r> Analyzer<'r> {
                         kind: CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
                     })),
                     projections: vec![CheckedProjection::Deref {
-                        r#type: base_type_snapshot,
+                        r#type: base_type_snapshot.clone(),
                     }],
+                    r#type: base_type_snapshot,
                 }
             };
         }
@@ -1044,7 +1046,11 @@ impl<'r> Analyzer<'r> {
             };
         }
 
-        Some((CheckedPlace { root, projections }, current_type, mutable))
+        Some((
+            CheckedPlace { root, projections, r#type: current_type.clone() },
+            current_type,
+            mutable,
+        ))
     }
 
     /// What a place starts from. Only a local binding can be writable at the

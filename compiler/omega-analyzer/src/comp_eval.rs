@@ -16,6 +16,7 @@
 //! function's already-checked body can be handed to [`eval`], whether or
 //! not it was ever written with `comp` in mind -- see [`CompFunctionResolver`].
 
+use crate::target::Target;
 use crate::checked::{
     CastKind, CheckedBinaryOp, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFor,
     CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace,
@@ -203,6 +204,10 @@ struct Frame {
 
 struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
     resolver: &'r mut R,
+    /// The compilation target -- `sizeof` inside a `comp` evaluation
+    /// answers the *real* target's pointer width rather than a hardcoded
+    /// one (see the `CheckedExpr::Sizeof` arm).
+    target: Target,
     fuel: u32,
     frames: Vec<Frame>,
     /// Call-site spans, outermost first -- pushed on entry to
@@ -225,9 +230,11 @@ struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
 pub fn eval<R: CompFunctionResolver + ?Sized>(
     resolver: &mut R,
     expr: &CheckedExprNode,
+    target: Target,
 ) -> Result<ConstValue, CompError> {
     let mut interp = Interpreter {
         resolver,
+        target,
         fuel: FUEL_LIMIT,
         frames: vec![Frame::default()],
         call_trace: vec![],
@@ -410,13 +417,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::Slice(slice) => self.eval_slice(slice, node.span),
             CheckedExpr::Cast(cast) => self.eval_cast(cast, node.span),
-            // Pointer-width-independent: this compiler targets exactly one
-            // pointer width today (see `ResolvedType::numeric_kind`'s
-            // identical `ISize`/`USize` hardcoding), so `sizeof` inside a
-            // `comp` evaluation uses that same fixed width rather than
-            // threading a real target through the interpreter.
+            // `sizeof` answers the *real* target: `sizeof<usize>` is 4 on a
+            // 32-bit target, 8 on a 64-bit one -- the same width every
+            // other width-sensitive question resolves against (see
+            // `ResolvedType::numeric_kind`).
             CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
-                crate::layout::total_bytes(target, 8) as u64,
+                crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
             ))),
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
@@ -735,7 +741,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                         CompErrorKind::Unsupported("a numeric cast of a non-numeric comp value"),
                     ));
                 };
-                let Some(target) = cast.target_type.numeric_kind() else {
+                let Some(target) = cast.target_type.numeric_kind(self.target.pointer_bits()) else {
                     return Err(self.err(
                         span,
                         CompErrorKind::Unsupported("a cast to a non-numeric type"),
@@ -868,6 +874,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     ..
                 },
             projections,
+            r#type: _,
         }) = &call.callee.kind
         else {
             return Err(self.err(span, CompErrorKind::Unsupported("an indirect call")));
@@ -1431,9 +1438,10 @@ mod tests {
             root: CheckedPlaceRoot::Variable {
                 decl_id: decl,
                 storage: Storage::Local,
-                r#type,
+                r#type: r#type.clone(),
             },
             projections: vec![],
+            r#type,
         }
     }
 
@@ -1457,7 +1465,7 @@ mod tests {
             }),
             ResolvedType::I32,
         );
-        let value = eval(&mut NoFunctions, &expr).unwrap();
+        let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
         assert_eq!(value, ConstValue::Number(NumberValue::Signed(30)));
     }
 
@@ -1471,7 +1479,7 @@ mod tests {
             }),
             ResolvedType::I32,
         );
-        let err = eval(&mut NoFunctions, &expr).unwrap_err();
+        let err = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap_err();
         assert!(matches!(err.kind, CompErrorKind::Unsupported(_)));
     }
 
@@ -1493,7 +1501,7 @@ mod tests {
             }),
             ResolvedType::I32,
         );
-        let value = eval(&mut NoFunctions, &expr).unwrap();
+        let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
         assert_eq!(value, ConstValue::Number(NumberValue::Signed(2)));
     }
 
@@ -1513,7 +1521,7 @@ mod tests {
             ],
         };
         let expr = node(CheckedExpr::StructLiteral(lit), struct_ty);
-        let value = eval(&mut NoFunctions, &expr).unwrap();
+        let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
         assert_eq!(
             value,
             ConstValue::Struct(vec![
@@ -1611,7 +1619,7 @@ mod tests {
         };
         let expr = node(CheckedExpr::Codeblock(outer), ResolvedType::I32);
 
-        let value = eval(&mut NoFunctions, &expr).unwrap();
+        let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
         assert_eq!(
             value,
             ConstValue::Number(NumberValue::Signed(0 + 1 + 2 + 3 + 4))
@@ -1637,7 +1645,7 @@ mod tests {
         };
         let expr = node(CheckedExpr::Codeblock(outer), ResolvedType::I32);
 
-        let err = eval(&mut NoFunctions, &expr).unwrap_err();
+        let err = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap_err();
         assert!(matches!(err.kind, CompErrorKind::FuelExhausted));
     }
 
@@ -1665,6 +1673,12 @@ mod tests {
                     }),
                 },
                 projections: vec![],
+                r#type: ResolvedType::Function(crate::resolved_type::ResolvedFunctionType {
+                    params: vec![],
+                    return_type: Box::new(ResolvedType::Void),
+                    is_variadic: false,
+                    self_mode: None,
+                }),
             }),
             ResolvedType::Function(crate::resolved_type::ResolvedFunctionType {
                 params: vec![],
@@ -1687,7 +1701,7 @@ mod tests {
             ResolvedType::Void,
         );
 
-        let err = eval(&mut AllExtern, &call).unwrap_err();
+        let err = eval(&mut AllExtern, &call, Target::DEFAULT).unwrap_err();
         assert!(matches!(err.kind, CompErrorKind::ExternCall));
     }
 
@@ -1773,6 +1787,7 @@ mod tests {
                     r#type: ResolvedType::Function(fn_type.clone()),
                 },
                 projections: vec![],
+                r#type: ResolvedType::Function(fn_type.clone()),
             }),
             ResolvedType::Function(fn_type.clone()),
         );
@@ -1786,7 +1801,7 @@ mod tests {
         );
 
         let mut resolver = OneFunction(add_def);
-        let value = eval(&mut resolver, &call).unwrap();
+        let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
         assert_eq!(value, ConstValue::Number(NumberValue::Signed(30)));
     }
 }

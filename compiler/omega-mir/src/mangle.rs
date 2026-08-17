@@ -1,8 +1,10 @@
-//! Builds `omega_mangle::Symbol`s from whatever `Codegen` already has on
-//! hand (a `CheckedFunctionDef`/`CheckedStructDef`/... or an
-//! `ExternFunctionRef`) and hands them to `omega_mangle::encode`. This is
-//! the *only* place in the compiler that constructs an `omega_mangle`
-//! type -- `omega_mangle` itself knows nothing about `ResolvedType`.
+//! Builds `omega_mangle::Symbol`s from resolved analyzer types and hands
+//! them to `omega_mangle::encode` -- moved out of `omega-codegen` so the
+//! MIR lowering can decide every symbol *once*, at lowering time, and carry
+//! the final string downstream (see `MirFunctionDef::symbol`); both
+//! backends then read it instead of re-deriving it. The *encoding* itself
+//! (`omega_mangle`) is untouched; only the dispatch that builds a `Symbol`
+//! lives here.
 //!
 //! `self` never needs special handling here: `HirFunctionDef::lower`
 //! already prepends the self parameter to `params` before anything else
@@ -12,6 +14,8 @@
 //! `fn_type.params` uniformly, in order, already spells out self's mode
 //! exactly like any other parameter.
 
+use omega_analyzer::annotations::ManglingMode;
+use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mangle::{ManglePath, MangleType, Namespace, Symbol};
 use omega_parser::prelude::Ident;
@@ -138,7 +142,7 @@ fn build_signature(fn_type: &ResolvedFunctionType) -> (Vec<MangleType>, MangleTy
 /// its bare, unmangled OS/linker symbol) -- that's a policy decision
 /// about *which* symbol gets built at all, not something this module,
 /// which only ever builds real `Symbol`s, needs to know about.
-pub(crate) fn free_function_symbol(
+pub fn free_function_symbol(
     module_path: &[Ident],
     name: &Ident,
     type_args: &[ResolvedType],
@@ -169,7 +173,7 @@ pub(crate) fn free_function_symbol(
 /// own leaf segment uses (a global and a function can never collide on a
 /// bare name within one module regardless, since nothing here ever indexes
 /// two different *kinds* of item under the same name in the first place).
-pub(crate) fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
+pub fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
     let path = ManglePath::Nested(
         Box::new(mangle_module_path(module_path)),
         Namespace::Value,
@@ -187,7 +191,7 @@ pub(crate) fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
 /// root (Omega methods are declared directly on the type; see the
 /// crate's design plan for why that means no `M`/`X`/`Y`-style
 /// productions are needed at all, unlike RFC 2603).
-pub(crate) fn method_symbol(
+pub fn method_symbol(
     module_path: &[Ident],
     owner_name: &Ident,
     owner_type_args: &[ResolvedType],
@@ -215,7 +219,7 @@ pub(crate) fn method_symbol(
 /// against (see `omega_analyzer::annotations::ManglingMode::Glued`'s doc
 /// comment). Gaps are never generic, so `owner_type_args` is always
 /// empty here.
-pub(crate) fn glued_symbol(
+pub fn glued_symbol(
     spec_module_path: &[Ident],
     spec_name: &Ident,
     function_name: &Ident,
@@ -246,7 +250,7 @@ pub(crate) fn glued_symbol(
 /// (with a space) `*mut [?]u8` straight into symbol names, leaving the
 /// `[A-Za-z0-9_]` set the rest of the scheme deliberately stays inside — see
 /// `vtable_symbol`'s own note on RFC 2603's vendor-suffix production.
-pub(crate) fn primitive_method_symbol(
+pub fn primitive_method_symbol(
     target: &ResolvedType,
     method_name: &Ident,
     fn_type: &ResolvedFunctionType,
@@ -274,7 +278,7 @@ fn target_owner_path(target: &ResolvedType) -> ManglePath {
     }
 }
 
-pub(crate) fn conformance_method_symbol(
+pub fn conformance_method_symbol(
     target: &ResolvedType,
     spec_name: &Ident,
     spec_args: &[ResolvedType],
@@ -333,7 +337,7 @@ pub(crate) fn conformance_method_symbol(
 /// `concrete` is always a `Struct`/`Enum`/`Union` (a spec-object
 /// coercion's pointee can never be anything else -- see
 /// `Codegen::vtable_for`'s identical assumption).
-pub(crate) fn vtable_symbol(
+pub fn vtable_symbol(
     concrete: &ResolvedType,
     spec_name: &Ident,
     spec_type_args: &[ResolvedType],
@@ -364,6 +368,114 @@ pub(crate) fn vtable_symbol(
     }
 }
 
-pub(crate) fn encode(symbol: &Symbol) -> String {
+pub fn encode(symbol: &Symbol) -> String {
     omega_mangle::encode(symbol)
+}
+
+/// An anonymous data object's symbol -- a pure function of its own bytes,
+/// not an arbitrary per-process counter: two identical constants, in the
+/// same compilation or two separate ones, always name themselves
+/// identically, the same "stable, content-derived name" property real
+/// functions/methods get from the mangling scheme. Shared by both
+/// backends (`cranelift::expr` and `llvm::expr`) so two packages --
+/// compiled by *different* backends -- that each embed the same string
+/// literal emit the same weak symbol and the linker folds them into one
+/// copy. Rapidhash V3 (avalanche-enabled) is a deliberately
+/// non-cryptographic choice: nothing here is adversarial (the input is
+/// always the compiler's own already-resolved constant data), so all
+/// that's needed is a fast hash with a low *accidental* collision rate at
+/// realistic program sizes, not preimage/collision resistance against a
+/// deliberate attacker.
+pub fn data_symbol(bytes: &[u8]) -> String {
+    format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
+}
+
+/// `encode(&global_symbol(module_path, name))` -- the one-shot spelling
+/// both backends' global declaration sites need, so neither re-derives the
+/// decision.
+pub fn global_symbol_string(module_path: &[Ident], name: &Ident) -> String {
+    encode(&global_symbol(module_path, name))
+}
+
+/// The final linker symbol for an *extern-owned* function/method reference
+/// -- the mirror of the local-function dispatch in `lower`, for references
+/// whose definition another `omgc` invocation produced. `extern_fn.mangling`
+/// (resolved by the *declaring* compilation, at signature time) decides
+/// which symbol-shape branch applies, mirroring the local dispatch arm for
+/// arm: whatever that other invocation actually mangled this declaration as
+/// is exactly what gets linked against here, never assumed. Trusts that the
+/// other invocation mangles its own definition identically -- see
+/// `CompiledProgram::extern_functions`'s doc comment for why that's a safe
+/// assumption. Moved out of the Cranelift backend so the LLVM backend links
+/// against the identical name with no chance of drifting apart.
+pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
+    use omega_analyzer::checked::ExternFunctionKind;
+    match (&extern_fn.mangling, &extern_fn.kind) {
+        (ManglingMode::Forced(name), _) => name.clone(),
+        (
+            ManglingMode::Glued {
+                spec_module_path,
+                spec_name,
+                function_name,
+            },
+            _,
+        ) => glued_symbol(
+            spec_module_path,
+            spec_name,
+            function_name,
+            &extern_fn.fn_type,
+        ),
+        (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
+        // `@mangling(disabled)` is rejected on methods at analysis time --
+        // an extern method's own declaration went through the exact same
+        // check, so this combination can't actually occur.
+        (
+            ManglingMode::Disabled,
+            ExternFunctionKind::Method { .. }
+            | ExternFunctionKind::Primitive { .. }
+            | ExternFunctionKind::Conform { .. },
+        ) => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
+        // `collect_extern_functions` only ever surfaces non-generic extern
+        // items (a generic reached through `--extern` is always fully
+        // recompiled locally instead), so there's no owner/free
+        // generic-args data to pass here -- always `&[]`.
+        (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
+            encode(&free_function_symbol(&extern_fn.module_path, name, &[], &extern_fn.fn_type))
+        }
+        (
+            ManglingMode::Enabled,
+            ExternFunctionKind::Method {
+                type_name,
+                method_name,
+            },
+        ) => encode(&method_symbol(
+            &extern_fn.module_path,
+            type_name,
+            &[],
+            method_name,
+            &extern_fn.fn_type,
+        )),
+        (
+            ManglingMode::Enabled,
+            ExternFunctionKind::Primitive {
+                target,
+                method_name,
+            },
+        ) => encode(&primitive_method_symbol(target, method_name, &extern_fn.fn_type)),
+        (
+            ManglingMode::Enabled,
+            ExternFunctionKind::Conform {
+                target,
+                spec_name,
+                spec_args,
+                method_name,
+            },
+        ) => encode(&conformance_method_symbol(
+            target,
+            spec_name,
+            spec_args,
+            method_name,
+            &extern_fn.fn_type,
+        )),
+    }
 }

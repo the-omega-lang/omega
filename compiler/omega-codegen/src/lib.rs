@@ -1,26 +1,32 @@
 //! Turns a whole compiled program (one [`omega_mir::MirModule`] per source
 //! module, already fully monomorphized -- see `omega_mir::lower_program`)
 //! into final output, through whichever backend [`BackendKind`] selects.
-//! Only one backend exists today (Cranelift, see the `cranelift` module),
-//! gated behind this crate's own `cranelift` Cargo feature so a future
-//! second backend can be added -- its own module, its own feature, one
-//! more match arm in `generate` -- without the first one paying for it.
+//! Two backends exist (Cranelift, the fast development backend, and LLVM,
+//! for target breadth -- see the `cranelift`/`llvm` modules), each gated
+//! behind its own Cargo feature so a backend nobody compiled in isn't even
+//! a choice the type system offers.
 //!
 //! Everything backend-agnostic lives at the crate root or in a shared
-//! module: [`Target`] (a compilation target, in Omega's own vocabulary --
-//! see `target`'s own doc comment) and `mangle` (linker symbol names).
-//! Struct/enum/union byte layout (`omega_analyzer::layout`) lives one
-//! crate down, in `omega-analyzer` -- originally lived here, moved so a
-//! `comp` evaluation's own `sizeof` support could call straight into the
-//! identical layout math this backend uses, rather than maintaining a
-//! second copy that could drift out of agreement with it.
+//! module: [`Target`] (a compilation target, in Omega's own vocabulary),
+//! the shared ABI (`abi.rs`), and the shared pre-flight rejection pass
+//! (`preflight.rs`). Linker symbols are decided even earlier -- at MIR
+//! lowering (`omega_mir::MirFunctionDef::symbol`/`linkage`), so two
+//! backends can never disagree about what a function is called or how
+//! strongly it's defined, and a `core.o` built with one backend always
+//! links against a `main.o` built with the other (which `justfile`'s
+//! recipes do as a matter of course). Struct/enum/union byte layout
+//! (`omega_analyzer::layout`) lives one crate down, in `omega-analyzer`.
 
+mod abi;
 #[cfg(feature = "cranelift")]
 mod cranelift;
-mod mangle;
-mod target;
+#[cfg(feature = "llvm")]
+mod llvm;
+mod preflight;
 
-pub use target::{Arch, Os, Target, TargetParseError};
+pub use abi::{AbiReturn, AbiSignature, variadic_promotion};
+
+use omega_analyzer::Target;
 
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_mir::MirModule;
@@ -83,12 +89,12 @@ pub struct CodegenRequest {
 /// Which backend [`generate`] should drive -- one variant per Cargo
 /// feature this crate enables (see `Cargo.toml`'s `[features]`), so a
 /// backend nobody compiled in isn't even a choice the type system offers.
-/// Only `Cranelift` exists today; adding a second backend is: its own
-/// module + feature + one more arm each in `parse`/`Display`/`generate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     #[cfg(feature = "cranelift")]
     Cranelift,
+    #[cfg(feature = "llvm")]
+    Llvm,
 }
 
 impl BackendKind {
@@ -98,6 +104,8 @@ impl BackendKind {
     pub const ALL: &'static [BackendKind] = &[
         #[cfg(feature = "cranelift")]
         BackendKind::Cranelift,
+        #[cfg(feature = "llvm")]
+        BackendKind::Llvm,
     ];
 
     pub fn parse(name: &str) -> Result<Self, String> {
@@ -111,6 +119,37 @@ impl BackendKind {
         match self {
             #[cfg(feature = "cranelift")]
             BackendKind::Cranelift => "cranelift",
+            #[cfg(feature = "llvm")]
+            BackendKind::Llvm => "llvm",
+        }
+    }
+
+    /// Whether this backend can produce output for `target`. The full
+    /// answer belongs to the backend itself (Cranelift's ISA list, LLVM's
+    /// registered targets); this is the shared entry point `generate`
+    /// consults *before* any backend work begins, so an unsupported
+    /// combination fails once, in one place, naming both the target and
+    /// the backend -- rather than surfacing as a raw backend-internal
+    /// ISA/target lookup failure.
+    pub fn supports(self, target: Target) -> bool {
+        match self {
+            #[cfg(feature = "cranelift")]
+            BackendKind::Cranelift => cranelift::supports(target),
+            #[cfg(feature = "llvm")]
+            BackendKind::Llvm => llvm::supports(target),
+        }
+    }
+
+    /// The targets this backend can serve, for the unsupported-combination
+    /// diagnostic.
+    pub fn supported_targets(self) -> &'static str {
+        match self {
+            #[cfg(feature = "cranelift")]
+            BackendKind::Cranelift => "x86_64, aarch64",
+            #[cfg(feature = "llvm")]
+            BackendKind::Llvm => {
+                "x86_64, x86, armv7, thumbv7em, aarch64, riscv32, riscv64"
+            }
         }
     }
 }
@@ -139,8 +178,22 @@ impl Default for BackendKind {
 /// already enforced while building the checked tree these `MirModule`s
 /// were lowered from.
 pub fn generate(backend: BackendKind, request: CodegenRequest) -> Result<EmitOutput, String> {
+    // Checked before any backend work begins: the language's accepted
+    // program set must not depend on `--backend` -- not for targets (below)
+    // and not for the still-unimplemented constructs either (`preflight`).
+    preflight::preflight(&request)?;
+    if !backend.supports(request.target) {
+        return Err(format!(
+            "target '{}' is not supported by the '{}' backend (supported: {})",
+            request.target,
+            backend,
+            backend.supported_targets()
+        ));
+    }
     match backend {
         #[cfg(feature = "cranelift")]
         BackendKind::Cranelift => cranelift::generate(request),
+        #[cfg(feature = "llvm")]
+        BackendKind::Llvm => llvm::generate(request),
     }
 }

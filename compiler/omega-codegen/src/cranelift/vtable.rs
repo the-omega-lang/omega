@@ -2,7 +2,6 @@
 //! vtable_for`'s own doc comment.
 
 use super::Codegen;
-use crate::mangle;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use omega_analyzer::resolved_type::{ResolvedSpecType, ResolvedType};
 use omega_hir::HirId;
@@ -85,7 +84,7 @@ impl Codegen {
         // under the identical symbol name, and are just as safe (and
         // worth) folding into one copy at link time as a generic
         // function/method instantiation is.
-        let symbol = mangle::encode(&mangle::vtable_symbol(
+        let symbol = omega_mir::mangle::encode(&omega_mir::mangle::vtable_symbol(
             concrete,
             &spec.borrow().name,
             spec_type_args,

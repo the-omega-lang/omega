@@ -69,11 +69,13 @@ already knows how to size — struct, enum, primitive, anything. Inside an
 annotation argument specifically (`@layout(pack = sizeof<usize>)`), it's
 deliberately **scoped to primitive types only** and resolved eagerly during
 analysis rather than deferred to codegen — resolving an aggregate type's
-size there would force either threading fallible target-dependent
-resolution through ~25+ codegen call sites, or picking the same hardcoded
-convention `numeric_kind`/`cast_class` already use for primitives. The
-narrower rule was chosen; `sizeof<SomeStruct>` used inside an annotation
-gets an immediate, clear error rather than a deferred one.
+size there would force threading fallible layout resolution (which can hit
+a not-yet-resolved type in the graph) through ~25+ codegen call sites. A
+primitive's size needs no such walk: it follows from the type alone plus
+the target's pointer width, which the analyzer carries (`Target::
+pointer_bytes` — so `sizeof<usize>` is genuinely 4 on a 32-bit target, not
+a fixed 8). The narrower rule was chosen; `sizeof<SomeStruct>` used inside
+an annotation gets an immediate, clear error rather than a deferred one.
 
 ## `@inline`
 

@@ -398,7 +398,7 @@ fn resolve_size_value(
         HirAnnotationValue::IntLiteral(s) => Some(s.parse::<u32>().map_err(|_| format!("'{s}' does not fit a u32"))),
         HirAnnotationValue::Sizeof(ty) => {
             let resolved = analyzer.resolve_type_or_error(node_id, span, ty, false)?;
-            Some(match resolved.primitive_byte_size() {
+            Some(match resolved.primitive_byte_size(analyzer.pointer_bytes()) {
                 Some(n) => Ok(n),
                 None => Err(format!(
                     "'sizeof<{resolved}>' is not supported here -- @layout only supports sizeof of a primitive type"
@@ -448,24 +448,24 @@ pub const LARGE_STRUCT_BY_VALUE_THRESHOLD: u32 = 128;
 /// to flag "this is clearly a large struct" (`LargeStructByValue`'s only
 /// job); the only failure mode this trades away is a false negative right
 /// at the threshold, never a false positive from ignored padding.
-pub fn estimate_type_size(r#type: &ResolvedType) -> u32 {
-    if let Some(n) = r#type.primitive_byte_size() {
+pub fn estimate_type_size(r#type: &ResolvedType, pointer_bytes: u32) -> u32 {
+    if let Some(n) = r#type.primitive_byte_size(pointer_bytes) {
         return n;
     }
     match r#type {
-        ResolvedType::Struct(cell) => cell.borrow().fields.iter().map(|(_, t, _)| estimate_type_size(t)).sum(),
+        ResolvedType::Struct(cell) => cell.borrow().fields.iter().map(|(_, t, _)| estimate_type_size(t, pointer_bytes)).sum(),
         ResolvedType::Union(cell) => {
-            cell.borrow().fields.iter().map(|(_, t, _)| estimate_type_size(t)).max().unwrap_or(0)
+            cell.borrow().fields.iter().map(|(_, t, _)| estimate_type_size(t, pointer_bytes)).max().unwrap_or(0)
         }
         ResolvedType::Enum { cell, .. } => {
             let cell = cell.borrow();
-            let tag = estimate_type_size(&cell.tag_type);
-            let header: u32 = cell.header.iter().map(|(_, t, _)| estimate_type_size(t)).sum();
-            let dynamic: u32 = cell.dynamic_fields.iter().map(|(_, t, _)| estimate_type_size(t)).sum();
+            let tag = estimate_type_size(&cell.tag_type, pointer_bytes);
+            let header: u32 = cell.header.iter().map(|(_, t, _)| estimate_type_size(t, pointer_bytes)).sum();
+            let dynamic: u32 = cell.dynamic_fields.iter().map(|(_, t, _)| estimate_type_size(t, pointer_bytes)).sum();
             let body = cell
                 .variants
                 .iter()
-                .map(|v| v.fields.iter().map(|(_, t, _)| estimate_type_size(t)).sum::<u32>())
+                .map(|v| v.fields.iter().map(|(_, t, _)| estimate_type_size(t, pointer_bytes)).sum::<u32>())
                 .max()
                 .unwrap_or(0);
             tag + header + dynamic + body
@@ -473,7 +473,7 @@ pub fn estimate_type_size(r#type: &ResolvedType) -> u32 {
         // `N` copies of the item type's own size, back to back -- an
         // embedded fixed-size array is inline data, not indirection (see
         // `omega_codegen`'s identical `SizedArray` leaf-flattening).
-        ResolvedType::SizedArray(item, size) => estimate_type_size(item) * size,
+        ResolvedType::SizedArray(item, size) => estimate_type_size(item, pointer_bytes) * size,
         // A fat pointer: a data pointer plus an `i32` length (see
         // `omega_codegen`'s `IntoIRType` for `Slice`/`Str` -- identical
         // leaf shape for both).

@@ -8,12 +8,14 @@ omega-hir = { path = "../omega-hir" }
 omega-analyzer = { path = "../omega-analyzer" }
 omega-mir = { path = "../omega-mir" }
 omega-parser = { path = "../omega-parser" }
-omega-mangle = { path = "../omega-mangle" }
-# `Target`/`Arch`/`Os` (see `src/target.rs`) are shared across every
-# backend and need `target_lexicon::Triple` regardless of which backend
-# (if any) is actually compiled in, so this stays a plain, non-optional
-# dependency -- only its *use* (feeding an ISA lookup) is Cranelift-side.
-target-lexicon = "0.13.5"
+omega-diagnostics = { path = "../omega-diagnostics" }
+# `Target`/`Arch`/`Os` live in `omega-analyzer` (see its `src/target.rs`)
+# and are deliberately free of any backend's target vocabulary, so this is
+# Cranelift's alone: `cranelift::triple_for` is the only thing in the tree
+# that names a `target_lexicon` type, exactly as `llvm::triple_for` is the
+# only thing that names LLVM's. Optional, and pulled in by the `cranelift`
+# feature below.
+target-lexicon = { version = "0.13.5", optional = true }
 
 # Everything below is Cranelift-specific and only pulled in by the
 # `cranelift` feature (see `[features]`) -- a future second backend adds
@@ -28,10 +30,14 @@ cranelift-object = { version = "0.131.1", optional = true }
 # both on via Cargo's additive feature unification, so `Target::Aarch64`
 # (see `target.rs`) is actually buildable, not just structurally present.
 cranelift-codegen = { version = "0.131.1", features = ["x86", "arm64"], optional = true }
-# Only used by the Cranelift backend's anonymous-data-object naming
-# (`cranelift::expr::data_symbol`).
-rapidhash = { version = "4.5.1", default-features = false, optional = true }
+# Everything below is LLVM-specific and only pulled in by the `llvm`
+# feature -- the same self-contained-feature shape the `cranelift` block
+# above establishes. `llvm21-1` matches the container's LLVM 21.1.2
+# (`/usr/lib/llvm21`, discovered via `llvm-config` on PATH), statically
+# linked.
+inkwell = { version = "0.10", features = ["llvm21-1"], optional = true }
 
 [features]
 default = ["cranelift"]
-cranelift = ["dep:cranelift", "dep:cranelift-module", "dep:cranelift-object", "dep:cranelift-codegen", "dep:rapidhash"]
+cranelift = ["dep:cranelift", "dep:cranelift-module", "dep:cranelift-object", "dep:cranelift-codegen", "dep:target-lexicon"]
+llvm = ["dep:inkwell"]

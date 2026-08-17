@@ -7,6 +7,15 @@
 use super::function::FunctionLowerer;
 use crate::body::{MirPlace, MirPlaceRoot, MirProjection};
 use omega_analyzer::checked::{CheckedPlace, CheckedPlaceRoot, CheckedProjection, Storage};
+use omega_analyzer::layout;
+use omega_analyzer::resolved_type::ResolvedType;
+
+/// The access alignment a `MirPlace` carries -- `layout::type_alignment` of
+/// the place's final type, the one sound lower bound everywhere (see
+/// `MirPlace::align`'s doc comment).
+pub(super) fn place_align(r#type: &ResolvedType) -> u32 {
+    layout::type_alignment(r#type)
+}
 
 pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) -> MirPlace {
     let root = match place.root {
@@ -29,7 +38,8 @@ pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) ->
         CheckedPlaceRoot::Expr(e) => MirPlaceRoot::Expr(Box::new(lowerer.lower_expr(*e))),
     };
     let projections = place.projections.into_iter().map(|p| lower_projection(lowerer, p)).collect();
-    MirPlace { root, projections }
+    let align = place_align(&place.r#type);
+    MirPlace { root, projections, r#type: place.r#type, align }
 }
 
 fn lower_projection(lowerer: &mut FunctionLowerer, projection: CheckedProjection) -> MirProjection {

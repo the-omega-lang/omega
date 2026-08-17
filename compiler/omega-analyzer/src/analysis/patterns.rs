@@ -31,6 +31,7 @@ impl<'r> Analyzer<'r> {
             let target = CheckedPlace {
                 root: CheckedPlaceRoot::Variable { decl_id: node_id, storage: Storage::Local, r#type: scrutinee_type.clone() },
                 projections: vec![],
+                r#type: scrutinee_type.clone(),
             };
             let decl = CheckedStmt::Declaration(CheckedDeclaration {
                 id: node_id,
@@ -60,7 +61,7 @@ impl<'r> Analyzer<'r> {
 
         let (arms, else_branch, result_type) = if is_enum_scrutinee {
             self.analyze_enum_match(node_id, span, m, &scrutinee_type, &scrutinee_read, narrow_binding)?
-        } else if scrutinee_type.integer_domain().is_some() {
+        } else if scrutinee_type.integer_domain(self.target.pointer_bits()).is_some() {
             self.analyze_value_match(node_id, span, m, &scrutinee_type, &scrutinee_read)?
         } else {
             self.error(node_id, span, AnalysisErrorKind::UnsupportedMatchScrutinee { r#type: scrutinee_type });
@@ -187,7 +188,11 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: tag_type.clone(),
-            kind: CheckedExpr::Place(CheckedPlace { root: scrutinee_place.root.clone(), projections: tag_projections }),
+            kind: CheckedExpr::Place(CheckedPlace {
+                root: scrutinee_place.root.clone(),
+                projections: tag_projections,
+                r#type: tag_type.clone(),
+            }),
         };
 
         let mut covered: HashMap<usize, Span> = HashMap::new();
@@ -398,7 +403,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_read: &CheckedExprNode,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         let domain = scrutinee_type
-            .integer_domain()
+            .integer_domain(self.target.pointer_bits())
             .expect("caller already confirmed this type has an integer domain");
 
         let mut catch_all: Option<&HirMatchArm> = None;
@@ -446,7 +451,7 @@ impl<'r> Analyzer<'r> {
                 }
             };
             let conditions =
-                Self::interval_conditions(scrutinee_read, scrutinee_type, domain, lo, hi, node_id, arm.pattern.span());
+                Self::interval_conditions(scrutinee_read, scrutinee_type, domain, lo, hi, node_id, arm.pattern.span(), self.target.pointer_bits());
             intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
             let body = self.analyze_match_arm_body(&arm.body)?;
             checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
@@ -503,7 +508,7 @@ impl<'r> Analyzer<'r> {
                 Some((n, n, vec![condition]))
             }
             HirPattern::Range(range) => {
-                let domain = scrutinee_type.integer_domain().expect("caller already confirmed an integer domain");
+                let domain = scrutinee_type.integer_domain(self.target.pointer_bits()).expect("caller already confirmed an integer domain");
                 let mut conditions = Vec::new();
                 let lo = match &range.start {
                     Some(e) => {
@@ -545,14 +550,15 @@ impl<'r> Analyzer<'r> {
         hi: i128,
         id: HirId,
         span: Span,
+        pointer_bits: u32,
     ) -> Vec<CheckedExprNode> {
         let mut conditions = Vec::new();
         if lo != domain.0 {
-            let value = Self::i128_to_const_value(scrutinee_type, lo);
+            let value = Self::i128_to_const_value(scrutinee_type, lo, pointer_bits);
             conditions.push(Self::value_cmp_condition(scrutinee_read, id, span, scrutinee_type, BinaryOp::Ge, value));
         }
         if hi != domain.1 {
-            let value = Self::i128_to_const_value(scrutinee_type, hi);
+            let value = Self::i128_to_const_value(scrutinee_type, hi, pointer_bits);
             conditions.push(Self::value_cmp_condition(scrutinee_read, id, span, scrutinee_type, BinaryOp::Le, value));
         }
         conditions
@@ -563,13 +569,13 @@ impl<'r> Analyzer<'r> {
     /// every other caller of `value_cmp_condition` builds its `ConstValue`
     /// by evaluating real source (`const_eval_pattern`), which this has no
     /// equivalent of.
-    pub(super) fn i128_to_const_value(scrutinee_type: &ResolvedType, n: i128) -> ConstValue {
+    pub(super) fn i128_to_const_value(scrutinee_type: &ResolvedType, n: i128, pointer_bits: u32) -> ConstValue {
         match scrutinee_type {
             ResolvedType::Bool => ConstValue::Bool(n != 0),
             ResolvedType::Char => {
                 ConstValue::Char(char::from_u32(n as u32).expect("catch-all inference stays within char's own domain"))
             }
-            _ => match scrutinee_type.numeric_kind() {
+            _ => match scrutinee_type.numeric_kind(pointer_bits) {
                 Some(NumericKind::Signed(_)) => ConstValue::Number(NumberValue::Signed(n as i64)),
                 Some(NumericKind::Unsigned(_)) => ConstValue::Number(NumberValue::Unsigned(n as u64)),
                 _ => unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type"),

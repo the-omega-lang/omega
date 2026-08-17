@@ -20,6 +20,7 @@ mod place;
 mod vtable;
 
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
+use omega_analyzer::{Arch, Os, Target};
 use cranelift::codegen;
 use cranelift::codegen::ir::StackSlot;
 use cranelift::prelude::{Configurable, Type as IRType, Value, isa, settings};
@@ -32,6 +33,9 @@ use std::sync::Arc;
 pub(crate) struct Codegen {
     // Backend
     isa: Arc<dyn isa::TargetIsa>,
+    /// The compilation target in Omega's own vocabulary -- what the shared
+    /// ABI facts (`crate::abi::AbiSignature`) are built against.
+    target: Target,
     module: ObjectModule,
     functions: HashMap<HirId, FuncId>,
     ctx: codegen::Context,
@@ -155,7 +159,7 @@ impl Codegen {
     /// Builds a `TargetIsa` from `request.target`/`request.opt_level` and
     /// runs the whole declare-then-define pipeline.
     fn generate(request: CodegenRequest) -> Result<Self, String> {
-        let CodegenRequest { module_name, target, opt_level, emit, modules, entry, extern_functions } = request;
+        let CodegenRequest { module_name, target, opt_level, emit, modules, entry: _, extern_functions } = request;
 
         let isa = {
             let mut builder = settings::builder();
@@ -165,7 +169,7 @@ impl Codegen {
 
             let flags = settings::Flags::new(builder);
 
-            isa::lookup(target.to_triple())
+            isa::lookup(triple_for(target))
                 .map_err(|e| format!("target '{target}' is not supported by this build of the compiler: {e}"))?
                 .finish(flags)
                 .map_err(|e| format!("failed to build a code generator for target '{target}': {e}"))?
@@ -181,6 +185,7 @@ impl Codegen {
 
         let mut codegen = Self {
             isa,
+            target,
             module,
             functions: HashMap::new(),
             ctx: codegen::Context::new(),
@@ -200,7 +205,7 @@ impl Codegen {
             symbol_error: None,
         };
 
-        codegen.update_all(modules, &entry, extern_functions);
+        codegen.update_all(modules, extern_functions);
 
         if let Some(error) = codegen.symbol_error {
             return Err(error);
@@ -241,8 +246,61 @@ impl Codegen {
     }
 }
 
+/// The targets this build of the Cranelift backend can serve -- its
+/// `cranelift-codegen` dependency requests the `x86` and `arm64` ISAs, so
+/// those two arches are genuinely buildable; everything else in
+/// `Target::Arch` (the 32-bit arches, riscv) is *not* compiled into
+/// Cranelift here, and `isa::lookup` would fail on them. Kept as the
+/// backend's own answer to `BackendKind::supports`.
+pub(crate) fn supports(target: Target) -> bool {
+    matches!(target.arch, Arch::X86_64 | Arch::Aarch64)
+}
+
 /// This backend's entry point, called from `crate::generate`'s dispatch --
 /// see `crate::BackendKind`.
 pub(crate) fn generate(request: CodegenRequest) -> Result<EmitOutput, String> {
     Ok(Codegen::generate(request)?.finish())
+}
+
+/// The Cranelift-specific translation of an Omega [`Target`] -- private to
+/// this backend: nothing outside the `cranelift` module should ever need a
+/// `target_lexicon::Triple`. Each OS gets the vendor/environment/
+/// binary-format combination its own platform actually uses (e.g. ELF
+/// + GNU on Linux, Mach-O + Apple on macOS); the user-facing `Target`
+/// stays deliberately simpler than Cranelift's own 5-field `Triple`
+/// because Omega has no use for those extra axes today.
+fn triple_for(target: Target) -> target_lexicon::Triple {
+    use target_lexicon::{Architecture, Environment, OperatingSystem, Triple, Vendor};
+    let architecture = match target.arch {
+        Arch::X86_64 => Architecture::X86_64,
+        Arch::X86 => Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
+        Arch::Armv7 => Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
+        Arch::Thumbv7em => {
+            Architecture::Arm(target_lexicon::ArmArchitecture::Thumbv7em)
+        }
+        Arch::Aarch64 => Architecture::Aarch64(target_lexicon::Aarch64Architecture::Aarch64),
+        Arch::Riscv32 => Architecture::Riscv32(target_lexicon::Riscv32Architecture::Riscv32),
+        Arch::Riscv64 => Architecture::Riscv64(target_lexicon::Riscv64Architecture::Riscv64),
+    };
+    let (vendor, operating_system, environment, binary_format) = match target.os {
+        Os::None => (
+            Vendor::Unknown,
+            OperatingSystem::Unknown,
+            Environment::Unknown,
+            target_lexicon::BinaryFormat::Elf,
+        ),
+        Os::Linux => {
+            (Vendor::Unknown, OperatingSystem::Linux, Environment::Gnu, target_lexicon::BinaryFormat::Elf)
+        }
+        Os::MacOs => (
+            Vendor::Apple,
+            OperatingSystem::MacOSX(None),
+            Environment::Unknown,
+            target_lexicon::BinaryFormat::Macho,
+        ),
+        Os::Windows => {
+            (Vendor::Pc, OperatingSystem::Windows, Environment::Msvc, target_lexicon::BinaryFormat::Coff)
+        }
+    };
+    Triple { architecture, vendor, operating_system, environment, binary_format }
 }

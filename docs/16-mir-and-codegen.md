@@ -191,11 +191,74 @@ already achieved, just triggered by first use instead of by walking a
 
 ## Multiple backends
 
+There are two backends: **Cranelift** (`default`, the fast development
+backend) and **LLVM** (the `llvm` feature, via `inkwell`/LLVM 21 — target
+breadth, and the features Cranelift lacks). `omgc --backend=<name>` picks
+one; `BackendKind::supports(target)` decides whether the chosen one can
+serve the chosen target, and a mismatch is one clear error naming both:
+
+```
+error: target 'riscv32-unknown-none' is not supported by the 'cranelift'
+       backend (supported: x86_64, aarch64)
+```
+
+### One decision, one home
+
+The rule the second backend forced: **the shared layers compute every
+decided fact exactly once, and a backend reads it rather than re-deriving
+it.** Anything re-derived per backend is somewhere the two can silently
+disagree — and they must not, because separate compilation means a
+Cranelift `core.o` gets linked against an LLVM `main.o` (`just
+test-mixed`). Concretely:
+
+| Fact | Home | Backends |
+| --- | --- | --- |
+| linker symbol, linkage | `MirFunctionDef::symbol`/`linkage` (`omega-mir::mangle`) | read it |
+| entry-point `main` | MIR lowering, from `lower_program`'s `entry` | read it |
+| sret, parameter flattening, variadic promotion | `omega-codegen::abi` | read it |
+| scalar leaf list | `omega_analyzer::layout` (`Leaf`) | map it |
+| per-access alignment | `MirPlace::align` | emit it |
+| what is not implemented yet | `omega-codegen::preflight` | neither runs |
+
+`preflight` matters more than it looks: with one backend, "unimplemented"
+could be a `todo!()` wherever it was noticed. With two, that would make the
+*accepted language* depend on `--backend`, so the rejections are shared and
+both backends refuse exactly the same programs.
+
+### `Leaf::Ptr` vs `Leaf::Size`
+
+`Leaf` splits the pointer-width scalar in two: `Ptr` is a genuine address,
+`Size` a pointer-width *integer* (`usize`/`isize`). Cranelift maps both to
+`pointer_type()` and always did — its pointer type *is* an integer type, so
+the distinction is invisible there. LLVM cannot: `ptr` and `iN` are
+distinct, and typing a `usize` as `ptr` makes arithmetic on it
+unrepresentable. This is the shape every such conflation takes — one
+backend not needing a distinction is not evidence the shared layer may drop
+it.
+
+The LLVM backend holds one invariant throughout: **a value's LLVM type
+always matches the leaf list of its MIR type.** `Reinterpret` casts and
+pointer arithmetic maintain it with explicit `ptrtoint`/`inttoptr`, and
+`bool` is always `i8` (`Leaf::I8`) except at `br`, which is the one
+instruction requiring `i1`.
+
+### The verifier
+
+The LLVM backend runs `Module::verify()` before emitting, and turns a
+failure into a compile error labelled *"this is a compiler bug, not a
+problem with your program"*. LLVM will otherwise write malformed IR — a
+type-mismatched `icmp`, a wrong-arity call — straight into an object file
+that then crashes at run time with nothing pointing back at the compiler.
+Cranelift needs no counterpart: its builder validates as it goes and panics
+at the point of construction. This check found real bugs the moment it was
+added, which is the argument for it.
+
+### Dispatch
+
 `omega-codegen` doesn't hand `MirModule`s straight to Cranelift-specific
-code anymore -- it dispatches through `BackendKind`, an enum with one
-variant per Cargo feature the crate enables (`cranelift` today; `default =
-["cranelift"]`), each variant gated by its own feature so a backend nobody
-compiled in isn't even a choice the type system offers:
+code -- it dispatches through `BackendKind`, an enum with one variant per
+Cargo feature the crate enables, each variant gated by its own feature so a
+backend nobody compiled in isn't even a choice the type system offers:
 
 ```rust
 pub fn generate(backend: BackendKind, request: CodegenRequest) -> Result<EmitOutput, String>;
@@ -205,29 +268,33 @@ pub fn generate(backend: BackendKind, request: CodegenRequest) -> Result<EmitOut
 emit kind, the mir modules themselves, the entry path, extern functions)
 into one named-field struct, replacing what used to be a seven-positional-
 argument call. `omgc`'s own `--backend=<name>` flag (`BackendKind::parse`)
-is the only place a user ever picks one; today `cranelift` is the only
-valid name, and also the default.
+is the only place a user ever picks one; `cranelift` is the default, and
+`llvm` is available when the crate is built with its feature.
 
-The Cranelift backend itself lives in `omega-codegen::cranelift` (module-
-private -- nothing outside the crate ever sees a Cranelift type), split by
-concern rather than kept as one file: `mod.rs` (the `Codegen` state struct
+Each backend lives in its own module (both module-private -- nothing
+outside the crate ever sees a Cranelift or an LLVM type), and the two are
+split by the *same* concerns, file for file, so a change to one has an
+obvious counterpart in the other: `mod.rs` (the `Codegen` state struct
 itself, `generate`/`finish`), `place.rs` (resolving a `MirPlace` to its
 storage), `expr.rs` (evaluating a `MirExprNode`), `function.rs` (building
 signatures, declaring/defining a function's body), `item.rs` (the
 declare-then-define sweep over every module), `vtable.rs` (spec dynamic-
-dispatch vtables), and `leaf.rs` (the one Cranelift-specific seam, below).
+dispatch vtables), and `leaf.rs` (the one backend-specific seam, below).
 
 **The actual multi-backend enabler** is `crate::layout`, not the
 `BackendKind` dispatch itself: struct/enum/union byte-offset/padding/leaf-
 count math (`FieldLayout`, `layout_fields`, `type_alignment`,
 `enum_*_offset`, ...) used to compute `cranelift::Type`s directly and take
 `&Codegen`. It's now backend-agnostic, expressed over a small `Leaf` enum
-(`I8`/`I16`/`I32`/`I64`/`F32`/`F64`/`Ptr`) and a plain `pointer_bytes: u32`
-instead of a Cranelift handle -- `Target::pointer_bytes` is the one place
-that width comes from. `cranelift::leaf::cranelift_type` is the *only*
-place a `Leaf` becomes a `cranelift::Type`; a second backend adds an
-equally small mapping of its own instead of reimplementing ~250 lines of
-layout math.
+(`I8`/`I16`/`I32`/`I64`/`F32`/`F64`/`Ptr`/`Size`) and a plain
+`pointer_bytes: u32` instead of a Cranelift handle -- `Target::pointer_bytes`
+is the one place that width comes from, and `Target` itself lives in
+`omega-analyzer` precisely so analysis (`comp` `sizeof`, `usize` range
+checking) answers with the *same* width codegen will lay out.
+`cranelift::leaf::cranelift_type` and `llvm::leaf::llvm_type` are the only
+places a `Leaf` becomes a native type; each backend is that one small
+mapping rather than another copy of ~250 lines of layout math. That claim
+has now actually been tested by a second backend, and it held.
 
 ## Caveats
 

@@ -44,6 +44,7 @@ use diagnostics::Diagnostics;
 use items::ItemQueries;
 use modules::ModuleStore;
 use omega_parser::ast::statement::macro_definition::MacroDefinitionStmt;
+use omega_analyzer::Target;
 use omega_parser::prelude::Ident;
 use resolver::ImportState;
 use roots::ModuleRoots;
@@ -79,6 +80,8 @@ pub struct Driver {
     conformances: Conformances,
     /// Every exposed macro in the ambient `core` prelude, collected once.
     prelude_macros: Option<Rc<HashMap<Ident, MacroDefinitionStmt>>>,
+    /// The compilation target -- see `Driver::new`'s doc comment.
+    target: Target,
 }
 
 impl Driver {
@@ -89,10 +92,17 @@ impl Driver {
     /// not a plain already-defaulted name, is what this needs); `externs`
     /// is every `--extern` the CLI was given. Fails if two package roots
     /// claim the same declared name.
+    /// `target` is the compilation target every piece of analysis runs
+    /// under -- carried here so every `Analyzer` constructed along the way
+    /// resolves width-sensitive questions (`numeric_kind`'s
+    /// `ISize`/`USize`, `integer_domain`, `comp`'s `sizeof`) against the
+    /// same real target `omgc` was given. `Driver::compile` re-sets it per
+    /// run, so one driver can compile for different targets in sequence.
     pub fn new(
         root: PathBuf,
         root_name: Option<Ident>,
         externs: Vec<ExternRoot>,
+        target: Target,
     ) -> Result<Self, Vec<CompileError>> {
         Ok(Self {
             roots: ModuleRoots::new(root, root_name, externs)?,
@@ -103,6 +113,7 @@ impl Driver {
             primitives: Primitives::default(),
             conformances: Conformances::default(),
             prelude_macros: None,
+            target,
         })
     }
 }

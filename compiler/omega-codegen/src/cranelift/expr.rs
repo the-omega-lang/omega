@@ -78,24 +78,12 @@ impl Codegen {
         vec![ptr, len]
     }
 
-    /// An anonymous data object's symbol -- a pure function of its own
-    /// bytes, not an arbitrary per-process counter: two identical
-    /// constants, in the same compilation or two separate ones, always
-    /// name themselves identically, the same "stable, type/content-derived
-    /// name" property `omega_mangle` gives real functions/methods -- see
-    /// its own design notes for why that matters. Rapidhash V3
-    /// (`rapidhash::v3::rapidhash_v3`, avalanche-enabled -- its default,
-    /// matching the reference C++ implementation, chosen over the crate's
-    /// own `fast` preset since that one deliberately trades away mixing
-    /// quality for hashmap-bucket-selection speed, a different need than a
-    /// standalone, collision-averse identifier) is a deliberately
-    /// non-cryptographic choice: nothing here is adversarial (the input is
-    /// always the compiler's own already-resolved constant data), so all
-    /// that's needed is a fast hash with a low *accidental* collision rate
-    /// at realistic program sizes, not preimage/collision resistance
-    /// against a deliberate attacker.
+    /// An anonymous data object's symbol -- the shared content-hashed name
+    /// (`omega_mir::mangle::data_symbol`), moved out of this backend so
+    /// both backends name identical constants identically (see its doc
+    /// comment).
     fn data_symbol(bytes: &[u8]) -> String {
-        format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
+        omega_mir::mangle::data_symbol(bytes)
     }
 
     /// Declares (and defines) `s`'s bytes as an anonymous module-level data
@@ -648,14 +636,14 @@ impl Codegen {
     /// unconditionally on every variadic argument, so anything else (a
     /// pointer, already the right width) just passes through unchanged.
     fn promote_variadic_arg(&mut self, builder: &mut FunctionBuilder, value: Value, arg_type: &ResolvedType) -> Value {
-        match arg_type.numeric_kind() {
-            Some(NumericKind::Float(width)) if width < 64 => builder.ins().fpromote(types::F64, value),
-            Some(NumericKind::Signed(width)) if width < 32 => builder.ins().sextend(types::I32, value),
-            Some(NumericKind::Unsigned(width)) if width < 32 => builder.ins().uextend(types::I32, value),
-            // `Bool` isn't `numeric_kind`-classified (see its doc comment),
-            // but it's still an 8-bit integer that needs the same promotion.
-            None if *arg_type == ResolvedType::Bool => builder.ins().uextend(types::I32, value),
-            _ => value,
+        // The *decision* (what promotes to what) is the shared C ABI rule
+        // in `crate::abi::variadic_promotion`; only the conversion emission
+        // is backend work.
+        match crate::abi::variadic_promotion(arg_type, self.target) {
+            Some(NumericKind::Float(_)) => builder.ins().fpromote(types::F64, value),
+            Some(NumericKind::Signed(_)) => builder.ins().sextend(types::I32, value),
+            Some(NumericKind::Unsigned(_)) => builder.ins().uextend(types::I32, value),
+            None => value,
         }
     }
 
@@ -877,7 +865,7 @@ impl Codegen {
                 // The mir guarantees only signed ints or floats reach here
                 // -- `fneg` for the latter, `ineg` (two's-complement
                 // negation) for the former.
-                let is_float = matches!(base.r#type.numeric_kind(), Some(NumericKind::Float(_)));
+                let is_float = matches!(base.r#type.numeric_kind(self.pointer_bytes() * 8), Some(NumericKind::Float(_)));
                 let value = self.process_expr(builder, *base)[0];
                 let result = if is_float { builder.ins().fneg(value) } else { builder.ins().ineg(value) };
                 vec![result]
@@ -907,7 +895,7 @@ impl Codegen {
                     ResolvedType::Char => NumericKind::Unsigned(32),
                     ResolvedType::Bool => NumericKind::Unsigned(8),
                     r#type => r#type
-                        .numeric_kind()
+                        .numeric_kind(self.pointer_bytes() * 8)
                         .expect("mir body guarantees BinaryOp operands are numeric, char, or bool"),
                 };
                 let left = self.process_expr(builder, *left)[0];

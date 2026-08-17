@@ -402,6 +402,34 @@ impl<'r> Analyzer<'r> {
             &extern_decl.r#type,
             true,
         )?;
+        // A safe narrowing, to stop a silent miscompile: Omega's calling
+        // convention is internally consistent, but it is *not* the platform
+        // C ABI -- a struct of two i32s is one SysV eightbyte but flattens
+        // to two parameters here. Today's C interop is scalars and pointers
+        // only, so nothing works less because of this; to keep it that way,
+        // an aggregate passed or returned *by value* across an `extern`
+        // boundary is rejected with the debt entry named, rather than
+        // silently miscompiling against a C caller/callee. One check to
+        // delete when the real C ABI lands (see
+        // `docs/14-known-issues.md`'s "Design debt worth watching").
+        if let ResolvedType::Function(fn_type) = &resolved_type {
+            let aggregate = fn_type
+                .params
+                .iter()
+                .map(|(_, ty)| ty)
+                .chain(std::iter::once(&*fn_type.return_type))
+                .find(|ty| matches!(ty, ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }));
+            if let Some(aggregate) = aggregate {
+                self.error(
+                    extern_decl.id,
+                    extern_decl.span,
+                    AnalysisErrorKind::ExternAggregateByValue {
+                        r#type: aggregate.clone(),
+                    },
+                );
+                return None;
+            }
+        }
         // An extern of function type imports a callable symbol; anything
         // else is extern *data*, whose storage isn't decided yet (see
         // `Storage::Global`'s doc comment).
@@ -581,7 +609,7 @@ impl<'r> Analyzer<'r> {
                 r#type,
                 ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }
             ) {
-                let size = crate::annotations::estimate_type_size(r#type);
+                let size = crate::annotations::estimate_type_size(r#type, self.target.pointer_bytes());
                 if size > crate::annotations::LARGE_STRUCT_BY_VALUE_THRESHOLD {
                     self.warn(
                         p.id,
@@ -894,7 +922,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if !Self::const_representable(&resolved) {
+            if !self.const_representable(&resolved) {
                 self.error(
                     field.id,
                     field.span,
@@ -926,7 +954,7 @@ impl<'r> Analyzer<'r> {
         }
         let tag_type = self.resolve_type_or_error(field.id, field.span, &field.r#type, true)?;
         if !matches!(
-            tag_type.numeric_kind(),
+            tag_type.numeric_kind(self.target.pointer_bits()),
             Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
         ) {
             self.error(

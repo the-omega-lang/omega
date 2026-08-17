@@ -429,7 +429,9 @@ impl Codegen {
             let leaf = builder.func.dfg.value_type(*value);
             match storage {
                 PlaceStorage::Values(_) => {
-                    todo!("assignment into a function parameter is not yet implemented");
+                    unreachable!(
+                        "assignment into a function parameter is rejected by the shared preflight (crate::preflight) before any backend runs"
+                    );
                 }
                 PlaceStorage::Slot { slot, offset } => {
                     builder.ins().stack_store(*value, *slot, (*offset + rel_offset) as i32);

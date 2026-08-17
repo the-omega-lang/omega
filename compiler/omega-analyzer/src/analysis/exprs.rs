@@ -386,7 +386,7 @@ impl<'r> Analyzer<'r> {
         expr: &CheckedExprNode,
     ) -> Option<crate::resolved_type::ConstValue> {
         crate::dead_code::collect_expr(expr, &mut self.field_usage);
-        match crate::comp_eval::eval(self.resolver, expr) {
+        match crate::comp_eval::eval(self.resolver, expr, self.target) {
             Ok(value) => Some(value),
             Err(err) => {
                 self.error(
@@ -861,7 +861,7 @@ impl<'r> Analyzer<'r> {
         // an unsigned integer (or `bool`/`char`, neither of which is
         // numeric at all) is rejected rather than silently wrapping.
         let negatable = matches!(
-            checked_base.r#type.numeric_kind(),
+            checked_base.r#type.numeric_kind(self.target.pointer_bits()),
             Some(NumericKind::Signed(_)) | Some(NumericKind::Float(_))
         );
         if !negatable {
@@ -911,9 +911,9 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        let checked_base = Self::coerce_for_unary_op(checked_base);
+        let checked_base = self.coerce_for_unary_op(checked_base);
         let bitnotable = matches!(
-            checked_base.r#type.numeric_kind(),
+            checked_base.r#type.numeric_kind(self.target.pointer_bits()),
             Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
         );
         if !bitnotable {
@@ -1188,7 +1188,7 @@ impl<'r> Analyzer<'r> {
             kind
         } else {
             let (Some(source_class), Some(target_class)) =
-                (checked_base.r#type.cast_class(), target_type.cast_class())
+                (checked_base.r#type.cast_class(self.target.pointer_bits()), target_type.cast_class(self.target.pointer_bits()))
             else {
                 self.error(
                     node_id,
@@ -1265,7 +1265,7 @@ impl<'r> Analyzer<'r> {
             })?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
-        let Some(kind) = place_type.numeric_kind() else {
+        let Some(kind) = place_type.numeric_kind(self.target.pointer_bits()) else {
             self.error(
                 node_id,
                 span,
@@ -1381,7 +1381,7 @@ impl<'r> Analyzer<'r> {
         // still aren't offered (`true + true` has no meaning to fall back
         // on), and neither is `~` (see `analyze_bit_not`'s doc comment).
         for operand in [&checked_left, &checked_right] {
-            let is_valid = operand.r#type.numeric_kind().is_some()
+            let is_valid = operand.r#type.numeric_kind(self.target.pointer_bits()).is_some()
                 || (op.is_comparison() && operand.r#type == ResolvedType::Char)
                 || (operand.r#type == ResolvedType::Bool
                     && matches!(
@@ -1427,7 +1427,7 @@ impl<'r> Analyzer<'r> {
         // matching C, which requires `fmod`/`fmodf` instead of `%`.
         if op == BinaryOp::Rem
             && matches!(
-                checked_left.r#type.numeric_kind(),
+                checked_left.r#type.numeric_kind(self.target.pointer_bits()),
                 Some(NumericKind::Float(_))
             )
         {
@@ -1442,7 +1442,7 @@ impl<'r> Analyzer<'r> {
             op,
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr
         ) && matches!(
-            checked_left.r#type.numeric_kind(),
+            checked_left.r#type.numeric_kind(self.target.pointer_bits()),
             Some(NumericKind::Float(_))
         ) {
             self.error(node_id, span, AnalysisErrorKind::FloatBitwiseOperand);
@@ -1497,7 +1497,7 @@ impl<'r> Analyzer<'r> {
     /// mutability never enter the equality check at all.
     fn coerce_for_binary_op(&self, _op: BinaryOp, operand: CheckedExprNode) -> CheckedExprNode {
         match operand.r#type.arithmetic_repr() {
-            Some(repr) => Self::coerce_to(operand, repr),
+            Some(repr) => Self::coerce_to(operand, repr, self.target.pointer_bits()),
             None => operand,
         }
     }
@@ -1505,9 +1505,9 @@ impl<'r> Analyzer<'r> {
     /// `coerce_for_binary_op`'s unary counterpart, for `~` (see
     /// `analyze_bit_not`) -- unconditional, since there's no comparison/
     /// arithmetic distinction to make for a unary op.
-    fn coerce_for_unary_op(operand: CheckedExprNode) -> CheckedExprNode {
+    fn coerce_for_unary_op(&self, operand: CheckedExprNode) -> CheckedExprNode {
         match operand.r#type.arithmetic_repr() {
-            Some(repr) => Self::coerce_to(operand, repr),
+            Some(repr) => Self::coerce_to(operand, repr, self.target.pointer_bits()),
             None => operand,
         }
     }
@@ -1516,13 +1516,13 @@ impl<'r> Analyzer<'r> {
     /// same `CheckedExpr::Cast` an explicit `<repr>operand` would produce.
     /// `repr` is always itself numeric (every `arithmetic_repr` value is),
     /// so both `cast_class` calls below are infallible.
-    fn coerce_to(operand: CheckedExprNode, repr: ResolvedType) -> CheckedExprNode {
+    fn coerce_to(operand: CheckedExprNode, repr: ResolvedType, pointer_bits: u32) -> CheckedExprNode {
         let source_class = operand
             .r#type
-            .cast_class()
+            .cast_class(pointer_bits)
             .expect("arithmetic_repr's source always has a cast_class");
         let target_class = repr
-            .cast_class()
+            .cast_class(pointer_bits)
             .expect("an arithmetic_repr target is always numeric");
         let kind = Self::resolve_cast_kind(source_class, target_class);
         CheckedExprNode {
@@ -1567,7 +1567,7 @@ impl<'r> Analyzer<'r> {
         left: &CheckedExprNode,
         right: &CheckedExprNode,
     ) {
-        let Some((lo, hi)) = left.r#type.integer_domain() else {
+        let Some((lo, hi)) = left.r#type.integer_domain(self.target.pointer_bits()) else {
             return;
         };
 
@@ -2025,9 +2025,10 @@ impl<'r> Analyzer<'r> {
                         root: CheckedPlaceRoot::Variable {
                             decl_id: method.decl_id,
                             storage: Storage::Function,
-                            r#type: function,
+                            r#type: function.clone(),
                         },
                         projections: vec![],
+                        r#type: function,
                     }),
                 }),
                 fn_type,

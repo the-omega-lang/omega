@@ -27,9 +27,21 @@
 use crate::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
 
 /// A single scalar machine value -- the backend-agnostic vocabulary every
-/// backend's own native IR type maps onto. `Ptr`'s size depends on the
-/// target, not the backend, so `Leaf::bytes` takes it explicitly rather
-/// than assuming a width.
+/// backend's own native IR type maps onto. `Ptr`/`Size`'s width depends on
+/// the target, not the backend, so `Leaf::bytes` takes it explicitly
+/// rather than assuming one.
+///
+/// `Ptr` and `Size` are the *same width* and differ only in domain: `Ptr`
+/// is a genuine address (`*T`, a function, an array, a slice's data
+/// pointer, a spec object's pointer and vtable), `Size` is a pointer-width
+/// *integer* (`usize`/`isize`). Cranelift can afford to conflate them --
+/// its `pointer_type()` simply *is* an integer type, so both map to `I64`
+/// there and always did. LLVM cannot: `ptr` and `iN` are distinct types,
+/// and typing a `usize` as `ptr` makes every size-typed integer an opaque
+/// pointer, which breaks arithmetic on it outright and misinforms alias
+/// analysis besides. The distinction lives here, in the shared vocabulary,
+/// rather than being re-guessed per backend -- one backend needing a fact
+/// is what makes it a fact the shared layer owes both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leaf {
     I8,
@@ -39,6 +51,8 @@ pub enum Leaf {
     F32,
     F64,
     Ptr,
+    /// A pointer-width integer -- see the type-level comment.
+    Size,
 }
 
 impl Leaf {
@@ -50,7 +64,7 @@ impl Leaf {
             Leaf::I64 => 8,
             Leaf::F32 => 4,
             Leaf::F64 => 8,
-            Leaf::Ptr => pointer_bytes,
+            Leaf::Ptr | Leaf::Size => pointer_bytes,
         }
     }
 }
@@ -75,11 +89,13 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         ResolvedType::I16 | ResolvedType::U16 => vec![Leaf::I16],
         ResolvedType::I32 | ResolvedType::U32 => vec![Leaf::I32],
         ResolvedType::I64 | ResolvedType::U64 => vec![Leaf::I64],
-        // The only leaf whose real size is target-dependent rather than
-        // fixed by the Omega type itself (see `ResolvedType::USize`/
-        // `ISize`'s doc comments) -- `Leaf::Ptr` carries that
-        // dependency, resolved by whoever asks for its `bytes()`.
-        ResolvedType::USize | ResolvedType::ISize => vec![Leaf::Ptr],
+        // Target-dependent in width rather than fixed by the Omega type
+        // itself (see `ResolvedType::USize`/`ISize`'s doc comments), which
+        // `Leaf::Size` carries, resolved by whoever asks for its `bytes()`.
+        // `Size`, not `Ptr`: these are pointer-*width integers*, not
+        // addresses, and a backend whose type system separates the two
+        // needs to be told which this is -- see `Leaf`'s own doc comment.
+        ResolvedType::USize | ResolvedType::ISize => vec![Leaf::Size],
         ResolvedType::F32 => vec![Leaf::F32],
         ResolvedType::F64 => vec![Leaf::F64],
         // Interior gaps (from a field's own transitive `align`, or from

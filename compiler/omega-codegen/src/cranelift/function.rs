@@ -3,68 +3,60 @@
 //! function's own symbol.
 
 use super::Codegen;
-use super::leaf::IntoCraneliftLeaves;
-use crate::mangle;
+use super::leaf::{IntoCraneliftLeaves, cranelift_type};
+use crate::abi::{AbiReturn, AbiSignature};
 use cranelift::codegen;
 use cranelift::codegen::ir::ArgumentPurpose;
 use cranelift::prelude::{
     AbiParam, FunctionBuilder, FunctionBuilderContext, Signature, StackSlotData, StackSlotKind, isa,
 };
 use cranelift_module::{FuncId, Linkage, Module};
-use omega_analyzer::annotations::ManglingMode;
-use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
+use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
 
 impl Codegen {
     /// Whether `return_type` is returned through a hidden `StructReturn`
-    /// pointer instead of in registers: x86_64 SysV has exactly two integer
-    /// return registers (rax/rdx), so any value flattening to more than two
-    /// leaves -- a large struct, or any enum with a payload -- can't come
-    /// back by value. (Two int + two float leaves would technically still
-    /// fit, but classifying leaf register classes buys nothing over this
-    /// simple, always-correct rule.) Must agree between definitions and
-    /// call sites -- both derive their `Signature` from `make_function_sig`,
-    /// so it's decided in exactly one place.
+    /// pointer instead of in registers -- the shared ABI's answer
+    /// (`crate::abi::AbiReturn::Indirect`), see `AbiReturn`'s doc comment
+    /// for the rule. Must agree between definitions and call sites -- both
+    /// derive their `Signature` from `make_function_sig`, so it's decided
+    /// in exactly one place.
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
-        return_type.cranelift_leaves(self).len() > 2
+        matches!(AbiReturn::for_type(self.target, return_type), AbiReturn::Indirect)
     }
 
     pub(super) fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
+        // The whole calling-convention shape comes from the shared ABI
+        // (`crate::abi`) -- this function is now a pure *translation* of
+        // that decision into Cranelift types.
+        let abi = AbiSignature::build(self.target, &resolved_fntype);
         let mut sig = self.module.make_signature();
 
-        // The hidden struct-return pointer is always the first parameter
-        // (see `needs_sret`); cranelift itself handles the SysV requirement
-        // of also returning that pointer in rax, so the signature declares
-        // no return values at all in this case. `Never` takes this same
-        // empty-signature path as `Void` -- nothing ever reads a call's
-        // result in a position typed `never` (the callee doesn't return at
-        // all, so there's no return-value ABI to negotiate); explicit here
-        // rather than left to fall out of `cranelift_leaves`/`needs_sret`
-        // both already answering "zero" for it (see `ResolvedType::Never`'s
-        // doc comment) purely as a byproduct of how they're implemented.
-        if *resolved_fntype.return_type != ResolvedType::Void
-            && *resolved_fntype.return_type != ResolvedType::Never
-        {
-            if self.needs_sret(&resolved_fntype.return_type) {
+        match abi.ret {
+            // The hidden struct-return pointer is always the first
+            // parameter (see `AbiReturn::Indirect`); cranelift itself
+            // handles the SysV requirement of also returning that pointer
+            // in rax, so the signature declares no return values at all in
+            // this case. `Never` takes the same empty-signature path as
+            // `Void` -- see `AbiReturn::Void`'s doc comment.
+            AbiReturn::Void => {}
+            AbiReturn::Indirect => {
                 sig.params.push(AbiParam::special(
                     self.pointer_type(),
                     ArgumentPurpose::StructReturn,
                 ));
-            } else {
-                for leaf in resolved_fntype.return_type.cranelift_leaves(self) {
-                    sig.returns.push(AbiParam::new(leaf));
+            }
+            AbiReturn::Direct(leaves) => {
+                for leaf in leaves {
+                    sig.returns.push(AbiParam::new(cranelift_type(leaf, self.pointer_type())));
                 }
             }
         }
 
-        let ir_params = resolved_fntype
-            .params
-            .iter()
-            .flat_map(|(_, ty)| ty.cranelift_leaves(self));
-        for param in ir_params {
-            sig.params.push(AbiParam::new(param));
+        for leaf in abi.params {
+            sig.params.push(AbiParam::new(cranelift_type(leaf, self.pointer_type())));
         }
 
         if resolved_fntype.is_variadic {
@@ -87,43 +79,23 @@ impl Codegen {
     pub(super) fn update_extern_decl(&mut self, extern_decl: MirExternDeclaration) {
         match extern_decl.r#type {
             ResolvedType::Function(resolved_fntype) => {
-                // `Disabled` is every ordinary, hand-written `extern`
-                // (annotations are rejected on `extern` at parse time, so
-                // this is the only reachable case for one of those) --
-                // `Glued` is a `gap` declaration's synthesized required
-                // function (see `CheckedExternDeclaration::mangling`'s doc
-                // comment), which must link against the exact same symbol
-                // its `glue` implementation forces -- computed the
-                // identical way, via `mangle::glued_symbol`.
-                let symbol = match &extern_decl.mangling {
-                    ManglingMode::Disabled => extern_decl.ident.0.clone(),
-                    ManglingMode::Glued {
-                        spec_module_path,
-                        spec_name,
-                        function_name,
-                    } => mangle::glued_symbol(
-                        spec_module_path,
-                        spec_name,
-                        function_name,
-                        &resolved_fntype,
-                    ),
-                    ManglingMode::Enabled | ManglingMode::Forced(_) => {
-                        unreachable!(
-                            "'@mangling' is rejected on 'extern' declarations at parse time"
-                        )
-                    }
-                };
+                // The symbol was decided once, at lowering
+                // (`MirExternDeclaration::symbol`); the `Disabled`/`Glued`
+                // branches that used to live here moved to
+                // `omega_mir::lower`.
                 let sig = self.make_function_sig(resolved_fntype);
 
                 let function_id = self
                     .module
-                    .declare_function(&symbol, Linkage::Import, &sig)
+                    .declare_function(&extern_decl.symbol, Linkage::Import, &sig)
                     .unwrap();
 
                 self.functions.insert(extern_decl.id, function_id);
             }
 
-            _ => todo!("extern data declarations (non-function externs) are not yet implemented"),
+            _ => unreachable!(
+                "extern data declarations are rejected by the shared preflight (crate::preflight) before any backend runs"
+            ),
         }
     }
 
@@ -217,87 +189,10 @@ impl Codegen {
     /// `CompiledProgram::extern_functions`'s doc comment for why that's a
     /// safe assumption.
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
-        let mangled = match (&extern_fn.mangling, &extern_fn.kind) {
-            (ManglingMode::Forced(name), _) => name.clone(),
-            (
-                ManglingMode::Glued {
-                    spec_module_path,
-                    spec_name,
-                    function_name,
-                },
-                _,
-            ) => mangle::glued_symbol(
-                spec_module_path,
-                spec_name,
-                function_name,
-                &extern_fn.fn_type,
-            ),
-            (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
-            // `@mangling(disabled)` is rejected on methods at analysis time
-            // -- an extern method's own declaration went through the exact
-            // same check, so this combination can't actually occur.
-            (
-                ManglingMode::Disabled,
-                ExternFunctionKind::Method { .. }
-                | ExternFunctionKind::Primitive { .. }
-                | ExternFunctionKind::Conform { .. },
-            ) => {
-                unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
-            }
-            // `collect_extern_functions` only ever surfaces non-generic
-            // extern items (a generic reached through `--extern` is always
-            // fully recompiled locally instead), so there's no owner/free
-            // generic-args data to pass here -- always `&[]`.
-            (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
-                mangle::encode(&mangle::free_function_symbol(
-                    &extern_fn.module_path,
-                    name,
-                    &[],
-                    &extern_fn.fn_type,
-                ))
-            }
-            (
-                ManglingMode::Enabled,
-                ExternFunctionKind::Method {
-                    type_name,
-                    method_name,
-                },
-            ) => mangle::encode(&mangle::method_symbol(
-                &extern_fn.module_path,
-                type_name,
-                &[],
-                method_name,
-                &extern_fn.fn_type,
-            )),
-            (
-                ManglingMode::Enabled,
-                ExternFunctionKind::Primitive {
-                    target,
-                    method_name,
-                },
-            ) => {
-                mangle::encode(&mangle::primitive_method_symbol(
-                    target,
-                    method_name,
-                    &extern_fn.fn_type,
-                ))
-            }
-            (
-                ManglingMode::Enabled,
-                ExternFunctionKind::Conform {
-                    target,
-                    spec_name,
-                    spec_args,
-                    method_name,
-                },
-            ) => mangle::encode(&mangle::conformance_method_symbol(
-                target,
-                spec_name,
-                spec_args,
-                method_name,
-                &extern_fn.fn_type,
-            )),
-        };
+        // The symbol decision lives in `omega_mir::mangle::extern_function_ref_symbol`
+        // -- one home for both backends (see its own doc comment for why the
+        // declaring compilation's own `mangling` is authoritative here).
+        let mangled = omega_mir::mangle::extern_function_ref_symbol(extern_fn);
         let sig = self.make_function_sig(extern_fn.fn_type.clone());
 
         let function_id = self

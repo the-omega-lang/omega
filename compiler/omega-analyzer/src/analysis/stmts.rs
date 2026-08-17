@@ -240,9 +240,10 @@ impl<'r> Analyzer<'r> {
                     root: CheckedPlaceRoot::Variable {
                         decl_id: decl.id,
                         storage: Storage::Local,
-                        r#type: resolved_type,
+                        r#type: resolved_type.clone(),
                     },
                     projections: vec![],
+                    r#type: resolved_type,
                 },
                 value: Box::new(checked_value),
             }),
@@ -309,9 +310,10 @@ impl<'r> Analyzer<'r> {
                     root: CheckedPlaceRoot::Variable {
                         decl_id: w.id,
                         storage: Storage::Local,
-                        r#type,
+                        r#type: r#type.clone(),
                     },
                     projections: vec![],
+                    r#type,
                 },
                 value: Box::new(checked_value),
             }),
@@ -389,7 +391,7 @@ impl<'r> Analyzer<'r> {
                 // is purely opportunistic, so any `Err` is silently
                 // ignored rather than reported.
                 if let Ok(ConstValue::Bool(true)) =
-                    crate::comp_eval::eval(self.resolver, &checked_cond)
+                    crate::comp_eval::eval(self.resolver, &checked_cond, self.target)
                 {
                     self.warn(w.id, checked_cond.span, AnalysisWarningKind::PreferLoop);
                 }
@@ -803,6 +805,7 @@ impl<'r> Analyzer<'r> {
                         r#type: next_type,
                     },
                     projections: tag_projections,
+                    r#type: tag_type.clone(),
                 }),
             };
 
@@ -934,6 +937,7 @@ impl<'r> Analyzer<'r> {
                         r#type: refined,
                     },
                     projections: value_projections,
+                    r#type: value_type.clone(),
                 }),
             };
 
@@ -1071,9 +1075,10 @@ impl<'r> Analyzer<'r> {
                     root: CheckedPlaceRoot::Variable {
                         decl_id: id,
                         storage: Storage::Local,
-                        r#type,
+                        r#type: r#type.clone(),
                     },
                     projections: vec![],
+                    r#type,
                 },
                 value: Box::new(value),
             }),

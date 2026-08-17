@@ -752,16 +752,16 @@ impl<'r> Analyzer<'r> {
                 true,
                 !self.reveal_stack.is_empty(),
             ) {
-                Ok(r#type) if r#type.numeric_kind().is_some() => r#type,
+                Ok(r#type) if r#type.numeric_kind(self.target.pointer_bits()).is_some() => r#type,
                 _ => {
                     invalid_suffix(self, explicit_type);
                     return None;
                 }
             },
-            None => Self::default_or_expected_number_type(n, expected),
+            None => Self::default_or_expected_number_type(n, expected, self.target.pointer_bits()),
         };
         let kind = resolved_type
-            .numeric_kind()
+            .numeric_kind(self.target.pointer_bits())
             .expect("just resolved above, or a hardcoded numeric default");
 
         // A literal written with a decimal point must resolve to a float
@@ -821,10 +821,10 @@ impl<'r> Analyzer<'r> {
     /// as a 4-byte `float`. Only a *variadic* argument is promoted to
     /// `double`, which is C's own default-argument-promotion rule rather than
     /// anything to do with this default -- see `Codegen::promote_variadic_arg`.
-    fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>) -> ResolvedType {
+    fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>, pointer_bits: u32) -> ResolvedType {
         let default = if n.fractional_part.is_some() { ResolvedType::F32 } else { ResolvedType::I32 };
         let Some(expected) = expected else { return default };
-        let Some(kind) = expected.numeric_kind() else { return default };
+        let Some(kind) = expected.numeric_kind(pointer_bits) else { return default };
         if matches!(kind, NumericKind::Float(_)) == n.fractional_part.is_some() {
             expected.clone()
         } else {

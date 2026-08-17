@@ -4,8 +4,34 @@
 
 ```
 omgc <entry-dir> -o <output> [--name=<name>] [--extern=[<name>:]<dir>]... \
-     [-O<0-3>] [--target=<triplet>] [--emit=<obj|ir|asm>] [-v]
+     [-O<0-3>] [--target=<triplet>] [--backend=<name>] \
+     [--emit=<obj|ir|asm>] [-v]
 ```
+
+`--target` is `<arch>-<os>` or `<arch>-<vendor>-<os>`, where the vendor
+segment is accepted and ignored. Architectures: `x86_64`, `x86`, `armv7`,
+`thumbv7em`, `aarch64`, `riscv32`, `riscv64`. Operating systems: `linux`,
+`macos` (or `darwin`), `windows`, and `none` (or `freestanding`) for a
+bare-metal target. The default is `x86_64-unknown-linux`.
+
+`--backend` is `cranelift` (the default — faster to compile) or `llvm`
+(available when the compiler is built with its feature — far more targets,
+better optimized output). Not every backend can serve every target;
+asking for a pair that doesn't work is an error naming both, rather than a
+failure from inside the backend:
+
+```
+error: target 'riscv32-unknown-none' is not supported by the 'cranelift'
+       backend (supported: x86_64, aarch64)
+```
+
+Objects from the two backends are interchangeable — a `core.o` built with
+one links against a `main.o` built with the other, because symbol naming,
+linkage, and the calling convention are all decided in shared code above
+the backend seam (see [mir-and-codegen.md](16-mir-and-codegen.md)). Note
+that Omega's calling convention is *not* the platform C ABI for aggregates
+passed by value; see the ABI entry in
+[known-issues.md](14-known-issues.md).
 
 `-o` is **required** — no default output path. Both the local project and
 every `--extern` are given as a **root directory**, never a file — the

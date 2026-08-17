@@ -6,4 +6,9 @@ edition = "2024"
 [dependencies]
 omega-hir = { path = "../omega-hir" }
 omega-analyzer = { path = "../omega-analyzer" }
+omega-mangle = { path = "../omega-mangle" }
 omega-parser = { path = "../omega-parser" }
+# Anonymous rodata naming (`mangle::data_symbol`) -- content-hashed, shared
+# by both backends so two packages' identical constants name themselves
+# identically (see its doc comment for why that matters).
+rapidhash = { version = "4.5.1", default-features = false }

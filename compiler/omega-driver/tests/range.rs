@@ -8,6 +8,7 @@
 //! covers what the front end accepts and rejects, and the diagnostics it
 //! produces when it rejects.
 
+use omega_analyzer::Target;
 use omega_analyzer::error::AnalysisErrorKind;
 use omega_driver::{CompileError, Driver, ExternRoot};
 use omega_parser::prelude::{Ident, ParseErrorKind};
@@ -40,10 +41,9 @@ impl TestPackage {
             vec![ExternRoot {
                 name: Ident("core".to_string()),
                 dir: core_root(),
-            }],
-        )
+            }], Target::DEFAULT)
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())])
+        .compile(&[Ident("main".to_string())], Target::DEFAULT)
     }
 
     fn expect_ok(&self) {

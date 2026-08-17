@@ -1,4 +1,6 @@
-use omega_analyzer::checked::{CheckedItem, ExternFunctionKind};
+use omega_analyzer::checked::{CheckedItem, ExternFunctionKind, NumberValue};
+use omega_analyzer::resolved_type::ConstValue;
+use omega_analyzer::Target;
 use omega_analyzer::error::{AnalysisErrorKind, TypeResolutionError};
 use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver, ExternRoot};
@@ -38,9 +40,9 @@ impl TestPackage {
     }
 
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, Vec::new())
+        Driver::new(self.0.clone(), None, Vec::new(), Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())])
+            .compile(&[Ident("main".to_string())], Target::DEFAULT)
     }
 }
 
@@ -727,11 +729,10 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct driver with core extern");
     let program = driver
-        .compile(&[Ident("main".to_string())])
+        .compile(&[Ident("main".to_string())], Target::DEFAULT)
         .expect("external primitive use should compile");
 
     let definitions = program
@@ -779,10 +780,9 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
         vec![ExternRoot {
             name: Ident("lib".to_string()),
             dir: library.0.clone(),
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct driver with library extern")
-    .compile(&[Ident("main".to_string())])
+    .compile(&[Ident("main".to_string())], Target::DEFAULT)
     .expect("calling an extern-owned concrete conformance should compile");
 
     let definitions = program
@@ -816,10 +816,9 @@ fn blanket_conforms_require_a_package_local_spec() {
         vec![ExternRoot {
             name: Ident("lib".to_string()),
             dir: library.0.clone(),
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct consumer")
-    .compile(&[Ident("main".to_string())]);
+    .compile(&[Ident("main".to_string())], Target::DEFAULT);
     let errors = match result {
         Ok(_) => panic!("a blanket conforming a foreign spec must be rejected"),
         Err(errors) => errors,
@@ -872,10 +871,9 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
                 name: Ident("lib".to_string()),
                 dir: library.0.clone(),
             },
-        ],
-    )
+        ], Target::DEFAULT)
     .expect("construct driver with I/O library extern");
-    let errors = match driver.compile(&[Ident("main".to_string())]) {
+    let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
         Ok(_) => panic!("a consumer must not conform two foreign I/O items"),
         Err(errors) => errors,
     };
@@ -908,10 +906,9 @@ fn old_boolean_console_glue_signature_is_rejected() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct driver with Option core extern");
-    let errors = match driver.compile(&[Ident("main".to_string())]) {
+    let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
         Ok(_) => panic!("an old console glue signature must fail"),
         Err(errors) => errors,
     };
@@ -947,10 +944,9 @@ fn formatting_is_not_available_from_core() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct driver with core extern");
-    let errors = match driver.compile(&[Ident("main".to_string())]) {
+    let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
         Ok(_) => panic!("core must not provide a formatting module"),
         Err(errors) => errors,
     };
@@ -1002,8 +998,7 @@ fn local_and_extern_root_identities_cannot_collide() {
         vec![ExternRoot {
             name: Ident("main".to_string()),
             dir: dependency.0.clone(),
-        }],
-    ) {
+        }], Target::DEFAULT) {
         Ok(_) => panic!("local and extern package identities must not collide"),
         Err(errors) => errors,
     };
@@ -1771,10 +1766,9 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core,
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct driver with core extern")
-    .compile(&[Ident("main".to_string())])
+    .compile(&[Ident("main".to_string())], Target::DEFAULT)
     {
         Ok(_) => panic!("a mismatched element annotation must be rejected"),
         Err(errors) => errors,
@@ -1798,9 +1792,9 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
     );
     // `primitive` is core-only, so compile it *as* core.
     let root = package.0.clone();
-    let program = Driver::new(root, Some(Ident("core".to_string())), Vec::new())
+    let program = Driver::new(root, Some(Ident("core".to_string())), Vec::new(), Target::DEFAULT)
         .expect("construct driver")
-        .compile(&[Ident("core".to_string())]);
+        .compile(&[Ident("core".to_string())], Target::DEFAULT);
     let program = match program {
         Ok(program) => program,
         Err(errors) => panic!("core-shaped primitive package must compile: {errors:?}"),
@@ -1838,9 +1832,9 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
     let own = format!("{}.omg", root.file_name().unwrap().to_str().unwrap());
     fs::write(nested.join(&own), "exposed helper() => i32 { 7 }\n").expect("write inner module");
 
-    let result = Driver::new(root.clone(), None, Vec::new())
+    let result = Driver::new(root.clone(), None, Vec::new(), Target::DEFAULT)
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())]);
+        .compile(&[Ident("main".to_string())], Target::DEFAULT);
     let _ = fs::remove_dir_all(&root);
 
     let errors = result.err().expect("an empty package root must not compile");
@@ -1864,10 +1858,9 @@ fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, V
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }],
-    )
+        }], Target::DEFAULT)
     .expect("construct driver with core extern")
-    .compile(&[Ident("main".to_string())]);
+    .compile(&[Ident("main".to_string())], Target::DEFAULT);
     drop(core);
     result
 }
@@ -2363,4 +2356,124 @@ fn a_by_value_generic_still_binds_a_slice() {
     package
         .compile()
         .expect("the by-value form binds the slice type parameter");
+}
+
+/// The whole point of Phase A's target threading: on a 32-bit target,
+/// `comp sizeof<usize>` must evaluate to 4 -- before the threading it
+/// silently evaluated to 8 regardless of `--target`. Observed through the
+/// compiled program's own checked tree (a `comp` global's initial value),
+/// since a 32-bit object can't be executed on this host.
+#[test]
+fn a_32_bit_target_sizes_usize_at_four_bytes() {
+    let target = Target { arch: omega_analyzer::Arch::Riscv32, os: omega_analyzer::Os::None };
+    let package = TestPackage::new(
+        r#"
+        width := comp sizeof<usize>;
+        width_isize := comp sizeof<isize>;
+        ptr_width := comp sizeof<*u8>;
+        main() => i32 { 0 }
+        "#,
+    );
+    let program = Driver::new(package.0.clone(), None, Vec::new(), target)
+        .expect("construct driver")
+        .compile(&[Ident("main".to_string())], target)
+        .expect("compiles for riscv32-none");
+    let width_of = |name: &str| -> Option<ConstValue> {
+        program.modules.iter().flat_map(|(_, module)| module.items.iter()).find_map(|item| {
+            match item {
+                omega_analyzer::checked::CheckedItem::Declaration(decl)
+                    if decl.ident.as_ref() == name =>
+                {
+                    Some(decl.initial_value.clone().expect("a `comp` global carries its value"))
+                }
+                _ => None,
+            }
+        })
+    };
+    for name in ["width", "width_isize", "ptr_width"] {
+        assert_eq!(
+            width_of(name),
+            Some(ConstValue::Number(NumberValue::Unsigned(4))),
+            "{name} must be 4 on a 32-bit target"
+        );
+    }
+}
+
+/// The range-check half of the same threading: a `usize` literal above
+/// `u32::MAX` is rejected on a 32-bit target (where `usize` is 32 bits)
+/// and accepted on the default 64-bit one -- before the threading, the
+/// 32-bit target silently accepted it against the hardcoded 64-bit domain.
+#[test]
+fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
+    let source = r#"
+        n : usize = 5000000000;
+        main() => i32 { 0 }
+        "#;
+    let target32 = Target { arch: omega_analyzer::Arch::Riscv32, os: omega_analyzer::Os::None };
+    let package32 = TestPackage::new(source);
+    let errors32 = match Driver::new(package32.0.clone(), None, Vec::new(), target32)
+        .expect("construct driver")
+        .compile(&[Ident("main".to_string())], target32)
+    {
+        Ok(_) => panic!("the out-of-range usize literal must be rejected on a 32-bit target"),
+        Err(errors) => errors,
+    };
+    assert!(
+        has_analysis_error(&errors32, |kind| matches!(
+            kind,
+            AnalysisErrorKind::NumberLiteralOutOfRange { .. }
+        )),
+        "expected NumberLiteralOutOfRange on the 32-bit target"
+    );
+
+    let package64 = TestPackage::new(source);
+    package64
+        .compile()
+        .expect("the same literal fits a 64-bit usize");
+}
+
+/// The MIR carries the decided facts: every function's final linker symbol
+/// and linkage, including the entry `main`'s bare unmangled symbol -- so a
+/// backend reads them instead of re-deriving them. Asserted by lowering a
+/// real compiled program (a generic instantiation must be `Weak`, the
+/// entry `main` exactly `"main"` and `Export`).
+#[test]
+fn lowered_mir_carries_symbols_and_linkage() {
+    let package = TestPackage::new(
+        r#"
+        add<T>(a: T, b: T) => T { a }
+        main() => i32 { add(1, 2) }
+        "#,
+    );
+    let program = Driver::new(package.0.clone(), None, Vec::new(), Target::DEFAULT)
+        .expect("construct driver")
+        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .expect("compiles");
+    let mir = omega_mir::lower_program(program.modules, &program.entry);
+    let functions: Vec<&omega_mir::MirFunctionDef> = mir
+        .iter()
+        .flat_map(|(_, module)| module.items.iter())
+        .filter_map(|item| match item {
+            omega_mir::MirItem::FunctionDefinition(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+
+    let main = functions
+        .iter()
+        .find(|f| f.name.as_ref() == "main")
+        .expect("the entry function is present");
+    assert_eq!(main.symbol, "main");
+    assert_eq!(main.linkage, omega_mir::MirLinkage::Export);
+
+    let add = functions
+        .iter()
+        .find(|f| f.name.as_ref() == "add")
+        .expect("the generic instantiation is present");
+    assert_eq!(add.linkage, omega_mir::MirLinkage::Weak);
+    assert!(
+        add.symbol.starts_with("_omg_"),
+        "an ordinary function's symbol is mangled: {}",
+        add.symbol
+    );
 }

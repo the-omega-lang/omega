@@ -16,7 +16,12 @@ pub(super) fn cranelift_type(leaf: Leaf, pointer_type: Type) -> Type {
         Leaf::I64 => types::I64,
         Leaf::F32 => types::F32,
         Leaf::F64 => types::F64,
-        Leaf::Ptr => pointer_type,
+        // Cranelift's `pointer_type()` is an ordinary integer type, so an
+        // address and a pointer-width integer are genuinely the same thing
+        // here -- the distinction `Leaf` draws (see its doc comment) exists
+        // for backends whose type systems separate the two, and collapsing
+        // it back is the correct mapping for this one, not a shortcut.
+        Leaf::Ptr | Leaf::Size => pointer_type,
     }
 }
 

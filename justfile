@@ -163,3 +163,110 @@ build-multi-print: build-std build-plat
 test-multi-print: build-multi-print
     ./target/multi_print > target/multi_print.stdout
     diff tests/multi_print.expected target/multi_print.stdout
+
+# --- the LLVM backend's own gates -----------------------------------------
+
+# The LLVM gates run the same programs through `--backend=llvm`, at both
+# `-O0` and `-O3` -- a wrong explicit alignment passes every functional
+# test at `-O0` and fails at `-O3`, so one opt level alone proves nothing.
+llvm-opt := "-O0"
+
+build-llvm:
+    RUST_BACKTRACE=1 cargo build --features llvm
+
+build-core-llvm: build-llvm
+    ./target/debug/omgc -v runtime/core/ -o target/core-llvm.o --backend=llvm {{llvm-opt}}
+
+build-std-llvm: build-core-llvm
+    ./target/debug/omgc -v runtime/std/ --extern=core:runtime/core/ -o target/std-llvm.o --backend=llvm {{llvm-opt}}
+
+build-plat-llvm: build-core-llvm
+    ./target/debug/omgc -v runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat-llvm.o --backend=llvm {{llvm-opt}}
+
+# The whole-program LLVM counterpart of `run-exec` (expects the same 69).
+# Unlike `run-exec`, which is a demo recipe you read the output of, this one
+# is a *gate* -- so it asserts the exit code rather than echoing it. `;
+# test $? = 69`, never `; echo $?` (the recipe's status becomes the `echo`'s,
+# so it can never fail -- it reported a passing segfault for exactly that
+# reason) and never `|| test $? = 69` either (`||` never runs when the
+# program *succeeds*, so a program that wrongly exited 0 would pass too).
+run-exec-llvm: build-std-llvm build-plat-llvm
+    ./target/debug/omgc -v examples/mathlib/ -o target/mathlib-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/mathlib/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/main-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/main-llvm.o target/mathlib-llvm.o target/core-llvm.o target/std-llvm.o target/plat-llvm.o -o target/example-llvm
+    ./target/example-llvm firstarg secondarg; test $? = 69
+
+test-core-only-llvm: build-core-llvm
+    ./target/debug/omgc -v examples/core_only/ --extern=core:runtime/core/ -o target/core_only-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/core_only-llvm.o target/core-llvm.o -o target/core_only-llvm
+    ./target/core_only-llvm
+
+test-range-llvm: build-core-llvm
+    ./target/debug/omgc -v examples/range_demo/ --extern=core:runtime/core/ -o target/range_demo-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/range_demo-llvm.o target/core-llvm.o -o target/range_demo-llvm
+    ./target/range_demo-llvm
+
+test-char-llvm: build-core-llvm
+    ./target/debug/omgc -v examples/char_demo/ --extern=core:runtime/core/ -o target/char_demo-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/char_demo-llvm.o target/core-llvm.o -o target/char_demo-llvm
+    ./target/char_demo-llvm
+
+test-spec-dispatch-llvm: build-core-llvm
+    ./target/debug/omgc -v examples/spec_dispatch/ --extern=core:runtime/core/ -o target/spec_dispatch-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/spec_dispatch-llvm.o target/core-llvm.o -o target/spec_dispatch-llvm
+    ./target/spec_dispatch-llvm
+
+test-spec-calls-llvm: build-core-llvm build-std-llvm
+    ./target/debug/omgc -v examples/spec_calls/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/spec_calls-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/spec_calls-llvm.o target/core-llvm.o target/std-llvm.o -o target/spec_calls-llvm
+    ./target/spec_calls-llvm
+
+test-root-layout-llvm: build-llvm
+    ./target/debug/omgc -v examples/root_layout/ -o target/root_layout-llvm.o --backend=llvm {{llvm-opt}}
+    test "$(nm --defined-only target/root_layout-llvm.o | rg -c ' main$')" = 1
+    nm --defined-only target/root_layout-llvm.o | rg '_omg_NvNtC11root_layout6nested4main'
+
+test-allocator-only-llvm: build-std-llvm
+    ./target/debug/omgc -v examples/allocator_only/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/allocator_only-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/allocator_only-llvm.o target/core-llvm.o target/std-llvm.o -o target/allocator_only-llvm
+    ./target/allocator_only-llvm
+    ! nm --defined-only target/allocator_only-llvm | rg 'Std(out|err|in).*(Write5write|Read4read)'
+
+test-io-llvm: build-std-llvm build-plat-llvm
+    ./target/debug/omgc -v examples/io_demo/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/io_demo-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/io_demo-llvm.o target/core-llvm.o target/std-llvm.o target/plat-llvm.o -o target/io_demo-llvm
+    ./target/io_demo-llvm < tests/io_demo.stdin > target/io_demo-llvm.stdout
+    diff tests/io_demo.expected target/io_demo-llvm.stdout
+
+test-stdio-contract-llvm: build-std-llvm build-plat-llvm
+    ./target/debug/omgc -v examples/stdio_contract/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/stdio_contract-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/stdio_contract-llvm.o target/core-llvm.o target/std-llvm.o target/plat-llvm.o -o target/stdio_contract-llvm
+    ./target/stdio_contract-llvm > target/stdio_contract-llvm.stdout
+    diff tests/stdio_contract.expected target/stdio_contract-llvm.stdout
+
+test-multi-print-llvm: build-std-llvm build-plat-llvm
+    ./target/debug/omgc -v examples/multi_print/printlib/ --name=printlib --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/printlib-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v examples/multi_print/app/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=printlib:examples/multi_print/printlib/ -o target/multi_print-llvm.o --backend=llvm {{llvm-opt}}
+    cc -Wl,--gc-sections target/multi_print-llvm.o target/printlib-llvm.o target/std-llvm.o target/core-llvm.o target/plat-llvm.o -o target/multi_print-llvm
+    ./target/multi_print-llvm > target/multi_print-llvm.stdout
+    diff tests/multi_print.expected target/multi_print-llvm.stdout
+
+# A Cranelift `core.o` linked against an LLVM `main.o` -- the mixed-backend
+# link, which is the whole point of the shared seam (symbols, linkage, and
+# the calling convention must agree across backends or this fails to link,
+# let alone run).
+build-mixed: build-core
+    RUST_BACKTRACE=1 cargo build --features llvm
+    ./target/debug/omgc -v examples/core_only/ --extern=core:runtime/core/ -o target/core_only-mixed.o --backend=llvm
+
+test-mixed: build-mixed
+    cc -Wl,--gc-sections target/core_only-mixed.o target/core.o -o target/core_only-mixed
+    ./target/core_only-mixed
+
+# The whole LLVM suite, at both opt levels. A `llvm-opt=` override has to
+# come *before* the recipe names -- `just recipe llvm-opt=-O3` is parsed as
+# a recipe *argument*, not an assignment, so the -O3 half silently never ran
+# when it was written that way round.
+test-llvm: build-llvm
+    just test-core-only-llvm test-range-llvm test-char-llvm test-spec-dispatch-llvm test-spec-calls-llvm test-root-layout-llvm test-allocator-only-llvm test-io-llvm test-stdio-contract-llvm test-multi-print-llvm run-exec-llvm
+    just llvm-opt="-O3" test-core-only-llvm test-range-llvm test-char-llvm test-spec-dispatch-llvm test-spec-calls-llvm test-root-layout-llvm test-allocator-only-llvm test-io-llvm test-stdio-contract-llvm test-multi-print-llvm run-exec-llvm

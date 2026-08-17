@@ -1,4 +1,5 @@
-use omega_codegen::{BackendKind, CodegenRequest, EmitKind, EmitOutput, OptLevel, Target};
+use omega_analyzer::Target;
+use omega_codegen::{BackendKind, CodegenRequest, EmitKind, EmitOutput, OptLevel};
 use omega_diagnostics::{BOLD, CYAN, GREEN, Renderer, paint};
 use omega_driver::{Driver, ExternRoot, basename};
 use omega_parser::highlight::OmegaHighlighter;
@@ -275,7 +276,7 @@ fn run() {
         verbose_step(colors, "Compiling", &format!("{} ({target})", entry_dir.display()));
     }
 
-    let mut driver = match Driver::new(entry_dir.clone(), name.clone(), externs) {
+    let mut driver = match Driver::new(entry_dir.clone(), name.clone(), externs, target) {
         Ok(driver) => driver,
         Err(errors) => {
             for error in &errors {
@@ -293,7 +294,7 @@ fn run() {
     let entry_name = declared_name;
     let entry_module = vec![entry_name.clone()];
 
-    let program = match driver.compile(&entry_module) {
+    let program = match driver.compile(&entry_module, target) {
         Ok(program) => program,
         Err(errors) => {
             let mut count = 0usize;
@@ -330,7 +331,7 @@ fn run() {
         verbose_step(colors, "Lowering", "checked tree to mir");
     }
 
-    let mir_modules = omega_mir::lower_program(program.modules);
+    let mir_modules = omega_mir::lower_program(program.modules, &program.entry);
 
     if verbose {
         verbose_step(

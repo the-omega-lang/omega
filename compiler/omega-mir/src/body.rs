@@ -234,6 +234,36 @@ pub struct MirDynamicCall {
 pub struct MirPlace {
     pub root: MirPlaceRoot,
     pub projections: Vec<MirProjection>,
+    /// The place's *final* type, after every projection -- carried straight
+    /// from `CheckedPlace::r#type` (which the analyzer already computed);
+    /// codegen seeds its own projection walk from the root and never needs
+    /// this to *re-derive* the type, but both backends load/store the whole
+    /// place as one value, and the type is what tells them the leaf shape.
+    pub r#type: ResolvedType,
+    /// The alignment of every load/store made *through* this place --
+    /// `layout::type_alignment(r#type)`, computed once here, at lowering,
+    /// instead of being re-derived (or, worse, assumed) by each backend.
+    ///
+    /// This is a claim about the place's **base** address only -- an access
+    /// at a byte offset into it is weaker, and a backend must lower the
+    /// claim accordingly (see `llvm::place::offset_align`). Omega packs
+    /// aggregates by default (`pack = 1, align = 1`), so for everything
+    /// without an `@layout(align = n)` anywhere in its type graph this is
+    /// simply `1` and nothing can be over-claimed. With `@layout(align =
+    /// n)` it is *not* yet a guarantee: `layout::type_alignment` does not
+    /// propagate through a containing type, so an aligned struct nested in
+    /// an unaligned one is aligned only relative to its parent -- see
+    /// `docs/14-known-issues.md`'s "`@layout(align = n)` is not yet a real
+    /// address guarantee". Cranelift's `MemFlags::new()` (no alignment claim) was
+    /// already the conservative reading; LLVM's default is *natural*
+    /// alignment, and a packed struct loaded with that assumption is UB its
+    /// optimizer will exploit -- so the LLVM backend must emit this value
+    /// explicitly on every load/store. (`stack_align_shift` deliberately
+    /// plays no part here: the 16-byte stack-slot floor is a property of
+    /// the *storage*, which each backend applies to its own allocas -- an
+    /// access's alignment is a property of the value, and claiming the
+    /// floor would be an over-claim against a packed local's real address.)
+    pub align: u32,
 }
 
 #[derive(Debug, Clone)]

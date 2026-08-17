@@ -4,8 +4,8 @@ impl<'r> Analyzer<'r> {
     /// Whether `r#type` has a literal constant form -- the requirement on
     /// enum header fields (their values are per-variant constants); see
     /// `ConstValue`.
-    pub(super) fn const_representable(r#type: &ResolvedType) -> bool {
-        r#type.numeric_kind().is_some()
+    pub(super) fn const_representable(&self, r#type: &ResolvedType) -> bool {
+        r#type.numeric_kind(self.target.pointer_bits()).is_some()
             || matches!(r#type, ResolvedType::Bool | ResolvedType::Char)
             // A string constant's own type is always immutable (see
             // `HirExpr::String`'s arm in `analyze_expr`), so only an
@@ -15,10 +15,10 @@ impl<'r> Analyzer<'r> {
             || matches!(r#type, ResolvedType::Str { mutable: false })
             // A compile-time slice (`&[...]`) is likewise always immutable
             // -- see `ConstValue::Slice`.
-            || matches!(r#type, ResolvedType::Slice { item, mutable: false } if Self::const_representable(item))
+            || matches!(r#type, ResolvedType::Slice { item, mutable: false } if self.const_representable(item))
             // A fixed-length array's own length is part of the field's
             // type, shared by every variant -- see `ConstValue::Array`.
-            || matches!(r#type, ResolvedType::SizedArray(item, _) if Self::const_representable(item))
+            || matches!(r#type, ResolvedType::SizedArray(item, _) if self.const_representable(item))
     }
 
     /// Evaluates an enum variant's tag/header value: a literal (number,
@@ -147,7 +147,7 @@ impl<'r> Analyzer<'r> {
             this.error(node_id, span, AnalysisErrorKind::EnumValueTypeMismatch { expected: expected.clone(), found });
             None
         };
-        let Some(kind) = expected.numeric_kind() else {
+        let Some(kind) = expected.numeric_kind(self.target.pointer_bits()) else {
             return mismatch(self, "a number literal".into());
         };
 

@@ -543,11 +543,10 @@ pub enum ResolvedType {
     I16,
     I32,
     I64,
-    /// Pointer-sized signed integer. Hardcoded to 64 bits in `numeric_kind`
-    /// below, matching this compiler's existing single-target reality (see
-    /// its doc comment) -- it tracks the *target's* pointer width, not a
-    /// fixed alias for `i64`, unlike `into_ir_type`'s mapping of this variant
-    /// to `codegen.pointer_type()`, which genuinely is target-correct.
+    /// Pointer-sized signed integer -- it tracks the *target's* pointer
+    /// width (`Target::pointer_bits`, threaded into `numeric_kind` and
+    /// `integer_domain` below), never a fixed alias for `i64`: it is
+    /// genuinely 32 bits on a 32-bit target.
     ISize,
     U8,
     U16,
@@ -824,19 +823,23 @@ impl ResolvedType {
     /// bitwise ops, just by first coercing to one of these (see
     /// `arithmetic_repr` below); `Bool` alone additionally gets a handful of
     /// ops natively, with no coercion at all (see `Analyzer::analyze_binary_op`).
-    pub fn numeric_kind(&self) -> Option<NumericKind> {
+    ///
+    /// `pointer_bits` is the *target's* pointer width (`Target::pointer_bits`)
+    /// -- the one answer this function cannot produce itself: `ISize`/`USize`
+    /// track the target, so their classification depends on it (32-bit for
+    /// the 32-bit targets, 64-bit for the rest).
+    pub fn numeric_kind(&self, pointer_bits: u32) -> Option<NumericKind> {
         Some(match self {
             Self::I8 => NumericKind::Signed(8),
             Self::I16 => NumericKind::Signed(16),
             Self::I32 => NumericKind::Signed(32),
             Self::I64 => NumericKind::Signed(64),
-            // Hardcoded to 64 bits -- see `ISize`/`USize`'s doc comments.
-            Self::ISize => NumericKind::Signed(64),
+            Self::ISize => NumericKind::Signed(pointer_bits),
             Self::U8 => NumericKind::Unsigned(8),
             Self::U16 => NumericKind::Unsigned(16),
             Self::U32 => NumericKind::Unsigned(32),
             Self::U64 => NumericKind::Unsigned(64),
-            Self::USize => NumericKind::Unsigned(64),
+            Self::USize => NumericKind::Unsigned(pointer_bits),
             Self::F32 => NumericKind::Float(32),
             Self::F64 => NumericKind::Float(64),
             _ => return None,
@@ -866,21 +869,21 @@ impl ResolvedType {
     /// annotation argument (`@layout(pack = sizeof<usize>)`) -- deliberately
     /// scoped to primitives only (`None` for structs/enums/unions/arrays/
     /// slices/functions/spec objects): a primitive's size needs no real
-    /// backend to know, only the same hardcoded-64-bit-pointer convention
-    /// `numeric_kind`/`cast_class` already use (see their doc comments), so
+    /// backend to know, only the target's own pointer width (the same one
+    /// `numeric_kind` resolves against -- see its doc comment), so
     /// `@layout`'s arguments can be resolved eagerly, in the analyzer, with
     /// the same span-anchored `Diagnostic` quality a plain integer literal
     /// gets. `sizeof<Type>` used as an ordinary *expression* (see
     /// `CheckedExpr::Sizeof`) is not scoped this way -- it supports any
     /// type, computed in codegen via the already-general `total_bytes`.
-    pub fn primitive_byte_size(&self) -> Option<u32> {
+    /// `pointer_bytes` is the *target's* pointer width, same reasoning as
+    /// `numeric_kind`'s parameter.
+    pub fn primitive_byte_size(&self, pointer_bytes: u32) -> Option<u32> {
         match self {
             Self::Bool => Some(1),
             Self::Char => Some(4),
-            // Hardcoded 64-bit -- see `cast_class`'s identical precedent for
-            // treating a pointer as a 64-bit integer.
-            Self::Pointer { .. } => Some(8),
-            _ => self.numeric_kind().map(|kind| {
+            Self::Pointer { .. } => Some(pointer_bytes),
+            _ => self.numeric_kind(pointer_bytes * 8).map(|kind| {
                 let width = match kind {
                     NumericKind::Signed(w) | NumericKind::Unsigned(w) | NumericKind::Float(w) => w,
                 };
@@ -892,14 +895,16 @@ impl ResolvedType {
     /// This type's shape for `<Target>expr` casting purposes -- `None` for
     /// anything a cast can't touch at all (structs/enums/unions/slices/
     /// `void`/functions; see `AnalysisErrorKind::InvalidCast`). A pointer
-    /// counts as an unsigned 64-bit int -- this compiler's existing
-    /// single-target assumption (exactly matching `numeric_kind`'s own
-    /// hardcoded 64-bit `isize`/`usize` above), and literally true at the IR
-    /// level: `Codegen::pointer_type()` already returns the same Cranelift
-    /// type an ordinary 64-bit integer would. This one case is what makes
-    /// pointer<->pointer, pointer<->integer, and integer<->pointer casts all
-    /// fall out of the *same* int-to-int width rules `Analyzer::
-    /// resolve_cast_kind` applies, with no special-casing beyond it.
+    /// counts as an unsigned integer of the *target's* pointer width --
+    /// exactly what `numeric_kind` classifies `isize`/`usize` at, and
+    /// literally true at the IR level (a pointer leaf and a `usize` leaf
+    /// are the same width by construction; see `layout::Leaf`). This one
+    /// case is what makes pointer<->pointer, pointer<->integer, and
+    /// integer<->pointer casts all fall out of the *same* int-to-int width
+    /// rules `Analyzer::resolve_cast_kind` applies, with no special-casing
+    /// beyond it -- and it has to follow the target, or on a 32-bit target
+    /// `<u64>some_ptr` classifies as a same-width `Reinterpret` and the
+    /// value keeps its 32-bit width while its type claims 64.
     ///
     /// `Char`/`Bool` get a class the same way (their own scalar
     /// representation's width -- 32 and 8 bits respectively, both
@@ -910,8 +915,10 @@ impl ResolvedType {
     /// there's no implicit "nonzero is true"). `Analyzer::analyze_cast`
     /// gates that asymmetry explicitly (see `allows_cast_into`) rather than
     /// this method trying to encode a direction it has no way to express.
-    pub fn cast_class(&self) -> Option<CastClass> {
-        if let Some(kind) = self.numeric_kind() {
+    /// `pointer_bits` is the *target's* pointer width -- `ISize`/`USize`
+    /// classify at it, exactly like `numeric_kind` does.
+    pub fn cast_class(&self, pointer_bits: u32) -> Option<CastClass> {
+        if let Some(kind) = self.numeric_kind(pointer_bits) {
             return Some(match kind {
                 NumericKind::Signed(width) => CastClass::Int {
                     width,
@@ -926,7 +933,7 @@ impl ResolvedType {
         }
         match self {
             Self::Pointer { .. } => Some(CastClass::Int {
-                width: 64,
+                width: pointer_bits,
                 signed: false,
             }),
             Self::Char => Some(CastClass::Int {
@@ -960,20 +967,24 @@ impl ResolvedType {
     /// a match that covers the domain *around* the hole without touching
     /// it as exhaustive without an `else` -- a minor conservatism, not a
     /// correctness gap.
-    pub fn integer_domain(&self) -> Option<(i128, i128)> {
+    /// `pointer_bits` is the *target's* pointer width -- `ISize`/`USize`
+    /// domains follow it exactly like `numeric_kind`'s classification does.
+    pub fn integer_domain(&self, pointer_bits: u32) -> Option<(i128, i128)> {
         Some(match self {
             Self::Bool => (0, 1),
             Self::Char => (0, char::MAX as i128),
             Self::I8 => (i8::MIN as i128, i8::MAX as i128),
             Self::I16 => (i16::MIN as i128, i16::MAX as i128),
             Self::I32 => (i32::MIN as i128, i32::MAX as i128),
-            // `ISize` is hardcoded to 64 bits -- see `numeric_kind`'s doc
-            // comment.
-            Self::I64 | Self::ISize => (i64::MIN as i128, i64::MAX as i128),
+            Self::I64 => (i64::MIN as i128, i64::MAX as i128),
+            Self::ISize if pointer_bits == 32 => (i32::MIN as i128, i32::MAX as i128),
+            Self::ISize => (i64::MIN as i128, i64::MAX as i128),
             Self::U8 => (u8::MIN as i128, u8::MAX as i128),
             Self::U16 => (u16::MIN as i128, u16::MAX as i128),
             Self::U32 => (u32::MIN as i128, u32::MAX as i128),
-            Self::U64 | Self::USize => (u64::MIN as i128, u64::MAX as i128),
+            Self::U64 => (u64::MIN as i128, u64::MAX as i128),
+            Self::USize if pointer_bits == 32 => (u32::MIN as i128, u32::MAX as i128),
+            Self::USize => (u64::MIN as i128, u64::MAX as i128),
             _ => return None,
         })
     }

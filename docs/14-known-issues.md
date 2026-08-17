@@ -35,10 +35,12 @@ new one is found.
   projection (`-O1`+ only), or even a plain local in a large enough
   function (previously believed safe; it isn't, it was just small
   enough to not show it). [primitives.md](01-primitives.md)
+
 - **No real C-ABI aggregate-passing convention** — structs/enums pass as
   flattened positional scalars, fine Omega-to-Omega, not safely callable
   from hand-written C expecting real struct-passing rules.
   [primitives.md](01-primitives.md)
+
 - **Extern *data* declarations (a non-function `extern`) have no storage
   story** — fully resolved and type-checked like everything else, but
   codegen still has nothing sound to do with it (`todo!()` in
@@ -47,11 +49,13 @@ new one is found.
   non-`comp` `ident := comp value;`) is *not* this gap anymore — both
   are fully implemented, including `mut`. [mir-and-codegen.md](16-mir-and-codegen.md),
   [compile-time-evaluation.md](19-compile-time-evaluation.md)
+
 - **Assigning *into* a function parameter directly (no deref in between)
   is still `todo!()`** — taking a parameter's *address* is fixed (see
   [mir-and-codegen.md](16-mir-and-codegen.md)'s own "Fixed" note); direct
   assignment is a separate, still-unfixed code path. An explicit local
   copy works around it today. [mir-and-codegen.md](16-mir-and-codegen.md)
+
 - ~~**A monomorphized *conform* method gets strong linkage**~~ — **fixed.**
   `linkage_for` decided weak vs. strong from the *function's* own `type_args`,
   which is empty for a conform method: the genericity lives in the target
@@ -74,6 +78,7 @@ new one is found.
   `*str` and `*[]u8`/`*[]i8` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
   [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
+
 - **`char`'s classifiers are ASCII-only, not Unicode.** `is_alphabetic`,
   `is_whitespace` and `to_ascii_*` cover the ASCII range and nothing beyond
   it; a `char` above `0x7F` is reported as neither alphabetic nor whitespace
@@ -82,6 +87,7 @@ new one is found.
   that data lives and what it costs in code size. The names are deliberately
   honest about the `to_ascii_*` half; the `is_*` half is the one that could
   mislead. [primitives.md](01-primitives.md)
+
 - **`char`'s validity is a supported path, not an enforced invariant.**
   `char::from_u32` rejects out-of-range values and UTF-16 surrogates, and the
   direct `<char>some_u32` cast stays refused — but a pointer reinterpretation
@@ -91,12 +97,14 @@ new one is found.
   is recorded because several comments would otherwise be tempted to claim a
   `char` is always valid — the true statement is that the supported path
   always produces a valid one. [primitives.md](01-primitives.md)
+
 - **There is no `!` (logical-not) operator for `bool`.** `& | ^` are `bool`'s
   logical operators (non-short-circuiting, since `&&`/`||` do not exist
   either), and negation is written `if x { false } else { true }` — see
   `core::cmp`'s `not_equals`. Adding `!` is a real if small language feature:
   a new parser token plus a new `Expression`/`HirExpr`/`CheckedExpr`/`MirExpr`
   variant. [control-flow.md](03-control-flow.md)
+
 - **`std::fmt`'s float output is fixed-precision, not round-trip** — six
   fractional digits, with a scientific fallback below `1e-6` and at or above
   `1e19` whose normalization loop (repeated multiply/divide by ten) is itself
@@ -168,9 +176,11 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
 - **No default-bodied `gap` function** — every gap function must
   currently be a bare requirement; a body is rejected outright
   ([gaps-and-glue.md](21-gaps-and-glue.md)).
+
 - **No "override" or test-only glue concept** — a second `glue` for the
   same gap is always a hard error project-wide, with no way to shadow one
   intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
+
 - **`MultipleGluesForGap` cannot point at the conflicting glue blocks.**
   The error is anchored at the *gap*'s declaration (correctly — neither
   glue is more at fault), and names each conflicting glue as
@@ -184,6 +194,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   `Driver::sweep_gaps` emit one additional `CompileError::Analysis` per
   glue site in that glue's own module. Left alone because the choice
   between those is a diagnostics-subsystem design decision, not a local fix.
+
 - **`@suppress(unfilled_gap)` is unreachable.** Every warning's rendering
   ends with the generic "suppress this with `@suppress(<slug>)`" note, so
   `UnfilledGap` advertises it — but `gap` is a first-class declaration that
@@ -226,6 +237,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   top-level statement node would fix the demonstrated case while leaving
   every nested expression inside an expansion still wrong.
   [macros.md](12-macros.md)
+
 - **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
   documents.** `macros.rs`'s budget is spent one unit per invocation and
   reports `ExpansionLimitExceeded` at 256, but each expansion costs roughly
@@ -237,6 +249,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   position adds a second recursion path (`expand_statements_invocation`)
   with the same shape. The fix is a *depth* limit rather than (or as well
   as) a total-expansion budget. [macros.md](12-macros.md)
+
 - **Duplicate macro parameter names are silently accepted**, e.g.
   `macro m($a: expr, $a: expr)`; bindings are a `HashMap`, so the later
   parameter wins and the earlier one becomes unreferenceable. The same
@@ -245,6 +258,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   `Vec<MacroParam>` model had it too); the fix is one duplicate check in
   `parse_macro_signature` plus a `ParseErrorKind` variant.
   [macros.md](12-macros.md)
+
 - **A repetition separator is not restricted to tokens that can survive
   substitution.** `parse_repetition` only rejects brackets and multi-token
   separators, so `$...($x){ ... }` or `$...($){ ... }` parses, emits the
@@ -252,12 +266,14 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   expansion-site parse error rather than at the definition. Low impact
   (nobody writes it deliberately), but the diagnostic points at the wrong
   place. [macros.md](12-macros.md)
+
 - **Macro visibility is not transitive.** A module's macro environment is
   built from its *own* import statements and each target's *own* definitions;
   an imported module's imports are never followed. This matches the language
   having no re-export concept, and it is what keeps the pre-pass acyclic, but
   it means a package cannot curate a macro surface the way it can't curate an
   item surface. [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+
 - **Importing a macro leaves a spurious `unused import` warning.** Macro
   names are resolved and consumed by the pre-pass in `omega-driver`'s
   `Driver::macro_env`, entirely before HIR exists, so the ordinary
@@ -280,10 +296,12 @@ need a breaking change to fix — full writeups in
   (`ResolveError::ItemFailed` firing with no primary error ever shown) —
   likely `ensure_overload_signature` resolving a generic candidate's own
   signature with an empty substitution list.
+
 - ~~**Two independent pending-spec-method queues**~~ — **fixed.** With
   conformance living only in the conform registry, an aggregate queues
   nothing, so the `ItemKey`-keyed queue was deleted outright rather than
   unified; `ConformanceEntry::pending` is the only one left.
+
 - **A directory sharing its package root's name is skipped without saying
   so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
   `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
@@ -295,216 +313,124 @@ need a breaking change to fix — full writeups in
   directory itself, so a package with both a root file *and* a same-named
   subdirectory still loses the subdirectory quietly. Full writeup in
   [modules and linkage](10-modules-and-linkage.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
+
 - **`ResolveError::Cycle` carries a chain it never populates** — it always
   prints one module, so the rendered message implies a cycle it never
   shows.
+
 - **Module paths and item paths are the same untyped `Vec<Ident>`**, so
   nothing prevents confusing the two.
+
 - **Diagnostic scoping for scanned (extern/`core`) modules is three ad-hoc
   lists** with four different outcomes and no stated policy.
+
 - **A node's identity is threaded as a bare `(HirId, Span)` pair** through
   ~60 analyzer signatures, with nothing tying the two together.
+
 - **`reveal`'s bypass must be re-activated by every operand position
   individually**, with no backstop — three positions have now been fixed
   one at a time.
 
 ## Design debt worth watching
 
-- Every new `Expression`/`HirExpr`/`CheckedExpr` variant needs updates
-  across up to five separate exhaustive matches spread over multiple
-  crates (macro expansion, prelude re-exports, HIR lowering, defer-id
-  collection, codegen emission) — the compiler catches every miss as a
-  hard exhaustiveness error, so nothing is silently skipped, but budget
-  for it when adding new expression forms.
+- **Omega's calling convention is not the platform C ABI.** The largest
+  piece of deliberate debt in the compiler, and it was *deliberately
+  preserved unchanged* when the LLVM backend landed — mirrored rather than
+  fixed, so that both backends agree with each other. Two facts, both in
+  `omega-codegen/src/abi.rs`:
 
-## Diagnostics
+  1. **Aggregates are flattened into their scalar leaves**, each leaf
+     becoming its own parameter. C's SysV instead classifies a struct into
+     eightbytes: `struct { i32 a; i32 b; }` is *one* register under C, and
+     *two* parameters here.
+  2. **The return rule is `leaves > 2` → `sret`**, justified in its own doc
+     comment by "x86_64 SysV has exactly two integer return registers
+     (rax/rdx)". That is an x86_64 fact, and it is now applied unchanged to
+     **every** architecture — aarch64 (x0/x1, plus x8 as the indirect
+     result register) and riscv (a0/a1) included.
 
-- ~~**A method call's receiver, and any write through a projection, did not
-  count as reads**~~ — **fixed.** `Context::mark_used` was reached from a
-  single site (`analyze_expr`'s `HirExpr::Place` arm), which a *receiver*
-  never goes through — it is analyzed as a place instead — and which a
-  projected write (`*out = 5`, `s.v = 5`) does not reach either. So a
-  parameter used only as a receiver, or only as an out-pointer, reported
-  `UnusedParameter`: `write_bool(out: spec *mut Write, …)` used `out` twice
-  and still warned, and `List::pop(*mut self, out: *mut T)` did too.
-  Long-standing and not spec-object-specific — a concrete `d.get()` warned
-  identically — but the stdio redesign made it unmissable, since every
-  `write_*` helper uses its `out` parameter only as a receiver. Marked now in
-  `resolve_callee` (receivers) and in `analyze_place` when the place has at
-  least one projection (a projection must load its root to compute an
-  address). A bare, projection-less `n = 5` is deliberately still a pure
-  write, so `UnusedVariable` keeps firing on write-only bindings.
+  C's variadic default-argument promotion *is* implemented correctly
+  (`abi::variadic_promotion`), so variadic C interop is unaffected.
 
-- **Latent blanket overlap is diagnosed at use, not declaration.** The
-  compiler intentionally does not try to prove whether arbitrary spec bounds
-  overlap. Two unrelated blankets become an `AmbiguousConformance` only when
-  a concrete type satisfies both; this avoids rejecting declarations that
-  can never apply together, at the cost of a downstream diagnostic.
-  [specs.md](08-specs.md)
+  What this does and does not break: Omega-to-Omega calls are correct on
+  every backend and target, because both backends read the same
+  `AbiSignature` and therefore agree exactly — that is what lets a
+  Cranelift `core.o` link against an LLVM `main.o` (`just test-mixed`).
+  Only the **C boundary** is wrong, and only for aggregates passed or
+  returned **by value**. Scalars and pointers — all Omega's C interop uses
+  today — are correct.
 
-- **Design note: definition-site `spec T` return types are removed.**
-  `make() => spec Animal { ... }` is now `SpecStaticNotAllowedHere` on a
-  free function and a method alike, deliberately — the syntax promises "some
-  unknown type implementing XYZ", which is true of a spec *declaration*
-  (each implementor answers differently) and false at a definition site
-  (one body, one type, known to its author), and its only benefit was
-  hiding a name. The removed machinery was a phase inversion (body analysis
-  during the signature phase); the rule is now uniform: a return type is
-  either written concretely, or chosen by the *caller* through an ordinary
-  generic parameter (`f<T: Animal>() => T`). The spec-declaration position
-  (`to_iterator(*self) => spec Iterator<T>`) and the parameter position
-  (unchanged sugar) both stay — see [specs.md](08-specs.md). Reopening this
-  would need a compiler that can afford body analysis during the signature
-  phase in every compilation module; until then the workarounds are to name
-  the concrete type or take a bound generic parameter.
-  [specs.md](08-specs.md)
+  To keep it that way rather than waiting for someone to discover it,
+  aggregate-by-value across an `extern` boundary is a **hard error**
+  (`AnalysisErrorKind::ExternAggregateByValue`) pointing back at this
+  entry. One `if` to delete once a real per-target C ABI exists; until
+  then it turns a silent miscompile into a compile error.
 
-## Gaps and glue
+  Fixing it properly means per-target ABI classification in `abi.rs`
+  (eightbyte classification for SysV, AAPCS for aarch64, ...) plus a
+  decision on whether Omega's *own* convention should follow the
+  platform's or stay deliberately its own with `extern` as the sole
+  translation point. That decision has not been made.
 
-- **No default-bodied `gap` function** — every gap function must
-  currently be a bare requirement; a body is rejected outright
-  ([gaps-and-glue.md](21-gaps-and-glue.md)).
-- **No "override" or test-only glue concept** — a second `glue` for the
-  same gap is always a hard error project-wide, with no way to shadow one
-  intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
-- **`MultipleGluesForGap` cannot point at the conflicting glue blocks.**
-  The error is anchored at the *gap*'s declaration (correctly — neither
-  glue is more at fault), and names each conflicting glue as
-  `<module path>#<internal HirId>`, e.g. `plat#1, other#1`. Within a single
-  module that degrades to `t#3, t#7`, which names nothing a reader can act
-  on. The real fix is a secondary diagnostic label at each glue's own span,
-  and those spans are in *different files* from the primary — the renderer
-  only supports same-file secondary labels today (`Redeclaration`'s
-  `previous: Option<Span>` is the only precedent). Resolving it means
-  either cross-file labels in `omega-diagnostics`, or having
-  `Driver::sweep_gaps` emit one additional `CompileError::Analysis` per
-  glue site in that glue's own module. Left alone because the choice
-  between those is a diagnostics-subsystem design decision, not a local fix.
-- **`@suppress(unfilled_gap)` is unreachable.** Every warning's rendering
-  ends with the generic "suppress this with `@suppress(<slug>)`" note, so
-  `UnfilledGap` advertises it — but `gap` is a first-class declaration that
-  takes no annotations at all, so following the advice is now a hard parse
-  error. It never worked before either: `Driver::sweep_gaps` constructs the
-  warning directly rather than going through `Analyzer::warn`, which is the
-  only thing that consults `@suppress`. Fixing it means either giving
-  `HirGapDef` an annotation list (which the gap/glue plan deliberately
-  avoided, to keep anything downstream from branching on gap-level
-  metadata) or teaching the whole-program sweeps to honour suppression and
-  suppressing the note when a warning kind has no suppressible anchor.
-  [gaps-and-glue.md](21-gaps-and-glue.md)
+- **`target/debug/omgc` is one path for two different builds.** `cargo
+  build` and `cargo build --features llvm` write the same binary, so
+  whichever ran last wins — a plain `cargo test` leaves an `omgc` that
+  rejects `--backend=llvm`. Every `just` recipe needing LLVM depends on
+  `build-llvm` first, so the gates are unaffected; it only bites when
+  running `omgc` by hand.
 
-## Visibility
+- **`@layout(align = n)` is not yet a real address guarantee.**
+  `layout::type_alignment` reports a type's *declared* `@layout(align)` and
+  nothing else — it never propagates through a containing type. So for
 
-- **No re-export / `pub use`-equivalent.** Matches the language having no
-  re-export concept at all today. [visibility.md](07-visibility.md)
+  ```
+  @layout(align = 16) struct Inner { v: i64; }
+  struct Outer { pad: u8; inner: Inner; }
+  ```
 
-## Macros
+  `Outer` has alignment 1, `layout_fields` places `inner` at offset 16
+  *within* `Outer`, and `Outer` itself is placed at whatever unaligned
+  offset it lands on — so `inner`'s absolute address is aligned only by
+  luck. Two consequences, both reachable today:
 
-- **A node built from a macro expansion gets a composite span running from
-  the call site to the definition site, and statement position makes it
-  visible in ordinary diagnostics.** Every token keeps its own real
-  originating span (deliberately — there is no render-to-text-and-relex
-  round trip), so a node built from a mix of call-site argument tokens and
-  definition-site body tokens spans both. `expand_expr` hides this for
-  expression position by pinning the invocation's own call-site span back
-  onto the outer node, but a statement-position expansion has no equivalent:
-  the spliced statements and their expressions keep the composite spans the
-  re-parse produced. `just build-exe` on `examples/dev/main.omg`
-  demonstrates it — the `unused return value` warning for
-  `call_each$(puts, ...)` at line 769 renders a label stretching to the
-  macro's own definition at line 1495, ~700 lines of elided snippet for a
-  one-line statement. Not fixed here because the honest fix is a single
-  span policy shared by all three positions (item position has the same
-  latent problem), which is a design decision rather than a local patch:
-  either remap every span in an expansion to the call site (losing the
-  ability to point inside a macro body at all) or give `Span` a notion of
-  expansion provenance so the renderer can show both. Pinning only the
-  top-level statement node would fix the demonstrated case while leaving
-  every nested expression inside an expansion still wrong.
-  [macros.md](12-macros.md)
-- **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
-  documents.** `macros.rs`'s budget is spent one unit per invocation and
-  reports `ExpansionLimitExceeded` at 256, but each expansion costs roughly
-  twenty stack frames (the recursive-descent re-parse plus `expand_expr`'s
-  own very large frame), so `macro a() => { a$() }` aborts on a stack
-  overflow before the budget runs out on a 2 MiB thread stack — it only
-  reports cleanly with `RUST_MIN_STACK` raised. Pre-existing: reproduced
-  identically on the baseline commit with the old `a!()` syntax. Statement
-  position adds a second recursion path (`expand_statements_invocation`)
-  with the same shape. The fix is a *depth* limit rather than (or as well
-  as) a total-expansion budget. [macros.md](12-macros.md)
-- **Duplicate macro parameter names are silently accepted**, e.g.
-  `macro m($a: expr, $a: expr)`; bindings are a `HashMap`, so the later
-  parameter wins and the earlier one becomes unreferenceable. The same
-  applies when a fixed parameter and the variadic share a name, where the
-  variadic's `Many` binding shadows the fixed `One`. Pre-existing (the flat
-  `Vec<MacroParam>` model had it too); the fix is one duplicate check in
-  `parse_macro_signature` plus a `ParseErrorKind` variant.
-  [macros.md](12-macros.md)
-- **A repetition separator is not restricted to tokens that can survive
-  substitution.** `parse_repetition` only rejects brackets and multi-token
-  separators, so `$...($x){ ... }` or `$...($){ ... }` parses, emits the
-  `$name`/`$` token literally, and fails much later with a confusing
-  expansion-site parse error rather than at the definition. Low impact
-  (nobody writes it deliberately), but the diagnostic points at the wrong
-  place. [macros.md](12-macros.md)
-- **Macro visibility is not transitive.** A module's macro environment is
-  built from its *own* import statements and each target's *own* definitions;
-  an imported module's imports are never followed. This matches the language
-  having no re-export concept, and it is what keeps the pre-pass acyclic, but
-  it means a package cannot curate a macro surface the way it can't curate an
-  item surface. [macros.md](12-macros.md), [visibility.md](07-visibility.md)
-- **Importing a macro leaves a spurious `unused import` warning.** Macro
-  names are resolved and consumed by the pre-pass in `omega-driver`'s
-  `Driver::macro_env`, entirely before HIR exists, so the ordinary
-  import-usage tracking never observes the use and reports the import as
-  dead. Every cross-package macro import warns today.
-  [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+  1. `MirExpr::StructLiteral` concatenates only the *fields'* leaves, while
+     `layout::leaves_of` includes the interior padding leaves an
+     `@layout(align)` field forces. The whole-value write path and the
+     byte-offset read path therefore disagree about where `inner` is, and
+     the two backends give two *different* wrong answers. This predates the
+     LLVM backend (Cranelift is equally wrong) and is a layout-model bug,
+     not a codegen one.
+  2. `MirPlace::align` is derived from `type_alignment`, and the LLVM
+     backend turns it into a real `align` on every load and store.
+     `llvm::place::offset_align` weakens the claim by the access's own byte
+     offset, so nothing is over-claimed *relative to the place's base* —
+     but the base itself can still be over-claimed when reached through a
+     pointer (`p: *Inner` deref claims 16), because of the propagation gap
+     above. Cranelift never claimed anything, so it cannot be miscompiled
+     by this; the LLVM backend can, at `-O2`/`-O3`.
 
-## Compiler internals
+  Resolving it means deciding what `@layout(align = n)` actually promises:
+  making `type_alignment` the max of a type's own declared alignment and
+  its fields' (so a container inherits its members' requirement, as C and
+  Rust both do), making `leaves_of`'s padding leaves reach every value
+  construction path, and giving the language an aligned-allocation story
+  for anything reached through a pointer. Until then, `@layout(align)` is
+  usable for *relative* field placement and not as an address guarantee.
+  No gate covers `@layout(align)` at all today, which is why this was not
+  caught earlier.
 
-Shape problems in `omega-driver` and `omega-analyzer` that work today but each
-need a breaking change to fix — full writeups in
-[design-review.md](17-design-review.md#compiler-architecture).
-
-- **Overloading needs a whole parallel item pipeline** (two extra caches,
-  two extra sweeps, two extra resolver methods) purely because the item
-  query key can't name one candidate of an overload group — which also
-  makes generic overloads structurally impossible. Confirmed: a generic and
-  non-generic overload of the same name (`f(x: i32)` / `f<T>(x: T)`) doesn't
-  just get rejected, it fails with an opaque, rootless diagnostic
-  (`ResolveError::ItemFailed` firing with no primary error ever shown) —
-  likely `ensure_overload_signature` resolving a generic candidate's own
-  signature with an empty substitution list.
-- ~~**Two independent pending-spec-method queues**~~ — **fixed.** With
-  conformance living only in the conform registry, an aggregate queues
-  nothing, so the `ItemKey`-keyed queue was deleted outright rather than
-  unified; `ConformanceEntry::pending` is the only one left.
-- **A directory sharing its package root's name is skipped without saying
-  so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
-  `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
-  exists to de-duplicate. The *consequence* is now diagnosed —
-  a package that ends up with no modules is `CompileError::EmptyPackage`,
-  which names the expected root file and tells an old-layout package what to
-  move (it previously panicked on `compile`'s "always includes at least the
-  entry module" expectation). What remains is that nothing reports the skipped
-  directory itself, so a package with both a root file *and* a same-named
-  subdirectory still loses the subdirectory quietly. Full writeup in
-  [modules and linkage](10-modules-and-linkage.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
-- **`ResolveError::Cycle` carries a chain it never populates** — it always
-  prints one module, so the rendered message implies a cycle it never
-  shows.
-- **Module paths and item paths are the same untyped `Vec<Ident>`**, so
-  nothing prevents confusing the two.
-- **Diagnostic scoping for scanned (extern/`core`) modules is three ad-hoc
-  lists** with four different outcomes and no stated policy.
-- **A node's identity is threaded as a bare `(HirId, Span)` pair** through
-  ~60 analyzer signatures, with nothing tying the two together.
-- **`reveal`'s bypass must be re-activated by every operand position
-  individually**, with no backstop — three positions have now been fixed
-  one at a time.
-
-## Design debt worth watching
+- **Nothing gates a 32-bit target end to end.** Phase A of the
+  LLVM-backend work made every width-sensitive analyzer question read the
+  real target width, and `riscv32-none`/`thumbv7em-none` objects do emit —
+  but the coverage stops at object emission plus two analyzer-level
+  assertions (`comp sizeof<usize> == 4`, and a `usize` literal above
+  `u32::MAX` being rejected). Nothing links or *runs* a 32-bit image, so
+  32-bit codegen is proved only by inspection. A residual hardcode in
+  `ResolvedType::cast_class`'s pointer arm survived Phase A for exactly
+  this reason and was found only by reading the emitted IR by hand.
+  Closing it needs a 32-bit runner (qemu-user, or a freestanding image
+  plus a linker script, which needs an entry convention Omega has not
+  defined — `Os::None` stops at "emits a correct `.o`" on purpose).
 
 - Every new `Expression`/`HirExpr`/`CheckedExpr` variant needs updates
   across up to five separate exhaustive matches spread over multiple
@@ -540,12 +466,6 @@ need a breaking change to fix — full writeups in
   contradict the mental model that an alias is only a name for its members.
   The same non-expansion applies to the derivation subset test. [specs.md](08-specs.md)
 
-- **Latent blanket overlap is diagnosed at use, not declaration.** The
-  compiler intentionally does not try to prove whether arbitrary spec bounds
-  overlap. Two unrelated blankets become an `AmbiguousConformance` only when a
-  concrete type satisfies both; this avoids rejecting declarations that can
-  never apply together, at the cost of a downstream diagnostic.
-
 - **Type-level capture remains possible in macro-generated declarations.**
   Generic parameters and `Self` intentionally ignore macro origin, because
   they are substitution-bound rather than lexical bindings. A generated type
@@ -553,6 +473,7 @@ need a breaking change to fix — full writeups in
   argument. There is no in-tree instance; partitioning these bindings would
   break the `Self` uses in the primitive conformance macros.
   [macros.md](12-macros.md)
+
 - **Macro-authored unused locals are not linted.** Expansion spans are anchored
   at the invocation and carry no source-file identity, so reporting the lint
   would misleadingly blame the caller. Locals introduced by a macro are

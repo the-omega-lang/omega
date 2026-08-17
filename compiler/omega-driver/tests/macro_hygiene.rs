@@ -1,3 +1,4 @@
+use omega_analyzer::Target;
 use omega_analyzer::error::AnalysisErrorKind;
 use omega_driver::{CompileError, Driver};
 use omega_parser::prelude::Ident;
@@ -28,9 +29,9 @@ impl TestPackage {
     }
 
     fn compile(&self) {
-        Driver::new(self.0.clone(), None, vec![])
+        Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".into())])
+            .compile(&[Ident("main".into())], Target::DEFAULT)
             .expect("package should compile");
     }
 }
@@ -77,9 +78,9 @@ fn an_exposed_macro_cannot_name_a_hidden_item() {
         exposed macro apply($value: expr) => { hidden($value) }
         "#,
     );
-    let result = Driver::new(package.0.clone(), None, vec![])
+    let result = Driver::new(package.0.clone(), None, vec![], Target::DEFAULT)
         .expect("construct driver")
-        .compile(&[Ident("main".into())]);
+        .compile(&[Ident("main".into())], Target::DEFAULT);
     let errors = match result {
         Ok(_) => panic!("an exposed macro may not expose a hidden dependency"),
         Err(errors) => errors,

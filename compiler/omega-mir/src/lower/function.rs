@@ -30,6 +30,7 @@ use crate::body::{
     MirSlice, MirSpecCoerce, MirStructLiteral, MirTerminator, MirUnionConstruct,
 };
 use crate::ids::{BlockId, LocalId};
+use super::place::place_align;
 use omega_analyzer::checked::{
     CheckedBlock, CheckedBreak, CheckedContinue, CheckedDefer, CheckedExpr, CheckedExprNode, CheckedFor, CheckedIf,
     CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
@@ -206,6 +207,8 @@ impl FunctionLowerer {
                 kind: MirExpr::Place(MirPlace {
                     root: MirPlaceRoot::Local { id: flag, r#type: ResolvedType::Bool },
                     projections: vec![],
+                    r#type: ResolvedType::Bool,
+                    align: place_align(&ResolvedType::Bool),
                 }),
             };
             lowerer.set_terminator(MirTerminator::Branch { condition: flag_read, then_block: run, else_block: next });
@@ -228,6 +231,8 @@ impl FunctionLowerer {
             kind: MirExpr::Place(MirPlace {
                 root: MirPlaceRoot::Local { id: slot, r#type: return_type.clone() },
                 projections: vec![],
+                r#type: return_type.clone(),
+                align: place_align(&return_type),
             }),
         });
         lowerer.set_terminator(MirTerminator::Return(return_value));
@@ -267,7 +272,12 @@ impl FunctionLowerer {
     }
 
     fn assign_local(&mut self, id: HirId, span: Span, local: LocalId, r#type: ResolvedType, value: MirExprNode) {
-        let target = MirPlace { root: MirPlaceRoot::Local { id: local, r#type: r#type.clone() }, projections: vec![] };
+        let target = MirPlace {
+            root: MirPlaceRoot::Local { id: local, r#type: r#type.clone() },
+            projections: vec![],
+            r#type: r#type.clone(),
+            align: place_align(&r#type),
+        };
         self.push_stmt(MirExprNode {
             id,
             span,
@@ -881,7 +891,12 @@ impl FunctionLowerer {
             self.set_terminator(MirTerminator::Unreachable);
         }
         let root = MirPlaceRoot::Local { id: result, r#type: r#type.clone() };
-        let kind = MirExpr::Place(MirPlace { root, projections: vec![] });
+        let kind = MirExpr::Place(MirPlace {
+            root,
+            projections: vec![],
+            r#type: r#type.clone(),
+            align: place_align(&r#type),
+        });
         MirExprNode { id, span, r#type, kind }
     }
 

@@ -727,6 +727,16 @@ pub enum AnalysisErrorKind {
     VariadicSpecFunctionUnsatisfiable {
         name: Ident,
     },
+    /// An `extern` function declaration passes or returns an aggregate
+    /// (struct/union/enum) *by value*. Omega's calling convention is
+    /// internally consistent but is not the platform C ABI, so this shape
+    /// would silently miscompile against a real C caller/callee -- rejected
+    /// with the debt entry named (see `docs/14-known-issues.md`'s "Design
+    /// debt worth watching") until the real C ABI lands. Scalars, pointers,
+    /// slices, and everything behind a pointer stay perfectly fine.
+    ExternAggregateByValue {
+        r#type: ResolvedType,
+    },
     /// A method call through a `spec *Spec` object where two of the spec's
     /// members (an alias of two specs declaring the same function name)
     /// could be meant -- static dispatch through a conjunction bound already
@@ -1483,6 +1493,9 @@ impl fmt::Display for AnalysisErrorKind {
                     "spec function '{}' must receive 'self' by pointer",
                     name.as_ref()
                 )
+            }
+            Self::ExternAggregateByValue { r#type } => {
+                write!(f, "'{type}' cannot cross an `extern` boundary by value")
             }
             Self::VariadicSpecFunctionUnsatisfiable { name } => {
                 write!(

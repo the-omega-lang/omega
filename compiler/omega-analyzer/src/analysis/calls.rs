@@ -126,9 +126,10 @@ impl<'r> Analyzer<'r> {
                 root: CheckedPlaceRoot::Variable {
                     decl_id,
                     storage,
-                    r#type: function,
+                    r#type: function.clone(),
                 },
                 projections: vec![],
+                r#type: function,
             }),
         };
         CheckedExprNode {
@@ -1020,9 +1021,10 @@ impl<'r> Analyzer<'r> {
                 root: CheckedPlaceRoot::Variable {
                     decl_id: method.decl_id,
                     storage: Storage::Function,
-                    r#type: fn_type,
+                    r#type: fn_type.clone(),
                 },
                 projections: vec![],
+                r#type: fn_type,
             }),
         };
         Some(CalleeResolution::Ordinary(ResolvedCallee {
@@ -1426,6 +1428,7 @@ impl<'r> Analyzer<'r> {
         let CheckedPlace {
             root,
             mut projections,
+            r#type: _,
         } = receiver.checked;
         let base_type = receiver.r#type;
         let field_type = self.with_reveal_bypass(was_reveal, callee.id, callee.span, |this| {
@@ -1442,7 +1445,7 @@ impl<'r> Analyzer<'r> {
             id: callee.id,
             span: callee.span,
             r#type: field_type.clone(),
-            kind: CheckedExpr::Place(CheckedPlace { root, projections }),
+            kind: CheckedExpr::Place(CheckedPlace { root, projections, r#type: field_type.clone() }),
         };
         let fn_type = self.require_callable(callee.id, callee.span, field_type)?;
         Some(CalleeResolution::Ordinary(ResolvedCallee {
@@ -2279,7 +2282,7 @@ impl<'r> Analyzer<'r> {
                             break;
                         }
                     }
-                    None => match Self::literal_overload_fit(arg, param_type) {
+                    None => match Self::literal_overload_fit(arg, param_type, self.target.pointer_bits()) {
                         Some(true) => {}
                         Some(false) => score += 1,
                         None => {
@@ -2349,7 +2352,7 @@ impl<'r> Analyzer<'r> {
     /// of range for `target`'s width). Deliberately silent -- never pushes
     /// an error, since a candidate this rejects might not be the one the
     /// call ultimately resolves to.
-    fn literal_overload_fit(arg: &HirExprNode, target: &ResolvedType) -> Option<bool> {
+    fn literal_overload_fit(arg: &HirExprNode, target: &ResolvedType, pointer_bits: u32) -> Option<bool> {
         let n = match &arg.expr {
             HirExpr::Number(n) => n,
             HirExpr::Negate(inner) => match &inner.expr {
@@ -2358,7 +2361,7 @@ impl<'r> Analyzer<'r> {
             },
             _ => return None,
         };
-        let target_kind = target.numeric_kind()?;
+        let target_kind = target.numeric_kind(pointer_bits)?;
         if matches!(target_kind, NumericKind::Float(_)) != n.fractional_part.is_some() {
             return None;
         }

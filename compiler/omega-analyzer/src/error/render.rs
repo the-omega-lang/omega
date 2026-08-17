@@ -444,7 +444,7 @@ impl AnalysisErrorKind {
                      the str/byte-slice family (*str, *[u8], *[i8]), and into a \
                      spec object (spec *Spec) when the source genuinely implements it",
                     );
-                if *to == ResolvedType::Char && from.numeric_kind().is_some() {
+                if *to == ResolvedType::Char && from.numeric_kind(64).is_some() {
                     d.with_help("use `char::from_u32` for a checked Unicode scalar conversion")
                 } else {
                     d
@@ -518,6 +518,12 @@ impl AnalysisErrorKind {
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
+            Self::ExternAggregateByValue { r#type } => d
+                .with_label(span, format!("`{type}` passes by value across an `extern` boundary"))
+                .with_note(
+                    "Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a C caller or callee",
+                )
+                .with_help("pass or return a pointer to it instead (see the ABI entry in docs/14-known-issues.md)"),
             Self::VariadicSpecFunctionUnsatisfiable { name } => d
                 .with_label(span, format!("`{}` is declared variadic", name.as_ref()))
                 .with_help(
@@ -826,8 +832,13 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
 /// The inclusive value range of a numeric type, for
 /// `NumberLiteralOutOfRange`'s note -- `None` for floats (their "range" is
 /// about precision, not simple bounds, so a bounds note would mislead).
+/// 64-bit `pointer_bits` is a *diagnostic-only* simplification: the range
+/// check itself happens in the analyzer against the real target width
+/// (this note is only ever printed after such a rejection), and the
+/// renderer has no target of its own -- a 32-bit `usize` rejection prints
+/// the 64-bit range as its note until rendering learns the target.
 fn type_range(r#type: &ResolvedType) -> Option<String> {
-    match r#type.numeric_kind()? {
+    match r#type.numeric_kind(64)? {
         NumericKind::Signed(bits) => {
             let max = (1u128 << (bits - 1)) - 1;
             Some(format!("-{} to {max}", max + 1))

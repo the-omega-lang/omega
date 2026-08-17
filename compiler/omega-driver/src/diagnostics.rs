@@ -138,7 +138,8 @@ impl Driver {
         owner: (HirId, Span),
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> AnalyzerRun<R> {
-        let mut analyzer = Analyzer::new_in(self, module.to_vec(), generics, bounds, owner);
+        let target = self.target;
+        let mut analyzer = Analyzer::new_in(self, module.to_vec(), generics, bounds, owner, target);
         let result = f(&mut analyzer);
         let (errors, warnings, field_usage) = analyzer.finish();
         let failed = self.diagnostics.record_errors(module, errors);

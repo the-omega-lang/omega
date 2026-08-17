@@ -722,6 +722,11 @@ pub struct CheckedSlice {
 pub struct CheckedPlace {
     pub root: CheckedPlaceRoot,
     pub projections: Vec<CheckedProjection>,
+    /// The place's *final* type, after every projection -- the value
+    /// `Analyzer::analyze_place` already computed as its own second return
+    /// (`current_type`), carried rather than left for MIR lowering or
+    /// codegen to re-derive by re-walking the projections.
+    pub r#type: ResolvedType,
 }
 
 #[derive(Debug, Clone)]

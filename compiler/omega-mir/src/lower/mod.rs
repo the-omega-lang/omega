@@ -14,6 +14,18 @@ use omega_parser::prelude::Ident;
 /// independently -- monomorphization has already fully run by the time a
 /// `CheckedModule` exists (see `omega_driver::compile`), so there is no
 /// whole-program state to thread through here.
-pub fn lower_program(modules: Vec<(Vec<Ident>, CheckedModule)>) -> Vec<(Vec<Ident>, MirModule)> {
-    modules.into_iter().map(|(path, module)| (path, item::lower_module(module))).collect()
+///
+/// `entry` is the program's entry module path -- the one piece of
+/// whole-program context symbol decisions need (the entry `main` keeps the
+/// bare, unmangled `main` the OS/linker looks for; nothing else is
+/// entry-sensitive). Decided here, once, instead of by string comparison
+/// inside each backend.
+pub fn lower_program(
+    modules: Vec<(Vec<Ident>, CheckedModule)>,
+    entry: &[Ident],
+) -> Vec<(Vec<Ident>, MirModule)> {
+    modules
+        .into_iter()
+        .map(|(path, module)| (path.clone(), item::lower_module(module, &path, entry)))
+        .collect()
 }

@@ -25,6 +25,7 @@ use omega_analyzer::error::{
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_hir::{HirEnumDef, HirGenericParam, HirGlueDef, HirId, HirItem, HirParam, HirStructDef, HirUnionDef};
+use omega_analyzer::Target;
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -57,7 +58,16 @@ impl Driver {
     /// module during final assembly, once both phases have fully finished (so
     /// however late one was discovered, it is guaranteed present by then).
     ///
-    pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
+    /// `target` re-sets the compilation target for this run (see
+    /// `Driver::new`'s doc comment) -- everything this compilation does,
+    /// from `comp` evaluation to codegen, answers width questions against
+    /// it.
+    pub fn compile(
+        &mut self,
+        entry: &[Ident],
+        target: Target,
+    ) -> Result<CompiledProgram, Vec<CompileError>> {
+        self.target = target;
         let local = self.local_module_paths().map_err(|e| vec![e])?;
         // Checked here, before anything else runs, so a package with nothing
         // in it reports that fact instead of surfacing much later as an

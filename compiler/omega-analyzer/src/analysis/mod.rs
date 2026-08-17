@@ -83,6 +83,7 @@ use omega_parser::prelude::{
     ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span,
     Type, Visibility,
 };
+use crate::target::Target;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -97,6 +98,11 @@ pub struct Analyzer<'r> {
     /// reject the program. See `AnalysisWarning`'s doc comment.
     warnings: Vec<AnalysisWarning>,
     context: Context,
+    /// The compilation target this analysis is being run for -- the
+    /// *target's* pointer width (`pointer_bits`/`pointer_bytes`) is what
+    /// every width-sensitive question (`numeric_kind`'s `ISize`/`USize`,
+    /// `integer_domain`, `comp`'s `sizeof`) resolves against.
+    target: Target,
     /// Everything module-tree-shaped -- filesystem lookups, cross-module
     /// caching, cycle detection -- lives entirely on the other side of this
     /// trait object (see `crate::resolver`); the same long-lived resolver
@@ -329,8 +335,9 @@ impl<'r> Analyzer<'r> {
         module_path: Vec<Ident>,
         generics: &[(Ident, ResolvedType)],
         owner: (HirId, Span),
+        target: Target,
     ) -> Self {
-        Self::new_in(resolver, module_path, generics, &[], owner)
+        Self::new_in(resolver, module_path, generics, &[], owner, target)
     }
 
     pub fn new_in(
@@ -339,6 +346,7 @@ impl<'r> Analyzer<'r> {
         generics: &[(Ident, ResolvedType)],
         bounds: &[ResolvedBound],
         owner: (HirId, Span),
+        target: Target,
     ) -> Self {
         let mut context = Context::new();
         let mut errors = Vec::new();
@@ -370,6 +378,7 @@ impl<'r> Analyzer<'r> {
             context,
             resolver,
             module_path,
+            target,
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
             loops_with_break: HashSet::new(),
@@ -380,6 +389,18 @@ impl<'r> Analyzer<'r> {
             field_usage: crate::dead_code::FieldUsage::default(),
             bounds: bounds.to_vec(),
         }
+    }
+
+    /// The target's pointer width in bytes -- the one number every
+    /// width-sensitive question outside this module (`annotations`,
+    /// `comp_eval`) needs to ask.
+    pub fn pointer_bytes(&self) -> u32 {
+        self.target.pointer_bytes()
+    }
+
+    /// The target's pointer width in bits.
+    pub fn pointer_bits(&self) -> u32 {
+        self.target.pointer_bits()
     }
 
     /// Consumes this throwaway, per-item `Analyzer`, handing back whatever
