@@ -14,37 +14,24 @@ use crate::parser::expression::{
 use crate::parser::macro_syntax::parse_macro_invocation;
 use crate::parser::{Parser, contextual, recovery};
 
-/// One statement, function-body scope. A deliberate cleanup from the old
-/// grammar's `terminal`/`nonterminal` *group* split (which needed
-/// `DeferStmt`'s own special-cased "try a block body directly, bypassing
-/// the general statement grammar" carve-out, since a bare `{ ... }`
-/// statement inconsistently required a trailing `;` while `if`/`while`/
-/// `for` didn't): every statement's *content* parses through one dispatch
-/// (`parse_statement_content`), and whether a trailing `;` is required is
-/// decided *after the fact*, purely by checking whether what was actually
-/// parsed is block-shaped -- not by which grammar production matched. This
-/// is what lets `if`/a bare `{ ... }` fall through to the plain "parse an
-/// expression" case below with no special-casing at all: `if`/`Codeblock`
+/// One statement, function-body scope. Every statement's *content* parses
+/// through one dispatch (`parse_statement_content`), and whether a trailing
+/// `;` is required is decided *after the fact*, purely by checking whether
+/// what was actually parsed is block-shaped -- not by which grammar
+/// production matched. This lets `if`/a bare `{ ... }` fall through to the
+/// plain "parse an expression" case with no special-casing: `if`/`Codeblock`
 /// are already ordinary `Expression` primaries (see `parser::expression`),
-/// and the block-shaped check after parsing already recognizes them
-/// correctly by their *outermost* shape -- `{ f(); } - g()` (outermost
-/// shape `BinaryOp`) still requires `;`, exactly like today, while a bare
-/// `{ f(); }` (outermost shape `Codeblock`) doesn't need one -- a pure
-/// postprocessing check on "what did we just parse," incapable of changing
-/// what any input parses *as*, only whether a trailing `;` is subsequently
-/// required.
+/// and the block-shaped check recognizes them by their *outermost* shape --
+/// `{ f(); } - g()` (outermost shape `BinaryOp`) still requires `;`, while a
+/// bare `{ f(); }` (outermost shape `Codeblock`) doesn't.
 ///
 /// `struct`/`while`/`for` still get dedicated dispatch (they aren't
-/// `Expression` variants at all, so the generic expression fallback could
-/// never reach them), and are unconditionally block-shaped by construction.
-/// `defer`'s own body is just "parse one statement's *content*" recursively
-/// -- no special-casing needed there either, since `defer` simply inherits
-/// its wrapped statement's block-shaped-ness and terminator handling stays
-/// the sole responsibility of the outer `parse_statement`, called exactly
-/// once per statement (splitting content-parsing from terminator-consuming
-/// like this is what avoids `defer foo();` otherwise having its `;`
-/// consumed twice -- once by a naive recursive `parse_statement` call for
-/// the inner body, and again by `defer`'s own wrapping).
+/// `Expression` variants at all) and are unconditionally block-shaped.
+/// `defer`'s own body just parses one statement's *content* recursively,
+/// inheriting its wrapped statement's block-shaped-ness -- terminator
+/// handling stays the sole responsibility of the outer `parse_statement`,
+/// called exactly once per statement, which is what avoids `defer foo();`
+/// having its `;` consumed twice.
 pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
     let start = p.peek_span();
     let (statement, block_shaped) = parse_statement_content(p)?;
@@ -270,14 +257,12 @@ fn parse_loop(p: &mut Parser) -> Option<LoopStmt> {
 /// independently optional, with no enclosing parens (unlike C). `init`
 /// reuses the same shapes `Statement` already has for declare-and-assign
 /// (`Walrus`, `Declaration`(`WithInit`)) or a plain expression; `return`/
-/// `extern`/`struct`/`defer` aren't included: none of them make sense as a
+/// `extern`/`struct`/`defer` aren't included since none make sense as a
 /// loop's init clause. The `post` clause sits directly before the mandatory
 /// body `{...}` with no separating `;`, and a bare `{...}` is itself a
-/// valid expression -- so an *empty* post clause has to be told apart from
-/// "the post clause is empty and this `{` is the body" by checking for `{`
-/// first, with no attempt to parse an expression there at all (the old
-/// grammar used a zero-width `.rewind()` for the same purpose; a plain peek
-/// does the same job here with no backtracking needed).
+/// valid expression -- so an *empty* post clause is told apart from "this
+/// `{` is the body" by checking for `{` first, with no attempt to parse an
+/// expression there at all.
 ///
 /// If any clause fails to parse, recovery is local and specific to this
 /// construct rather than delegating to the generic statement-level
@@ -285,9 +270,7 @@ fn parse_loop(p: &mut Parser) -> Option<LoopStmt> {
 /// indistinguishable by the generic synchronizer from a real statement
 /// terminator (see `parser::recovery`'s module doc comment) -- so instead,
 /// this scans forward for its own body's opening `{` and skips the whole
-/// body as one balanced unit, leaving the cursor positioned right after
-/// this (entire, if malformed) `for` statement, ready for whatever comes
-/// next, rather than resynchronizing mid-header.
+/// body as one balanced unit, rather than resynchronizing mid-header.
 fn parse_for(p: &mut Parser) -> Option<Statement> {
     p.expect(&TokenKind::For, "'for'");
 

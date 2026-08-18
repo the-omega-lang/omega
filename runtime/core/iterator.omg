@@ -1,21 +1,15 @@
-# `core::iterator` -- the iteration protocol `for <binding> in <iterator>`
-# is built on (see `Analyzer::analyze_for_in`). Split into two specs, the
-# same way Rust splits `Iterator` from `IntoIterator`: `Iterator<T>` is the
-# actual cursor (owns mutable position state, produced once), `ToIterator
-# <T>` is what a *collection* implements to produce one.
+# `core::iterator` -- the protocol `for <binding> in <iterator>` is built on
+# (see `Analyzer::analyze_for_in`). Split in two like Rust's `Iterator`/
+# `IntoIterator`: `Iterator<T>` is the cursor itself, `ToIterator<T>` is
+# what a collection implements to produce one.
 
 import option::Option;
 
-# `to_iterator`'s return is `spec Iterator<T>` -- static dispatch (no `*`):
-# each implementor's own `to_iterator` returns its own concrete iterator
-# type by value (an owned value, Rust's `IntoIterator` equivalent), checked
-# against the `Iterator<T>` bound rather than matched by exact signature.
-# This is the associated-type-like mechanism `spec T` return position gives
-# a spec's own function declaration -- see docs/08-specs.md. The one real
-# cost: `ToIterator<T>` is no longer object-safe (`spec *ToIterator<T>`
-# doesn't exist) since no vtable slot can represent "whichever concrete
-# type each implementor happens to use" -- a deliberate, accepted tradeoff,
-# not an oversight (see docs/08-specs.md's object-safety caveat).
+# `to_iterator` returns `spec Iterator<T>` (static dispatch): each
+# implementor returns its own concrete iterator type, checked against the
+# bound rather than an exact signature -- see docs/08-specs.md. This makes
+# `ToIterator<T>` not object-safe, a deliberate tradeoff (docs/08-specs.md's
+# object-safety caveat).
 exposed spec Iterator<T> {
     next(*mut self) => Option<T>;
 }

@@ -1,23 +1,16 @@
-# Platform-capability gaps: functionality `core` (and, eventually, the rest
-# of `std`) needs a concrete answer for, but has no single portable one --
-# the target platform, or the final application, supplies exactly one
-# implementation via a `glue` block. See docs/21-gaps-and-glue.md for the
-# full design; this file only ever adds new gaps, never their glue.
+# Platform-capability gaps: functionality with no single portable answer --
+# the target platform or final application supplies one via a `glue` block.
+# See docs/21-gaps-and-glue.md. This file only adds gaps, never their glue.
 
 import option::Option;
 
-# The global heap allocator. Every function is required (no default body --
-# see docs/21-gaps-and-glue.md for why a default-bodied gap function isn't
-# supported yet) and self-less: called through the gap's own qualified name
-# (`core::platform::GlobalAllocator::alloc(...)`), never through an instance.
+# The global heap allocator: every function required (no default body, see
+# docs/21-gaps-and-glue.md), self-less (called via
+# `core::platform::GlobalAllocator::alloc(...)`, never through an instance).
 #
-# `alloc`/`realloc` return `*mut u8`, not `*u8` -- freshly allocated memory
-# is always meant to be written into, and a plain `*u8` can never be cast to
-# a `*mut T` (mutable-target-needs-mutable-source, the same directional rule
-# ordinary pointer coercion enforces), which would make writing into a new
-# allocation impossible for any caller. `free`'s own parameter stays a plain
-# `*u8` -- freeing needs an address, not write access, and a `*mut u8`
-# argument widens to it for free either way.
+# `alloc`/`realloc` return `*mut u8` since freshly allocated memory must be
+# writable, and a plain `*u8` can't cast to `*mut T`. `free` takes a plain
+# `*u8` -- freeing needs only an address, and `*mut u8` widens to it anyway.
 gap GlobalAllocator {
     alloc(size: usize) => *mut u8;
     free(ptr: *u8) => void;

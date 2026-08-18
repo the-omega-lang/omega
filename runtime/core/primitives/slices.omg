@@ -1,15 +1,12 @@
-# `core::primitives::slices` -- `*[]T`'s own methods, for any element type `T`.
-# The primitive target is bare (`[]T`, no leading `*`); each function's
-# self mode supplies the pointer. One instantiation is generated per concrete `T` a program
-# actually uses, deduplicated across translation units the same way any
-# other generic instantiation is).
+# `core::primitives::slices` -- `*[]T`'s own methods. The primitive target
+# is bare (`[]T`, no leading `*`); each function's self mode supplies the
+# pointer.
 #
 # Every potentially-out-of-bounds read reports success through a returned
-# `bool` and writes the found value through an `out` pointer, rather than
-# trusting the caller or aborting -- there is no panic mechanism in this
-# layer at all (nothing to call on a target with no libc), so "fails
-# cleanly, inspectable by the caller" is the only available shape for a
-# partial operation. `false` leaves `*out` untouched.
+# `bool` and writes the value through an `out` pointer, rather than
+# trusting the caller or aborting -- there is no panic mechanism at this
+# layer (nothing to call on a target with no libc). `false` leaves `*out`
+# untouched.
 
 primitive<T> []T {
     exposed is_empty(*self) => bool {

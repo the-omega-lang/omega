@@ -9,22 +9,14 @@
 //! actually touched. `omega_driver::Driver::compile` then diffs this against
 //! each struct/union/enum cell's own declared fields/variants.
 //!
-//! One access pattern can't be found this way: a `comp <expr>` subtree is
-//! interpreted and then collapses into a single `CheckedExpr::Const`,
-//! discarding the `FieldAccess`/`EnumConstruct` nodes that this walk would
-//! otherwise have found -- by the time `collect_module` runs over the final
-//! tree, they're already gone. `Analyzer::eval_comp` covers that gap itself,
-//! calling `collect_expr` on the about-to-be-discarded checked subtree
-//! before replacing it, into a `FieldUsage` of its own that the driver folds
-//! into this module's post-hoc one (`FieldUsage::merge`) before the final
-//! sweep -- the same usage-collection logic, just run once eagerly (per
-//! `comp` evaluation) instead of only in the one whole-program pass.
+//! `Analyzer::eval_comp` runs this same walk eagerly over a `comp` subtree
+//! before it collapses into a `CheckedExpr::Const` (see docs/14-known-issues.md
+//! for why that's needed), folding the result into the whole-program pass
+//! via `FieldUsage::merge`.
 //!
-//! The walk itself mirrors `omega_codegen`'s `collect_defer_ids` family (same
-//! four-function recursive shape: block/stmt/expr/place) -- the two exist
-//! for different reasons (this collects usage, that collects defer ids to
-//! allocate) but need to visit exactly the same tree, so there's no reason
-//! for their shapes to differ.
+//! The walk mirrors `omega_codegen`'s `collect_defer_ids` family (same
+//! four-function block/stmt/expr/place shape) since both must visit
+//! exactly the same tree.
 
 use crate::checked::{
     CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem, CheckedModule, CheckedPlace,
@@ -53,11 +45,8 @@ pub struct FieldUsage {
 }
 
 impl FieldUsage {
-    /// Folds `other` into `self` -- how a per-item `Analyzer`'s own usage
-    /// (recorded from a `comp`-evaluated subtree that never survives into
-    /// the final `CheckedModule`, see `Analyzer::eval_comp`) reaches the
-    /// driver-wide accumulator this module's own post-hoc `collect_module`
-    /// walk populates.
+    /// Folds `other` into `self` -- how a `comp`-eval subtree's usage
+    /// (see `Analyzer::eval_comp`) reaches the driver-wide accumulator.
     pub fn merge(&mut self, other: FieldUsage) {
         self.struct_fields.extend(other.struct_fields);
         self.union_fields.extend(other.union_fields);

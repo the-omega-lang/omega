@@ -2261,10 +2261,8 @@ fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
     )));
 }
 
-/// `Bump::bump(make())` -- a `*mut self` requirement against an rvalue
-/// receiver -- is rejected with the dedicated temporary diagnostic, not
-/// `NotMutablePointer`: no pointer appears in the source, and no added
-/// `mut` could fix it.
+/// A `*mut self` call on an rvalue receiver is rejected as `MutateTemporary`,
+/// not `NotMutablePointer` (see docs/14-known-issues.md).
 #[test]
 fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
     let package = TestPackage::new(
@@ -2286,11 +2284,9 @@ fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
     );
 }
 
-/// The *other* shape that produces a non-place root: an ordinary projected
-/// write through an rvalue (`make().n = 5`), with no receiver and no `*mut
-/// self` anywhere. Pinned alongside the receiver case because the two share
-/// one diagnostic, and its wording must stay true of both -- it previously
-/// named a receiver and `*mut self`, neither of which appears here.
+/// The other `MutateTemporary` shape: a projected write through an rvalue
+/// (`make().n = 5`), with no receiver or `*mut self` involved -- the shared
+/// diagnostic's wording must stay true of both.
 #[test]
 fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
     let package = TestPackage::new(
@@ -2310,10 +2306,9 @@ fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
     );
 }
 
-/// `f<T>(x: *T)` against a fat pointer reports the rule-teaching
-/// diagnostic: `*T` is a thin pointer, a slice carries a length, and there
-/// is no `[]T` type for `T` to bind to. Both `*[]u8`-shaped slices and
-/// `*str` reach it.
+/// `f<T>(x: *T)` against a fat pointer reports `GenericParamFromFatPointer`
+/// (see docs/14-known-issues.md). Both slice- and `*str`-shaped fat pointers
+/// reach it.
 #[test]
 fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
     let package = TestPackage::new(

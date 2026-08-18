@@ -1,12 +1,10 @@
 //! A compilation target, in Omega's own vocabulary -- deliberately
-//! decoupled from any backend's own target types (`target_lexicon::Triple`
-//! for Cranelift, LLVM's own `TargetTriple` for the LLVM backend), so the
-//! analyzer (and every backend) shares one `Target` while each backend
-//! maps it to its own native vocabulary (see `cranelift::triple_for` and
-//! `llvm`'s target-machine construction). Only the *mapping* lives
-//! backend-side; the vocabulary -- and, crucially, every piece of layout
-//! math that depends on it, `pointer_bytes` above all -- lives here, in
-//! the analyzer, which is where `comp` evaluation and layout already are.
+//! decoupled from any backend's own target type (`target_lexicon::Triple`
+//! for Cranelift, LLVM's own `TargetTriple`), so the analyzer and every
+//! backend share one `Target` while each backend maps it to its own native
+//! vocabulary (see `cranelift::triple_for`). Layout math that depends on
+//! the target (`pointer_bytes` above all) lives here rather than
+//! backend-side.
 
 use std::fmt;
 
@@ -45,13 +43,10 @@ impl Target {
     pub const DEFAULT: Target = Target { arch: Arch::X86_64, os: Os::Linux };
 
     /// The width of a pointer/`usize`/`isize` on this target, in bytes --
-    /// the one piece of target-specific information the shared layout
-    /// math (`omega_analyzer::layout`, `ResolvedType::numeric_kind`, ...)
-    /// needs, so it never has to ask a backend (which might not even exist
-    /// yet, or might use a completely different native type system) what a
-    /// pointer "is". The real per-arch answer -- 64-bit for `x86_64`/
-    /// `aarch64`/`riscv64`, 32-bit for `x86`/`armv7`/`thumbv7em`/
-    /// `riscv32`.
+    /// the one piece of target-specific information layout math
+    /// (`omega_analyzer::layout`, `ResolvedType::numeric_kind`, ...) needs.
+    /// 64-bit for `x86_64`/`aarch64`/`riscv64`, 32-bit for `x86`/`armv7`/
+    /// `thumbv7em`/`riscv32`.
     pub fn pointer_bytes(self) -> u32 {
         match self.arch {
             Arch::X86_64 | Arch::Aarch64 | Arch::Riscv64 => 8,
@@ -59,17 +54,15 @@ impl Target {
         }
     }
 
-    /// `pointer_bytes`, in bits -- for the numeric-width call sites that
-    /// already think in bits (`numeric_kind`'s widths, integer-domain
-    /// bounds).
+    /// `pointer_bytes`, in bits -- for call sites that already think in
+    /// bits (`numeric_kind`'s widths, integer-domain bounds).
     pub fn pointer_bits(self) -> u32 {
         self.pointer_bytes() * 8
     }
 
-    /// Parses `<arch>-<vendor>-<os>` or `<arch>-<os>` -- the vendor segment
-    /// (when present) is accepted but ignored: Omega doesn't need it for
-    /// anything the OS alone doesn't already decide. `none` and
-    /// `freestanding` both parse to `Os::None`.
+    /// Parses `<arch>-<vendor>-<os>` or `<arch>-<os>` -- the vendor segment,
+    /// if present, is accepted but ignored. `none` and `freestanding` both
+    /// parse to `Os::None`.
     pub fn parse(s: &str) -> Result<Target, TargetParseError> {
         let segments: Vec<&str> = s.split('-').collect();
         let (arch_str, os_str) = match segments.as_slice() {

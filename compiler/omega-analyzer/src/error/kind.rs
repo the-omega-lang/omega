@@ -11,12 +11,9 @@ pub enum AnalysisErrorKind {
         name: Ident,
         similar: Option<Ident>,
     },
-    /// A qualified place/value path (`head::rest`) whose head names nothing
-    /// visible: not an imported module alias, not a type, and not one of
-    /// this module's own items. What the user *meant* can't be known (a
-    /// module they forgot to import, or a typo'd struct name), so this
-    /// carries a "did you mean" candidate from each world and only ever
-    /// suggests what actually exists.
+    /// A qualified place/value path (`head::rest`) whose head names
+    /// nothing visible. Carries a "did you mean" candidate from each
+    /// world (module and type), only ever suggesting what actually exists.
     UndefinedPathHead {
         name: Ident,
         similar_module: Option<Ident>,
@@ -31,11 +28,8 @@ pub enum AnalysisErrorKind {
         field: Ident,
         base: ResolvedType,
     },
-    /// A field access (or struct/union/enum-variant literal initializer)
-    /// naming a field that exists on `base` but isn't visible from this
-    /// module -- `field` is hidden (or `internal` to a different package)
-    /// relative to the accessing site. Bypassed by `reveal` (see
-    /// `Analyzer::check_visibility`).
+    /// A field access (or literal initializer) naming a field that exists
+    /// on `base` but isn't visible from this module. Bypassed by `reveal`.
     FieldNotVisible {
         field: Ident,
         base: ResolvedType,
@@ -64,18 +58,15 @@ pub enum AnalysisErrorKind {
     UnresolvedCallee,
     InvalidNumberType(Ident),
     UnresolvedInnerExpression,
-    /// A name is declared twice in the same scope (a second parameter with
-    /// the same name, or a second local `ident: type;` in the same function
-    /// body). Shadowing an *outer* scope is fine and doesn't trigger this.
-    /// `previous` is the first declaration's span, when the declaring site
-    /// tracks one -- rendered as a "first declared here" secondary label.
+    /// A name is declared twice in the same scope. Shadowing an *outer*
+    /// scope is fine and doesn't trigger this. `previous` is the first
+    /// declaration's span, when tracked -- a "first declared here" label.
     Redeclaration {
         name: Ident,
         previous: Option<Span>,
     },
     /// An assignment's left-hand side isn't syntactically a place (e.g.
-    /// `5 = 3;`) -- rejected here so `CheckedAssignment.target` can be typed
-    /// as `CheckedPlace` rather than a general expression.
+    /// `5 = 3;`).
     AssignmentTargetNotAPlace,
     /// An assignment's value doesn't have the same resolved type as its
     /// target (e.g. assigning a pointer into an `i32` local).
@@ -103,9 +94,9 @@ pub enum AnalysisErrorKind {
         op: BinaryOp,
         r#type: ResolvedType,
     },
-    /// Arithmetic and bitwise operators have no meaning for Unicode scalar
-    /// values. `char` remains comparable, but its codepoint must be cast
-    /// explicitly before arithmetic.
+    /// Arithmetic/bitwise operators have no meaning for Unicode scalar
+    /// values; `char` remains comparable, but its codepoint must be cast
+    /// explicitly first.
     CharArithmeticNotAllowed {
         op: String,
     },
@@ -145,8 +136,8 @@ pub enum AnalysisErrorKind {
     /// mutable.
     SliceRequiresAddressOf,
     /// `&mut base[start..end]` where `base` is itself an already-immutable
-    /// `Slice` value -- distinct from `NotMutableBinding`/`NotMutablePointer`
-    /// because the *binding* holding the slice may well be `mut`; it's the
+    /// `Slice` value -- distinct from `NotMutableBinding`/
+    /// `NotMutablePointer`: the *binding* may well be `mut`, it's the
     /// slice value's own flag that's immutable.
     ImmutableSliceSource,
     /// A slice's `start`/`end` bound isn't `i32`.
@@ -158,9 +149,8 @@ pub enum AnalysisErrorKind {
     /// a missing end to.
     MissingSliceEnd,
     /// `&comp_arr_binding[range]` -- a `comp`-bound `*[]T` has no
-    /// established const-promotion story (see `Analyzer::analyze_slice`'s
-    /// own comment on this); narrow and likely never hit in practice, but
-    /// rejected explicitly rather than silently mishandled.
+    /// established const-promotion story; narrow and likely never hit in
+    /// practice, but rejected explicitly rather than silently mishandled.
     CompPointerSliceNotSupported,
     /// Bare `..` has no type source outside an index or pattern.
     RangeNotAllowedHere,
@@ -193,11 +183,10 @@ pub enum AnalysisErrorKind {
         found: String,
     },
     /// A `+ - * / %` operand's types don't match each other (e.g. `i32 +
-    /// i64`) -- unlike `InvalidBinaryOperand`, both operands *are* numeric,
-    /// they just aren't the same numeric type; this language has no implicit
-    /// numeric conversions, so a mismatch here is always an error rather than
-    /// a promotion. The per-operand spans let the diagnostic point at each
-    /// side with its own type.
+    /// i64`) -- unlike `InvalidBinaryOperand`, both operands *are*
+    /// numeric, just not the same numeric type; this language has no
+    /// implicit numeric conversions, so it's always an error, never a
+    /// promotion.
     BinaryOperandTypeMismatch {
         left: ResolvedType,
         left_span: Span,
@@ -220,11 +209,10 @@ pub enum AnalysisErrorKind {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// A function's body doesn't produce its declared return type -- neither
-    /// a tail expression of the right type, nor an unconditional trailing
-    /// `return`, nor (for `Void`) falling off the end with no tail at all.
-    /// Also used for an individual `return <expr>;` whose type doesn't match
-    /// the enclosing function's declared return type.
+    /// A function's body doesn't produce its declared return type -- no
+    /// tail expression of the right type, no unconditional trailing
+    /// `return`, nor (for `Void`) falling off the end with no tail. Also
+    /// used for `return <expr>;` whose type doesn't match.
     ReturnTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
@@ -237,20 +225,16 @@ pub enum AnalysisErrorKind {
     InvalidIncrementOperand {
         r#type: ResolvedType,
     },
-    /// `for init;; post { ... }` -- the condition clause was omitted. Unlike
-    /// `init`/`post`, this isn't just a style choice: this language has no
-    /// constant-condition reasoning to prove an always-true loop's exit
-    /// point is ever actually reached, which codegen can't soundly build a
-    /// jump target for (every cranelift block must end in a terminator) --
-    /// see `CheckedFor`'s doc comment.
+    /// `for init;; post { ... }` -- the condition clause was omitted. Not
+    /// just a style choice -- see findings for why this is a real
+    /// compiler limitation, not merely a stylistic rejection.
     ForLoopMissingCondition,
     /// `break;` outside any enclosing `while`/`for`.
     BreakOutsideLoop,
     /// `continue;` outside any enclosing `while`/`for`.
     ContinueOutsideLoop,
     /// A qualified place/value path (`mymodule::foo`) failed to resolve
-    /// across modules -- unknown module/item, not visible, or a cycle. See
-    /// `crate::resolver::ModuleResolver`.
+    /// across modules -- unknown module/item, not visible, or a cycle.
     ModuleResolution(crate::resolver::ResolveError),
     /// A macro's public interface is wider than an item it references from
     /// its body. The item must be at least as visible as the macro.
@@ -263,48 +247,41 @@ pub enum AnalysisErrorKind {
     /// position that requires a value (e.g. calling it, or using it as a
     /// place).
     NotAValue(Vec<Ident>),
-    /// A generic function call's argument-driven type inference
-    /// (`Analyzer::resolve_generic_call`) couldn't deduce a concrete type
-    /// for this declared generic parameter -- it never appeared (in a
-    /// structurally recognizable position) in any of the call's arguments.
+    /// A generic function call's argument-driven type inference couldn't
+    /// deduce a concrete type for this declared generic parameter -- it
+    /// never appeared, in a structurally recognizable position, in any of
+    /// the call's arguments.
     UnresolvedGenericParam(Ident),
     /// The specific "couldn't infer" case whose cause deserves teaching:
-    /// `f<T>(x: *T)` called with a fat pointer (`*[]u8`/`*str`). A `Slice`/
-    /// `Str` carries a runtime length, so it can never match the thin
-    /// pointer `*T` -- and there is no `[]T` type for `T` to bind to (`[]T`
-    /// is not valid on its own). This is not an inference gap; the rule is
-    /// the point (a generic that must accept slices takes `x: T` by value,
-    /// which binds `T = *[]u8`, or spells the slice out as `x: *[]T`).
+    /// `f<T>(x: *T)` called with a fat pointer (`*[]u8`/`*str`). A
+    /// `Slice`/`Str` carries a runtime length, so it can never match the
+    /// thin pointer `*T`, and there is no `[]T` type for `T` to bind to.
+    /// Not an inference gap -- the rule is the point (take `x: T` by
+    /// value, or spell the slice out as `x: *[]T`).
     GenericParamFromFatPointer {
         parameter: Ident,
         found: ResolvedType,
     },
-    /// A generic struct/union/enum-variant literal (`Name { field = value;
-    /// ... }`), or a bare enum unit-variant reference (`Enum::Variant`),
-    /// was written with no explicit `<...>` type arguments, and neither the
-    /// literal's own field values nor an available `expected` (surrounding
-    /// context) type pinned down every one of `r#type`'s declared generic
-    /// parameters -- `generics` names whichever ones are still unresolved.
+    /// A generic literal or bare enum unit-variant reference was written
+    /// with no explicit `<...>` type arguments, and neither the field
+    /// values nor an available expected type pinned down every one of
+    /// `r#type`'s declared generic parameters -- `generics` names whichever
+    /// are still unresolved.
     UnresolvedLiteralGeneric {
         r#type: Ident,
         generics: Vec<Ident>,
     },
-    /// `defer` lexically inside a `while`/`for` loop body -- out of scope for
-    /// now. A `defer`'s "was this reached" tracking is a single runtime
-    /// boolean flag (see `omega_codegen`'s `defer_flags`), which can't
-    /// represent "reached N times"; correct per-iteration defer needs a real
-    /// dynamic, variable-length deferred-call list, which is real future
-    /// work, not this version's scope.
+    /// `defer` lexically inside a `while`/`for` loop body -- see findings
+    /// for why this is deferred future work, not a permanent restriction.
     DeferInsideLoopNotSupported,
     /// `return` inside a `defer`'s own body. Deferred code only ever runs
-    /// from the enclosing function's shared epilogue (see `omega_codegen`),
-    /// so a `return` here would have to jump into that very epilogue from
-    /// inside code the epilogue itself is running -- not supported.
+    /// from the enclosing function's shared epilogue, so a `return` here
+    /// would have to jump into that very epilogue from inside code the
+    /// epilogue itself is running.
     ReturnInsideDefer,
-    /// A `defer` statement nested inside another `defer`'s own body --
-    /// not supported; a defer's body always runs at most once per function
-    /// call already, and there is no useful "defer whose scope is another
-    /// defer's body" to speak of, only the enclosing function's exit.
+    /// A `defer` statement nested inside another `defer`'s own body -- a
+    /// defer's body always runs at most once per function call already,
+    /// so there's no useful "defer whose scope is another defer's body".
     NestedDeferNotSupported,
     /// `Name { field = value; ... }` where `Name` resolves to a type that
     /// isn't a struct or union (a primitive, an array, ...).
@@ -324,8 +301,8 @@ pub enum AnalysisErrorKind {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// A struct literal that doesn't cover every declared field -- partial
-    /// initialization is not allowed (there is no implicit zeroing).
+    /// A struct literal that doesn't cover every declared field -- no
+    /// implicit zeroing, so partial initialization isn't allowed.
     MissingFieldInitializers {
         r#struct: Ident,
         missing: Vec<Ident>,
@@ -409,13 +386,11 @@ pub enum AnalysisErrorKind {
         previous: Span,
     },
     /// A name already claimed elsewhere in the same enum's shared
-    /// `value.name` namespace -- the tag, a header field, a shared dynamic
-    /// field, and (when `variant` is `Some`) that variant's own body
-    /// fields all draw from one namespace, so none of them may collide
-    /// with any other. `variant` is `None` for a definition-time
-    /// collision among the tag/header/dynamic fields themselves (which
-    /// apply enum-wide), `Some` for a variant's own body field colliding
-    /// with one of those.
+    /// `value.name` namespace -- tag, header fields, shared dynamic
+    /// fields, and (when `variant` is `Some`) a variant's own body fields
+    /// all draw from one namespace. `variant` is `None` for a collision
+    /// among the enum-wide fields themselves, `Some` for a variant's body
+    /// field colliding with one of those.
     EnumFieldNameCollision {
         field: Ident,
         variant: Option<Ident>,
@@ -436,9 +411,8 @@ pub enum AnalysisErrorKind {
         similar_variant: Option<Ident>,
         similar_function: Option<Ident>,
     },
-    /// `Enum::Variant` (bare, no `{ ... }`) where the variant declares body
-    /// fields -- they'd be left uninitialized, and there is no implicit
-    /// zeroing anywhere in this language.
+    /// `Enum::Variant` (bare, no `{ ... }`) where the variant declares
+    /// body fields -- no implicit zeroing anywhere in this language.
     EnumVariantMissingBody {
         r#enum: Ident,
         variant: Ident,
@@ -672,15 +646,12 @@ pub enum AnalysisErrorKind {
 
     // -- specs --
     /// A conform declaration requires `function` (from
-    /// `spec<spec_type_args>`, possibly by way of one of its dependencies),
-    /// but the type provides neither its own matching method nor does
-    /// `spec` supply a default -- `implementor` is the concrete type's own
-    /// name. `spec_type_args` matters now that the same spec can be
-    /// implemented more than once at different type arguments (see
-    /// conformance checking) -- without it, two missing
-    /// requirements from two different instantiations of the same generic
-    /// spec would render identically, with nothing to tell a reader which
-    /// one is actually missing.
+    /// `spec<spec_type_args>`, possibly via a dependency), but the type
+    /// provides neither a matching method nor does `spec` supply a
+    /// default. `spec_type_args` matters since the same spec can be
+    /// implemented more than once at different type arguments -- without
+    /// it, two missing requirements from different instantiations would
+    /// render identically.
     MissingSpecFunction {
         implementor: Ident,
         spec: Ident,
@@ -688,10 +659,8 @@ pub enum AnalysisErrorKind {
         function: Ident,
     },
     /// `for x in y { ... }` where `y`'s type doesn't *nominally* declare
-    /// `: ToIterator<T>` **or** `: Iterator<T>` directly -- even if it
-    /// happens to have a same-shaped `to_iterator`/`next` method (see
-    /// `Analyzer::for_in_source_declares`'s doc comment for why that alone
-    /// was never enough).
+    /// `: ToIterator<T>` or `: Iterator<T>` directly, even if it happens
+    /// to have a same-shaped `to_iterator`/`next` method.
     ForLoopSourceNotIterable {
         r#type: ResolvedType,
     },
@@ -700,12 +669,10 @@ pub enum AnalysisErrorKind {
     AmbiguousForLoopElementType {
         candidates: Vec<ResolvedType>,
     },
-    /// `for x : u64 in source { }` where `source` conforms to `ToIterator<T>`,
-    /// but never at `u64`. Distinct from
+    /// `for x : u64 in source { }` where `source` conforms to
+    /// `ToIterator<T>`, but never at `u64`. Distinct from
     /// [`Self::AmbiguousForLoopElementType`]: that one means "too many to
-    /// choose from", this one means "the one you named isn't there" -- which
-    /// previously rendered as an ambiguity over an *empty* candidate list,
-    /// naming neither the requested type nor the available ones.
+    /// choose from", this one means "the one you named isn't there".
     ForLoopElementTypeMismatch {
         expected: ResolvedType,
         available: Vec<ResolvedType>,
@@ -716,24 +683,17 @@ pub enum AnalysisErrorKind {
         spec: Ident,
         function: Ident,
     },
-    /// A spec function declared with by-value `self`/`mut self` -- rejected
-    /// unconditionally, at the spec's own definition: `spec *T` dynamic
-    /// dispatch erases `Self` down to a single opaque data pointer (see
-    /// `Analyzer::finish_dynamic_dispatch_call`), which has no way to carry
-    /// or reconstruct a full by-value copy of the concrete type. A spec
-    /// function's self must always be `*self`/`*mut self`.
+    /// A spec function declared with by-value `self`/`mut self` --
+    /// rejected at the spec's own definition: `spec *T` dynamic dispatch
+    /// erases `Self` down to a single opaque data pointer, with no way to
+    /// carry or reconstruct a full by-value copy of the concrete type.
     SpecSelfMustBePointer {
         name: Ident,
     },
-    /// A spec function declared variadic (`f(*self, ...)`) -- rejected at the
-    /// spec's own definition, for the same "nothing downstream could satisfy
-    /// it" reason as [`Self::SpecSelfMustBePointer`]. Omega has no variadic
-    /// function *definitions*; only `extern` declarations may be variadic, so
-    /// neither a `conform` block nor a spec default can supply a body with a
-    /// matching signature, and every implementor would fail with a bare
-    /// `MissingSpecFunction` naming a function it has no syntax to write.
-    /// Lift this the day variadic definitions exist -- the `is_variadic`
-    /// plumbing behind it is already complete.
+    /// A spec function declared variadic (`f(*self, ...)`) -- rejected for
+    /// the same "nothing downstream could satisfy it" reason as
+    /// [`Self::SpecSelfMustBePointer`]. See findings for the deferred-work
+    /// note on lifting this once variadic definitions exist.
     VariadicSpecFunctionUnsatisfiable {
         name: Ident,
     },
@@ -741,45 +701,37 @@ pub enum AnalysisErrorKind {
     /// (struct/union/enum) *by value*. Omega's calling convention is
     /// internally consistent but is not the platform C ABI, so this shape
     /// would silently miscompile against a real C caller/callee -- rejected
-    /// with the debt entry named (see `docs/14-known-issues.md`'s "Design
-    /// debt worth watching") until the real C ABI lands. Scalars, pointers,
-    /// slices, and everything behind a pointer stay perfectly fine.
+    /// until the real C ABI lands (see `docs/14-known-issues.md`). Scalars,
+    /// pointers, slices, and everything behind a pointer stay fine.
     ExternAggregateByValue {
         r#type: ResolvedType,
     },
-    /// A method call through a `spec *Spec` object where two of the spec's
-    /// members (an alias of two specs declaring the same function name)
-    /// could be meant -- static dispatch through a conjunction bound already
-    /// rejects this shape, so dynamic dispatch must too rather than silently
-    /// picking the first slot. The candidate specs are named; a narrowing
-    /// cast (`<spec *A>x`) disambiguates.
+    /// A method call through a `spec *Spec` object where two of the
+    /// spec's members could be meant -- static dispatch through a
+    /// conjunction bound already rejects this shape, so dynamic dispatch
+    /// must too. A narrowing cast (`<spec *A>x`) disambiguates.
     AmbiguousSpecObjectMethod {
         function: Ident,
         specs: Vec<Ident>,
     },
-    /// A cast between two `spec *Spec` fat pointers that isn't a narrowing
-    /// onto one of the source object's own spec sections. Only narrowing is
-    /// offered: a widening cast (`<spec *AB>` from `spec *A`) has no section
-    /// to invent, and a cast between unrelated specs would be a vtable
-    /// reinterpretation with no offset to apply.
+    /// A cast between two `spec *Spec` fat pointers that isn't a
+    /// narrowing onto one of the source object's own spec sections. Only
+    /// narrowing is offered: widening has no section to invent, and
+    /// unrelated specs have no vtable offset to apply.
     SpecObjectCastImpossible {
         from: Ident,
         to: Ident,
     },
-    /// `Spec::static_fn()` where nothing determines `Self` -- there is no
-    /// expected type at the call site to take it from, and the bare
-    /// spelling has no other place to read it. The fully-qualified form
-    /// (`<Type : Spec>::fn()`) or an unambiguous `Type::fn()` names it
-    /// instead.
+    /// `Spec::static_fn()` where nothing determines `Self` -- no expected
+    /// type at the call site to take it from. The fully-qualified form
+    /// (`<Type : Spec>::fn()`) or an unambiguous `Type::fn()` names it.
     SpecStaticNeedsExpectedType {
         spec: Ident,
         function: Ident,
     },
     /// `Spec::static_fn()` where the declared return type is not exactly
-    /// `Self`, so even an expected type cannot pin down which type
-    /// implements the spec (`=> usize` never mentions it; `=> Option<Self>`
-    /// would need return-type unification nothing else needs yet). The
-    /// fully-qualified form names the type explicitly.
+    /// `Self`, so even an expected type can't pin down which type
+    /// implements the spec. The fully-qualified form names it explicitly.
     SpecStaticReturnNotSelf {
         spec: Ident,
         function: Ident,
@@ -828,13 +780,10 @@ pub enum AnalysisErrorKind {
     /// now: a bare method name has no owning-type prefix once mangling is
     /// off, a much easier accidental collision than a top-level function's.
     ManglingDisabledOnMethod,
-    /// `@mangling(force = "...")` on a function with any generic parameters
-    /// -- unlike plain `disabled`, this isn't even a *possible* collision to
-    /// avoid by naming carefully: every instantiation would share the exact
-    /// same hardcoded symbol, an unconditional multiple-definition error.
-    /// Allowed on a method, unlike `ManglingDisabledOnMethod` -- the forced
-    /// name is complete and deliberate, so there's no bare-name collision
-    /// risk to guard against.
+    /// `@mangling(force = "...")` on a function with any generic
+    /// parameters -- unlike plain `disabled`, this isn't a *possible*
+    /// collision to avoid by naming carefully: every instantiation would
+    /// share the exact same hardcoded symbol.
     ManglingForcedOnGeneric,
     /// A `glue` declaration targeted something other than a first-class
     /// `gap` item.
@@ -914,54 +863,41 @@ pub enum AnalysisErrorKind {
         /// (`<Type : Spec>::method(recv, ...)`).
         r#type: ResolvedType,
     },
-    /// Two or more different `glue` declarations implement the same gap --
-    /// exactly one glue is allowed per gap, project-wide. Anchored at the
-    /// gap's own declaration (a whole-program check, run once at the end of
-    /// compilation -- see `Driver::sweep_gaps` -- rather than at either
-    /// individual `glue` site, since neither is more "at fault" than the
-    /// other). `glues` names every conflicting implementor found, in
-    /// discovery order.
+    /// Two or more different `glue` declarations implement the same gap
+    /// -- exactly one glue is allowed per gap, project-wide. Anchored at
+    /// the gap's own declaration (a whole-program check run once at the
+    /// end of compilation), since neither `glue` site is more "at fault".
     MultipleGluesForGap {
         gap: Ident,
         glues: Vec<Ident>,
     },
-    /// `comp <expr>` couldn't be evaluated at compile time -- `reason` names
-    /// the specific construct that actually blocked it (an already-
-    /// formatted description of a `comp_eval::CompErrorKind`, from
-    /// `Analyzer::analyze_comp`), and `trace` is the call-site chain from
-    /// the outermost `comp` down to wherever `reason` happened, outermost
-    /// first -- empty when the failure was directly inside the outermost
-    /// evaluation, with no intervening call. See `docs/19-compile-time-evaluation.md`.
+    /// `comp <expr>` couldn't be evaluated at compile time -- `reason`
+    /// names the specific construct that blocked it, and `trace` is the
+    /// call-site chain from the outermost `comp` down to where `reason`
+    /// happened, outermost first (empty for a direct failure). See
+    /// `docs/19-compile-time-evaluation.md`.
     CompEvalFailed {
         reason: String,
         trace: Vec<Span>,
     },
     /// `mut comp a := ...;` -- a `comp` binding carries no storage of its
-    /// own (every reference to it is substituted with its already-known
-    /// value at compile time), so a later mutation could never be observed
-    /// by anything that already substituted it -- incoherent, not just
-    /// discouraged.
+    /// own (every reference is substituted with its known value at
+    /// compile time), so a later mutation could never be observed --
+    /// incoherent, not just discouraged.
     MutCompBinding,
-    /// `ident := value;` at item level (no `comp` on the binding) whose
-    /// `value` doesn't resolve to a compile-time-known `CheckedExpr::Const`
-    /// -- a non-`comp` top-level binding gets real storage (unlike a
-    /// `comp` binding), but its initial value still has to be known before
-    /// codegen runs: there's no runtime constructor/init-order machinery
-    /// (a genuinely runtime-computed top-level global is a distinct,
-    /// larger feature nobody has built). The fix is an explicit `comp
-    /// <expr>` initializer, not `comp` on the binding -- see
-    /// `Analyzer::analyze_global_walrus`'s own doc comment, and
+    /// `ident := value;` at item level (no `comp`) whose `value` doesn't
+    /// resolve to a compile-time-known constant -- a top-level binding
+    /// gets real storage, but its initial value still has to be known
+    /// before codegen runs; there's no runtime constructor/init-order
+    /// machinery. Fix: an explicit `comp <expr>` initializer. See
     /// `docs/19-compile-time-evaluation.md`.
     TopLevelValueNotComp,
     /// A `struct`/`union` whose fields (if any) all resolve to zero-sized
     /// types -- unlike `marker`, a `struct`/`union` is meant to hold real
-    /// data, so this is rejected outright rather than silently accepted as
-    /// a `marker` would be. Checked against the type's own full,
-    /// recursively-flattened leaf list (`layout::is_zero_sized`), so this
-    /// also catches a struct whose only field is itself another zero-sized
-    /// type, and a generic struct/union whose fields happen to all resolve
-    /// to a zero-sized type for one particular instantiation -- not just a
-    /// literally empty field list.
+    /// data. Checked against the type's full, recursively-flattened leaf
+    /// list, so this also catches a struct whose only field is itself
+    /// zero-sized, or a generic instantiation that happens to resolve that
+    /// way.
     ZeroSizedAggregate {
         name: Ident,
         is_union: bool,

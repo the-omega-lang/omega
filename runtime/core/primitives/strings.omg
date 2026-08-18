@@ -1,15 +1,11 @@
-# `core::primitives::strings` -- `str`'s own inherent methods, plus its `Eq` conformance.
-# `str` is already a sized (byte count, not character count -- see `.size`
-# below) fat pointer (`Context::resolve_pointer_type`'s `*str`), never
+# `core::primitives::strings` -- `str`'s own inherent methods, plus `Eq`.
+# `str` is a sized (byte count, not character count) fat pointer, never
 # null-terminated, so everything here works off `.size` and byte comparisons
-# rather than any terminator scan. The inherent methods are `exposed`, so they
-# are callable public API on their own, with no spec involved.
+# rather than a terminator scan.
 #
-# The `Eq` conformance lives here rather than in `std::primitives` only
-# because `core::cmp` owns `Eq`: `str` has no declaring package of its own, so
-# under the orphan rule the package that owns the *spec* is the only one that
-# may conform it. Hashing and formatting conformances for `str` stay in `std`
-# for exactly the same reason, since `std` still owns those specs.
+# `Eq` conforms here rather than in `std::primitives` because `core::cmp`
+# owns `Eq` and, under the orphan rule, only the spec's owning package may
+# conform it -- hashing/formatting for `str` stay in `std` for the same reason.
 
 import root::cmp::Eq;
 
@@ -32,9 +28,8 @@ primitive str {
         self.size == 0
     }
 
-    # A plain reinterpretation, not a copy -- `*str` and `*[]u8` share the
-    # exact same fat-pointer leaf layout (data pointer + byte count --
-    # `*str`'s `.size` and `*[]u8`'s `.length` read the identical leaf).
+    # Reinterpretation, not a copy -- `*str` and `*[]u8` share the same
+    # fat-pointer leaf layout (data pointer + byte count).
     exposed as_bytes(*self) => *[]u8 {
         <*[]u8>self
     }
@@ -72,12 +67,9 @@ primitive str {
         true
     }
 
-    # Naive (no Boyer-Moore/KMP skip table) substring search -- `O(n*m)`,
-    # deliberately: a skip table needs working memory proportional to the
-    # needle, which is exactly the kind of hidden allocation this layer
-    # never does. Fine for the short, mostly-literal needles this is
-    # actually used with; a caller with real throughput needs is expected
-    # to bring their own algorithm, not lean on this one.
+    # Naive `O(n*m)` search, deliberately -- a skip table (Boyer-Moore/KMP)
+    # needs working memory proportional to the needle, which this
+    # allocation-free layer never does.
     exposed contains(*self, needle: Self) => bool {
         if needle.size == 0 {
             return true;

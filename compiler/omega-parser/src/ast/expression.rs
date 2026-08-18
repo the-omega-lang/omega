@@ -431,9 +431,9 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-/// One arm's pattern. There is no destructuring/binding in this grammar
-/// (deliberately, for now) -- a pattern only ever *proves* something about
-/// the scrutinee, it never introduces new names.
+/// One arm's pattern. There is no destructuring/binding in this grammar --
+/// a pattern only ever *proves* something about the scrutinee, it never
+/// introduces new names.
 #[derive(Debug, Clone)]
 pub enum Pattern {
     /// A literal (`100`, `'a'`, `true`) or an `Enum::Variant` path -- which

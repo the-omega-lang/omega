@@ -1,20 +1,14 @@
 # `core::range` -- tangible, inert range values and their independent
 # iteration cursor.
 #
-# The compiler lowers expression-position range syntax to `Range<T>` by this
-# exact path (`Analyzer::core_range_path`), and builds the struct literal by
-# *field index*. So `Range`'s own field order below -- `start`, `end`,
-# `inclusive` -- is load-bearing exactly the way `core::option::Option`'s
-# variant order is: renaming either type, or reordering these three fields,
-# silently miscompiles every range in the language unless that lowering is
-# updated to match. Adding a field after `inclusive` is safe.
+# `Range`'s field order (`start`, `end`, `inclusive`) is load-bearing:
+# `Analyzer::core_range_path` builds the struct literal by field index.
+# Reordering these three (adding one after `inclusive` is safe) silently
+# miscompiles every range in the language.
 #
-# A range is never its own cursor. Omega values copy, so a `Range` that
-# carried iteration state would lose its progress on assignment with nothing
-# to catch it -- Rust can afford `Range: Iterator` only because its move
-# checker makes the copy impossible, and even there it cost `RangeInclusive`
-# its `Copy` and left an `exhausted` flag contaminating equality. Splitting
-# the value from the cursor avoids the whole class of problem.
+# A range is never its own cursor: Omega values copy, so a `Range` carrying
+# iteration state would lose progress on assignment with nothing to catch
+# it. Splitting the value from the cursor avoids that class of problem.
 
 import cmp::Ord;
 import iterator::Iterator;
@@ -35,27 +29,21 @@ exposed struct RangeIterator<T> {
 }
 
 # Stepping, and nothing else. `successor` returns `None` at the type's upper
-# bound, which is what lets an inclusive full-domain range terminate without
-# ever computing MAX + 1 -- the same job the old `$more` desugaring flag did,
-# now expressed in the type.
+# bound, letting an inclusive full-domain range terminate without ever
+# computing MAX + 1.
 #
-# This deliberately declares no comparison of its own. A range cursor does
-# need ordering -- to recognize an inverted (empty) range, and to recognize
-# the final element -- but that is `Ord`'s job, and a `Successor` that
-# redeclared `greater_than`/`equals` would be a second, independent ordering
-# that could silently disagree with the type's real one. The cursor's
-# conformances below ask for both capabilities directly, with the inline
-# conjunction bound `T: Successor + Ord` -- the `Steppable` alias this file
-# used to define existed only because inline bounds were not spellable.
+# Declares no comparison of its own -- ordering (to recognize an inverted or
+# final-element range) is `Ord`'s job; a redeclared `greater_than`/`equals`
+# here could silently disagree with the type's real one. Conformances below
+# ask for both via the inline bound `T: Successor + Ord`.
 exposed spec Successor {
     successor(*self) => Option<Self>;
 }
 
-# The element type's own domain limits, needed only when a bound is left to
-# be inferred (`1..`, `..<10`). Separate from `Successor` on purpose: a type
-# can be perfectly steppable without having a representable first or last
-# value, and such a type should still be usable in a fully-written range.
-# Static (receiverless), like `Default::default` -- there is no value to ask.
+# The element type's own domain limits, needed only when a bound is
+# inferred (`1..`, `..<10`). Separate from `Successor`: a type can be
+# steppable without a representable first/last value. Static (receiverless)
+# since there is no value to ask.
 exposed spec Bounded {
     min() => Self;
     max() => Self;

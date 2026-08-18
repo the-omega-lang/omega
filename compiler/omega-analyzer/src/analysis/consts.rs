@@ -7,17 +7,9 @@ impl<'r> Analyzer<'r> {
     pub(super) fn const_representable(&self, r#type: &ResolvedType) -> bool {
         r#type.numeric_kind(self.target.pointer_bits()).is_some()
             || matches!(r#type, ResolvedType::Bool | ResolvedType::Char)
-            // A string constant's own type is always immutable (see
-            // `HirExpr::String`'s arm in `analyze_expr`), so only an
-            // immutable `*str` header field could ever accept one anyway.
-            // No recursion needed (unlike `Slice`/`SizedArray` below) --
-            // `Str` has no `item` to check.
+            // String and compile-time slice constants are always immutable.
             || matches!(r#type, ResolvedType::Str { mutable: false })
-            // A compile-time slice (`&[...]`) is likewise always immutable
-            // -- see `ConstValue::Slice`.
             || matches!(r#type, ResolvedType::Slice { item, mutable: false } if self.const_representable(item))
-            // A fixed-length array's own length is part of the field's
-            // type, shared by every variant -- see `ConstValue::Array`.
             || matches!(r#type, ResolvedType::SizedArray(item, _) if self.const_representable(item))
     }
 
@@ -59,15 +51,9 @@ impl<'r> Analyzer<'r> {
                 ResolvedType::Char => Some(ConstValue::Char(*c)),
                 _ => mismatch(self, "a character literal"),
             },
-            // A bare `[...]` -- unlike a compile-time *slice* (`&[...]`,
-            // just below), a fixed-length array has no pointer indirection
-            // at all: its elements live inline, directly in the header's
-            // own storage, so there's nothing to take the address of --
-            // matching how an ordinary `[T; N]`-typed place is never
-            // written with a leading `&` either. Every variant must supply
-            // exactly `size` elements (the length is part of the field's
-            // declared type, shared by every variant, unlike a slice's
-            // per-variant length).
+            // A bare `[...]` -- a fixed-length array has no indirection of
+            // its own, so it's never written with a leading `&`. Every
+            // variant must supply exactly `size` elements.
             HirExpr::ArrayLiteral(elements) => match expected {
                 ResolvedType::SizedArray(item, size) => {
                     if elements.len() != *size as usize {
@@ -81,13 +67,10 @@ impl<'r> Analyzer<'r> {
                 }
                 _ => mismatch(self, "an array literal"),
             },
-            // `&[...]` is the *only* recognized spelling for a compile-time
-            // slice, even here -- a bare `[...]` is never treated as one
-            // (it would be too easy to confuse with an ordinary array),
-            // matching `analyze_const_slice`'s own requirement in ordinary
-            // expression position. Recurses through `const_eval` itself, so
-            // nesting (e.g. a `*[*[i32]]` header field, written
-            // `&[&[1, 2], &[3, 4]]`) falls out for free.
+            // `&[...]` is the only recognized spelling for a compile-time
+            // slice -- a bare `[...]` is never treated as one, to avoid
+            // confusion with an ordinary array. Recurses through
+            // `const_eval` itself, so nesting falls out for free.
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 if *mutable {
                     self.error(expr.id, expr.span, AnalysisErrorKind::ConstSliceCannotBeMutable);
@@ -111,18 +94,11 @@ impl<'r> Analyzer<'r> {
                 }
             }
             // Not a recognized literal shape -- fall back to the general
-            // `comp` evaluator (`crate::comp_eval`) rather than immediately
-            // rejecting: an enum header value is an inherently compile-
-            // time-only position (no `comp` keyword needed here, same as
-            // every literal shape above), so anything the interpreter can
-            // resolve -- arithmetic, a call, even a nested struct built
-            // from a `comp` function -- is just as legitimate a header
-            // value as a bare literal always was. This is the one place
-            // `const_eval`'s literal-only origins actually generalize; the
-            // literal arms above stay exactly as they are (same accepted
-            // syntax, same error wording) rather than being rerouted
-            // through this same path, since their existing messages are
-            // more specific than anything a general fallback could give.
+            // `comp` evaluator: an enum header value is inherently
+            // compile-time-only, so anything the interpreter can resolve
+            // (arithmetic, a call, a `comp`-built struct) is as legitimate
+            // as a bare literal. The literal arms above keep their own,
+            // more specific error messages rather than routing through here.
             _ => match self.analyze_expr(expr, Some(expected)) {
                 Some(checked) if checked.r#type == *expected => self.eval_comp(expr.id, &checked),
                 Some(checked) => mismatch(self, &format!("a value of type `{}`", checked.r#type)),
@@ -133,8 +109,7 @@ impl<'r> Analyzer<'r> {
 
     /// The number-literal side of `const_eval`: parses and range-checks `n`
     /// against `expected` (which must be numeric), honoring an optional
-    /// leading negation -- including the asymmetric edge (`-32768` fits
-    /// `i16`, `32768` doesn't).
+    /// leading negation.
     pub(super) fn const_number(
         &mut self,
         node_id: HirId,
@@ -234,16 +209,10 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `analyze_const_slice`'s per-element evaluator -- the `&[...]`
-    /// sibling of `const_eval`, kept deliberately separate for the exact
-    /// reason `const_eval_pattern` is: `const_eval`'s fallback errors
-    /// (`EnumValueNotConstant`/`EnumValueTypeMismatch`) are worded
-    /// specifically for enum header values, which would be a confusing
-    /// thing to say about `a := &[1, f()];`. The actual literal
-    /// recognition (including its own recursive `AddressOf`-wrapped-
-    /// `ArrayLiteral` case, for nested compile-time slices -- a *bare*
-    /// nested array is never recognized, even here, to keep `&[...]` the
-    /// one unambiguous spelling) is otherwise identical, and both share
-    /// `const_number` for the real parsing/range-checking work.
+    /// sibling of `const_eval`, kept separate because `const_eval`'s
+    /// fallback errors are worded specifically for enum header values,
+    /// which would be confusing for `a := &[1, f()];`. Otherwise identical,
+    /// sharing `const_number` for parsing/range-checking.
     pub(super) fn const_eval_slice(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
         let mismatch = |this: &mut Self, found: &str| {
             this.error(

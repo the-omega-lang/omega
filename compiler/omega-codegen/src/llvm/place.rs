@@ -273,13 +273,9 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 // A slice is flattened as [data pointer, i32 length], so
-                // `.length` is the *second* leaf -- one pointer's width past
-                // the start of the slice's own storage, or element 1 of an
-                // SSA-backed parameter. Selecting the storage is the whole
-                // job here: relabeling `current_type` alone would leave the
-                // read pointed at the data pointer instead (and `I32`, not
-                // `USize` -- the length leaf is genuinely 32-bit; see
-                // `layout::leaves_of`'s `Slice`/`Str` arm).
+                // `.length` is the second leaf -- element 1, one pointer's
+                // width past the data pointer. `I32`, not `USize`: the
+                // length leaf is genuinely 32-bit (`layout::leaves_of`).
                 MirProjection::SliceLength => {
                     let ptr_size = self.pointer_bytes();
                     current = match current {
@@ -330,18 +326,14 @@ impl<'ctx> Codegen<'ctx> {
         (current, current_type, place.align)
     }
 
-    /// The alignment an access `byte_offset` bytes into a base known to be
-    /// `base_align`-aligned actually has.
-    ///
-    /// `MirPlace::align` is a claim about the place's *base* address and
-    /// nothing else; the leaf at `base + 5` is not `base`-aligned just
-    /// because `base` is. Every access here is a byte-offset one (a leaf
-    /// within a flattened aggregate, a field within a slot), so the claim
-    /// has to be weakened by whatever the offset itself destroys --
-    /// otherwise a `@layout(align = 16)` aggregate stamps `align 16` on
-    /// its own leaves at offsets 1, 2, 3..., which is undefined behavior
-    /// LLVM's optimizer is entitled to act on. Only ever *lowers* the
-    /// claim, so it can never turn a sound alignment into an unsound one.
+    /// The alignment an access `byte_offset` bytes into a `base_align`-
+    /// aligned base actually has. `MirPlace::align` claims only the
+    /// place's *base* address, so a byte-offset access (a leaf within a
+    /// flattened aggregate, a field within a slot) must weaken that claim
+    /// by whatever the offset itself destroys, or an over-aligned `align`
+    /// on the resulting load/store is UB LLVM's optimizer can act on.
+    /// Only ever lowers the claim -- see `docs/14-known-issues.md`'s
+    /// `@layout(align)` entry for the propagation gap this does not cover.
     fn offset_align(base_align: u32, byte_offset: u32) -> u32 {
         let base_align = base_align.max(1);
         if byte_offset == 0 {

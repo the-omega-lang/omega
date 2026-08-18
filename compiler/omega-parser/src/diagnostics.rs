@@ -25,14 +25,9 @@ impl ParseError {
     }
 
     /// This error's complete renderable form -- headline, the caret label at
-    /// the offending span, and any `note:`/`help:` footers.
-    ///
-    /// This is the **one** place any of an error's text lives. It used to be
-    /// three: the variant's own doc comment, a `Display` impl holding the
-    /// headline, and this method holding everything else -- three exhaustive
-    /// matches in three different orders, with nothing keeping their wording
-    /// in step. `Display` now reads its headline back from here (see below),
-    /// so adding an error means adding exactly one arm.
+    /// the offending span, and any `note:`/`help:` footers. The **one**
+    /// place an error's text lives; `Display` reads its headline back from
+    /// here (see below), so adding an error means adding exactly one arm.
     ///
     /// Advice is attached only where it is always true; a wrong hint is
     /// worse than none.

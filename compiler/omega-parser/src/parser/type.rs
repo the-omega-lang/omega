@@ -5,13 +5,10 @@ use crate::lexer::TokenKind;
 use crate::parser::{Parser, contextual, parse_path};
 
 /// `*T` / `[N]T` / `[]T` / `[?]T` / `(params) => T` / `Path` / `Path<T,
-/// ...>` -- matches `Type::parser`'s original `choice((pointer, array,
-/// function, named))` dispatch order exactly (no ambiguity between them:
-/// each starts with a distinct token). Mutability is never parsed here --
-/// it only ever appears right after a leading `*` (`parse_pointer_type`),
-/// so `*[]T`/`*mut []T`/`*[?]T`/`*mut [?]T` all fall out of the ordinary
-/// pointer grammar recursing back into this function for its pointee,
-/// with no special-casing needed in the parser at all.
+/// ...>` -- no ambiguity between them, each starts with a distinct token.
+/// Mutability is never parsed here -- it only ever appears right after a
+/// leading `*` (`parse_pointer_type`), so `*[]T`/`*mut []T`/... all fall out
+/// of the ordinary pointer grammar recursing back into this function.
 ///
 /// The second of the grammar's two cycles (the other is `parse_expression`),
 /// and so the second `descend` site: `*[?]*[?]T` recurses entirely within

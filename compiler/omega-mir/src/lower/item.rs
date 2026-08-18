@@ -49,14 +49,9 @@ fn lower_declaration(decl: CheckedDeclaration) -> MirDeclaration {
 }
 
 fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclaration {
-    // The same branch `update_extern_decl` used to own backend-side, now
-    // decided once at lowering: `Disabled` is every ordinary hand-written
-    // `extern` (annotations are rejected on `extern` at parse time, so
-    // nothing else is reachable for one of those); `Glued` is a `gap`
-    // declaration's synthesized required function, which must link against
-    // the exact same symbol its `glue` implementation forces. A *data*
-    // extern carries no function signature, so only the plain identifier
-    // case can ever apply.
+    // `Disabled` is an ordinary hand-written `extern`; `Glued` is a `gap`
+    // declaration's synthesized required function, linked to the symbol
+    // its `glue` implementation forces.
     let symbol = match (&decl.mangling, &decl.r#type) {
         (ManglingMode::Disabled, _) => decl.ident.0.clone(),
         (
@@ -99,10 +94,8 @@ fn lower_method_def(
     owner_type_args: &[ResolvedType],
 ) -> MirFunctionDef {
     let symbol = match &f.mangling {
-        // `@mangling(disabled)` is rejected on methods at analysis time
-        // (`ManglingDisabledOnMethod`), but `@mangling(force = "...")` is
-        // deliberately allowed there -- see `ManglingMode::Forced`'s doc
-        // comment.
+        // `@mangling(force = "...")` is allowed on methods; `disabled` is not
+        // (`ManglingDisabledOnMethod`) -- see `ManglingMode::Forced`.
         ManglingMode::Forced(name) => name.clone(),
         ManglingMode::Glued {
             spec_module_path,
@@ -140,12 +133,9 @@ fn lower_function_def_inner(f: CheckedFunctionDef, symbol: String, linkage: MirL
         conformance_owner,
         primitive_target,
     } = f;
-    // Lowered against `&params`/`&return_type` (only its own id/type is
-    // needed to seed parameter locals and the return slot -- see
-    // `FunctionLowerer::lower`) before either is moved into the returned
-    // `MirFunctionDef` below, exactly like `CheckedFunctionDef` itself
-    // keeps both a `params` list and a body that implicitly references the
-    // same parameters via `Storage::Parameter`.
+    // Lowered against `&params`/`&return_type` before either is moved into
+    // the returned `MirFunctionDef` below (the body references them via
+    // `Storage::Parameter`).
     let mir_body = FunctionLowerer::lower(&params, body, &return_type, id, span);
     MirFunctionDef {
         id,
@@ -175,12 +165,8 @@ fn free_function_symbol_and_linkage(
     path: &[Ident],
     entry: &[Ident],
 ) -> (String, MirLinkage) {
-    // The program's literal entry point (`main`, in the entry module)
-    // keeps the bare, unmangled symbol the OS/linker looks for -- decided
-    // here, before a `Symbol` is even built, rather than inside
-    // `mangle::free_function_symbol`, which only ever needs to know how to
-    // name a real symbol. `main` is never itself generic, so linkage stays
-    // `Export`, same as ever, with no special case needed beyond the name.
+    // The program's entry point (`main`, in the entry module) keeps the
+    // bare, unmangled symbol the OS/linker looks for.
     let symbol = match (&f.mangling, &f.conformance_owner, &f.primitive_target) {
         (ManglingMode::Forced(name), _, _) => name.clone(),
         (
@@ -213,12 +199,9 @@ fn free_function_symbol_and_linkage(
             &f.fn_type(),
         )),
     };
-    // A conform method's genericity lives in its *target* (`Self`), never
-    // in its own parameter list, so `f.type_args` is empty for
-    // `conform<W> BufWriter<W> to Write` at `W = Stdout` just as it is for
-    // `conform Stdout to Write`. Asking `type_args` alone would make both
-    // strong, and the first is emitted independently by every package that
-    // uses it -- `monomorphized` is the conform counterpart of a non-empty
+    // A conform method's genericity lives in its target (`Self`), not its
+    // own parameter list, so `f.type_args` is always empty for one --
+    // `monomorphized` is the conform counterpart of a non-empty
     // `type_args`; see `ConformanceOwner::monomorphized`.
     let linkage = match &f.conformance_owner {
         Some(owner) if owner.monomorphized => MirLinkage::Weak,

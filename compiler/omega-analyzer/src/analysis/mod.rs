@@ -1,16 +1,16 @@
 //! Semantic analysis: everything between HIR and the checked tree.
 //!
 //! One [`Analyzer`] checks exactly one top-level item -- a signature or a
-//! body -- and is thrown away afterwards. Everything module-shaped it needs
-//! (what a path names, what an import means, another module's items) it asks
-//! the [`ModuleResolver`] for; nothing here ever touches a filesystem or a
-//! cross-module cache.
+//! body -- and is thrown away afterwards. Module-shaped questions (what a
+//! path names, what an import means, another module's items) go through the
+//! [`ModuleResolver`]; nothing here touches a filesystem or cross-module
+//! cache directly.
 //!
-//! The implementation is split by *what is being analyzed*, one submodule
-//! per concern, each contributing its own `impl Analyzer` block:
+//! Split by *what is being analyzed*, one submodule per concern, each
+//! contributing its own `impl Analyzer` block:
 //!
 //! - [`visibility`] -- `exposed`/`internal`/hidden and the `reveal` bypass.
-//! - [`specs`] -- spec declarations, flattening, conformance, and conformance.
+//! - [`specs`] -- spec declarations, flattening, conformance.
 //! - [`items`] -- top-level item signatures and bodies (the driver's entry
 //!   points).
 //! - [`stmts`] -- blocks, statements, control flow, divergence.
@@ -22,9 +22,8 @@
 //! - [`patterns`] -- `match` and its exhaustiveness/narrowing.
 //! - [`consts`] -- compile-time evaluation.
 //!
-//! Submodules import this module's own prelude with `use super::*` rather
-//! than each repeating the same twenty-line import block: the canonical list
-//! of what analysis depends on lives here, once.
+//! Submodules import this module's own prelude with `use super::*` instead
+//! of each repeating the same import block.
 
 mod calls;
 mod consts;
@@ -89,106 +88,60 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub struct Analyzer<'r> {
-    /// Private: every error goes through [`Analyzer::error`], so nothing
-    /// outside this type ever pushes one directly.
+    /// Every error goes through [`Analyzer::error`].
     errors: Vec<AnalysisError>,
-    /// Non-fatal findings -- currently just unreachable code (see
-    /// `truncate_unreachable`) -- returned alongside a successful
-    /// `CheckedModule` rather than folded into `errors`, since none of them
-    /// reject the program. See `AnalysisWarning`'s doc comment.
+    /// Non-fatal findings (currently just unreachable code), returned
+    /// alongside a successful `CheckedModule` rather than folded into
+    /// `errors`, since none reject the program.
     warnings: Vec<AnalysisWarning>,
     context: Context,
-    /// The compilation target this analysis is being run for -- the
-    /// *target's* pointer width (`pointer_bits`/`pointer_bytes`) is what
-    /// every width-sensitive question (`numeric_kind`'s `ISize`/`USize`,
-    /// `integer_domain`, `comp`'s `sizeof`) resolves against.
+    /// The compilation target this analysis runs for -- its pointer width
+    /// is what every width-sensitive question resolves against.
     target: Target,
-    /// Everything module-tree-shaped -- filesystem lookups, cross-module
-    /// caching, cycle detection -- lives entirely on the other side of this
-    /// trait object (see `crate::resolver`); the same long-lived resolver
-    /// (the driver) is borrowed across many short-lived per-module
-    /// `Analyzer`s, one per `collect_signatures`/`analyze_bodies` call,
-    /// rather than owned by any one of them.
+    /// Module-tree-shaped state (filesystem lookups, cross-module caching,
+    /// cycle detection) lives behind this trait object; the driver's
+    /// long-lived resolver is borrowed across many short-lived per-item
+    /// `Analyzer`s rather than owned by any one of them.
     resolver: &'r mut dyn ModuleResolver,
-    /// This item's owning module's absolute path -- supplies the implicit
-    /// prefix an unqualified top-level reference needs to become an
-    /// absolute `(module_path, name)` query, so it's resolved exactly the
-    /// same way a qualified cross-module reference is (see
-    /// `ModuleResolver::resolve_item`'s doc comment: there is no longer an
-    /// architectural difference between the two). The *same* path for every
-    /// item constructed for this module -- this module's own top-level
-    /// signature/body work.
+    /// This item's owning module's absolute path -- the implicit prefix an
+    /// unqualified top-level reference needs to become an absolute query.
     module_path: Vec<Ident>,
     /// The enclosing function's declared return type, checked against every
-    /// `return <expr>;` and against the function body's own effective type
-    /// (see `block_type`/`check_function_return`). Reset at the start of
-    /// each `check_function_body` call -- one `Analyzer` checks exactly one
-    /// top-level item at a time (see `item_name`'s doc comment), and a
-    /// struct's methods are checked sequentially, never nested inside one
-    /// another's analysis, so a plain reset (not a save/restore) is enough.
+    /// `return <expr>;` and the body's own effective type. Reset at the
+    /// start of each `check_function_body` call.
     current_return_type: ResolvedType,
-    /// A stack of enclosing loops' `HirId`s (innermost last), pushed/popped
-    /// around a `while`/`for`'s body analysis. `break`/`continue` resolve
-    /// against this -- today always `.last()` (the innermost loop), but
-    /// looked up rather than hard-assumed specifically so a future labeled
-    /// `break 'outer;` only has to change *this* resolution rule (search the
-    /// stack for a matching label instead of always taking the top); nothing
-    /// about `HirBreak`/`CheckedBreak`/codegen would need to change. Cleared
-    /// at the start of each `check_function_body` call, same reasoning as
-    /// `current_return_type`.
+    /// Enclosing loops' `HirId`s (innermost last), pushed/popped around a
+    /// `while`/`for`'s body. `break`/`continue` resolve against `.last()`.
+    /// Cleared at the start of each `check_function_body` call.
     loop_stack: Vec<HirId>,
-    /// Every loop `HirId` that a `break` targeting it has actually been seen
-    /// for, filled in as each `break` is analyzed (`HirStmt::Break`'s arm in
-    /// `analyze_stmt`) and consulted once, when a `loop { }`'s own body
-    /// finishes analyzing, to decide `CheckedLoop::has_break` -- see its own
-    /// doc comment for why that's recorded on the checked node rather than
-    /// re-derived later. IDs are never reused, so this only ever grows;
-    /// never cleared, unlike `loop_stack`/`current_return_type`.
+    /// Every loop `HirId` that a `break` targeting it has been seen for,
+    /// consulted once a `loop { }`'s body finishes analyzing to decide
+    /// `CheckedLoop::has_break`. IDs are never reused, so this only grows;
+    /// never cleared.
     loops_with_break: HashSet<HirId>,
-    /// `true` while analyzing a `defer`'s own body (see `HirStmt::Defer`'s
-    /// arm in `analyze_stmt`) -- not a stack/counter, since a `defer` nested
-    /// inside another defer's body is rejected outright the moment this is
-    /// already `true`, so it can never need to represent more than one
-    /// level. Used to reject `return` inside a defer body (it would have to
-    /// jump into the very epilogue that runs deferred bodies, from inside
-    /// one of them) and nested `defer`. Reset at the start of each
-    /// `check_function_body` call, same reasoning as `current_return_type`.
+    /// `true` while analyzing a `defer`'s own body -- rejects `return` and
+    /// nested `defer` inside it. Reset at the start of each
+    /// `check_function_body` call.
     in_defer_body: bool,
     /// A stack of `@suppress(...)` name lists, one frame per item/method
     /// currently being checked (innermost last) -- a method's own frame and
-    /// its owning struct/enum/union's frame are both active while that
-    /// method's body is checked, so either one suppresses a given warning
-    /// (see `Analyzer::warn`), the same lexical-nesting behavior Rust's
-    /// `#[allow]` has.
+    /// its owning type's frame are both active while the method body is
+    /// checked, matching Rust's `#[allow]` nesting.
     suppressed: Vec<Vec<Ident>>,
-    /// One frame per currently-active `reveal` expression (innermost last),
-    /// each tracking whether *its* bypass has proven load-bearing yet (i.e.
-    /// whether some check nested inside it would actually have failed
-    /// without it) -- see `HirExpr::Reveal`'s analysis arm and
-    /// `AnalysisWarningKind::UnnecessaryReveal`. `check_visibility` marks
-    /// only the *innermost* frame (`.last_mut()`), so a redundant outer
-    /// `reveal reveal x.y` still warns on the outer wrapper even though the
-    /// inner one saved the access.
+    /// One frame per active `reveal` expression (innermost last), tracking
+    /// whether its bypass has proven load-bearing (see
+    /// `AnalysisWarningKind::UnnecessaryReveal`). `check_visibility` marks
+    /// only the innermost frame.
     reveal_stack: Vec<bool>,
-    /// The struct/union/enum whose own method bodies this `Analyzer`
-    /// instance is currently checking -- `Some(cell.borrow().id)` for the
-    /// whole duration of `check_struct_body`/`check_union_body`/
-    /// `check_enum_body` (one fresh `Analyzer` per type, never shared
-    /// across two different types -- see those functions' own callers in
-    /// `omega_driver::Driver`), `None` for a plain top-level function/
-    /// global. This is what a **hidden field or method**'s own visibility
-    /// rule is actually scoped to -- "cannot be accessed outside of the
-    /// struct definition," a narrower scope than a hidden *item*'s
-    /// (module-wide) rule, since it's compared against a single type's
-    /// identity, not a module path. See `Analyzer::check_member_visibility`.
+    /// The struct/union/enum whose method bodies this `Analyzer` is
+    /// currently checking, `None` for a top-level function/global. Scopes a
+    /// **hidden** field/method's visibility: accessible only while
+    /// `current_owner` is that exact type (see `check_member_visibility`).
     current_owner: Option<HirId>,
-    /// Field/variant usage recorded from `comp`-evaluated subtrees this
-    /// `Analyzer` run interpreted (see `eval_comp`) -- they collapse into a
-    /// `CheckedExpr::Const` and never reach the final `CheckedModule`, so
-    /// `crate::dead_code::collect_module`'s own whole-program walk would
-    /// otherwise never see the field accesses/enum constructions they
-    /// contained. Folded into the driver-wide `FieldUsage` by
-    /// `omega_driver::Driver::with_analyzer` once this `Analyzer` finishes.
+    /// Field/variant usage recorded from `comp`-evaluated subtrees (see
+    /// `eval_comp`) -- these collapse into `CheckedExpr::Const` and never
+    /// reach the final `CheckedModule`, so dead-code analysis would
+    /// otherwise miss the field accesses/enum constructions they contained.
     field_usage: crate::dead_code::FieldUsage,
     bounds: Vec<ResolvedBound>,
 }
@@ -307,29 +260,15 @@ impl<'r> Analyzer<'r> {
         false
     }
 
-    /// Imports are no longer pre-resolved and pre-bound here: an `import`
-    /// alias resolves lazily, the first time some name lookup that isn't
-    /// satisfied locally actually needs to know what it means (see
-    /// `Analyzer::resolve_alias`) -- this is what fixes a real false-cycle
-    /// bug the old eager-resolve-the-whole-module's-imports-up-front
-    /// approach had (two modules whose *unrelated* items happened to
-    /// cross-import each other's module would deadlock on each other's
-    /// whole import list, even though the specific items in question never
-    /// referenced each other). `omega_driver::Driver` memoizes each
-    /// `(module_path, alias)` alias resolution individually, so this
-    /// throwaway `Analyzer` doesn't need its own import-alias cache either
-    /// -- every lookup just asks the resolver directly.
+    /// An `import` alias resolves lazily, the first time a name lookup not
+    /// satisfied locally needs it (see `Analyzer::resolve_alias`), rather
+    /// than being pre-resolved here.
     ///
     /// `generics` is the concrete substitution for the item's own declared
-    /// generic parameters -- empty for an ordinary, non-generic item.
-    /// Seeded into `defined_types`, with a `Redeclaration` for a duplicate
-    /// entry within `generics` itself, anchored at `owner` -- the item's own
-    /// id/span, since an individual generic parameter has none of its own.
-    /// This is what makes a generic parameter nothing more than a type name
-    /// bound to a concrete `ResolvedType` for the lifetime of one throwaway
-    /// `Analyzer`: genericity is purely a resolution-time concern, matching
-    /// the "duck typed" design (no bounds are ever declared or checked
-    /// here).
+    /// generic parameters (empty for a non-generic item), seeded into
+    /// `defined_types`; a duplicate entry is a `Redeclaration` anchored at
+    /// `owner` (the item's own id/span). Genericity is purely a
+    /// resolution-time concern here -- no bounds are declared or checked.
     pub fn new(
         resolver: &'r mut dyn ModuleResolver,
         module_path: Vec<Ident>,
@@ -447,15 +386,9 @@ impl<'r> Analyzer<'r> {
 
     /// Runs `f` and discards every diagnostic it produced -- a speculative
     /// question whose failure is not this query's to report; the real path
-    /// re-derives and reports it. Snapshots and truncates the *sink*, not
-    /// per-diagnostic state, so everything pushed while `f` ran (errors,
-    /// warnings, and anything a pushed error records on the side) is gone
-    /// afterwards, exactly as if the probe never happened.
-    ///
-    /// Deliberately *not* retrofitted onto `classify_for_in_source` or
-    /// `probe_literal_type_args`: those keep diagnostics on outright
-    /// failure, which is a different contract -- this is discard-everything,
-    /// for questions whose only consumer is the return value.
+    /// re-derives and reports it later if needed. `classify_for_in_source`
+    /// and `probe_literal_type_args` intentionally don't use this: they keep
+    /// diagnostics on outright failure, a different contract.
     pub fn probe<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let errors = self.errors.len();
         let warnings = self.warnings.len();

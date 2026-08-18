@@ -9,27 +9,20 @@ use omega_analyzer::layout;
 use omega_mir::{MirItem, MirLinkage};
 use omega_parser::prelude::Ident;
 
-/// `MirLinkage`'s Cranelift counterpart -- the one remaining mapping from
-/// a MIR-carried fact to a backend-native value. `Preemptible` maps to a
-/// genuine weak ELF/Mach-O/COFF symbol (`cranelift-object`'s
-/// `translate_linkage`, `let weak = linkage == Linkage::Preemptible`),
-/// empirically confirmed to let a linker silently fold multiple
-/// independently-compiled definitions of the *same* symbol name into one,
-/// rather than erroring on "multiple definition" the way two strong
-/// symbols with the same name always would. Every separate `omgc`
-/// invocation that instantiates e.g. `CustomStruct<i32>` still fully
-/// regenerates its own copy locally (nothing here skips that -- there is
-/// no cross-process build cache), exactly like Rust/C++ generics: the
-/// deduplication happens once, at final link time, not at compile time.
-/// This is only sound because a generic instantiation's mangled symbol is
-/// a pure function of `(module_path, name, type_args)` -- two independent
-/// compilations of the exact same instantiation are therefore guaranteed
-/// to produce byte-identical bodies under the identical name, which is the
-/// actual precondition weak-symbol folding relies on (the linker trusts
-/// the name, it doesn't diff the bytes). An ordinary, non-generic symbol
-/// keeps strong linkage unconditionally -- two *different* object files
-/// defining the same non-generic symbol is always a genuine user error,
-/// and should still be a hard link error, not silently tolerated.
+/// `MirLinkage`'s Cranelift counterpart. `Preemptible` maps to a genuine
+/// weak ELF/Mach-O/COFF symbol (`cranelift-object`'s `translate_linkage`),
+/// letting a linker silently fold multiple independently-compiled
+/// definitions of the *same* symbol name into one instead of erroring on
+/// "multiple definition". Every separate `omgc` invocation that
+/// instantiates e.g. `CustomStruct<i32>` still fully regenerates its own
+/// copy locally -- the deduplication happens once, at final link time, not
+/// at compile time -- and this is only sound because a generic
+/// instantiation's mangled symbol is a pure function of `(module_path,
+/// name, type_args)`, so two independent compilations of the same
+/// instantiation are guaranteed byte-identical bodies under the identical
+/// name. An ordinary, non-generic symbol keeps strong linkage
+/// unconditionally, so two *different* definitions of it stay a hard link
+/// error.
 fn cranelift_linkage(linkage: MirLinkage) -> Linkage {
     match linkage {
         MirLinkage::Export => Linkage::Export,
@@ -69,27 +62,19 @@ impl Codegen {
                     self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
                 }
             }
-            // A top-level global (`ident: Type;`, `Storage::Global`) --
-            // zero-initialized when `initial_value` is `None` (a plain
-            // `ident : Type;`, or `mut`), or built from real bytes via
-            // `write_const_element` when it's `Some` (a non-`comp`
-            // `ident := comp expr();`, see `CheckedDeclaration::
-            // initial_value`'s doc comment) -- the exact same call
-            // `build_const_data` makes for an anonymous rodata blob,
-            // just against this global's own real, named symbol instead.
-            // `Export` (strong) linkage unconditionally: a global is never
-            // a generic instantiation the way a function/method can be, so
-            // there's no multi-definition-folding need for `Preemptible`
-            // here (see `linkage_for`'s own doc comment for why that
-            // distinction matters at all), and unlike `build_const_data`'s
-            // blobs, this symbol must never be deduplicated by content --
-            // two different globals that merely start out byte-identical
-            // can still diverge after a `mut` write. `writable: true`
-            // regardless of the source-level `mut`/plain distinction --
-            // that's enforced at analysis time (only a `mut` binding's
-            // `CheckedAssignment` ever exists in the checked tree at all),
-            // not by object-file memory protection, exactly like a local's
-            // stack slot is never protected either.
+            // A top-level global -- zero-initialized when `initial_value`
+            // is `None` (a plain `ident : Type;`, or `mut`), or built from
+            // real bytes via `write_const_element` when it's `Some` (see
+            // `CheckedDeclaration::initial_value`'s doc comment). `Export`
+            // (strong) linkage unconditionally: a global is never a generic
+            // instantiation, so there's no multi-definition-folding need
+            // for `Preemptible` (see `cranelift_linkage` above), and unlike
+            // `build_const_data`'s blobs, this symbol must never be
+            // deduplicated by content -- two globals that start out
+            // byte-identical can still diverge after a `mut` write.
+            // `writable: true` regardless of the source-level `mut`/plain
+            // distinction -- enforced at analysis time, not by object-file
+            // memory protection, exactly like a local's stack slot.
             MirItem::Declaration(decl) => {
                 let symbol = omega_mir::mangle::global_symbol_string(path, &decl.ident);
                 let total = layout::total_bytes(&decl.r#type, self.pointer_bytes());

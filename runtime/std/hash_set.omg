@@ -1,15 +1,11 @@
 # `std::hash_set` -- `HashSet<T>`, a thin wrapper around
-# `std::hash_map::HashMap<T, Unit>` (`Unit` a real, zero-sized, `marker`-
-# declared placeholder payload) -- the same trick Rust's own real
-# `HashSet<T>` uses internally (`HashSet<T> = HashMap<T, ()>`), and a
-# genuinely free one here too: `Unit` costs nothing in either storage or
-# codegen (see `docs/20-marker-types.md`).
+# `HashMap<T, Unit>` (`Unit` a zero-sized `marker` payload, free in both
+# storage and codegen -- see docs/20-marker-types.md), the same trick
+# Rust's `HashSet<T> = HashMap<T, ()>` uses.
 #
 # `insert`/`remove`/`contains` return plain `bool`, not `Option<T>` --
-# unlike `HashMap<K, V>`, there's no *payload* to hand back beyond
-# presence itself (the caller already holds the value), matching Rust's
-# own real `HashSet` API exactly. Same allocator/cleanup story as every
-# other owning type here:
+# there's no payload beyond presence itself. Same allocator/cleanup story
+# as every other owning type here:
 #
 #   set := HashSet<i32>::new();
 #   defer set.free();

@@ -1,11 +1,8 @@
-# `core::cmp` -- the allocation-free comparison interfaces (`Eq`, `Ord`)
-# core range iteration depends on, plus the three-way result `Ord::compare`
-# reports through. Deliberately split from `Ord` (Rust's own split of
-# `PartialEq`/`Eq` from `PartialOrd`/`Ord` collapsed into one pair here,
-# since this language has no partial/total distinction to encode): a type
-# can be comparable for equality alone (most usefully, `f32`/`f64`, where a
-# total order doesn't exist because of `NaN`) without claiming a total
-# order it can't actually provide.
+# `core::cmp` -- allocation-free comparison interfaces (`Eq`, `Ord`), plus
+# the three-way result `Ord::compare` reports through. `Eq` and `Ord` are
+# kept separate (unlike Rust's Partial/total split, collapsed here since
+# there's no partial/total distinction) so a type like `f32`/`f64` can be
+# equality-comparable without claiming a total order `NaN` breaks.
 
 exposed enum Ordering {
     Less,
@@ -67,20 +64,11 @@ exposed spec Eq {
     }
 }
 
-# `Ord` declares nothing but its own ordering requirements -- no `: Eq`, and
-# no other spec's requirements folded in. Spec provisioning no longer exists
-# in the language: a spec is a contract about what an implementer provides,
-# never a list of other specs to also satisfy. The `Ord`-implies-`Eq`
-# convenience is expressed as a blanket *derivation* below instead, which
-# puts the constraint on the derivation that needs it rather than on every
-# implementer -- and a concrete type wanting a faster `equals` writes a
-# direct `conform T to Eq`, which beats the blanket under the ordinary
-# precedence rules.
-#
-# `less_than`/`greater_than`/`min`/`max` all come free from `compare` alone,
-# though an implementor is free to override any of them with a more direct
-# definition (see `core::primitives::numerics`, which does, purely for speed
-# -- the defaults here are what make the interface usable on their own).
+# `Ord` declares only its own ordering requirement -- no `: Eq`, since specs
+# don't provision other specs here. The `Ord`-implies-`Eq` convenience comes
+# from the blanket `conform` below instead. `less_than`/`greater_than`/
+# `min`/`max` all derive from `compare` alone; implementors may override any
+# for speed (see `core::primitives::numerics`).
 exposed spec Ord {
     compare(*self, other: Self) => Ordering;
 
@@ -109,10 +97,8 @@ exposed spec Ord {
     }
 }
 
-# The one blanket that used to be twelve inline `equals` methods: anything
-# with a total order can also be checked for equality, since
-# `compare(a, b).is_eq()` decides it. A type wanting a faster `equals`
-# writes a concrete `conform T to Eq`, which beats this blanket.
+# Anything with a total order can be checked for equality via
+# `compare(a, b).is_eq()`. A concrete `conform T to Eq` beats this blanket.
 conform<T: Ord> T to Eq {
     equals(*self, other: Self) => bool { self.compare(other).is_eq() }
 }

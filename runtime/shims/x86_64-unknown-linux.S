@@ -4,11 +4,11 @@ exit:
         syscall
 
 strlen:
-	xor %rax, %rax            # len = 0
-	mov %rdi, %rcx            # rcx = ptr
+	xor %rax, %rax
+	mov %rdi, %rcx
 .L_loop2:
-	movzbq (%rcx), %rdx      # load byte -> rdx (zero-extend)
-	test %dl, %dl            # test low byte
+	movzbq (%rcx), %rdx
+	test %dl, %dl
 	je .L_done
 	inc %rax
 	inc %rcx
@@ -27,7 +27,7 @@ puts:
         mov $1, %rdi
         syscall
 
-        mov $10, %rax /* new line */
+        mov $10, %rax /* newline */
         push %rax
 
         mov $1, %rax
@@ -40,15 +40,8 @@ puts:
 
         ret
 
-/* TODO: Handle void functions */
 .global _start
 _start:
         call main
         mov %rax, %rdi
         call exit
-
-/*
-main:
-        mov $123, %rax
-        ret
-*/

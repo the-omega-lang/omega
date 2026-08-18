@@ -1,24 +1,16 @@
-//! Where module content comes from on disk: the local project's own root
-//! directory, and every registered `--extern` dependency's own root --
-//! both eagerly, structurally discovered in full at construction (see
-//! [`fs_resolve::discover_tree`]), so every module *path* any extern
-//! contains is already known upfront (`extern_modules`/`core_modules`),
-//! and finding one (`ModuleRoots::locate`) is always a plain map lookup,
-//! never a live filesystem access, local or extern alike.
+//! Where module content comes from on disk: the local project's own root,
+//! and every registered `--extern` root -- both eagerly discovered in full
+//! at construction (see [`fs_resolve::discover_tree`]), so `ModuleRoots::
+//! locate` is always a plain map lookup, never a live filesystem access.
 //!
-//! What gets done with a known path's *content* still varies by how
-//! "eager" its owner is: the local project's own modules are always fully
-//! parsed, signature-resolved, *and* body-checked (`Driver::
-//! local_module_paths`/`collect_signatures`/`check_bodies`); an extern
-//! module's own struct/spec *signatures* are now eagerly resolved too,
-//! whichever extern it belongs to (`Driver::collect_extern_signatures`)
-//! -- but never its body, and never anything reached only through an
-//! ordinary reference (a free function, an overload, ...), which stays
-//! exactly as on-demand as ever, parsed and resolved the first time
-//! something actually needs it (`Driver::parse_module`/`ensure_item`).
+//! Content is still resolved with varying eagerness: local modules are
+//! fully parsed, signature-resolved, and body-checked; an extern module's
+//! struct/spec signatures are eagerly resolved too
+//! (`Driver::collect_extern_signatures`), but never its body or anything
+//! reached only by ordinary reference, which stays on-demand
+//! (`Driver::parse_module`/`ensure_item`).
 //!
-//! This is the *only* place a module path is turned into a filesystem
-//! lookup: everything above it deals in declared module paths exclusively.
+//! This is the only place a module path becomes a filesystem lookup.
 
 use crate::error::CompileError;
 pub(crate) const CORE_MODULE: &str = "core";

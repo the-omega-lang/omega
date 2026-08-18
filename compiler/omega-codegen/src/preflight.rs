@@ -6,10 +6,9 @@
 //! are checked here, once, before any backend work begins, and reported as
 //! a plain `Err` like every other rejectable *program* input.
 //!
-//! (A parameter's *address*, and `MirPlaceRoot::Global` storage, were the
-//! other two historical `todo!()`s -- both are fully implemented now, so
-//! this pass covers exactly what remains: assignment into a function
-//! parameter, and non-function `extern` data declarations.)
+//! This pass covers what remains unimplemented: assignment into a function
+//! parameter, and non-function `extern` data declarations (see
+//! `docs/14-known-issues.md`).
 
 use crate::CodegenRequest;
 use omega_analyzer::resolved_type::ResolvedType;
@@ -23,11 +22,7 @@ pub(crate) fn preflight(request: &CodegenRequest) -> Result<(), String> {
     for (_, module) in &request.modules {
         for item in &module.items {
             match item {
-                // Extern *data* declarations have no storage story -- fully
-                // resolved and type-checked like everything else, but no
-                // backend has anything sound to emit for one yet (its
-                // storage genuinely lives in another translation unit, and
-                // neither backend decides how to name or address it).
+                // Extern *data* declarations have no storage story yet (docs/14-known-issues.md).
                 MirItem::ExternDeclaration(decl)
                     if !matches!(decl.r#type, ResolvedType::Function(_)) =>
                 {
@@ -77,10 +72,8 @@ fn parameter_assignment_error(span: Span) -> String {
 }
 
 /// Whether `body` assigns into one of its own parameters (`LocalId <
-/// arg_count`, see `MirBody`'s doc comment) anywhere -- the `Span` of the
-/// offending assignment, for the rejection message. Parameters are
-/// SSA-register-backed values, not memory, so no backend can honor a write
-/// to one until the language gives parameters an explicit storage story.
+/// arg_count`) anywhere -- the `Span` of the offending assignment, for the
+/// rejection message.
 fn parameter_assignment(body: &MirBody) -> Option<Span> {
     for block in &body.blocks {
         for stmt in &block.statements {
@@ -173,17 +166,10 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
 }
 
 /// Whether an assignment *target* is a parameter's own storage: the root
-/// is a parameter local **and** no projection moves the write off the
-/// parameter's own register-backed value. A `Deref` (writing through a
-/// parameter pointer: `*out = x`) or an `Index` (writing through a slice/
-/// array data pointer: `into[i] = x`) writes *pointee* memory, which is
-/// perfectly ordinary; it is only a write into the parameter's own value
-/// (bare `x = y`, or `p.field = y` on a by-value aggregate parameter)
-/// that no backend can honor yet. The analyzer already rejects every
-/// such write today (parameters are always-immutable bindings), so this
-/// check is the invariant's backstop, not its only guard: if a future
-/// language change reopens the shape, both backends refuse it identically
-/// here instead of panicking backend-side.
+/// is a parameter local **and** no projection moves the write off it. A
+/// `Deref`/`Index` projection writes *pointee* memory instead, which is
+/// fine (`*out = x`, `into[i] = x`); only a direct write into the
+/// parameter's own value (`x = y`, `p.field = y`) hits this rejection.
 fn place_targets_parameter(place: &MirPlace, arg_count: usize) -> bool {
     matches!(&place.root, MirPlaceRoot::Local { id, .. } if (id.0 as usize) < arg_count)
         && !place.projections.iter().any(|p| {

@@ -137,13 +137,10 @@ fn offsetting_a_pointer_by_an_integer_is_still_allowed() {
     .expect_ok();
 }
 
-/// Taking a binding's address is a *use* of it. `analyze_place` only marks a
-/// root used when the place has projections — deliberately, so a genuinely
-/// write-only `n = 5` still warns — but `&n` is a projection-less place that
-/// unambiguously reads the binding.
-///
-/// This compiled with `warning: unused variable 'a'` before the fix, which is
-/// why `core`'s `Bounded::max` looked like it needed a pointless `mut`.
+/// Taking a binding's address is a *use* of it (see the `UnusedVariable`
+/// fix in docs/14-known-issues.md). This compiled with `warning: unused
+/// variable 'a'` before the fix, which is why `core`'s `Bounded::max`
+/// looked like it needed a pointless `mut`.
 #[test]
 fn taking_a_binding_s_address_counts_as_using_it() {
     let program = TestPackage::new("main() => i32 { a := 5; p := &a; *p }")

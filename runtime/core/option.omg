@@ -1,9 +1,6 @@
-# `core::option` -- a real, generic "maybe a value" type. Variant order is
-# load-bearing: `for <binding> in <iterator>` (see `core::iterator`) hand-
-# builds its own desugared match against this exact enum, hardcoding
-# `None` as variant 0 and `Some` as variant 1, rather than resolving them
-# by name -- see `Analyzer::analyze_for_in`'s own doc comment for why.
-# Don't reorder these without updating that code to match.
+# `core::option` -- a generic "maybe a value" type. Variant order is
+# load-bearing: `for..in` desugaring hardcodes `None`=0, `Some`=1
+# (see `Analyzer::analyze_for_in`); don't reorder.
 
 exposed enum Option<T> {
     None,

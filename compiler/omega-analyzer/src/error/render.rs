@@ -85,9 +85,8 @@ impl AnalysisErrorKind {
                 let d = d
                     .with_label(span, format!("expected `{target}`, found `{value}`"))
                     .with_note("Omega has no implicit conversions; the value must have exactly the target's type");
-                // Both sides being *refined* variants of one enum means the
-                // variable was `:=`-inferred to one specific variant --
-                // declaring it as the plain enum is exactly what holds any.
+                // Both sides being refined variants of one enum means the
+                // variable was `:=`-inferred to one specific variant.
                 match (target, value) {
                     (
                         ResolvedType::Enum { cell: expected, variant: Some(_) },
@@ -633,8 +632,8 @@ impl AnalysisErrorKind {
                 .with_note(format!("neither conform is more specific for `{target}`")),
             Self::ConformanceCycle { chain, .. } => {
                 let mut d = d.with_label(span, "this bound re-enters a conformance already being checked");
-                // Each consecutive goal pair is one "requires" step; the
-                // final link repeats the first, showing the closure.
+                // Each consecutive pair is one "requires" step; the final
+                // link repeats the first, showing the closure.
                 for pair in chain.windows(2) {
                     let (from_target, from_spec, _) = &pair[0];
                     let (to_target, to_spec, _) = &pair[1];
@@ -837,13 +836,9 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
 }
 
 /// The inclusive value range of a numeric type, for
-/// `NumberLiteralOutOfRange`'s note -- `None` for floats (their "range" is
-/// about precision, not simple bounds, so a bounds note would mislead).
-/// 64-bit `pointer_bits` is a *diagnostic-only* simplification: the range
-/// check itself happens in the analyzer against the real target width
-/// (this note is only ever printed after such a rejection), and the
-/// renderer has no target of its own -- a 32-bit `usize` rejection prints
-/// the 64-bit range as its note until rendering learns the target.
+/// `NumberLiteralOutOfRange`'s note -- `None` for floats. 64-bit
+/// `pointer_bits` is a diagnostic-only simplification: see findings for
+/// the resulting 32-bit-target inaccuracy.
 fn type_range(r#type: &ResolvedType) -> Option<String> {
     match r#type.numeric_kind(64)? {
         NumericKind::Signed(bits) => {

@@ -2,28 +2,19 @@ use crate::resolved_type::ResolvedType;
 use omega_parser::prelude::{Ident, Type};
 use std::collections::HashMap;
 
-/// Structurally unifies `raw` (a generic function template's own declared
-/// parameter type, exactly as written in source, still referencing its
-/// generic parameter names) against `concrete` (a call's already-resolved
-/// argument type) to deduce a binding for any of `generics` found at a
-/// `Type::Named` leaf -- the duck-typed, argument-driven inference behind
-/// `Analyzer::resolve_generic_call`.
+/// Structurally unifies `raw` (a generic function template's declared
+/// parameter type, still referencing its generic parameter names) against
+/// `concrete` (a call's already-resolved argument type) to deduce a binding
+/// for any of `generics` found at a `Type::Named` leaf -- the duck-typed,
+/// argument-driven inference behind `Analyzer::resolve_generic_call`.
 ///
-/// The first binding found for a given generic name wins; a later,
-/// differently-typed occurrence of the same name isn't treated as an error
-/// here -- "duck typed" means unification's only job is a best-effort
-/// deduction, not full verification. Any real mismatch (including a raw
-/// shape that doesn't structurally match `concrete` at all) is simply left
-/// unbound/unresolved and caught afterward by the ordinary, unchanged
-/// argument-type-matching loop, once the concrete instantiated signature
-/// actually exists.
+/// The first binding found for a given generic name wins; unification is
+/// best-effort only, not full verification -- any real mismatch is left
+/// unbound and caught afterward by the ordinary argument-type-matching loop.
 ///
 /// Recurses through `Pointer`/`SizedArray`/`Function`/`Generic` to find a
-/// generic parameter nested inside a compound shape (e.g. a parameter
-/// declared `item: *T`, or `item: Pair<T>`), including the same
-/// `*[]T` -> `Slice` / `*[?]T` -> `Array` dedicated productions
-/// `Context::resolve_pointer_type` applies when *resolving* (rather than
-/// unifying) a type.
+/// generic parameter nested inside a compound shape (e.g. `item: *T`, or
+/// `item: Pair<T>`).
 pub fn unify_generic_type(
     generics: &[Ident],
     raw: &Type,
@@ -36,11 +27,8 @@ pub fn unify_generic_type(
                 .entry(path.head.clone())
                 .or_insert_with(|| concrete.clone());
         }
-        // `*[]T`/`*[?]T` only ever resolve to `Slice`/`Array`, never a
-        // plain `Pointer` (see `Context::resolve_pointer_type`) -- so these
-        // raw shapes only ever unify against the matching `ResolvedType`,
-        // regardless of whether `concrete` actually turns out to be one (a
-        // mismatch here is left for the ordinary argument-type check).
+        // `*[]T`/`*[?]T` only ever resolve to `Slice`/`Array`, matching
+        // `Context::resolve_pointer_type`'s own productions.
         (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
             if matches!(inner.as_ref(), Type::InferredArray(_)) =>
         {
@@ -69,20 +57,11 @@ pub fn unify_generic_type(
             }
             unify_generic_type(generics, &f.return_type, &c.return_type, subst);
         }
-        // `Pair<T>` (a parameter typed as a still-generic struct/enum/union)
-        // against `Pair<i32>` (the call's own already-resolved argument) --
-        // zips `raw`'s own written arguments positionally against the
-        // concrete owner's own `type_args` (populated positionally against
-        // the declaration's generic parameter list when that cell was
-        // built, see `ResolvedStructType`/`ResolvedEnumType`/
-        // `ResolvedUnionType::type_args`) and recurses into each pair, the
-        // same way a nested `Pointer`/`Array` shape already does. No check
-        // that `raw`'s own path name actually names the same owner as
-        // `concrete` -- matches this function's own "duck typed, best-effort,
-        // any real mismatch is caught afterward by the ordinary argument
-        // check" contract (see this function's doc comment): a wrong guess
-        // here can never be silently accepted, only ever left unbound or
-        // corrected by that later check.
+        // `Pair<T>` against `Pair<i32>`: zips `raw`'s written arguments
+        // positionally against the concrete owner's `type_args` and
+        // recurses into each pair. No check that `raw`'s path actually
+        // names the same owner as `concrete` -- a wrong guess here is
+        // caught afterward by the ordinary argument check.
         (Type::Generic(_, raw_args), _) => {
             if let Some(concrete_args) = owner_type_args(concrete) {
                 for (r, c) in raw_args.iter().zip(&concrete_args) {
@@ -96,29 +75,20 @@ pub fn unify_generic_type(
 
 /// Turns a completed `unify_generic_type` substitution into `generics`'
 /// own ordered `Vec<ResolvedType>`, or the first generic name that never
-/// got a binding and has no declared default either -- the shared tail end
-/// of every duck-typed inference site (a generic function call, a generic
-/// struct/enum/union literal, ...): each has its own reason to know *which*
-/// generic came up empty (to shape its own diagnostic), so this stops at
-/// the first real miss and hands the name back rather than picking a
-/// wording itself.
+/// got a binding and has no declared default either -- callers use the
+/// name to shape their own diagnostic.
 ///
-/// An unbound generic that *does* have a declared default is not resolved
-/// here -- it's left for the returned vec to simply be shorter than
-/// `generics`, trusting the caller to hand it on to `ensure_item`'s own
-/// default-padding gate (see `omega_driver::items::ensure_item`), the one
-/// place a default `Type` is actually turned into a `ResolvedType` for
-/// this "no argument ever bound it" case. This is only ever safe because
-/// defaults are enforced trailing-only at parse time
-/// (`omega_parser`'s `DefaultGenericParamNotTrailing`): the first unbound
-/// generic with a default means every generic after it has one too, so
-/// stopping here can never strand a later, still-explicit generic behind
-/// an unfilled gap.
+/// An unbound generic that *does* have a declared default is left out of
+/// the returned vec (which is then shorter than `generics`); the caller
+/// hands it on to `ensure_item`'s default-padding gate
+/// (`omega_driver::items::ensure_item`), the one place a default `Type` is
+/// turned into a `ResolvedType`. Safe only because defaults are enforced
+/// trailing-only at parse time (`omega_parser`'s
+/// `DefaultGenericParamNotTrailing`).
 ///
-/// Every deduced type is widened -- a deduced `T` must never carry a
-/// caller-specific enum-variant refinement (`T = MyEnum`, not `T =
-/// MyEnum::Second`), which would mint a spurious extra instantiation per
-/// variant.
+/// Every deduced type is widened: a deduced `T` must never carry a
+/// caller-specific enum-variant refinement (`T = MyEnum::Second`), which
+/// would mint a spurious extra instantiation per variant.
 pub fn resolve_inferred_type_args(
     generics: &[Ident],
     defaults: &[Option<Type>],
@@ -135,12 +105,8 @@ pub fn resolve_inferred_type_args(
     Ok(type_args)
 }
 
-/// `concrete`'s own generic type arguments, if it's a struct/enum/union
-/// instantiation -- `None` for anything else (including a non-generic
-/// struct/enum/union, whose `type_args` is simply empty, and every other
-/// `ResolvedType` shape, which has no such field at all). The one piece of
-/// data `unify_generic_type`'s `Type::Generic` arm needs to recurse into a
-/// generic owner's own arguments.
+/// `concrete`'s generic type arguments, if it's a struct/enum/union
+/// instantiation -- `None` for anything else.
 fn owner_type_args(concrete: &ResolvedType) -> Option<Vec<ResolvedType>> {
     match concrete {
         ResolvedType::Struct(cell) => Some(cell.borrow().type_args.clone()),

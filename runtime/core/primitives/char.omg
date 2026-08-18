@@ -1,9 +1,7 @@
 # `core::primitives::char` -- Unicode scalar values and their core behavior.
-#
-# `char::from_u32` is the supported checked path from a computed codepoint.
-# It rejects values outside Unicode and UTF-16 surrogates. It is deliberately
-# not claimed as an enforcement boundary: Omega's honest pointer casts can
-# still reinterpret an arbitrary `u32` as a `char`.
+# `char::from_u32` is the supported checked path from a codepoint (rejects
+# out-of-range values and UTF-16 surrogates); see docs/14-known-issues.md
+# for why it is not an enforcement boundary.
 
 import root::cmp::Ord;
 import root::cmp::Ordering;
@@ -21,8 +19,8 @@ primitive char {
                 return Option<char>::None;
             }
         }
-        # This is an ordinary pointer reinterpretation, after the checks
-        # above have established that the bit pattern is a Unicode scalar.
+        # Pointer reinterpretation, safe here since the checks above already
+        # established the bit pattern is a valid Unicode scalar.
         Option<char>::Some { value = *<*char>&value; }
     }
 
@@ -31,8 +29,7 @@ primitive char {
         cp := <u32>*self;
         if cp < 0x30u32 { false } else { cp <= 0x39u32 }
     }
-    # ASCII-only classifiers: full Unicode tables intentionally do not live
-    # in freestanding core.
+    # ASCII-only; see docs/14-known-issues.md.
     exposed is_alphabetic(*self) => bool {
         cp := <u32>*self;
         if cp >= 0x41u32 {
@@ -52,9 +49,8 @@ primitive char {
         else if cp < 0x10000u32 { 3usize }
         else { 4usize }
     }
-    # These two reinterpret directly rather than going through `from_u32`:
-    # the result is always ASCII, so it is a scalar value by construction and
-    # there is nothing a check could reject.
+    # Reinterpret directly rather than via `from_u32`: result is always
+    # ASCII, so nothing a check could reject.
     exposed to_ascii_uppercase(*self) => char {
         mut cp := <u32>*self;
         if cp >= 0x61u32 {
@@ -96,12 +92,9 @@ conform char to Successor {
 
 conform char to Bounded {
     min() => Self { <char>0u8 }
-    # `0x10FFFF` is `char::MAX` -- a constant this file can see is a scalar
-    # value, so there is nothing to check at runtime. Routing it through
-    # `from_u32` would force an `else` branch that cannot be reached and has
-    # no honest value to return: the only candidates for "the maximum" would
-    # be a wrong answer, and `<char>0u8` in particular is the *minimum*,
-    # which would silently inverted-empty every open-ended `char` range.
+    # `0x10FFFF` (char::MAX) is a known-valid scalar, so it skips `from_u32`
+    # -- routing it through would need an unreachable `else` with no honest
+    # value to return.
     max() => Self {
         cp := 0x10FFFFu32;
         *<*char>&cp

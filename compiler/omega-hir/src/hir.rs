@@ -1,9 +1,6 @@
 use crate::ids::HirId;
-// Re-exported: `HirBinaryOp.op`'s type needs to be nameable by downstream
-// crates (codegen matches on its variants) without them depending on
-// omega-parser directly, the same way they never need to spell `Ident`/
-// `Type` because they only ever go through field access, never pattern
-// match on those.
+// Re-exported so downstream crates can match on `HirBinaryOp.op`'s variants
+// without depending on omega-parser directly.
 pub use omega_parser::prelude::{BinaryOp, ImportRoot, LogicalOp};
 use omega_parser::prelude::{
     ByteStringExpr, ExprPath, FunctionType, Ident, Param, NumberExpr, Path, SelfMode, Span, StringExpr,

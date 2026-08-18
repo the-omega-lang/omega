@@ -24,12 +24,10 @@ use std::collections::HashMap;
 pub(crate) struct Diagnostics {
     errors: HashMap<ModulePath, Vec<AnalysisError>>,
     warnings: HashMap<ModulePath, Vec<AnalysisWarning>>,
-    /// Field/variant usage recorded from every `Analyzer` run's own
-    /// `comp`-evaluated subtrees (see `Analyzer::field_usage`'s doc
-    /// comment) -- folded in by every `with_analyzer` call, drained once by
-    /// `compile::Driver::compile` and merged with its own post-hoc,
-    /// whole-program `crate::dead_code::collect_module` walk before the
-    /// final unused-field/never-constructed-variant sweep.
+    /// Field/variant usage from every `Analyzer` run's `comp`-evaluated
+    /// subtrees, folded in by `with_analyzer` and drained once by
+    /// `compile::Driver::compile` to merge with its own whole-program
+    /// `dead_code::collect_module` walk before the unused-field sweep.
     comp_field_usage: FieldUsage,
 }
 

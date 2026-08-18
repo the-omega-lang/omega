@@ -178,9 +178,7 @@ impl Default for BackendKind {
 /// already enforced while building the checked tree these `MirModule`s
 /// were lowered from.
 pub fn generate(backend: BackendKind, request: CodegenRequest) -> Result<EmitOutput, String> {
-    // Checked before any backend work begins: the language's accepted
-    // program set must not depend on `--backend` -- not for targets (below)
-    // and not for the still-unimplemented constructs either (`preflight`).
+    // The accepted program set must not depend on `--backend`.
     preflight::preflight(&request)?;
     if !backend.supports(request.target) {
         return Err(format!(

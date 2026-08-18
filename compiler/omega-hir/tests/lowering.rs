@@ -28,8 +28,6 @@ fn only_function(module: &omega_hir::HirModule) -> &omega_hir::HirFunctionDef {
         .expect("expected a function")
 }
 
-// --- Desugaring 1: `self` insertion -------------------------------------
-
 #[test]
 fn pointer_self_becomes_a_leading_self_parameter() {
     let module = lower("struct S { x: i32; get(*self) => i32 { self.x } }");
@@ -47,8 +45,6 @@ fn a_free_function_gets_no_self_parameter() {
     assert_eq!(f.params.len(), 1);
     assert_eq!(f.params[0].ident.as_ref(), "a");
 }
-
-// --- Desugaring 2: `mut self` shadowing ---------------------------------
 
 #[test]
 fn by_value_mut_self_gets_a_shadowing_binding_first() {
@@ -71,8 +67,6 @@ fn plain_by_value_self_gets_no_shadow() {
         "immutable `self` needs no shadow"
     );
 }
-
-// --- Desugaring 3: `spec T` parameters ----------------------------------
 
 #[test]
 fn each_spec_parameter_becomes_its_own_bound_generic() {
@@ -100,8 +94,6 @@ fn spec_parameters_are_found_behind_a_pointer() {
     );
     assert_eq!(only_function(&module).generics.len(), 1);
 }
-
-// --- Desugaring 4: place-chain flattening -------------------------------
 
 #[test]
 fn a_projection_chain_flattens_in_source_order() {
@@ -142,13 +134,10 @@ fn a_non_place_base_roots_at_an_expression() {
     assert_eq!(place.projections.len(), 1);
 }
 
-// --- Invariants ---------------------------------------------------------
-
 #[test]
 fn every_range_spelling_survives_lowering_distinctly() {
-    // The three spellings must stay distinguishable: flattening them into
-    // `Option<end> + bool` is what let an "inclusive range with no end"
-    // become representable. See `HirRangeEnd`.
+    // See `HirRangeEnd`'s doc comment for why the three spellings are kept
+    // distinguishable rather than flattened.
     for (source, expect_open, expect_inclusive) in [
         ("f() => void { for i in 0..=3 { } }", false, true),
         ("f() => void { for i in 0..<3 { } }", false, false),
@@ -230,8 +219,6 @@ fn collect_ids(module: &omega_hir::HirModule, out: &mut Vec<omega_hir::HirId>) {
 
 #[test]
 fn a_field_carries_its_own_span_not_the_structs() {
-    // The regression that made a duplicate field underline the whole
-    // struct: fields inherited the enclosing declaration's span.
     let source = "struct S { alpha: i32; beta: i32; }";
     let module = lower(source);
     let HirItem::Struct(s) = &module.items[0] else {

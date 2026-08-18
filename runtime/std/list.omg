@@ -1,41 +1,27 @@
-# `std::list` -- `List<T>`, a growable, heap-backed array (Rust's `Vec<T>`,
-# under a name that doesn't collide with "this is actually a vector" the
-# way "Vec" does for a general-purpose audience).
-#
-# Built directly on `core::platform::GlobalAllocator` -- the only capability
-# this type needs, so it works on any platform that's supplied *a* glue
-# for it, embedded included. No RAII in this language (no `Drop`
-# equivalent -- `defer` is the only structured cleanup mechanism, see
-# `docs/03-control-flow.md`), so every owning method here has a real,
-# explicit `free`; the intended idiom is:
+# `std::list` -- `List<T>`, a growable heap-backed array (Rust's `Vec<T>`).
+# No RAII in this language (`defer` is the only structured cleanup, see
+# docs/03-control-flow.md), so every owning method has a real, explicit
+# `free`; the intended idiom:
 #
 #   list := List<i32>::new();
 #   defer list.free();
 #
-# Fallible, possibly-out-of-bounds access follows `core::primitives::slices::
-# SliceImpl<T>`'s own out-pointer/`bool` convention (`get`/`pop`/`set`)
-# rather than `Option<T>` -- `List<T>` is the growable version of the same
-# hot-path, no-allocation-on-read concept `*[]T` already is, and should
-# feel like a drop-in extension of the methods a caller already knows from
-# plain slices.
+# Fallible, possibly-out-of-bounds access follows `core::primitives::slices`'
+# out-pointer/`bool` convention (`get`/`pop`/`set`) rather than `Option<T>`,
+# so it feels like a drop-in extension of plain-slice methods.
 
-# No imports needed for `Iterator`/`ToIterator`/`Option<T>` -- `core` is a
-# full ambient prelude for every other package (see
-# `docs/10-modules-and-linkage.md`), exactly like `examples/dev/dev.omg`'s
-# own bare `Option::None` usage. `alloc`/`free`/`realloc` come from
-# `std::alloc` instead of calling `core::platform::GlobalAllocator` directly --
-# see that file's own doc comment for why that indirection is required,
-# not stylistic.
+# `core` is a full ambient prelude, so no imports needed for
+# `Iterator`/`ToIterator`/`Option<T>`. `alloc`/`free`/`realloc` come from
+# `std::alloc`, not `core::platform::GlobalAllocator` directly -- see that
+# file's own comment for why.
 import alloc::alloc;
 import alloc::free;
 import alloc::realloc;
 
 exposed struct List<T> {
     internal data: *mut T;
-    # Named `count`, not `len` -- a field and a method can't share one name
-    # on the same type, and the public accessor is what should get the
-    # short, idiomatic name (`list.len()`, matching `*[]T`'s own `.length`
-    # in spirit).
+    # Named `count`, not `len` -- a field and method can't share a name,
+    # and the public accessor (`list.len()`) gets the idiomatic one.
     internal count: usize;
     internal cap: usize;
 
@@ -55,25 +41,18 @@ exposed struct List<T> {
     exposed capacity(*self) => usize { self.cap }
     exposed is_empty(*self) => bool { self.count == 0 }
 
-    # `index`'s own element address -- explicit byte math, since pointer
-    # arithmetic in this language coerces to `usize` and does *not*
-    # implicitly scale by `sizeof<T>` the way C's does (see
-    # `docs/01-primitives.md`'s "char, bool, and pointer arithmetic"), and
-    # indexing syntax (`ptr[i]`) only works on a real slice/array, never a
-    # raw pointer. Centralized here once rather than repeated per method.
+    # `index`'s element address -- explicit byte math, since pointer
+    # arithmetic here doesn't scale by `sizeof<T>` like C's does (see
+    # docs/01-primitives.md), and `ptr[i]` only works on a slice/array,
+    # never a raw pointer.
     elem_ptr(*self, index: usize) => *mut T {
         <*mut T>(<usize>self.data + index * sizeof<T>)
     }
 
-    # Grows `data` to hold at least `min_capacity` elements, doubling
-    # (starting from 4) until it does -- the same amortized-O(1)-push
-    # growth factor Rust's own `Vec` uses. Explicitly branches `alloc`
-    # (first allocation) vs. `realloc` (every later growth) rather than
-    # always calling `realloc` and relying on `realloc(null, size)`
-    # behaving like `alloc` -- that's a real property of libc's own
-    # `realloc`, but not a contract `core::platform::GlobalAllocator` itself
-    # promises, and this type is meant to work with any future glue,
-    # including ones that don't happen to share that behavior.
+    # Grows to at least `min_capacity`, doubling from 4 (Rust `Vec`'s
+    # amortized-O(1)-push factor). Branches `alloc` vs `realloc` explicitly
+    # rather than relying on `realloc(null, size)` acting like `alloc` --
+    # that's a libc property, not one `GlobalAllocator` itself promises.
     reserve(*mut self, min_capacity: usize) => void {
         if self.cap < min_capacity {
             mut new_cap : usize = if self.cap == 0 { 4 } else { self.cap * 2 };
@@ -128,13 +107,9 @@ exposed struct List<T> {
         self.count = 0;
     }
 
-    # A real, borrowed view of this list's current contents -- `self.data`
-    # is a bare `*T`, which no longer supports indexing or slicing on its
-    # own; casting it to `*mut [?]T` first (an ordinary `Pointer <-> Array`
-    # reinterpret cast) gets back an unsized-array pointer, which range-
-    # slicing with an explicit end (`self.count`, cast to `i32` to match a
-    # slice's own `.length` leaf type) then turns into a real, runtime-
-    # length `*[]T`; see docs/11-strings-casting-and-slices.md.
+    # `self.data` is a bare `*T` with no indexing/slicing of its own; cast
+    # to `*mut [?]T` (Pointer <-> Array reinterpret) then range-slice to
+    # get a real runtime-length `*[]T`; see docs/11-strings-casting-and-slices.md.
     exposed as_slice(*self) => *[]T {
         count := <i32>self.count;
         &(<*mut [?]T>self.data)[0..<count]
@@ -157,12 +132,9 @@ conform<T> List<T> to ToIterator<T> {
     }
 }
 
-# `internal`, not hidden, on every field: `List<T>::to_iterator` (a
-# different type's method, though the same package) has to build one by
-# struct literal, and a hidden field is only settable from within its own
-# type's own methods -- `internal` (package-wide) is exactly the
-# permission this needs without making these fields part of `std`'s real
-# public surface.
+# `internal`, not hidden: `List<T>::to_iterator` builds one by struct
+# literal from a different type's method, and hidden fields are settable
+# only within their own type's methods.
 exposed struct ListIterator<T> {
     internal data: *mut T;
     internal index: usize;

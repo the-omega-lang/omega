@@ -10,34 +10,27 @@ pub struct ResolvedFunctionType {
     pub return_type: Box<ResolvedType>,
     pub is_variadic: bool,
     /// `None` for an ordinary function; `Some` for a member function,
-    /// carrying exactly how it receives `self` -- see `SelfMode`. The
-    /// single source of truth for self's passing convention at any call
-    /// site; never reverse-engineered from `params[0]`'s resolved type
-    /// shape.
+    /// carrying exactly how it receives `self` -- see `SelfMode`. Never
+    /// reverse-engineered from `params[0]`'s resolved type shape.
     pub self_mode: Option<SelfMode>,
 }
 
 /// A struct method's resolved type, plus the `HirId` of its declaring
 /// `HirFunctionDef` -- unlike a field, a method has to be resolved back to a
-/// callable symbol from *outside* the struct's own (already-popped)
-/// analysis scope (see member-call resolution in `analysis.rs`), so its
-/// declaration identity has to be recorded here, not just its type.
+/// callable symbol from outside the struct's own already-popped analysis
+/// scope, so its declaration identity is recorded here too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMethod {
     pub decl_id: HirId,
     pub fn_type: ResolvedFunctionType,
-    /// `exposed`/`internal`/(default `Hidden`), resolved once here
-    /// (alongside `annotations`) at signature time -- see
-    /// `Analyzer::check_visibility`'s method-call hook (`resolve_callee`)
-    /// for where this is actually enforced.
+    /// `exposed`/`internal`/(default `Hidden`), resolved once here at
+    /// signature time -- enforced in `Analyzer::check_visibility`'s
+    /// method-call hook (`resolve_callee`).
     pub visibility: Visibility,
     /// This method's own resolved `@inline`/`@mangling`/`@suppress` --
-    /// resolved once, here, at signature time (never re-resolved at body-
-    /// check time) so it's already known even for a method whose body this
-    /// compilation never checks at all (an extern-owned method referenced
-    /// via `--extern`) -- see `omega_driver::Driver::collect_extern_functions`,
-    /// this field's only reader outside `check_struct_body`/`check_enum_body`/
-    /// `check_union_body`.
+    /// resolved once at signature time (never re-resolved at body-check
+    /// time) so it's already known even for an extern-owned method whose
+    /// body this compilation never checks.
     pub annotations: crate::annotations::ResolvedAnnotations,
     pub source: Option<ConformanceSource>,
 }
@@ -63,68 +56,48 @@ pub type ResolvedBound = (
 );
 
 /// A struct's fields and methods, shared behind `ResolvedType::Struct`'s
-/// `Rc<RefCell<_>>` so that a self-referencing field (`next: *Node`, the
-/// classic linked-list shape) can hold a live handle to the very type still
-/// being built: the placeholder is inserted (with empty `fields`/
-/// `functions`) *before* fields are resolved, and patched in place once
-/// they're known -- every clone taken in the meantime (e.g. a pointer field
-/// that pointed back to it) observes the same, eventually-complete data,
-/// rather than a stale structural snapshot copied by value. Comparing two
-/// `ResolvedType::Struct`s (see `PartialEq` below) never has to walk into
-/// `fields`/`functions` at all, so this also sidesteps the infinite regress
-/// a *structural* comparison of a self-referential type would otherwise be.
+/// `Rc<RefCell<_>>` so a self-referencing field (`next: *Node`) can hold a
+/// live handle to the very type still being built: a placeholder cell is
+/// inserted before fields are resolved, then patched in place once known,
+/// so every clone taken meanwhile observes the same eventually-complete
+/// data. `PartialEq` below never walks into `fields`/`functions`, so this
+/// also sidesteps the infinite regress a structural comparison would be.
 #[derive(Debug)]
 pub struct ResolvedStructType {
     pub id: HirId,
     pub name: Ident,
     /// The absolute path of the module this struct is declared in --
-    /// needed for the same reason `type_args` is (see its doc comment):
-    /// a reference to this type from anywhere else only ever sees this
-    /// cell, never the declaration site itself, and mangling a full
-    /// symbol needs a full path, not just a bare name.
+    /// a reference to this type from elsewhere only ever sees this cell,
+    /// never the declaration site, and mangling a symbol needs a full path.
     pub module_path: Vec<Ident>,
     /// The concrete generic arguments this cell was instantiated with --
-    /// empty for a non-generic struct. This is what lets a *reference* to
-    /// this type from somewhere else (a field, a parameter, a return
-    /// type -- anywhere that only ever sees this `Rc<RefCell<_>>` cell,
-    /// never the original declaration site) still be mangled with its
-    /// generic arguments intact; see `omega_driver`'s type cells,
-    /// this field's only writer.
+    /// empty for a non-generic struct. Lets a reference to this type from
+    /// elsewhere still be mangled with its generic arguments intact.
     pub type_args: Vec<ResolvedType>,
-    /// `(name, type, visibility)` per field, in declaration order -- see
-    /// `Analyzer::check_visibility`'s field-access hook
-    /// (`resolve_field_projection`) for where the third element is enforced.
+    /// `(name, type, visibility)` per field, in declaration order -- the
+    /// third element is enforced by `Analyzer::check_visibility`'s
+    /// field-access hook (`resolve_field_projection`).
     pub fields: Vec<(Ident, ResolvedType, Visibility)>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
-    /// `@layout(...)`'s resolved `pack`/`align` -- `{1, 1}` (today's
-    /// implicit, zero-padding layout) unless overridden. See
-    /// `omega_codegen`'s layout functions (`total_bytes`/
-    /// `field_byte_offset`), which are this field's only reader.
+    /// `@layout(...)`'s resolved `pack`/`align` -- `{1, 1}` unless
+    /// overridden. Read by `omega_codegen`'s layout functions.
     pub layout: crate::annotations::Layout,
-    /// `@suppress(...)`'s warning names -- resolved once here (alongside
-    /// `layout`, by whatever first builds this cell) rather than
+    /// `@suppress(...)`'s warning names -- resolved once here rather than
     /// re-resolved every time a method body is checked, so
-    /// `Analyzer::check_struct_body` can just read it back without risking
-    /// re-emitting the same annotation errors a second time.
+    /// `check_struct_body` doesn't risk re-emitting the same annotation
+    /// errors twice.
     pub suppress: Vec<Ident>,
-    /// `true` for a `marker` declaration -- see
-    /// `omega_parser::prelude::StructStmt::is_marker`. The only thing this
-    /// changes anywhere in the analyzer/codegen: it exempts this cell from the
-    /// "a struct must have at least one sized field" check (`Analyzer::signature_of_struct`) --
-    /// everything else (conformance checking, method dispatch, generics,
-    /// dead-code tracking, spec/vtable coercion, layout) already works
-    /// unmodified for a zero-field struct, which is deliberately why
-    /// `marker` reuses this type wholesale instead of being a separate
+    /// `true` for a `marker` declaration. Exempts this cell from the "a
+    /// struct must have at least one sized field" check -- everything else
+    /// already works unmodified for a zero-field struct, which is why
+    /// `marker` reuses this type wholesale instead of a separate
     /// `ResolvedType` variant.
     pub is_marker: bool,
 }
 
-/// Nominal, not structural: two struct types are the same type iff they're
-/// the same *declaration* (matching real language semantics -- two
-/// unrelated structs that happen to share a field layout are still
-/// different types), and, just as importantly, this never has to borrow
-/// into (or recurse through) `fields`, which may reference this very struct
-/// again -- comparing by id keeps that O(1) regardless.
+/// Nominal, not structural: two struct types are equal iff they're the
+/// same declaration. Never borrows into `fields` (which may reference this
+/// very struct again), keeping comparison O(1).
 impl PartialEq for ResolvedStructType {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -132,10 +105,9 @@ impl PartialEq for ResolvedStructType {
 }
 impl Eq for ResolvedStructType {}
 
-/// Consistent with the identity-only `PartialEq` above -- hashing only
-/// `id` (never `fields`/`functions`) is both correct (equal values must hash
-/// equal, and equality here is id-only) and the only option that doesn't
-/// recurse into a possibly self-referential struct's own fields.
+/// Consistent with the identity-only `PartialEq` above -- hashes only
+/// `id`, never `fields`/`functions`, avoiding recursion into a possibly
+/// self-referential struct.
 impl Hash for ResolvedStructType {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
@@ -143,11 +115,10 @@ impl Hash for ResolvedStructType {
 }
 
 /// A union's fields and methods, shared behind `ResolvedType::Union`'s
-/// `Rc<RefCell<_>>` for exactly the reasons `ResolvedStructType` is (see its
-/// doc comment) -- same self-reference/placeholder-then-patch handling, same
-/// nominal `PartialEq`/`Hash` below. The only real difference from a struct
-/// is semantic (fields overlap in storage instead of being laid out
-/// sequentially), which lives entirely in codegen/field-projection, not here.
+/// `Rc<RefCell<_>>` for the same reasons `ResolvedStructType` is. The only
+/// difference from a struct is semantic (fields overlap in storage rather
+/// than laying out sequentially), which lives in codegen/field-projection,
+/// not here.
 #[derive(Debug)]
 pub struct ResolvedUnionType {
     pub id: HirId,
@@ -178,14 +149,12 @@ impl Hash for ResolvedUnionType {
 }
 
 /// An omega-style enum's fully resolved shape, shared behind
-/// `ResolvedType::Enum`'s `Rc<RefCell<_>>` for exactly the reasons
-/// `ResolvedStructType` is (see its doc comment): a variant body may point
-/// back at the enum itself (`next: *MyEnum`), so the placeholder is
-/// registered before variants are resolved and patched in place.
-///
-/// Everything a *use site* needs is here -- construction sites in any
-/// module read the tag/header constants straight out of this cell, so the
-/// per-variant constants only ever get analyzed once, at the definition.
+/// `ResolvedType::Enum`'s `Rc<RefCell<_>>` for the same reasons
+/// `ResolvedStructType` is: a variant body may point back at the enum
+/// itself (`next: *MyEnum`), so the placeholder is registered before
+/// variants are resolved and patched in place. Construction sites in any
+/// module read the tag/header constants straight out of this cell, so
+/// per-variant constants are analyzed once, at the definition.
 #[derive(Debug)]
 pub struct ResolvedEnumType {
     pub id: HirId,
@@ -196,22 +165,18 @@ pub struct ResolvedEnumType {
     pub type_args: Vec<ResolvedType>,
     /// Always an integer type -- `U16` for an implicit tag; whatever the
     /// header's leading `tag:` entry declared for an explicit one. Kept as
-    /// a full `ResolvedType` (not a width/signedness pair) deliberately:
-    /// the language intends to allow non-numeric tags eventually, and
-    /// everything downstream already treats this as an opaque field type.
+    /// a full `ResolvedType` rather than a width/signedness pair since the
+    /// language intends to allow non-numeric tags eventually.
     pub tag_type: ResolvedType,
-    /// The shared header fields, in declaration order -- *excluding* the
-    /// tag, which is layout-wise field -1 (always first) and accessed via
-    /// the dedicated `.tag` projection instead. See
-    /// `ResolvedStructType::fields`'s doc comment for the 3-tuple shape.
+    /// The shared header fields, in declaration order -- excluding the
+    /// tag, which is layout-wise field -1 and accessed via the dedicated
+    /// `.tag` projection instead.
     pub header: Vec<(Ident, ResolvedType, Visibility)>,
-    /// The shared *dynamic* fields, in declaration order -- present on
-    /// every variant like `header`, laid out right after it, but
-    /// runtime-valued: every construction site supplies them (see
-    /// `Analyzer::analyze_struct_literal`'s `EnumVariant` arm), and they're
-    /// freely assignable afterward, exactly like a variant's own body
-    /// field. Unlike `header`, there is no per-variant constant list here
-    /// at all -- there's nothing to bake in.
+    /// The shared dynamic fields, in declaration order -- present on every
+    /// variant like `header`, laid out right after it, but runtime-valued:
+    /// every construction site supplies them, and they're freely
+    /// assignable afterward like a variant's own body field. Unlike
+    /// `header`, there is no per-variant constant list here.
     pub dynamic_fields: Vec<(Ident, ResolvedType, Visibility)>,
     pub variants: Vec<ResolvedEnumVariant>,
     /// Same shape and semantics as `ResolvedStructType::functions`.
@@ -220,7 +185,7 @@ pub struct ResolvedEnumType {
     /// to the enum's own aggregate `[tag][header][dynamic][payload]`
     /// layout as a whole.
     pub layout: crate::annotations::Layout,
-    /// See `ResolvedStructType::suppress`'s doc comment.
+    /// See `ResolvedStructType::suppress`.
     pub suppress: Vec<Ident>,
 }
 
@@ -230,16 +195,15 @@ pub struct ResolvedEnumType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedEnumVariant {
     pub name: Ident,
-    /// Compile-time constant, unique across the enum -- what the
-    /// uniqueness check compared, and what construction emits at offset 0.
+    /// Compile-time constant, unique across the enum -- what construction
+    /// emits at offset 0.
     pub tag: crate::checked::NumberValue,
     /// One constant per header field, positionally.
     pub header_values: Vec<ConstValue>,
     /// The variant-specific body fields -- empty for a body-less variant.
     /// At runtime the enum's body region is a union of all variants'
-    /// bodies; analysis only ever lets the statically-known variant's own
-    /// fields be touched. See `ResolvedStructType::fields`'s doc comment
-    /// for the 3-tuple shape.
+    /// bodies; analysis only lets the statically-known variant's own
+    /// fields be touched.
     pub fields: Vec<(Ident, ResolvedType, Visibility)>,
 }
 
@@ -254,9 +218,8 @@ impl ResolvedEnumType {
     }
 }
 
-/// Nominal identity, exactly like `ResolvedStructType`'s -- see its
-/// `PartialEq`/`Hash` doc comments; the same self-reference reasoning
-/// applies (a variant body may embed `*MyEnum`).
+/// Nominal identity, exactly like `ResolvedStructType`'s -- the same
+/// self-reference reasoning applies (a variant body may embed `*MyEnum`).
 impl PartialEq for ResolvedEnumType {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -271,80 +234,61 @@ impl Hash for ResolvedEnumType {
 }
 
 /// A `spec`'s fully resolved shape, shared behind `ResolvedType::Spec`'s
-/// `Rc<RefCell<_>>` for the same nominal-identity reasons `ResolvedStructType`
-/// is (see its doc comment) -- though a spec is never self-referential the
-/// way a struct field can be, so the placeholder-then-patch dance doesn't
-/// apply here; it's still behind a cell purely so every reference to "this
-/// spec" (a conform declaration, a generic bound, a spec-object type) shares
-/// one identity to compare/hash against, exactly like a struct reference
-/// does.
+/// `Rc<RefCell<_>>` for the same nominal-identity reasons
+/// `ResolvedStructType` is -- though a spec is never self-referential, so
+/// the placeholder-then-patch dance doesn't apply; it's still behind a
+/// cell purely so every reference to "this spec" shares one identity to
+/// compare/hash against.
 ///
 /// `dependencies` are already resolved (not raw) -- an alias's member list
-/// needs no `Self`/generic substitution to know *which* specs it names
-/// (only the functions those specs require need substitution, deferred to
-/// implementation time -- see `RawSpecFunctionSig`), so resolving them
-/// eagerly here is what makes alias-cycle detection fall out of the
-/// ordinary `omega_driver::Driver::ensure_item` `InProgress`/cycle
-/// machinery for free, with no spec-specific cycle guard needed. Only an
-/// alias ever populates it: spec provisioning (`spec X : A, B`) no longer
-/// exists, so an ordinary declaration's member list is always empty.
+/// needs no `Self`/generic substitution to know *which* specs it names, so
+/// resolving them eagerly here makes alias-cycle detection fall out of the
+/// ordinary `ensure_item` `InProgress` machinery for free, with no
+/// spec-specific cycle guard needed. Only an alias populates it: spec
+/// provisioning (`spec X : A, B`) no longer exists, so an ordinary
+/// declaration's member list is always empty.
 #[derive(Debug)]
 pub struct ResolvedSpecType {
     pub id: HirId,
     pub name: Ident,
     /// `exposed`/`internal`/(default `Hidden`) -- the spec's own
-    /// visibility, already checked wherever this spec is *named* (an
-    /// ordinary item-visibility check, same as any other top-level item).
-    /// Kept here too because every one of this spec's own functions
-    /// *inherits* this same visibility (see `FlattenedSpecFn::visibility`'s
-    /// doc comment) -- an implementor's own method satisfying one of them
-    /// must be at least this permissive, checked in
-    /// conform conformance checking.
+    /// visibility. Kept here too because every one of this spec's
+    /// functions inherits it: an implementor's method satisfying one must
+    /// be at least this permissive, checked during conform checking.
     pub visibility: Visibility,
     pub generics: Vec<Ident>,
-    /// See `ResolvedStructType::module_path`'s doc comment.
+    /// See `ResolvedStructType::module_path`.
     pub module_path: Vec<Ident>,
-    /// See `ResolvedStructType::type_args`'s doc comment -- the concrete
-    /// arguments `generics` was substituted with, empty for a
-    /// non-generic spec.
+    /// See `ResolvedStructType::type_args` -- the concrete arguments
+    /// `generics` was substituted with, empty for a non-generic spec.
     pub type_args: Vec<ResolvedType>,
     /// Whether this spec can be used as a dynamic-dispatch trait object
-    /// (`spec *Self`) at all -- `false` the instant any of `functions`
-    /// declares a `spec T` (static-dispatch, no `*`) return type, directly
-    /// or transitively through an alias member (a vtable slot can't point
-    /// at "whichever concrete type each implementor happens to use" -- the
-    /// exact reason Rust's `IntoIterator` isn't object-safe either).
-    /// Computed once, eagerly, right where `functions`/`dependencies`
-    /// themselves are first resolved (`omega_driver::Driver::
-    /// resolve_spec_declaration`) -- a member's own cell is always
-    /// already fully built by then, so this never needs its own
-    /// resolution pass. Checked wherever a `Type::SpecObject` (`spec
-    /// *Self`) actually resolves into a real `ResolvedType::SpecObject`
-    /// value, so a not-object-safe spec is rejected at the one point that
-    /// matters instead of scattered across every dynamic-dispatch call
-    /// site.
+    /// (`spec *Self`) -- `false` the instant any of `functions` declares a
+    /// `spec T` (static-dispatch) return type, directly or transitively
+    /// through an alias member: a vtable slot can't point at "whichever
+    /// concrete type each implementor happens to use" (the same reason
+    /// Rust's `IntoIterator` isn't object-safe). Computed once, eagerly,
+    /// where `functions`/`dependencies` are first resolved. Checked
+    /// wherever a `Type::SpecObject` actually resolves into a real
+    /// `ResolvedType::SpecObject`.
     pub is_object_safe: bool,
-    /// Whether this spec is a pure alias (`spec X = A + B;`) rather than an
-    /// ordinary declaration. An alias is never itself conformable -- it
+    /// Whether this spec is a pure alias (`spec X = A + B;`) rather than
+    /// an ordinary declaration. An alias is never itself conformable -- it
     /// names a conjunction of other specs, satisfied by conforming each
-    /// member separately. Checked wherever a `conform Target to Spec`
-    /// declaration resolves (`AnalysisErrorKind::ConformToAliasSpec`).
+    /// member separately.
     pub is_alias: bool,
-    /// The alias form's members, each resolved eagerly (see
-    /// `ModuleResolver::spec_declaration`), paired with its **raw**,
-    /// unresolved type arguments -- deliberately not `Vec<ResolvedType>`:
-    /// resolving them here, at this spec's own declaration, would need this
-    /// spec's own generics already bound to something concrete, which they
-    /// never are at this point (`spec Foo<T> = Bar<T> + Baz;` -- `T` isn't
-    /// concrete until a real implementor is known). Resolved lazily
-    /// instead, in `Analyzer::flatten_spec_into`, once `Self` + this spec's
-    /// own generics *are* bound -- the exact same deferral `functions`
-    /// (below) already uses, for the identical reason. Always empty for a
-    /// non-alias declaration.
+    /// The alias form's members, each resolved eagerly, paired with its
+    /// **raw**, unresolved type arguments -- deliberately not
+    /// `Vec<ResolvedType>`: resolving them here would need this spec's own
+    /// generics already bound to something concrete, which they never are
+    /// at this point (`spec Foo<T> = Bar<T> + Baz;` -- `T` isn't concrete
+    /// until a real implementor is known). Resolved lazily instead, in
+    /// `Analyzer::flatten_spec_into`, once `Self` and this spec's own
+    /// generics *are* bound. Always empty for a non-alias declaration.
     pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
-    /// This spec's own resolved `@suppress` list -- same shape and purpose
-    /// as `ResolvedStructType::suppress`.
+    /// This spec's own resolved `@suppress` list -- see
+    /// `ResolvedStructType::suppress`.
     pub suppress: Vec<Ident>,
 }
 
@@ -362,36 +306,32 @@ impl Hash for ResolvedSpecType {
 }
 
 /// One function member of a spec, kept **raw** (unresolved `Type`s, an
-/// unlowered `HirBlock` default body) -- directly mirroring
-/// `omega_analyzer::resolver::GenericSignature`'s existing precedent for an
-/// ordinary generic function's signature: a `Self`-referencing (or spec-
-/// generic-referencing) type can't be resolved to a concrete
-/// `ResolvedType` until a concrete implementor is known, so resolution is
-/// deferred to that point (see `Analyzer::signature_of_struct`'s
-/// conformance handling) rather than attempted here, at the spec's
-/// own definition.
+/// unlowered `HirBlock` default body) -- mirroring `GenericSignature`'s
+/// precedent: a `Self`-referencing (or spec-generic-referencing) type
+/// can't be resolved to a concrete `ResolvedType` until a concrete
+/// implementor is known, so resolution is deferred to that point
+/// (`Analyzer::signature_of_struct`'s conformance handling) rather than
+/// attempted at the spec's own definition.
 #[derive(Debug, Clone)]
 pub struct RawSpecFunctionSig {
     pub decl_id: HirId,
     pub name: Ident,
     pub span: Span,
-    /// Carried alongside `span` so a queued default-method instantiation can
-    /// rebuild a `HirFunctionDef` with the spec function's *real* signature
-    /// spans rather than widening every diagnostic to the whole declaration
-    /// -- see `Analyzer::check_pending_spec_method`.
+    /// Carried alongside `span` so a queued default-method instantiation
+    /// can rebuild a `HirFunctionDef` with the spec function's real
+    /// signature spans rather than widening every diagnostic to the whole
+    /// declaration.
     pub name_span: Span,
     pub signature_span: Span,
     pub return_type_span: Span,
     /// See `ResolvedFunctionType::self_mode`. Always `Pointer`/`MutPointer`
     /// in practice -- by-value self is rejected at spec signature
-    /// resolution (`Analyzer::resolve_spec_functions`).
+    /// resolution.
     pub self_mode: Option<SelfMode>,
-    /// Raw `HirParam`s (own id/span kept, per-param) rather than a plain
-    /// `(Ident, Type)` list -- this is what lets a queued default-method
-    /// instantiation reconstruct a real, ordinary `HirFunctionDef` later
-    /// (see `Analyzer::check_pending_spec_method`) and reuse
-    /// `check_function_body` wholesale, rather than duplicating its
-    /// param-binding logic.
+    /// Raw `HirParam`s rather than a plain `(Ident, Type)` list -- lets a
+    /// queued default-method instantiation reconstruct a real
+    /// `HirFunctionDef` later and reuse `check_function_body` wholesale
+    /// instead of duplicating its param-binding logic.
     pub params: Vec<HirParam>,
     pub is_variadic: bool,
     pub return_type: Type,
@@ -424,10 +364,8 @@ pub struct ResolvedGap {
 
 /// A compile-time constant value -- what an enum variant's tag and header
 /// values evaluate to at the definition, and what construction sites
-/// re-emit. Covers exactly the primitive types a constant can currently be
-/// written as; a header field whose type can't be represented here is
-/// rejected at the enum's definition (see `AnalysisErrorKind::
-/// EnumHeaderFieldUnsupportedType`), never at a use site.
+/// re-emit. A header field whose type can't be represented here is
+/// rejected at the enum's definition, never at a use site.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstValue {
     Number(crate::checked::NumberValue),
@@ -436,40 +374,24 @@ pub enum ConstValue {
     /// A `*str` string constant -- the literal's decoded UTF-8 bytes.
     Str(String),
     /// A compile-time slice's elements (`&[...]`) -- no item type is
-    /// carried here, exactly like `Str` doesn't carry its own type: it's
-    /// always supplied externally by the enclosing `ResolvedType::Slice {
-    /// item, .. }` at every call site (see `Analyzer::const_representable`,
-    /// `Codegen::emit_const_value`). Codegen builds a separate rodata blob
-    /// and stores a `[ptr, len]` fat pointer to it.
+    /// carried here, exactly like `Str`: it's always supplied externally
+    /// by the enclosing `ResolvedType::Slice { item, .. }`. Codegen builds
+    /// a separate rodata blob and stores a `[ptr, len]` fat pointer to it.
     Slice(Vec<ConstValue>),
-    /// A fixed-length compile-time array's elements (a bare `[...]` against
-    /// a `ResolvedType::SizedArray`-typed header field) -- unlike `Slice`,
-    /// there's no indirection: codegen writes every element's leaves
-    /// inline, back to back, directly into the enclosing storage (an enum's
-    /// header region, or a nested array/slice element), exactly like an
-    /// ordinary `SizedArray` value's own layout.
+    /// A fixed-length compile-time array's elements -- unlike `Slice`,
+    /// no indirection: codegen writes every element's leaves inline, back
+    /// to back, directly into the enclosing storage.
     Array(Vec<ConstValue>),
-    /// A whole struct value, built by `comp` evaluation (see
-    /// `crate::comp_eval`) -- fields in declared (`field_index`) order,
-    /// mirroring `crate::checked::CheckedStructLiteral`'s own field-order
-    /// guarantee, so codegen can write leaves in list order with no name
-    /// lookup, exactly like `Array`'s elements already are.
+    /// A whole struct value, built by `comp` evaluation -- fields in
+    /// declared order, so codegen can write leaves in list order with no
+    /// name lookup, like `Array`'s elements.
     Struct(Vec<ConstValue>),
     /// A whole enum value, built by `comp` evaluation. `tag` and `header`
-    /// are embedded directly (rather than re-derived from the enum's
-    /// shared `ResolvedEnumType` cell via `variant_index` at every read)
-    /// since a `ConstValue` carries no reference back to its own
-    /// `ResolvedType` -- the one deliberate divergence from
-    /// `CheckedEnumConstruct`'s shape, which *can* rely on the enclosing
-    /// expression's own `r#type` instead. `header` is a straight clone of
-    /// `ResolvedEnumVariant::header_values` (a per-variant *constant*, not
-    /// per-instance data -- duplicated here purely so a `comp` evaluation
-    /// can read `.header_field` back without needing type context, not
-    /// because it's genuinely separate storage). `dynamic_fields`/`fields`
-    /// split `CheckedEnumConstruct::fields`'s own combined "shared dynamic
-    /// fields first, then this variant's own body fields" list back into
-    /// its two real regions (see that type's doc comment) -- `comp_eval`'s
-    /// own construction is what does the splitting.
+    /// are embedded directly rather than re-derived from the enum's
+    /// shared `ResolvedEnumType` cell, since a `ConstValue` carries no
+    /// reference back to its own `ResolvedType`. `dynamic_fields`/`fields`
+    /// split `CheckedEnumConstruct::fields`'s combined list back into its
+    /// two real regions.
     Enum {
         variant_index: usize,
         tag: crate::checked::NumberValue,
@@ -485,22 +407,17 @@ pub enum ConstValue {
     },
     /// The address of another piece of `comp`-evaluated data (`&<place>`
     /// where `<place>` itself evaluated cleanly) -- generalizes what `Str`/
-    /// `Slice` above already do ad hoc (both are secretly "pointer to a
-    /// separately-built rodata blob") into one explicit indirection, so a
-    /// struct field can point at e.g. a sibling `comp`-computed buffer, not
-    /// just a string/slice literal. Never a pointer into *runtime* memory --
-    /// the interpreter only ever produces one of these by evaluating a
-    /// place it fully evaluated itself; see `comp_eval`'s rejection of any
-    /// pointer the interpreter didn't itself produce.
+    /// `Slice` do ad hoc into one explicit indirection, so a struct field
+    /// can point at e.g. a sibling `comp`-computed buffer. Never a pointer
+    /// into runtime memory -- the interpreter only produces one of these
+    /// by evaluating a place it fully evaluated itself.
     Ref(Box<ConstValue>),
 }
 
 /// How a numeric resolved type behaves arithmetically: its signedness (or
-/// float-ness) and bit width. Shared by analysis (to validate a number
-/// literal's suffix, range-check its value, and type-check `BinaryOp`/
-/// `Negate` operands) and codegen (to pick the right instruction --
-/// `sdiv`/`udiv`, `ineg`/`fneg`, ...) -- computed once here rather than
-/// re-pattern-matched on `ResolvedType` at every call site.
+/// float-ness) and bit width. Shared by analysis (literal suffixes, range
+/// checks, `BinaryOp`/`Negate` type-checking) and codegen (picking
+/// `sdiv`/`udiv`, `ineg`/`fneg`, ...).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericKind {
     Signed(u32),
@@ -508,10 +425,10 @@ pub enum NumericKind {
     Float(u32),
 }
 
-/// A castable type's shape, for `<Target>expr` (see `ResolvedType::cast_class`):
-/// its bit width, and (for the int family) signedness -- exactly what's
-/// needed to pick a `CastKind` between any two castable types, purely from
-/// their widths/signedness, with no per-type-pair table.
+/// A castable type's shape, for `<Target>expr` (see
+/// `ResolvedType::cast_class`): bit width and, for the int family,
+/// signedness -- enough to pick a `CastKind` between any two castable
+/// types purely from width/signedness, with no per-type-pair table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastClass {
     Int { width: u32, signed: bool },
@@ -522,70 +439,50 @@ pub enum CastClass {
 pub enum ResolvedType {
     Void,
     /// `never` -- a function's own declared return type meaning "this
-    /// function does not return" (`exit(code: i32) => never`). Legal
-    /// *only* in that one position (a function/method/extern/gap's own
-    /// return type; `Context::resolve_type` rejects it everywhere else a
-    /// type gets resolved for storage -- see `AnalysisErrorKind::
-    /// NeverTypeNotAllowed`), and deliberately not threaded through
-    /// `accepts`/general expression-type inference: it only ever needs to
-    /// exist so `=> never` itself resolves, and so a call's looked-up
-    /// return type can *be* `Never` at the one point that matters --
-    /// `Analyzer::expr_diverges` recognizing such a call as diverging. From
-    /// there, the existing `None`-means-diverges mechanism (`Analyzer::
-    /// block_type`) already does everything a real coercing `!` type would
-    /// -- see its own doc comment. No `never`-typed variables follow from
-    /// this by construction: nothing ever needs to *store* a `Never` value,
-    /// only recognize that a position produced one.
+    /// function does not return" (`exit(code: i32) => never`). Legal only
+    /// in that one position; `Context::resolve_type` rejects it everywhere
+    /// else a type gets resolved for storage. Deliberately not threaded
+    /// through `accepts`/general expression-type inference: it only needs
+    /// to exist so a call's looked-up return type can *be* `Never` at the
+    /// point that matters -- `Analyzer::expr_diverges` recognizing such a
+    /// call as diverging, after which the existing `None`-means-diverges
+    /// mechanism (`Analyzer::block_type`) does the rest.
     Never,
     Bool,
-    /// A single Unicode scalar value, stored as a 4-byte codepoint -- the
-    /// same representation Rust's `char` uses (large enough to hold any
-    /// UTF-8-encoded character, decoded). This is *not* what a C string's
-    /// bytes are typed as; that's `U8` (see `*u8`'s use for `puts`/`printf`
-    /// in `examples/dev/dev.omg`) -- a byte and a decoded character are
-    /// different things once `char` stops being an alias for "one byte".
+    /// A single Unicode scalar value, stored as a 4-byte codepoint, like
+    /// Rust's `char`. Not what a C string's bytes are typed as -- that's
+    /// `U8`; a byte and a decoded character are different things.
     Char,
     I8,
     I16,
     I32,
     I64,
-    /// Pointer-sized signed integer -- it tracks the *target's* pointer
-    /// width (`Target::pointer_bits`, threaded into `numeric_kind` and
-    /// `integer_domain` below), never a fixed alias for `i64`: it is
-    /// genuinely 32 bits on a 32-bit target.
+    /// Pointer-sized signed integer -- tracks the target's pointer width
+    /// (`Target::pointer_bits`), never a fixed alias for `i64`: genuinely
+    /// 32 bits on a 32-bit target.
     ISize,
     U8,
     U16,
     U32,
     U64,
-    /// Pointer-sized unsigned integer. See `ISize`'s doc comment.
+    /// Pointer-sized unsigned integer. See `ISize`.
     USize,
     F32,
     F64,
-    /// `*T` (`mutable: false`) or `*mut T` (`mutable: true`) -- whether the
-    /// pointee may be written through (`Analyzer::analyze_place`'s running
-    /// mutability, overwritten by every `Deref` it processes). Immutable by
-    /// default, like every binding (`VarBinding::mutable`). This is a
-    /// *type*-level fact, unrelated to whether the pointer *itself* (as a
-    /// binding) can be reassigned to point elsewhere.
+    /// `*T` (`mutable: false`) or `*mut T` (`mutable: true`) -- whether
+    /// the pointee may be written through. A type-level fact, unrelated
+    /// to whether the pointer itself (as a binding) can be reassigned to
+    /// point elsewhere.
     Pointer {
         pointee: Box<ResolvedType>,
         mutable: bool,
     },
     Function(ResolvedFunctionType),
     /// `*[?]T` (`mutable: false`) or `*mut [?]T` (`mutable: true`) -- an
-    /// unsized run of `T`: genuinely just a thin pointer value (one leaf,
-    /// see `layout::leaves_of`) with array-like properties (indexing,
-    /// slicing) -- the same C-decayed-array-parameter shape `argv : *[]*u8`
-    /// in `examples/dev/dev.omg` already uses, now a fully general,
-    /// constructible type (see `Analyzer::array_pointer_cast_kind`) rather
-    /// than only ever populated by the OS's own C entry-point convention.
-    /// Mutability is a type-level fact exactly like `Pointer`'s own --
-    /// whether `arr[i] = x` is legal follows this flag, never whatever
-    /// binding holds the value (see `Analyzer::project_index`'s `Array`
-    /// arm). This is *not* what `*[]T` resolves to -- see `Slice` below,
-    /// and `Context::resolve_pointer_type`'s dedicated production that
-    /// produces it.
+    /// unsized run of `T`: a thin pointer value with array-like properties
+    /// (indexing, slicing), the same C-decayed-array-parameter shape
+    /// `argv : *[]*u8` uses. Mutability is a type-level fact exactly like
+    /// `Pointer`'s. Not what `*[]T` resolves to -- see `Slice` below.
     Array(Box<ResolvedType>, bool),
     /// `[N]T` -- a sized, inline, contiguous run of exactly `N` `T`s.
     /// Unlike `Array`, this is a genuine value type: it's stored inline
@@ -593,59 +490,47 @@ pub enum ResolvedType {
     /// pointer, the same way a `Struct` is.
     SizedArray(Box<ResolvedType>, u32),
     /// `*[]T` (`mutable: false`) or `*mut []T` (`mutable: true`) -- a fat
-    /// pointer: a data pointer plus a length, unlike `Pointer` which is
-    /// always a single thin pointer value. Never written as
-    /// `Pointer(Array(_))`; see `Context::resolve_pointer_type`. `mutable`
-    /// carries the same meaning `Pointer::mutable` does, for `slice[i] =
-    /// value`.
+    /// pointer: a data pointer plus a length, unlike `Pointer`'s single
+    /// thin pointer. Never written as `Pointer(Array(_))`. `mutable`
+    /// carries the same meaning `Pointer::mutable` does.
     Slice {
         item: Box<ResolvedType>,
         mutable: bool,
     },
     /// `*str` (`mutable: false`) or `*mut str` (`mutable: true`) -- a
-    /// UTF-8 string slice: at runtime, the exact same fat-pointer shape
-    /// `Slice { item: U8, .. }` has (`[data_ptr, len]`, no null
-    /// terminator), but a genuinely distinct nominal type -- no implicit
-    /// coercion to/from `Slice`/`Pointer` in either direction (see
-    /// `accepts` below). No `item` field: always byte-shaped, so there's
-    /// nothing to parameterize. `str` alone (unwrapped by `*`/`*mut`)
-    /// names nothing -- it's deliberately never registered in
-    /// `Context::new()`'s `defined_types`, so it only ever resolves to
-    /// this variant via the raw-pointee special case in
-    /// `Context::resolve_type`'s `Type::Pointer` arm; any other use falls
-    /// through to the ordinary "unrecognized type name" diagnostic.
+    /// UTF-8 string slice: at runtime the same fat-pointer shape as
+    /// `Slice { item: U8, .. }` (no null terminator), but a genuinely
+    /// distinct nominal type with no implicit coercion to/from
+    /// `Slice`/`Pointer`. `str` alone names nothing on its own -- it only
+    /// resolves to this variant via the raw-pointee special case in
+    /// `Context::resolve_type`'s `Type::Pointer` arm.
     Str {
         mutable: bool,
     },
     Struct(Rc<RefCell<ResolvedStructType>>),
     /// A C/Rust-style union value -- see `ResolvedUnionType`'s doc comment.
     Union(Rc<RefCell<ResolvedUnionType>>),
-    /// An omega-style enum value. `variant` is the *statically known*
+    /// An omega-style enum value. `variant` is the statically known
     /// variant, when there is one: `MyEnum::Second { ... }` produces a
-    /// value of type `MyEnum::Second` (variant `Some(1)`), and only such a
-    /// refined value may touch that variant's own body fields; a plain
-    /// `MyEnum` (variant `None` -- what every written-down type annotation
-    /// resolves to) only exposes the tag and the shared header. A refined
-    /// value is usable anywhere the plain enum is expected -- the one
-    /// implicit widening this type system has; see `ResolvedType::accepts`.
+    /// value of type `MyEnum::Second`, and only such a refined value may
+    /// touch that variant's own body fields; a plain `MyEnum` (variant
+    /// `None`) only exposes the tag and shared header. See `accepts` for
+    /// the implicit widening from refined to plain.
     Enum {
         cell: Rc<RefCell<ResolvedEnumType>>,
         variant: Option<usize>,
     },
-    /// A reference to a spec *definition* -- what a conform declaration
-    /// (`conform Dog to Animal`), a generic bound (`T: Animal`), or a
-    /// spec-object type's pointee (`spec *Animal`) resolves the name
-    /// `Animal` to. Never itself the type of a runtime value -- a `spec
-    /// *Animal` *value*'s type is `SpecObject` below, not this.
+    /// A reference to a spec *definition* -- what a conform declaration,
+    /// a generic bound (`T: Animal`), or a spec-object type's pointee
+    /// resolves the name `Animal` to. Never itself the type of a runtime
+    /// value -- a `spec *Animal` value's type is `SpecObject` below.
     Spec(Rc<RefCell<ResolvedSpecType>>),
     /// `spec *Animal` (`mutable: false`) or `spec *mut Animal` (`mutable:
-    /// true`) -- a dynamic-dispatch trait-object value: at runtime, a fat
-    /// pointer (a data pointer plus a compiler-generated vtable pointer),
-    /// exactly like `Slice`'s `[data_ptr, len]` shape is a fat pointer of a
-    /// different kind (see `Codegen`'s `IntoIRType` impl, which flattens
-    /// both to two leaves). The concrete pointee type is erased -- only
-    /// that it implements `spec` (with these `type_args`, for a generic
-    /// spec) is known.
+    /// true`) -- a dynamic-dispatch trait-object value: a fat pointer (a
+    /// data pointer plus a compiler-generated vtable pointer), like
+    /// `Slice`'s `[data_ptr, len]` is a fat pointer of a different kind.
+    /// The concrete pointee type is erased -- only that it implements
+    /// `spec` (with these `type_args`, for a generic spec) is known.
     SpecObject {
         spec: Rc<RefCell<ResolvedSpecType>>,
         type_args: Vec<ResolvedType>,
@@ -654,12 +539,9 @@ pub enum ResolvedType {
 }
 
 /// Can't `#[derive(Hash)]` -- `Rc<RefCell<ResolvedStructType>>` isn't
-/// `Hash` (std deliberately omits it for `RefCell`, since mutating a key
-/// after it's hashed into a map would silently break the map's invariants).
-/// Mirrors the manual `PartialEq` derived transitively through `Struct`
-/// above: hash the borrowed cell's `id` only, never its `fields`/
-/// `functions`, both for consistency with that equality and to avoid
-/// recursing into a possibly self-referential struct.
+/// `Hash` (std omits it for `RefCell`, since mutating a key after it's
+/// hashed would break the map's invariants). Hashes the borrowed cell's
+/// `id` only, consistent with the manual `PartialEq`.
 impl Hash for ResolvedType {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
@@ -718,10 +600,9 @@ impl Hash for ResolvedType {
     }
 }
 
-/// Renders the type exactly as a user would write it in Omega source
-/// (`*u8`, `[i32; 3]`, `*[u8]`, `(s: *u8, ...) => i32`, a struct's bare
-/// name) -- this is what every diagnostic shows, so it must read as the
-/// language's own syntax, never as Rust debug output.
+/// Renders the type exactly as a user would write it in Omega source --
+/// what every diagnostic shows, so it must read as the language's own
+/// syntax, never as Rust debug output.
 impl std::fmt::Display for ResolvedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -823,17 +704,13 @@ impl std::fmt::Display for ResolvedType {
 }
 
 impl ResolvedType {
-    /// `Some` for exactly the types a number literal can resolve to, and the
-    /// only types `BinaryOp`/`Negate`/`BitNot` operate on *directly*, with no
-    /// conversion involved -- `Bool`/`Char`/pointers still get arithmetic and
-    /// bitwise ops, just by first coercing to one of these (see
-    /// `arithmetic_repr` below); `Bool` alone additionally gets a handful of
-    /// ops natively, with no coercion at all (see `Analyzer::analyze_binary_op`).
+    /// `Some` for exactly the types a number literal can resolve to, and
+    /// the only types `BinaryOp`/`Negate`/`BitNot` operate on directly.
+    /// `Bool`/`Char`/pointers still get arithmetic and bitwise ops by
+    /// first coercing to one of these (see `arithmetic_repr`).
     ///
-    /// `pointer_bits` is the *target's* pointer width (`Target::pointer_bits`)
-    /// -- the one answer this function cannot produce itself: `ISize`/`USize`
-    /// track the target, so their classification depends on it (32-bit for
-    /// the 32-bit targets, 64-bit for the rest).
+    /// `pointer_bits` is the target's pointer width -- `ISize`/`USize`
+    /// track it, so their classification depends on it.
     pub fn numeric_kind(&self, pointer_bits: u32) -> Option<NumericKind> {
         Some(match self {
             Self::I8 => NumericKind::Signed(8),
@@ -852,18 +729,14 @@ impl ResolvedType {
         })
     }
 
-    /// The numeric type a non-numeric operand implicitly *coerces* to for an
-    /// arithmetic or bitwise op (`+ - * / % & | ^ << >>` binary, `~` unary) --
-    /// `None` for anything with no such stand-in, including `Char` and `Bool` (see
-    /// `Analyzer::analyze_binary_op`'s doc comment for why `Bool` is handled
-    /// natively instead of through this) and everything else that simply
-    /// isn't arithmetic-eligible at all (structs, functions, ...).
+    /// The numeric type a non-numeric operand implicitly coerces to for
+    /// an arithmetic or bitwise op -- `None` for anything with no such
+    /// stand-in, including `Char` and `Bool` (handled natively instead,
+    /// see `Analyzer::analyze_binary_op`) and non-arithmetic types.
     ///
     /// The chosen representative always matches the exact scalar
-    /// `layout::Leaf` codegen already stores the type as (a pointer as
-    /// `Leaf::Ptr`, target-pointer-width) --
-    /// so the coercion is always a same-width `CastKind::Reinterpret`, free
-    /// at runtime, purely a compile-time relabeling.
+    /// `layout::Leaf` codegen stores the type as, so the coercion is
+    /// always a same-width `CastKind::Reinterpret`, free at runtime.
     pub fn arithmetic_repr(&self) -> Option<ResolvedType> {
         match self {
             Self::Pointer { .. } => Some(ResolvedType::USize),
@@ -872,18 +745,13 @@ impl ResolvedType {
     }
 
     /// This type's byte size, for a `sizeof<...>` used *inside* an
-    /// annotation argument (`@layout(pack = sizeof<usize>)`) -- deliberately
-    /// scoped to primitives only (`None` for structs/enums/unions/arrays/
-    /// slices/functions/spec objects): a primitive's size needs no real
-    /// backend to know, only the target's own pointer width (the same one
-    /// `numeric_kind` resolves against -- see its doc comment), so
-    /// `@layout`'s arguments can be resolved eagerly, in the analyzer, with
-    /// the same span-anchored `Diagnostic` quality a plain integer literal
-    /// gets. `sizeof<Type>` used as an ordinary *expression* (see
-    /// `CheckedExpr::Sizeof`) is not scoped this way -- it supports any
-    /// type, computed in codegen via the already-general `total_bytes`.
-    /// `pointer_bytes` is the *target's* pointer width, same reasoning as
-    /// `numeric_kind`'s parameter.
+    /// annotation argument (`@layout(pack = sizeof<usize>)`) -- scoped to
+    /// primitives only (`None` for structs/enums/unions/arrays/slices/
+    /// functions/spec objects), since a primitive's size needs no real
+    /// backend, only the target's pointer width, so `@layout`'s arguments
+    /// can be resolved eagerly in the analyzer. `sizeof<Type>` used as an
+    /// ordinary expression is not scoped this way -- it supports any type,
+    /// computed in codegen via `total_bytes`.
     pub fn primitive_byte_size(&self, pointer_bytes: u32) -> Option<u32> {
         match self {
             Self::Bool => Some(1),
@@ -898,31 +766,22 @@ impl ResolvedType {
         }
     }
 
-    /// This type's shape for `<Target>expr` casting purposes -- `None` for
-    /// anything a cast can't touch at all (structs/enums/unions/slices/
-    /// `void`/functions; see `AnalysisErrorKind::InvalidCast`). A pointer
-    /// counts as an unsigned integer of the *target's* pointer width --
-    /// exactly what `numeric_kind` classifies `isize`/`usize` at, and
-    /// literally true at the IR level (a pointer leaf and a `usize` leaf
-    /// are the same width by construction; see `layout::Leaf`). This one
-    /// case is what makes pointer<->pointer, pointer<->integer, and
-    /// integer<->pointer casts all fall out of the *same* int-to-int width
-    /// rules `Analyzer::resolve_cast_kind` applies, with no special-casing
-    /// beyond it -- and it has to follow the target, or on a 32-bit target
-    /// `<u64>some_ptr` classifies as a same-width `Reinterpret` and the
-    /// value keeps its 32-bit width while its type claims 64.
+    /// This type's shape for `<Target>expr` casting purposes -- `None`
+    /// for anything a cast can't touch at all (structs/enums/unions/
+    /// slices/`void`/functions). A pointer counts as an unsigned integer
+    /// of the target's pointer width, literally true at the IR level (a
+    /// pointer leaf and a `usize` leaf are the same width by
+    /// construction), which is what makes pointer<->pointer,
+    /// pointer<->integer, and integer<->pointer casts all fall out of the
+    /// same int-to-int width rules with no special-casing.
     ///
-    /// `Char`/`Bool` get a class the same way (their own scalar
-    /// representation's width -- 32 and 8 bits respectively, both
-    /// unsigned), but **only ever as the source** of a cast: `resolve_
-    /// cast_kind` has no notion of direction, so on its own this would
-    /// symmetrically allow casting arbitrary integers *into* `Char`/`Bool`
-    /// too, which isn't sound (not every `u32` is a valid codepoint, and
-    /// there's no implicit "nonzero is true"). `Analyzer::analyze_cast`
-    /// gates that asymmetry explicitly (see `allows_cast_into`) rather than
-    /// this method trying to encode a direction it has no way to express.
-    /// `pointer_bits` is the *target's* pointer width -- `ISize`/`USize`
-    /// classify at it, exactly like `numeric_kind` does.
+    /// `Char`/`Bool` get a class the same way, but **only ever as the
+    /// source** of a cast: this has no notion of direction, so
+    /// `Analyzer::analyze_cast` gates the into-`Char`/`Bool` asymmetry
+    /// explicitly (see `allows_cast_into`), since not every `u32` is a
+    /// valid codepoint and there's no implicit "nonzero is true".
+    /// `pointer_bits` is the target's pointer width -- `ISize`/`USize`
+    /// classify at it.
     pub fn cast_class(&self, pointer_bits: u32) -> Option<CastClass> {
         if let Some(kind) = self.numeric_kind(pointer_bits) {
             return Some(match kind {
@@ -955,26 +814,19 @@ impl ResolvedType {
     }
 
     /// The inclusive `[min, max]` domain of every representable value of
-    /// this type, as `i128` (comfortably spans every integer type from
-    /// `i8` to `u64`/`usize`, plus `bool`'s `{0,1}`) -- what a `match`'s
-    /// interval-exhaustiveness check (`crate::exhaustiveness`) treats as
-    /// "the whole domain" a numeric/`bool`/`char` match must cover. `None`
-    /// for every other type: `match` support is deliberately scoped to
-    /// enums, integers, `bool`, and `char` for now (see
-    /// `AnalysisErrorKind::UnsupportedMatchScrutinee`).
+    /// this type, as `i128` -- what a `match`'s interval-exhaustiveness
+    /// check (`crate::exhaustiveness`) treats as "the whole domain" a
+    /// numeric/`bool`/`char` match must cover. `None` for every other
+    /// type: `match` support is scoped to enums, integers, `bool`, and
+    /// `char` for now.
     ///
-    /// `Char`'s domain is `0..=0x10FFFF` (`char::MAX`), the full range of a
-    /// Unicode scalar value -- it does *not* carve out the surrogate hole
-    /// (`0xD800..=0xDFFF`). Pointer reinterprets can manufacture such a
-    /// value, so this is deliberately a conservative interval abstraction:
-    /// it may demand an arm for an unsupported value, but it never accepts
-    /// an incomplete match. A match covering the full `0..=0x10FFFF` range is
-    /// correctly recognized as exhaustive; it just can't (today) recognize
-    /// a match that covers the domain *around* the hole without touching
-    /// it as exhaustive without an `else` -- a minor conservatism, not a
-    /// correctness gap.
-    /// `pointer_bits` is the *target's* pointer width -- `ISize`/`USize`
-    /// domains follow it exactly like `numeric_kind`'s classification does.
+    /// `Char`'s domain is `0..=0x10FFFF` (`char::MAX`) and does *not*
+    /// carve out the surrogate hole (`0xD800..=0xDFFF`), since pointer
+    /// reinterprets can manufacture such a value -- a deliberately
+    /// conservative interval abstraction that may demand an arm for an
+    /// unsupported value but never accepts an incomplete match. `pointer_
+    /// bits` is the target's pointer width -- `ISize`/`USize` domains
+    /// follow it.
     pub fn integer_domain(&self, pointer_bits: u32) -> Option<(i128, i128)> {
         Some(match self {
             Self::Bool => (0, 1),
@@ -998,9 +850,8 @@ impl ResolvedType {
     /// The same type with any statically-known enum-variant refinement
     /// erased (`MyEnum::Second` -> `MyEnum`) -- what inference positions
     /// that must stay variant-agnostic (an `if`'s unified branch type, an
-    /// array literal's element type, a deduced generic argument) normalize
-    /// to. Shallow on purpose: refinement only ever exists at the top level
-    /// of a value's type (nothing written down in source can nest one).
+    /// array literal's element type) normalize to. Shallow on purpose:
+    /// refinement only ever exists at the top level of a value's type.
     pub fn widened(&self) -> ResolvedType {
         match self {
             Self::Enum {
@@ -1014,13 +865,11 @@ impl ResolvedType {
         }
     }
 
-    /// The canonical identity used by conformance and primitive registries.
-    ///
-    /// Lookup is about which methods belong to a type, not transient facts
-    /// carried by a particular expression. Enum refinements and pointer-like
-    /// mutability are such facts, so registry users must always key through
-    /// this method at both insertion and lookup. Any future `ResolvedType`
-    /// refinement needs an explicit decision here.
+    /// The canonical identity used by conformance and primitive
+    /// registries. Lookup is about which methods belong to a type, not
+    /// transient facts carried by a particular expression -- enum
+    /// refinements and pointer-like mutability are such facts, so registry
+    /// users must always key through this method.
     pub fn lookup_key(&self) -> ResolvedType {
         match self {
             Self::Enum { cell, .. } => Self::Enum {
@@ -1043,39 +892,13 @@ impl ResolvedType {
     /// Whether a value of type `value` can be supplied where `self` is
     /// expected: exact equality, plus the one implicit widening this type
     /// system has -- a variant-refined enum value (`MyEnum::Second`) is
-    /// usable as its plain enum (`MyEnum`). Never the reverse (a plain
-    /// value's variant isn't known).
-    ///
-    /// This widening also applies through exactly one level of *immutable*
-    /// pointer/slice indirection (`*MyEnum::Second` usable as `*MyEnum`) --
-    /// sound specifically because of which pointers are ever allowed to
-    /// carry a refined pointee in the first place: `&value` only keeps a
-    /// refinement when it's a *permanent* fact about `value`'s own
-    /// declared/inferred type (see `VarBinding::narrowed` and
-    /// `Analyzer`'s `HirExpr::AddressOf` arm), and a permanently-refined
-    /// binding can never be reassigned a different variant (this same
-    /// `accepts` rule, applied at every assignment, already rejects that).
-    ///
-    /// Deliberately **not** extended to mutable pointers/slices at all --
-    /// `*mut MyEnum::Second` never widens to `*mut MyEnum`, full stop, even
-    /// though the exact same reasoning above would make it locally sound at
-    /// this one call site. The reason is what happens *after*: a widened
-    /// `*mut MyEnum` handed to unconstrained code could be used to write a
-    /// *different* variant through it, silently invalidating whatever
-    /// *other* binding/pointer still believes the underlying storage is
-    /// `MyEnum::Second` (the original aliasing hole this whole mutability
-    /// system exists to close). `&mut place`/`mut self`'s auto-ref close
-    /// this at the *source* instead (see `Analyzer`'s `HirExpr::AddressOf`
-    /// arm and `Context::widen_variable`): they always produce an already-
-    /// widened mutable pointer and immediately widen the source binding's
-    /// own tracked type too, so a refined mutable pointer only ever exists
-    /// as a `match`-narrowed *view* of an already-mutable place, never as
-    /// something `accepts` needs to reason about widening further.
-    ///
-    /// A mutable pointer/slice *does* freely coerce into an immutable one
-    /// of the same (or widening-compatible) pointee, symmetric with a
-    /// mutable binding being just as readable as an immutable one --
-    /// captured below by `mutable: false` on `self`'s side alone.
+    /// usable as its plain enum. Never the reverse. Widening also applies
+    /// through one level of *immutable* pointer/slice indirection
+    /// (`*MyEnum::Second` usable as `*MyEnum`), but deliberately **not**
+    /// through mutable ones (`*mut MyEnum::Second` never widens) -- see
+    /// findings for why. A mutable pointer/slice does freely coerce into
+    /// an immutable one of the same pointee, symmetric with a mutable
+    /// binding being just as readable as an immutable one.
     pub fn accepts(&self, value: &ResolvedType) -> bool {
         if self == value {
             return true;
@@ -1115,17 +938,11 @@ impl ResolvedType {
         }
     }
 
-    /// The `mutable` flag of any pointer-shaped type (`Pointer`/`Slice`/
-    /// `Str`/`Array`) -- `None` for anything else. Lets a single check
-    /// (e.g. "a cast can't turn an immutable pointer-shaped value into a
-    /// mutable one") apply uniformly across all four instead of being
-    /// duplicated per shape.
-    /// The module and declaration this type's own members belong to -- what
-    /// a member-visibility check needs. `None` for anything with no
+    /// The module and declaration this type's own members belong to --
+    /// what a member-visibility check needs. `None` for anything with no
     /// declaration of its own (a primitive, a slice, a pointer): their
     /// members come from a `primitive` block or a `conform`, whose
-    /// visibility is the declaring spec's rather than the target's, so no
-    /// owner is needed.
+    /// visibility is the declaring spec's rather than the target's.
     pub fn declaring_owner(&self) -> Option<(Vec<Ident>, HirId)> {
         match self {
             Self::Struct(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
@@ -1137,8 +954,7 @@ impl ResolvedType {
 
     /// This type with at most one pointer hop removed -- the seamless
     /// autoderef every member lookup applies (`ptr.field`, `ptr.method()`),
-    /// and never more than one level: `**Struct` still needs an explicit
-    /// deref of its own.
+    /// never more than one level: `**Struct` still needs an explicit deref.
     pub fn autoderef(&self) -> &ResolvedType {
         match self {
             Self::Pointer { pointee, .. } => pointee,
@@ -1146,6 +962,9 @@ impl ResolvedType {
         }
     }
 
+    /// The `mutable` flag of any pointer-shaped type (`Pointer`/`Slice`/
+    /// `Str`/`Array`) -- `None` for anything else. Lets a single check
+    /// apply uniformly across all four instead of duplicating it per shape.
     pub fn pointer_like_mutable(&self) -> Option<bool> {
         match self {
             Self::Pointer { mutable, .. } | Self::Slice { mutable, .. } | Self::Str { mutable } => {

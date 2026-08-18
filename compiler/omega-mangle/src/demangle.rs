@@ -1,24 +1,12 @@
 //! Parses a mangled string back into a `Symbol` (`decode`), and renders
-//! that into a readable form (`demangle`). Backrefs are resolved exactly
-//! per RFC 2603's own reference pseudocode: hitting a `B<offset>` token
-//! re-invokes parsing at that byte offset in the *mangled* string (not
-//! the output), using a fresh cursor, and the outer cursor only advances
-//! past the backref token itself -- no separate decoded-position cache
-//! needed. A backref's offset is required to be strictly less than where
-//! the backref token itself starts, which is always true of anything an
-//! honest encoder produces (a substitution can only ever point at a
-//! position already fully written) and rejects malformed/adversarial
-//! input (e.g. a self-referential or forward-pointing backref) instead
-//! of looping or overflowing the stack.
+//! it into a readable form (`demangle`). A `B<offset>` backref re-parses
+//! at that byte offset in the *mangled* string (not the output) with a
+//! fresh cursor; the offset must be strictly less than the backref
+//! token's own position, which honest encoder output always satisfies
+//! and rejects malformed/adversarial input instead of looping.
 //!
-//! Rendering deliberately doesn't try to reconstruct Rust-style
-//! `<Owner>::method(...)` bracketing -- reliably telling "this path
-//! segment is a type" from "this path segment is just a module" apart
-//! would need a third pseudo-namespace with no real Omega meaning behind
-//! it, purely to serve cosmetics. A flat, fully `::`-qualified path
-//! followed by `(params) -> return` is simpler, unambiguous, and just as
-//! readable (RFC 2603 itself leaves the demangled *form* entirely up to
-//! each demangler).
+//! Rendering doesn't reconstruct Rust-style `<Owner>::method(...)`
+//! bracketing -- see `docs/16-mir-and-codegen.md`.
 
 use crate::base62;
 use crate::grammar::*;

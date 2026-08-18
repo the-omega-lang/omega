@@ -20,21 +20,15 @@ impl Codegen {
     /// `slots` -- one concrete method's `decl_id` per vtable slot, already
     /// fully resolved by `Analyzer::type_implements_spec` (see
     /// `MirSpecCoerce::slots`'s doc comment) -- is both the cache key and
-    /// the vtable's entire content: unlike an earlier version of this
-    /// function, nothing here re-derives *which* concrete method satisfies
-    /// a given slot by matching names. That used to be sound (`by the time
-    /// codegen runs, every name collision is already known-identical`), but
-    /// stopped being true once conformance checking started
-    /// allowing one implementor to satisfy the same generic spec at two
-    /// different type arguments via two same-named overloads -- codegen has
-    /// no way to tell those apart by name alone, so it no longer tries to;
-    /// it just plays back the answer analysis already worked out. Keying
-    /// the cache on `slots` itself (rather than `(concrete, spec)`) is also
-    /// strictly more precise: two coercions that happen to resolve to the
-    /// exact same ordered method list produce byte-identical vtables no
-    /// matter which concrete type or spec they came from, so sharing one
-    /// copy is always correct, not just when the identity happens to match
-    /// too.
+    /// the vtable's entire content: nothing here re-derives *which*
+    /// concrete method satisfies a given slot by matching names, since that
+    /// stopped being sound once conformance checking allowed one
+    /// implementor to satisfy the same generic spec at two different type
+    /// arguments via two same-named overloads. Keying on `slots` itself
+    /// (rather than `(concrete, spec)`) is also strictly more precise: two
+    /// coercions resolving to the same ordered method list always produce
+    /// byte-identical vtables regardless of which concrete type or spec
+    /// they came from.
     ///
     /// `concrete`/`spec`/`spec_type_args` are only needed for the vtable's
     /// own linker *symbol* -- unlike `slots`' `HirId`s, which are only
@@ -74,16 +68,14 @@ impl Codegen {
         }
         desc.define(bytes.into_boxed_slice());
 
-        // `Preemptible` (weak), not `Local`, for the same reason a generic
-        // instantiation's own symbol is (see `linkage_for`): a vtable's
-        // content is a pure function of `slots`, which is itself a pure,
-        // deterministic function of `(concrete, spec, spec_type_args)` (see
-        // this method's own doc comment) -- so two separate compilations
-        // that both coerce the same concrete type to the same spec
-        // instantiation are guaranteed to build byte-identical vtables
-        // under the identical symbol name, and are just as safe (and
-        // worth) folding into one copy at link time as a generic
-        // function/method instantiation is.
+        // `Preemptible` (weak), not strong, for the same reason a generic
+        // instantiation's own symbol is (see `cranelift_linkage` in
+        // `item.rs`): a vtable's content is a pure function of `slots`,
+        // itself a pure function of `(concrete, spec, spec_type_args)`, so
+        // two separate compilations that coerce the same concrete type to
+        // the same spec instantiation always build byte-identical vtables
+        // under the identical symbol name -- safe to fold into one copy at
+        // link time.
         let symbol = omega_mir::mangle::encode(&omega_mir::mangle::vtable_symbol(
             concrete,
             &spec.borrow().name,

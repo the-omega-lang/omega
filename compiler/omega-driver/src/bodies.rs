@@ -133,12 +133,8 @@ impl Driver {
                 })
             }
 
-            // `ident : Type = value;` -- identical shape to the non-`comp`
-            // `Walrus` arm below (`initial_value` read back from the same
-            // `items.global_initial_values` cache, populated by
-            // `compute_item`'s `analyze_global_declaration_with_init`
-            // call), just sourced from a `HirDeclaration` instead of a
-            // `HirWalrusDeclaration`.
+            // `ident : Type = value;` -- same shape as the non-`comp` `Walrus`
+            // arm below, sourced from a `HirDeclaration` instead.
             HirItem::DeclarationWithInit { decl, .. } => {
                 let r#type = self.resolved_value_type(key);
                 let initial_value = self.items.global_initial_values.get(&decl.id).cloned();
@@ -156,25 +152,14 @@ impl Driver {
                 })
             }
 
-            // A `comp` top-level binding (`w.comp == true`) has no body-
-            // phase work left at all -- `compute_item`'s own `Walrus` arm
-            // already evaluated it (eagerly, during signature resolution --
-            // see that arm's doc comment) and recorded its value in
-            // `items.comp_values`. `None`, not a `CheckedBody`: it
-            // contributes nothing to the final `CheckedModule` -- every
-            // reference substitutes its value directly (`Storage::Comp`),
-            // so MIR/codegen never need to see it as an item at all.
+            // A `comp` binding was already evaluated eagerly during signature
+            // resolution and recorded in `items.comp_values` -- `None`, not
+            // a `CheckedBody`: every reference substitutes its value
+            // directly, so MIR/codegen never see it as an item.
             //
-            // A non-`comp` `Walrus` (`w.comp == false`) is the opposite:
-            // it *does* need to reach MIR/codegen, as a real
-            // `Storage::Global` place -- same shape as `HirItem::
-            // Declaration` above, just with `initial_value` read back from
-            // `items.global_initial_values` (populated by `compute_item`'s
-            // own `analyze_global_walrus` call; `None` there simply means
-            // this global has no initializer at all, e.g. `pqr : Thing;`
-            // spelled with `:=`... which the grammar doesn't actually
-            // allow, so in practice this is always `Some` here -- see
-            // `CheckedDeclaration::initial_value`'s doc comment).
+            // A non-`comp` `Walrus` does need to reach MIR/codegen as a real
+            // `Storage::Global` place, same shape as `HirItem::Declaration`
+            // above.
             HirItem::Walrus { walrus: w, .. } if w.comp => None,
             HirItem::Walrus { walrus: w, .. } => {
                 let r#type = self.resolved_value_type(key);
@@ -303,14 +288,11 @@ impl Driver {
         let mut substitution = Self::substitution(generics, &key.type_args);
         substitution.push((Ident("Self".to_string()), self_type.clone()));
 
-        // An aggregate's own generic bounds only. A type's *inherent*
+        // An aggregate's own generic bounds only -- a type's inherent
         // methods are not a conform body, so nothing conformed onto this
-        // type belongs in their scope -- see `check_conformance_bodies`, which
-        // seeds a conform body with the one spec it conforms to, and
-        // `check_generic_bounds`, which stores exactly the declared bound.
-        // The bound *context* (alias members, entailed derived conformances)
-        // is body-checking information, built here from that stored declared
-        // set rather than during signature resolution.
+        // type belongs in their scope. The bound *context* (alias members,
+        // entailed derived conformances) is built here from the stored
+        // declared set rather than during signature resolution.
         let declared = self
             .items
             .declared_bounds

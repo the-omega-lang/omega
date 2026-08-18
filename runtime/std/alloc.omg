@@ -1,27 +1,10 @@
-# `std::alloc` -- a thin, deliberately *non-generic* wrapper around
-# `core::platform::GlobalAllocator`, used by every generic collection in this
-# package instead of calling the gap directly from their own generic
-# methods.
-#
-# This indirection was originally added as a workaround for a real
-# codegen bug: any generic instantiation whose *template* lived in an
-# extern package (every `std` type, from a consuming application's point
-# of view) was silently dropped from codegen entirely, panicking the
-# moment anything referenced it. That bug is now fixed at the compiler
-# level (`Driver::compile`'s generic-instantiation merge loop, see
-# `docs/10-modules-and-linkage.md`'s "Fixed: two bugs found building
-# `std`..." section) -- calling `GlobalAllocator::*` directly from a
-# generic method no longer panics.
-#
-# The indirection is kept anyway, on separately confirmed grounds: `std`
-# is compiled as its own whole-package translation unit ahead of any one
-# consumer (`std.o`), so `String`'s own internal use of `List<u8>`, for
-# instance, is compiled into `std.o` regardless of whether a given
-# consumer ever touches `String`. Empirically, removing this layer and
-# calling `GlobalAllocator::*` straight from each generic method made gap
-# reachability *strictly worse* -- more distinct symbol references to the
-# gap baked into `std.o` itself, not fewer -- so it stays, now purely as
-# an ordinary abstraction boundary rather than a bug workaround.
+# `std::alloc` -- a thin, deliberately non-generic wrapper around
+# `core::platform::GlobalAllocator`, used by every generic collection here
+# instead of calling the gap directly. Originally a workaround for a
+# codegen bug (now fixed, see docs/10-modules-and-linkage.md); kept because
+# calling the gap directly from each generic method empirically made gap
+# reachability worse, not better (more distinct symbol references baked
+# into `std.o`). Do not inline this back into the generic methods.
 
 internal alloc(size: usize) => *mut u8 {
     GlobalAllocator::alloc(size)

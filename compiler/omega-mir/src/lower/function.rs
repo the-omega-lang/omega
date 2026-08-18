@@ -240,8 +240,6 @@ impl FunctionLowerer {
         lowerer.finish(arg_count)
     }
 
-    // -- Core block-builder primitives --------------------------------
-
     fn declare_local(&mut self, source: Option<HirId>, r#type: ResolvedType) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
         if let Some(hir_id) = source {
@@ -309,8 +307,6 @@ impl FunctionLowerer {
             .collect();
         MirBody { locals: self.locals, arg_count, blocks }
     }
-
-    // -- Statements -----------------------------------------------------
 
     /// Lowers a whole statement sequence, stopping early (leaving any
     /// remaining statements un-lowered, i.e. dead code) the moment
@@ -473,17 +469,11 @@ impl FunctionLowerer {
             return;
         }
         self.push_stmt(node);
-        // A bare call to a `never`-returning function is an ordinary
-        // instruction, not a terminator on its own -- nothing else follows
-        // it in the checked tree (`Analyzer::truncate_unreachable` already
-        // dropped whatever did), so without this the block would be left
-        // un-terminated, or -- worse, if the caller's own fallback logic
-        // routed it into the exit chain regardless -- would read back
-        // whatever garbage happens to sit in an unwritten `return_slot`.
-        // `Unreachable` is exactly the trap this needs: if the callee
-        // somehow *did* return anyway (a lying `extern`), this is where
-        // that gets caught, the same backstop LLVM emits after any
-        // `noreturn` call.
+        // A bare call to a `never`-returning function needs an explicit
+        // trap: nothing else follows it in the checked tree, so without
+        // this the block would be left un-terminated. Also the backstop if
+        // an `extern` declared `never` actually returns anyway -- see
+        // primitives.md's "never" section.
         if diverges {
             self.set_terminator(MirTerminator::Unreachable);
         }
@@ -587,17 +577,13 @@ impl FunctionLowerer {
     }
 
     /// `lower_control_flow_into`'s counterpart for a *statement* position
-    /// (a bare `if`/`match` statement, or `place = if/match/{ }`) that
-    /// needs a fresh "after" block of its own -- unlike `return`/tail
-    /// position (see `lower_stmt`'s `Return` arm/`lower_function_body`),
-    /// where `merge` is the already-existing exit chain and every reached
-    /// arm's own jump there is the last thing that happens, a statement
-    /// has to keep going afterward, so this mints `merge` fresh and
-    /// positions `self.current` on it once every arm has been lowered --
+    /// (a bare `if`/`match` statement, or `place = if/match/{ }`): unlike
+    /// `return`/tail position, where `merge` is the already-existing exit
+    /// chain, a statement has to keep going afterward, so this mints `merge`
+    /// fresh and positions `self.current` on it once every arm is lowered --
     /// the same "mark unreachable if nothing reached it" finalization
-    /// `finish_merge` does for the value-producing (nested/operand)
-    /// path, just without building a `MirExprNode` to hand back (nothing
-    /// here needs to read a value afterward).
+    /// `finish_merge` does for the value-producing path, just with no value
+    /// to hand back.
     fn lower_control_flow_stmt(&mut self, expr: CheckedExprNode, result: Option<(LocalId, ResolvedType)>) {
         let merge = self.new_block();
         let (result_id, result_type) = match result {
@@ -663,8 +649,6 @@ impl FunctionLowerer {
         self.set_terminator(MirTerminator::Goto(merge));
         true
     }
-
-    // -- Loops ------------------------------------------------------------
 
     fn lower_while(&mut self, loop_id: HirId, condition: CheckedExprNode, body: CheckedBlock) {
         let header = self.new_block();
@@ -769,8 +753,6 @@ impl FunctionLowerer {
 
         self.current = exit;
     }
-
-    // -- Expressions ------------------------------------------------------
 
     pub(super) fn lower_expr(&mut self, node: CheckedExprNode) -> MirExprNode {
         let CheckedExprNode { id, span, r#type, kind } = node;

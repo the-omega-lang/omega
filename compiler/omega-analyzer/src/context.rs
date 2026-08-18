@@ -10,9 +10,8 @@ use omega_parser::prelude::*;
 /// What a name resolves to within a scope: the declaring node's own id (so
 /// codegen can key its storage maps by declaration identity instead of by
 /// name), where its value physically lives, and its resolved type. Anything
-/// callable by name -- extern function decls, local function defs, struct
-/// methods within their own struct scope -- is bound here too, with
-/// `storage: Storage::Function`; there is no separate function-only table.
+/// callable by name is bound here too, with `storage: Storage::Function`;
+/// there is no separate function-only table.
 #[derive(Debug, Clone)]
 pub struct VarBinding {
     pub decl_id: HirId,
@@ -22,65 +21,42 @@ pub struct VarBinding {
     /// can point back at it ("first declared here").
     pub span: Span,
     /// `true` only for the shadow binding a matched `match` arm declares to
-    /// narrow its scrutinee (`Analyzer::analyze_enum_match`) -- `false` for
-    /// every ordinary declaration, including one whose own inferred type
-    /// happens to be a refined enum variant (`a := Entity::Person { ... }`).
-    /// The distinction matters for exactly one thing: whether `&binding`
-    /// may keep a refined pointee type. A `:=`-inferred refined type is a
-    /// *permanent* fact about the binding (assigning a different variant to
-    /// it later would already be rejected by `ResolvedType::accepts`), so a
-    /// pointer to it staying refined is sound; a match-narrowed shadow's
-    /// refinement is only true for the lexical duration of that one arm --
-    /// the underlying storage can still hold a different variant once the
-    /// arm ends, so a pointer taken inside it must still widen, exactly
-    /// like before this field existed. See `Analyzer`'s `HirExpr::AddressOf`
-    /// arm.
+    /// narrow its scrutinee -- `false` for every ordinary declaration,
+    /// including one whose own inferred type happens to be a refined enum
+    /// variant. Controls whether `&binding` may keep a refined pointee
+    /// type: a `:=`-inferred refined type is a permanent fact about the
+    /// binding (see `ResolvedType::accepts`), so a pointer to it staying
+    /// refined is sound; a match-narrowed shadow's refinement is only true
+    /// for that one arm's lexical duration, so a pointer taken inside it
+    /// must still widen.
     pub narrowed: bool,
-    /// Whether this binding may be reassigned (`x = ...`/`++x`/`--x`) --
-    /// `true` only for a declaration explicitly written `mut` (see
-    /// `DeclarationStmt`/`WalrusStmt`'s own `mutable` fields). Every other
-    /// binding -- parameters (including `self`), struct/enum fields, and an
-    /// un-`mut` local/global -- is `false`; only `self`'s own *pointee*
-    /// mutability varies (`mut self` vs `self`, a `ResolvedType::Pointer`
-    /// concern, unrelated to this field). See `Analyzer::analyze_place`'s
-    /// doc comment for how this feeds into a whole place's mutability.
+    /// Whether this binding may be reassigned -- `true` only for a
+    /// declaration explicitly written `mut`. Every other binding
+    /// (parameters including `self`, struct/enum fields, an un-`mut`
+    /// local/global) is `false`; only `self`'s own pointee mutability
+    /// varies (`mut self` vs `self`), unrelated to this field.
     pub mutable: bool,
     /// Whether this binding has been read at least once since declaration
-    /// -- live-tracked (not a post-hoc tree walk, since `mutable` never
-    /// survives onto the checked tree at all -- see `mark_written`'s doc
-    /// comment) via `Context::mark_used`, called from the one place an
-    /// ordinary read of a place actually happens (`Analyzer::analyze_expr`'s
-    /// `HirExpr::Place` arm). Checked at scope-exit for
-    /// `AnalysisWarningKind::UnusedVariable`/`UnusedParameter` -- see
-    /// `Analyzer::warn_unused_bindings`.
+    /// -- live-tracked via `Context::mark_used`. Checked at scope-exit for
+    /// `AnalysisWarningKind::UnusedVariable`/`UnusedParameter`.
     pub used: bool,
-    /// Whether this binding has actually been reassigned (`=`, a compound
-    /// assignment, `++`/`--`, or `&mut`) since declaration -- live-tracked
-    /// via `Context::mark_written`, called from `Analyzer::
-    /// require_mutable_place`, the one existing choke point for "this place
-    /// is about to be written through." Only ever meaningful when `mutable`
-    /// is also `true` (an un-`mut` binding can never reach
-    /// `require_mutable_place` successfully in the first place); checked at
-    /// scope-exit for `AnalysisWarningKind::UnnecessaryMut`.
+    /// Whether this binding has actually been reassigned since declaration
+    /// -- live-tracked via `Context::mark_written`, deliberately
+    /// independent of `used` (a write is not itself treated as a read).
+    /// Only meaningful when `mutable` is also `true`; checked at scope-exit
+    /// for `AnalysisWarningKind::UnnecessaryMut`.
     pub written: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ScopeContext {
-    /// `IndexMap`, not `HashMap` -- `Analyzer::warn_unused_bindings` walks
-    /// every declared binding at scope-exit to report `UnusedVariable`/
-    /// `UnusedParameter`/`UnnecessaryMut`, and needs that walk to visit
-    /// bindings in a deterministic (declaration) order rather than
-    /// `HashMap`'s per-process-random one -- insertion order already *is*
-    /// declaration order here, so this gets that for free.
+    /// `IndexMap`, not `HashMap` -- `warn_unused_bindings` walks every
+    /// declared binding at scope-exit and needs deterministic (declaration)
+    /// order, which insertion order already gives for free.
     pub declared_variables: IndexMap<(Ident, Origin), VarBinding>,
-    /// `IndexMap`, not `HashMap` -- `Context::similar_type_name` (the "did
-    /// you mean" candidate source for an unrecognized type name) iterates
-    /// every scope's `defined_types` and picks the first candidate on an
-    /// edit-distance tie (`similarity::best_match`'s own `min_by_key`
-    /// semantics) -- with a `HashMap`, which candidate wins a tie varied
-    /// build-to-build for byte-identical source, an `IndexMap` makes that
-    /// deterministic (declaration order) instead.
+    /// `IndexMap`, not `HashMap` -- `similar_type_name` picks the first
+    /// candidate on an edit-distance tie, and a `HashMap` would make that
+    /// pick vary build-to-build for byte-identical source.
     pub defined_types: IndexMap<Ident, ResolvedType>,
 }
 
@@ -92,14 +68,9 @@ impl ScopeContext {
         }
     }
 
-    /// Binds `ident` in this scope, or returns it back as `Err` -- together
-    /// with the existing binding's span, for the "first declared here"
-    /// label -- if it's already declared *in this scope*; shadowing an
-    /// outer scope is ordinary lexical scoping and stays allowed.
-    /// Centralizes a check that used to live, wrongly, in codegen (a
-    /// name-keyed stack-slot map, which only coincidentally caught
-    /// same-function redeclaration and never caught it for parameters at
-    /// all).
+    /// Binds `ident` in this scope, or returns it back as `Err` (with the
+    /// existing binding's span, for "first declared here") if already
+    /// declared *in this scope*; shadowing an outer scope stays allowed.
     pub fn declare(
         &mut self,
         ident: Ident,
@@ -118,11 +89,8 @@ impl ScopeContext {
 pub struct Context {
     scopes: Vec<ScopeContext>,
     /// Every `comp` binding's already-evaluated value, keyed by `decl_id`
-    /// rather than kept per-scope -- a `decl_id` is already globally unique
-    /// (see `omega_hir::HirId`), so this needs no shadowing/scope-exit
-    /// logic of its own; ordinary scoped name lookup (`find_variable`)
-    /// already decided *which* `decl_id` a reference means before this is
-    /// ever consulted. See `Storage::Comp` and `Analyzer::analyze_place_read`.
+    /// rather than kept per-scope -- `decl_id` is already globally unique,
+    /// so this needs no shadowing/scope-exit logic of its own.
     comp_values: std::collections::HashMap<HirId, crate::resolved_type::ConstValue>,
 }
 
@@ -130,7 +98,6 @@ impl Context {
     pub fn new() -> Self {
         let mut global_scope = ScopeContext::new();
         global_scope.defined_types.extend([
-            // Standard types
             (Ident("void".into()), ResolvedType::Void),
             (Ident("never".into()), ResolvedType::Never),
             (Ident("bool".into()), ResolvedType::Bool),
@@ -152,7 +119,7 @@ impl Context {
     }
 
     /// Records `decl_id`'s already-evaluated `comp` value -- called once,
-    /// by `Analyzer::declare_comp_binding`, right alongside the ordinary
+    /// by `Analyzer::declare_comp_binding`, alongside the ordinary
     /// `declare_binding` that gives it its `Storage::Comp` place.
     pub fn set_comp_value(&mut self, decl_id: HirId, value: crate::resolved_type::ConstValue) {
         self.comp_values.insert(decl_id, value);
@@ -160,7 +127,7 @@ impl Context {
 
     /// `decl_id`'s recorded `comp` value -- always `Some` for a place whose
     /// root resolved to `Storage::Comp` (the two are only ever produced
-    /// together, see `set_comp_value`'s doc comment).
+    /// together).
     pub fn comp_value(&self, decl_id: HirId) -> Option<&crate::resolved_type::ConstValue> {
         self.comp_values.get(&decl_id)
     }
@@ -184,17 +151,13 @@ impl Context {
         })
     }
 
-    /// "De-assumes" a proof the instant a mutable reference to `ident`'s
-    /// current place is taken (`&mut`, or the auto-ref for a `mut self`
-    /// method call) -- widens its *currently visible* binding's type in
-    /// place, wherever it's found (innermost scope first, matching
-    /// `find_variable`'s own walk), rather than shadowing a new one: a
-    /// writable alias to the storage now exists, so any later direct read
-    /// of `ident` within the same (or an enclosing) scope can no longer
-    /// trust a narrower type than the plain one. See
-    /// `ResolvedType::accepts`'s doc comment for why this -- rather than
-    /// ever letting a *mutable* pointer/slice widen implicitly -- is how
-    /// this compiler closes that aliasing hole.
+    /// Widens `ident`'s *currently visible* binding's type in place the
+    /// instant a mutable reference to it is taken (`&mut`, or the auto-ref
+    /// for a `mut self` call), rather than shadowing a new one: a writable
+    /// alias to the storage now exists, so a later read can no longer trust
+    /// a narrower type. See `ResolvedType::accepts` for why this -- rather
+    /// than letting a mutable pointer/slice widen implicitly -- is how this
+    /// compiler closes that aliasing hole.
     pub fn widen_variable(&mut self, ident: &Ident, origin: Origin) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.declared_variables.get_mut(&(ident.clone(), origin)) {
@@ -216,13 +179,10 @@ impl Context {
     }
 
     /// Marks the binding identified by `decl_id` as having been read at
-    /// least once -- scans live scopes innermost-first (same walk as
-    /// `widen_variable`), but by `decl_id` rather than name: the caller only
-    /// ever has a resolved `CheckedPlace`'s `decl_id` by the time it can
-    /// call this, and keying by name could hit the wrong binding if a
-    /// same-named shadow was declared in between resolution and marking.
-    /// A no-op if `decl_id` doesn't belong to any live scope (e.g. it names
-    /// a field/global, which aren't tracked this way at all).
+    /// least once -- by `decl_id` rather than name, since keying by name
+    /// could hit the wrong binding if a same-named shadow was declared in
+    /// between resolution and marking. A no-op if `decl_id` doesn't belong
+    /// to any live scope (e.g. a field/global, not tracked this way).
     pub fn mark_used(&mut self, decl_id: HirId) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.declared_variables.values_mut().find(|b| b.decl_id == decl_id) {
@@ -233,13 +193,9 @@ impl Context {
     }
 
     /// Same shape as `mark_used`, for "this binding was actually
-    /// reassigned" -- deliberately independent of `used` (a write is *not*
-    /// itself treated as a read): a write-only binding (reassigned but
-    /// never read back) still reports `UnusedVariable` -- it matches that
-    /// warning's exact definition, "never read" -- while correctly *not*
-    /// also reporting `UnnecessaryMut`, since `mut` genuinely was exercised
-    /// here (see `Analyzer::warn_unused_bindings`'s `used &&`-gated check,
-    /// which relies on this independence).
+    /// reassigned" -- a write-only binding (reassigned but never read
+    /// back) still reports `UnusedVariable`, while correctly not also
+    /// reporting `UnnecessaryMut`, since `mut` genuinely was exercised.
     pub fn mark_written(&mut self, decl_id: HirId) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.declared_variables.values_mut().find(|b| b.decl_id == decl_id) {
@@ -257,9 +213,9 @@ impl Context {
     }
 
     /// The visible value name (this scope chain only -- an import alias
-    /// isn't known here at all anymore, see `Analyzer::similar_import_alias`)
-    /// most similar to `target`, if any is close enough -- the "did you
-    /// mean" candidate for an undefined-variable diagnostic.
+    /// isn't known here anymore, see `Analyzer::similar_import_alias`)
+    /// most similar to `target` -- the "did you mean" candidate for an
+    /// undefined-variable diagnostic.
     pub fn similar_variable_name(&self, target: &Ident) -> Option<Ident> {
         best_match(
             target,
@@ -270,16 +226,14 @@ impl Context {
     }
 
     /// The visible type name most similar to `target` -- builtins and
-    /// locally defined types only (see `similar_variable_name`'s doc
-    /// comment on why import aliases aren't known here anymore).
+    /// locally defined types only (see `similar_variable_name`).
     pub fn similar_type_name(&self, target: &Ident) -> Option<Ident> {
         best_match(target, self.scopes.iter().flat_map(|scope| scope.defined_types.keys()))
     }
 
     /// A function/method signature's param and return types are never
-    /// embedded inline into anything's layout (a function is called, not
-    /// laid out inline) -- always `indirect = true`, regardless of what the
-    /// caller itself was.
+    /// embedded inline into anything's layout -- always `indirect = true`,
+    /// regardless of what the caller itself was.
     pub fn resolve_function_type(
         &self,
         fntype: FunctionType,
@@ -305,19 +259,15 @@ impl Context {
 
     /// Resolves `path` to an absolute `[module_path.., name]`, the shared
     /// logic behind `Type::Named`'s and `Type::Generic`'s unqualified/
-    /// qualified branches (kept as one method so this priority order is only
-    /// written once): for an unqualified `path`, an import alias resolving
-    /// to a *generic* item wins over the implicit own-module-prefixed
-    /// fallback -- a generic item is never itself a `find_defined_type`
-    /// entry, so callers still check that first, separately, for ordinary
-    /// local shadowing. For a qualified `path`, `path`'s head must resolve
-    /// to a *module* alias; the rest is appended onto its absolute path.
+    /// qualified branches: for an unqualified `path`, an import alias
+    /// resolving to a *generic* item wins over the implicit
+    /// own-module-prefixed fallback. For a qualified `path`, its head must
+    /// resolve to a *module* alias; the rest is appended onto its absolute
+    /// path.
     ///
-    /// `pub(crate)` (not just used internally by `resolve_type`) so
-    /// `Analyzer::resolve_spec_dependencies` can resolve *which* spec a raw
-    /// dependency reference names without resolving its type arguments too
-    /// -- see that function's own doc comment for why the two need to be
-    /// separable there specifically.
+    /// `pub(crate)` so `Analyzer::resolve_spec_dependencies` can resolve
+    /// *which* spec a raw dependency reference names without resolving its
+    /// type arguments too.
     pub(crate) fn resolve_absolute_item_path(
         &self,
         resolver: &mut dyn ModuleResolver,
@@ -328,12 +278,10 @@ impl Context {
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
         if path.is_unqualified() {
-            // `ImportTarget::Item`'s own eagerly-resolved snapshot is
-            // deliberately ignored here, same as `resolve_named_type`'s
-            // identical case -- this function's only job is the absolute
-            // *path*; every caller re-resolves through `resolver` itself
-            // afterward (with its own real `indirect`/args), never trusting
-            // a cached snapshot built with someone else's assumptions.
+            // `ImportTarget::Item`'s eagerly-resolved snapshot is ignored
+            // here -- this function's only job is the absolute path; every
+            // caller re-resolves through `resolver` with its own real
+            // `indirect`/args, never trusting a cached snapshot.
             match resolver
                 .resolve_import_alias(&resolution_module, &path.head)
                 .map_err(TypeResolutionError::ModuleResolution)?
@@ -364,29 +312,21 @@ impl Context {
         }
     }
 
-    /// `module_path` is the *caller's own* absolute module path -- used to
-    /// build an implicit absolute path for an unqualified reference that
-    /// isn't a builtin or a local (function-body-level) binding, so it can
-    /// be resolved the exact same way a qualified cross-module one is (see
-    /// `ModuleResolver::resolve_item`'s doc comment: there's no longer an
-    /// architectural difference between the two).
+    /// Resolves one written type to its concrete form. `module_path` is
+    /// the caller's own absolute module path, used to build an implicit
+    /// absolute path for an unqualified reference that isn't a builtin or
+    /// a local binding.
     ///
-    /// `indirect` is true whenever `typ` itself sits somewhere that never
-    /// embeds its referent inline into another type's layout. It starts out
-    /// as whatever the caller passed and only ever *turns on* as the walk
-    /// descends: `Pointer`/`Array` (a thin pointer) and a `Function`'s own
-    /// param/return types are never embedded inline into anything, so
-    /// everything beneath them is indirect regardless of what it started as;
-    /// `SizedArray` carries its element inline, so it just passes the
-    /// current value through unchanged. See `ModuleResolver::resolve_item`
-    /// for what this distinction ultimately protects.
-    /// Resolves one written type to its concrete form.
-    ///
-    /// `indirect` says whether this reference sits somewhere that never
-    /// embeds its referent inline (behind a pointer, or in a function
-    /// signature) -- the distinction that lets a self-referential pointer
-    /// field resolve while its own type is still being collected, and that
-    /// rejects a by-value cycle. `bypass` is the `reveal` modifier.
+    /// `indirect` says whether `typ` sits somewhere that never embeds its
+    /// referent inline into another type's layout -- the distinction that
+    /// lets a self-referential pointer field resolve while its own type is
+    /// still being collected, and that rejects a by-value cycle. It starts
+    /// as whatever the caller passed and only ever turns on as the walk
+    /// descends: `Pointer`/`Array` and a `Function`'s param/return types
+    /// are never embedded inline, so everything beneath them is indirect
+    /// regardless of what it started as; `SizedArray` carries its element
+    /// inline, so it passes the current value through unchanged. `bypass`
+    /// is the `reveal` modifier.
     pub fn resolve_type(
         &self,
         typ: Type,
@@ -459,33 +399,15 @@ impl Context {
                 if let Some(local) = self.find_defined_type(&path.head) {
                     local.to_owned()
                 } else {
-                    // An import alias, lazily resolved -- an ordinary,
-                    // non-generic *type* alias, a generic item, or a
-                    // module alias all end up resolved the same way
-                    // here: find the absolute path the alias names, then
-                    // resolve *that* through `resolve_item` with *this*
-                    // reference's own `indirect`; no alias at all falls
-                    // through to the implicit own-module assumption,
-                    // exactly as before.
-                    //
-                    // Deliberately never short-circuits on
-                    // `ImportTarget::Item`'s own eagerly-resolved
-                    // snapshot -- that snapshot was always produced with
-                    // `indirect = true` (see its doc comment), so
-                    // trusting it directly here would silently drop this
-                    // reference's real `indirect` whenever it's `false`
-                    // (a struct/enum/union field's own type, embedded
-                    // inline) -- exactly the gap that let a mutual
-                    // by-value struct cycle reached through a bare
-                    // import alias slip past the cycle check a
-                    // module-qualified reference already got. Re-running
-                    // `resolve_item` costs nothing extra once the item
-                    // is already `Done` (a couple of hashmap lookups,
-                    // the same cost `ImportTarget::Item` itself would
-                    // have paid to read back its own snapshot); it only
-                    // matters when the item is still genuinely
-                    // `InProgress`, which is exactly the case this
-                    // exists to catch.
+                    // An import alias, lazily resolved: find the
+                    // absolute path the alias names, then resolve *that*
+                    // through `resolve_item` with this reference's own
+                    // `indirect` -- deliberately never trusting
+                    // `ImportTarget::Item`'s eagerly-resolved snapshot,
+                    // which was always produced with `indirect = true`
+                    // (see findings for the cycle-detection bug this
+                    // used to cause). Re-running `resolve_item` costs
+                    // nothing extra once the item is already `Done`.
                     let alias = resolver
                         .resolve_import_alias(&resolution_module, &path.head)
                         .map_err(TypeResolutionError::ModuleResolution)?;
@@ -505,23 +427,12 @@ impl Context {
                     match resolver.resolve_item(&resolution_module, &absolute, &[], indirect, bypass) {
                         Ok(ResolvedItem::Type(t)) => t,
                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => return Err(TypeResolutionError::NotAType(absolute)),
-                        // The implicit own-module fallback missing isn't
-                        // a module problem from the user's point of
-                        // view -- they wrote a bare type name that
-                        // doesn't exist. Report it as exactly that, with
-                        // a typo suggestion where one is close enough --
-                        // from the visible scopes, this module's own
-                        // import aliases, then its top-level structs
-                        // (which only the resolver can enumerate).
-                        // An unqualified name that doesn't resolve to
-                        // anything local gets one more try against every
-                        // exposed name in `core`'s own tree -- see
-                        // `ModuleResolver::ambient_core_candidates`'s doc
-                        // comment. Mirrors `resolve_generic_type`'s
-                        // identical fallback; needed here too since a bare
-                        // (non-generic) named type -- `GlobalAllocator`,
-                        // not `Option<T>` -- never reaches that function at
-                        // all.
+                        // A bare type name that doesn't exist gets one
+                        // more try against every exposed name in `core`'s
+                        // ambient tree before giving up with a typo
+                        // suggestion -- mirrors `resolve_generic_type`'s
+                        // identical fallback, needed here too since a bare
+                        // named type never reaches that function.
                         Err(ResolveError::UnknownItem { .. }) => {
                             match resolver.ambient_core_candidates(&resolution_module, &path.head) {
                                 Ok(Some(ambient_absolute)) => {
@@ -551,8 +462,7 @@ impl Context {
                 }
             } else {
                 // A qualified type reference (`mymodule::Foo`) -- `path`'s
-                // head must already be an imported module alias; the rest
-                // is resolved across modules by `resolver`, never locally.
+                // head must already be an imported module alias.
                 let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
                     .resolve_item(&resolution_module, &absolute, &[], indirect, bypass)
@@ -589,10 +499,9 @@ impl Context {
             let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
             let result = resolver.resolve_item(&resolution_module, &absolute, &resolved_args, indirect, bypass);
             // An unqualified name that doesn't resolve to anything local
-            // gets one more try against every exposed name in `core`'s own
-            // tree -- see `ModuleResolver::ambient_core_candidates`'s doc
-            // comment (`core` is a full ambient prelude, not the short,
-            // hardcoded table this used to be).
+            // gets one more try against every exposed name in `core`'s
+            // ambient tree (a full prelude, not the short hardcoded table
+            // this used to be).
             let result = match (&result, path.is_unqualified()) {
                 (Err(ResolveError::UnknownItem { .. }), true) => {
                     match resolver.ambient_core_candidates(&resolution_module, &path.head) {
@@ -614,15 +523,10 @@ impl Context {
         Ok(resolved)
     }
 
-    /// `*T`, which is not always a thin pointer.
-    /// Dispatches directly on `pointee_type`'s own raw shape -- a real,
-    /// dedicated production per case, rather than resolving the pointee
-    /// generically first and pattern-matching the *result* to override it
-    /// (the "hijack" this function used to be, back when the only two
-    /// possible outcomes were `Pointer` and `Slice`). `*[]T`/`*[?]T` are
-    /// caught before any generic resolution happens at all; every other
-    /// pointee (including `*[N]T`, which needs no special handling
-    /// whatsoever) falls through to ordinary resolution.
+    /// `*T`, which is not always a thin pointer. Dispatches directly on
+    /// `pointee_type`'s own raw shape: `*[]T`/`*[?]T` are caught before any
+    /// generic resolution happens; every other pointee (including `*[N]T`)
+    /// falls through to ordinary resolution.
     fn resolve_pointer_type(
         &self,
         pointee_type: Type,
@@ -643,34 +547,24 @@ impl Context {
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
-            // `*self`/`*mut self` always lowers to exactly this raw shape
-            // (see `omega_hir::lower::Lowerer::self_param`'s doc comment)
-            // -- when a `primitive str`/`primitive<T> []T` method's `Self`
-            // is substituted with `Str`/`Array`, this re-stamps rather
-            // than double-wraps, so `*self` comes out as the real `Str`/
-            // `Slice` receiver instead of a pointer *to* one. Checked as a
-            // raw-syntax peek, mirroring the literal-`str` case just
-            // above -- deliberately **not** applied to any other named
-            // type (an ordinary generic parameter, e.g. `T` in `out: *mut
-            // T`) that might happen to resolve to `Str`/`Array` through
-            // unrelated substitution: `*mut T` with `T = *str` must stay a
-            // genuine pointer-to-a-pointer (`Pointer{pointee: Str}`),
-            // never collapsed into `*mut str` -- confirmed a real bug, not
-            // a hypothetical one, via `core::primitives::slices`'s own `SliceImpl<T>::
-            // first(*self, out: *mut T)` called with `T = *str`.
+            // `*self`/`*mut self` always lowers to exactly this raw
+            // shape: when a `primitive str`/`primitive<T> []T` method's
+            // `Self` is substituted with `Str`/`Array`, this re-stamps
+            // rather than double-wraps, so `*self` comes out as the real
+            // `Str`/`Slice` receiver instead of a pointer to one.
+            // Deliberately **not** applied to an ordinary generic
+            // parameter (`T` in `out: *mut T`) that might resolve to
+            // `Str`/`Array` through unrelated substitution -- see findings
+            // for the confirmed bug this distinction prevents.
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self" => {
                 match self.resolve_named_type(path, resolver, module_path, true, bypass)? {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
                     // `Self` already *being* the slice is the shape a
-                    // `conform []u8 to Spec` binds (the registry's own target
-                    // type), as opposed to the `Array` stand-in a `primitive
-                    // <T> [?]T` block substitutes. Both must re-stamp to the
-                    // real lengthed receiver rather than wrap: without this
-                    // arm `*self` came out as `**[?]u8`, and the conform's
-                    // signature disagreed with the requirement `flatten_spec`
-                    // built from the same `Self`, so no slice conform could
-                    // ever be called.
+                    // `conform []u8 to Spec` binds, as opposed to the
+                    // `Array` stand-in a `primitive<T> [?]T` block
+                    // substitutes -- see findings for the bug this arm
+                    // fixes.
                     ResolvedType::Slice { item, .. } => Ok(ResolvedType::Slice { item, mutable }),
                     resolved => Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable }),
                 }
@@ -722,17 +616,14 @@ impl Context {
     }
 
     /// If `path`'s last segment names a variant of the enum its remaining
-    /// segments resolve to (`Entity::Person`, or `mymodule::Entity::Person`),
-    /// resolves to that variant's own refined type
-    /// (`ResolvedType::Enum { variant: Some(_) }`) -- the type-position
-    /// mirror of `Analyzer::resolve_type_member`'s identical lookup on the
-    /// expression side, letting a variant be named directly in a type
-    /// annotation (`x: *Entity::Person`). Returns `Ok(None)` -- not an error
-    /// -- whenever `path` has only one segment, or its prefix doesn't
-    /// resolve to a plain enum at all, so the caller falls through to
-    /// ordinary module-qualified-path handling unchanged; only returns
-    /// `Err` once the prefix genuinely *is* a plain enum but the last
-    /// segment isn't one of its variants -- a real, actionable mistake.
+    /// segments resolve to (`Entity::Person`), resolves to that variant's
+    /// own refined type -- the type-position mirror of
+    /// `Analyzer::resolve_type_member`, letting a variant be named directly
+    /// in a type annotation (`x: *Entity::Person`). `Ok(None)`, not an
+    /// error, whenever `path` has one segment or its prefix isn't a plain
+    /// enum, so the caller falls through to ordinary handling; `Err` only
+    /// once the prefix genuinely is a plain enum but the last segment
+    /// isn't one of its variants.
     fn try_resolve_enum_variant_type(
         &self,
         path: &Path,
@@ -776,8 +667,7 @@ impl Context {
 
     pub fn leave_scope(&mut self) -> ScopeContext {
         if self.scopes.len() == 1 {
-            // The Context must always
-            // have at least one scope
+            // The Context must always have at least one scope.
             let scope = self.scopes.remove(0);
             self.scopes.push(ScopeContext::new());
             return scope;

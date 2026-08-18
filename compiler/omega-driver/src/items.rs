@@ -590,15 +590,10 @@ impl Driver {
         indirect: bool,
         bypass: bool,
     ) -> Result<ResolvedItem, ResolveError> {
-        // `index`/`generic_params` (and, when `type_args` is short, the
-        // padded-with-defaults list) have to be known *before* `ItemKey` is
-        // built: the key's own equality is purely structural over
-        // `type_args`, so two call sites that end up meaning "the same
-        // effective types" -- one spelling every argument out, one omitting
-        // a defaulted trailing one -- must produce the identical key to
-        // share one monomorphized instantiation. This runs even on what
-        // will turn out to be a cache hit; both lookups are cheap, "no
-        // analysis triggered" reads (see their own doc comments).
+        // `type_args` must be padded with defaults before `ItemKey` is built:
+        // its equality is structural, so two call sites meaning the same
+        // effective types must produce the identical key to share one
+        // instantiation.
         let index = self.local_item_index(module_path, name)?;
         let generic_params = self.item_generics(module_path, name)?;
         let type_args =
@@ -629,13 +624,10 @@ impl Driver {
         let result = self.compute_item(&key, index, &generics);
         self.items.finish(&key, visibility, result.as_ref().ok());
 
-        // A genuine instantiation's body is checked right here, immediately
-        // after its own signature is marked `Done` (never while it's still
-        // `InProgress`). That ordering is exactly why an ordinary same-module
-        // recursive call never hits the `InProgress` branch above -- its
-        // signature is always `Done` before its body is checked -- and
-        // triggering here preserves the same invariant for a recursive
-        // generic call, which `compile`'s static sweep could never enumerate.
+        // An instantiation's body is checked right here, once its signature
+        // is `Done` -- preserves the invariant that a recursive call never
+        // hits `InProgress`, for a generic call `compile`'s static sweep
+        // could never enumerate.
         if result.is_ok() && key.is_instantiation() {
             self.check_generic_instantiation_body(&key, index);
         }
@@ -748,10 +740,9 @@ impl Driver {
             .zip(type_args.iter().cloned())
             .collect();
 
-        // Every bound is checked first, so the complete declared bound set is
-        // known before anything consumes it -- a derived-conformance seed
-        // (see `bound_context_for`) is admitted against the *whole*
-        // conjunction, never against one member in isolation.
+        // Every bound is checked first so a derived-conformance seed (see
+        // `bound_context_for`) is admitted against the whole conjunction,
+        // never one member in isolation.
         let mut declared = Vec::new();
         for (param, concrete) in generic_params.iter().zip(type_args) {
             for bound in &param.bounds {
@@ -834,11 +825,9 @@ impl Driver {
                     mutable: c.mutable,
                 }),
 
-            // `ident : Type = value;` -- `HirItem::Declaration`'s explicit-
-            // initializer sibling, same "must be compile-time-known" rule
-            // as a non-`comp` `Walrus` below, just with a written-down
-            // type instead of an inferred one. See `Analyzer::
-            // analyze_global_declaration_with_init`'s own doc comment.
+            // `ident : Type = value;` -- same "must be compile-time-known"
+            // rule as a non-`comp` `Walrus` below, with a written type
+            // instead of an inferred one.
             HirItem::DeclarationWithInit { decl, value, .. } => self
                 .analyze(module, &substitution, (decl.id, decl.span), |a| {
                     a.analyze_global_declaration_with_init(decl, value)
@@ -855,28 +844,17 @@ impl Driver {
                     }
                 }),
 
-            // A top-level binding, `comp` or not -- evaluated right here,
-            // during signature resolution (not deferred to a body-check
-            // phase the way a function's own body would be): `comp <expr>`
-            // interprets eagerly as an inherent part of ordinary expression
-            // analysis (`Analyzer::analyze_comp`), so analyzing `w.value`
-            // at all already triggers it, the same "signature resolution
-            // that needs a body-shaped answer" inversion `resolve_spec_
-            // return_function` uses for the identical reason -- safe here
-            // for the same reason it's safe there (`ensure_item_body`'s own
-            // cycle guard, see its doc comment, protects the one new
-            // reentrancy hazard this opens). `check_item_body`'s own
-            // `Walrus` arm has nothing left to do -- see its doc comment.
+            // A top-level binding, `comp` or not -- evaluated right here
+            // during signature resolution, since `comp <expr>` interprets
+            // eagerly as part of ordinary expression analysis. The new
+            // reentrancy this opens is guarded by `ensure_item_body`'s own
+            // cycle guard.
             //
-            // `w.comp` decides which of two genuinely different things
-            // this binding is (see `CheckedDeclaration::initial_value`'s
-            // doc comment): a `comp` binding has no storage at all, so its
-            // value lives only in `ItemQueries::comp_values`, substituted
-            // at every use; a non-`comp` binding gets real `Storage::
-            // Global` storage (optionally starting from a compile-time-
-            // known value), the same as `HirItem::Declaration` above --
-            // `analyze_global_walrus` builds the identical `CheckedDeclaration`
-            // shape `analyze_declaration` does, just with `initial_value: Some`.
+            // `w.comp` decides which of two things this binding is: a
+            // `comp` binding has no storage, so its value lives only in
+            // `ItemQueries::comp_values`, substituted at every use; a
+            // non-`comp` binding gets real `Storage::Global` storage,
+            // like `HirItem::Declaration` above.
             HirItem::Walrus { walrus: w, .. } if w.comp => self
                 .analyze(module, &substitution, (w.id, w.span), |a| {
                     a.analyze_comp_declaration(w)
@@ -915,8 +893,7 @@ impl Driver {
                         ResolvedType::Function(_) => Storage::Function,
                         _ => Storage::Global,
                     };
-                    // `extern` declarations are always immutable for now --
-                    // see `Analyzer::analyze_extern_decl`'s own doc comment.
+                    // `extern` declarations are always immutable for now.
                     ResolvedItem::Value {
                         r#type: c.r#type,
                         storage,
@@ -1067,10 +1044,9 @@ impl Driver {
         };
         let key: SpecKey = (module_path.to_vec(), name.clone());
         match self.items.spec_state(&key) {
-            // `Done` but absent means this spec's own construction already
-            // failed (its real diagnostics were recorded then) -- reported as
-            // `ItemFailed`, so a second reference doesn't get a misleading
-            // "not a spec" instead.
+            // `Done` but absent means construction already failed (real
+            // diagnostics recorded then) -- report `ItemFailed` rather than
+            // a misleading "not a spec".
             Some(QueryState::Done) => {
                 return match self.items.spec_cell(&key) {
                     Some(cell) => Ok(Some(cell)),
@@ -1098,10 +1074,8 @@ impl Driver {
         let sp = sp.clone();
 
         self.items.begin_spec(&key);
-        // Empty substitution: `resolve_spec_dependencies` only identifies
-        // *which* spec each dependency names (its args stay raw) and
-        // `resolve_spec_functions` is fully deferred, so neither needs `Self`
-        // or this spec's own generics bound to anything concrete yet.
+        // Empty substitution: neither call needs `Self` or this spec's own
+        // generics bound to anything concrete yet.
         let run = self.with_analyzer(module_path, &[], (sp.id, sp.span), |analyzer| {
             (
                 analyzer.resolve_spec_dependencies(&sp),
@@ -1118,11 +1092,8 @@ impl Driver {
             });
         }
         let (dependencies, (functions, annotations)) = run.result;
-        // See `ResolvedSpecType::is_object_safe`'s doc comment: computed
-        // once, here, since `functions`/`dependencies` are both already
-        // fully resolved (a dependency's own cell is always `Done` -- and
-        // so already carries its own `is_object_safe` -- by the time it's
-        // sitting in this list).
+        // Computed once, here: `functions`/`dependencies` are both already
+        // fully resolved by this point.
         let is_object_safe = functions
             .iter()
             .all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))

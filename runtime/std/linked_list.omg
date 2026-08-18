@@ -1,30 +1,18 @@
-# `std::linked_list` -- `LinkedList<T>`, a doubly linked list. Each element
-# is its own individual heap allocation (`Node<T>`), unlike `List<T>`'s one
-# contiguous buffer -- the classic space/locality-for-O(1)-splice tradeoff.
-#
-# Same allocator/cleanup story as `std::list::List<T>`: built on
-# `std::alloc` (see that file's own doc comment for why generic collection
-# methods route allocator calls through it rather than calling
-# `core::platform::GlobalAllocator` directly), no RAII, explicit `free`:
+# `std::linked_list` -- `LinkedList<T>`, a doubly linked list. Each element is
+# its own individual heap allocation (`Node<T>`), unlike `List<T>`'s one
+# contiguous buffer. Same allocator/no-RAII/explicit-`free` story as
+# `std::list::List<T>`:
 #
 #   list := LinkedList<i32>::new();
 #   defer list.free();
-#
-# `pop_back`/`pop_front` return `Option<T>` rather than `List<T>`'s out-
-# pointer/`bool` convention -- no existing Omega precedent to match here
-# (unlike `List<T>`, which mirrors `core::primitives::slices::SliceImpl<T>`), so this
-# follows Rust's own `VecDeque`/`LinkedList` API shape instead, matching
-# node-chasing's own non-hot-path character.
 
 import alloc::alloc;
 import alloc::free;
 
-# Hidden (module-scoped) as a top-level declaration -- fine to reference
-# from `LinkedList<T>`/`LinkedListIterator<T>` below, both in this same
-# file -- but its own fields are `internal`, not hidden: a hidden *field*
-# is only visible inside its own type's own methods (narrower than "same
-# module"), and both of the other two types here need to read/write these
-# directly.
+# `Node<T>` is hidden (module-scoped); its fields are `internal` rather than
+# hidden since `LinkedList<T>`/`LinkedListIterator<T>` (both in this file)
+# need to read/write them directly, and a hidden field is visible only
+# within its own type's methods.
 struct Node<T> {
     internal value: T;
     internal prev: *mut Node<T>;

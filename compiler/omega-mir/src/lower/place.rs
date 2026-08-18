@@ -20,9 +20,7 @@ pub(super) fn place_align(r#type: &ResolvedType) -> u32 {
 pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) -> MirPlace {
     let root = match place.root {
         CheckedPlaceRoot::Variable { decl_id, storage, r#type } => match storage {
-            // Parameters and declared locals both just index into
-            // `MirBody::locals` uniformly -- see its own doc comment for
-            // why that unification is sound.
+            // Both index into `MirBody::locals` uniformly -- see its doc comment.
             Storage::Local | Storage::Parameter => {
                 let id = *lowerer.local_of.get(&decl_id).unwrap_or_else(|| {
                     panic!("checked module guarantees {decl_id:?} was declared before this use")

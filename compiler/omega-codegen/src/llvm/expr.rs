@@ -51,16 +51,12 @@ impl<'ctx> Codegen<'ctx> {
             MirExpr::Const(value) => self.emit_const_value(value, &node.r#type),
 
             MirExpr::FunctionCall(MirFunctionCall { callee, fn_type, args }) => {
-                // The callee is evaluated to a single address and called
-                // indirectly, exactly as `cranelift/expr.rs` does -- *not*
-                // resolved to a declared `FunctionValue`. A callee is not
-                // always a direct function place: a function *pointer*
-                // (`ResolvedType::Function` held in a local, a field, or a
-                // parameter) is an ordinary value here, and insisting on a
-                // `MirPlaceRoot::Function` root rejects every such call.
-                // Nothing is lost on the direct case either -- LLVM prints a
-                // call through a constant function address as an ordinary
-                // direct `call @name`.
+                // Always evaluated to an address and called indirectly, not
+                // resolved to a declared `FunctionValue`: a callee can be a
+                // function *pointer* (held in a local, field, or parameter),
+                // not only a direct function place. The direct case loses
+                // nothing -- LLVM prints a call through a constant address
+                // as an ordinary direct `call @name`.
                 let fnaddr = self.process_expr(callee)[0].into_pointer_value();
 
                 let fixed_count = fn_type.params.len();
@@ -292,15 +288,11 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 let left_value = self.process_expr(left)[0];
                 let right_value = self.process_expr(right)[0];
-                // A `Ptr` leaf reaches every integer-domain op, not just the
-                // comparisons. Pointer arithmetic coerces to `usize` at
-                // analysis time (`ResolvedType::arithmetic_repr`), but the
-                // operand keeps its pointer leaf all the way here -- and a
-                // pointer *parameter* arrives with no cast in front of it at
-                // all. Cranelift's integer instructions accept such a value
-                // natively, since its pointer type is an integer type; LLVM's
-                // need a genuine integer, so normalize once here rather than
-                // at each of the fifteen arms below.
+                // A `Ptr` leaf reaches every integer-domain op, not just
+                // comparisons: pointer arithmetic coerces to `usize` at
+                // analysis time but the operand keeps its pointer leaf.
+                // Cranelift's integer ops accept that natively; LLVM wants a
+                // genuine integer, so normalize once here for every arm below.
                 let (left, right) = match kind {
                     NumericKind::Float(_) => (left_value, right_value),
                     _ => (
@@ -429,12 +421,7 @@ impl<'ctx> Codegen<'ctx> {
                             BinaryOp::Ge => SGE,
                             _ => unreachable!("not a comparison op"),
                         };
-                        // Pointer leaves can reach a comparison directly:
-                        // pointer arithmetic *coerces* to `usize` at analysis
-                        // time, but the coercion is a `Reinterpret` cast, so
-                        // the value keeps its pointer leaf. Cranelift's
-                        // `icmp` accepts pointer-typed values natively;
-                        // LLVM's wants integers, so translate.
+                        // Same pointer-leaf normalization as above.
                         let left = self.to_int_operand(left);
                         let right = self.to_int_operand(right);
                         let cmp = self
@@ -463,11 +450,8 @@ impl<'ctx> Codegen<'ctx> {
                         self.bool_result(cmp)
                     }
                 };
-                // ...and back out again, when the expression is itself
-                // pointer-typed (`ptr + n` is a pointer, not a `usize`) --
-                // the same invariant the operand normalization above keeps,
-                // in the other direction. A comparison's `i1` result is left
-                // alone: neither side of that is a pointer domain.
+                // ...and back to a pointer when the expression itself is
+                // pointer-typed (`ptr + n`); a comparison's `i1` is untouched.
                 let want = leaf::llvm_leaves(self.context, &node.r#type, self.pointer_bytes());
                 let result = match want.first() {
                     Some(want) => self.reinterpret_leaf(result, *want),
@@ -683,11 +667,8 @@ impl<'ctx> Codegen<'ctx> {
                             self.context.i32_type().const_int(len as u64, false).into(),
                         ]
                     }
-                    // A pointer source (`<usize>ptr`, `<i64>ptr` -- pointers
-                    // classify as pointer-width unsigned integers for casts)
-                    // keeps its pointer *leaf*; translate it to an integer
-                    // before the integer-shaped conversion, exactly like the
-                    // comparison arms above.
+                    // A pointer source keeps its pointer leaf; translate to
+                    // an integer before the integer-shaped conversion.
                     CastKind::IntExtend { signed } => {
                         let base_int = self.to_int_operand(base_leaves[0]);
                         vec![self.cast_to_target_leaf(base_int, target_ir, *signed)]
@@ -713,18 +694,12 @@ impl<'ctx> Codegen<'ctx> {
                             .as_basic_value_enum()]
                     }
                     // Saturating, matching Cranelift's `fcvt_to_*_sat` --
-                    // the language's own FloatToInt semantics. The
-                    // intrinsic is *overloaded* on both its result and its
-                    // argument type, so it is looked up by base name and
-                    // declared through LLVM's own mangler rather than by
-                    // spelling `llvm.fptosi.sat.<to>.<from>` out here --
-                    // the type suffixes LLVM wants (`f32`, not a printed
-                    // `float`) are its own business, and a hand-built name
-                    // that misses simply finds no declaration at all.
-                    // A pointer target (`<*u8>some_float`: a pointer
-                    // classifies as a pointer-width unsigned integer for
-                    // casts) converts to the pointer-width integer first,
-                    // then `inttoptr`, exactly like `cast_to_target_leaf`.
+                    // the language's own FloatToInt semantics. The intrinsic
+                    // is overloaded on both result and argument type, so
+                    // it's looked up by base name and declared through
+                    // LLVM's own mangler rather than spelling the type
+                    // suffixes out by hand. A pointer target converts to the
+                    // pointer-width integer first, then `inttoptr`.
                     CastKind::FloatToInt { signed } => {
                         let from = base_leaves[0].into_float_value().get_type();
                         let to = if target_ir.is_pointer_type() {
@@ -900,25 +875,13 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// One leaf, retyped for a `Reinterpret` cast.
-    ///
-    /// A `Reinterpret` is a pure relabeling in the MIR, and a genuine no-op
-    /// in Cranelift, where an address simply *is* a pointer-width integer.
-    /// LLVM keeps `ptr` and `iN` distinct, so the same relabeling needs a
-    /// real `ptrtoint`/`inttoptr` whenever it crosses that boundary --
-    /// which pointer arithmetic does on every use, since the analyzer
-    /// coerces a pointer operand to `usize` through exactly this cast (see
-    /// `ResolvedType::arithmetic_repr`).
-    ///
-    /// This is what keeps the backend's central invariant true: a value's
-    /// LLVM type always matches the leaf list of its MIR type. Without it
-    /// a pointer keeps its `ptr` leaf while claiming to be a `usize`, and
-    /// every downstream integer consumer -- arithmetic, bitwise ops,
-    /// comparisons -- receives a value of the wrong LLVM type.
-    ///
-    /// Same-domain reinterprets stay no-ops: `*T` to `*U` is nothing at all
-    /// under opaque pointers, and an integer relabeled to a same-width
-    /// integer needs no instruction either.
+    /// One leaf, retyped for a `Reinterpret` cast -- a pure relabeling in
+    /// the MIR and a no-op in Cranelift (where an address is already a
+    /// pointer-width integer), but LLVM keeps `ptr` and `iN` distinct, so
+    /// crossing that boundary (e.g. pointer arithmetic's coercion to
+    /// `usize`) needs a real `ptrtoint`/`inttoptr`. Keeps this backend's
+    /// invariant that a value's LLVM type always matches its MIR leaf list.
+    /// Same-domain reinterprets (`*T` to `*U`, same-width int) stay no-ops.
     fn reinterpret_leaf(
         &self,
         value: BasicValueEnum<'ctx>,
@@ -936,20 +899,11 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// An `icmp`/`fcmp` result (`i1`), widened to the `i8` that Omega's
-    /// `bool` actually is.
-    ///
-    /// The invariant this half maintains: **a `bool`-typed value is always
-    /// `i8` in this backend**, because that is what `layout::leaves_of`
-    /// says it is (`ResolvedType::Bool => vec![Leaf::I8]`), and every other
-    /// producer of a `bool` -- a load, a call result, a struct field --
-    /// already yields one. LLVM's comparisons are the sole exception, so
-    /// they are converted at the source rather than every consumer being
-    /// taught to accept both widths. `to_i1` below is the other half: the
-    /// single point where an `i8` becomes `i1` again, because `br` is the
-    /// only instruction that demands it.
-    ///
-    /// Cranelift needs neither: its `icmp` yields an `I8` directly and its
-    /// `brif` accepts it, so the two widths never diverge there.
+    /// `bool` always is in this backend (`layout::leaves_of` says so, and
+    /// every other `bool` producer already yields one) -- LLVM's
+    /// comparisons are the sole exception, so they're converted at the
+    /// source. `to_i1` is the inverse, for `br`'s sole requirement.
+    /// Cranelift needs neither: its `icmp`/`brif` agree on `I8` already.
     fn bool_result(&self, value: inkwell::values::IntValue<'ctx>) -> BasicValueEnum<'ctx> {
         self.builder
             .build_int_z_extend(value, self.context.i8_type(), "tobool8")

@@ -1,12 +1,9 @@
-//! Turns a `Symbol` into a mangled string. Compression (RFC 2603's
-//! byte-offset backref scheme) is built directly into the recursive
-//! descent, following the RFC's own reference pseudocode: before
+//! Turns a `Symbol` into a mangled string, with RFC 2603-style backref
+//! compression built directly into the recursive descent: before
 //! encoding a substitutable node, check whether it's already been
-//! written; if so, emit a backref to where it started instead of
-//! re-encoding it; otherwise encode it normally and record its start
-//! position afterward. Because parents are always encoded before their
-//! children, the longest available match is automatically preferred with
-//! no extra bookkeeping.
+//! written and emit a backref instead; otherwise encode it normally and
+//! record its start position. Parents are always encoded before
+//! children, so the longest match is automatically preferred.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -17,12 +14,10 @@ use crate::symbol::{ManglePath, MangleType, Symbol};
 
 struct Encoder {
     out: String,
-    /// Byte offset (into `out`) where each already-encoded `ManglePath`
-    /// began -- registered for *every* prefix, not just whole paths,
-    /// since `encode_path` recurses into the parent before writing the
-    /// child (see its own insert at the end of each call).
+    /// Byte offset in `out` where each already-encoded `ManglePath`
+    /// began, including every prefix, not just whole paths.
     path_subs: HashMap<ManglePath, usize>,
-    /// Same idea for non-basic `MangleType`s.
+    /// Same, for non-basic `MangleType`s.
     type_subs: HashMap<MangleType, usize>,
 }
 
@@ -95,11 +90,9 @@ impl Encoder {
             self.out.push(letter as char);
             return;
         }
-        // `Str` is a leaf too (no inner type, just a `mutable` flag) --
-        // exactly as cheap as a basic-type letter, so it gets the same
-        // treatment: never worth registering as a substitution candidate,
-        // since a backref (2+ chars) is never shorter than repeating this
-        // single tag byte.
+        // `Str` is a leaf (just a `mutable` flag) -- never worth
+        // registering as a substitution candidate, since a backref is
+        // never shorter than repeating this one tag byte.
         if let MangleType::Str(mutable) = ty {
             self.out.push(if *mutable { TAG_STR_MUT } else { TAG_STR } as char);
             return;

@@ -34,12 +34,8 @@ pub enum AbiReturn {
     Direct(Vec<Leaf>),
     /// Returned through a hidden struct-return pointer (the caller
     /// allocates the slot and passes its address as an implicit first
-    /// parameter) -- x86_64 SysV has exactly two integer return registers
-    /// (rax/rdx), so any value flattening to more than two leaves can't
-    /// come back by value. (Two int + two float leaves would technically
-    /// still fit, but classifying leaf register classes buys nothing over
-    /// this simple, always-correct rule.) This threshold is an x86_64 fact
-    /// currently applied to every arch -- see the module doc comment.
+    /// parameter). See `docs/14-known-issues.md` for the threshold this
+    /// is based on and its cross-arch caveat.
     Indirect,
 }
 

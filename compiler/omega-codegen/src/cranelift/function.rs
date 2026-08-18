@@ -109,24 +109,14 @@ impl Codegen {
     /// needed another module's not-yet-declared `FuncId`.
     ///
     /// `linkage` is `Linkage::Export` (strong) for an ordinary item and
-    /// `Linkage::Preemptible` (weak) for a generic instantiation -- see
-    /// `declare_item`'s `linkage_for`, this function's only caller for the
-    /// choice. A within-process collision between two *different* strong
-    /// symbols is still exactly the `@mangling(disabled)`/`@mangling(force =
-    /// "...")` user error this check has always caught; it's untouched by
-    /// generics, since the
-    /// driver's own `ItemKey` cache already guarantees at most one
-    /// `MirFunctionDef` per instantiation reaches this function at all
-    /// within a single compilation -- weak linkage is what lets two
-    /// *separate* compilations' independently-generated copies fold into
-    /// one at link time, a scenario this in-process map never sees.
-    ///
-    /// A single `declare_function` call with the real `linkage` already
-    /// covers both "first time this symbol is seen" and "seen again, merge
-    /// linkages" (`cranelift_module`'s own `Linkage::merge` treats
-    /// `Import` as identity, so pre-declaring as `Import` and immediately
-    /// re-declaring with the real linkage -- what this used to do -- is
-    /// provably the same as just declaring with `linkage` directly).
+    /// `Linkage::Preemptible` (weak) for a generic instantiation (see
+    /// `declare_item`'s `cranelift_linkage`). A within-process collision
+    /// between two *different* strong symbols is the `@mangling(disabled)`/
+    /// `@mangling(force = "...")` user error this check catches; it's
+    /// untouched by generics, since the driver's own `ItemKey` cache
+    /// already guarantees at most one `MirFunctionDef` per instantiation
+    /// reaches this function within a single compilation -- weak linkage is
+    /// only for folding two *separate* compilations' copies at link time.
     pub(super) fn declare_function_def(
         &mut self,
         function_def: &MirFunctionDef,
@@ -173,25 +163,15 @@ impl Codegen {
         function_id
     }
 
-    /// `declare_function_def`'s extern-module counterpart: declares a link
-    /// against an extern-owned function/method, but `Linkage::Import` only
-    /// -- no paired `Export` declare, and `define_item`'s pass 2 never sees
-    /// this `HirId` at all (it isn't in any `MirModule.items`), so no body
-    /// is ever generated for it here. `extern_fn.mangling` (resolved by the
-    /// *declaring* compilation, at signature time -- see
-    /// `omega_analyzer::annotations`' doc comment and `ExternFunctionRef::
-    /// mangling`'s own) decides which symbol-shape branch below applies,
-    /// mirroring `declare_item`'s identical branch for a local function:
-    /// whatever that other `omgc` invocation actually mangled this
-    /// declaration as is exactly what gets linked against here, never
-    /// assumed. Trusts that the *other* `omgc` invocation compiling that
-    /// module standalone mangles its own definition identically -- see
-    /// `CompiledProgram::extern_functions`'s doc comment for why that's a
-    /// safe assumption.
+    /// `declare_function_def`'s extern-module counterpart: `Linkage::Import`
+    /// only, no paired `Export`, and no body -- `define_item`'s pass 2
+    /// never sees this `HirId` (it isn't in any `MirModule.items`). Trusts
+    /// that the *other* `omgc` invocation compiling that module standalone
+    /// mangled its own definition identically -- see
+    /// `CompiledProgram::extern_functions`'s doc comment for why that's safe.
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
-        // The symbol decision lives in `omega_mir::mangle::extern_function_ref_symbol`
-        // -- one home for both backends (see its own doc comment for why the
-        // declaring compilation's own `mangling` is authoritative here).
+        // Symbol decision lives in `omega_mir::mangle::extern_function_ref_symbol`
+        // -- one home shared by both backends.
         let mangled = omega_mir::mangle::extern_function_ref_symbol(extern_fn);
         let sig = self.make_function_sig(extern_fn.fn_type.clone());
 
@@ -217,13 +197,11 @@ impl Codegen {
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
         // A symbol collision (see `declare_function_def`) is always found
         // during the declare pass, which fully finishes before any define
-        // pass starts (see `update_all`'s doc comment) -- so once one's
-        // been found, every remaining body is skipped outright rather than
-        // defined against whatever `FuncId` `declare_function_def` had to
-        // improvise for the colliding function (which would otherwise ask
-        // `cranelift_module` to define the same `FuncId` twice and panic).
-        // `Codegen::generate` discards this whole `Codegen` once
-        // `symbol_error` is `Some`, so an incomplete module here is fine.
+        // pass starts -- so once one's been found, every remaining body is
+        // skipped rather than defined against the improvised `FuncId` the
+        // colliding function got (which would ask `cranelift_module` to
+        // define the same `FuncId` twice and panic). `Codegen::generate`
+        // discards this whole `Codegen` once `symbol_error` is `Some`.
         if self.symbol_error.is_some() {
             return;
         }
@@ -299,9 +277,9 @@ impl Codegen {
         let sret = self.needs_sret(&return_type).then(|| block_params[0]);
         let declared_params = &block_params[sret.is_some() as usize..];
 
-        // Some identifiers (e.g structs) have more than one value per identifier.
-        // For that reason, lets make a helper array that repeats the local's own
-        // index N times, where N is the amount of values it has.
+        // A parameter can flatten to more than one leaf (e.g. a struct), so
+        // repeat its local index once per leaf to map Cranelift's flat
+        // param list back onto `local_args`.
         let argmap: Vec<usize> = body.locals[..body.arg_count]
             .iter()
             .enumerate()

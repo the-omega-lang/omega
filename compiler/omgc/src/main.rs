@@ -8,32 +8,15 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// The whole pipeline recurses over the AST -- a hand-written
-/// recursive-descent parser, then HIR lowering, analysis and MIR, all of
-/// which walk nested expressions and types with native recursion. So
-/// *grammar nesting depth* costs native stack, and enough of it exceeds the
-/// platform's default thread stack (commonly 8MiB). The length of a statement
-/// *sequence* does not: `parse_block_contents` is an ordinary `loop`, and
-/// 20,000 sequential statements parse fine on a default stack. There is a
-/// test pinning that, because an earlier diagnosis had it backwards and
-/// blamed per-statement recursion that does not exist.
-///
-/// Depth is bounded at the front door by `omega_parser::parser::
-/// MAX_NESTING_DEPTH`, which reports `NestingTooDeep` instead of letting the
-/// process die with a bare `fatal runtime error: stack overflow` -- no file,
-/// no line, no span. That bounds AST depth for every later pass too.
-///
-/// This large stack is still required, and is not redundant with that limit.
-/// Measured: an expression the parser accepts at ~250 levels still overflows
-/// an 8MiB stack *after* parsing, because the later passes spend
-/// considerably more stack per AST level than parsing does. Shrinking this
-/// number therefore means either dropping `MAX_NESTING_DEPTH` well below
-/// Clang's comparable default of 256, or giving lowering and analysis their
-/// own depth accounting. Until one of those happens the limit buys the
-/// diagnostic and this buys the headroom; they are not substitutes.
-///
-/// The reservation is virtual -- Linux commits stack pages lazily, so a
-/// compile that never recurses deeply never touches most of it.
+/// The whole pipeline recurses over the AST (parser, HIR lowering, analysis,
+/// MIR), so grammar *nesting depth* costs native stack and can exceed the
+/// platform's default thread stack -- a long *sequence* of statements does
+/// not, since `parse_block_contents` is an ordinary loop. `omega_parser::
+/// parser::MAX_NESTING_DEPTH` bounds nesting depth at the front door with a
+/// clean `NestingTooDeep` diagnostic, but later passes spend more stack per
+/// AST level than parsing does, so this large reservation is still needed on
+/// top of that limit, not redundant with it. The reservation is virtual --
+/// Linux commits stack pages lazily.
 fn main() {
     std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
@@ -87,15 +70,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if let Some(rest) = arg.strip_prefix("--extern=") {
-            // Two shapes: a bare `--extern=<dir>` (the common case --
-            // identity inferred from the directory's own basename, exactly
-            // like the local project's root), or an explicit
-            // `--extern=<name>:<dir>` (the name is author-stated and used
-            // exactly as typed -- never re-derived, never a separate
-            // translated alias). Distinguished by whether `rest` contains a
-            // `:` at all; `split_once` takes only the *first* one, so a
-            // directory path containing later colons still parses correctly
-            // in the explicit form, same as before.
+            // Two shapes: a bare `--extern=<dir>` (identity inferred from
+            // the basename), or `--extern=<name>:<dir>` (name used exactly
+            // as typed). `split_once` takes only the first `:`, so a later
+            // colon in the path still parses correctly.
             let (explicit_name, dir) = match rest.split_once(':') {
                 Some((name, dir)) => {
                     if name.is_empty() {
@@ -107,13 +85,11 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 }
                 None => (None, PathBuf::from(rest)),
             };
-            // The directory's own basename is required even when `<name>:`
-            // already supplies the declared identity: discovery keys an
-            // extern's entire tree off the *physical* basename and
-            // `relabel_root` renames it only afterwards, so a root with no
-            // usable final component would discover nothing at all and
-            // surface later as a pile of "cannot find" errors instead of
-            // here, at the flag that caused it.
+            // The physical basename is required even when `<name>:` already
+            // supplies the identity: discovery keys the tree off it and
+            // `relabel_root` renames only afterwards, so catch a root with
+            // no usable final component here instead of as a pile of
+            // "cannot find" errors later.
             let Some(physical_name) = basename(&dir) else {
                 return Err(format!(
                     "invalid --extern flag '{arg}': '{}' has no usable directory name",
@@ -252,15 +228,11 @@ fn run() {
     let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
-    // The root directory's *physical* basename is what
-    // `fs_resolve::discover_tree` keys the entire local tree off, and it is
-    // also the name the root module's own file has to carry on disk --
-    // `--name=` renames the discovered module afterwards (`relabel_root`),
-    // it does not stand in for a missing directory name. A path with no
-    // usable final component (`.`, `/`, `..`) can therefore never name a
-    // package, with or without `--name=`, and is rejected here, in one
-    // place, rather than discovering an empty tree further down and
-    // silently emitting an object file containing nothing.
+    // The physical basename is what `fs_resolve::discover_tree` keys the
+    // local tree off, and the name the root module's file must carry on
+    // disk -- `--name=` renames it afterwards, it does not stand in for a
+    // missing directory name. Rejected here rather than discovering an
+    // empty tree further down and silently emitting an empty object file.
     let Some(physical_name) = basename(&entry_dir) else {
         eprintln!(
             "error: '{}' has no usable directory name -- a package root's own module file is \

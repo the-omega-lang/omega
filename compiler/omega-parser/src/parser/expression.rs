@@ -609,25 +609,19 @@ fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionN
     }
 }
 
-/// Like `parse_expression`, but for the one position that isn't just "parse
-/// the full expression grammar": a statement's own leading expression (and
-/// `parse_codeblock`'s speculative tail-value attempt just below, which
-/// parses at that identical leading position). When the very next token
-/// starts a block-shaped primary (`{`, `if`, `match`), *only* that block is
-/// parsed -- postfix/unary/binary/assignment continuation is skipped
-/// entirely, matching Rust's own rule that a block-like expression used in
-/// statement position is never continued as an operand by whatever follows
-/// it. Without this, a bare `if cond { ... }` statement immediately
-/// followed by a new statement starting with `*`/`-`/`&` (all three also
-/// valid *infix* continuations, at the multiplicative/additive/bitand
-/// tiers respectively) gets misread as one expression spanning the
-/// statement boundary -- e.g. `*p = 5;` right after an `if` block folds
-/// into `(if cond {...}) * p = 5`, which then fails semantic analysis with
-/// a confusing "invalid assignment target" instead of parsing as two
-/// separate statements. Explicitly wanting the continuation still works --
-/// write the block in parens, `(if cond {...}) * p`, which recurses into
-/// the ordinary `parse_expression` inside `parse_primary`'s `LParen` arm,
-/// unaffected by any of this.
+/// Like `parse_expression`, but for a statement's own leading expression
+/// (and `parse_codeblock`'s speculative tail-value attempt, which parses at
+/// that identical leading position). When the very next token starts a
+/// block-shaped primary (`{`, `if`, `match`), *only* that block is parsed --
+/// postfix/unary/binary/assignment continuation is skipped entirely,
+/// matching Rust's own rule that a block-like expression in statement
+/// position is never continued as an operand by whatever follows it.
+/// Without this, `*p = 5;` right after an `if` block would fold into
+/// `(if cond {...}) * p = 5` (`*` also being a valid infix continuation),
+/// failing analysis with a confusing "invalid assignment target" instead of
+/// parsing as two statements. Explicitly wanting the continuation still
+/// works by parenthesizing the block, which recurses into the ordinary
+/// `parse_expression` inside `parse_primary`'s `LParen` arm.
 pub(crate) fn parse_statement_leading_expression(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
     if matches!(
@@ -843,16 +837,14 @@ fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type
 
 /// A struct literal written where they're restricted (`if Name { ... }` --
 /// see `Parser::restrict_struct_literals`): normally the `{` simply starts
-/// the statement's body and the path stands alone, but when what follows
-/// can *only* be read as a struct literal, silently mis-parsing it as
-/// "condition, then body" would bury the user in nonsense errors inside
-/// the "body". So this speculatively parses the literal and keeps it --
-/// with one precise `StructLiteralNotAllowedHere` error -- exactly when
-/// the token after its closing `}` proves the literal reading (another
-/// `{` for the real body, a projection, or an operator continuing the
-/// condition; none of these can follow a completed `if cond { body }`
-/// mid-statement). Anything less conclusive resets and lets the ordinary
-/// "path, then body" interpretation proceed untouched.
+/// the statement's body and the path stands alone, but when what follows can
+/// *only* be read as a struct literal, silently mis-parsing it as
+/// "condition, then body" would bury the user in nonsense errors inside the
+/// "body". So this speculatively parses the literal and keeps it -- with one
+/// precise `StructLiteralNotAllowedHere` error -- exactly when the token
+/// after its closing `}` proves the literal reading. Anything less
+/// conclusive resets and lets the ordinary "path, then body" interpretation
+/// proceed untouched.
 fn recover_restricted_struct_literal(
     p: &mut Parser,
     path: &crate::ast::identifier::ExprPath,
@@ -1062,15 +1054,13 @@ fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
 /// `{ stmt; stmt; ... tail }` -- at every position, tries the tail
 /// interpretation first (does a full expression parse here *and* get
 /// immediately followed by `}`?), falling back to "one ordinary statement"
-/// only if that fails -- matching the old grammar's own `tail_only`-before-
-/// `one_more_stmt` ordering exactly (needed so a trailing `if`/`{}`
-/// expression meant as the block's value isn't instead swallowed as just
-/// another statement, silently discarding it). `mark`/`reset` is the
-/// backtracking primitive this genuinely needs: an ordinary statement can
-/// itself start by parsing the very same expression grammar (e.g. an
-/// expression-statement), so there is no cheaper, backtracking-free way to
-/// tell "this is the tail" from "this is a statement" apart than trying the
-/// expression interpretation and checking what follows.
+/// only if that fails, so a trailing `if`/`{}` expression meant as the
+/// block's value isn't instead swallowed as just another statement and
+/// silently discarded. `mark`/`reset` is the backtracking primitive this
+/// genuinely needs: an ordinary statement can itself start by parsing the
+/// very same expression grammar, so there is no cheaper way to tell "this
+/// is the tail" from "this is a statement" apart than trying the expression
+/// interpretation and checking what follows.
 pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
     // Inside the block's own braces, struct literals are unambiguous again
     // regardless of what position the block itself sits in.

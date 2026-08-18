@@ -26,10 +26,8 @@ fn mangle_module_path(segments: &[Ident]) -> ManglePath {
     let mut path = ManglePath::Root(first.as_ref().to_string());
     for seg in iter {
         // Intermediate module segments get an arbitrary, fixed namespace
-        // tag (`Type`) -- there's no real Omega namespace a module itself
-        // belongs to; this just needs to be consistent between encode and
-        // decode, which it is (every path segment always carries some
-        // namespace tag, mirroring RFC 2603's own uniform treatment).
+        // tag (`Type`) -- there's no real Omega namespace a module belongs
+        // to; this just needs to stay consistent between encode and decode.
         path = ManglePath::Nested(Box::new(path), Namespace::Type, seg.as_ref().to_string());
     }
     path
@@ -426,19 +424,15 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             &extern_fn.fn_type,
         ),
         (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
-        // `@mangling(disabled)` is rejected on methods at analysis time --
-        // an extern method's own declaration went through the exact same
-        // check, so this combination can't actually occur.
+        // Rejected on methods at analysis time, so unreachable here.
         (
             ManglingMode::Disabled,
             ExternFunctionKind::Method { .. }
             | ExternFunctionKind::Primitive { .. }
             | ExternFunctionKind::Conform { .. },
         ) => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
-        // `collect_extern_functions` only ever surfaces non-generic extern
-        // items (a generic reached through `--extern` is always fully
-        // recompiled locally instead), so there's no owner/free
-        // generic-args data to pass here -- always `&[]`.
+        // A generic reached through `--extern` is always fully recompiled
+        // locally instead, so there's never owner/free generic-args data here.
         (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
             encode(&free_function_symbol(&extern_fn.module_path, name, &[], &extern_fn.fn_type))
         }

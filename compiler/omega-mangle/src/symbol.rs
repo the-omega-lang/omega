@@ -1,17 +1,10 @@
-//! The mangler's own small, self-contained description of "the thing
-//! being named" -- deliberately decoupled from `omega_analyzer`'s
-//! `ResolvedType`/`CheckedFunctionDef` (which this crate never depends
-//! on): nominal types are referenced by path + generic args only, never
-//! by unrolling their fields, so there's nothing here that can recurse
-//! through a self-referential type (a struct containing a pointer to
-//! itself, e.g. `GenericNode<T>`'s `next: *GenericNode<T>`, mangles as
-//! `Pointer(Named(Generic(path, [T])))` -- finite, since `Named` never
-//! looks past the type's own name and arguments).
-//!
-//! Every type here derives structural `Hash`/`Eq`, which is exactly what
-//! the compressor (see `crate::encode`) needs to detect "this exact
-//! component already occurred" -- there is no `Rc`/identity anywhere in
-//! this module, unlike `ResolvedType::Struct`'s `Rc<RefCell<_>>`.
+//! The mangler's own self-contained description of "the thing being
+//! named" -- decoupled from `omega_analyzer`'s `ResolvedType` (never
+//! depended on here). Nominal types are referenced by path + generic
+//! args only, never by unrolling fields, which keeps mangling of
+//! self-referential types (e.g. `GenericNode<T>`'s `next: *GenericNode<T>`)
+//! finite. Every type derives structural `Hash`/`Eq`, which is what
+//! `crate::encode`'s backref compression needs to detect repeats.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Namespace {
@@ -68,10 +61,8 @@ pub enum MangleType {
     Void,
     /// `never` -- a distinct tag from `Void` even though both are
     /// zero-leaf/no-return-value at the codegen level (see
-    /// `ResolvedType::Never`'s doc comment): keeping them structurally
-    /// separate here is what lets a decoded mangled name still read back
-    /// as `never`, not `void`, and avoids ever conflating the two by
-    /// construction rather than by coincidence.
+    /// `ResolvedType::Never`), so a decoded name reads back as `never`,
+    /// not `void`.
     Never,
     Bool,
     Char,
@@ -93,12 +84,9 @@ pub enum MangleType {
     Slice(Box<MangleType>, bool),
     /// `*str` (`false`) / `*mut str` (`true`) -- a leaf, unlike `Pointer`/
     /// `Slice`: `str` is always byte-shaped, so there's no inner type to
-    /// parameterize. Structurally identical to `Slice(U8, _)` once
-    /// encoded (both flatten to the same `[ptr, len]` shape at the
-    /// codegen level), but a distinct grammar production (`T`/`U`, see
-    /// `crate::grammar`) so the two are never confused -- mirrors
-    /// `ResolvedType::Str` being a fully separate variant from `Slice`,
-    /// not a structural alias.
+    /// parameterize. Flattens to the same `[ptr, len]` shape as
+    /// `Slice(U8, _)` at the codegen level, but kept as a distinct
+    /// grammar production (`T`/`U`) so the two are never confused.
     Str(bool),
     /// `*[?]T` (`false`) / `*mut [?]T` (`true`) -- an unsized, pointer-shaped
     /// array.
@@ -136,14 +124,9 @@ pub struct Symbol {
     pub path: ManglePath,
     pub signature: Option<(Vec<MangleType>, MangleType)>,
     /// A general escape hatch mirroring RFC 2603's own
-    /// `<vendor-specific-suffix>`, appended as `.` + this string -- meant
-    /// for a piece of *external* tooling to disambiguate an
-    /// already-complete symbol further (e.g. an LTO pass appending
-    /// `.llvm.1234`), not for the compiler's own routine output: the
-    /// RFC's own motivation section flags `.` as a real cross-platform
-    /// portability problem, so nothing this compiler emits on its own
-    /// should rely on this (e.g. `omega_codegen`'s vtable symbols use an
-    /// ordinary nested identifier instead -- see its own `vtable_symbol`
-    /// doc comment).
+    /// `<vendor-specific-suffix>`, appended as `.` + this string. Meant
+    /// for external tooling (e.g. an LTO pass appending `.llvm.1234`),
+    /// not the compiler's own routine output -- see
+    /// `docs/16-mir-and-codegen.md`.
     pub vendor_suffix: Option<String>,
 }

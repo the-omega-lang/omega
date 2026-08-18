@@ -16,10 +16,8 @@ pub struct CheckedModule {
 
 #[derive(Debug, Clone)]
 pub enum CheckedItem {
-    /// A top-level `ident: type;` with no initializer syntax -- global data
-    /// storage isn't decided yet (no linkage/section/zero-init story), so
-    /// this is resolved and type-checked like everything else, but codegen
-    /// still has nothing sound to do with it (`todo!()`).
+    /// A top-level `ident: type;` with no initializer syntax. See
+    /// `Storage::Global`'s doc comment for how codegen stores it.
     Declaration(CheckedDeclaration),
     ExternDeclaration(CheckedExternDeclaration),
     FunctionDefinition(CheckedFunctionDef),
@@ -702,16 +700,12 @@ pub struct CheckedArrayLiteral {
 /// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`,
 /// `Slice`, `Str`, or `Pointer` (never anything else) by the time this is
 /// constructed, and `start`/`end` (when present) are guaranteed `I32`.
-/// `item_type` is
-/// `base`'s element type, carried the same way `CheckedProjection::Index`'s
-/// is, so codegen never has to re-derive it from `base`'s type. `inclusive`
-/// is `omega_hir::HirRange::inclusive()`'s answer, flattened back out
-/// alongside an `Option` end -- when `true` and `end` is present, codegen
-/// includes `end` itself in the slice (see `omega_parser::prelude::
-/// RangeExpr`'s doc comment for the range grammar). That flattening is the
-/// same shape `HirRangeEnd` deliberately replaced one layer up, and is
-/// recorded in `docs/14-known-issues.md` rather than fixed here: the fix
-/// belongs with `omega-analyzer`'s own refactor pass.
+/// `item_type` is `base`'s element type, carried the same way
+/// `CheckedProjection::Index`'s is, so codegen never has to re-derive it
+/// from `base`'s type. `inclusive` is `omega_hir::HirRange::inclusive()`'s
+/// answer, flattened back out alongside an `Option` end -- when `true` and
+/// `end` is present, codegen includes `end` itself in the slice (see
+/// `omega_parser::prelude::RangeExpr`'s doc comment for the range grammar).
 #[derive(Debug, Clone)]
 pub struct CheckedSlice {
     pub base: CheckedPlace,

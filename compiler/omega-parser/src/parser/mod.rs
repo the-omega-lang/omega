@@ -10,60 +10,46 @@ use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 use crate::lexer::{Token, TokenKind};
 
 /// A recursive-descent parser over an already-lexed token stream (see
-/// `crate::lexer::tokenize`) -- `omega-parser` no longer parses directly
-/// against `&str` the way the old chumsky grammar did, which is what lets
-/// every parsing function stay unaware of trivia (already stripped out
-/// during lexing) and reason about lookahead in terms of whole tokens
-/// rather than characters.
+/// `crate::lexer::tokenize`), reasoning about lookahead in terms of whole
+/// tokens rather than characters.
 ///
-/// `mark`/`reset` is the backtracking primitive, used sparingly -- most of
-/// this grammar's disambiguation only needs a bounded, non-consuming peek
-/// (e.g. "is the token after this identifier a `:` or a `:=`?"), not real
-/// backtracking; root-item dispatch, for instance, needs none at all (a
-/// single-token lookahead already tells `:`/`(`/`!` apart, see
-/// `parser::item::parse_declaration_or_function_definition`). The one
-/// genuine backtracking site is `parser::expression::parse_codeblock`'s
+/// `mark`/`reset` is the backtracking primitive, used sparingly -- most
+/// disambiguation only needs a bounded, non-consuming peek. The one genuine
+/// backtracking site is `parser::expression::parse_codeblock`'s
 /// tail-vs-statement disambiguation, which has no cheaper way to tell "this
 /// expression is the block's tail" from "this is the start of an ordinary
 /// statement" apart than trying the expression interpretation and checking
-/// what follows. `reset` also truncates `errors` back to the mark's count --
-/// so a speculative attempt that gets abandoned via `reset` never leaves
-/// behind spurious errors from the road not taken.
+/// what follows. `reset` also truncates `errors` back to the mark's count,
+/// so an abandoned speculative attempt never leaves spurious errors behind.
 pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     errors: Vec<ParseError>,
     /// Rust's "no struct literal here" restriction: inside an `if`/`while`
     /// condition or a `for` header, `flag { ... }` must mean "condition
-    /// `flag`, then the body block", never a struct literal -- the two are
-    /// otherwise syntactically identical. Set by those condition parsers
-    /// (see `restrict_struct_literals`), and cleared again the moment the
-    /// grammar enters any bracketed sub-context (`(...)`, `[...]`, `{...}`),
-    /// where a `{` can no longer be mistaken for the statement's own body --
-    /// the exact rule rustc's parser applies.
+    /// `flag`, then the body block", never a struct literal. Set by those
+    /// condition parsers (see `restrict_struct_literals`), and cleared again
+    /// once the grammar enters any bracketed sub-context (`(...)`, `[...]`,
+    /// `{...}`), where a `{` can no longer be mistaken for the body.
     struct_literals_restricted: bool,
     /// The second half of a `>>` token, once `eat_close_angle`/
-    /// `expect_close_angle` has split one in two -- e.g. closing the outer
-    /// generic of `Foo<Bar<Baz>>`, or a cast's own bracket in
-    /// `<*mut Node<T>>0`. The lexer has no notion of angle-bracket nesting
-    /// (see `TokenKind::Shr`'s own doc comment), so `>>` is always lexed as
-    /// one token regardless of context; splitting it needs somewhere to
-    /// stash the leftover `>` since `tokens` is an immutable borrowed slice
-    /// that can't be spliced in place. `peek`/`peek_at`/`advance` all
-    /// consult this ahead of `tokens[pos]` whenever it's set, so every
-    /// other parsing function keeps working completely unmodified once a
-    /// split has happened -- only ever `TokenKind::Gt`, so just its span
-    /// needs remembering.
+    /// `expect_close_angle` has split one in two (e.g. closing the outer
+    /// generic of `Foo<Bar<Baz>>`) -- the lexer always lexes `>>` as one
+    /// token (see `TokenKind::Shr`), so splitting it needs somewhere to
+    /// stash the leftover `>` since `tokens` is an immutable borrowed slice.
+    /// `peek`/`peek_at`/`advance` all consult this ahead of `tokens[pos]`
+    /// whenever it's set, so every other parsing function keeps working
+    /// unmodified once a split has happened.
     pending_gt: Option<Span>,
     /// The span of the most recently consumed token, tracked explicitly
-    /// rather than derived from `tokens[pos - 1]` (as it used to be) --
-    /// once `pending_gt` exists, the "previous token" may be a synthetic
-    /// half of a split `>>`, which has no slot of its own in `tokens`.
+    /// rather than derived from `tokens[pos - 1]` -- once `pending_gt`
+    /// exists, the "previous token" may be a synthetic half of a split
+    /// `>>`, which has no slot of its own in `tokens`.
     last_span: Span,
     /// How many grammar levels deep the recursive-descent parser currently
-    /// is -- see `descend`. Deliberately *not* part of `Mark`: `reset`
-    /// rewinds the token position, but depth unwinds on its own as the
-    /// native frames return, so restoring it from a mark would corrupt it.
+    /// is -- see `descend`. Deliberately *not* part of `Mark`: depth
+    /// unwinds on its own as native frames return, so restoring it from a
+    /// mark would corrupt it.
     depth: usize,
     /// Whether `MAX_NESTING_DEPTH` has already been reported once. Without
     /// this, `parse_block_contents`'s error recovery re-enters the grammar
@@ -75,19 +61,15 @@ pub struct Parser<'a> {
 /// nest before the parser refuses to descend further.
 ///
 /// The parser is hand-written recursive descent, so grammar nesting costs
-/// native stack -- roughly ten frames per level, since one level of nesting
-/// walks the whole precedence chain. A few hundred levels is enough to
-/// exhaust a default 8MiB thread stack, and the failure mode without this
-/// limit is a bare `fatal runtime error: stack overflow` with no file, no
-/// line and no span: a crash rather than a diagnostic.
+/// native stack -- roughly ten frames per level. A few hundred levels is
+/// enough to exhaust a default 8MiB thread stack, and the failure mode
+/// without this limit is a bare `fatal runtime error: stack overflow` with
+/// no file, no line and no span.
 ///
-/// 256 matches Clang's own `-fbracket-depth` default. It is far past
-/// anything hand-written and is only ever reached by generated source, which
-/// is exactly the case that deserves a real error instead of an abort. The
-/// value is measured against a *debug* build, whose frames are the fattest.
-///
-/// Note this bounds the depth of the AST every later pass then walks, so
-/// HIR lowering, analysis and MIR inherit the bound for free.
+/// 256 matches Clang's own `-fbracket-depth` default, far past anything
+/// hand-written and reached only by generated source. This also bounds the
+/// depth of the AST every later pass walks, so HIR lowering, analysis and
+/// MIR inherit the bound for free.
 pub const MAX_NESTING_DEPTH: usize = 256;
 
 /// The lexer only ever collapses `>` this way as half of a wider token, so
@@ -130,18 +112,15 @@ impl<'a> Parser<'a> {
     /// Runs `f` one grammar level deeper, refusing to recurse past
     /// `MAX_NESTING_DEPTH` and reporting `NestingTooDeep` instead.
     ///
-    /// Save/run/restore, the same shape as `restrict_struct_literals` below,
-    /// and for the same reason: the recursive entry points are full of `?`
-    /// early returns, so a `self.depth -= 1` written at the end of a caller
-    /// would be skipped on every error path and leak the count. Keeping the
-    /// increment and decrement in one function makes that unrepresentable.
+    /// Save/run/restore, the same shape as `restrict_struct_literals` below:
+    /// the recursive entry points are full of `?` early returns, so a
+    /// `self.depth -= 1` at the end of a caller would be skipped on every
+    /// error path and leak the count.
     ///
     /// Wrapped around the grammar's two genuine cycles -- `parse_expression`
-    /// and `parse_type` -- which between them cover every nested `(...)`,
-    /// `[...]`, block, call argument, match arm, index and pointer/array/
-    /// function type. One shared counter rather than one per cycle, because
-    /// what is being bounded is the native stack, and a type nested inside an
-    /// expression nested inside a type all draw on the same stack.
+    /// and `parse_type` -- with one shared counter rather than one per
+    /// cycle, since what's being bounded is the native stack and a type
+    /// nested inside an expression nested inside a type all draw on it.
     pub fn descend<T>(&mut self, f: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
         if self.depth >= MAX_NESTING_DEPTH {
             if !std::mem::replace(&mut self.depth_exceeded, true) {
@@ -347,13 +326,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes one `>` closing an angle-bracket construct (a generic
-    /// argument/parameter list, a cast's own bracket, `sizeof<T>`)
-    /// -- unlike a bare `eat(&TokenKind::Gt)`, this also
-    /// splits a `>>` token into two logical `>`s when that's what's
-    /// actually here, so a nested generic's own closing bracket
-    /// (`Foo<Bar<Baz>>`, `<*mut Node<T>>0`) still closes correctly even
-    /// though the lexer, having no notion of angle-bracket nesting, always
-    /// lexes `>>` as one `Shr` token regardless of context. Every
+    /// argument/parameter list, a cast's own bracket, `sizeof<T>`) -- unlike
+    /// a bare `eat(&TokenKind::Gt)`, this also splits a `>>` token into two
+    /// logical `>`s when that's what's actually here, so a nested generic's
+    /// own closing bracket (`Foo<Bar<Baz>>`) still closes correctly even
+    /// though the lexer always lexes `>>` as one `Shr` token. Every
     /// closing-`>` site in the grammar must go through this (or
     /// `expect_close_angle`) rather than a bare `Gt` check.
     pub fn eat_close_angle(&mut self) -> bool {
@@ -424,11 +401,8 @@ impl<'a> Parser<'a> {
 /// modifiers consumed.
 ///
 /// Both words are contextual keywords: they lead a binding here and are
-/// ordinary identifiers everywhere else (`comp` is also a prefix expression
-/// operator -- see `parser::expression::parse_unary`). Committing on the
-/// bare word would stop either being usable as a name, so nothing is
-/// consumed until the full shape matches -- the commit rule described in
-/// `parser::contextual`.
+/// ordinary identifiers everywhere else, so nothing is consumed until the
+/// full shape matches -- the commit rule described in `parser::contextual`.
 ///
 /// `mut comp x := ...` parses with both flags set and is rejected later by
 /// analysis (`AnalysisErrorKind::MutCompBinding`), not here.
@@ -549,18 +523,14 @@ pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode
     use crate::ast::self_mode::SelfMode;
     use crate::parser::contextual::{MUT, SELF};
 
-    // '*' can never legally start an ordinary `ident: Type` parameter (a
-    // parameter always starts with its own name), so eating it here is
-    // unambiguous -- but once eaten, only `self`/`mut self` may follow;
-    // anything else is a real, specific parse error rather than a silent
-    // fallback, since that's a strictly better diagnostic than letting
-    // parsing continue and fail later with a generic "expected an
-    // identifier".
+    // '*' can never legally start an ordinary `ident: Type` parameter, so
+    // eating it here is unambiguous -- but once eaten, only `self`/`mut
+    // self` may follow; anything else is a specific parse error rather
+    // than a generic "expected an identifier" later.
     let by_pointer = p.eat(&TokenKind::Star);
-    // Mirrors the pre-existing `mut self` lookahead exactly: `mut` must NOT
-    // be eaten until `self` is confirmed at peek_at(1), because `mut` is a
-    // legal ordinary identifier (e.g. an unrelated parameter literally
-    // named `mut`) everywhere outside this exact position.
+    // `mut` must NOT be eaten until `self` is confirmed at peek_at(1),
+    // since `mut` is a legal ordinary identifier everywhere outside this
+    // exact position.
     let mutable = if p.at_contextual(MUT) && p.at_contextual_at(1, SELF) {
         p.advance(); // 'mut'
         true

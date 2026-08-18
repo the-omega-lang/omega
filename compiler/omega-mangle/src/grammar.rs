@@ -2,16 +2,11 @@
 //! `encode` and `demangle` so the two can never drift apart. See the
 //! crate-level docs for the full grammar in EBNF form.
 //!
-//! Tag bytes are partitioned by case so there's exactly one alphabet to
-//! keep straight: lowercase is reserved entirely for basic (primitive)
-//! types and the two namespace tags (`t`/`v`, only ever read immediately
-//! after `N`, never in a `<type>`-leading position); uppercase is
-//! reserved entirely for path/type structural tags. No byte is ever
-//! reused as both a leading tag and an optional trailing marker on some
-//! other production -- every optional element sits at the *start* of a
-//! self-terminating production (e.g. `F`'s optional `V`), never as a
-//! suffix tacked onto an already-complete one, which is what would make
-//! greedy parsing ambiguous.
+//! Tag bytes are partitioned by case: lowercase is basic (primitive)
+//! types plus the two namespace tags (`t`/`v`, only ever read right
+//! after `N`); uppercase is path/type structural tags. No byte is ever
+//! reused as both a leading tag and a trailing marker on another
+//! production, so parsing is never positionally ambiguous.
 
 use crate::symbol::MangleType;
 

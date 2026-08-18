@@ -1,20 +1,13 @@
-# `core::primitives::valueless` -- `void` and `never`, the two built-ins that
-# have no values at all.
-#
-# Grouped because that is the property they share and the reason both behave
-# unlike every other primitive: there is nothing to construct, store, compare
-# or pass. It is also why neither is *conformable* -- a spec method needs a
-# `self` to receive, and neither type can supply one. They are declarable
-# without being conformable, which is exactly the distinction between a
-# primitive target and a conform target.
+# `core::primitives::valueless` -- `void` and `never`, the two built-ins
+# with no values at all: nothing to construct, store, compare or pass, and
+# neither is conformable since a spec method needs a `self` to receive.
 
-# The absence of a value, not a value that happens to be empty. A function's
-# "returns nothing"; occupies no storage.
+# The absence of a value, not an empty one. A function's "returns nothing";
+# occupies no storage.
 primitive void { }
 
-# The bottom type: what an expression has when control never reaches past it.
-# Legal only as a function, method, extern or gap's own declared return type
-# (`extern exit : (code: i32) => never`), so it can never be the type of a
-# binding, field or parameter. This declaration site is the single exception
-# to that restriction.
+# The bottom type: what an expression has when control never reaches past
+# it. Legal only as a function/method/extern/gap declared return type; this
+# declaration site is the one exception to never being a binding/field/
+# parameter type.
 primitive never { }

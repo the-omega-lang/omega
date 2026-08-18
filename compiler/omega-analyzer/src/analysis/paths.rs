@@ -43,11 +43,7 @@ impl<'r> Analyzer<'r> {
     /// memoized by the driver per `(module_path, alias)` pair -- `Ok(None)`
     /// means this module has no `import` statement binding `alias` at all,
     /// the signal every caller's own "assume this is my own module's item"
-    /// fallback keys off. This is the direct replacement for the old
-    /// `Context::absolute_path`/`generic_alias`/`bind_imported_item`, which
-    /// used to be populated eagerly, for a module's *entire* import list,
-    /// before any item in it was ever touched -- see `Analyzer::new`'s doc
-    /// comment for why that was a real false-cycle bug, not just eagerness.
+    /// fallback keys off.
     pub(super) fn resolve_alias(
         &mut self,
         alias: &Ident,
@@ -55,13 +51,10 @@ impl<'r> Analyzer<'r> {
         self.resolver.resolve_import_alias(&self.module_path, alias)
     }
 
-    /// `resolve_alias`, with a real resolution failure (a cycle, a broken
-    /// target module, ...) folded directly into `self.errors` -- the
-    /// `Option<Option<_>>` "handled or fall through" shape every *hard*
-    /// (non-probing) call site wants: outer `None` means an error was
-    /// already pushed and the caller should give up immediately (`?`);
-    /// `Some(None)` means `alias` isn't an import at all, the caller's own
-    /// fallback applies.
+    /// `resolve_alias`, with a real resolution failure folded directly into
+    /// `self.errors`. Outer `None` means an error was already pushed and the
+    /// caller should give up (`?`); `Some(None)` means `alias` isn't an
+    /// import at all, the caller's own fallback applies.
     pub(super) fn resolve_alias_or_error(
         &mut self,
         node_id: HirId,
@@ -99,11 +92,7 @@ impl<'r> Analyzer<'r> {
     /// The alias (of any kind -- module, item, or generic item) this
     /// module's own `import` statements bind that's most similar to
     /// `target` -- the "did you mean" suggestion for a reference that named
-    /// nothing at all. Replaces `Context`'s old `similar_module_alias`
-    /// (which only ever knew about whole-module aliases, pre-populated
-    /// eagerly); `ModuleResolver::import_alias_names` is the only remaining
-    /// place that knows a module's whole alias set up front, since
-    /// resolving what each one actually *means* is lazy now.
+    /// nothing at all.
     pub(super) fn similar_import_alias(&mut self, target: &Ident) -> Option<Ident> {
         best_match(
             target,
@@ -111,17 +100,12 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// Resolves `absolute` (already a full `[module_path.., name]`, whether
-    /// built from a qualified place's import alias or an unqualified one's
-    /// implicit own-module prefix) to a place root -- shared by both of
-    /// `analyze_place`'s non-local cases so the `Value`/`Type`/`Err` match
-    /// is only written once.
+    /// Resolves `absolute` (already a full `[module_path.., name]`) to a
+    /// place root -- shared by both of `analyze_place`'s non-local cases.
     /// `unqualified` is the bare name the user actually wrote, when this
     /// query is the implicit own-module fallback for one -- an
-    /// `UnknownItem` miss then means "no such variable", and is reported as
-    /// exactly that (with a typo suggestion from the visible scopes) rather
-    /// than as a confusing module-shaped error about the module the user
-    /// never mentioned.
+    /// `UnknownItem` miss then means "no such variable" rather than a
+    /// confusing module-shaped error about a module the user never named.
     pub(super) fn resolve_qualified_value(
         &mut self,
         node_id: HirId,
@@ -136,16 +120,10 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         // A bare (uncalled) reference to an overloaded name -- `resolve_item`
-        // would otherwise silently resolve it to whichever candidate the
-        // driver happens to index first (see `ModuleResolver::resolve_item`'s
-        // single-result contract, which has no way to pick one at all). A
-        // call site (`resolve_overloaded_call`) has the argument types
-        // needed to disambiguate; anywhere else, the only other thing that
-        // can disambiguate is an explicit function-typed `expected` (a
-        // declaration/assignment annotation) that structurally matches
-        // exactly one candidate's signature -- everything else is
-        // unconditionally ambiguous, reported with every candidate listed
-        // and no winner.
+        // has no way to pick one candidate. A call site can disambiguate by
+        // argument types; anywhere else, only an explicit function-typed
+        // `expected` that structurally matches exactly one candidate can --
+        // everything else is unconditionally ambiguous.
         if let Some((name, module_path)) = absolute.split_last()
             && let Ok(Some(candidates)) = self
                 .resolver
@@ -159,10 +137,8 @@ impl<'r> Analyzer<'r> {
                 && let Some((decl_id, fn_type)) =
                     Self::unique_overload_signature_match(expected_fn, &signatures)
             {
-                // Same post-winner visibility check as `resolve_overloaded_
-                // call`'s identical situation -- structural signature
-                // matching (here, against `expected`) has no notion of
-                // visibility either.
+                // Same post-winner visibility check as `resolve_overloaded_call`
+                // -- structural signature matching has no notion of visibility.
                 let visibility = candidates
                     .iter()
                     .find(|(id, ..)| *id == decl_id)
@@ -222,8 +198,8 @@ impl<'r> Analyzer<'r> {
             Err(ResolveError::UnknownItem { .. }) if unqualified.is_some() => {
                 let name = unqualified.expect("checked by the guard").clone();
                 // Scope-level candidates first, then this module's own
-                // top-level values (functions/globals/externs) -- only the
-                // resolver holds a module-wide name list.
+                // top-level values -- only the resolver holds a
+                // module-wide name list.
                 let similar = self.context.similar_variable_name(&name).or_else(|| {
                     self.resolver
                         .similar_item_name(accessor, &name, ItemNamespace::Value)
@@ -236,10 +212,9 @@ impl<'r> Analyzer<'r> {
                 None
             }
             // `mymodule::MyStruct::do_thing` -- the "module" that failed to
-            // resolve (`mymodule::MyStruct`) may actually be a struct, and
-            // the last segment one of its static functions. Only attempted
-            // when the missing module is exactly this path minus its last
-            // segment (a deeper miss can't be this shape).
+            // resolve may actually be a struct, with the last segment one of
+            // its static functions. Only attempted when the missing module
+            // is exactly this path minus its last segment.
             Err(ResolveError::UnknownModule(missing))
                 if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
             {
@@ -273,13 +248,8 @@ impl<'r> Analyzer<'r> {
     /// signatures that structurally matches `expected` -- a function-typed
     /// declaration/assignment annotation naming exactly which overload is
     /// meant (`f : (a: u64) => void = f;`). Compared by shape only (param
-    /// types in order, return type, `is_variadic`/`self_mode`),
-    /// never by parameter name -- the annotation's own parameter names have
-    /// no reason to match the target function's, same "types only" spirit
-    /// as `check_overload_duplicates`'s pairwise comparison. Zero or 2+
-    /// matches both return `None`: a real duplicate overload set is already
-    /// rejected elsewhere (`check_overload_duplicates`), so 2+ here would
-    /// mean the annotation itself is ambiguous, not that a choice exists.
+    /// types in order, return type, `is_variadic`/`self_mode`), never by
+    /// parameter name. Zero or 2+ matches both return `None`.
     pub(super) fn unique_overload_signature_match(
         expected: &ResolvedFunctionType,
         candidates: &[(HirId, ResolvedFunctionType)],
@@ -303,13 +273,10 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `Head::function` where `Head` isn't an imported module alias -- the
-    /// head may instead name a struct *type* (a builtin/imported/locally
-    /// defined one via `find_defined_type`, or this module's own top-level
-    /// struct via the resolver), making this a static-function reference.
-    /// Reports the most precise error it can when the head names nothing
-    /// usable -- `ModuleNotImported` only when the head is genuinely
-    /// unknown, never when it exists but is the wrong kind of thing (a
-    /// wrong "add `import ...;`" hint would be worse than none).
+    /// head may instead name a struct *type*, making this a static-function
+    /// reference. Reports `ModuleNotImported` only when the head is
+    /// genuinely unknown, never when it exists but is the wrong kind of
+    /// thing.
     pub(super) fn resolve_type_qualified_value(
         &mut self,
         node_id: HirId,
@@ -317,11 +284,9 @@ impl<'r> Analyzer<'r> {
         path: &omega_parser::prelude::Path,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        // `str` is deliberately absent from `defined_types` (the `*str`
-        // feature's own invariant -- see `Context::resolve_type`'s doc
-        // comment), so `str::from_bytes_unchecked(...)`-style static calls
-        // on a `for str` extension spec need this one narrow carve-out to
-        // even reach `resolve_type_member` at all.
+        // `str` is deliberately absent from `defined_types` (see
+        // `Context::resolve_type`), so a `str::from_bytes_unchecked(...)`-
+        // style static call needs this narrow carve-out.
         if path.head.as_ref() == "str" {
             return self.resolve_type_member(
                 node_id,
@@ -334,10 +299,9 @@ impl<'r> Analyzer<'r> {
             return self.resolve_type_member(node_id, span, &head_type, &path.tail);
         }
 
-        // A plain (non-generic) *type* import alias resolves outright,
-        // exactly the same lazy-alias treatment `Context::resolve_type`
-        // gives an unqualified `Type::Named` -- see its own comment for why
-        // this can no longer be caught by `find_defined_type` above.
+        // A plain (non-generic) *type* import alias resolves outright, same
+        // lazy-alias treatment `Context::resolve_type` gives an unqualified
+        // `Type::Named`.
         let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
         if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.resolve_type_member(node_id, span, &t, &path.tail);
@@ -356,11 +320,9 @@ impl<'r> Analyzer<'r> {
                 .chain(std::iter::once(path.head.clone()))
                 .collect(),
         };
-        // A bare reference to a generic enum's unit variant (`Option::
-        // None`, no `{ }` at all -- so no field values to unify against,
-        // unlike a literal) can still be inferred from an `expected`
-        // (surrounding-context) type -- see `infer_literal_type_args`,
-        // called here with no fields.
+        // A bare reference to a generic enum's unit variant (`Option::None`,
+        // no fields to unify against) can still be inferred from an
+        // `expected` type -- see `infer_literal_type_args`.
         let variant = path.tail.first();
         let result = match self.generic_literal_signature_with_ambient(
             std::slice::from_ref(&path.head),
@@ -422,12 +384,9 @@ impl<'r> Analyzer<'r> {
 
     /// A place root whose path carries explicit generic arguments
     /// (`Optional<u32>::Some`, `List<u8>::new`, `sum_generic<f64>`): the
-    /// argumented prefix resolves through the same instantiating
-    /// `resolve_item` query every other generic reference uses, and
-    /// whatever one segment may follow it resolves as a member of the
-    /// resulting type (`resolve_type_member`). An instantiated *value* (a
-    /// generic function referenced with explicit arguments) is legal only
-    /// with nothing after it.
+    /// argumented prefix resolves through `resolve_item`, and any trailing
+    /// segment resolves as a member of the result. An instantiated *value*
+    /// is legal only with nothing after it.
     pub(super) fn resolve_generic_args_place(
         &mut self,
         node_id: HirId,
@@ -492,8 +451,7 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Resolves an `ExprPath`'s written `<T, ...>` arguments -- always
-    /// indirect, same reasoning as `Type::Generic`'s argument resolution in
-    /// `Context::resolve_type`.
+    /// indirect, same as `Type::Generic`'s in `Context::resolve_type`.
     pub(super) fn resolve_generic_arg_list(
         &mut self,
         node_id: HirId,
@@ -506,9 +464,9 @@ impl<'r> Analyzer<'r> {
     }
 
     /// The absolute item path of an expression path's generic-argumented
-    /// *prefix* (`Optional` in `Optional<u32>::Some`, `mymodule::List` in
-    /// `mymodule::List<u8>::new`) -- the same alias-vs-own-module priority
-    /// `Context::resolve_absolute_item_path` applies to type positions.
+    /// *prefix* (`Optional` in `Optional<u32>::Some`) -- same
+    /// alias-vs-own-module priority `Context::resolve_absolute_item_path`
+    /// applies to type positions.
     pub(super) fn generic_prefix_absolute(
         &mut self,
         node_id: HirId,
@@ -606,16 +564,12 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// `Type::member` -- resolves `rest` (the path segments after the type's
-    /// own name, always non-empty) against `r#type`'s members. For a struct
-    /// that can only be a static function; for an enum it's a variant
-    /// (producing a whole constructed value -- the unit form, so only valid
-    /// for a body-less variant) or a static function. A function declared
-    /// *without* `self` is static: callable through the type's name alone,
-    /// with no instance. A static function resolves to an ordinary
-    /// `Storage::Function` place root, exactly what a member-call callee
-    /// resolves to; a unit variant resolves to a `CheckedPlaceRoot::Expr`
-    /// construction -- codegen needs no new machinery for either.
+    /// `Type::member` -- resolves `rest` against `r#type`'s members. For a
+    /// struct that can only be a static function; for an enum it's a variant
+    /// (a body-less unit construction) or a static function. A function
+    /// declared without `self` is static. A static function resolves to an
+    /// ordinary `Storage::Function` place root; a unit variant resolves to a
+    /// `CheckedPlaceRoot::Expr` construction.
     fn resolve_type_member(
         &mut self,
         node_id: HirId,
@@ -841,10 +795,9 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `Enum::Variant` in value position -- the unit construction. Only a
-    /// variant with no fields at all -- neither its own body fields nor
-    /// (now) the enum's shared dynamic fields -- has one (there is no
-    /// implicit zeroing to fill a body with); the result is an ordinary
-    /// expression place root whose type statically knows its variant.
+    /// variant with no body fields and no shared dynamic fields has one
+    /// (there is no implicit zeroing); the result is an ordinary expression
+    /// place root whose type statically knows its variant.
     fn resolve_unit_variant(
         &mut self,
         node_id: HirId,

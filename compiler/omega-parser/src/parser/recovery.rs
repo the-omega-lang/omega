@@ -1,27 +1,20 @@
 //! Panic-mode error recovery: after a construct fails to parse, skip
 //! forward to a plausible boundary and keep going, so one mistake produces
 //! one error instead of aborting the whole file. Two granularities --
-//! top-level item boundaries and function-body statement boundaries -- not
-//! finer-grained; a malformed sub-expression already means its enclosing
-//! statement can't be trusted, so bailing to the nearest statement/item
-//! boundary is the standard, sufficient granularity real compilers use.
+//! top-level item boundaries and function-body statement boundaries -- since
+//! a malformed sub-expression already means its enclosing statement can't be
+//! trusted.
 //!
 //! Both helpers here are bracket-depth-aware: an entire `(...)`/`[...]`/
-//! `{...}` is skipped as one atomic unit regardless of what's inside it, so
-//! e.g. a `;` inside a function call's argument list is never mistaken for
-//! a statement terminator.
+//! `{...}` is skipped as one atomic unit, so e.g. a `;` inside a function
+//! call's argument list is never mistaken for a statement terminator.
 //!
 //! **Not** handled here: `for init; cond; post { ... }`'s own two internal,
-//! unparenthesized clause-separator `;`s. If an error occurs while parsing
-//! one of `for`'s own clauses, the parser is already lexically *inside* the
-//! header at that point -- from there, the very next depth-0 `;` this
-//! module's generic scan would find genuinely *is* the for-loop's own next
-//! clause separator, not an unrelated statement terminator, so stopping
-//! there would resynchronize mid-header and cascade into spurious errors on
-//! the rest of an otherwise-valid loop. That's a distinct, local problem
-//! only `for`'s own parsing function is in a position to fix (by scanning
-//! forward for its own body's `{` and skipping the whole body as a unit
-//! instead) -- see `parser::statement`'s `parse_for`.
+//! unparenthesized clause-separator `;`s -- stopping at the next depth-0 `;`
+//! while still inside the header would resynchronize mid-header rather than
+//! at the loop's actual boundary. `for`'s own parsing function handles that
+//! separately, by skipping its whole body as a unit instead (see
+//! `parser::statement::parse_for`).
 
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
@@ -66,14 +59,11 @@ fn synchronize(p: &mut Parser, starts_boundary: fn(&TokenKind) -> bool, stop_at_
 }
 
 /// Consumes a `(...)`/`[...]`/`{...}` group wholesale, tracking nesting
-/// depth across all three bracket kinds (not per-kind -- true of any
-/// single-depth-counter scan, and acceptable here since a well-formed
-/// source never crosses delimiters like `{ ( }`; recovery is already
-/// operating on malformed input, so this only needs to be a reasonable
-/// best effort, not a perfect one). Assumes `p.peek()` is currently one of
-/// the three opening delimiters. `pub(crate)`: also used by
-/// `parser::statement::recover_for_header` for its own local, `for`-header-
-/// specific recovery (see that function's doc comment).
+/// depth across all three bracket kinds together rather than per-kind --
+/// fine here since recovery is already operating on malformed input and
+/// only needs to be a reasonable best effort. Assumes `p.peek()` is
+/// currently one of the three opening delimiters. `pub(crate)`: also used
+/// by `parser::statement::recover_for_header`.
 pub(crate) fn skip_balanced_group(p: &mut Parser) {
     let mut depth = 0usize;
     loop {

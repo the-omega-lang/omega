@@ -153,10 +153,6 @@ impl<'ctx> Codegen<'ctx> {
         self.arg_count = body.arg_count;
         self.local_args = vec![Vec::new(); body.locals.len()];
 
-        // One combined alloca for every non-parameter local, laid out by
-        // `layout::locals_layout` -- the exact counterpart of Cranelift's
-        // `frame_slot` (see its doc comment for why one shared slot, not
-        // one per local).
         let non_param_types: Vec<ResolvedType> = body.locals[body.arg_count..]
             .iter()
             .map(|local| local.r#type.clone())
@@ -186,13 +182,9 @@ impl<'ctx> Codegen<'ctx> {
         self.builder.position_at_end(blocks[0]);
 
         // One combined alloca for every non-parameter local, laid out by
-        // `layout::locals_layout` -- the exact counterpart of Cranelift's
-        // `frame_slot` (see its doc comment for why one shared slot, not
-        // one per local).
-        //
-        // `stack_align_shift` answers in *shift* units (a backend
-        // stack-slot API's own currency); LLVM wants bytes, so `1 <<
-        // shift`, exactly like every other `entry_alloca` caller.
+        // `layout::locals_layout` -- the counterpart of Cranelift's
+        // `frame_slot`. `stack_align_shift` answers in shift units, so
+        // `1 << shift` converts to the bytes `entry_alloca` wants.
         let frame_slot = if frame.packed_end == 0 {
             None
         } else {

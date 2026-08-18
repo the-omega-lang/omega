@@ -43,13 +43,10 @@
 //!
 //! # Spans
 //!
-//! A construct that can be the subject of a diagnostic owns its own span.
-//! This is load-bearing rather than decorative: spans used to live only on
-//! the parser's wrapper nodes (`ItemNode`/`StatementNode`), and anything
-//! never wrapped in one -- every method, field, parameter and spec function
-//! -- inherited its parent's, so a duplicate struct field underlined the
-//! whole struct and a return-type mismatch underlined the whole body. See
-//! [`HirParam::name_span`] and [`HirFunctionDef::return_type_span`].
+//! A construct that can be the subject of a diagnostic owns its own span,
+//! rather than inheriting the enclosing declaration's -- load-bearing
+//! rather than decorative. See [`HirParam::name_span`] and
+//! [`HirFunctionDef::return_type_span`].
 
 pub mod hir;
 pub mod ids;

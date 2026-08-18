@@ -21,21 +21,15 @@ use omega_mir::{
 };
 
 /// A `ConstValue::Ref(inner)`'s own real type, given the *pointee* type its
-/// enclosing `ResolvedType::Pointer` carries. For the ordinary case (`&x`
-/// where `x`'s own type already exactly matches the pointer's declared
-/// pointee -- e.g. `&some_i32`, pointee `I32`), `inner` and `pointee`
-/// genuinely are the same type, so this just returns `leaf_type` unchanged.
-/// But `CastKind::DropLength` (see `comp_eval::Interpreter::eval_cast`)
-/// produces a `Ref` wrapping an `Array` of `leaf_type`-typed elements (the
-/// fat pointer's raw bytes/items, rewrapped as an inline block so taking
-/// their address gives exactly the thin pointer a `DropLength` cast wants)
-/// -- there, `inner`'s real type is `SizedArray(leaf_type, N)`, not
-/// `leaf_type` itself, and building/hashing/writing it as the wrong type
-/// would either panic (wrong `ResolvedType` variant) or produce the wrong
-/// bytes. Reconstructing this from `inner`'s own shape (rather than
-/// carrying a real `ResolvedType` on `ConstValue::Ref` directly, which no
-/// other `ConstValue` variant does either) keeps `ConstValue` itself
-/// self-contained.
+/// enclosing `ResolvedType::Pointer` carries. Usually `inner` and `pointee`
+/// are the same type (`&some_i32`, pointee `I32`), so this returns
+/// `leaf_type` unchanged -- but `CastKind::DropLength` produces a `Ref`
+/// wrapping an `Array` of `leaf_type`-typed elements (see
+/// `comp_eval::Interpreter::eval_cast`), where `inner`'s real type is
+/// `SizedArray(leaf_type, N)`, not `leaf_type` itself; building/hashing/
+/// writing it as the wrong type would panic or produce the wrong bytes.
+/// Reconstructed from `inner`'s own shape rather than carried directly on
+/// `ConstValue::Ref` (which would break `ConstValue`'s self-containment).
 fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedType {
     match inner {
         ConstValue::Array(elements) => {
@@ -54,18 +48,12 @@ impl Codegen {
     /// enum header/dynamic-field constants -- the caller alone decides
     /// whether the surrounding value is typed `*str` or `*[u8]`.
     ///
-    /// Both leaves are recomputed at every call site, deliberately never
-    /// cached *within* a function the way the underlying `DataId` is
-    /// across the module: `global_value`/`iconst` are each one cheap,
-    /// side-effect-free instruction, but the `Value` they produce is tied
-    /// to the specific block that defines it -- Cranelift is strict SSA,
-    /// so reusing one across two sibling blocks (e.g. the same literal
-    /// appearing in two separate, non-nested loops) is a dominance
-    /// violation the verifier rejects, not a valid optimization. (This
-    /// was a real, if narrow-triggering, bug: caching the pointer `Value`
-    /// per function in a `HashMap<String, Value>` here, keyed purely by
-    /// content and never invalidated mid-function, crashed the compiler
-    /// on exactly that "same literal, two sibling blocks" shape.)
+    /// Both leaves are recomputed at every call site, never cached
+    /// *within* a function the way the underlying `DataId` is across the
+    /// module: a `Value` is tied to the block that defines it under
+    /// Cranelift's strict SSA, so reusing one across two sibling blocks
+    /// (e.g. the same literal in two separate, non-nested loops) is a
+    /// dominance violation, not a valid optimization.
     fn emit_bytes(&mut self, builder: &mut FunctionBuilder, s: String) -> Vec<Value> {
         let len = builder.ins().iconst(types::I32, s.len() as i64);
 
@@ -351,20 +339,15 @@ impl Codegen {
     /// (`Str`, nested `Slice`) as a zero placeholder in the physical
     /// buffer -- the actual target only exists as a `write_data_addr`
     /// relocation recorded in `desc`, invisible to a hash over raw bytes
-    /// alone. Hashing the physical buffer directly would therefore let
-    /// two constant slices that point at *different* strings collide on
-    /// one symbol name whenever their non-pointer bytes happen to
-    /// coincide (e.g. `&["a"]` and `&["b"]`, both a single same-length
-    /// string) -- harmless under today's `Local` linkage, but a real
-    /// silent miscompile risk if these ever move to weak/COMDAT linkage
-    /// (two genuinely different constants folded into one because the
-    /// linker trusted a colliding name). So this walks the *logical*
-    /// `ConstValue` tree instead, writing a string's real bytes (length-
-    /// prefixed, since it's the only variable-length leaf here) rather
-    /// than a placeholder. Every other leaf is fixed-width (given
-    /// `r#type`, shared across one call) or already length-prefixed
-    /// (`Slice`'s element count), so the whole traversal is
-    /// self-delimiting with no separators needed.
+    /// alone. Hashing the physical buffer directly would let two constant
+    /// slices pointing at *different* strings collide on one symbol name
+    /// whenever their non-pointer bytes coincide (e.g. `&["a"]` and
+    /// `&["b"]`) -- these blobs are declared `Preemptible` (weak), so a
+    /// collision here is a live silent-miscompile risk, not a hypothetical
+    /// one. Walking the *logical* `ConstValue` tree instead (a string's
+    /// real bytes, length-prefixed since it's the only variable-length
+    /// leaf) avoids it; every other leaf is fixed-width or already
+    /// length-prefixed, so no separators are needed.
     fn hash_const_element(&mut self, out: &mut Vec<u8>, value: &ConstValue, r#type: &ResolvedType) {
         match value {
             ConstValue::Number(number) => {
@@ -848,9 +831,9 @@ impl Codegen {
                 // Uniformly covers assignment to a local, through any depth
                 // of explicit/seamless deref (`*ptr = 5;`, `ptr.field = 5;`),
                 // and through array indexing -- whatever `target` resolved
-                // to, `store_scalars` only cares whether it has an address
-                // (`todo!()`s itself for the one case that doesn't yet, a
-                // parameter with no deref in between).
+                // to, `store_scalars` only cares whether it has an address.
+                // A bare parameter (no deref in between) never reaches here:
+                // `crate::preflight` rejects that shape before any backend runs.
                 let (storage, _) = self.resolve_place_storage(&target, builder);
                 self.store_scalars(builder, &storage, &values);
                 values
@@ -1089,26 +1072,15 @@ impl Codegen {
                 let ptr_type = self.pointer_type();
 
                 // A slice's data pointer and full length, however `base` is
-                // actually stored: a `SizedArray`'s elements live inline, so
-                // the pointer is the storage's own address and the length is
-                // a compile-time constant; a `Slice`/`Str` already carries
-                // both as its two flattened leaves (identical layout for
-                // both -- re-slicing a `*str` produces another `*str`,
-                // decided by `node.r#type` above this match, not by
-                // anything read here); `Array` (`*[]T`) has no length at
-                // all, at compile time or runtime -- it's genuinely just a
-                // pointer with array-like properties (see `ResolvedType::
-                // Array`'s doc comment), so its own *value* (not its
-                // storage's own address, unlike `SizedArray`) is the data
-                // pointer, matching `Slice`/`Str`'s "load the pointer value"
-                // treatment, not `SizedArray`'s "take the storage's own
-                // address" one. `full_len`'s placeholder `0` is never
-                // actually read: `Analyzer::analyze_slice` requires an
-                // explicit `end` whenever the base has no length to default
-                // to (`MissingSliceEnd`), so `end` below is always `Some`
-                // for this base kind. A plain `Pointer` never reaches this
-                // match at all -- `analyze_slice` never produces a `MirExpr::
-                // Slice` with one as its base.
+                // stored: a `SizedArray`'s elements live inline, so the
+                // pointer is the storage's own address and the length a
+                // compile-time constant; `Slice`/`Str` already carry both as
+                // their two flattened leaves; `Array` (`*[]T`) has no length
+                // at compile or runtime, so its own value (not its storage's
+                // address) is the data pointer, and the `0` placeholder for
+                // `full_len` is never read -- `Analyzer::analyze_slice`
+                // requires an explicit `end` whenever the base has no length
+                // to default to. A plain `Pointer` never reaches this match.
                 let (data_ptr, full_len) = match &base_type {
                     ResolvedType::SizedArray(_, size) => {
                         let ptr = self.place_storage_address(builder, &storage);

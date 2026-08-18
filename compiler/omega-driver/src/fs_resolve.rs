@@ -4,26 +4,17 @@ use omega_parser::prelude::Ident;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// A root directory's own bare, on-disk identity: its basename. This is
-/// only ever the *default* declared identity of a project root -- both the
-/// local package's own root and every `--extern` target may instead be
-/// given an explicit override (`--name=`/`--extern=<name>:<dir>`) that
-/// differs from it, in which case `relabel_root` is what actually makes
-/// that override apply beneath the root, not just at it. `None` for a path
-/// with no usable final component (`/`, `.`, `..`, or one that isn't valid
-/// UTF-8).
+/// A root directory's default declared identity (its basename); overridden
+/// per-root by `--name=`/`--extern=<name>:<dir>`, applied via `relabel_root`.
+/// `None` for a path with no usable final component.
 pub fn basename(dir: &Path) -> Option<Ident> {
     dir.file_name()?.to_str().map(|s| Ident(s.to_string()))
 }
 
 /// Rewrites every path in a freshly discovered tree so it's addressed by
-/// `declared` instead of whatever the root's real on-disk name turned out
-/// to be -- the same translation `--name=`/`--extern=<name>:<dir>` already
-/// apply to the root itself, extended to everything nested beneath it, so
-/// a directory honestly named `libc` can still present as the package
-/// `plat` in full, not just at its own entry. A no-op (returns `tree`
-/// unchanged) when the tree is empty/malformed (no single root segment to
-/// relabel) or already matches `declared`.
+/// `declared` instead of the root's on-disk name, extending the
+/// `--name=`/`--extern=<name>:<dir>` override to nested paths too. No-op if
+/// the tree has no single root segment, or already matches `declared`.
 pub fn relabel_root(
     tree: HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     declared: &Ident,
@@ -51,13 +42,11 @@ pub fn relabel_root(
         .collect()
 }
 
-/// Where a module's own content (if any) and further children (if any) live
-/// on disk. See the module-tree discovery rule this crate implements: a
-/// bare `name.omg` file is a leaf (`children_dir: None`); a directory
-/// `name/` is a module whose own items come from `name/name.omg` if that
-/// file exists (`own_file: Some`) or nowhere at all (a namespace-only
-/// module, `own_file: None`) -- either way its children live in `name/`
-/// (`children_dir: Some`).
+/// Where a module's own content (if any) and children (if any) live on disk.
+/// A bare `name.omg` file is a leaf (`children_dir: None`); a directory
+/// `name/` is a module whose items come from `name/name.omg` if present
+/// (`own_file: Some`) or is namespace-only (`own_file: None`); either way
+/// its children live in `name/` (`children_dir: Some`).
 #[derive(Clone)]
 pub struct ModuleLocation {
     pub own_file: Option<PathBuf>,
@@ -66,14 +55,11 @@ pub struct ModuleLocation {
 
 enum SegmentError {
     NotFound,
-    /// Both `dir/name.omg` and `dir/name/` exist -- ambiguous, deliberately
-    /// not resolved by an implicit tie-break rule.
+    /// Both `dir/name.omg` and `dir/name/` exist -- deliberately not tie-broken.
     Ambiguous,
 }
 
-/// Resolves one path segment (`name`) directly inside `dir` -- no
-/// recursion; `discover_into` is the only caller, walking one path
-/// component of the tree at a time.
+/// Resolves one path segment inside `dir`, no recursion.
 fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentError> {
     let file_path = dir.join(format!("{}.omg", name.as_ref()));
     let dir_path = dir.join(name.as_ref());
@@ -92,11 +78,8 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
     }
 }
 
-/// A very small mirror of the lexer's own identifier grammar
-/// (`omega_parser::lexer`'s private `is_ident_start`/`is_ident_continue`) --
-/// enough to tell a real module segment apart from a dotfile or anything
-/// else that could never be a valid `Ident` in the first place, without
-/// this crate depending on lexer internals for it.
+/// Small local mirror of the lexer's identifier grammar, so a dotfile or
+/// other non-`Ident` name is skipped without depending on lexer internals.
 fn is_module_segment_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -106,42 +89,25 @@ fn is_module_segment_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Recursively discovers every module reachable under `root` -- the eager
-/// inventory backing `ModuleRoots::locate`, for the local package's own
-/// root and for every registered `--extern`'s root alike (`ModuleRoots::
-/// new` calls this for both). Reuses `resolve_segment` for each name
-/// actually found on disk, so the file-vs-directory decision is made in
-/// exactly one place regardless of whether a path was asked about or
-/// discovered. Metadata-only -- nothing here ever opens a file, only
-/// `read_dir`/`is_file`/`is_dir`, so this stays cheap no matter how large
-/// the tree is.
+/// Recursively discovers every module reachable under `root` (used for the
+/// local package root and every `--extern` root). Metadata-only --
+/// `read_dir`/`is_file`/`is_dir` only, no file ever opened.
 ///
-/// A directory entry whose name isn't a syntactically valid module segment
-/// (a dotfile, anything with characters no `Ident` can have) is silently
-/// skipped -- it could never be resolved by an on-demand lookup either, so
-/// walking into it (`.git/`, say) would only cost time for zero benefit.
-///
-/// An ambiguous segment (both `name.omg` and `name/` present) is recorded
-/// as `Err(AmbiguousModule(..))` rather than silently dropped, so a later
-/// lookup against this inventory reports the real diagnostic instead of a
-/// misleading "doesn't exist".
+/// A non-`Ident`-shaped entry name (dotfile, etc.) is skipped. An ambiguous
+/// segment (both `name.omg` and `name/` present) is recorded as
+/// `Err(AmbiguousModule)` rather than dropped, so lookup reports the real
+/// diagnostic instead of "doesn't exist".
 pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
     let mut out = HashMap::new();
-    // Unreachable in practice: `omgc` rejects a root with no usable final
-    // component (`.`, `/`, `..`) up front, for the local package and every
-    // `--extern` alike, precisely so this can never become a *second*,
-    // silent way to end up with an empty tree and an empty object file. The
-    // empty map stays here only because this function is total; it is not a
-    // supported outcome.
+    // `omgc` rejects a root with no usable final component up front, so this
+    // is unreachable in practice; kept because the function must be total.
     let Some(name) = basename(root) else {
         return out;
     };
 
-    // A package root follows the same directory-shaped-module convention as
-    // every nested directory: `<root>/<basename>.omg` is its own content and
-    // the root directory contains its children.  A same-named child directory
-    // would claim the identical path, so preserve the ordinary ambiguity
-    // diagnostic rather than inventing a root-only tie break.
+    // The root follows the same directory-shaped-module convention as any
+    // nested directory: `<root>/<basename>.omg` is its own content, and a
+    // same-named child directory is the ordinary ambiguity case.
     let own_file = root.join(format!("{}.omg", name.as_ref()));
     let same_named_child = root.join(name.as_ref());
     let root_path = vec![name.clone()];
@@ -164,16 +130,10 @@ pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, 
     out
 }
 
-/// `skip`: the one entry name to ignore in `dir`, when `dir` is itself a
-/// directory-shaped module's own `children_dir` -- that directory's
-/// `<name>.omg` is exactly the `own_file` its *parent* call already
-/// recorded one level up (at `prefix` before `name` was pushed onto it,
-/// see the recursive call below), not a fresh sibling. Without this, a
-/// directory-shaped module named the same as its own entry file
-/// (`X/X.omg`) gets double-counted: this same rescan would find `X.omg`
-/// again and register a spurious `[...prefix, "X"]` pointing at the
-/// identical file `[...prefix]` already has. `None` only at the very top
-/// after `discover_tree` has registered the root module itself.
+/// `skip`: the one entry name to ignore in `dir`, when `dir` is a
+/// directory-shaped module's own `children_dir` -- avoids double-counting
+/// that module's own `<name>.omg` as a spurious child of itself. `None`
+/// only at the top, after `discover_tree` registers the root module.
 fn discover_into(
     dir: &Path,
     prefix: &mut ModulePath,
@@ -204,15 +164,11 @@ fn discover_into(
                     discover_into(&children_dir, prefix, out, Some(&name));
                 }
             }
-            // A real, on-disk collision (both `name.omg` and `name/`
-            // exist) -- kept, not dropped, so a lookup against this
-            // inventory reports it instead of a misleading "not found".
+            // Real on-disk collision -- kept, not dropped, for a proper diagnostic.
             Err(SegmentError::Ambiguous) => {
                 out.insert(prefix.clone(), Err(ResolveError::AmbiguousModule(prefix.clone())));
             }
-            // Can only happen from a filesystem race (removed between
-            // `read_dir` and this check) -- `name` was just observed to
-            // exist, so this is never a real "doesn't exist" case.
+            // Only a filesystem race (entry vanished after read_dir) could hit this.
             Err(SegmentError::NotFound) => {}
         }
         prefix.pop();

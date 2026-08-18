@@ -240,12 +240,10 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
         call_trace: vec![],
     };
     let result = interp.eval_expr(expr);
-    // A `defer` reached directly by the outermost `comp <expr>` (rather
-    // than inside a function `call_function` itself calls into, which
-    // already drains its own frame's defers on the way out -- see its own
-    // doc comment) has no function-call boundary of its own to run at the
-    // end of; this frame is the closest thing to one. Same "only once the
-    // value itself evaluated cleanly" rule `call_function` applies.
+    // The outermost frame has no function-call boundary of its own to run
+    // its defers at (unlike `call_function`'s frames, drained on the way
+    // out) -- drain it here instead, under the same "only once the value
+    // evaluated cleanly" rule.
     let result = match result {
         Ok(value) => {
             let defers = std::mem::take(&mut interp.frame().defers);
@@ -263,12 +261,10 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
     match result {
         Ok(value) => Ok(value),
         Err(Outcome::Error(e)) => Err(e),
-        // A bare `return`/`break`/`continue` reaching the outermost `comp
-        // <expr>` with no enclosing call/loop to catch it is impossible in
-        // a validly checked tree (analysis already rejects `return` outside
-        // a function, `break`/`continue` outside a loop) -- if it happens
-        // anyway, that's an analyzer/interpreter bug, not a user-reportable
-        // `comp` failure.
+        // A signal escaping the outermost `comp` with no enclosing call/loop
+        // to catch it is impossible in a validly checked tree (analysis
+        // already rejects `return`/`break`/`continue` outside their
+        // contexts) -- an analyzer/interpreter bug, not a user-facing error.
         Err(Outcome::Signal(_)) => {
             unreachable!("control-flow signal escaped the outermost comp evaluation")
         }
@@ -308,19 +304,16 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::Bool(b) => Ok(ConstValue::Bool(*b)),
             CheckedExpr::Char(c) => Ok(ConstValue::Char(*c)),
             CheckedExpr::String(s) => Ok(ConstValue::Str(s.clone())),
-            // No dedicated byte-string `ConstValue` shape -- represented as
-            // an ordinary `Slice` of `U8` `Number`s, matching how every
-            // other `comp`-evaluated slice is represented.
+            // No dedicated byte-string `ConstValue` shape -- an ordinary
+            // `Slice` of `U8` `Number`s instead.
             CheckedExpr::ByteString(s) => Ok(ConstValue::Slice(
                 s.bytes()
                     .map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64)))
                     .collect(),
             )),
             // Already a fully evaluated constant -- an enum tag/header
-            // value, a `&[...]` literal, or (see `Analyzer::analyze_comp`)
-            // a previously-evaluated `comp <expr>` reached again through
-            // another comp evaluation (e.g. a `comp` binding's own value,
-            // substituted in at every use site).
+            // value, a `&[...]` literal, or a previously-evaluated `comp`
+            // binding substituted in at its use site.
             CheckedExpr::Const(value) => Ok(value.clone()),
             CheckedExpr::FunctionCall(call) => self.eval_call(call, node.span),
             CheckedExpr::Assignment(assign) => {
@@ -349,10 +342,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 Ok(ConstValue::Array(values))
             }
             CheckedExpr::StructLiteral(lit) => {
-                // `fields` is already sorted into `field_index` order by
-                // analysis (see `CheckedStructLiteral`'s doc comment) --
-                // evaluated in that same (source) order for side effects,
-                // then stored positionally.
+                // Evaluated in source order (for side effects), stored
+                // positionally by `field_index`.
                 let mut values: Vec<Option<ConstValue>> =
                     (0..lit.fields.len()).map(|_| None).collect();
                 for field in &lit.fields {
@@ -375,13 +366,10 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::EnumConstruct(construct) => {
                 let (tag, header, dynamic_count) =
                     self.enum_variant_facts(node, construct.variant_index)?;
-                // `construct.fields` is in *source* (evaluation) order, each
-                // entry carrying its *declared* position in the combined
-                // "dynamic fields, then this variant's own body fields"
-                // list (see `CheckedEnumConstruct`'s doc comment) -- values
-                // are evaluated in source order (their side effects must
-                // run in that order) but stored positionally, exactly like
-                // `CheckedExpr::StructLiteral` just above.
+                // Same source-order-eval, positional-store rule as
+                // `StructLiteral` above; `field_index` here positions into
+                // the combined "dynamic fields, then this variant's body
+                // fields" list.
                 let mut values: Vec<Option<ConstValue>> =
                     (0..construct.fields.len()).map(|_| None).collect();
                 for field in &construct.fields {
@@ -417,10 +405,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::Slice(slice) => self.eval_slice(slice, node.span),
             CheckedExpr::Cast(cast) => self.eval_cast(cast, node.span),
-            // `sizeof` answers the *real* target: `sizeof<usize>` is 4 on a
-            // 32-bit target, 8 on a 64-bit one -- the same width every
-            // other width-sensitive question resolves against (see
-            // `ResolvedType::numeric_kind`).
+            // `sizeof` answers the *real* target width, e.g. `sizeof<usize>`
+            // is 4 on 32-bit, 8 on 64-bit.
             CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
                 crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
             ))),
@@ -493,10 +479,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     fn eval_binary_op(&mut self, bin: &CheckedBinaryOp, span: Span) -> CompResult<ConstValue> {
         let left = self.eval_expr(&bin.left)?;
         let right = self.eval_expr(&bin.right)?;
-        // Analysis already guarantees both operands share one resolved
-        // numeric type (see `CheckedBinaryOp`'s doc comment) -- the
-        // interpreter only has to pick signed/unsigned/float arithmetic
-        // from the *values'* own shape, never re-check agreement.
+        // Analysis already guarantees both operands share one numeric type,
+        // so the interpreter only picks signed/unsigned/float from shape,
+        // never re-checks agreement.
         match (left, right) {
             (ConstValue::Number(l), ConstValue::Number(r)) => {
                 self.eval_numeric_binary_op(bin.op, l, r, span)
@@ -559,9 +544,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 (Unsigned(l), Unsigned(r)) => l.cmp(&r),
                 (Float(l), Float(r)) => match l.partial_cmp(&r) {
                     Some(ord) => ord,
-                    // NaN: every ordered comparison is false, `!=` is true
-                    // -- `Eq`/`Ne` are handled separately, below, so this
-                    // arm only ever needs to make `<`/`<=`/`>`/`>=` false.
+                    // NaN: only `<`/`<=`/`>`/`>=` reach here (`Eq`/`Ne` are
+                    // handled separately below), and all are false.
                     None => return Ok(ConstValue::Bool(false)),
                 },
                 _ => {
@@ -686,22 +670,13 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     ) -> CompResult<ConstValue> {
         let base = self.eval_expr(&cast.base)?;
         match cast.kind {
-            // Same underlying representation on both sides -- including the
-            // str/byte-slice family's "both leaves, unchanged" case, which
-            // needs no per-shape handling here since the `ConstValue` is
-            // simply carried through as-is either way.
+            // Same representation on both sides, including the str/slice
+            // "both leaves unchanged" case -- carried through as-is.
             CastKind::Reinterpret => Ok(base),
-            // `*str`/`*[?]T` (fat, `[ptr, len]`) -> `*u8`/`*T` (thin) --
-            // keeps the pointer leaf, discards the length, exactly like
-            // ordinary (non-`comp`) `DropLength` codegen does. Represented
-            // as `&<the raw bytes/elements, as an inline Array>`: `Ref`
-            // already means "address of a separately-built piece of comp
-            // data" (see its doc comment), and an `Array`'s own leaves are
-            // already written inline with no indirection of their own --
-            // exactly the byte layout a thin pointer's pointee has. Doesn't
-            // alias the *same* data object the fat-pointer form would use
-            // (a fresh one is built instead) -- harmless: nothing needs
-            // this pointer to be reference-equal to another, only valid.
+            // `*str`/`*[?]T` (fat) -> `*u8`/`*T` (thin): keeps the pointer
+            // leaf, discards the length, represented as `&<Array>` (a fresh
+            // data object, not an alias of the fat-pointer form -- harmless,
+            // nothing needs reference-equality here, only validity).
             CastKind::DropLength => match base {
                 ConstValue::Str(s) => {
                     let bytes = s
@@ -720,19 +695,14 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     ),
                 )),
             },
-            // Same reasoning as `DropLength`'s own comp-unsupported case
-            // just above -- no fundamental blocker (`base` is always a
-            // `Pointer` to a `SizedArray`, which `comp` already knows how
-            // to build), just not implemented in this pass.
+            // Not implemented in this pass -- see docs/19-compile-time-evaluation.md.
             CastKind::Unsize => Err(self.err(
                 span,
                 CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"),
             )),
-            // A `spec *` object is never a comp value at all (a vtable has
-            // no compile-time meaning, see `CompErrorKind::DynamicDispatch`),
-            // so this can only ever be unreachable in practice -- kept
-            // explicit rather than folded into the numeric catch-all below,
-            // which would misdescribe what was attempted.
+            // Unreachable in practice (a vtable has no comp-time meaning),
+            // kept explicit rather than folded into the numeric catch-all
+            // below, which would misdescribe what was attempted.
             CastKind::SpecNarrow { .. } => Err(self.err(span, CompErrorKind::DynamicDispatch)),
             _ => {
                 let ConstValue::Number(n) = base else {
@@ -823,10 +793,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
     fn eval_match(&mut self, match_expr: &CheckedMatch, span: Span) -> CompResult<ConstValue> {
         for arm in &match_expr.arms {
-            // An OR of AND-groups (see `CheckedMatchArm`'s own doc comment)
-            // -- this arm runs the moment any one group's conditions all
-            // hold; a group that fails partway just moves on to the next
-            // group, never the next arm.
+            // An OR of AND-groups (see `CheckedMatchArm`) -- this arm runs
+            // once any one group's conditions all hold; a group failing
+            // partway moves to the next group, never the next arm.
             'groups: for group in &arm.conditions {
                 for condition in group {
                     match self.eval_expr(condition)? {
@@ -851,11 +820,10 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 BlockResult::Value(v) => Ok(v),
                 BlockResult::Diverged => Ok(ConstValue::Bool(false)),
             },
-            // Exhaustiveness was already proven by analysis -- falling off
-            // the end here means either a checked-tree invariant broke, or
-            // (far more likely) analysis proved coverage using information
-            // (a real enum discriminant only known here, mid-evaluation)
-            // this interpreter's own arm evaluation didn't reproduce.
+            // Exhaustiveness was already proven by analysis; reaching here
+            // means either a checked-tree invariant broke, or the
+            // interpreter's own arm evaluation didn't reproduce analysis's
+            // coverage proof (see docs/19-compile-time-evaluation.md).
             None => Err(self.err(
                 span,
                 CompErrorKind::Unsupported("an exhaustive match with no matching arm"),
@@ -900,9 +868,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         let result = self.call_function(&body, args);
         self.call_trace.pop();
         result.map_err(|outcome| match outcome {
-            // A `return` at the callee's own top level is ordinary control
-            // flow, caught right here -- never a signal that should keep
-            // unwinding into the *caller's* own frame.
+            // A `return` at the callee's own top level is caught right
+            // here, never left to unwind into the caller's frame.
             Outcome::Signal(Signal::Return(_)) => {
                 unreachable!("call_function always converts its own Return signal into a value")
             }
@@ -923,19 +890,15 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         let value = match self.eval_block(&body.body) {
             Ok(BlockResult::Value(v)) => Ok(v),
             // `Void`-returning function falling off the end with no tail --
-            // matches `CheckedBlock::tail`'s own "no trailing expression"
-            // convention; there is no meaningful value to hand back.
+            // nothing meaningful to hand back.
             Ok(BlockResult::Diverged) => Ok(ConstValue::Bool(false)),
             Err(Outcome::Signal(Signal::Return(v))) => Ok(v),
             Err(other) => Err(other),
         };
-        // Defers run only once the body itself finished evaluating cleanly
-        // (fell through, or hit an ordinary `return`) -- in FILO order,
-        // matching this language's real `defer` semantics. If the body
-        // failed instead, there's nothing for a defer to be cleaning up
-        // after: the whole comp evaluation has already failed regardless
-        // of what a deferred block might otherwise have done, so they're
-        // skipped rather than run against a value that was never produced.
+        // Defers run in FILO order, only once the body finished cleanly
+        // (fell through or hit `return`) -- if the body failed, the whole
+        // comp evaluation already failed, so they're skipped rather than
+        // run against a value that was never produced.
         let result = match value {
             Ok(v) => {
                 let defers = std::mem::take(&mut self.frame().defers);
@@ -970,8 +933,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         match stmt {
             // No initializer to run -- either a genuinely uninitialized
             // local (a later read is `ReadBeforeInit`) or immediately
-            // followed by its own desugared `Assignment` statement (see
-            // `Analyzer::analyze_walrus`).
+            // followed by its own desugared `Assignment` statement.
             CheckedStmt::Declaration(_) => Ok(()),
             CheckedStmt::ExternDeclaration(_) => Ok(()),
             CheckedStmt::Expression(expr) => {
@@ -987,10 +949,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedStmt::For(f) => self.eval_for(f),
             CheckedStmt::Break(_) => Err(Outcome::Signal(Signal::Break)),
             CheckedStmt::Continue(_) => Err(Outcome::Signal(Signal::Continue)),
-            // Queued on the *frame* (function-scoped, not block-scoped --
-            // see `Frame::defers`' doc comment), not run here -- `call_
-            // function` runs every queued defer, in FILO order, once this
-            // frame's own function body finishes evaluating.
+            // Queued on the frame (function-scoped, not block-scoped), not
+            // run here -- `call_function` drains it in FILO order once the
+            // body finishes.
             CheckedStmt::Defer(d) => {
                 self.frame().defers.push(d.body.clone());
                 Ok(())
@@ -1194,9 +1155,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     CompErrorKind::Unsupported("field access on a non-union comp value"),
                 )),
             },
-            // A `spec *Self` value has no `ConstValue` shape -- dynamic
-            // dispatch isn't comp-evaluable, so this can never actually see
-            // a real base value; reject uniformly rather than panic.
+            // A `spec *Self` value has no `ConstValue` shape and can never
+            // actually appear here; reject uniformly rather than panic.
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
                 Err(self.err(
                     span,
@@ -1219,10 +1179,8 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         }
         // A projected write (`a.b = x`, `a[i] = x`) reads the whole root
         // value, mutates the projected-into leaf, and writes the whole
-        // value back -- there's no real memory here to mutate in place
-        // through, only a `ConstValue` tree, so "mutate a leaf" is
-        // structurally a "rebuild the tree" operation, same as everywhere
-        // else in this interpreter.
+        // value back -- there's no real memory to mutate through, only a
+        // `ConstValue` tree, so "mutate a leaf" means "rebuild the tree."
         let root_value = self.read_root(&place.root, span)?;
         let updated = self.write_projections(root_value, &place.projections, value, span)?;
         self.write_root(&place.root, updated, span)

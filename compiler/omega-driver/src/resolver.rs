@@ -23,14 +23,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// One import alias's resolution state -- the same white/gray/black cycle
-/// guard items get, at `(module, alias)` granularity.
-///
-/// That granularity is what fixes a real false-cycle bug a whole-module
-/// version of this guard used to have: resolving one item's context used to
-/// require its *entire* module's import list resolved first, so two modules
-/// whose *unrelated* items happened to cross-import each other would deadlock
-/// on each other's whole list. Per-alias, only a name that genuinely,
-/// directly needs itself still reports a cycle.
+/// guard items get, at `(module, alias)` granularity rather than whole-module:
+/// a whole-module guard would deadlock two modules whose unrelated items
+/// happen to cross-import each other. Per-alias, only a name that genuinely,
+/// directly needs itself reports a cycle.
 enum AliasState {
     InProgress,
     Done(Result<ImportTarget, ResolveError>),
@@ -96,8 +92,7 @@ impl Driver {
     ) -> Result<ImportTarget, ResolveError> {
         match self.roots.locate(segments) {
             Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
-            // Real regardless of whether this turns out to be a whole-module
-            // or an item import -- must surface here, not be masked by the
+            // Real either way -- must surface here, not be masked by the
             // item-import fallback below.
             Err(e @ ResolveError::AmbiguousModule(_)) => return Err(e),
             Err(_) => {}
@@ -107,20 +102,15 @@ impl Driver {
             return Err(ResolveError::UnknownModule(segments.to_vec()));
         };
 
-        // A *generic* item import supplies no type arguments at all (those
-        // only ever appear at a use site), so eagerly instantiating here would
-        // always fail with a spurious arg-count mismatch. This defers
-        // entirely, carrying just the absolute path for the use site to
-        // substitute in later.
+        // A generic item import supplies no type arguments (those only
+        // appear at a use site), so eagerly instantiating here would always
+        // fail; defer, carrying just the absolute path.
         if self.is_generic_template(module_path, item_name)? {
             return Ok(ImportTarget::GenericItem(segments.to_vec()));
         }
 
-        // Capturing "what does this alias refer to" never embeds anything
-        // inline the way a struct field does -- always indirect here. The
-        // absolute path travels along with the resolved snapshot so a
-        // type-position consumer whose own `indirect` differs can re-resolve
-        // with its own real value instead of trusting this one.
+        // Always resolved indirect: the absolute path travels along with the
+        // snapshot so a consumer whose own `indirect` differs can re-resolve.
         let item = self.ensure_item(accessor, module_path, item_name, &[], true, reveal)?;
         Ok(ImportTarget::Item(segments.to_vec(), item))
     }
@@ -168,13 +158,9 @@ impl ModuleResolver for Driver {
     ) -> Result<Option<ImportTarget>, ResolveError> {
         let Some((target, reveal)) = self.import_entry(module_path, alias)? else {
             // No explicit `import` binds this alias -- `core` is always
-            // implicitly available as a qualified-path prefix anyway (see
-            // `docs/10-modules-and-linkage.md`'s "core is a prelude"
-            // section), except from within `core`'s own tree, which still
-            // needs real imports among its own submodules like anything
-            // else. `Item`/`GenericItem` targets never apply here -- an
-            // implicit import always names the whole `core` module, never
-            // one specific item inside it.
+            // implicitly available as a qualified-path prefix (see
+            // docs/10-modules-and-linkage.md's "core is a prelude"), except
+            // from within `core`'s own tree.
             if alias.as_ref() == crate::roots::CORE_MODULE
                 && !crate::roots::is_core_module(module_path)
                 && !self.roots.core_modules().is_empty()
@@ -200,10 +186,7 @@ impl ModuleResolver for Driver {
         let mut candidates = Vec::new();
         for path in self.roots.core_modules() {
             // Best-effort: a broken core module has its own real error
-            // recorded wherever *it* is actually checked (`core`'s own
-            // build, or whatever local code imports it directly) -- an
-            // unrelated bare-name lookup elsewhere shouldn't also surface
-            // it a second time, so it's just skipped here.
+            // recorded elsewhere, so just skip it here.
             if self.ensure_module_indexed(&path).is_err() {
                 continue;
             }
@@ -305,8 +288,7 @@ impl ModuleResolver for Driver {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
         // "Doesn't exist" is deferred to the ordinary call path, which
-        // re-derives and reports it identically -- this query only ever needs
-        // to say "not a generic function" either way.
+        // re-derives and reports it identically.
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
@@ -334,8 +316,7 @@ impl ModuleResolver for Driver {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
         // "Doesn't exist"/"not generic" are deferred to the ordinary literal
-        // path, which re-derives and reports them identically -- this query
-        // only ever needs to say "not a generic literal target" either way.
+        // path, which re-derives and reports them identically.
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
@@ -389,8 +370,7 @@ impl ModuleResolver for Driver {
         };
         // "Doesn't exist"/"not generic"/"no such static function" are all
         // deferred to the ordinary call path, which re-derives and reports
-        // them identically -- this query only ever needs to say "not this
-        // shape" either way.
+        // them identically.
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
@@ -406,10 +386,7 @@ impl ModuleResolver for Driver {
         }
         // Exactly one candidate only -- 2+ overloaded statics under this
         // name is `resolve_overloaded_static_call`'s own concern (once the
-        // owner is concrete), not this query's; composing overload scoring
-        // with owner-generic inference at once is deliberately out of
-        // scope (see `Analyzer::resolve_generic_static_call`'s doc
-        // comment), so this must not silently pick a first match.
+        // owner is concrete); this must not silently pick a first match.
         let mut matches = functions
             .iter()
             .filter(|f| &f.name == function_name && f.self_mode.is_none());
@@ -447,10 +424,8 @@ impl ModuleResolver for Driver {
     ) -> Result<Option<Vec<(HirId, ResolvedFunctionType, Visibility)>>, ResolveError> {
         // A module-resolution failure here doesn't mean this call is broken --
         // it means `module_path` (the caller's naive "everything but the last
-        // segment" split) isn't a real module at all, which is exactly what a
+        // segment" split) isn't a real module, which is exactly what a
         // `Module::Type::function` static-call path looks like from here.
-        // Swallowed for the same reason `generic_function_signature` swallows
-        // it: "not a flat item path" just means "not this query's concern".
         if self.ensure_module_indexed(module_path).is_err() {
             return Ok(None);
         }
@@ -551,11 +526,8 @@ impl ModuleResolver for Driver {
         spec_ids: &[HirId],
     ) -> Result<Vec<ResolvedConformance>, ResolveError> {
         // Goal-directed: `solve` per requested spec instantiates only the
-        // templates that can produce it, never the whole type's template
-        // set. The entries are then filtered down to exactly the requested
-        // specs -- a template producing a *different* spec under this type
-        // may still have been swept before (and registered its entry), but
-        // must not contribute here.
+        // templates that can produce it. Entries are then filtered down to
+        // exactly the requested specs.
         for id in spec_ids {
             self.solve(target, Some(id));
         }

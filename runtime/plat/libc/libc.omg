@@ -1,16 +1,13 @@
-# `plat`'s `libc` platform: the default, OS-agnostic `glue` for
-# `core::platform::GlobalAllocator`, backed directly by libc's own
-# `malloc`/`free`/`realloc`. No page-level allocation, no alignment beyond
-# whatever libc's own `malloc` already guarantees, and no error handling
-# beyond a straight pass-through -- the gap's own signature has no failure
-# channel (no `Option`/`Result`) to put anything else in.
+# `plat`'s `libc` platform: default OS-agnostic `glue` for
+# `core::platform::GlobalAllocator`, backed directly by libc's
+# `malloc`/`free`/`realloc`. No page-level allocation or alignment beyond
+# what `malloc` guarantees; no error handling beyond pass-through, since the
+# gap's signature has no failure channel.
 #
-# This directory is honestly named `libc` -- it's compiled and registered
-# as the package `plat` purely via `--name=plat`/`--extern=plat:...`
-# (see `docs/22-platform-glue.md`), never by renaming this file. The two
-# `free`s below (the raw extern and glue function) are a real, intentional
-# name collision, confirmed safe: a bare call resolves through the ordinary
-# module-level namespace.
+# This directory is named `libc` but registers as package `plat` via
+# `--name=plat`/`--extern=plat:...` (see docs/22-platform-glue.md), not by
+# renaming the file. The two `free`s below (raw extern and glue function)
+# are an intentional, confirmed-safe name collision.
 
 internal extern malloc : (size: usize) => *mut u8;
 internal extern free : (ptr: *u8) => void;

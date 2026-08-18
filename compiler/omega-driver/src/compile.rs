@@ -69,26 +69,19 @@ impl Driver {
     ) -> Result<CompiledProgram, Vec<CompileError>> {
         self.target = target;
         let local = self.local_module_paths().map_err(|e| vec![e])?;
-        // Checked here, before anything else runs, so a package with nothing
-        // in it reports that fact instead of surfacing much later as an
-        // internal assertion -- the generic-instantiation merge below indexes
-        // `modules` expecting the entry module to be present, and an empty
-        // `local` used to panic there rather than diagnose anything. See
-        // `CompileError::EmptyPackage` for the layout that reaches this.
+        // Checked before anything else runs, so an empty package reports
+        // that fact directly rather than panicking later when the
+        // generic-instantiation merge indexes `modules` expecting the entry
+        // module to be present.
         if local.is_empty() {
             return Err(vec![self.empty_package_error()]);
         }
         let extern_surface = self.collect_extern_signatures()?;
 
-        // Deduplicated, because sweeping one module for `glue` blocks is
-        // *not* idempotent -- each pass appends to `items.glues` (a list of
-        // declaration sites, where a repeat is by definition a conflict) and
-        // re-records that module's own diagnostics. The two lists genuinely
-        // can overlap: registering a package as its own `--extern`
-        // (`--name=plat --extern=plat:...`) puts the identical `ModulePath`
-        // in both, which would otherwise report every one of its glues as
-        // `MultipleGluesForGap` against itself, naming the same `HirId`
-        // twice.
+        // Deduplicated, because sweeping a module for `glue` blocks is not
+        // idempotent -- each pass appends to `items.glues`. The two lists
+        // can genuinely overlap: registering a package as its own `--extern`
+        // puts the identical `ModulePath` in both.
         let mut glue_modules: Vec<ModulePath> =
             Vec::with_capacity(extern_surface.len() + local.len());
         for path in extern_surface.iter().chain(local.iter()) {
@@ -102,19 +95,14 @@ impl Driver {
         self.collect_glue_signatures(&glue_modules);
         let (mut modules, mut warnings) = self.check_bodies(&local)?;
 
-        // Merged only now that both phases have finished, in the
-        // (deterministic) order instantiations were discovered. An
-        // instantiation whose own template is declared in an `--extern`
-        // package (not `local`) has no matching entry in `modules` at all
-        // (that only ever holds the local package's own modules) -- falls
-        // back to the first local module instead of being silently
-        // dropped, since monomorphization means this instantiation's own
-        // body is only ever produced *here*, in the consuming compilation
-        // (see this function's own doc comment: "no other compilation will
-        // ever produce it"). Safe to regroup this way because `modules`'
-        // own grouping is purely organizational -- `lower_program` lowers
-        // each module independently, with no cross-module state, so an
-        // item only needs to be present *somewhere* codegen will see it.
+        // Merged only now that both phases have finished, in the order
+        // instantiations were discovered. An instantiation whose template is
+        // declared in an `--extern` package has no matching entry in
+        // `modules` (which only holds local modules) -- falls back to the
+        // first local module rather than being dropped, since this
+        // compilation is the only one that will ever produce its body.
+        // Safe to regroup this way because `lower_program` lowers each
+        // module independently with no cross-module state.
         for (key, body) in &self.items.generic_instantiations {
             let target_index = modules
                 .iter()
@@ -130,10 +118,9 @@ impl Driver {
         // triggered, directly or transitively through another one's body.
         self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
 
-        // A genuine error inside an extern tree (a malformed primitive or
-        // conform block, say) must still surface even when nothing local
-        // imports that particular submodule. Warnings stay scoped to local
-        // modules only, deliberately.
+        // A genuine error inside an extern tree must still surface even when
+        // nothing local imports that submodule. Warnings stay scoped to
+        // local modules only, deliberately.
         let mut error_scope = local.clone();
         error_scope.extend(extern_surface);
         let errors = self.diagnostics.drain_errors(&error_scope);
@@ -169,23 +156,17 @@ impl Driver {
         CompileError::EmptyPackage { root, expected }
     }
 
-    /// Every module the local package -- the one actually being compiled --
-    /// contains, unconditionally. The filesystem is the source of truth for
-    /// what a package contains (`ModuleRoots`'s own doc comment): nothing
-    /// needs to *import* a sibling module for it to be part of the build,
-    /// only to *reference* it. An `--extern` dependency is the opposite,
-    /// deliberately -- it stays resolved lazily, one path at a time, on
-    /// demand, exactly as before; this only ever concerns the local root.
+    /// Every module the local package contains, unconditionally -- the
+    /// filesystem is the source of truth, so nothing needs to *import* a
+    /// sibling module for it to be part of the build, only to *reference*
+    /// it. An `--extern` dependency is the opposite: resolved lazily, one
+    /// path at a time, on demand.
     ///
-    /// A namespace-only directory (no own file, only further children)
-    /// contributes no module of its own. Each real module is parsed here,
-    /// not merely inventoried, so a genuine parse/macro-expansion failure
-    /// anywhere in the package is caught with its full diagnostic detail
-    /// (`load_failure`) rather than falling through to a generic
-    /// `ResolveError` the first time something else happens to reference
-    /// it -- the same precision `discover_reachable`'s old import-graph
-    /// walk used to provide, just sourced from the eager local inventory
-    /// instead of a transitive walk from one entry point.
+    /// A namespace-only directory contributes no module of its own. Each
+    /// real module is parsed here, not merely inventoried, so a genuine
+    /// parse/macro-expansion failure anywhere in the package is caught with
+    /// full diagnostic detail rather than falling through to a generic
+    /// `ResolveError` the first time something references it.
     fn local_module_paths(&mut self) -> Result<Vec<ModulePath>, CompileError> {
         // Collected into an owned `Vec` first, not iterated in place --
         // `load_failure` below needs `&mut self`, which can't coexist with
@@ -207,13 +188,10 @@ impl Driver {
                 Err(error) => return Err(self.load_failure(&path, error, None)),
             }
         }
-        // Deterministic order: `local_modules()`'s backing map never
-        // guarantees an iteration order, and `collect_signatures` mints
-        // globally-sequential synthetic ids as it visits modules -- a
-        // random order would bake a different id onto each instantiation
-        // build-to-build, exactly the reproducibility concern
-        // `collect_signatures`'s own doc comment already covers one layer
-        // down, at the item level within one module.
+        // Deterministic order: `local_modules()`'s backing map guarantees
+        // none, and `collect_signatures` mints globally-sequential synthetic
+        // ids as it visits modules -- a random order would bake a different
+        // id onto each instantiation build-to-build.
         paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
 
         for path in &paths {
@@ -225,51 +203,17 @@ impl Driver {
     }
 
     /// Every registered `--extern`'s own struct/spec surface -- signatures
-    /// only, never a body (an extern's body is never this compilation's to
-    /// check, see `check_bodies`'s doc comment) -- eagerly resolved
-    /// regardless of whether anything actually imports or path-references
-    /// them. Returns every module path visited, for `compile`'s own
-    /// `error_scope` to extend (see there for why that's required, not
-    /// optional).
-    ///
-    /// Why: before this, `sweep_gaps` only ever saw a `gap`/`glue` item
-    /// this compilation happened to *reference* (`ItemQueries::spec_cells`/
-    /// `cells.structs()` are populated purely as an `ensure_item` side
-    /// effect) -- a real `glue` sitting in an extern module nothing
-    /// imports was invisible, producing a false `UnfilledGap`, and two
-    /// different externs each shipping an unimported `glue` for the same
-    /// gap were never compared at all, silently deferring a genuine
-    /// conflict all the way to a raw "duplicate symbol" error from the
-    /// system linker (each extern's own build already compiles its own
-    /// glue into its own object file unconditionally, whether or not this
-    /// compilation ever references it -- see `check_bodies`'s doc
-    /// comment). This closes that gap by bringing every extern's
-    /// struct/spec surface to the same eagerness the local package's
-    /// signatures already have (`collect_signatures`), so `sweep_gaps`'
-    /// existing logic -- unchanged -- sees the whole picture.
-    ///
-    /// Restricted to `HirItem::Struct`/`HirItem::Spec`/`HirItem::Gap` --
-    /// the only signatures needed for ordinary aggregate conformance and
-    /// first-class gap resolution,
-    /// rather than mirroring `collect_signatures`'s full
-    /// per-module sweep (free functions, overloads, enums, unions as their
-    /// own eager entry points too). Anything a struct/spec's own signature
-    /// transitively needs (a field's enum type, a generic bound, ...)
-    /// still resolves normally, recursively, through the exact same
-    /// `ensure_item` every other reference already goes through -- keeping
-    /// this narrowly scoped to the actual problem, rather than paying for
-    /// (and risking a build break from) every extern function/overload/
-    /// enum/union nobody uses too.
+    /// only, never a body -- eagerly resolved regardless of whether
+    /// anything actually imports or path-references them, so `sweep_gaps`
+    /// sees the whole picture instead of missing an unimported `glue`.
+    /// Returns every module path visited, for `compile`'s `error_scope`.
+    /// Restricted to `HirItem::Struct`/`HirItem::Spec`/`HirItem::Gap`, the
+    /// only signatures gap resolution needs.
     ///
     /// A parse or signature failure here is a real, fatal `CompileError`,
-    /// exactly like a local module's -- deliberately, not swallowed: a
-    /// silently-skipped broken `glue` would fail *invisibly* instead,
-    /// which defeats the point of this sweep more than a loud failure
-    /// does. This does mean a broken, wholly unrelated struct/spec
-    /// anywhere in any registered extern -- `core` included -- can now
-    /// fail a build that never references it; accepted as the cost of
-    /// eager whole-tree resolution without incremental builds to cache it
-    /// (see `docs/10-modules-and-linkage.md`).
+    /// not swallowed -- so a broken, wholly unrelated struct/spec anywhere
+    /// in any registered extern can fail a build that never references it.
+    /// See docs/10-modules-and-linkage.md for the full rationale and cost.
     fn collect_extern_signatures(&mut self) -> Result<Vec<ModulePath>, Vec<CompileError>> {
         let paths = self.roots.extern_modules();
         for path in &paths {
@@ -414,19 +358,12 @@ impl Driver {
                 .all(|((_, expected), (_, actual))| expected == actual)
     }
 
-    /// Every `gap` this compilation actually resolved (see
-    /// `ItemQueries::spec_cells`'s doc comment for why "resolved" is
-    /// exactly the right scope, local or `--extern`, rather than mirroring
-    /// `sweep_dead_code`'s "local only" convention), checked against every
-    /// `glue` declaration resolved alongside it: zero matches is `UnfilledGap`
-    /// (a warning -- see its own doc comment for why this design leaves
-    /// precise reachability to the linker), two or more is
-    /// `MultipleGluesForGap` (a real error). Returns `CompileError`s
-    /// directly, bypassing `Diagnostics`' per-module scope filtering
-    /// (`drain_errors`) entirely -- a gap/glue conflict is a whole-program
-    /// fact belonging to neither side's module more than the other's, the
-    /// same reasoning `CompileError::DuplicateModuleIdentity` already
-    /// carries no single module of its own for.
+    /// Every `gap` this compilation actually resolved (local or
+    /// `--extern`), checked against every `glue` resolved alongside it:
+    /// zero matches is `UnfilledGap` (a warning), two or more is
+    /// `MultipleGluesForGap` (an error). Returns `CompileError`s directly,
+    /// bypassing `Diagnostics`' per-module scope filtering -- a gap/glue
+    /// conflict is a whole-program fact belonging to neither side's module.
     fn sweep_gaps(&self) -> (TaggedWarnings, Vec<CompileError>) {
         let mut warnings = TaggedWarnings::new();
         let mut errors = Vec::new();
@@ -513,19 +450,16 @@ impl Driver {
                 self.mark_bound_type_imports(module, generics);
             }
 
-            // Items are visited in declaration order (the index preserves it)
-            // because this sweep mints globally-sequential synthetic ids as a
-            // side effect: a random visit order would bake a different id
-            // onto each instantiation build-to-build -- harmless for
-            // correctness, but it's what used to make the emitted object file
-            // differ byte-for-byte across repeated builds of identical source.
+            // Items are visited in declaration order because this sweep
+            // mints globally-sequential synthetic ids as a side effect -- a
+            // random order would bake a different id onto each instantiation
+            // build-to-build.
             for (name, _) in self.modules.index(path).plain_items() {
                 if self.is_generic_template(path, &name).map_err(fatal)? {
                     continue;
                 }
                 // Nothing is in progress at this point in the sweep, so
-                // `indirect`'s distinction cannot matter here; `true` just
-                // means "no spurious cycle risk from the sweep itself".
+                // `indirect`'s distinction cannot matter here.
                 let _ = self.ensure_item(path, path, &name, &[], true, false);
             }
 
@@ -627,18 +561,11 @@ impl Driver {
         let mut items = Vec::new();
         for (gap, functions) in signatures {
             for (function, fn_type) in functions {
-                // Both guards are already-checked invariants, not filters:
-                // `collect_glue_signatures` refuses to register a glue whose
-                // function set or signatures don't line up with its gap's
-                // (an unregistered glue never reaches here at all), so
-                // anything that *does* reach here matches. They must use
-                // `same_glue_signature`, not `!=`, for exactly that reason:
-                // `ResolvedFunctionType`'s derived `PartialEq` compares
-                // parameter *names* too, and a glue's parameter names are
-                // its own implementation detail -- silently skipping on a
-                // renamed parameter would emit no body, no symbol and no
-                // diagnostic, deferring the whole thing to an "undefined
-                // reference" from the system linker.
+                // Already-checked invariants, not filters -- an unregistered
+                // glue never reaches here. Uses `same_glue_signature`, not
+                // `!=`: `ResolvedFunctionType`'s derived `PartialEq` also
+                // compares parameter names, which are a glue's own
+                // implementation detail.
                 let Some((_, declared)) = gap
                     .functions
                     .iter()
@@ -686,10 +613,8 @@ impl Driver {
                 entry.module == path
                     // A concrete conformance owned by an extern package is
                     // defined by that package's object, never by whichever
-                    // consumer happened to need it. Generic conformances are
-                    // the deliberate exception: their concrete instantiation
-                    // is monomorphized in this compilation, and `Self` is the
-                    // second substitution after the template's parameter(s).
+                    // consumer needed it. Generic conformances are the
+                    // exception: their instantiation is monomorphized here.
                     && (!self.roots.is_extern(&entry.module) || entry.origin != ConformanceOrigin::Concrete)
                     && !self.conformances.emitted.contains(&(
                         entry.target.clone(),
@@ -879,15 +804,11 @@ impl Driver {
     }
 
     /// Every `gap` declared directly in `path`, synthesized as one
-    /// `CheckedItem::ExternDeclaration` per required function -- reuses
-    /// that exact shape (see `CheckedExternDeclaration::mangling`'s doc
-    /// comment) since a gap's required function *is*, at codegen time,
-    /// indistinguishable from a hand-written top-level `extern`, just with
-    /// its symbol forced to match its `glue` implementation (`ManglingMode::Glued`)
-    /// instead of staying bare. A gap spec is never itself a `CheckedItem`
-    /// otherwise -- specs declare no code of their own (see
-    /// `check_item_body`'s own `HirItem::Spec` arm) -- so this is the one
-    /// place a gap's own functions turn into anything codegen can see.
+    /// `CheckedItem::ExternDeclaration` per required function -- at codegen
+    /// time a gap's required function is indistinguishable from a
+    /// hand-written top-level `extern`, just with its symbol forced to
+    /// match its `glue` implementation (`ManglingMode::Glued`). This is the
+    /// one place a gap's own functions turn into anything codegen can see.
     fn synthesize_gap_items(&mut self, path: &[Ident]) -> Vec<CheckedItem> {
         let mut items = Vec::new();
         for (name, index) in self.modules.index(path).plain_items() {
@@ -1091,10 +1012,9 @@ impl Driver {
     /// instantiation ever touched it, and it is reported once, not once per
     /// instantiation.
     ///
-    /// Scoped to local modules, matching every other end-of-compile sweep --
-    /// an extern-owned type's "unused" status only reflects what *this*
-    /// compilation happens to touch, not what a downstream consumer might, so
-    /// warning on it would be a false positive by construction.
+    /// Scoped to local modules: an extern-owned type's "unused" status only
+    /// reflects what this compilation happens to touch, not what a
+    /// downstream consumer might, so warning on it would be a false positive.
     ///
     /// Enum *header* fields are deliberately never checked at all (there is
     /// no `usage.enum_header_fields` to check against) -- they are per-variant

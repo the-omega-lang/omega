@@ -46,95 +46,69 @@ pub(crate) struct Codegen {
     captured_text: String,
 
     // Global state
-    /// Every anonymous byte-run constant this module has emitted so far --
-    /// `"..."` (`*str`) and `b"..."` (`*[u8]`) literals alike, deduplicated
-    /// by raw content in one map: neither is null-terminated, so identical
-    /// text used once each way produces byte-for-byte identical storage,
-    /// and sharing one `DataId` between them is exactly right (they only
-    /// ever differ in the *type* the surrounding expression carries, never
-    /// in the bytes themselves).
+    /// Every anonymous byte-run constant emitted so far -- `"..."` (`*str`)
+    /// and `b"..."` (`*[u8]`) literals share one map, deduplicated by raw
+    /// content: neither is null-terminated, so identical text used either
+    /// way produces byte-for-byte identical storage, and the two only ever
+    /// differ in the surrounding expression's *type*.
     bytes: HashMap<String, DataId>,
-    /// `build_const_data`/`build_const_slice_data`'s own dedup cache,
-    /// keyed by their already-content-addressed symbol name
-    /// (`Codegen::data_symbol`'s hash of the value's canonical bytes) --
-    /// the `comp`/const-slice counterpart of `bytes` above, kept as its
-    /// own map rather than folded into `bytes` since the two are keyed by
-    /// different things (raw string content there, an arbitrary
-    /// `ConstValue`'s hash here). Without this, two independent constant
-    /// expressions that happen to evaluate to identical content (e.g. a
-    /// `comp` binding promoted to an address at two separate call sites --
-    /// see `analyze_address_of`'s and `adapt_comp_self_argument`'s own doc
-    /// comments) would each try to `define_data` under the same
-    /// content-derived symbol name, and `cranelift_module` rejects
-    /// defining the same symbol twice.
+    /// `build_const_data`/`build_const_slice_data`'s dedup cache, keyed by
+    /// their content-addressed symbol name -- the `comp`/const-slice
+    /// counterpart of `bytes` above, kept separate since the two are keyed
+    /// by different things (raw string content vs. an arbitrary
+    /// `ConstValue`'s hash). Without it, two independent constant
+    /// expressions evaluating to identical content would both try to
+    /// `define_data` under the same symbol, which `cranelift_module`
+    /// rejects.
     const_blobs: HashMap<String, DataId>,
-    /// One vtable per distinct resolved slot list (`MirSpecCoerce::slots`)
-    /// actually coerced to a `spec *Spec` value somewhere in this
-    /// compilation -- built lazily, the first time a `MirExpr::SpecCoerce`
-    /// with that exact slot list is codegen'd (see `vtable::vtable_for`),
-    /// and shared by every later coercion with the same one. Keyed on
-    /// `slots` itself rather than `(concrete, spec)`: two coercions
-    /// resolving to the identical ordered method list always produce
-    /// byte-identical vtables regardless of which concrete type or spec
-    /// they came from, so `slots` alone is both simpler and strictly more
-    /// precise than an identity-based key (see `vtable_for`'s own doc
-    /// comment for why the old `(concrete, spec)` key stopped being enough
-    /// once one implementor could satisfy the same generic spec twice).
+    /// One vtable per distinct resolved slot list (`MirSpecCoerce::slots`),
+    /// built lazily on first use (see `vtable::vtable_for`) and shared by
+    /// every later coercion with the same slot list. Keyed on `slots`
+    /// itself rather than `(concrete, spec)` -- see `vtable_for`'s own doc
+    /// comment for why identity isn't precise enough once one implementor
+    /// can satisfy the same generic spec twice.
     vtables: HashMap<Vec<HirId>, DataId>,
-    /// Every top-level global's (`Storage::Global`/`MirItem::Declaration`)
-    /// own `DataId`, keyed by its declaration id -- the `globals`
-    /// counterpart of `functions`, filled in by `declare_item`'s
-    /// `Declaration` arm (pass 1) and read back by `Storage::Global` place
-    /// codegen (`cranelift/place.rs`) whenever a reference needs its
-    /// address, regardless of which module declared it or which imports it.
+    /// Every top-level global's `DataId`, keyed by its declaration id --
+    /// filled in by `declare_item`'s `Declaration` arm (pass 1), read back
+    /// by `Storage::Global` place codegen whenever a reference needs its
+    /// address.
     globals: HashMap<HirId, DataId>,
 
     // Local state (must be cleared per function)
     /// One entry per `MirBody::locals` index -- `local_args[i]` is
     /// non-empty exactly when local `i` is a parameter (`i < arg_count`),
     /// caching its already-materialized SSA leaves straight from the entry
-    /// block's own Cranelift params (never a stack slot, unless something
-    /// later takes its address -- see `place::place_storage_address`'s
-    /// own `todo!()`).
+    /// block's own Cranelift params. Spilled to a stack slot on demand if
+    /// something later takes its address -- see `place::place_storage_address`.
     local_args: Vec<Vec<Value>>,
     /// One combined stack slot for *every* non-parameter local in the
     /// current function (`i >= arg_count`), sized to
     /// `layout::locals_layout`'s own `packed_end` and created once, up
-    /// front, in `define_function_def` -- never one slot per local. This is
-    /// what makes `layout::locals_layout` (the same field-layout algorithm
-    /// a struct's own fields already go through) the actual, load-bearing
-    /// source of a non-parameter local's address, rather than merely a
-    /// number nothing downstream honors: a zero-sized local's precomputed
-    /// offset genuinely coincides with whatever real address comes next in
-    /// `local_offsets`, in the one shared slot they both live in, exactly
-    /// like a zero-sized struct field already does within its own struct.
-    /// `None` only between functions (`clear_local`); always `Some` by the
-    /// time any block in the current function is processed.
+    /// front, in `define_function_def` -- never one slot per local, so a
+    /// zero-sized local's offset still coincides with whatever real local
+    /// comes next, the same way a zero-sized struct field does. `None`
+    /// only between functions (`clear_local`); always `Some` once any
+    /// block in the current function is processed.
     frame_slot: Option<StackSlot>,
     /// `MirBody::locals`-indexed (full length, matching `local_args`) --
     /// `local_offsets[i]` (`i >= arg_count`) is `i`'s own byte offset into
     /// `frame_slot`, precomputed once per function by `layout::
     /// locals_layout` alongside `frame_slot` itself. Entries `< arg_count`
     /// are never read (a parameter's storage is `local_args`, not
-    /// `frame_slot`, unless/until `place::place_storage_address`'s own
-    /// `todo!()` for a parameter's address is filled in).
+    /// `frame_slot`).
     local_offsets: Vec<u32>,
     /// The current function's own `MirBody::arg_count` -- the boundary
     /// `local_args`/`frame_slot` use to tell a parameter local apart from
-    /// a declared/synthetic one (see `MirBody::locals`'s own doc comment
-    /// for why both share one index space).
+    /// a declared/synthetic one.
     arg_count: usize,
 
-    /// Every locally-defined function/method's final (post-mangling-or-not)
-    /// linker symbol, keyed by the demangled string actually handed to
-    /// `cranelift_module::declare_function` -- built up as
-    /// `declare_function_def` runs for every item across every module (see
+    /// Every locally-defined function/method's final linker symbol, keyed
+    /// by the string handed to `cranelift_module::declare_function` --
+    /// built up as `declare_function_def` runs for every item (see
     /// `update_all`). A second, different function claiming a symbol
     /// already seen (only possible via `@mangling(disabled)` or
-    /// `@mangling(force = "...")`, since an ordinary mangled name always
-    /// embeds a unique module path + `HirId`) is caught here instead of
-    /// surfacing as a confusing linker error or, worse, a silent
-    /// single-definition merge.
+    /// `@mangling(force = "...")`) is caught here instead of surfacing as a
+    /// confusing linker error or a silent single-definition merge.
     declared_symbols: HashMap<String, HirId>,
     /// The first symbol collision found (see `declared_symbols`) -- checked
     /// once, at the end of `generate`, and turned into that function's

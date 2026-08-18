@@ -20,17 +20,11 @@ struct EnumMember {
 
 impl<'r> Analyzer<'r> {
     /// Resolves a single `.field` step against `current_type`, inserting a
-    /// seamless one-level pointer deref first if needed (`ptr.field` is
-    /// sugar for `(*ptr).field` when `ptr` points at an aggregate, matching
-    /// Rust's autoderef -- exactly one level: `ptr.field` where `ptr` is
-    /// `**Struct` still needs an explicit `(*ptr).field`).
-    ///
-    /// Shared by `analyze_place`'s projection loop and by member-call
-    /// resolution, so plain field access and method access both get this
-    /// from one implementation. `mutable`, like `analyze_place`'s own
-    /// running mutability, is overwritten with the pointer's own flag when a
-    /// seamless deref is inserted -- callers that don't care (a read, or a
-    /// callable-field lookup) pass a throwaway `&mut bool`.
+    /// seamless one-level pointer deref first if needed (`ptr.field` sugar
+    /// for `(*ptr).field`). Shared by `analyze_place`'s projection loop and
+    /// by member-call resolution. `mutable` is overwritten with the
+    /// pointer's own flag when a seamless deref is inserted; callers that
+    /// don't care pass a throwaway `&mut bool`.
     pub(super) fn resolve_field_projection(
         &mut self,
         node_id: HirId,
@@ -55,9 +49,8 @@ impl<'r> Analyzer<'r> {
         };
 
         match &base {
-            // `slice.length` / `str.size` -- not a real field (neither is a
-            // struct), so this is answered before the aggregate paths below
-            // reject it.
+            // `slice.length` / `str.size` aren't real fields; answered here
+            // before the aggregate paths below would reject them.
             ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                 self.project_slice_field(node_id, span, projections, &base, field)
             }
@@ -83,15 +76,8 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `.length` on a `*[?]T`, or `.size` on a `*str` -- both project to the
-    /// exact same `CheckedProjection::SliceLength` marker (`Str` shares
-    /// `Slice`'s exact fat-pointer leaf layout, `[ptr, len]`, so it's the
-    /// same byte-count read either way), but the *name* a user spells it
-    /// with deliberately differs: a slice's second leaf really is an
-    /// element count, so "length" fits, but `*str`'s is a UTF-8 *byte*
-    /// count -- "length" there would nudge a reader toward "character
-    /// count", which it isn't. Using the *other* type's name (`.size` on a
-    /// slice, `.length` on a `*str`) is `NoSuchField`, same as any other
-    /// unrecognized name.
+    /// same `CheckedProjection::SliceLength` marker, but the field name is
+    /// type-specific; using the other type's name is `NoSuchField`.
     fn project_slice_field(
         &mut self,
         node_id: HirId,
@@ -113,13 +99,9 @@ impl<'r> Analyzer<'r> {
         Some(ResolvedType::I32)
     }
 
-    /// `.ptr`/`.vtable` on a `spec *Spec` value -- not real fields (the
-    /// concrete implementor is erased, so there's nothing to look up by
-    /// name/index), answered before the aggregate paths below would reject
-    /// it, exactly like `project_slice_field`. Both read one of the two
-    /// leaves `ResolvedType::SpecObject`'s own doc comment describes; see
-    /// `CheckedProjection::SpecObjectPtr`/`SpecObjectVtable` for why the
-    /// pointee is always the opaque `u8` and which one tracks `mutable`.
+    /// `.ptr`/`.vtable` on a `spec *Spec` value -- the two leaves of the fat
+    /// pointer (see `ResolvedType::SpecObject`'s doc comment), not real
+    /// declared fields.
     fn project_spec_object_field(
         &mut self,
         node_id: HirId,
@@ -153,9 +135,7 @@ impl<'r> Analyzer<'r> {
 
     /// Enum member access: `tag`, header fields, and shared dynamic fields
     /// exist on every value; a body field additionally requires the value's
-    /// variant to be statically known (see `ResolvedType::Enum`) *and* to be
-    /// the one declaring it -- anything else gets the most precise "why not"
-    /// this lookup can determine.
+    /// variant to be statically known and to be the one declaring it.
     fn project_enum_field(
         &mut self,
         node_id: HirId,
@@ -166,8 +146,7 @@ impl<'r> Analyzer<'r> {
         base: &ResolvedType,
         field: &Ident,
     ) -> Option<ResolvedType> {
-        // Read out of the cell in one borrow, released before any `&mut
-        // self` call below.
+        // Borrow released before the `&mut self` call below.
         let member = Self::find_enum_member(&cell.borrow(), variant, field);
         let Some(member) = member else {
             let kind = Self::no_such_enum_field(&cell.borrow(), variant, field);
@@ -182,9 +161,8 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Everything reachable as `value.name` on an enum value, in lookup
-    /// order: the tag (which has no declared visibility of its own), then
-    /// the header, the shared dynamic fields, and finally the known
-    /// variant's own body fields.
+    /// order: tag, header, shared dynamic fields, then the known variant's
+    /// own body fields.
     fn find_enum_member(
         e: &ResolvedEnumType,
         variant: Option<usize>,
@@ -270,9 +248,9 @@ impl<'r> Analyzer<'r> {
                 owner: declaring.name.clone(),
             },
             (None, _) => {
-                // Suggest across everything reachable as `value.name` on this
-                // value: tag, header, shared dynamic fields, and -- when the
-                // variant is known -- its own body fields.
+                // Suggest across everything reachable as `value.name`: tag,
+                // header, shared dynamic fields, and the known variant's
+                // own body fields.
                 let tag = Ident("tag".into());
                 let candidates = std::iter::once(&tag)
                     .chain(e.header.iter().map(|(name, _, _)| name))
@@ -412,10 +390,8 @@ impl<'r> Analyzer<'r> {
 
     /// Every method named `field` on `current_type` (after at most one
     /// pointer deref) -- usually zero or one, but two or more is a valid
-    /// overload set (see `Analyzer::resolve_overload`, which the two call
-    /// sites route a multi-candidate result through). A field with this
-    /// name always shadows every same-named method, exactly like a single
-    /// method would have.
+    /// overload set (see `Analyzer::resolve_overload`). A field with this
+    /// name shadows every same-named method.
     pub(super) fn find_methods(
         &mut self,
         id: HirId,
@@ -438,9 +414,7 @@ impl<'r> Analyzer<'r> {
                     .collect()
             }
             ResolvedType::Enum { cell, variant } => {
-                // Anything reachable as a field on *this* value (`tag`,
-                // header, the known variant's body fields) shadows a
-                // same-named function, matching the struct rule above.
+                // Same shadowing rule as the struct case above.
                 let e = cell.borrow();
                 let shadowed = field.as_ref() == "tag"
                     || e.header.iter().any(|(name, _, _)| name == field)
@@ -471,8 +445,8 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, method)| method.clone())
                     .collect()
             }
-            // Built-in types store their inherent methods in core's
-            // `primitive` registry rather than in a declared type cell.
+            // Built-in types store methods in core's `primitive` registry
+            // rather than in a declared type cell.
             other => match self.resolver.primitive_methods(other) {
                 Ok(methods) => methods
                     .into_iter()
@@ -486,8 +460,7 @@ impl<'r> Analyzer<'r> {
             },
         };
 
-        // A conformance is deliberately not an inherent method source.
-        // Instance syntax is admitted only while checking a body whose
+        // Conformance methods are only admitted while checking a body whose
         // generic/conform context established the matching bound.
         for (target, spec, spec_args) in self.bounds.clone() {
             if target != *current_type {
@@ -527,14 +500,12 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Hand-written structural equality between two checked places, used
-    /// only to detect self-assignment (`x = x;`). Never attempts recursive
-    /// sub-expression equality -- an `Expr` root, or an `Index`/`Deref`
-    /// projection (whose "index" or "pointer" sub-expressions could
-    /// themselves have side effects or simply differ at runtime), makes the
-    /// comparison bail out as "not provably equal" rather than risk a false
-    /// positive. A false negative here (missing a self-assignment) is fine;
-    /// a false positive (warning on `a.foo = b.foo`) is not.
+    /// Structural equality between two checked places, used only to detect
+    /// self-assignment (`x = x;`). Bails out to "not provably equal" on any
+    /// `Expr` root or `Index`/`Deref` projection, rather than recursing into
+    /// sub-expressions that could have side effects or differ at runtime.
+    /// False negatives (missed self-assignment) are fine; false positives
+    /// are not.
     pub(super) fn places_provably_equal(a: &CheckedPlace, b: &CheckedPlace) -> bool {
         let roots_equal = match (&a.root, &b.root) {
             (
@@ -591,23 +562,14 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Errors (returning `None`) unless a place `analyze_place` already
-    /// resolved (`mutable` is its own third return value) may be written
-    /// to. Shared by every requirement that ultimately means the same
-    /// thing -- an assignment, `++`/`--`, an explicit `&mut`, and a `mut
-    /// self` method call's implicit auto-ref are all, at bottom, "this
-    /// place must be mutable" -- so the diagnostic (and the choice between
-    /// `NotMutableBinding`/`NotMutablePointer`/`MutateTemporary`, mirroring
-    /// `immutable_enum_member`'s pattern of inspecting the checked place's
-    /// own projections) only needs writing once. `hir_root` is the
-    /// *original* place's root, for naming the binding in
-    /// `NotMutableBinding` -- only ever `None` when the reason is
-    /// definitely `NotMutablePointer`/`MutateTemporary` instead (a
-    /// non-place root, e.g. a freshly-constructed value: something
-    /// dereferenced along the way, or nothing at all -- a spec-qualified
-    /// call wraps a non-place receiver in `HirPlaceRoot::Expr` so it can be
-    /// adapted at all, producing a place with a non-path root and *no*
-    /// `Deref` projection, whose mutation would land in a discarded
-    /// temporary).
+    /// resolved may be written to. Shared by every requirement that reduces
+    /// to "this place must be mutable" -- assignment, `++`/`--`, `&mut`,
+    /// and a `mut self` call's implicit auto-ref. `hir_root` is the
+    /// original place's root, used only to name the binding in
+    /// `NotMutableBinding`; it's `None` when the place has no path root at
+    /// all (e.g. a spec-qualified call's non-place receiver, wrapped in
+    /// `HirPlaceRoot::Expr`), in which case the diagnostic is
+    /// `NotMutablePointer`/`MutateTemporary` instead.
     pub(super) fn require_mutable_place(
         &mut self,
         node_id: HirId,

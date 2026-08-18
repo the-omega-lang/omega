@@ -5,44 +5,28 @@ use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 
 /// One lexical unit -- everything the parser sees is one of these; comments
 /// and whitespace are consumed internally by [`tokenize`] and never turn
-/// into tokens at all, which is what lets every parsing function stay
-/// completely unaware of trivia (unlike the old scannerless grammar, where
-/// `.trivia_padded()` had to be threaded through nearly every combinator by
-/// hand).
+/// into tokens at all.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Ident(String),
     /// Captures shape (radix, digit text, suffix), not value -- semantic
-    /// analysis still range-checks; see `NumberExpr`'s own doc comment.
+    /// analysis still range-checks.
     Number(NumberExpr),
-    /// Decoded content (escapes already resolved) -- matches `StringExpr`'s
-    /// existing shape, which wraps a decoded `String` the same way.
+    /// Decoded content (escapes already resolved).
     Str(String),
-    /// `b"..."` -- same decoded-content shape and escape rules as `Str`
-    /// (see `Lexer::scan_string`, shared verbatim), just tagged separately
-    /// so the parser knows to produce a `ByteStringExpr` instead of a
-    /// `StringExpr`: a raw byte run with no implicit null terminator, not a
-    /// C-style string.
+    /// `b"..."` -- same decoded-content shape as `Str`, tagged separately so
+    /// the parser produces a `ByteStringExpr` (a raw byte run, no implicit
+    /// null terminator) instead of a `StringExpr`.
     ByteStr(String),
     Char(char),
     /// `$name` -- a macro metavariable, recognized atomically.
     Metavar(String),
 
-    // Keywords. Deliberately *not* included here: `self`/`mut`/`expr`/
-    // `type`/`items`/`usize`/`isize` -- these are context-sensitive in the
-    // current grammar (e.g. `self` is a keyword only in a function's
-    // first-parameter position, and an ordinary identifier everywhere else,
-    // including in expression position inside a method body referencing
-    // that same parameter; `mut` is a keyword only immediately after `*`
-    // (`*mut T`) or leading a binding declaration (`mut a := ...`), and an
-    // ordinary identifier everywhere else; `usize`/`isize` are never syntax
-    // keywords at all, just ordinary type-name identifiers plus a narrow
-    // number-literal-suffix recognition rule inside `scan_number_suffix`).
-    // Reserving them globally here would be a real (if minor) grammar
-    // narrowing -- e.g. it would stop `self`/`mut`/`type`/... from being
-    // usable as ordinary variable names -- so they stay plain `Ident`
-    // tokens, and the parser recognizes them contextually by comparing an
-    // ident's text exactly where the current grammar already does.
+    // Deliberately not keywords here: `self`/`mut`/`type`/`usize`/`isize`
+    // are context-sensitive (e.g. `self` only in a function's first
+    // parameter, `mut` only after `*` or leading a binding) and stay plain
+    // `Ident` tokens so they remain usable as ordinary names; the parser
+    // recognizes them contextually by comparing ident text.
     True,
     False,
     If,
@@ -66,13 +50,7 @@ pub enum TokenKind {
     // Multi-char punctuation, maximal-munch (tried longest-first during
     // lexing so e.g. `...` is never mistaken for `..` followed by `.`).
     /// `...` -- variadic function-type parameters ONLY (`(s: *u8, ...) =>
-    /// i32`). No longer a range operator at all -- see `DotDotEq`/`DotDot`
-    /// below, and `ast::range::RangeExpr`'s own doc comment for why the
-    /// split. Parsed positionally, in a completely separate grammar
-    /// production (`parser::r#type::parse_function_type`) from every range
-    /// use of `..=`/`..<`/`..`, so there is no actual ambiguity between
-    /// them -- the split is about readability/intent, not resolving a real
-    /// grammar collision.
+    /// i32`); not a range operator. See `ast::range::RangeExpr`'s doc comment.
     DotDotDot,
     ColonColon,
     FatArrow,
@@ -81,23 +59,14 @@ pub enum TokenKind {
     NotEq,
     LtEq,
     GtEq,
-    /// `..=` -- an inclusive-end range (`a..=b`, `..=b`); always requires
-    /// an explicit end (`a..=` alone is a parse error, see
-    /// `parser::expression::parse_range_tail`). Replaces the old `...`
-    /// range spelling -- deliberately a different token from the plain
-    /// `...` used for variadics, so writing one out of habit for the other
-    /// is never silently accepted as the wrong thing.
+    /// `..=` -- an inclusive-end range; always requires an explicit end
+    /// (`a..=` alone is a parse error).
     DotDotEq,
-    /// `..<` -- an exclusive-end range (`a..<b`, `..<b`); always requires an
-    /// explicit end (`a..<` alone is a parse error, see
-    /// `parser::expression::parse_range_tail`).
+    /// `..<` -- an exclusive-end range; always requires an explicit end.
     DotDotLt,
-    /// `..` -- an open range with no end at all, ever (`a..`, or bare `..`)
-    /// -- the *only* range spelling that's ever legal with no end written;
-    /// `..=`/`..<` both require one. Its actual bound is inferred entirely
-    /// from context: a slice's own container length, a `match` arm's own
-    /// unmatched remainder, or a range-driven `for` loop's own element
-    /// type domain -- see `ast::range::RangeExpr`'s own doc comment.
+    /// `..` -- an open range with no end, ever; the only range spelling
+    /// legal with nothing written. Its bound is inferred from context; see
+    /// `ast::range::RangeExpr`'s doc comment.
     DotDot,
     PlusPlus,
     MinusMinus,
@@ -323,10 +292,8 @@ fn is_ident_continue(c: char) -> bool {
 
 /// Tokenizes a whole source file, consuming comments/whitespace internally.
 /// Recovers from lexical errors rather than aborting: an unexpected
-/// character is skipped (one character) and lexing continues; an
-/// unterminated string/char/comment consumes to end-of-input (the same
-/// severity the old grammar gave these, just no longer aborting the entire
-/// tokenize pass).
+/// character is skipped and lexing continues; an unterminated
+/// string/char/comment consumes to end-of-input.
 pub fn tokenize(source: &str) -> (Vec<Token>, Vec<ParseError>) {
     let lexed = lex(source);
     (lexed.tokens, lexed.errors)
@@ -362,11 +329,8 @@ pub fn lex(source: &str) -> Lexed {
 
 struct Lexer<'a> {
     source: &'a str,
-    /// A *byte* offset into `source` -- not a char index. `Span`s are byte
-    /// ranges (matching how `&str` slicing and `LineIndex` both work), so
-    /// tracking anything else here would silently produce wrong spans for
-    /// any source containing multi-byte UTF-8 characters (e.g. inside a
-    /// string literal).
+    /// A *byte* offset into `source`, not a char index -- `Span`s are byte
+    /// ranges.
     pos: usize,
     tokens: Vec<Token>,
     comments: Vec<Span>,
@@ -487,11 +451,8 @@ impl<'a> Lexer<'a> {
                 Ok(TokenKind::Dollar)
             }
             '"' => self.scan_string_or_multiline(start),
-            // `b"..."` -- checked ahead of the general `is_ident_start`
-            // branch below (`'b'` would otherwise just start an ordinary
-            // identifier); only committed when a `"` immediately follows,
-            // so `b` alone, or an identifier merely starting with `b`
-            // (`bar`, `byte_count`, ...), is untouched.
+            // `b"..."` -- only committed when `"` immediately follows, so
+            // `b` alone or an identifier starting with `b` is untouched.
             'b' if self.peek_at(1) == Some('"') => {
                 self.advance(); // 'b'
                 let TokenKind::Str(s) = self.scan_string_or_multiline(start)? else {
@@ -730,20 +691,12 @@ impl<'a> Lexer<'a> {
         false
     }
 
-    /// Dispatches between an ordinary single-quote string (`scan_string`,
-    /// completely unchanged below -- this is what makes today's `""`
-    /// (empty string, immediately followed by whatever's next) keep
-    /// working with zero special-casing: a run of exactly 2 never reaches
-    /// the multi-line path at all) and a multi-line string (`"""..."""`,
-    /// N >= 3 quotes). Mirrors `skip_comment`'s own hashes-counting
-    /// dispatch, parameterized by `"` instead of `#`, with two
-    /// differences: N must additionally be odd here (an even count is
-    /// rejected with a dedicated diagnostic rather than silently
-    /// reinterpreted, since it could otherwise be confused with two
-    /// shorter, separately-closed runs), and content is accumulated into
-    /// a `String` instead of discarded. Shared by both `scan_token` call
-    /// sites (`"..."` and `b"..."`) so `b"""..."""` gets identical
-    /// treatment to `"""..."""` rather than silently mis-lexing.
+    /// Dispatches between an ordinary single-quote string (a run of exactly
+    /// 2 quotes) and a multi-line string (`"""..."""`, N >= 3 quotes, closed
+    /// by a matching run of N, same hashes-counting shape as
+    /// `skip_comment`). An even N is rejected with a dedicated diagnostic
+    /// rather than silently reinterpreted, since it could be confused with
+    /// two shorter, separately-closed runs.
     fn scan_string_or_multiline(&mut self, start: usize) -> Result<TokenKind, ParseError> {
         let quote_run = self.source[self.pos..]
             .chars()
@@ -761,11 +714,8 @@ impl<'a> Lexer<'a> {
                 ParseErrorKind::EvenMultilineStringDelimiter { count: quote_run },
             ));
         }
-        // No backslash-escape processing here, unlike `scan_string` below
-        // -- raw/verbatim content, matching multi-line comments exactly
-        // (which have none at all). This also means there's no ambiguity
-        // to resolve about whether an escaped quote should count toward a
-        // terminating run, the way an ordinary string has to.
+        // Raw/verbatim content -- no backslash-escape processing, unlike
+        // `scan_string` below.
         let mut content = String::new();
         loop {
             match self.peek() {
@@ -785,9 +735,7 @@ impl<'a> Lexer<'a> {
                     if run == quote_run {
                         return Ok(TokenKind::Str(content));
                     }
-                    // Not a match -- exact-run-only, same as `skip_comment`
-                    // (no prefix/greedy matching) -- these quotes are
-                    // ordinary literal content.
+                    // Not a matching run -- ordinary literal content.
                     content.push_str(&self.source[run_start..self.pos]);
                 }
                 Some(c) => {
@@ -829,14 +777,10 @@ impl<'a> Lexer<'a> {
     }
 
     /// Exactly one character or one escape between the quotes -- an empty
-    /// (`''`) or multi-character literal is `InvalidCharLiteral`. On either
-    /// malformed-shape error, skips forward to the literal's own closing
-    /// `'` (or a newline/EOF, whichever comes first) before returning, so
-    /// the next token starts cleanly after the whole malformed literal --
-    /// without this, e.g. `'ab'`'s trailing `b'` would otherwise get
-    /// re-lexed as unrelated fragments (a stray `Ident("b")` token, then a
-    /// *second*, spurious error from the leftover `'`), cascading one
-    /// mistake into several confusing ones.
+    /// (`''`) or multi-character literal is `InvalidCharLiteral`. On a
+    /// malformed shape, skips to the literal's closing `'` (or
+    /// newline/EOF) before returning, so e.g. `'ab'` doesn't cascade into a
+    /// second spurious error from the leftover `b'`.
     fn scan_char(&mut self, start: usize) -> Result<TokenKind, ParseError> {
         self.advance(); // opening quote
         let c = match self.peek() {
@@ -890,26 +834,14 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// `\n \t \r \0 \\ \" \' \u{XXXX}`, matching `escape::escape_sequence`.
-    /// Called with `self.peek() == Some('\\')`.
-    ///
-    /// Mirrors the old grammar's exact (if slightly unusual) fallback
-    /// behavior for anything else: an *unrecognized* escape letter (e.g.
-    /// `\q`) is not an error at all -- it silently falls back to treating
-    /// the backslash as a literal character, leaving the following
-    /// character to be read normally on the next iteration (this is what
-    /// `choice((escape_sequence(), any().and_is(quote.not())))` already
-    /// does today: `escape_sequence()`'s inner `choice` has no matching
-    /// arm, so the *whole* combinator fails and backtracks to before the
-    /// backslash, and the outer `any()` picks up just the backslash on its
-    /// own). Returns `Ok(None)` for exactly this "no escape recognized
-    /// here, caller should treat `\` as a literal and not advance past it
-    /// itself" case; the caller (`scan_string`/`scan_char`) does the actual
-    /// `content.push('\\'); self.advance();`. A `\u{...}` that *is*
-    /// structurally well-formed but names an invalid Unicode scalar value
-    /// is a real, hard `InvalidUnicodeEscape` error, matching today's
-    /// `try_map` failure there -- the one case that doesn't fall back
-    /// silently, since the delimiter/digit structure already committed.
+    /// `\n \t \r \0 \\ \" \' \u{XXXX}`. Called with `self.peek() ==
+    /// Some('\\')`. An *unrecognized* escape letter (e.g. `\q`) is not an
+    /// error: returns `Ok(None)` so the caller treats the backslash as a
+    /// literal character and reads the next character normally. A
+    /// `\u{...}` that's structurally well-formed but names an invalid
+    /// Unicode scalar value is a real `InvalidUnicodeEscape` error -- the
+    /// one case that doesn't fall back silently, since the delimiter/digit
+    /// structure already committed.
     fn try_scan_escape(&mut self, literal_start: usize) -> Result<Option<char>, ParseError> {
         let simple = match self.peek_at(1) {
             Some('n') => Some('\n'),

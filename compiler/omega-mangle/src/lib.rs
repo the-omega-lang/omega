@@ -38,10 +38,8 @@
 //! <vendor-suffix> = "." <bytes>
 //! ```
 //!
-//! `E` is reserved exclusively as a list terminator -- never reused as a
-//! leading tag -- and every optional element sits at the *start* of a
-//! self-terminating production, never as a trailing suffix on one, so
-//! there is no positional ambiguity anywhere in the grammar.
+//! `E` is reserved exclusively as a list terminator, never reused as a
+//! leading tag (see `crate::grammar` for the full tag-byte layout).
 //!
 //! No Rust-style `M`/`X`/`Y`/`<impl-path>` (Omega methods nest directly
 //! under their owner type's own path -- there's no separate, possibly

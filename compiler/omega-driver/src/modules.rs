@@ -489,12 +489,10 @@ impl Driver {
         }
         let hir = self.parse_module(path)?;
         let (items, overloads) = self.index_items(path, &hir);
-        // Published before the imports are indexed, deliberately: indexing an
-        // import resolves its annotations, which runs an `Analyzer`, which
-        // could in principle ask this very module for a name again. Marking
-        // the module indexed here makes that re-entry return immediately
-        // (finding no aliases, so the caller falls back to "not an alias")
-        // instead of recursing forever.
+        // Published before imports are indexed: indexing an import resolves
+        // its annotations, which runs an `Analyzer` that could ask this same
+        // module for a name again -- marking it indexed here makes that
+        // re-entry return immediately instead of recursing forever.
         self.modules.set_index(
             path,
             ModuleIndex {
@@ -531,11 +529,9 @@ impl Driver {
                 Entry::Occupied(first) => *first.get(),
             };
             if is_function(i) && is_function(first_index) {
-                // A valid overload *candidate*, not a redeclaration. Whether
-                // it's genuinely distinct (a different signature) is checked
-                // once every candidate's signature is resolved (see
-                // `Driver::check_overload_duplicates`) -- nothing here has
-                // access to param types yet.
+                // A valid overload candidate, not a redeclaration -- whether
+                // it's genuinely distinct is checked once every candidate's
+                // signature is resolved (`Driver::check_overload_duplicates`).
                 overloads
                     .entry(name)
                     .or_insert_with(|| vec![first_index])

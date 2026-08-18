@@ -172,19 +172,12 @@ impl<'ctx> Codegen<'ctx> {
             return Err(error);
         }
 
-        // LLVM will happily write malformed IR straight into an object file
-        // -- a type-mismatched `icmp`, a call with the wrong arity -- and
-        // the result crashes at *run* time, in generated code, with nothing
-        // pointing back at the compiler. The verifier turns that class of
-        // backend bug into a compile-time failure instead, which is the only
-        // way it is ever debuggable. Cranelift needs no counterpart: its
-        // builder validates as it goes and panics at the point of
-        // construction.
-        //
-        // This is a bug in *this compiler*, never in the program being
-        // compiled: every rejectable program input was settled long before
-        // codegen (see `crate::preflight`). It is surfaced rather than
-        // `panic!`ed only so the message survives to the user intact.
+        // Unlike Cranelift (which validates as it builds), LLVM will happily
+        // write malformed IR to an object file and crash at run time with
+        // nothing pointing back at the compiler -- so this verifier is the
+        // only place that class of backend bug becomes a compile-time
+        // failure. Always a bug in this compiler, not the program: every
+        // rejectable input was settled before codegen (`crate::preflight`).
         if let Err(errors) = codegen.module.verify() {
             return Err(format!(
                 "internal error: the LLVM backend produced invalid IR -- this is a compiler bug, \
@@ -205,23 +198,10 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// A `bytes`-sized, `align`-byte-aligned scratch slot, allocated in the
-    /// function's **entry block** no matter which block asked for it.
-    ///
-    /// This is the one place this backend allocates stack storage, and the
-    /// entry block is not a stylistic preference: LLVM's `alloca` allocates
-    /// *each time it executes*, and the stack is only released at `ret`, so
-    /// an `alloca` emitted at the current insertion point inside a loop body
-    /// grows the frame once per iteration and eventually overflows it (an
-    /// enum constructed in a `loop` is enough). Cranelift's
-    /// `create_sized_stack_slot` has no such hazard -- a stack slot is a
-    /// property of the *function*, allocated once in the prologue -- so
-    /// hoisting to the entry block is exactly what makes the two backends
-    /// agree. Reuse across iterations is safe for the same reason it is in
-    /// Cranelift: every one of these slots is fully written before it is
-    /// read, at every site that asks for one.
-    ///
-    /// The builder's own insertion point is saved and restored, so a caller
-    /// mid-way through emitting some other block is unaffected.
+    /// function's **entry block** no matter which block asked for it. LLVM's
+    /// `alloca` allocates on every execution (unlike Cranelift's stack
+    /// slots), so this is required, not stylistic -- see
+    /// `docs/16-mir-and-codegen.md`.
     pub(super) fn entry_alloca(
         &self,
         bytes: u32,

@@ -1,22 +1,11 @@
 # `std::hash` -- a value's own contribution to a hash-based collection's
-# bucket index (`std::hash_map::HashMap`/`std::hash_set::HashSet`).
+# bucket index. Contract: values equal under `cmp::Eq::equals` must produce
+# the same hash (the reverse isn't required).
 #
-# The only real contract: two values that compare equal (`cmp::Eq::equals`)
-# must produce the same hash -- the reverse isn't required (a collision
-# between unequal values is always allowed, just ideally rare). Every
-# primitive conformance lives in `std::primitives`; the inherent primitive
-# methods those targets also carry stay in `core`.
-#
-# `HashMap<K: Hash, V>`/`HashSet<T: Hash>` bound only on this -- not a
-# combined `Hash`-and-`Eq` spec, even though a bucket lookup needs both.
-# A generic parameter only ever carries a single formal bound (see
-# `GenericParam`'s own doc comment), and every realistic key type (every
-# primitive `std::primitives` conformances, and any user type meant to be
-# hashable at all) already provides `cmp::Eq::equals` as a matter of course,
-# the same structural expectation `Ord`'s own default methods already lean
-# on -- so `HashMap` selects `Eq::equals` explicitly at its concrete key
-# instantiation. A `K` without `Eq` fails at that call site; no second formal
-# bound is needed to preserve the one-bound generic syntax.
+# `HashMap<K: Hash, V>`/`HashSet<T: Hash>` bound only on `Hash`, not a
+# combined `Hash`-and-`Eq` spec -- a generic parameter carries only one
+# formal bound, so `HashMap` calls `Eq::equals` directly at its concrete key
+# instantiation; a `K` without `Eq` fails there instead of at a second bound.
 
 exposed spec Hash {
     hash(*self) => u64;

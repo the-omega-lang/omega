@@ -489,12 +489,10 @@ impl Driver {
                 })
                 .collect();
             for conform in declarations {
-                // Bound-position spec references only ever resolve when the
-                // template is instantiated -- which a package's own
-                // standalone build may never do -- so mark their import
-                // aliases as used right here, at the declaration, or the
-                // package's own build reports `UnusedImport` on an import
-                // that genuinely binds the bound's name.
+                // Bound-position spec references only resolve when the
+                // template is instantiated, which a standalone build may
+                // never do -- mark their import aliases used right here or
+                // the build reports a spurious `UnusedImport`.
                 self.mark_bound_type_imports(module, &conform.generics);
                 let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics) else {
                     self.diagnostics.error(
@@ -559,9 +557,8 @@ impl Driver {
                 }
             }
         }
-        // Every template is now visible before a concrete conform can cause
-        // a bound lookup, removing module-order dependence from lazy
-        // materialization.
+        // Every template is visible before a concrete conform can cause a
+        // bound lookup, removing module-order dependence.
         for (module, conform) in concrete {
             self.instantiate_conformance(&module, &conform, &[], ConformanceOrigin::Concrete);
         }
@@ -593,10 +590,7 @@ impl Driver {
         let spec_reference = spec_run.result?;
         // A spec alias is a name for a conjunction, never a contract of its
         // own: `conform T to Alias` is rejected outright rather than
-        // flattening its members into one block (which was never its
-        // semantics -- an alias is satisfied by conforming each member
-        // separately). Nothing downstream ever needs to wonder about an
-        // alias-named entry again.
+        // flattening its members into one block.
         if spec_reference.0.borrow().is_alias {
             self.diagnostics.error(
                 module,
@@ -631,12 +625,11 @@ impl Driver {
         {
             return None;
         }
-        // The recursion guard itself lives in `solve`: it pushes this
-        // instantiation's `(target, spec)` goal before calling in and skips
-        // any template whose goal is already in flight, so re-entry is
-        // impossible here -- only `conformance_for` can report a cycle,
-        // from outside, once the goal stack tells it the proof closed on
-        // itself.
+        // The recursion guard lives in `solve`: it pushes this
+        // instantiation's `(target, spec)` goal and skips any template
+        // already in flight, so re-entry is impossible here -- only
+        // `conformance_for` reports a cycle, once the goal stack shows the
+        // proof closed on itself.
         let declared_bounds = match self.check_generic_bounds(
             module,
             (conform.id, conform.span),
@@ -645,23 +638,18 @@ impl Driver {
         ) {
             Some(Ok(bounds)) => bounds,
             Some(Err(error)) => {
-                // At the outermost goal (`solve`'s stack holds only this
-                // one) nothing else in flight could have caused the
-                // failure, so it is genuine and permanent -- worth memoizing
-                // in `failed`. A nested failure is *not*: the in-flight
-                // proof above it may itself fail and unwind, and the same
-                // template may be re-asked later from a clean stack. (This
-                // is what keeps the already-fixed duplicate-
-                // `SpecNotImplemented` behaviour intact while making a
-                // nested failure retryable.)
+                // At the outermost goal, the failure is genuine and
+                // permanent, worth memoizing in `failed`. A nested failure
+                // is not: the in-flight proof above it may itself fail and
+                // unwind, and the same template may be re-asked later from a
+                // clean stack.
                 if self.conformances.goals.len() == 1 {
                     self.conformances.failed.push((conform.id, target.lookup_key()));
                 }
                 // A blanket's bound is its applicability predicate: a
                 // non-`Animal` type simply does not receive
-                // `conform<T: Animal> T ...`. Generic constructor
-                // templates keep their existing diagnostic behavior, where
-                // a matched `List<NotBound>` is an attempted, invalid
+                // `conform<T: Animal> T ...`. Generic constructor templates
+                // still diagnose a matched `List<NotBound>` as an invalid
                 // instantiation.
                 if origin != ConformanceOrigin::Blanket {
                     self.diagnostics.error(
@@ -683,11 +671,9 @@ impl Driver {
             }
         };
         // Instantiating one template twice at the same target is not a
-        // duplicate conform -- `conformances_for_type` re-walks every matching
-        // template on each call, so without this the *second* lookup for a
-        // generic target would report `DuplicateConformance` against the entry
-        // the first lookup registered. Keyed on the declaration's own id, so
-        // two genuinely distinct `conform` blocks still collide below.
+        // duplicate conform -- `conformances_for_type` re-walks every
+        // matching template on each call, so without this the second lookup
+        // would report `DuplicateConformance` against its own first entry.
         if let Some(existing) = self
             .conformances
             .entries
@@ -698,10 +684,9 @@ impl Driver {
         }
         let mut method_substitution = substitution.to_vec();
         method_substitution.push((Ident("Self".to_string()), target.clone()));
-        // The declared set's alias-expanded identity, computed once here
-        // where an analyzer is already in hand -- both blanket precedence
-        // and derived-conformance admission compare on this, so an alias
-        // bound and its inline spelling are interchangeable everywhere.
+        // The declared set's alias-expanded identity -- both blanket
+        // precedence and derived-conformance admission compare on this, so
+        // an alias bound and its inline spelling are interchangeable.
         let keys_run = self.with_analyzer(module, &substitution, (conform.id, conform.span), |a| {
             a.expand_bound_set(conform.id, conform.span, &declared_bounds)
         });
@@ -903,9 +888,8 @@ impl Driver {
         if candidate.origin == ConformanceOrigin::Blanket
             && incumbent.origin == ConformanceOrigin::Blanket
         {
-            // Both sides compare their *alias-expanded* key sets
-            // (`declared_bound_keys`), so `T: AB` and `T: A + B` describe
-            // the same set and compare as equal.
+            // Both sides compare alias-expanded key sets, so `T: AB` and
+            // `T: A + B` compare as equal.
             let candidate_subset_of_incumbent = candidate
                 .declared_bound_keys
                 .iter()
@@ -938,12 +922,9 @@ impl Driver {
         if let Some(entry) = self.conformances.entries.iter().find(matches) {
             return Some(entry.clone());
         }
-        // Goal-directed proving: instantiate only the templates that can
-        // produce *this* spec, then look again. A goal still on the stack
-        // after that means this query re-entered its own proof -- a genuine
-        // cycle, reported with the chain that closes it. (An unsatisfied
-        // but acyclic query leaves nothing on the stack and reports nothing
-        // here; its own diagnostic came from wherever the failure was.)
+        // Goal-directed: instantiate only the templates that can produce
+        // this spec, then look again. A goal still on the stack after that
+        // is a genuine cycle, reported with the chain that closes it.
         self.solve(target, Some(&spec.borrow().id));
         if let Some(entry) = self.conformances.entries.iter().find(matches) {
             return Some(entry.clone());
@@ -1080,10 +1061,8 @@ impl Driver {
         if !self.conformances.materialized.contains(&key) {
             let outcome = self.solve(target, None);
             // A partial sweep is not a complete one: if any template was
-            // skipped because its goal was already in flight, every
-            // template has *not* been considered, so the memo must not
-            // claim it has -- the next query re-sweeps and picks up
-            // whatever the interrupted proof left behind.
+            // skipped because its goal was already in flight, the memo must
+            // not claim completeness -- the next query re-sweeps.
             if !outcome.skipped_goal {
                 self.conformances.materialized.push(key);
             }
@@ -1100,11 +1079,11 @@ impl Driver {
     /// `Some(spec)` restricts the sweep to templates that can produce that
     /// spec -- the demand path, which makes proving goal-directed: each
     /// goal pulls in precisely the templates it needs, instead of
-    /// instantiating every template on the type (which is what let one
-    /// blanket's bound check fire mid-sweep and start a *second* template
+    /// instantiating every template on the type (which used to let one
+    /// blanket's bound check fire mid-sweep and start a second template
     /// while the first was still in flight -- the false-cycle bug).
-    /// `None` sweeps every matching template -- the "all conformances of
-    /// this type" path, kept as-is for the queries that genuinely want it.
+    /// `None` sweeps every matching template, for callers that want all
+    /// conformances of a type.
     ///
     /// A template whose `(target, spec)` goal is already on the stack is
     /// skipped **silently** -- only `conformance_for` reports, and only
@@ -1133,9 +1112,7 @@ impl Driver {
             }
             let Some((produced, _)) = self.template_spec(&template, &substitution) else {
                 // The produced spec does not resolve. The demand path skips
-                // silently (it cannot match a spec it cannot resolve); the
-                // full sweep still instantiates and reports -- see
-                // `template_spec`'s doc comment.
+                // silently; the full sweep still instantiates and reports.
                 if spec.is_some() {
                     continue;
                 }

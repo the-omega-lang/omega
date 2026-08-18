@@ -32,11 +32,10 @@ fn join(path: &[Ident]) -> String {
         .join("::")
 }
 
-/// A raw (unresolved) `Type` spelled back for a diagnostic -- the same
-/// shapes a reader writes, not a resolved-type `Display` (which never
-/// applies here; the type never resolved, by definition). ~25 lines of
-/// mechanical mirroring, kept here rather than on `Type` itself because
-/// nothing else needs it.
+/// A raw (unresolved) `Type` spelled back for a diagnostic -- the shapes a
+/// reader wrote, not a resolved-type `Display` (the type never resolved, by
+/// definition). Kept here rather than on `Type` itself since nothing else
+/// needs it.
 pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     use omega_parser::prelude::Type;
     match ty {
@@ -67,14 +66,9 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
 }
 
 /// Renders a possibly-generic name for a diagnostic -- `"Name"` when
-/// `type_args` is empty, `"Name<Arg1, Arg2>"` otherwise. Exists because
+/// `type_args` is empty, `"Name<Arg1, Arg2>"` otherwise. Used where
 /// `ResolvedType::Struct`/`Spec`'s own `Display` deliberately stays bare
-/// (their `type_args` field exists for mangling a reference back to the
-/// right instantiation, not for diagnostics -- see `ResolvedStructType::
-/// type_args`'s doc comment) -- a diagnostic that specifically needs to
-/// show *which* instantiation it's about (e.g. `MissingSpecFunction`, once
-/// the same generic spec can be implemented more than once) builds its own
-/// string with this instead of leaning on that `Display` impl.
+/// but the diagnostic needs to show *which* instantiation it's about.
 fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
     if type_args.is_empty() {
         return name.as_ref().to_string();
@@ -129,49 +123,28 @@ pub enum TypeResolutionError {
     /// `spec Foo` (no `*`, static dispatch) written somewhere other than a
     /// parameter type or a return type inside a spec's own function
     /// declaration -- the only two positions this sugar is defined for
-    /// (see `Type::SpecStatic`'s doc comment). Reaching ordinary
-    /// `resolve_type` with this shape at all means neither the
-    /// parameter-position desugaring (HIR lowering) nor the
-    /// spec-declaration-position handling (`resolve_raw_spec_fn_type`)
-    /// ever ran -- i.e. a position this sugar was never meant to reach (a
-    /// local variable annotation, a struct field, an array element, or --
-    /// since definition-site inference was removed -- an ordinary
-    /// function's or method's return type).
+    /// (see `Type::SpecStatic`'s doc comment).
     SpecStaticNotAllowedHere(Ident),
     /// A bare spec name (`Animal`, no `spec *`/`spec` prefix) resolved
     /// somewhere a value's actual type is required -- a variable's
     /// declaration, a field, a parameter, a return type, a cast/`sizeof`
     /// target, a generic argument, and so on. A spec definition alone has
-    /// no size or representation (see `ResolvedType::Spec`'s doc comment,
-    /// "never itself the type of a runtime value") -- only `spec *Foo`
-    /// (dynamic dispatch, a fat pointer) or a generic bound (`T: Foo`) give
-    /// it one. Every legitimate producer of a bare `ResolvedType::Spec`
-    /// (a conform declaration, a generic bound, `spec *Foo`'s own pointee)
-    /// resolves it through a dedicated path that never reaches this check;
-    /// reaching this variant means a spec name was written where none of
-    /// those apply.
+    /// no size or representation; only `spec *Foo` (dynamic dispatch) or a
+    /// generic bound (`T: Foo`) give it one.
     SpecUsedAsValueType(Ident),
     /// `never` resolved somewhere other than a function/method/extern/gap's
-    /// own declared return type -- a local variable's type, a struct/union/
-    /// enum field, a bare parameter type, and so on. `never` means "this
-    /// position is never reached" (see `ResolvedType::Never`'s doc
-    /// comment); there is no such thing as a `never`-typed value to store
-    /// anywhere, only a proof that a particular return position is
-    /// unreachable. A `(...) => never` *function type* used as, say, a
-    /// parameter's type is unaffected -- this only rejects `never` as the
-    /// resolved type in its own right, never as another type's inner
-    /// return-type position.
+    /// own declared return type. There is no `never`-typed value to store
+    /// anywhere, only a proof a return position is unreachable; a `(...) =>
+    /// never` function type used elsewhere is unaffected.
     NeverNotAllowedHere,
-    /// `[]T` reached ordinary type resolution directly -- inferred-size, and
+    /// `[]T` reached ordinary type resolution directly -- inferred-size,
     /// nothing here to give it a length. Only legal behind a leading `*`
-    /// (`*[]T`, a pointer-with-array-properties) or as a declaration's own
-    /// type annotation paired with an array-literal initializer, which
-    /// infers the real length (see `Analyzer::resolve_typed_decl_init`).
+    /// (`*[]T`) or paired with an array-literal initializer that infers the
+    /// length (see `Analyzer::resolve_typed_decl_init`).
     BareUnsizedArray,
-    /// `[?]T` reached ordinary type resolution directly -- unlike `[]T`
-    /// above, there is no standalone-legal case at all: a slice's length
-    /// is only ever known at runtime, nothing to infer here either. Only
-    /// legal behind a leading `*` (`*[?]T`, an unsized-array pointer).
+    /// `[?]T` reached ordinary type resolution directly -- unlike `[]T`,
+    /// there is no standalone-legal case: a slice's length is only known
+    /// at runtime. Only legal behind a leading `*` (`*[?]T`).
     BareUnknownSizeArray,
 }
 

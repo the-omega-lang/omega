@@ -27,10 +27,8 @@
 //!
 //! Labels render as independent, sequentially-emitted blocks (sorted by
 //! start offset) rather than being merged into one shared multi-column
-//! layout -- overlapping multi-line labels therefore repeat their shared
-//! lines instead of stacking extra bar columns, trading rustc's last few
-//! percent of polish for a renderer that stays simple and can never
-//! produce a misaligned layout on pathological input.
+//! layout -- overlapping multi-line labels repeat their shared lines
+//! instead of stacking extra bar columns.
 
 use crate::diagnostic::{Diagnostic, Footer, Label, LabelStyle, Severity};
 use crate::highlight::{Highlighter, TokenClass};

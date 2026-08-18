@@ -1,8 +1,6 @@
-//! `<base62-number> = {0-9a-zA-Z} "_"` -- v0's own encoding, reused
-//! verbatim (RFC 2603's reference-level explanation): `"_"` alone is 0,
-//! any other value is offset by 1 (`"0_"` is 1, `"Z_"` is 62, `"10_"` is
-//! 63, ...). Used for backref byte-offsets, sized-array lengths, and
-//! enum-variant indices -- anywhere the grammar needs a compact integer.
+//! `<base62-number> = {0-9a-zA-Z} "_"` -- v0's own encoding: `"_"` alone
+//! is 0, any other value is offset by 1. Used for backref byte-offsets,
+//! sized-array lengths, and enum-variant indices.
 
 const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 

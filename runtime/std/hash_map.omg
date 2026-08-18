@@ -1,37 +1,23 @@
-# `std::hash_map` -- `HashMap<K, V>`, separate-chaining hash map.
-#
-# Bound only on `K: Hash` -- a generic parameter only ever carries one
-# formal bound (see `GenericParam`'s own doc comment), and every realistic
-# key type's `Hash` and `Eq` operations are selected explicitly below. The
-# `Hash` bound establishes the normal hash operation; equality remains a
-# concrete-instantiation requirement, diagnosed at the exact use if a key
-# type omits it.
+# `std::hash_map` -- `HashMap<K, V>`, separate-chaining hash map. Bound
+# only on `K: Hash` (a generic parameter carries one formal bound); `Eq`
+# is selected explicitly at each use below.
 #
 # Separate chaining, not open addressing -- simpler to get correct (no
-# tombstones, no probe-sequence resize dance), and this is a first pass
-# establishing the fundamentals, not a final-word perf design. Same
-# allocator/cleanup story as every other owning type here (`std::alloc`,
-# no RAII, explicit `free`):
+# tombstones, no probe-sequence resize dance). Same allocator/no-RAII/
+# explicit-`free` story as every other owning type here:
 #
 #   map := HashMap<i32, *str>::new();
 #   defer map.free();
 #
-# `insert`/`get`/`remove` all return `Option<V>` -- no existing Omega
-# precedent to match (unlike `List<T>`, which mirrors `core::primitives::slices`), so
-# this follows Rust's own `HashMap` API shape instead, matching this
-# type's own heavier, non-hot-path character.
+# `insert`/`get`/`remove` return `Option<V>`, following Rust's `HashMap`
+# shape (no existing Omega precedent to match here).
 
-# `alloc`/`free` are `std::alloc` siblings, imported normally; `Hash` is
-# `std::hash::Hash`, imported below. `std` is an ordinary extern package and
-# never receives core's ambient-prelude treatment.
 import alloc::alloc;
 import alloc::free;
 import extern::core::cmp::Eq;
 import hash::Hash;
 
-# Hidden (module-scoped) top-level declaration, `internal` fields -- see
-# `std::linked_list::Node<T>`'s identical doc comment for why the two
-# differ.
+# Hidden (module-scoped), `internal` fields -- see `std::linked_list::Node<T>`.
 struct Entry<K, V> {
     internal key: K;
     internal value: V;
@@ -51,20 +37,16 @@ exposed struct HashMap<K: Hash, V> {
     internal bucket_count: usize;
     internal count: usize;
 
-    # `idx`'s own bucket-slot address, within an arbitrary bucket array
-    # (not necessarily `self.buckets` -- `resize` needs this for both the
-    # old and new arrays at once). Explicit byte math for the same reason
-    # `List<T>::elem_ptr` needs it -- see that file's own doc comment.
-    # Static (no `self`) -- pure computation from its own two arguments.
+    # `idx`'s slot address within an arbitrary bucket array (not necessarily
+    # `self.buckets` -- `resize` needs this for both old and new arrays at
+    # once). Static since it's needed before `Self` exists, in `new`.
     bucket_slot_in(buckets: *mut *mut Entry<K, V>, idx: usize) => *mut *mut Entry<K, V> {
         <*mut *mut Entry<K, V>>(<usize>buckets + idx * sizeof<*mut Entry<K, V>>)
     }
 
-    # Allocates `n` bucket slots, all zeroed (null) -- freshly allocated
-    # memory is never guaranteed zeroed, so every slot is written
-    # explicitly. Shared by `new`/`resize` rather than duplicated. Static
-    # for the same reason `bucket_slot_in` is -- needed before `Self` is
-    # even constructed, in `new`.
+    # Allocates `n` bucket slots, all zeroed (null) -- allocation is never
+    # guaranteed zeroed, so each slot is written explicitly. Shared by
+    # `new`/`resize`.
     alloc_buckets(n: usize) => *mut *mut Entry<K, V> {
         buckets := <*mut *mut Entry<K, V>>alloc(n * sizeof<*mut Entry<K, V>>);
         mut i : usize = 0;

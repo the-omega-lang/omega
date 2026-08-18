@@ -30,14 +30,11 @@ impl<'ctx> Codegen<'ctx> {
                     self.declare_function_def(f);
                 }
             }
-            // A top-level global -- zero-initialized when `initial_value`
-            // is `None`, or built from real bytes (with automatic pointer
-            // relocations, see `expr::build_const_blob`) when it's `Some`.
-            // Strong linkage unconditionally (a global is never a generic
-            // instantiation), writable regardless of source-level `mut`
-            // (enforced at analysis time, not by object-file memory
-            // protection) -- the exact counterparts of `cranelift/item.rs`'s
-            // `Declaration` arm.
+            // A top-level global -- zero-initialized when `initial_value` is
+            // `None`, else built from real bytes (see `build_const_blob`).
+            // Strong linkage unconditionally (never a generic instantiation);
+            // writable regardless of source-level `mut`, enforced at
+            // analysis time rather than by object-file memory protection.
             MirItem::Declaration(decl) => {
                 let symbol = omega_mir::mangle::global_symbol_string(path, &decl.ident);
                 let total = omega_analyzer::layout::total_bytes(&decl.r#type, self.pointer_bytes());
@@ -46,14 +43,12 @@ impl<'ctx> Codegen<'ctx> {
                     .as_ref()
                     .map(|value| self.build_const_blob(value, &decl.r#type));
 
-                // The global is declared with *whatever type its own
-                // initializer has*, not unconditionally as a byte array: an
-                // initial value that embeds a pointer (a string literal, a
-                // `&[...]` slice constant) materializes as a packed struct
-                // of byte spans and pointer fields, and a global whose
-                // declared type and initializer type disagree is invalid
-                // IR. Nothing downstream cares which shape it took -- every
-                // access goes through an opaque `ptr` and a byte offset.
+                // Declared with whatever type its own initializer has, not
+                // unconditionally a byte array: a global's declared type and
+                // initializer type must agree or the IR is invalid, and a
+                // pointer-embedding initializer materializes as a packed
+                // struct rather than bytes. Downstream access is unaffected
+                // either way -- always through an opaque `ptr` and offset.
                 let (r#type, initializer) = match blob {
                     None => {
                         let byte_array = self.context.i8_type().array_type(total.max(1));

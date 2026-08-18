@@ -1,33 +1,17 @@
 //! Compile-time macro expansion: a pure `SourceModule -> SourceModule`
-//! syntax transform. This is the *only* place `Item::
+//! syntax transform. This is the only place `Item::
 //! MacroDefinition`/`MacroInvocation` and `Expression::MacroInvocation`
-//! exist -- by the time [`expand`] returns successfully, none of them
-//! remain anywhere in the tree (see `omega_hir::lower::Lowerer`'s
-//! `unreachable!()` arms for those variants), so nothing downstream of
-//! `omega-parser` (HIR lowering, analysis, codegen) needs any notion of
-//! macros at all.
+//! exist -- nothing downstream of `omega-parser` needs any notion of macros.
 //!
-//! A macro's body is captured as a [`MacroBodyPiece`] tree at parse time
-//! (see `parser::macro_syntax`) -- ordinary tokens plus, where the author
-//! wrote `$...(sep){ ... }`, a repetition -- substituted at each invocation,
-//! and fed directly into the ordinary parser's token-based entry points, one
-//! per invocation position (`parser::item::parse_source_module`,
-//! `parser::expression::parse_block_contents`,
-//! `parser::expression::parse_expression`)
-//! -- no render-to-text-then-re-lex round-trip. Before reparsing, generated
-//! tokens are re-anchored at the invocation's span. A [`Span`] deliberately
-//! carries no source-file identity, so preserving definition-site spans
-//! would make an imported macro's byte offsets point into the importing
-//! module's unrelated source text when a later diagnostic is rendered.
-//! Call-site attribution is therefore both meaningful to the author and the
-//! only source-safe policy without threading source identities through the
-//! whole compiler.
+//! A macro's body is captured as a [`MacroBodyPiece`] tree at parse time and
+//! substituted at each invocation, then fed directly into the ordinary
+//! parser's token-based entry points -- no render-to-text-then-re-lex
+//! round-trip. Generated tokens are re-anchored at the invocation's span
+//! (call-site attribution) rather than keeping definition-site spans, since
+//! a [`Span`] carries no source-file identity.
 //!
-//! A macro's body is never type-checked or even syntax-checked on its own,
-//! only once fully substituted with concrete arguments at a specific
-//! invocation, matching "duck typed" expansion: whatever the substituted
-//! code does or doesn't support is discovered the same way it would be for
-//! hand-written code.
+//! A macro's body is never type- or syntax-checked on its own, only once
+//! fully substituted at a specific invocation ("duck typed" expansion).
 
 use crate::ast::identifier::{ExpansionId, Ident, Origin};
 use crate::ast::range::{RangeEnd, RangeExpr};
@@ -108,11 +92,9 @@ impl ExpansionState {
     /// The macro environment an invocation resolves in, chosen by where its
     /// name token was *written*: a body-emitted invocation resolves in the
     /// emitting macro's defining module, one that arrived through argument
-    /// substitution keeps `ambient` (the environment of the module being
-    /// expanded). Selecting per invocation rather than swapping the
-    /// environment for a whole expanded subtree is what keeps a macro
-    /// invocation passed *as an argument* resolvable -- it was written by the
-    /// caller, so it must resolve there.
+    /// substitution keeps `ambient`. Selecting per invocation (rather than
+    /// swapping the environment for a whole expanded subtree) keeps an
+    /// invocation passed *as an argument* resolvable in the caller's module.
     fn environment_for<'a>(
         &'a self,
         origin: Origin,

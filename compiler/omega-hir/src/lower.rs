@@ -148,17 +148,12 @@ impl Lowerer {
 
     /// Most statements lower into exactly one `HirStmt`; `ident : type =
     /// value;` lowers into two (a plain `Declaration` followed by an
-    /// assignment expression statement) -- unlike `Walrus`, this needs no
-    /// analysis-time desugaring, since the type is already written down
-    /// here, so lowering can do it directly.
+    /// assignment expression statement).
     ///
     /// Split out from `lower_stmt` (which just supplies `node.span`) so a
     /// `for` loop's init clause -- a bare `Statement` with no
-    /// `StatementNode` span of its own, since it's parsed without the
-    /// semicolon/wrapping a real statement normally comes with -- can reuse
-    /// this same logic against the enclosing `for` statement's span, the
-    /// same approximation `lower_function_def` already makes for struct
-    /// methods that have no span of their own either.
+    /// `StatementNode` span of its own -- can reuse this logic against the
+    /// enclosing `for` statement's span instead.
     fn lower_statement(&mut self, statement: &Statement, span: Span) -> Vec<HirStmt> {
         match statement {
             Statement::Declaration(decl) => {
@@ -416,18 +411,10 @@ impl Lowerer {
     /// represented here at all, since parameters can never be mutable
     /// bindings; see `self_shadow_stmt`.
     ///
-    /// This is deliberately never the owner's own bare name: `Self` is what
-    /// every struct/union/enum/spec method's own analysis substitution
-    /// already binds to the concrete owner type (see
-    /// `omega_analyzer::analysis::Analyzer`'s `Self` seeding, mirrored at
-    /// both `Driver::compute_item` and `Driver::check_item_body`), so
-    /// resolving through it needs no further lookup and, critically, never
-    /// re-triggers an independent by-name lookup of the owner -- which,
-    /// for a *generic* owner, would need its own type arguments supplied
-    /// and previously produced a bogus `'Pair' expects 1 type argument(s),
-    /// found 0` error for any generic struct/enum with a self-taking
-    /// method (a signature-time bug, independent of whether the body
-    /// itself references `self`).
+    /// Deliberately never the owner's own bare name: `Self` is what every
+    /// struct/union/enum/spec method's own analysis substitution already
+    /// binds to the concrete owner type, so resolving through it needs no
+    /// further lookup of the owner itself.
     fn self_param(&mut self, self_mode: Option<SelfMode>, span: Span) -> Option<HirParam> {
         let mode = self_mode?;
         let self_type = Ident("Self".to_string());
@@ -588,11 +575,8 @@ impl Lowerer {
     ///
     /// Separate from `lower_field` below because the AST distinguishes the
     /// two -- a field carries a visibility modifier, a parameter cannot --
-    /// even though both still land in `HirParam` today. Merging those three
-    /// layers (`HirParam`, `CheckedParam`, and the analyzer's
-    /// `(Ident, ResolvedType, Visibility)` field triple) is recorded as one
-    /// unit of work in `docs/14-known-issues.md`; doing it here alone would
-    /// create a distinction that dies at the next layer.
+    /// even though both still land in `HirParam` today (see
+    /// `docs/14-known-issues.md`).
     fn lower_param(&mut self, param: &Param) -> HirParam {
         HirParam {
             id: self.ids.next(),

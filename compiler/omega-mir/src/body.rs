@@ -53,23 +53,13 @@ pub struct MirLocalDecl {
 /// One basic block: a straight-line run of statements, ending in exactly
 /// one terminator.
 ///
-/// Deliberately *not* Cranelift-style block parameters (a phi-equivalent):
-/// an earlier version of this design threaded an `if`/`match` join's value
-/// that way, but it silently breaks the moment a *sibling* expression (say,
-/// the other operand of the same enclosing `BinaryOp`) builds further
-/// blocks before that value is actually consumed -- the value ends up
-/// referenced from whatever block the enclosing statement/terminator
-/// finally lands in, which is no longer the block that produced it, and a
-/// Cranelift block's own params are only ever valid for a use gated behind
-/// dominance from that exact block, not "wherever lowering happens to be
-/// by the time the tree gets consumed." So every cross-block value in this
-/// MIR -- an `if`/`match` join's result, the function's own return-value
-/// threaded through its `defer` exit chain -- is an ordinary synthetic
-/// [`LocalId`] instead (see `MirPlaceRoot::Local`), written by an ordinary
-/// `Assign` statement in each producing block and read back by an ordinary
-/// `Place` wherever it's needed, exactly like Rust's own MIR does (no
-/// block-argument mechanism there either) -- a block never carries any
-/// incoming value of its own.
+/// Deliberately *not* Cranelift-style block parameters: every cross-block
+/// value (an `if`/`match` join's result, the function's return value
+/// threaded through its `defer` exit chain) is an ordinary synthetic
+/// [`LocalId`] instead (see `MirPlaceRoot::Local`), written by an `Assign`
+/// in each producing block and read back by a `Place` wherever it's
+/// needed -- see [mir-and-codegen.md](../../../docs/16-mir-and-codegen.md)'s
+/// "Block-arguments were tried and rejected" for why.
 #[derive(Debug, Clone)]
 pub struct MirBlockData {
     /// Evaluated in order, purely for side effects -- each is a whole
@@ -241,28 +231,12 @@ pub struct MirPlace {
     /// place as one value, and the type is what tells them the leaf shape.
     pub r#type: ResolvedType,
     /// The alignment of every load/store made *through* this place --
-    /// `layout::type_alignment(r#type)`, computed once here, at lowering,
-    /// instead of being re-derived (or, worse, assumed) by each backend.
-    ///
-    /// This is a claim about the place's **base** address only -- an access
-    /// at a byte offset into it is weaker, and a backend must lower the
-    /// claim accordingly (see `llvm::place::offset_align`). Omega packs
-    /// aggregates by default (`pack = 1, align = 1`), so for everything
-    /// without an `@layout(align = n)` anywhere in its type graph this is
-    /// simply `1` and nothing can be over-claimed. With `@layout(align =
-    /// n)` it is *not* yet a guarantee: `layout::type_alignment` does not
-    /// propagate through a containing type, so an aligned struct nested in
-    /// an unaligned one is aligned only relative to its parent -- see
-    /// `docs/14-known-issues.md`'s "`@layout(align = n)` is not yet a real
-    /// address guarantee". Cranelift's `MemFlags::new()` (no alignment claim) was
-    /// already the conservative reading; LLVM's default is *natural*
-    /// alignment, and a packed struct loaded with that assumption is UB its
-    /// optimizer will exploit -- so the LLVM backend must emit this value
-    /// explicitly on every load/store. (`stack_align_shift` deliberately
-    /// plays no part here: the 16-byte stack-slot floor is a property of
-    /// the *storage*, which each backend applies to its own allocas -- an
-    /// access's alignment is a property of the value, and claiming the
-    /// floor would be an over-claim against a packed local's real address.)
+    /// `layout::type_alignment(r#type)`, computed once here at lowering
+    /// instead of being re-derived by each backend. A claim about the
+    /// place's **base** address only; an access at a byte offset into it is
+    /// weaker (see `llvm::place::offset_align`). Not yet a real guarantee
+    /// under `@layout(align = n)` -- see `docs/14-known-issues.md`'s
+    /// "`@layout(align = n)` is not yet a real address guarantee".
     pub align: u32,
 }
 
@@ -275,9 +249,9 @@ pub enum MirPlaceRoot {
     /// further-projected, same invariant `Storage::Function` documents
     /// today.
     Function(HirId),
-    /// A top-level variable or non-function extern -- storage layout is
-    /// still undecided (`todo!()` in codegen), same as `Storage::Global`
-    /// today.
+    /// A top-level variable, ordinary globals fully implemented; a
+    /// non-function `extern` still has no storage story in codegen
+    /// (`todo!()`) -- see `docs/14-known-issues.md`.
     Global { id: HirId, r#type: ResolvedType },
     /// The base of a projection chain that isn't a bare name, e.g.
     /// `foo().bar` -- the root is the `foo()` call expression.

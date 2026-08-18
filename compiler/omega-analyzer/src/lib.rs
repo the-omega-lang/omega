@@ -14,18 +14,14 @@
 //!
 //! - **A node is identified by its `(HirId, Span)` pair**, threaded
 //!   explicitly rather than carried in the analyzer's state -- which is why
-//!   so many functions here take both. (Collapsing the pair into one type is
-//!   worth doing, but it reaches into `omega-hir` and every call site; see
-//!   the design review.)
+//!   so many functions here take both (see docs/17-design-review.md).
 //! - **Resolve once, at signature time; read back everywhere.** Annotations,
 //!   self-mode, method identities and spec visibility are all decided when a
 //!   signature is collected, and every later phase reads those decisions
 //!   back instead of re-deriving them.
 
-// Both of these follow from the conventions above: the argument count from
-// the explicit `(HirId, Span)` pair, and the enum size from one short-lived
-// local enum whose larger variant is never stored. Boxing either would cost
-// clarity for no real benefit.
+// Argument count follows from the explicit `(HirId, Span)` pair; enum size
+// from one short-lived local enum whose larger variant is never stored.
 #![allow(clippy::too_many_arguments, clippy::large_enum_variant)]
 
 pub mod analysis;
