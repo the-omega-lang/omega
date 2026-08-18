@@ -17,3 +17,13 @@ We only started keeping plans at `0001`. Everything built before that —
 most of the language — has no plan on file. Its rationale lives in the
 docs, in the code's own comments, and in the commit history; nothing is
 missing from this directory that ever existed here.
+
+
+For the language's *current* state, read [`docs/`](../README.md) instead; where
+a plan and the docs disagree, the docs are right.
+
+## Agent use: cold storage
+
+Coding agents should treat this directory as **historical cold storage**, not normal task context. Do not search or read old plans merely because their title or vocabulary resembles the current task. Start from [`ARCHITECTURE.md`](../../ARCHITECTURE.md), current `docs/`, and current source instead.
+
+Consult an old plan only when current source/docs leave a specific, necessary design rationale unresolved. Read the smallest relevant plan/range, then return to current sources of truth. Historical plans must never override current code or documentation.

@@ -38,6 +38,8 @@ flat, cross-referenced index of every one of them for a quick scan.
 
 ## Reading order
 
+> **Agent note:** the sequence below is for human onboarding. Coding agents working on a concrete task should **not** read it front-to-back. Start from [`ARCHITECTURE.md`](../ARCHITECTURE.md), then read only the topic documents relevant to the task and search the owning source subsystem.
+
 New to the codebase — read roughly in this order:
 
 1. [Functions](00-functions.md) — declaration grammar, overloading,

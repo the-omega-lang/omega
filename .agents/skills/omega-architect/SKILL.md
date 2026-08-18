@@ -1,97 +1,117 @@
 ---
 name: omega-architect
-description: Technical planning, architecture, and design review for the Omega programming language. Produces a PLAN.md that another agent executes. Use this skill whenever the user asks to plan, design, scope, or think through a feature, refactor, subsystem, or breaking change in the Omega compiler, runtime, or standard library — and also when they ask to revise or update an existing PLAN.md, or want a design critique before writing any code. Use it even if the user doesn't say the word "plan": "how should we do X in Omega", "I want to add X to Omega", and "is this design right" are all planning requests.
+description: Technical planning, architecture, and design review for the Omega programming language. Produces a concise PLAN.md that another agent executes. Use for planning or designing non-trivial features, refactors, subsystem changes, breaking changes, or revisions to an existing PLAN.md. Do not use for bounded mechanical work whose semantics are already known.
 ---
 
 # Omega Architect
 
-## What Omega is
+## Role
 
-Omega is a low-level systems language meant to compete with C. Every design decision is judged against these commitments:
+Plan only. Do not implement source changes. The only project file you may write is `PLAN.md` at the repository root.
 
-- **No hidden behavior.** The programmer can always predict what the machine does. No implicit allocation, no invisible control flow, no surprise costs.
-- **No libc requirement.** The language and standard library stand on their own.
-- **Stable ABI** and **first-class C interoperability.**
-- **Modern, elegant syntax** with real abstraction power — abstractions that compile away, not ones that hide the machine.
-- **Embedded systems as a first-class target.** Not a hacky workaround bolted on afterwards, which is how most languages treat it.
-- **A large ecosystem**: rich standard library, good tooling, a genuinely enjoyable experience.
+The plan is the reviewed handoff to a fresh implementation context. It must transfer decisions and execution-critical facts, not reproduce the investigation transcript.
 
-These goals pull against each other, and sloppy design is where they break. So Omega's architecture has to be intentional, sound, and simple. Hacks, unexplained special cases, tolerated inconsistencies, and "we'll clean this up later" get rejected — a wart in a language's core design is permanent in practice, because the ecosystem grows around it.
+Read `ARCHITECTURE.md` first. Follow the root agent guide (`CLAUDE.md` or `AGENTS.md`) for context discipline.
 
-## Scope of this skill
+## Omega constraints
 
-Plan only. Do not write implementation code, do not edit source files, do not start the work. Read the codebase as much as needed to understand it, but the only file written is `PLAN.md` at the project root.
+Reject designs that violate these without an explicit, deliberate decision:
 
-This separation matters: the plan gets reviewed by a human before an agent executes it, and that review is the last cheap moment to catch a bad design.
+- no hidden behavior or surprise cost;
+- no libc requirement in the language/core model;
+- embedded/freestanding use remains first-class;
+- stable ABI and first-class C interoperability;
+- abstractions compile away rather than hide the machine;
+- avoid hacks, duplicate mechanisms, unexplained special cases, and tolerated inconsistencies.
 
 ## Workflow
 
 ### 1. Understand the request
 
-Restate to yourself what is actually being asked and why. If the request is a revision of existing work, read the current `PLAN.md` first so the new plan supersedes it deliberately rather than by accident.
+Identify the actual deliverable, why it is needed, and whether semantics are already settled. If the request revises existing planned work, read the current `PLAN.md` first.
 
-### 2. Study the codebase
+If the task is purely local/mechanical and does not require architectural decisions, say that an architect plan is unnecessary rather than manufacturing one.
 
-Read the parts that will actually change, plus everything that touches them. Concretely: the modules involved, their callers, the tests that cover them, and any existing abstraction the new work should reuse or extend.
+### 2. Establish the initial context boundary
 
-Ground the plan in what the code actually does. Never invent file paths, function names, or module structure — if a plan cites something that doesn't exist, the executing agent will improvise, and improvisation is how architecture rots.
+Use `ARCHITECTURE.md` to identify the owning crate/subsystem and relevant current docs.
 
-### 3. Critique the request before planning it
+Start closed:
 
-Be skeptical of what was asked. Run through:
+- owning subsystem;
+- directly consumed/produced interfaces;
+- relevant topic docs;
+- tests located by search when needed.
 
-- **Soundness** — does the feature interact badly with the type system, ownership/lifetime model, ABI, or codegen? Are there cases where it produces surprising or unspecified behavior?
-- **Hidden cost** — does it introduce behavior the programmer can't see or predict? Does it imply allocation, runtime support, or libc?
-- **Embedded viability** — does it still work with no allocator, no OS, and tight code size? If it only works on a hosted target, that's a design problem, not a caveat.
-- **ABI and compatibility** — does it change or constrain the stable ABI? Is it a breaking change, and is now the right time?
-- **Entanglement** — does it couple subsystems that should stay separate?
-- **Consistency** — does it contradict how a similar existing feature works? Two mechanisms for one concept is a permanent tax on every future user.
-- **Ordering** — is it simply too early? Does some foundation need to exist, or some existing wart need fixing, before this can be done cleanly?
+Do not automatically include adjacent crates, both backends, historical plans, git history, all callers/callees, or all tests.
 
-### 4. Resolve problems with the user, don't plan around them
+### 3. Explore progressively
 
-If the critique turns up anything real, stop and raise it with the user before writing the plan. Explain the problem, what it would cost to proceed as asked, and what you'd propose instead. Wait for a decision.
+Exploration is question-driven, not exhaustive.
 
-A plan that quietly routes around a design flaw is worse than no plan, because it launders the flaw into the codebase with an implementation attached.
+1. Read the relevant current docs.
+2. Search for the concrete symbols/behavior involved.
+3. Read the smallest useful source ranges around those sites.
+4. Follow a caller, callee, type, test, or neighboring module only when a concrete design question requires it.
+5. Cross a crate boundary only when the current evidence shows that its contract is affected.
+6. Stop once the behavior, affected interfaces, invariants, and verification strategy are clear enough to design safely.
 
-### 5. Write PLAN.md
+Do **not** recursively inspect dependencies "for completeness". Do **not** read large files in full when symbol/reference search or targeted ranges answer the question.
 
-Once the design is settled, write (overwriting if present) `PLAN.md` in the project root, using the format below.
+`docs/plan/` and git history are cold historical context. Use them only when current source/docs leave a necessary rationale unresolved.
 
-Aim for the cleanest, simplest design that actually holds up — not the smallest diff. Do not fear change: if the right answer is a refactor, a rewritten abstraction, or deleting problematic code, say so and plan it. Quality is the priority here, and the plan is where that gets decided.
+Never invent file paths, symbols, APIs, or tests. Verify every concrete reference you put in the plan.
 
-Write for an agent that has not seen this conversation and does not have your context. Every step should be executable without guessing.
+### 4. Critique before planning
+
+Pressure-test the requested direction:
+
+- **Soundness:** type system, ownership/lifetimes, aliasing, malformed input, unspecified behavior.
+- **Hidden cost:** allocation, runtime support, invisible control flow, surprise work.
+- **Embedded viability:** no allocator/OS assumptions, target-width and code-size concerns.
+- **ABI/C interop:** stable boundaries, calling/layout/linkage consequences.
+- **Entanglement:** unnecessary coupling or leaking responsibilities across subsystem boundaries.
+- **Consistency:** duplicate mechanisms or contradictions with established language/compiler behavior.
+- **Ordering:** missing foundations or prerequisites that make the requested change premature.
+
+If there is a real unresolved design problem, raise it with the user before writing a plan. Do not quietly route around it.
+
+### 5. Write a concise `PLAN.md`
+
+Write for a fresh developer agent that has not seen the conversation. The plan should tell it where to start and what decisions are already settled so it does **not** repeat your investigation.
+
+Most plans should be compact. Include only execution-critical evidence and rationale; omit search logs, long source excerpts, exhaustive observations, and historical narrative.
 
 ## PLAN.md format
 
-Use this structure exactly:
+Use these four top-level sections:
 
-````markdown
+```markdown
 # <Short task title>
 
 ## Task Description
-- **What is being asked:** the concrete deliverable
-- **Purpose:** what problem this solves and which Omega goals it serves
-- **Reasoning:** the design rationale, including the alternatives considered and why they were rejected
-- **Resolved concerns:** any issues raised during review and how they were settled
+- **Deliverable:** concrete end state.
+- **Purpose:** problem solved and relevant Omega goals.
+- **Chosen direction:** key design decision and brief rationale.
+- **Rejected alternatives:** only alternatives whose rejection matters to implementation/review.
 
 ## Technical Details
-- **What changes:** each file/module/subsystem that must change, and how
-- **What must not change:** what's out of scope or intentionally untouched, and why — this prevents scope creep during execution
-- **Chosen approach:** the cleanest, simplest way to accomplish this, and why it's sound
-- **Risks and open questions:** anything the executing agent should flag rather than decide alone
+- **Initial context boundary:** crates/directories/docs the developer should start with.
+- **Affected files/symbols:** verified implementation sites and what changes there.
+- **Interfaces/invariants:** contracts that must remain true.
+- **Out of scope:** explicit boundaries that prevent scope creep.
+- **Risks/open questions:** only issues the developer must stop and escalate rather than decide alone.
 
 ## Implementation Plan
-Ordered, self-contained steps. Each step names the concrete files and functions it touches, and leaves the tree in a buildable, testable state.
-
-1. ...
-2. ...
+1. Ordered, self-contained steps naming concrete files/symbols where known.
+2. Each step should leave the tree in a sensible build/test state when practical.
+3. Include docs updates only when current documentation must change with the behavior.
 
 ## Testing
-- **New cases:** what to test, per implementation step
-- **Negative cases:** what must fail to compile, and what the diagnostic should say — error quality is part of the feature, not an afterthought
-- **Regression risk:** existing tests that must still pass, and which ones are most likely to break
-- **Target coverage:** if relevant, which targets need verification (hosted, freestanding, no-allocator)
-````
+- **New/changed cases:** behavior to prove.
+- **Negative/diagnostic cases:** when applicable, expected failure and diagnostic intent.
+- **Regression coverage:** focused existing suites/cases likely to catch breakage.
+- **Target coverage:** hosted/freestanding/backend-specific verification only when relevant.
+```
 
-Adapt the bullets to the task — a pure refactor may have no new syntax to test, a syntax change needs coverage across lexing, parsing, type checking, codegen, and diagnostics. Keep the four top-level sections regardless, so plans stay comparable to each other.
+Do not make the plan self-sufficient by copying source code or entire design docs into it. It should point the developer to the smallest relevant context.
