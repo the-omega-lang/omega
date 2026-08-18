@@ -1,8 +1,3 @@
-//! Building a `spec *Spec` dynamic-dispatch vtable -- the LLVM counterpart
-//! of `cranelift/vtable.rs`: a compiler-generated array of function
-//! pointers, one per resolved slot, under the shared
-//! `omega_mir::mangle::vtable_symbol` name, weak linkage so identical
-//! vtables from separate compilations fold at link time.
 
 use super::Codegen;
 use inkwell::module::Linkage;
@@ -12,11 +7,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 impl<'ctx> Codegen<'ctx> {
-    /// Lazily builds (and memoizes) the vtable for `slots` -- see
-    /// `cranelift/vtable.rs`'s `vtable_for` for the full rationale; this
-    /// is its LLVM translation. `slots` is both the cache key and the
-    /// vtable's entire content (one concrete method's declaration id per
-    /// slot, already fully resolved by analysis).
     pub(super) fn vtable_for(
         &mut self,
         concrete: &ResolvedType,
@@ -29,9 +19,7 @@ impl<'ctx> Codegen<'ctx> {
             return global;
         }
 
-        // One function pointer per slot, in order -- each pointing at that
-        // entry's already-declared method. LLVM builds the pointer
-        // relocations itself from the `FunctionValue`s.
+        // Vtable slots preserve the analyzer-resolved method order exactly.
         let fn_ptrs: Vec<inkwell::values::BasicValueEnum> = slots
             .iter()
             .map(|decl_id| {

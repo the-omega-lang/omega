@@ -1,6 +1,3 @@
-//! Resolving a [`MirPlace`] to its underlying storage -- the one general
-//! mechanism behind reading, writing, and taking the address of a place,
-//! regardless of how many derefs/field accesses/indices got it there.
 
 use super::Codegen;
 use super::leaf::IntoCraneliftLeaves;
@@ -11,29 +8,13 @@ use cranelift_module::Module;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_mir::{MirPlace, MirPlaceRoot, MirProjection};
 
-/// Where a resolved place's underlying storage lives, for both the read
-/// (producing values) and write (storing values) case:
 pub(super) enum PlaceStorage {
-    /// Already-materialized SSA values (a parameter local that hasn't been
-    /// dereferenced through) -- readable, but has no address: there is no
-    /// memory location backing a bare SSA value.
     Values(Vec<Value>),
-    /// A byte offset into one compile-time-known stack slot (a non-
-    /// parameter local, before any `Deref`).
     Slot { slot: StackSlot, offset: u32 },
-    /// A byte offset from a runtime pointer value -- the state from the
-    /// first `Deref` projection onward (explicit `*`, or a seamless
-    /// pointer-to-struct field access), since the pointee isn't known
-    /// until runtime.
     Address { base: Value, offset: u32 },
 }
 
 impl Codegen {
-    /// Walks a place's root and projections once, tracking where its
-    /// storage currently lives -- switching from `Slot`/`Values` to
-    /// `Address` the moment a `Deref` (explicit, or an array `Index`'s
-    /// implicit pointer arithmetic) happens, since the pointee isn't known
-    /// until runtime.
     pub(super) fn resolve_place_storage(
         &mut self,
         place: &MirPlace,
@@ -44,12 +25,7 @@ impl Codegen {
                 let current = if (id.0 as usize) < self.arg_count {
                     PlaceStorage::Values(self.local_args[id.0 as usize].clone())
                 } else {
-                    // One shared per-function slot, offset by this local's
-                    // own precomputed position within it -- see
-                    // `Codegen::frame_slot`'s doc comment for why this
-                    // (rather than one independent slot per local) is what
-                    // makes a zero-sized local's address genuinely coincide
-                    // with whatever real local comes next, cross-backend.
+                    // Use the shared frame slot plus precomputed local offset so zero-sized locals follow shared layout.
                     let slot = self.frame_slot.expect("define_function_def always sets this before any block runs");
                     PlaceStorage::Slot { slot, offset: self.local_offsets[id.0 as usize] }
                 };
@@ -60,11 +36,7 @@ impl Codegen {
                     "a function reference is never itself further-projected; calls resolve it directly via get_place_value"
                 );
             }
-            // A global's own runtime address, exactly like a vtable's or an
-            // interned string's (`declare_data_in_func` + `global_value`) --
-            // then an ordinary `Address` storage from there, offset 0, so
-            // every projection below walks it exactly like a dereferenced
-            // pointer's storage already does.
+            // Treat globals as ordinary address-backed storage before applying projections.
             MirPlaceRoot::Global { id, r#type } => {
                 let data_id = *self.globals.get(id).unwrap_or_else(|| {
                     panic!("mir body guarantees {id:?} was declared as a global before this use")
@@ -73,13 +45,7 @@ impl Codegen {
                 let base = builder.ins().global_value(self.pointer_type(), global_value);
                 (PlaceStorage::Address { base, offset: 0 }, r#type.clone())
             }
-            // A temporary as the root of a projection chain -- `foo().bar`,
-            // `Vec2 { ... }.x`, or a method call's implicit `&self` on
-            // either: materialized into an anonymous stack slot so the rest
-            // of the projection walk (including taking its address) has
-            // ordinary memory to work against, exactly like a local's slot
-            // -- the temporary just has no name and no declaration to key
-            // a stack slot by.
+            // Spill temporary projection roots so their address and subfields remain addressable.
             MirPlaceRoot::Expr(expr) => {
                 let r#type = expr.r#type.clone();
                 let values = self.process_expr(builder, (**expr).clone());
@@ -120,13 +86,7 @@ impl Codegen {
                     current_type = r#type.clone();
                 }
 
-                // Every field lives at offset 0 (see
-                // `MirProjection::UnionField`'s doc comment) -- the only
-                // real work here is spilling an SSA-value-backed union to
-                // memory first (mirrors `EnumBody`'s identical spill, for the
-                // identical reason: no leaf slice can reinterpret one field's
-                // real shape out of the union's own opaque payload chunks),
-                // then letting `current_type` advance to the field's type.
+                // Union projections reinterpret offset-zero storage; spill SSA-backed unions before projecting.
                 MirProjection::UnionField { r#type, .. } => {
                     if let PlaceStorage::Values(values) = &current {
                         let shift = layout::stack_align_shift(layout::type_alignment(&current_type));
@@ -147,26 +107,13 @@ impl Codegen {
                 }
 
                 MirProjection::Index { index_expr, item_type } => {
-                    // The element size comes from `item_type` (the resolved
-                    // element type analysis already picked out), not from
-                    // flattening `current_type` itself -- the container's own
-                    // leaf flattening (a single thin pointer for `Array`, or
-                    // N*item leaves for `SizedArray`) has nothing to do with
-                    // one element's size.
+                    // Index scaling comes from the resolved element type, not the container leaf shape.
                     let element_ir_size = layout::total_bytes(item_type, self.pointer_bytes());
 
                     let mut base = match &current_type {
-                        // Inline contiguous storage: index off the storage's
-                        // own address, not a pointer value loaded from it --
-                        // there is no pointer to load, the elements live
-                        // directly in `current`.
+                        // Sized arrays index from inline storage; pointer-backed containers index from their data pointer.
                         ResolvedType::SizedArray(_, _) => self.place_storage_address(builder, &current),
-                        // `Array` (a plain, unsized-array-shaped thin
-                        // pointer, e.g. `argv`) *is* a pointer value;
-                        // `Slice`/`Str`'s first flattened leaf is its data
-                        // pointer (the second, its length, isn't needed for
-                        // a single-element index) -- identical leaf layout,
-                        // so the same one-leaf load works for both.
+                        // Unsized arrays use their pointer value; slices/strings use the first leaf as the data pointer.
                         ResolvedType::Array(_, _) | ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                             self.load_scalars(builder, &current, &current_type)[0]
                         }
@@ -193,8 +140,7 @@ impl Codegen {
                 }
 
                 MirProjection::EnumTag { r#type } => {
-                    // The tag is the leading leaf/bytes of every enum value
-                    // -- offset 0, first leaf.
+                    // Enum tags begin at byte/leaf offset zero.
                     let ResolvedType::Enum { cell, .. } = &current_type else {
                         unreachable!("mir body guarantees EnumTag projections are only built against an enum type");
                     };
@@ -214,11 +160,7 @@ impl Codegen {
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            // Positional, by leaf-list start index -- shares
-                            // `enum_header_offset`'s exact layout (see
-                            // `enum_prefix_layout`), so an interior gap
-                            // before this field (from an earlier field's own
-                            // alignment demand) is accounted for here too.
+                            // Use shared enum-prefix layout offsets; leaf position alone cannot model alignment gaps.
                             let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
                                 [1 + *index];
                             let len = enum_type.header[*index].1.cranelift_leaves(self).len();
@@ -236,11 +178,7 @@ impl Codegen {
                     current_type = r#type.clone();
                 }
 
-                // `EnumHeader`'s arm above, mirrored exactly -- the only
-                // difference between the two is which offset helper and
-                // field list to read from (dynamic fields sit right after
-                // the header); mutability is handled generically wherever a
-                // place is written to, not here.
+                // Dynamic enum fields use the same resolved-prefix offset logic as header fields.
                 MirProjection::EnumDynamicField { index, r#type, .. } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
                         unreachable!("mir body guarantees EnumDynamicField projections are only built against an enum type");
@@ -249,7 +187,6 @@ impl Codegen {
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            // See `EnumHeader`'s identical `Values` arm above.
                             let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
                                 [1 + enum_type.header.len() + *index];
                             let len = enum_type.dynamic_fields[*index].1.cranelift_leaves(self).len();
@@ -274,11 +211,7 @@ impl Codegen {
                         unreachable!("mir body guarantees EnumBody projections are only built against an enum type");
                     };
                     let cell = cell.clone();
-                    // A body field lives inside the opaque payload chunks,
-                    // which no leaf slice can address -- an SSA-value-backed
-                    // enum (a parameter) is spilled to an anonymous slot
-                    // first, exactly like a temporary place root, so the
-                    // field is an ordinary byte offset from there.
+                    // Spill SSA-backed enums before payload projection because payload chunks are byte-addressed.
                     if let PlaceStorage::Values(values) = &current {
                         let shift = layout::stack_align_shift(layout::type_alignment(&current_type));
                         let size = layout::total_bytes(&current_type, self.pointer_bytes());
@@ -307,10 +240,7 @@ impl Codegen {
                 }
 
                 MirProjection::SliceLength => {
-                    // A slice is flattened as [data pointer, i32 length] --
-                    // `.length` is just the second leaf, at a byte offset of
-                    // one pointer's width past the start of the slice's own
-                    // storage.
+                    // Slice place access uses the data-pointer leaf; length is metadata.
                     let ptr_size = self.pointer_type().bytes();
                     current = match current {
                         PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[1]]),
@@ -324,11 +254,7 @@ impl Codegen {
                     current_type = ResolvedType::I32;
                 }
 
-                // A spec object is flattened as [data pointer, vtable
-                // pointer] (see `ResolvedType::SpecObject`'s own doc
-                // comment) -- `.ptr` is the first leaf, at no offset;
-                // `.vtable` is the second, exactly like `SliceLength` above
-                // reads a fat pointer's second leaf.
+                // Dynamic-spec place access uses the data-pointer leaf; vtable is metadata.
                 MirProjection::SpecObjectPtr { mutable } => {
                     current = match current {
                         PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[0]]),
@@ -355,28 +281,10 @@ impl Codegen {
         (current, current_type)
     }
 
-    /// The runtime address backing `storage` -- the same address-resolution
-    /// `AddressOf` needs, but also needed by `SizedArray` indexing (which
-    /// must index off the storage's own address, having no pointer value to
-    /// load) and slice construction from a `SizedArray` base.
     pub(super) fn place_storage_address(&mut self, builder: &mut FunctionBuilder, storage: &PlaceStorage) -> Value {
         let ptr_type = self.pointer_type();
         match storage {
-            // A parameter's own SSA-register-backed values have no address
-            // by construction -- spilled into a fresh stack slot on
-            // demand, the same lazy-materialization `MirPlaceRoot::Expr`/
-            // `MirProjection::UnionField` already use elsewhere in this
-            // file (see their own comments) for the identical reason, so
-            // a parameter's address can be taken (an explicit `&param`, or
-            // the implicit auto-ref a `*self`/`*mut self` method call
-            // needs) like any other in-memory place's. Size computed
-            // directly from the leaf values' own Cranelift IR types,
-            // exactly like `store_scalars` already does, rather than
-            // requiring this function to also take a `ResolvedType` it
-            // doesn't otherwise need; alignment uses `stack_align_shift`'s
-            // own floor (16 bytes) since there's no declared type here to
-            // ask for a real one, and over-aligning a stack slot is always
-            // safe, just occasionally a few bytes wide.
+            // Spill address-taken parameters once and reuse the spill for subsequent projections.
             PlaceStorage::Values(values) => {
                 let size: u32 = values.iter().map(|v| builder.func.dfg.value_type(*v).bytes()).sum();
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 4));
@@ -393,7 +301,6 @@ impl Codegen {
         }
     }
 
-    /// Reads every scalar leaf of `r#type` out of `storage`, in leaf order.
     pub(super) fn load_scalars(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -422,7 +329,6 @@ impl Codegen {
         result
     }
 
-    /// Writes `values` (one per scalar leaf, in leaf order) into `storage`.
     pub(super) fn store_scalars(&mut self, builder: &mut FunctionBuilder, storage: &PlaceStorage, values: &[Value]) {
         let mut rel_offset = 0u32;
         for value in values {
@@ -445,10 +351,7 @@ impl Codegen {
     }
 
     pub(super) fn get_place_value(&mut self, place: &MirPlace, builder: &mut FunctionBuilder) -> Vec<Value> {
-        // A function reference has no memory backing at all -- just a
-        // symbol address -- so it's handled before the general
-        // storage-resolution path (mir guarantees this root never carries
-        // further projections, see `resolve_place_storage`).
+        // Function references are code pointers and cannot be materialized as ordinary data places.
         if let MirPlaceRoot::Function(decl_id) = &place.root {
             let function = *self.functions.get(decl_id).unwrap_or_else(|| {
                 panic!("mir body guarantees {decl_id:?} was declared as a function before this use")

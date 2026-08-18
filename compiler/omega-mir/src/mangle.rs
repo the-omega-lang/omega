@@ -1,18 +1,3 @@
-//! Builds `omega_mangle::Symbol`s from resolved analyzer types and hands
-//! them to `omega_mangle::encode` -- moved out of `omega-codegen` so the
-//! MIR lowering can decide every symbol *once*, at lowering time, and carry
-//! the final string downstream (see `MirFunctionDef::symbol`); both
-//! backends then read it instead of re-deriving it. The *encoding* itself
-//! (`omega_mangle`) is untouched; only the dispatch that builds a `Symbol`
-//! lives here.
-//!
-//! `self` never needs special handling here: `HirFunctionDef::lower`
-//! already prepends the self parameter to `params` before anything else
-//! sees it (`omega-hir/src/lower.rs`'s `lower_function_def`), with its
-//! resolved type already reflecting the declared self-mode (a plain
-//! `Named` for by-value, a `Pointer` for by-pointer) -- so mapping
-//! `fn_type.params` uniformly, in order, already spells out self's mode
-//! exactly like any other parameter.
 
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::ExternFunctionRef;
@@ -25,17 +10,12 @@ fn mangle_module_path(segments: &[Ident]) -> ManglePath {
     let first = iter.next().expect("a module path is never empty");
     let mut path = ManglePath::Root(first.as_ref().to_string());
     for seg in iter {
-        // Intermediate module segments get an arbitrary, fixed namespace
-        // tag (`Type`) -- there's no real Omega namespace a module belongs
-        // to; this just needs to stay consistent between encode and decode.
+        // Intermediate module path segments use the fixed namespace discriminator expected by the mangling grammar.
         path = ManglePath::Nested(Box::new(path), Namespace::Type, seg.as_ref().to_string());
     }
     path
 }
 
-/// The path to a type-namespace item (struct/enum/union/spec): its
-/// module path, its own name, and -- if it's a generic instantiation --
-/// its concrete type arguments.
 fn mangle_type_path(module_path: &[Ident], name: &Ident, type_args: &[ResolvedType]) -> ManglePath {
     let base = ManglePath::Nested(
         Box::new(mangle_module_path(module_path)),
@@ -135,11 +115,6 @@ fn build_signature(fn_type: &ResolvedFunctionType) -> (Vec<MangleType>, MangleTy
     )
 }
 
-/// A top-level function's symbol. The caller is responsible for the
-/// program-entry-point special case (`main` in the entry module keeps
-/// its bare, unmangled OS/linker symbol) -- that's a policy decision
-/// about *which* symbol gets built at all, not something this module,
-/// which only ever builds real `Symbol`s, needs to know about.
 pub fn free_function_symbol(
     module_path: &[Ident],
     name: &Ident,
@@ -164,13 +139,6 @@ pub fn free_function_symbol(
     }
 }
 
-/// A top-level global's symbol (`Storage::Global` -- see `MirItem::
-/// Declaration`) -- `signature: None`, unlike `free_function_symbol`: a
-/// plain value has no parameter/return-type signature to encode, only a
-/// name nested under its module path, same `Namespace::Value` a function's
-/// own leaf segment uses (a global and a function can never collide on a
-/// bare name within one module regardless, since nothing here ever indexes
-/// two different *kinds* of item under the same name in the first place).
 pub fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
     let path = ManglePath::Nested(
         Box::new(mangle_module_path(module_path)),
@@ -184,11 +152,6 @@ pub fn global_symbol(module_path: &[Ident], name: &Ident) -> Symbol {
     }
 }
 
-/// A struct/enum/union method's symbol -- nested under its owner type's
-/// own path (itself possibly generic), never a separate `impl`-block
-/// root (Omega methods are declared directly on the type; see the
-/// crate's design plan for why that means no `M`/`X`/`Y`-style
-/// productions are needed at all, unlike RFC 2603).
 pub fn method_symbol(
     module_path: &[Ident],
     owner_name: &Ident,
@@ -210,13 +173,6 @@ pub fn method_symbol(
     }
 }
 
-/// A `glue` function's forced symbol -- the exact same string a `gap`
-/// declaration's synthesized declaration for `function_name` expects, since
-/// both sides call this identically: the gap spec, treated as if it were
-/// an ordinary marker with a static method, is what actually gets linked
-/// against (see `omega_analyzer::annotations::ManglingMode::Glued`'s doc
-/// comment). Gaps are never generic, so `owner_type_args` is always
-/// empty here.
 pub fn glued_symbol(
     spec_module_path: &[Ident],
     spec_name: &Ident,
@@ -232,22 +188,6 @@ pub fn glued_symbol(
     ))
 }
 
-/// A `primitive` block method's symbol, rooted at the target type itself.
-///
-/// Deliberately carries **no module path**, unlike an ordinary
-/// `method_symbol`. A primitive's target has no declaring module of its own
-/// — `core::primitives::strings` is merely where someone wrote the block — and exactly
-/// one `primitive` block may exist per target program-wide, so the target
-/// alone is already a unique owner. Including the module would make the
-/// symbol depend on which `core` submodule the declaration happens to sit
-/// in, so moving `primitive str` between files would silently break every
-/// consumer's link.
-///
-/// This is also what retires the `Ident(target.to_string())` fallback these
-/// two call sites used: `ResolvedType`'s `Display` put `*str`, `*[?]u8` and
-/// (with a space) `*mut [?]u8` straight into symbol names, leaving the
-/// `[A-Za-z0-9_]` set the rest of the scheme deliberately stays inside — see
-/// `vtable_symbol`'s own note on RFC 2603's vendor-suffix production.
 pub fn primitive_method_symbol(
     target: &ResolvedType,
     method_name: &Ident,
@@ -266,9 +206,6 @@ pub fn primitive_method_symbol(
     }
 }
 
-/// The path a conform/primitive target is nested under: a named type keeps
-/// its own module-qualified path, a structural one (`i32`, `str`, `[?]T`)
-/// is encoded through the ordinary `MangleType` grammar.
 fn target_owner_path(target: &ResolvedType) -> ManglePath {
     match mangle_type(target) {
         MangleType::Named(path, _) => path,
@@ -307,34 +244,6 @@ pub fn conformance_method_symbol(
     }
 }
 
-/// A `(concrete type, spec, spec type args)` triple's vtable data symbol --
-/// one concrete type can carry a separate vtable per spec instantiation
-/// it's dynamically dispatched through (see `Codegen::vtable_for`'s own doc
-/// comment), so all three need to appear, nested as
-/// `<concrete>::<spec>[<args>]::vtable` -- `<args>`, when present, mangled
-/// exactly the way an ordinary generic type/function instantiation's own
-/// type arguments already are (`mangle_type_path`'s identical `ManglePath::
-/// Generic` construction), since this is the same underlying fact
-/// (a generic thing, instantiated at concrete types) in a new position.
-/// Without this, two different instantiations of the same generic spec on
-/// the same concrete type (`ToIterator<char>`/`ToIterator<*char>`, say)
-/// would mangle to the identical symbol despite having different content --
-/// exactly the kind of silent, wrong-vtable-picked bug this function exists
-/// to prevent. The bare `vtable` identifier in the value namespace nested
-/// under an ordinary spec-named type-namespace segment: there's no real
-/// "vtable" function to call and no real "spec-implementation" type to
-/// name, but reusing the same identifier/namespace machinery every other
-/// symbol already uses keeps this strictly within `[A-Za-z0-9_]`. RFC
-/// 2603's own `<vendor-specific-suffix>` production allows arbitrary bytes
-/// after a literal `.`/`$`, which the RFC's own motivation section flags as
-/// a real cross-platform portability problem in exactly this kind of
-/// compiler-emitted, not merely tool-appended, position -- see
-/// `omega_mangle::Symbol::vendor_suffix`'s doc comment -- so it's
-/// deliberately not used here.
-///
-/// `concrete` is always a `Struct`/`Enum`/`Union` (a spec-object
-/// coercion's pointee can never be anything else -- see
-/// `Codegen::vtable_for`'s identical assumption).
 pub fn vtable_symbol(
     concrete: &ResolvedType,
     spec_name: &Ident,
@@ -370,42 +279,14 @@ pub fn encode(symbol: &Symbol) -> String {
     omega_mangle::encode(symbol)
 }
 
-/// An anonymous data object's symbol -- a pure function of its own bytes,
-/// not an arbitrary per-process counter: two identical constants, in the
-/// same compilation or two separate ones, always name themselves
-/// identically, the same "stable, content-derived name" property real
-/// functions/methods get from the mangling scheme. Shared by both
-/// backends (`cranelift::expr` and `llvm::expr`) so two packages --
-/// compiled by *different* backends -- that each embed the same string
-/// literal emit the same weak symbol and the linker folds them into one
-/// copy. Rapidhash V3 (avalanche-enabled) is a deliberately
-/// non-cryptographic choice: nothing here is adversarial (the input is
-/// always the compiler's own already-resolved constant data), so all
-/// that's needed is a fast hash with a low *accidental* collision rate at
-/// realistic program sizes, not preimage/collision resistance against a
-/// deliberate attacker.
 pub fn data_symbol(bytes: &[u8]) -> String {
     format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
 }
 
-/// `encode(&global_symbol(module_path, name))` -- the one-shot spelling
-/// both backends' global declaration sites need, so neither re-derives the
-/// decision.
 pub fn global_symbol_string(module_path: &[Ident], name: &Ident) -> String {
     encode(&global_symbol(module_path, name))
 }
 
-/// The final linker symbol for an *extern-owned* function/method reference
-/// -- the mirror of the local-function dispatch in `lower`, for references
-/// whose definition another `omgc` invocation produced. `extern_fn.mangling`
-/// (resolved by the *declaring* compilation, at signature time) decides
-/// which symbol-shape branch applies, mirroring the local dispatch arm for
-/// arm: whatever that other invocation actually mangled this declaration as
-/// is exactly what gets linked against here, never assumed. Trusts that the
-/// other invocation mangles its own definition identically -- see
-/// `CompiledProgram::extern_functions`'s doc comment for why that's a safe
-/// assumption. Moved out of the Cranelift backend so the LLVM backend links
-/// against the identical name with no chance of drifting apart.
 pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
     use omega_analyzer::checked::ExternFunctionKind;
     match (&extern_fn.mangling, &extern_fn.kind) {
@@ -424,15 +305,14 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             &extern_fn.fn_type,
         ),
         (ManglingMode::Disabled, ExternFunctionKind::Free(name)) => name.as_ref().to_string(),
-        // Rejected on methods at analysis time, so unreachable here.
+        // Method-level disabled mangling is unreachable because analysis rejects it.
         (
             ManglingMode::Disabled,
             ExternFunctionKind::Method { .. }
             | ExternFunctionKind::Primitive { .. }
             | ExternFunctionKind::Conform { .. },
         ) => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
-        // A generic reached through `--extern` is always fully recompiled
-        // locally instead, so there's never owner/free generic-args data here.
+        // Extern generic instantiations are emitted locally and therefore use ordinary concrete mangling.
         (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
             encode(&free_function_symbol(&extern_fn.module_path, name, &[], &extern_fn.fn_type))
         }

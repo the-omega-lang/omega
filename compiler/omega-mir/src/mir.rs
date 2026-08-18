@@ -1,10 +1,3 @@
-//! Item-level MIR shapes -- the direct analogue of `omega_analyzer::checked`'s
-//! `CheckedModule`/`CheckedItem` family, minus anything control-flow-shaped
-//! (that's `crate::body`'s job). A struct/enum/union/extern/global
-//! declaration carries no control flow of its own, so these are close to a
-//! straight field copy of their `Checked*` counterparts -- only a
-//! `FunctionDefinition`'s `body` actually changes shape, from a
-//! `CheckedBlock` tree to a [`crate::body::MirBody`] graph.
 
 use crate::body::MirBody;
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
@@ -21,10 +14,6 @@ pub struct MirModule {
 
 #[derive(Debug, Clone)]
 pub enum MirItem {
-    /// A top-level global (`ident : Type;` or a non-`comp` `ident := value;`)
-    /// -- see `MirDeclaration::initial_value`'s doc comment and
-    /// `Codegen::declare_item`'s `Declaration` arm for how this becomes
-    /// real static storage.
     Declaration(MirDeclaration),
     ExternDeclaration(MirExternDeclaration),
     FunctionDefinition(MirFunctionDef),
@@ -39,12 +28,6 @@ pub struct MirDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
-    /// See `CheckedDeclaration::initial_value`'s doc comment. `mutable`
-    /// itself doesn't need to travel this far -- it's only ever consulted
-    /// at analysis time (`ResolvedItem::Value::mutable`, checked wherever
-    /// a place is resolved), never by codegen, which always emits
-    /// writable storage regardless (see `Codegen::declare_item`'s
-    /// `Declaration` arm).
     pub initial_value: Option<ConstValue>,
 }
 
@@ -54,28 +37,16 @@ pub struct MirExternDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
-    /// See `CheckedExternDeclaration::mangling`'s doc comment.
     pub mangling: ManglingMode,
-    /// The final linker symbol -- decided once, at lowering (see
-    /// `crate::mangle`'s doc comment), so every backend links against the
-    /// identical name with no chance of drifting apart.
     pub symbol: String,
 }
 
-/// A function's final linker linkage, decided during lowering: `Weak` for
-/// anything a second compilation can independently regenerate under the
-/// identical symbol (a generic instantiation, a monomorphized conform
-/// method -- the linker folds duplicate weak definitions silently),
-/// `Export` (strong) for everything else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MirLinkage {
     Export,
     Weak,
 }
 
-/// See `CheckedFunctionDef`'s doc comment -- every field here means exactly
-/// what it does there, except `body`, which is now a control-flow graph
-/// instead of a tree.
 #[derive(Debug, Clone)]
 pub struct MirFunctionDef {
     pub id: omega_hir::HirId,
@@ -90,20 +61,12 @@ pub struct MirFunctionDef {
     pub mangling: ManglingMode,
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
-    /// The final linker symbol -- decided once, at lowering, so every
-    /// backend declares the identical name (see `crate::mangle` and
-    /// `lower`). The `mangling`/`conformance_owner`/`primitive_target`
-    /// fields above are the *inputs* to that decision; this is its result.
     pub symbol: String,
-    /// See `MirLinkage` -- the linkage half of the same once-only
-    /// decision.
     pub linkage: MirLinkage,
     pub body: MirBody,
 }
 
 impl MirFunctionDef {
-    /// Same shape/purpose as `CheckedFunctionDef::fn_type` -- codegen builds
-    /// a call/definition signature from this, never from `body` directly.
     pub fn fn_type(&self) -> ResolvedFunctionType {
         ResolvedFunctionType {
             params: self
@@ -128,7 +91,6 @@ pub struct MirStructDef {
     pub functions: Vec<MirFunctionDef>,
 }
 
-/// See `CheckedUnionDef`'s doc comment -- same shape as `MirStructDef`.
 #[derive(Debug, Clone)]
 pub struct MirUnionDef {
     pub id: omega_hir::HirId,
@@ -139,9 +101,6 @@ pub struct MirUnionDef {
     pub functions: Vec<MirFunctionDef>,
 }
 
-/// See `CheckedEnumDef`'s doc comment -- deliberately functions-only, same
-/// reasoning (the tag/header/variant data lives in `ResolvedType::Enum`'s
-/// shared cell, not duplicated here).
 #[derive(Debug, Clone)]
 pub struct MirEnumDef {
     pub id: omega_hir::HirId,

@@ -1,12 +1,3 @@
-//! Single source of truth for every tag byte the grammar uses, shared by
-//! `encode` and `demangle` so the two can never drift apart. See the
-//! crate-level docs for the full grammar in EBNF form.
-//!
-//! Tag bytes are partitioned by case: lowercase is basic (primitive)
-//! types plus the two namespace tags (`t`/`v`, only ever read right
-//! after `N`); uppercase is path/type structural tags. No byte is ever
-//! reused as both a leading tag and a trailing marker on another
-//! production, so parsing is never positionally ambiguous.
 
 use crate::symbol::MangleType;
 
@@ -32,14 +23,10 @@ pub const TAG_VARIADIC: u8 = b'V';
 pub const TAG_REFINED: u8 = b'R';
 pub const TAG_STR: u8 = b'T';
 pub const TAG_STR_MUT: u8 = b'U';
-/// A structural type promoted to a conformance-owner path.
 pub const TAG_TYPE_PATH: u8 = b'X';
 
 pub const VENDOR_SUFFIX_SEP: u8 = b'.';
 
-/// `None` for a compound type (handled structurally by the caller), and
-/// for anything represented as a `<path>` (structs/enums/unions/specs) --
-/// those aren't "basic" in the grammar's sense at all.
 pub fn basic_letter(ty: &MangleType) -> Option<u8> {
     Some(match ty {
         MangleType::Void => b'v',

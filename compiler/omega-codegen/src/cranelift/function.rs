@@ -1,6 +1,3 @@
-//! Building a Cranelift `Signature` for a function/method (shared by
-//! definitions, externs, and call sites), and declaring/defining a
-//! function's own symbol.
 
 use super::Codegen;
 use super::leaf::{IntoCraneliftLeaves, cranelift_type};
@@ -17,30 +14,17 @@ use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
 
 impl Codegen {
-    /// Whether `return_type` is returned through a hidden `StructReturn`
-    /// pointer instead of in registers -- the shared ABI's answer
-    /// (`crate::abi::AbiReturn::Indirect`), see `AbiReturn`'s doc comment
-    /// for the rule. Must agree between definitions and call sites -- both
-    /// derive their `Signature` from `make_function_sig`, so it's decided
-    /// in exactly one place.
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
         matches!(AbiReturn::for_type(self.target, return_type), AbiReturn::Indirect)
     }
 
     pub(super) fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
-        // The whole calling-convention shape comes from the shared ABI
-        // (`crate::abi`) -- this function is now a pure *translation* of
-        // that decision into Cranelift types.
+        // Translate the shared ABI signature directly into Cranelift types.
         let abi = AbiSignature::build(self.target, &resolved_fntype);
         let mut sig = self.module.make_signature();
 
         match abi.ret {
-            // The hidden struct-return pointer is always the first
-            // parameter (see `AbiReturn::Indirect`); cranelift itself
-            // handles the SysV requirement of also returning that pointer
-            // in rax, so the signature declares no return values at all in
-            // this case. `Never` takes the same empty-signature path as
-            // `Void` -- see `AbiReturn::Void`'s doc comment.
+            // Indirect returns receive the hidden sret pointer as the first ABI parameter.
             AbiReturn::Void => {}
             AbiReturn::Indirect => {
                 sig.params.push(AbiParam::special(
@@ -66,12 +50,6 @@ impl Codegen {
         sig
     }
 
-    /// A function/method's cranelift `Signature`, built the same way
-    /// regardless of whether it's being declared (pass 1) or defined (pass
-    /// 2) -- and, crucially, the same way *call sites* build it: one
-    /// delegation to `make_function_sig`, so the definition and every call
-    /// can never disagree about parameter flattening or the hidden
-    /// struct-return pointer.
     pub(super) fn function_signature(&self, function_def: &MirFunctionDef) -> Signature {
         self.make_function_sig(function_def.fn_type())
     }
@@ -79,10 +57,7 @@ impl Codegen {
     pub(super) fn update_extern_decl(&mut self, extern_decl: MirExternDeclaration) {
         match extern_decl.r#type {
             ResolvedType::Function(resolved_fntype) => {
-                // The symbol was decided once, at lowering
-                // (`MirExternDeclaration::symbol`); the `Disabled`/`Glued`
-                // branches that used to live here moved to
-                // `omega_mir::lower`.
+                // Consume the MIR-provided symbol; backend code must not reinterpret mangling policy.
                 let sig = self.make_function_sig(resolved_fntype);
 
                 let function_id = self
@@ -99,24 +74,6 @@ impl Codegen {
         }
     }
 
-    /// Declares (but doesn't yet define the body of) a function or method --
-    /// signature/symbol registration only, split out from what used to be
-    /// one `update_function_def` specifically so *every* function across
-    /// *every* compiled module can be declared (and therefore have a
-    /// `FuncId` any other module's body can already look up) before *any*
-    /// body starts being built. Without this split, a cross-module call in
-    /// either import direction would panic the first time one module's body
-    /// needed another module's not-yet-declared `FuncId`.
-    ///
-    /// `linkage` is `Linkage::Export` (strong) for an ordinary item and
-    /// `Linkage::Preemptible` (weak) for a generic instantiation (see
-    /// `declare_item`'s `cranelift_linkage`). A within-process collision
-    /// between two *different* strong symbols is the `@mangling(disabled)`/
-    /// `@mangling(force = "...")` user error this check catches; it's
-    /// untouched by generics, since the driver's own `ItemKey` cache
-    /// already guarantees at most one `MirFunctionDef` per instantiation
-    /// reaches this function within a single compilation -- weak linkage is
-    /// only for folding two *separate* compilations' copies at link time.
     pub(super) fn declare_function_def(
         &mut self,
         function_def: &MirFunctionDef,
@@ -136,14 +93,7 @@ impl Codegen {
                      give one of them a different name, or re-enable mangling"
                 )
             });
-            // Don't ask `cranelift_module` to declare a second `Export` for
-            // a symbol it already has one for -- it rejects that outright
-            // (a real, deliberate safety check on its part), which would
-            // panic here instead of surfacing `symbol_error` cleanly. The
-            // object file is discarded either way once `symbol_error` is
-            // set (see `Codegen::generate`), so reusing the first
-            // definition's `FuncId` for this one is harmless -- it only
-            // has to survive long enough to let this pass finish.
+            // Reuse the first FuncId after a detected symbol collision so Cranelift reports cleanly instead of panicking.
             let existing_function_id = *self
                 .functions
                 .get(&existing_id)
@@ -163,15 +113,8 @@ impl Codegen {
         function_id
     }
 
-    /// `declare_function_def`'s extern-module counterpart: `Linkage::Import`
-    /// only, no paired `Export`, and no body -- `define_item`'s pass 2
-    /// never sees this `HirId` (it isn't in any `MirModule.items`). Trusts
-    /// that the *other* `omgc` invocation compiling that module standalone
-    /// mangled its own definition identically -- see
-    /// `CompiledProgram::extern_functions`'s doc comment for why that's safe.
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
-        // Symbol decision lives in `omega_mir::mangle::extern_function_ref_symbol`
-        // -- one home shared by both backends.
+        // Extern references use the MIR-computed symbol shared by both backends.
         let mangled = omega_mir::mangle::extern_function_ref_symbol(extern_fn);
         let sig = self.make_function_sig(extern_fn.fn_type.clone());
 
@@ -182,26 +125,8 @@ impl Codegen {
         self.functions.insert(extern_fn.decl_id, function_id);
     }
 
-    /// Builds a function/method's body -- everything `update_function_def`
-    /// used to do after declaring, now looking up the `FuncId` every item
-    /// across every module already got in the declare pass, rather than
-    /// declaring (and re-registering) it itself.
-    ///
-    /// There is no `BlockOutcome`/`return_block`/`loop_stack`/`defer_flags`
-    /// bookkeeping here at all -- the mir body already *is* the
-    /// control-flow graph (every `if`/`match`/`while`/`for`/`break`/
-    /// `continue`/`return`/`defer` was flattened into it during lowering,
-    /// see `docs/architecture/mir-and-codegen.md`), so this is just: one
-    /// Cranelift `Block` per `MirBlockData`, then translate each one's
-    /// statements and its single terminator.
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
-        // A symbol collision (see `declare_function_def`) is always found
-        // during the declare pass, which fully finishes before any define
-        // pass starts -- so once one's been found, every remaining body is
-        // skipped rather than defined against the improvised `FuncId` the
-        // colliding function got (which would ask `cranelift_module` to
-        // define the same `FuncId` twice and panic). `Codegen::generate`
-        // discards this whole `Codegen` once `symbol_error` is `Some`.
+        // Skip definitions after a declaration collision; the whole Codegen result will be discarded.
         if self.symbol_error.is_some() {
             return;
         }
@@ -215,13 +140,9 @@ impl Codegen {
             return_type, body, ..
         } = function_def;
 
-        // Move `ctx` out of `self` for the duration of the build so the rest of
-        // this function can still freely borrow `self` (e.g. `.cranelift_leaves(&self)`,
-        // `self.process_expr(...)`) while `builder` holds onto it.
+        // Move the function context out temporarily so the builder does not block borrowing other Codegen state.
         let mut ctx = std::mem::replace(&mut self.ctx, codegen::Context::new());
-        // `ctx.clear()` (called for every function via `clear_local`, below)
-        // resets `want_disasm` back to `false` each time, so this has to be
-        // set again per function, not once up front.
+        // Re-enable disassembly per function because clearing the context resets that flag.
         ctx.set_disasm(self.emit == crate::EmitKind::Asm);
         let mut fbctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
@@ -230,16 +151,7 @@ impl Codegen {
         self.arg_count = body.arg_count;
         self.local_args = vec![Vec::new(); body.locals.len()];
 
-        // One combined stack slot for every non-parameter local, laid out
-        // by `layout::locals_layout` -- the same field-layout algorithm a
-        // struct's own fields already go through (see `frame_slot`'s own
-        // doc comment for why this, not a per-local slot, is what makes a
-        // zero-sized local's address genuinely coincide with whatever real
-        // local comes next). Created unconditionally, even when
-        // `packed_end` is `0` (no non-parameter locals, or all of them are
-        // zero-sized) -- a zero-size stack slot is already relied on
-        // elsewhere (an all-zero-leaf struct/`marker` local) and costs
-        // nothing to create.
+        // Pack non-parameter locals into one frame slot so zero-sized offsets match shared layout.
         let non_param_types: Vec<ResolvedType> = body.locals[body.arg_count..]
             .iter()
             .map(|local| local.r#type.clone())
@@ -260,9 +172,7 @@ impl Codegen {
         local_offsets[body.arg_count..].copy_from_slice(&frame.byte_offsets);
         self.local_offsets = local_offsets;
 
-        // One cranelift block per mir block, minted up front so a forward
-        // reference (or a loop's own back-edge) always resolves regardless
-        // of which order the blocks below get filled in.
+        // Create all backend blocks up front so forward and back edges always resolve.
         let cranelift_blocks: Vec<cranelift::prelude::Block> =
             body.blocks.iter().map(|_| builder.create_block()).collect();
         let entry_block = cranelift_blocks[0];
@@ -270,16 +180,11 @@ impl Codegen {
         builder.append_block_params_for_function_params(entry_block);
         let block_params = builder.block_params(entry_block).to_vec();
 
-        // A large return value comes back through a hidden StructReturn
-        // pointer, always the signature's first parameter (see
-        // `make_function_sig`) -- peel it off before mapping the *declared*
-        // parameters below.
+        // Remove the hidden sret parameter before mapping declared parameters.
         let sret = self.needs_sret(&return_type).then(|| block_params[0]);
         let declared_params = &block_params[sret.is_some() as usize..];
 
-        // A parameter can flatten to more than one leaf (e.g. a struct), so
-        // repeat its local index once per leaf to map Cranelift's flat
-        // param list back onto `local_args`.
+        // Map each flattened ABI leaf back to its originating MIR parameter.
         let argmap: Vec<usize> = body.locals[..body.arg_count]
             .iter()
             .enumerate()
@@ -300,10 +205,7 @@ impl Codegen {
             self.emit_terminator(&mut builder, mir_block.terminator, &cranelift_blocks, sret);
         }
 
-        // Every cranelift block was created up front and every terminator
-        // above has now been emitted, so every block's predecessor set is
-        // already final -- safe to seal all of them in one pass here,
-        // rather than interleaved with the loop above.
+        // Seal blocks only after all terminators are emitted and predecessor sets are final.
         for block in cranelift_blocks {
             builder.seal_block(block);
         }
@@ -318,11 +220,7 @@ impl Codegen {
 
         self.module.define_function(function_id, &mut ctx).unwrap();
 
-        // `ctx.func` (the CLIF) and `ctx.compiled_code()` (populated by the
-        // `define_function` call just above, since `set_disasm` was set
-        // on this same `ctx` above) are both still valid to read here --
-        // `define_function` fills in the compile *result*, it doesn't
-        // consume the IR that produced it.
+        // Read CLIF/disassembly after definition while the same context still owns both results.
         match self.emit {
             crate::EmitKind::Ir => {
                 let name = self
@@ -358,11 +256,6 @@ impl Codegen {
         self.clear_local();
     }
 
-    /// Translates one `MirBlockData`'s single terminator into the
-    /// Cranelift instruction(s) that end its corresponding block --
-    /// `sret`, when `Some`, is the hidden struct-return pointer every
-    /// `Return` in this function stores its value through instead of
-    /// returning it in registers (see `make_function_sig`/`needs_sret`).
     fn emit_terminator(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -393,11 +286,7 @@ impl Codegen {
                 let leaves = value
                     .map(|v| self.process_expr(builder, v))
                     .unwrap_or_default();
-                // With a StructReturn pointer, the value leaves are stored
-                // through it and the signature declares no return values
-                // (cranelift itself returns the pointer in rax per the
-                // SysV rule); otherwise the leaves return in registers as
-                // before.
+                // Store indirect-return leaves through sret; otherwise return leaves directly.
                 match sret {
                     Some(pointer) => {
                         self.store_scalars(

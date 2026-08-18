@@ -1,16 +1,3 @@
-//! The LLVM backend -- the second implementation behind `crate::BackendKind`,
-//! at capability parity with `cranelift`. Built against the corrected seam:
-//! the MIR carries every decided fact (symbol, linkage, access alignment),
-//! the shared ABI (`crate::abi`) carries the calling convention, and the
-//! shared preflight (`crate::preflight`) carries the rejections -- so this
-//! backend's only real work is *translating* those facts into LLVM.
-//!
-//! Like its Cranelift sibling, `Codegen` never fails on the *program*
-//! itself: everything rejectable was already enforced by analysis or by
-//! `crate::preflight`. The only fallible steps here are target-machine
-//! construction (a `--target` this LLVM build cannot serve) and the
-//! shared symbol-collision check -- both plain `Err(String)`, matching
-//! `omgc`'s CLI-error convention.
 
 mod expr;
 mod function;
@@ -29,15 +16,10 @@ use omega_analyzer::{Arch, Os, Target as OmegaTarget};
 use omega_hir::HirId;
 use std::collections::HashMap;
 
-/// The targets this LLVM build can serve -- every `Target` arch, since
-/// LLVM ships them all in this build (`Target::initialize_all`). Kept as
-/// the backend's own answer to `BackendKind::supports`.
 pub(crate) fn supports(_target: OmegaTarget) -> bool {
     true
 }
 
-/// The LLVM triple for an Omega `Target` -- LLVM's own vocabulary, private
-/// to this backend exactly like `cranelift::triple_for` is to Cranelift's.
 fn triple_for(target: OmegaTarget) -> String {
     let arch = match target.arch {
         Arch::X86_64 => "x86_64",
@@ -56,10 +38,6 @@ fn triple_for(target: OmegaTarget) -> String {
     }
 }
 
-/// `-O<n>` maps onto LLVM's own four levels natively -- unlike Cranelift,
-/// LLVM *has* four, so nothing collapses and nothing is invented; the
-/// difference is documented (`docs/architecture/mir-and-codegen.md`) rather than
-/// papered over.
 fn llvm_opt_level(level: OptLevel) -> OptimizationLevel {
     match level {
         OptLevel::O0 => OptimizationLevel::None,
@@ -77,42 +55,23 @@ pub(crate) struct Codegen<'ctx> {
     target: OmegaTarget,
     emit: EmitKind,
 
-    /// Every locally-defined function/method/extern's own `FunctionValue`,
-    /// keyed by declaration id -- the `functions` counterpart of
-    /// `cranelift::Codegen::functions`.
     functions: HashMap<HirId, inkwell::values::FunctionValue<'ctx>>,
-    /// Every anonymous byte-run constant this module has emitted so far,
-    /// deduplicated by raw content -- the exact counterpart of
-    /// `cranelift::Codegen::bytes`.
     bytes: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
-    /// The content-addressed `comp`/const-slice dedup cache -- the exact
-    /// counterpart of `cranelift::Codegen::const_blobs`.
     const_blobs: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
-    /// One vtable per distinct resolved slot list -- the exact counterpart
-    /// of `cranelift::Codegen::vtables`.
     vtables: HashMap<Vec<HirId>, inkwell::values::GlobalValue<'ctx>>,
-    /// Every top-level global's own `GlobalValue`, keyed by declaration id.
     globals: HashMap<HirId, inkwell::values::GlobalValue<'ctx>>,
 
-    /// The declared-symbol collision guard -- the exact counterpart of
-    /// `cranelift::Codegen::declared_symbols`/`symbol_error`.
     declared_symbols: HashMap<String, HirId>,
     symbol_error: Option<String>,
 
-    // Local state (cleared per function)
     local_args: Vec<Vec<inkwell::values::BasicValueEnum<'ctx>>>,
     frame_slot: Option<inkwell::values::PointerValue<'ctx>>,
-    /// The function currently being defined's own entry block -- where
-    /// *every* `alloca` this backend emits goes, whichever block asked for
-    /// it. See `entry_alloca`.
     entry_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     local_offsets: Vec<u32>,
     arg_count: usize,
 }
 
 impl<'ctx> Codegen<'ctx> {
-    /// Builds the target machine from `request.target`/`request.opt_level`
-    /// and runs the whole declare-then-define pipeline.
     fn generate(
         context: &'ctx Context,
         request: CodegenRequest,
@@ -120,9 +79,7 @@ impl<'ctx> Codegen<'ctx> {
         let CodegenRequest { module_name, target, opt_level, emit, modules, entry: _, extern_functions } =
             request;
 
-        // Every target this LLVM build ships is registered up front -- the
-        // 32-bit/freestanding targets Phase A widened `Target` for are
-        // only buildable through this backend.
+        // Initialize all LLVM targets before creating the requested target machine.
         Target::initialize_all(&InitializationConfig::default());
 
         let triple = TargetTriple::create(&triple_for(target));
@@ -134,8 +91,7 @@ impl<'ctx> Codegen<'ctx> {
                 "generic",
                 "",
                 llvm_opt_level(opt_level),
-                // PIC, like Cranelift's `is_pic` -- both required here or
-                // the two backends' objects stop being interchangeable.
+                // Use PIC so independently emitted objects link consistently with Cranelift output.
                 RelocMode::PIC,
                 inkwell::targets::CodeModel::Default,
             )
@@ -172,12 +128,7 @@ impl<'ctx> Codegen<'ctx> {
             return Err(error);
         }
 
-        // Unlike Cranelift (which validates as it builds), LLVM will happily
-        // write malformed IR to an object file and crash at run time with
-        // nothing pointing back at the compiler -- so this verifier is the
-        // only place that class of backend bug becomes a compile-time
-        // failure. Always a bug in this compiler, not the program: every
-        // rejectable input was settled before codegen (`crate::preflight`).
+        // Verify the finished LLVM module; verifier failures indicate an internal compiler bug.
         if let Err(errors) = codegen.module.verify() {
             return Err(format!(
                 "internal error: the LLVM backend produced invalid IR -- this is a compiler bug, \
@@ -197,11 +148,6 @@ impl<'ctx> Codegen<'ctx> {
         self.arg_count = 0;
     }
 
-    /// A `bytes`-sized, `align`-byte-aligned scratch slot, allocated in the
-    /// function's **entry block** no matter which block asked for it. LLVM's
-    /// `alloca` allocates on every execution (unlike Cranelift's stack
-    /// slots), so this is required, not stylistic -- see
-    /// `docs/architecture/mir-and-codegen.md`.
     pub(super) fn entry_alloca(
         &self,
         bytes: u32,
@@ -212,9 +158,7 @@ impl<'ctx> Codegen<'ctx> {
             .entry_block
             .expect("define_function_def sets this before any block is emitted");
         let resume = self.builder.get_insert_block();
-        // Before the entry block's first instruction, not at its end: by the
-        // time a later block asks for a slot, the entry block already ends
-        // in a terminator, and nothing may follow that.
+        // Insert allocas before the entry block's first instruction, never at its current builder tail.
         match entry.get_first_instruction() {
             Some(first) => self.builder.position_before(&first),
             None => self.builder.position_at_end(entry),
@@ -230,21 +174,14 @@ impl<'ctx> Codegen<'ctx> {
         slot
     }
 
-    /// The universal pointer type for this compilation -- see
-    /// `leaf::ptr_type`'s doc comment.
     pub(super) fn ptr_type(&self) -> inkwell::types::PointerType<'ctx> {
         leaf::ptr_type(self.context)
     }
 
-    /// The width of a pointer on the target this `Codegen` was built for,
-    /// in bytes -- the shared layout math's parameter, straight from the
-    /// target (see `Target::pointer_bytes`).
     pub(super) fn pointer_bytes(&self) -> u32 {
         self.target.pointer_bytes()
     }
 
-    /// Produces whatever `emit` asked for. `Obj` finishes and links the
-    /// object; `Ir`/`Asm` print the module's own textual forms instead.
     fn finish(self) -> EmitOutput {
         match self.emit {
             EmitKind::Obj => {
@@ -266,8 +203,6 @@ impl<'ctx> Codegen<'ctx> {
     }
 }
 
-/// This backend's entry point, called from `crate::generate`'s dispatch --
-/// see `crate::BackendKind`.
 pub(crate) fn generate(request: CodegenRequest) -> Result<EmitOutput, String> {
     let context = Context::create();
     Codegen::generate(&context, request).map(Codegen::finish)

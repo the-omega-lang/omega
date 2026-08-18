@@ -1,7 +1,3 @@
-//! `omg-demangle` -- reads mangled Omega symbols (one per line from
-//! stdin, or given as argv) and prints their demangled form, mirroring
-//! `rustfilt`/`c++filt`. A symbol that doesn't decode is printed
-//! unchanged.
 
 use std::io::{self, BufRead, Write};
 

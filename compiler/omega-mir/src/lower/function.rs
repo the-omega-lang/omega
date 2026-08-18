@@ -1,28 +1,3 @@
-//! Lowers one function/method body -- a `CheckedBlock` tree -- into a
-//! [`crate::body::MirBody`] control-flow graph. This is the direct
-//! data-producing analogue of `omega_codegen::Codegen`'s
-//! `emit_block`/`emit_expr_stmt`/`emit_if`/`emit_match`/`emit_while`/
-//! `emit_for`/`process_statement`/`process_decl` -- see
-//! `docs/architecture/mir-and-codegen.md` for the full rationale.
-//!
-//! `FunctionLowerer` plays the role `Codegen`'s own per-function fields
-//! (`stack_slots`/`local_args`/`loop_stack`/`defer_flags`/`defer_bodies`/
-//! `return_block`) play today, except it builds a graph of [`MirBlockData`]
-//! (kept in `blocks`, indexed by [`BlockId`]) instead of directly emitting
-//! Cranelift IR against a `FunctionBuilder`.
-//!
-//! **The "did this diverge" question, without a `BlockOutcome`:** a block's
-//! `terminator` starts `None` (see [`BuilderBlock`]) and is set at most
-//! once; `is_current_terminated` asks exactly the question `BlockOutcome`
-//! used to answer, and is used the same way -- once true, nothing may be
-//! appended to that block, and whatever `Vec<CheckedStmt>`/tail is being
-//! walked stops early (dead code, same as today). Marking a
-//! zero-predecessor `if`/`match` merge block `Unreachable` immediately
-//! (rather than leaving its terminator unset) is what makes this check
-//! alone sufficient -- no separate return value/enum needed. `lower_if`/
-//! `lower_match`'s chain-building helpers still return a `bool` ("did any
-//! arm actually reach the merge block"), which is that same signal
-//! threaded through the recursion.
 
 use crate::body::{
     MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirBlockData, MirBody, MirCast, MirDynamicCall,
@@ -41,11 +16,6 @@ use omega_hir::HirId;
 use omega_parser::prelude::Span;
 use std::collections::HashMap;
 
-/// A block still under construction -- `terminator: None` means exactly
-/// what `BlockOutcome`'s absence used to mean: control hasn't left this
-/// block yet. Converted to a real [`MirBlockData`] by `finish`, which is
-/// also where an internal lowering bug (a block nobody ever terminated)
-/// would panic.
 struct BuilderBlock {
     statements: Vec<MirExprNode>,
     terminator: Option<MirTerminator>,
@@ -59,50 +29,18 @@ struct LoopTargets {
 
 pub(crate) struct FunctionLowerer {
     locals: Vec<MirLocalDecl>,
-    /// The lowering-time counterpart of `Codegen::stack_slots`/`local_args`
-    /// -- maps a declared local/parameter's own `HirId` to the `LocalId`
-    /// its `MirLocalDecl` lives at. `pub(super)` so `crate::lower::place`
-    /// can resolve a `Storage::Local`/`Storage::Parameter` place root.
     pub(super) local_of: HashMap<HirId, LocalId>,
     blocks: Vec<BuilderBlock>,
     current: BlockId,
     loop_stack: Vec<(HirId, LoopTargets)>,
-    /// `Some` once the return type is known non-`Void` -- every `return`/
-    /// fallthrough writes its value here instead of threading it through
-    /// block params, since (unlike an `if`/`match` join) the exit chain may
-    /// be several blocks deep (see `lower`'s defer-chain construction) and
-    /// block params only carry a value across one edge.
     return_slot: Option<LocalId>,
-    /// The function's own return type -- kept around so the `return`/
-    /// tail-position fast path (see `lower_control_flow_stmt`'s doc
-    /// comment) can pass it to `lower_control_flow_into` without needing a
-    /// value in hand yet (it's needed *before* any arm has been lowered).
     return_type: ResolvedType,
-    /// The first block of the function's shared exit chain -- every
-    /// `return`, and the body's own implicit fallthrough, `Goto` here
-    /// (see `lower`).
     exit_chain_start: BlockId,
-    /// A `defer`'s body, stashed here (moved out of the tree) by
-    /// `lower_stmt`'s `Defer` arm, for `lower`'s exit-chain construction to
-    /// consume once the whole function body has been walked -- the
-    /// lowering-time counterpart of `Codegen::defer_bodies`.
     defer_bodies: HashMap<HirId, CheckedBlock>,
-    /// A `defer`'s own `HirId` -> its (synthetic, `source: None`) flag
-    /// local -- deliberately *not* `local_of` (which only maps a real
-    /// user declaration/parameter to its local): a `defer`'s flag has no
-    /// declaring `HirId` of its own to be looked up *by* the way a
-    /// variable is, only an owning `defer` statement, so it gets its own
-    /// map, populated by `lower`'s pre-pass and read back by `lower_stmt`'s
-    /// `Defer` arm.
     defer_flag_of: HashMap<HirId, LocalId>,
 }
 
 impl FunctionLowerer {
-    /// Lowers one function/method's parameter list and body into a
-    /// [`MirBody`]. `fn_id`/`fn_span` are used only as a fallback id/span
-    /// for the handful of nodes this synthesizes with no source counterpart
-    /// of their own (the final exit chain's return-value read) -- purely
-    /// diagnostic bookkeeping, never read by codegen.
     pub(crate) fn lower(
         params: &[CheckedParam],
         body: CheckedBlock,
@@ -128,16 +66,10 @@ impl FunctionLowerer {
         }
         let arg_count = lowerer.locals.len();
 
-        // Minted first, deliberately, so the entry block is always `BlockId(0)`
-        // (see `MirBody::blocks`'s doc comment) -- the exit chain reserved
-        // just below needs its own block ids known before the body is
-        // walked, but nothing requires *this* block to be minted after them.
+        // Create the entry block first so it is always BlockId(0).
         let entry = lowerer.new_block();
 
-        // Defer pre-pass: every `defer`'s id/span must be known before the
-        // real walk begins, since a `return` nested arbitrarily deep needs
-        // the exit chain's first block id up front -- see
-        // `collect_defer_ids`'s own doc comment.
+        // Collect all defers before lowering because nested returns need the complete exit chain up front.
         let mut defers = Vec::new();
         collect_defer_ids(&body, &mut defers);
         let defer_flags: Vec<LocalId> =
@@ -149,53 +81,31 @@ impl FunctionLowerer {
         lowerer.return_slot =
             (!matches!(return_type, ResolvedType::Void)).then(|| lowerer.declare_local(None, return_type.clone()));
 
-        // Reserve the exit chain's blocks up front -- one check/run pair
-        // per defer (processed FILO, last-declared first, below), plus the
-        // final block that performs the real `Return`. Left un-terminated
-        // until every defer body has actually been extracted from the tree
-        // by the walk that follows.
+        // Reserve defer check/run blocks before body lowering so return targets are stable.
         let check_blocks: Vec<BlockId> = defers.iter().map(|_| lowerer.new_block()).collect();
         let run_blocks: Vec<BlockId> = defers.iter().map(|_| lowerer.new_block()).collect();
         let final_block = lowerer.new_block();
-        // `check_blocks`/`run_blocks` are indexed in *declaration* order
-        // (matching `defers`), but the chain itself must run FILO -- the
-        // *last*-declared defer torn down first -- so the chain starts at
-        // the highest index, not `[0]`.
+        // Store defer blocks in declaration order; execution walks them in reverse.
         lowerer.exit_chain_start = check_blocks.last().copied().unwrap_or(final_block);
 
         lowerer.current = entry;
 
-        // One flag per defer, initialized `false` here -- unconditionally,
-        // before the body is walked for real -- so a path that never
-        // reaches a given `defer` reads back `false` in the exit chain,
-        // exactly like `Codegen::defer_flags`' entry-block zero-init today.
+        // Each defer gets a flag that records whether control reached its declaration.
         for (&flag, (id, span)) in defer_flags.iter().zip(&defers) {
             lowerer.assign_local(*id, *span, flag, ResolvedType::Bool, bool_literal(*id, *span, false));
         }
 
-        // Not `lower_block_as_stmt` -- analysis guarantees this body either
-        // ends in a statement-level `return` or a tail expression whose
-        // value *is* the function's own return value (see
-        // `CheckedFunctionDef::body`'s own doc comment), so a fall-through
-        // here needs its tail routed into `return_slot`, exactly like an
-        // explicit trailing `return` would -- `lower_function_body` is
-        // `lower_block_into`'s analogue for that (`return_slot`, not a
-        // merge block, is the destination).
+        // Lower the body through the value-producing path because analysis already proved its tail/return shape.
         let fell_through = lowerer.lower_function_body(body);
         if fell_through {
             lowerer.set_terminator(MirTerminator::Goto(lowerer.exit_chain_start));
         }
 
-        // Every defer's body has now been stashed by `lower_stmt`'s `Defer`
-        // arm -- fill in the reserved chain blocks, FILO (the *last*-
-        // declared defer tears down first).
+        // Emit deferred bodies only after the main body has populated the defer table.
         for (i, (id, span)) in defers.iter().enumerate().rev() {
             let check = check_blocks[i];
             let run = run_blocks[i];
-            // The chain runs high-index-to-low (see `exit_chain_start`'s
-            // own comment) -- `next` is the *previous* declaration's check
-            // block (one step closer to `[0]`), or `final_block` once `[0]`
-            // itself (the *first*-declared defer, torn down last) is done.
+            // Run active defers in reverse declaration order.
             let next = if i == 0 { final_block } else { check_blocks[i - 1] };
             let flag = defer_flags[i];
 
@@ -308,10 +218,6 @@ impl FunctionLowerer {
         MirBody { locals: self.locals, arg_count, blocks }
     }
 
-    /// Lowers a whole statement sequence, stopping early (leaving any
-    /// remaining statements un-lowered, i.e. dead code) the moment
-    /// `self.current` terminates -- the direct analogue of `emit_block`'s
-    /// per-statement loop.
     fn lower_stmts(&mut self, stmts: Vec<CheckedStmt>) {
         for stmt in stmts {
             if self.is_current_terminated() {
@@ -331,14 +237,7 @@ impl FunctionLowerer {
             }
             CheckedStmt::Expression(expr) => self.lower_expr_stmt(expr),
             CheckedStmt::Return(expr) => {
-                // Fast path: `return if/match/{ }` -- see
-                // `lower_control_flow_stmt`'s doc comment for why routing
-                // straight into the exit chain (instead of through
-                // `lower_expr`'s always-safe-but-allocates-a-temp general
-                // path) needs no merge block of its own here: every reached
-                // arm already terminates by jumping to `exit_chain_start`
-                // directly, so there is no "afterward" to position
-                // `self.current` at.
+                // Lower value-producing control flow directly into the return destination to avoid a temporary.
                 if is_control_flow_expr(&expr.kind) {
                     let result = self.return_slot;
                     let result_type = self.return_type.clone();
@@ -356,14 +255,7 @@ impl FunctionLowerer {
                     let r#type = value.r#type.clone();
                     self.assign_local(id, span, slot, r#type, value);
                 }
-                // `return exit(1);` (a `never`-returning value, unlike a
-                // bare `return;`) has no real value for the exit chain's
-                // own `return_slot` read to find -- `assign_local` above
-                // still runs so the call itself is emitted (it's the RHS
-                // of that assignment), but routing through the *normal*
-                // exit chain afterward would read whatever garbage that
-                // meaningless assignment left behind. Trap instead, same
-                // reasoning as `lower_expr_stmt`'s identical case.
+                // A never-returning expression terminates control flow and must not synthesize a return value.
                 self.set_terminator(if diverges { MirTerminator::Unreachable } else { MirTerminator::Goto(self.exit_chain_start) });
             }
             CheckedStmt::While(CheckedWhile { id, condition, body, .. }) => {
@@ -395,17 +287,6 @@ impl FunctionLowerer {
         }
     }
 
-    /// A bare expression statement -- `expr;`. Two fast paths, both there
-    /// purely to avoid the general (always-safe, but always-allocates-a-
-    /// temp-local) path's cost for the two shapes that make up the
-    /// overwhelming majority of real `if`/`match`-as-a-value use: a bare
-    /// `if a { .. } else { .. };` statement, and (since a walrus/typed
-    /// declaration desugars to a `Declaration` followed by exactly this)
-    /// `x := if a { .. } else { .. };`. See `lower_control_flow_stmt`'s doc
-    /// comment for why these are safe to skip the temp for -- neither has
-    /// any sibling sub-expression lowered after it within the same
-    /// statement, which is the one thing that makes a shared temp
-    /// necessary in general.
     fn lower_expr_stmt(&mut self, expr: CheckedExprNode) {
         let CheckedExprNode { id, span, r#type, kind } = expr;
 
@@ -418,10 +299,7 @@ impl FunctionLowerer {
                     self.lower_control_flow_stmt(*assignment.value, Some((local_id, local_type)));
                     return;
                 }
-                // Not a bare local (a field/deref/index target) -- fall
-                // back to the general path, reusing the place already
-                // lowered above rather than lowering it twice (which would
-                // double-evaluate a side-effecting index expression).
+                // Complex assignment targets fall back to the general resolved-place lowering path.
                 let diverges = assignment.value.r#type == ResolvedType::Never;
                 let value = Box::new(self.lower_expr(*assignment.value));
                 let node = MirExprNode {
@@ -434,10 +312,7 @@ impl FunctionLowerer {
                     return;
                 }
                 self.push_stmt(node);
-                // See the general path's identical `diverges` handling
-                // below -- an assignment whose own value never actually
-                // gets produced needs the same trap, not a normal
-                // fallthrough.
+                // Honor divergence after the assignment fast path just as in general expression lowering.
                 if diverges {
                     self.set_terminator(MirTerminator::Unreachable);
                 }
@@ -469,34 +344,19 @@ impl FunctionLowerer {
             return;
         }
         self.push_stmt(node);
-        // A bare call to a `never`-returning function needs an explicit
-        // trap: nothing else follows it in the checked tree, so without
-        // this the block would be left un-terminated. Also the backstop if
-        // an `extern` declared `never` actually returns anyway -- see
-        // primitives.md's "never" section.
+        // Terminate the block explicitly after a never-returning call.
         if diverges {
             self.set_terminator(MirTerminator::Unreachable);
         }
     }
 
-    /// `lower_block_as_stmt`'s counterpart for the function's own top-level
-    /// body: its tail expression (if any) is the function's own return
-    /// value, so it's written to `return_slot` -- exactly like an explicit
-    /// trailing `return` would -- instead of being pushed as a discarded
-    /// statement. Returns whether control fell off the end normally
-    /// (`true`, meaning the caller still needs to route into the exit
-    /// chain) or already diverged (`false`).
     fn lower_function_body(&mut self, block: CheckedBlock) -> bool {
         self.lower_stmts(block.stmts);
         if self.is_current_terminated() {
             return false;
         }
         if let Some(tail) = block.tail {
-            // Fast path -- see `lower_stmt`'s `Return` arm, which this
-            // mirrors exactly (an implicit tail-return is otherwise
-            // identical to an explicit one): every reached arm already
-            // jumps straight to the exit chain, so there is no fallthrough
-            // left for the caller to route there itself.
+            // Route return-position value control flow directly to the function result destination.
             if is_control_flow_expr(&tail.kind) {
                 let result = self.return_slot;
                 let result_type = self.return_type.clone();
@@ -514,10 +374,7 @@ impl FunctionLowerer {
                 let r#type = value.r#type.clone();
                 self.assign_local(id, span, slot, r#type, value);
             }
-            // The function's own tail expression never actually produced
-            // a value -- same reasoning as `lower_stmt`'s `Return` arm:
-            // trap here instead of letting the caller route this into the
-            // exit chain to read `return_slot` back.
+            // Do not read a tail value from a branch that diverged.
             if diverges {
                 self.set_terminator(MirTerminator::Unreachable);
                 return false;
@@ -526,11 +383,6 @@ impl FunctionLowerer {
         true
     }
 
-    /// Lowers `block` in a position where its own value (if any) is
-    /// discarded -- a `while`/`for` body, or a `defer`'s own body. Returns
-    /// whether control fell off the end normally (`true`) or already
-    /// diverged (`false`), the same "reached" signal `lower_block_into`
-    /// returns for a value-producing position.
     fn lower_block_as_stmt(&mut self, block: CheckedBlock) -> bool {
         self.lower_stmts(block.stmts);
         if self.is_current_terminated() {
@@ -551,12 +403,6 @@ impl FunctionLowerer {
         true
     }
 
-    /// Dispatches an `If`/`Match`/`Codeblock`-shaped `expr` straight into a
-    /// caller-supplied `merge`/`result` instead of allocating its own (the
-    /// mechanism behind every fast path in this file -- `lower_expr_stmt`'s
-    /// two, `lower_stmt`'s `Return` arm, and `lower_function_body`'s tail).
-    /// Panics if `expr` isn't one of those three -- every caller checks
-    /// `is_control_flow_expr` first.
     fn lower_control_flow_into(
         &mut self,
         expr: CheckedExprNode,
@@ -576,14 +422,6 @@ impl FunctionLowerer {
         }
     }
 
-    /// `lower_control_flow_into`'s counterpart for a *statement* position
-    /// (a bare `if`/`match` statement, or `place = if/match/{ }`): unlike
-    /// `return`/tail position, where `merge` is the already-existing exit
-    /// chain, a statement has to keep going afterward, so this mints `merge`
-    /// fresh and positions `self.current` on it once every arm is lowered --
-    /// the same "mark unreachable if nothing reached it" finalization
-    /// `finish_merge` does for the value-producing path, just with no value
-    /// to hand back.
     fn lower_control_flow_stmt(&mut self, expr: CheckedExprNode, result: Option<(LocalId, ResolvedType)>) {
         let merge = self.new_block();
         let (result_id, result_type) = match result {
@@ -597,18 +435,6 @@ impl FunctionLowerer {
         }
     }
 
-    /// Lowers `block` as one arm of an `if`/`match`/bare-`{}` value join:
-    /// its tail expression (if any -- absent means this arm is `Void`, and
-    /// analysis guarantees every arm agrees on that when one is) is written
-    /// into `result` before jumping to `merge` -- see `MirBlockData`'s doc
-    /// comment for why a synthetic local, not a block argument, is what
-    /// carries the value across this jump. `result: None` means nobody
-    /// needs this arm's value at all (the bare-statement/`return`/tail
-    /// fast paths -- see `lower_control_flow_stmt`/`lower_stmt`'s `Return`
-    /// arm/`lower_function_body`), in which case the tail is still lowered
-    /// and still pushed as an ordinary (side-effect-only) statement -- it
-    /// just isn't copied anywhere. Returns whether `merge` was actually
-    /// reached.
     fn lower_block_into(
         &mut self,
         block: CheckedBlock,
@@ -634,13 +460,7 @@ impl FunctionLowerer {
                 }
                 None => self.push_stmt(value),
             }
-            // This arm's own tail never actually produced the value the
-            // merge block expects -- e.g. `if cond { exit(1) } else { 42
-            // }`, where this is the `exit(1)` arm. Trap here instead of
-            // joining `merge` as if a real value were coming; the
-            // *overall* `if`/`match` still resolves fine as long as some
-            // other arm does reach it (its own type is what the whole
-            // expression ends up typed as).
+            // A diverging match arm contributes no value to the join.
             if diverges {
                 self.set_terminator(MirTerminator::Unreachable);
                 return false;
@@ -675,15 +495,6 @@ impl FunctionLowerer {
         self.current = exit;
     }
 
-    /// `loop { body }` -- the same shape as `lower_while`, minus the
-    /// header/condition-check block: there's no condition to branch on, so
-    /// entry goes straight to `body_blk`, which falls through back to
-    /// itself rather than to a separate header. `exit` is still always
-    /// created, even when nothing in `body` ever `break`s (i.e. it's
-    /// statically unreachable) -- exactly like `while true { }`'s `exit`
-    /// already is today, and for the same reason: it still needs *some*
-    /// terminator (whatever code follows the loop provides one), and MIR
-    /// has no trouble with a block that's simply dead at runtime.
     fn lower_loop(&mut self, loop_id: HirId, body: CheckedBlock) {
         let body_blk = self.new_block();
         let exit = self.new_block();
@@ -859,14 +670,6 @@ impl FunctionLowerer {
         MirFieldInit { field_index: field.field_index, value: self.lower_expr(field.value) }
     }
 
-    /// `if`/`match`/a bare `{ .. }` used as a value all share this shape:
-    /// allocate a `result` local typed for the expression's own resolved
-    /// type, lower every arm into `merge` (via a construct-specific chain
-    /// helper, each arm writing its own value to `result` before jumping),
-    /// and -- once done -- read `result` back as this expression's own
-    /// value. See the module doc comment for how "reached" propagates and
-    /// why a `false` result still leaves the block graph well-formed (an
-    /// `Unreachable` merge).
     fn finish_merge(&mut self, merge: BlockId, reached: bool, result: LocalId, id: HirId, span: Span, r#type: ResolvedType) -> MirExprNode {
         self.current = merge;
         if !reached {
@@ -903,14 +706,6 @@ impl FunctionLowerer {
         self.finish_merge(merge, reached, result, id, span, r#type)
     }
 
-    /// `if a {..} else if b {..} else {..}` recurses through `branches`
-    /// exactly like `emit_if`: each arm's `then` body is lowered into
-    /// `merge` directly (writing its own value to `result` first, when
-    /// there is one to write -- see `lower_block_into`'s doc comment for
-    /// `result: None`), and `else` is this same recursion one level
-    /// deeper -- the direct analogue of `emit_if`'s own `branches:
-    /// IntoIter` recursion, minus the actual `Value`/`Diverged` payload
-    /// (which now just lives in `result`, when there is one).
     fn lower_if_chain(
         &mut self,
         mut branches: std::vec::IntoIter<(CheckedExprNode, CheckedBlock)>,
@@ -958,10 +753,6 @@ impl FunctionLowerer {
         self.finish_merge(merge, reached, result, id, span, r#type)
     }
 
-    /// `match`'s analogue of `lower_if_chain` -- see `emit_match`'s own doc
-    /// comment for why a missing `else_branch` here means "already proved
-    /// exhaustive" (traps) rather than "defaults to empty" the way `if`
-    /// treats it.
     fn lower_match_chain(
         &mut self,
         mut arms: std::vec::IntoIter<CheckedMatchArm>,
@@ -980,11 +771,7 @@ impl FunctionLowerer {
             };
         };
 
-        // An OR of AND-groups (see `CheckedMatchArm`'s own doc comment) --
-        // any group with zero conditions is vacuously true, which makes
-        // the whole arm match unconditionally regardless of any other
-        // group, exactly like the old "conditions is empty" shortcut this
-        // replaces.
+        // Each match arm is an OR of condition groups; each group itself short-circuits as AND.
         if arm.conditions.iter().any(|group| group.is_empty()) {
             return self.lower_block_into(arm.body, merge, result, result_type);
         }
@@ -995,10 +782,7 @@ impl FunctionLowerer {
         let mut group_entry = self.current;
         for (g, group) in arm.conditions.into_iter().enumerate() {
             self.current = group_entry;
-            // Where this group's own AND-chain falls through to once every
-            // condition in it has been tried: the next group's own entry
-            // block, or the arm's overall failure block once every group
-            // has had its turn.
+            // Successful conditions jump to the arm body; failed conditions advance to the next group.
             let group_fail = if g + 1 == group_count { fail_blk } else { self.new_block() };
             let condition_count = group.len();
             for (i, cond) in group.into_iter().enumerate() {
@@ -1020,7 +804,7 @@ impl FunctionLowerer {
         body_reached || fail_reached
     }
 
-    // Delegates to `crate::lower::place` -- see that module's doc comment.
+    // Resolved place lowering is centralized in lower/place.rs.
     fn lower_place(&mut self, place: CheckedPlace) -> MirPlace {
         super::place::lower_place(self, place)
     }
@@ -1030,24 +814,10 @@ fn bool_literal(id: HirId, span: Span, value: bool) -> MirExprNode {
     MirExprNode { id, span, r#type: ResolvedType::Bool, kind: MirExpr::Bool(value) }
 }
 
-/// Whether `kind` is one of the three shapes that lower to a
-/// [`crate::body::MirTerminator`]-based control-flow graph instead of an
-/// ordinary [`crate::body::MirExprNode`] tree -- the guard every fast path
-/// in this file (`lower_expr_stmt`'s two, `lower_stmt`'s `Return` arm,
-/// `lower_function_body`'s tail) checks before routing into
-/// `FunctionLowerer::lower_control_flow_into`/`lower_control_flow_stmt`
-/// instead of the general, always-safe-but-always-allocates-a-temp
-/// `lower_expr`.
 fn is_control_flow_expr(kind: &CheckedExpr) -> bool {
     matches!(kind, CheckedExpr::If(_) | CheckedExpr::Match(_) | CheckedExpr::Codeblock(_))
 }
 
-/// Every `defer` in `block`, depth-first in source order, with the span its
-/// own statement covers -- the pre-pass `FunctionLowerer::lower` needs
-/// before the real walk begins (see its doc comment). Direct copy of
-/// `omega_codegen`'s former `collect_defer_ids*` family, which walked the
-/// identical `CheckedBlock`/`CheckedStmt`/`CheckedExprNode`/`CheckedPlace`
-/// shapes for the identical reason.
 fn collect_defer_ids(block: &CheckedBlock, out: &mut Vec<(HirId, Span)>) {
     for stmt in &block.stmts {
         collect_defer_ids_stmt(stmt, out);
@@ -1079,8 +849,7 @@ fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<(HirId, Span)>) {
         }
         CheckedStmt::Defer(d) => {
             out.push((d.id, d.span));
-            // Always empty in practice -- analysis rejects a nested `defer`
-            // -- but walked anyway for uniformity, same as the original.
+            // Nested defers are rejected earlier, so defer bodies should not introduce another exit chain.
             collect_defer_ids(&d.body, out);
         }
     }

@@ -1,6 +1,3 @@
-//! Declaring and defining every item across every compiled module -- the
-//! two-pass sweep (`update_all`) that makes cross-module calls work
-//! regardless of import direction, exactly like `cranelift/item.rs`.
 
 use super::Codegen;
 use inkwell::module::Linkage;
@@ -9,8 +6,6 @@ use omega_mir::MirItem;
 use omega_parser::prelude::Ident;
 
 impl<'ctx> Codegen<'ctx> {
-    /// Declares every function/method/extern/global in one item -- pass 1
-    /// of 2.
     fn declare_item(&mut self, item: &MirItem, path: &[Ident]) {
         match item {
             MirItem::ExternDeclaration(extern_decl) => self.declare_extern_decl(extern_decl),
@@ -30,11 +25,7 @@ impl<'ctx> Codegen<'ctx> {
                     self.declare_function_def(f);
                 }
             }
-            // A top-level global -- zero-initialized when `initial_value` is
-            // `None`, else built from real bytes (see `build_const_blob`).
-            // Strong linkage unconditionally (never a generic instantiation);
-            // writable regardless of source-level `mut`, enforced at
-            // analysis time rather than by object-file memory protection.
+            // Globals are declared before initialization so references are order-independent.
             MirItem::Declaration(decl) => {
                 let symbol = omega_mir::mangle::global_symbol_string(path, &decl.ident);
                 let total = omega_analyzer::layout::total_bytes(&decl.r#type, self.pointer_bytes());
@@ -43,12 +34,7 @@ impl<'ctx> Codegen<'ctx> {
                     .as_ref()
                     .map(|value| self.build_const_blob(value, &decl.r#type));
 
-                // Declared with whatever type its own initializer has, not
-                // unconditionally a byte array: a global's declared type and
-                // initializer type must agree or the IR is invalid, and a
-                // pointer-embedding initializer materializes as a packed
-                // struct rather than bytes. Downstream access is unaffected
-                // either way -- always through an opaque `ptr` and offset.
+                // Use the initializer value type here; semantic layout already guarantees compatibility.
                 let (r#type, initializer) = match blob {
                     None => {
                         let byte_array = self.context.i8_type().array_type(total.max(1));
@@ -69,8 +55,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Pass 2 of 2 -- define every body (everything else was fully handled
-    /// by the declare pass).
     fn define_item(&mut self, item: MirItem) {
         match item {
             MirItem::ExternDeclaration(_) | MirItem::Declaration(_) => {}
@@ -93,9 +77,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Two full passes over every item across every compiled module --
-    /// declare everything first (so any function a cross-module call or a
-    /// vtable needs already exists), then define every body.
     pub(super) fn update_all(
         &mut self,
         modules: Vec<(Vec<Ident>, omega_mir::MirModule)>,

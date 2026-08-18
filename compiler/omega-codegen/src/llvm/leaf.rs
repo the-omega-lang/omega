@@ -1,7 +1,3 @@
-//! The LLVM-specific seam in the shared layout math (`omega_analyzer::
-//! layout`): mapping a backend-agnostic [`Leaf`] onto LLVM's own types --
-//! the exact counterpart of `cranelift/leaf.rs`'s `cranelift_type`, same
-//! shape, same contract: never another copy of `omega_analyzer::layout`.
 
 use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, PointerType};
@@ -21,17 +17,11 @@ pub(super) fn llvm_type<'ctx>(
         Leaf::F32 => context.f32_type().into(),
         Leaf::F64 => context.f64_type().into(),
         Leaf::Ptr => ptr_type(context).into(),
-        // The half of the old single `Ptr` leaf that is an *integer*
-        // (`usize`/`isize`) rather than an address. Cranelift maps both to
-        // the same type because its pointer type is an integer type; here
-        // they must not be, or every size-typed value becomes an opaque
-        // pointer and arithmetic on it is not even representable.
+        // Pointer-width integers and pointers share width but require distinct LLVM types.
         Leaf::Size => size_type(context, pointer_bytes).into(),
     }
 }
 
-/// The pointer-width *integer* type -- `Leaf::Size`'s mapping, and the
-/// type any `ptrtoint` in this backend produces.
 pub(super) fn size_type<'ctx>(
     context: &'ctx Context,
     pointer_bytes: u32,
@@ -44,16 +34,10 @@ pub(super) fn size_type<'ctx>(
     }
 }
 
-/// The one universal pointer type: LLVM's opaque pointer (i8*) -- every
-/// address in this backend is carried as one, and every typed access
-/// bitcasts or gep-then-loads through it.
 pub(super) fn ptr_type<'ctx>(context: &'ctx Context) -> PointerType<'ctx> {
     context.ptr_type(inkwell::AddressSpace::default())
 }
 
-/// `ResolvedType -> Vec<LLVM scalar types>` -- the shared layout math's
-/// leaf list, mapped through `llvm_type`, exactly like
-/// `cranelift/leaf.rs`'s `IntoCraneliftLeaves`.
 pub(super) fn llvm_leaves<'ctx>(
     context: &'ctx Context,
     ty: &ResolvedType,
@@ -65,9 +49,6 @@ pub(super) fn llvm_leaves<'ctx>(
         .collect()
 }
 
-/// The byte width of one LLVM scalar value type -- the only per-leaf fact
-/// `load_scalars`/`store_scalars` need from a value (the layout math
-/// itself always comes from `omega_analyzer::layout::Leaf`).
 pub(super) fn value_byte_width(ty: inkwell::types::BasicTypeEnum, pointer_bytes: u32) -> u32 {
     if ty.is_int_type() {
         ty.into_int_type().get_bit_width() / 8
@@ -77,7 +58,7 @@ pub(super) fn value_byte_width(ty: inkwell::types::BasicTypeEnum, pointer_bytes:
             _ => 8,
         }
     } else {
-        // The opaque pointer type.
+        // All semantic pointer leaves map to LLVM opaque pointers.
         pointer_bytes
     }
 }

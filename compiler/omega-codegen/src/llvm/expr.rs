@@ -1,7 +1,3 @@
-//! Evaluating one [`MirExprNode`] into its scalar leaves -- the LLVM
-//! counterpart of `cranelift/expr.rs`, line for line in *semantics* (the
-//! shared layout math, the shared ABI, and the MIR-carried alignment do
-//! the deciding; this module only translates).
 
 use super::leaf;
 use super::place::PlaceStorage;
@@ -17,10 +13,6 @@ use omega_mir::{
     MirExpr, MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
 };
 
-/// A `ConstValue::Ref(inner)`'s own real type, given the *pointee* type its
-/// enclosing `ResolvedType::Pointer` carries -- the exact counterpart of
-/// `cranelift/expr.rs`'s `ref_pointee_type` (see there for the
-/// `DropLength`-produced `Array` shape it exists for).
 fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedType {
     match inner {
         ConstValue::Array(elements) => {
@@ -30,12 +22,6 @@ fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedTyp
     }
 }
 
-/// A constant's physical byte image plus its pointer relocations -- the
-/// exact counterpart of Cranelift's `DataDescription` +
-/// `write_const_element` pair, kept backend-native: the bytes mirror
-/// `cranelift/expr.rs`'s buffer exactly (same layout math, same offsets,
-/// same little-endian writes), and the relocations are `(byte offset,
-/// target global)` pairs LLVM turns into packed-struct initializer fields.
 pub(super) struct ConstBlob<'ctx> {
     pub bytes: Vec<u8>,
     pub relocs: Vec<(u32, GlobalValue<'ctx>)>,
@@ -43,20 +29,13 @@ pub(super) struct ConstBlob<'ctx> {
 }
 
 impl<'ctx> Codegen<'ctx> {
-    /// `process_expr`'s LLVM counterpart: one `MirExprNode` into its
-    /// scalar leaves.
     pub(super) fn process_expr(&mut self, node: &MirExprNode) -> Vec<BasicValueEnum<'ctx>> {
         match &node.kind {
             MirExpr::String(s) | MirExpr::ByteString(s) => self.emit_bytes(s.clone()),
             MirExpr::Const(value) => self.emit_const_value(value, &node.r#type),
 
             MirExpr::FunctionCall(MirFunctionCall { callee, fn_type, args }) => {
-                // Always evaluated to an address and called indirectly, not
-                // resolved to a declared `FunctionValue`: a callee can be a
-                // function *pointer* (held in a local, field, or parameter),
-                // not only a direct function place. The direct case loses
-                // nothing -- LLVM prints a call through a constant address
-                // as an ordinary direct `call @name`.
+                // Dynamic callees are addresses and must be emitted as indirect calls.
                 let fnaddr = self.process_expr(callee)[0].into_pointer_value();
 
                 let fixed_count = fn_type.params.len();
@@ -64,9 +43,7 @@ impl<'ctx> Codegen<'ctx> {
                 for (i, arg) in args.iter().enumerate() {
                     let arg_type = arg.r#type.clone();
                     let mut value = self.process_expr(arg);
-                    // Only the variadic tail needs default-argument
-                    // promotion (the shared C ABI rule; see
-                    // `crate::abi::variadic_promotion`).
+                    // Apply C default promotions only to the variadic tail.
                     if fn_type.is_variadic && i >= fixed_count {
                         for v in value.iter_mut() {
                             *v = self.promote_variadic_value(*v, &arg_type);
@@ -75,8 +52,7 @@ impl<'ctx> Codegen<'ctx> {
                     ir_args.extend(value);
                 }
 
-                // sret: allocate the scratch slot and prepend its address
-                // -- the exact counterpart of `maybe_sret_arg`.
+                // Indirect returns prepend the caller-allocated sret destination.
                 let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
                     let shift = layout::stack_align_shift(layout::type_alignment(&fn_type.return_type));
                     let size = layout::total_bytes(&fn_type.return_type, self.pointer_bytes());
@@ -111,8 +87,7 @@ impl<'ctx> Codegen<'ctx> {
                                 unreachable!("a non-void call always returns a value")
                             }
                         };
-                        // A multi-leaf return comes back as one aggregate
-                        // struct -- extract it back into leaves.
+                        // LLVM returns multiple leaves as one aggregate value that must be unpacked.
                         let leaves = leaf::llvm_leaves(self.context, &fn_type.return_type, self.pointer_bytes());
                         if leaves.len() > 1 {
                             (0..leaves.len())
@@ -288,11 +263,7 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 let left_value = self.process_expr(left)[0];
                 let right_value = self.process_expr(right)[0];
-                // A `Ptr` leaf reaches every integer-domain op, not just
-                // comparisons: pointer arithmetic coerces to `usize` at
-                // analysis time but the operand keeps its pointer leaf.
-                // Cranelift's integer ops accept that natively; LLVM wants a
-                // genuine integer, so normalize once here for every arm below.
+                // Normalize pointer leaves to pointer-width integers for integer-domain operations.
                 let (left, right) = match kind {
                     NumericKind::Float(_) => (left_value, right_value),
                     _ => (
@@ -421,7 +392,7 @@ impl<'ctx> Codegen<'ctx> {
                             BinaryOp::Ge => SGE,
                             _ => unreachable!("not a comparison op"),
                         };
-                        // Same pointer-leaf normalization as above.
+                        // Normalize pointer leaves before integer comparison.
                         let left = self.to_int_operand(left);
                         let right = self.to_int_operand(right);
                         let cmp = self
@@ -450,8 +421,7 @@ impl<'ctx> Codegen<'ctx> {
                         self.bool_result(cmp)
                     }
                 };
-                // ...and back to a pointer when the expression itself is
-                // pointer-typed (`ptr + n`); a comparison's `i1` is untouched.
+                // Cast the integer-domain result back when the expression type is a pointer.
                 let want = leaf::llvm_leaves(self.context, &node.r#type, self.pointer_bytes());
                 let result = match want.first() {
                     Some(want) => self.reinterpret_leaf(result, *want),
@@ -667,8 +637,7 @@ impl<'ctx> Codegen<'ctx> {
                             self.context.i32_type().const_int(len as u64, false).into(),
                         ]
                     }
-                    // A pointer source keeps its pointer leaf; translate to
-                    // an integer before the integer-shaped conversion.
+                    // Preserve pointer provenance until the cast actually requires integer bits.
                     CastKind::IntExtend { signed } => {
                         let base_int = self.to_int_operand(base_leaves[0]);
                         vec![self.cast_to_target_leaf(base_int, target_ir, *signed)]
@@ -693,13 +662,7 @@ impl<'ctx> Codegen<'ctx> {
                             .unwrap()
                             .as_basic_value_enum()]
                     }
-                    // Saturating, matching Cranelift's `fcvt_to_*_sat` --
-                    // the language's own FloatToInt semantics. The intrinsic
-                    // is overloaded on both result and argument type, so
-                    // it's looked up by base name and declared through
-                    // LLVM's own mangler rather than spelling the type
-                    // suffixes out by hand. A pointer target converts to the
-                    // pointer-width integer first, then `inttoptr`.
+                    // Use saturating float-to-int conversion to match Cranelift semantics.
                     CastKind::FloatToInt { signed } => {
                         let from = base_leaves[0].into_float_value().get_type();
                         let to = if target_ir.is_pointer_type() {
@@ -758,9 +721,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// One scalar constant of `raw_leaf`'s own type -- `Ptr` (a `usize`
-    /// literal's leaf) is an integer constant of pointer width cast to the
-    /// opaque pointer, mirroring Cranelift's `iconst` of a pointer type.
     fn scalar_const(
         &self,
         raw_leaf: omega_analyzer::layout::Leaf,
@@ -786,10 +746,7 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 int_value.const_to_pointer(self.ptr_type()).into()
             }
-            // Pointer-*width integer* (`usize`/`isize`): the same bits as
-            // the `Ptr` arm above, minus the `const_to_pointer` -- this one
-            // stays an integer, which is the whole reason `Leaf` separates
-            // the two (see `omega_analyzer::layout::Leaf`).
+            // `usize`/`isize` use pointer-width bits but remain integer values, not pointers.
             Leaf::Size => {
                 let int_ty = leaf::size_type(self.context, self.pointer_bytes());
                 match value {
@@ -822,11 +779,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// An integer-shaped cast's target-side translation: extend/truncate to
-    /// the target's width, then `inttoptr` when the target leaf is itself a
-    /// pointer (`<*u8>some_int` -- pointers classify as pointer-width
-    /// integers for casts, and Cranelift's unified type system folds the
-    /// two into one instruction; LLVM's keeps them apart).
     fn cast_to_target_leaf(
         &self,
         base: inkwell::values::IntValue<'ctx>,
@@ -875,13 +827,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// One leaf, retyped for a `Reinterpret` cast -- a pure relabeling in
-    /// the MIR and a no-op in Cranelift (where an address is already a
-    /// pointer-width integer), but LLVM keeps `ptr` and `iN` distinct, so
-    /// crossing that boundary (e.g. pointer arithmetic's coercion to
-    /// `usize`) needs a real `ptrtoint`/`inttoptr`. Keeps this backend's
-    /// invariant that a value's LLVM type always matches its MIR leaf list.
-    /// Same-domain reinterprets (`*T` to `*U`, same-width int) stay no-ops.
     fn reinterpret_leaf(
         &self,
         value: BasicValueEnum<'ctx>,
@@ -898,12 +843,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// An `icmp`/`fcmp` result (`i1`), widened to the `i8` that Omega's
-    /// `bool` always is in this backend (`layout::leaves_of` says so, and
-    /// every other `bool` producer already yields one) -- LLVM's
-    /// comparisons are the sole exception, so they're converted at the
-    /// source. `to_i1` is the inverse, for `br`'s sole requirement.
-    /// Cranelift needs neither: its `icmp`/`brif` agree on `I8` already.
     fn bool_result(&self, value: inkwell::values::IntValue<'ctx>) -> BasicValueEnum<'ctx> {
         self.builder
             .build_int_z_extend(value, self.context.i8_type(), "tobool8")
@@ -911,10 +850,6 @@ impl<'ctx> Codegen<'ctx> {
             .as_basic_value_enum()
     }
 
-    /// `value`, narrowed to the `i1` that LLVM's `br` requires -- the
-    /// counterpart of `bool_result` above, and the only place an Omega
-    /// `bool` stops being an `i8`. Already-`i1` values pass through so the
-    /// helper is safe to apply unconditionally.
     pub(super) fn to_i1(&self, value: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
         if value.get_type().get_bit_width() == 1 {
             return value;
@@ -929,9 +864,6 @@ impl<'ctx> Codegen<'ctx> {
             .expect("icmp always succeeds")
     }
 
-    /// `v`, translated to an integer operand where a comparison needs one
-    /// -- a pointer value (see the `BinaryOp` arm) becomes
-    /// `ptrtoint`-of-pointer-width; an integer passes through unchanged.
     fn to_int_operand(&self, v: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
         if v.is_pointer_value() {
             let int_ty = leaf::size_type(self.context, self.pointer_bytes());
@@ -943,9 +875,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// The C default-argument-promotion emission for one variadic argument
-    /// -- the *decision* is the shared rule in
-    /// `crate::abi::variadic_promotion`; this only emits the conversion.
     fn promote_variadic_value(
         &mut self,
         value: BasicValueEnum<'ctx>,
@@ -971,12 +900,8 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Reads a whole place's leaves back -- `cranelift::get_place_value`'s
-    /// LLVM counterpart (function roots yield their own address).
     pub(super) fn get_place_value(&mut self, place: &omega_mir::MirPlace) -> Vec<BasicValueEnum<'ctx>> {
-        // A function reference has no memory backing at all -- just a
-        // symbol address (the exact counterpart of cranelift's own
-        // Function-root handling in `get_place_value`).
+        // Function references are code pointers, not addressable data places.
         if let omega_mir::MirPlaceRoot::Function(decl_id) = &place.root {
             let function = *self
                 .functions
@@ -993,18 +918,12 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// A byte-run constant's two-leaf `[pointer, length]` form -- the LLVM
-    /// counterpart of `cranelift::emit_bytes` (same dedup map, same
-    /// shared content-hashed symbol).
     fn emit_bytes(&mut self, s: String) -> Vec<BasicValueEnum<'ctx>> {
         let len = self.context.i32_type().const_int(s.len() as u64, false);
         let data = self.get_or_declare_global_bytes(s);
         vec![data.as_pointer_value().into(), len.into()]
     }
 
-    /// Declares (and defines) `s`'s bytes as an anonymous module-level data
-    /// object, verbatim -- no null terminator, shared by `"..."` and
-    /// `b"..."` literals alike (see `cranelift::get_or_declare_global_bytes`).
     fn get_or_declare_global_bytes(&mut self, s: String) -> GlobalValue<'ctx> {
         if let Some(global) = self.bytes.get(&s) {
             return *global;
@@ -1027,9 +946,6 @@ impl<'ctx> Codegen<'ctx> {
         global
     }
 
-    /// Builds one anonymous data object holding `elements` at consecutive
-    /// `total_bytes(item_type)`-sized slots -- the LLVM counterpart of
-    /// `cranelift::build_const_slice_data`.
     fn build_const_slice_data(
         &mut self,
         elements: &[ConstValue],
@@ -1058,9 +974,6 @@ impl<'ctx> Codegen<'ctx> {
         global
     }
 
-    /// `build_const_slice_data`'s `ConstValue::Ref` counterpart -- one
-    /// `comp`-evaluated value as its own separately addressable static
-    /// data object.
     fn build_const_data(&mut self, value: &ConstValue, r#type: &ResolvedType) -> GlobalValue<'ctx> {
         let mut hash_input = Vec::new();
         self.hash_const_element(&mut hash_input, value, r#type);
@@ -1081,9 +994,6 @@ impl<'ctx> Codegen<'ctx> {
         global
     }
 
-    /// The whole-`ConstValue` byte-image builder -- used by both the
-    /// item-level global initializers and the anonymous blobs above. See
-    /// `item.rs`'s `Declaration` arm.
     pub(super) fn build_const_blob(&mut self, value: &ConstValue, r#type: &ResolvedType) -> ConstBlob<'ctx> {
         let total = layout::total_bytes(r#type, self.pointer_bytes());
         let mut blob = ConstBlob {
@@ -1095,21 +1005,13 @@ impl<'ctx> Codegen<'ctx> {
         blob
     }
 
-    /// Declares a `ConstBlob` as a module-level weak data object and
-    /// returns its initializer's `(type, value)` pair, so the caller can
-    /// `add_global` with exactly the matching type -- a plain byte array
-    /// when nothing inside is a pointer, or a *packed* struct of byte
-    /// spans and pointer fields when it embeds relocations (LLVM builds
-    /// the real relocations from the pointer fields itself).
     pub(super) fn materialize_blob(
         &mut self,
         blob: &ConstBlob<'ctx>,
     ) -> (BasicTypeEnum<'ctx>, BasicValueEnum<'ctx>) {
         let total = blob.bytes.len() as u32;
         if blob.relocs.is_empty() {
-            // Exactly `total`, never `total.max(1)`: the initializer below
-            // has `total` elements, and a global whose declared type and
-            // initializer type disagree is invalid IR.
+            // Keep zero-sized constants zero-sized; do not invent storage bytes.
             let ty: BasicTypeEnum = self.context.i8_type().array_type(total).into();
             let bytes: Vec<inkwell::values::IntValue> = blob
                 .bytes
@@ -1149,8 +1051,6 @@ impl<'ctx> Codegen<'ctx> {
         (struct_ty.into(), struct_ty.const_named_struct(&values).into())
     }
 
-    /// `materialize_blob` plus `add_global` under the blob's own symbol --
-    /// the anonymous-blob declaration shape (weak, read-only).
     fn declare_blob(&mut self, symbol: &str, blob: &ConstBlob<'ctx>) -> GlobalValue<'ctx> {
         let (ty, init) = self.materialize_blob(blob);
         let global = self.module.add_global(ty, None, symbol);
@@ -1164,9 +1064,6 @@ impl<'ctx> Codegen<'ctx> {
         global
     }
 
-    /// Emits one `ConstValue` (an enum tag/header constant, or a
-    /// `MirExpr::Const`) as its leaves, in leaf order -- the LLVM
-    /// counterpart of `cranelift::emit_const_value`.
     fn emit_const_value(
         &mut self,
         value: &ConstValue,
@@ -1312,12 +1209,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Writes one element's leaves into `blob`'s byte buffer at `offset` --
-    /// the LLVM counterpart of `cranelift::write_const_element`, byte-for-
-    /// byte identical in what it produces (same layout offsets, same
-    /// little-endian writes); pointer-shaped elements record a relocation
-    /// instead of bytes, which `materialize_blob` turns into a real LLVM
-    /// relocation.
     fn write_const_element(
         &mut self,
         blob: &mut ConstBlob<'ctx>,
@@ -1450,12 +1341,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Appends `value`'s canonical, unambiguous content bytes to `out`,
-    /// purely for `data_symbol`'s naming -- the exact counterpart of
-    /// `cranelift::hash_const_element`, algorithm-for-algorithm identical
-    /// so both backends name identical constants identically (see there
-    /// for why the *logical* tree is hashed rather than the physical
-    /// buffer).
     fn hash_const_element(&mut self, out: &mut Vec<u8>, value: &ConstValue, r#type: &ResolvedType) {
         let pointer_bytes = self.pointer_bytes();
         match value {
@@ -1552,7 +1437,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// A pointer load with an explicit alignment (the vtable slot load).
     fn aligned_load_ptr(
         &self,
         base: PointerValue<'ctx>,

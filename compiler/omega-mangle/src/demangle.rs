@@ -1,12 +1,3 @@
-//! Parses a mangled string back into a `Symbol` (`decode`), and renders
-//! it into a readable form (`demangle`). A `B<offset>` backref re-parses
-//! at that byte offset in the *mangled* string (not the output) with a
-//! fresh cursor; the offset must be strictly less than the backref
-//! token's own position, which honest encoder output always satisfies
-//! and rejects malformed/adversarial input instead of looping.
-//!
-//! Rendering doesn't reconstruct Rust-style `<Owner>::method(...)`
-//! bracketing -- see `docs/architecture/mir-and-codegen.md`.
 
 use crate::base62;
 use crate::grammar::*;
@@ -27,7 +18,7 @@ pub fn decode(mangled: &str) -> Option<Symbol> {
         while bytes.get(pos) != Some(&TAG_LIST_END) {
             params.push(parse_type(bytes, &mut pos)?);
         }
-        pos += 1; // consume 'E'
+        pos += 1;
         let ret = parse_type(bytes, &mut pos)?;
         Some((params, ret))
     } else {

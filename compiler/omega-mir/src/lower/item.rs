@@ -1,6 +1,3 @@
-//! Item-level lowering: `CheckedModule -> MirModule`, mechanical for
-//! everything except a function's own body (delegated to
-//! `crate::lower::function::FunctionLowerer`).
 
 use crate::lower::function::FunctionLowerer;
 use crate::mangle;
@@ -49,9 +46,7 @@ fn lower_declaration(decl: CheckedDeclaration) -> MirDeclaration {
 }
 
 fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclaration {
-    // `Disabled` is an ordinary hand-written `extern`; `Glued` is a `gap`
-    // declaration's synthesized required function, linked to the symbol
-    // its `glue` implementation forces.
+    // `Disabled` externs keep their external name; glued gaps use the matching generated glue symbol.
     let symbol = match (&decl.mangling, &decl.r#type) {
         (ManglingMode::Disabled, _) => decl.ident.0.clone(),
         (
@@ -84,9 +79,6 @@ fn lower_function_def(f: CheckedFunctionDef, path: &[Ident], entry: &[Ident]) ->
     lower_function_def_inner(f, symbol, linkage)
 }
 
-/// The symbol/linkage decision for a *method*, made exactly like the free
-/// function's -- just owned, via `method_symbol`, with the owner's own
-/// `type_args` deciding genericity. Shared by struct/enum/union lowering.
 fn lower_method_def(
     f: CheckedFunctionDef,
     path: &[Ident],
@@ -94,8 +86,7 @@ fn lower_method_def(
     owner_type_args: &[ResolvedType],
 ) -> MirFunctionDef {
     let symbol = match &f.mangling {
-        // `@mangling(force = "...")` is allowed on methods; `disabled` is not
-        // (`ManglingDisabledOnMethod`) -- see `ManglingMode::Forced`.
+        // Forced method symbols survive lowering; disabled method mangling was rejected earlier.
         ManglingMode::Forced(name) => name.clone(),
         ManglingMode::Glued {
             spec_module_path,
@@ -133,9 +124,7 @@ fn lower_function_def_inner(f: CheckedFunctionDef, symbol: String, linkage: MirL
         conformance_owner,
         primitive_target,
     } = f;
-    // Lowered against `&params`/`&return_type` before either is moved into
-    // the returned `MirFunctionDef` below (the body references them via
-    // `Storage::Parameter`).
+    // Compute mangling before moving the resolved signature fields into MIR.
     let mir_body = FunctionLowerer::lower(&params, body, &return_type, id, span);
     MirFunctionDef {
         id,
@@ -156,17 +145,12 @@ fn lower_function_def_inner(f: CheckedFunctionDef, symbol: String, linkage: MirL
     }
 }
 
-/// The free-function symbol/linkage decision -- moved verbatim out of
-/// `omega-codegen`'s `cranelift/item.rs`, so it runs exactly once per
-/// function, at lowering, and every backend reads the result. See the
-/// original for the reasoning behind each arm.
 fn free_function_symbol_and_linkage(
     f: &CheckedFunctionDef,
     path: &[Ident],
     entry: &[Ident],
 ) -> (String, MirLinkage) {
-    // The program's entry point (`main`, in the entry module) keeps the
-    // bare, unmangled symbol the OS/linker looks for.
+    // Only the designated root entry function receives the bare `main` symbol.
     let symbol = match (&f.mangling, &f.conformance_owner, &f.primitive_target) {
         (ManglingMode::Forced(name), _, _) => name.clone(),
         (
@@ -199,10 +183,7 @@ fn free_function_symbol_and_linkage(
             &f.fn_type(),
         )),
     };
-    // A conform method's genericity lives in its target (`Self`), not its
-    // own parameter list, so `f.type_args` is always empty for one --
-    // `monomorphized` is the conform counterpart of a non-empty
-    // `type_args`; see `ConformanceOwner::monomorphized`.
+    // Conformance-method identity comes from the instantiated target/spec context, not method-local generics.
     let linkage = match &f.conformance_owner {
         Some(owner) if owner.monomorphized => MirLinkage::Weak,
         _ => {

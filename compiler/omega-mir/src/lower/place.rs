@@ -1,8 +1,3 @@
-//! `CheckedPlace -> MirPlace` -- resolves a `Storage::Local`/
-//! `Storage::Parameter` reference to the `LocalId` `FunctionLowerer`
-//! already allocated for it (the lowering-time counterpart of
-//! `Codegen::resolve_place_storage`'s identical lookup, just against
-//! `local_of` instead of `stack_slots`/`local_args`).
 
 use super::function::FunctionLowerer;
 use crate::body::{MirPlace, MirPlaceRoot, MirProjection};
@@ -10,9 +5,6 @@ use omega_analyzer::checked::{CheckedPlace, CheckedPlaceRoot, CheckedProjection,
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::ResolvedType;
 
-/// The access alignment a `MirPlace` carries -- `layout::type_alignment` of
-/// the place's final type, the one sound lower bound everywhere (see
-/// `MirPlace::align`'s doc comment).
 pub(super) fn place_align(r#type: &ResolvedType) -> u32 {
     layout::type_alignment(r#type)
 }
@@ -20,7 +12,7 @@ pub(super) fn place_align(r#type: &ResolvedType) -> u32 {
 pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) -> MirPlace {
     let root = match place.root {
         CheckedPlaceRoot::Variable { decl_id, storage, r#type } => match storage {
-            // Both index into `MirBody::locals` uniformly -- see its doc comment.
+            // Parameters and locals share the same MIR LocalId namespace.
             Storage::Local | Storage::Parameter => {
                 let id = *lowerer.local_of.get(&decl_id).unwrap_or_else(|| {
                     panic!("checked module guarantees {decl_id:?} was declared before this use")

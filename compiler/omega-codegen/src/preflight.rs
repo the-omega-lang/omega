@@ -1,28 +1,14 @@
-//! The shared pre-flight rejection pass -- the constructs every backend
-//! must refuse *identically*, so the language's accepted program set never
-//! depends on `--backend`. Historically these were per-backend `todo!()`s
-//! (a panic inside whichever backend happened to emit them first); with
-//! two backends, "unimplemented" must not be a backend property, so they
-//! are checked here, once, before any backend work begins, and reported as
-//! a plain `Err` like every other rejectable *program* input.
-//!
-//! This pass covers what remains unimplemented: assignment into a function
-//! parameter, and non-function `extern` data declarations (see
-//! `docs/issues/known-issues.md`).
 
 use crate::CodegenRequest;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_diagnostics::Span;
 use omega_mir::{MirBody, MirExpr, MirExprNode, MirItem, MirPlace, MirPlaceRoot, MirProjection, MirTerminator};
 
-/// The one entry point, called from `crate::generate` before any backend
-/// work begins. `Err` is the rejection, `Ok(())` means every backend can
-/// proceed.
 pub(crate) fn preflight(request: &CodegenRequest) -> Result<(), String> {
     for (_, module) in &request.modules {
         for item in &module.items {
             match item {
-                // Extern *data* declarations have no storage story yet (docs/issues/known-issues.md).
+                // Extern data still has no supported storage model; reject it uniformly before backend selection.
                 MirItem::ExternDeclaration(decl)
                     if !matches!(decl.r#type, ResolvedType::Function(_)) =>
                 {
@@ -71,9 +57,6 @@ fn parameter_assignment_error(span: Span) -> String {
     )
 }
 
-/// Whether `body` assigns into one of its own parameters (`LocalId <
-/// arg_count`) anywhere -- the `Span` of the offending assignment, for the
-/// rejection message.
 fn parameter_assignment(body: &MirBody) -> Option<Span> {
     for block in &body.blocks {
         for stmt in &block.statements {
@@ -101,8 +84,7 @@ fn terminator_parameter_assignment(terminator: &MirTerminator, arg_count: usize)
 fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Span> {
     match &expr.kind {
         MirExpr::Assignment(assignment) => {
-            // The rejection is about the assignment's *target*, but the
-            // assignment node's own span is the honest anchor for it.
+            // Point the diagnostic at the unsupported assignment target, not the whole expression.
             if place_targets_parameter(&assignment.target, arg_count) {
                 return Some(expr.span);
             }
@@ -165,11 +147,6 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
     }
 }
 
-/// Whether an assignment *target* is a parameter's own storage: the root
-/// is a parameter local **and** no projection moves the write off it. A
-/// `Deref`/`Index` projection writes *pointee* memory instead, which is
-/// fine (`*out = x`, `into[i] = x`); only a direct write into the
-/// parameter's own value (`x = y`, `p.field = y`) hits this rejection.
 fn place_targets_parameter(place: &MirPlace, arg_count: usize) -> bool {
     matches!(&place.root, MirPlaceRoot::Local { id, .. } if (id.0 as usize) < arg_count)
         && !place.projections.iter().any(|p| {
@@ -177,9 +154,6 @@ fn place_targets_parameter(place: &MirPlace, arg_count: usize) -> bool {
         })
 }
 
-/// Walks a read-side place's own nested expressions (an `Index`
-/// projection's index) -- no place occurrence outside an assignment target
-/// can itself be a parameter assignment.
 fn place_nested_assignment(place: &MirPlace, arg_count: usize) -> Option<Span> {
     for projection in &place.projections {
         if let MirProjection::Index { index_expr, .. } = projection

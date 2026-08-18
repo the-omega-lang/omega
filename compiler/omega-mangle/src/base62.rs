@@ -1,6 +1,3 @@
-//! `<base62-number> = {0-9a-zA-Z} "_"` -- v0's own encoding: `"_"` alone
-//! is 0, any other value is offset by 1. Used for backref byte-offsets,
-//! sized-array lengths, and enum-variant indices.
 
 const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -23,8 +20,6 @@ pub fn encode(n: u64) -> String {
     s
 }
 
-/// Parses a `<base62-number>` starting at `bytes[*pos]`, advancing `*pos`
-/// past the trailing `"_"` on success.
 pub fn decode(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     let start = *pos;
     let mut value: u64 = 0;

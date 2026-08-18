@@ -1,9 +1,3 @@
-//! Resolving a `MirPlace` to concrete storage, and loading/storing scalar
-//! leaves through it -- the LLVM counterpart of `cranelift/place.rs`, with
-//! one deliberate difference: **every load and store carries the
-//! `MirPlace::align` alignment explicitly** (see that field's doc comment
-//! for why LLVM's natural-alignment default would be a miscompile on
-//! Omega's packed layouts).
 
 use super::leaf;
 use super::Codegen;
@@ -13,10 +7,6 @@ use omega_analyzer::layout;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_mir::{MirPlace, MirPlaceRoot, MirProjection};
 
-/// Where a resolved place's value physically lives -- the exact shape
-/// `cranelift/place.rs`'s `PlaceStorage` takes, translated to LLVM:
-/// `Values` (SSA leaves), `Slot` (a byte offset into the shared frame
-/// alloca), or `Address` (a byte-offset base pointer).
 #[derive(Clone)]
 pub(super) enum PlaceStorage<'ctx> {
     Values(Vec<BasicValueEnum<'ctx>>),
@@ -25,9 +15,6 @@ pub(super) enum PlaceStorage<'ctx> {
 }
 
 impl<'ctx> Codegen<'ctx> {
-    /// `resolve_place_storage`'s LLVM counterpart -- the same projection
-    /// walk, the same `current`/`current_type` bookkeeping, returning the
-    /// final storage, type, and the access alignment the place carries.
     pub(super) fn resolve_place_storage(
         &mut self,
         place: &MirPlace,
@@ -57,9 +44,7 @@ impl<'ctx> Codegen<'ctx> {
                 let base = global.as_pointer_value();
                 (PlaceStorage::Address { base, offset: 0 }, r#type.clone())
             }
-            // A temporary as the root of a projection chain -- materialized
-            // into an anonymous stack slot, exactly like Cranelift's
-            // `MirPlaceRoot::Expr` arm (spill `Values` to a fresh alloca).
+            // Spill temporary projection roots so field/index/address operations have stable storage.
             MirPlaceRoot::Expr(expr) => {
                 let r#type = expr.r#type.clone();
                 let values = self.process_expr(expr);
@@ -272,10 +257,7 @@ impl<'ctx> Codegen<'ctx> {
                     current_type = r#type.clone();
                 }
 
-                // A slice is flattened as [data pointer, i32 length], so
-                // `.length` is the second leaf -- element 1, one pointer's
-                // width past the data pointer. `I32`, not `USize`: the
-                // length leaf is genuinely 32-bit (`layout::leaves_of`).
+                // Slice indexing uses the data-pointer leaf; the length leaf is not part of the address calculation.
                 MirProjection::SliceLength => {
                     let ptr_size = self.pointer_bytes();
                     current = match current {
@@ -290,9 +272,7 @@ impl<'ctx> Codegen<'ctx> {
                     current_type = ResolvedType::I32;
                 }
 
-                // A spec object is flattened as [data pointer, vtable
-                // pointer] -- `.ptr` is the first leaf at no offset,
-                // `.vtable` the second, exactly like `SliceLength` above.
+                // Dynamic-spec places use the data-pointer leaf; the vtable leaf is metadata.
                 MirProjection::SpecObjectPtr { mutable } => {
                     current = match current {
                         PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[0]]),
@@ -326,14 +306,6 @@ impl<'ctx> Codegen<'ctx> {
         (current, current_type, place.align)
     }
 
-    /// The alignment an access `byte_offset` bytes into a `base_align`-
-    /// aligned base actually has. `MirPlace::align` claims only the
-    /// place's *base* address, so a byte-offset access (a leaf within a
-    /// flattened aggregate, a field within a slot) must weaken that claim
-    /// by whatever the offset itself destroys, or an over-aligned `align`
-    /// on the resulting load/store is UB LLVM's optimizer can act on.
-    /// Only ever lowers the claim -- see `docs/issues/known-issues.md`'s
-    /// `@layout(align)` entry for the propagation gap this does not cover.
     fn offset_align(base_align: u32, byte_offset: u32) -> u32 {
         let base_align = base_align.max(1);
         if byte_offset == 0 {
@@ -343,9 +315,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Reads a whole place's leaves back from `storage` -- leaf by leaf,
-    /// with the access's own alignment set explicitly on every load (see
-    /// the module doc comment and `offset_align`).
     pub(super) fn load_scalars(
         &mut self,
         storage: &PlaceStorage<'ctx>,
@@ -377,9 +346,6 @@ impl<'ctx> Codegen<'ctx> {
         result
     }
 
-    /// A load from a byte-offset address, with an explicit alignment --
-    /// LLVM's default is *natural* alignment, and Omega's packed layouts
-    /// are genuinely unaligned (see `MirPlace::align`'s doc comment).
     fn aligned_load(
         &self,
         ty: BasicTypeEnum<'ctx>,
@@ -398,9 +364,6 @@ impl<'ctx> Codegen<'ctx> {
         value
     }
 
-    /// Writes `values` (one per scalar leaf, in leaf order) into `storage`
-    /// -- leaf by leaf, with the access's own alignment set explicitly on
-    /// every store (see `offset_align`).
     pub(super) fn store_scalars(
         &mut self,
         base: &PointerValue<'ctx>,
@@ -422,11 +385,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// The address of a place's storage -- spilling a parameter's SSA
-    /// values into a fresh alloca on demand (the same lazy materialization
-    /// `cranelift/place.rs`'s `place_storage_address` does), so an
-    /// explicit `&param` or an implicit auto-ref can take its address like
-    /// any other in-memory place's.
     pub(super) fn place_storage_address(&mut self, storage: &PlaceStorage<'ctx>) -> PointerValue<'ctx> {
         match storage {
             PlaceStorage::Values(values) => {
@@ -440,7 +398,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// `base + offset`, in universal `i8*` terms.
     fn byte_gep(&self, base: PointerValue<'ctx>, offset: u32) -> PointerValue<'ctx> {
         let int_ty: BasicTypeEnum = if self.pointer_bytes() == 8 {
             self.context.i64_type().into()
@@ -450,8 +407,6 @@ impl<'ctx> Codegen<'ctx> {
         self.gep(base, int_ty.into_int_type().const_int(offset as u64, false))
     }
 
-    /// The one safe wrapper around LLVM's (unsafe-flagged) in-bounds GEP:
-    /// `base + offset_value`, in universal `i8*` terms.
     pub(super) fn gep(
         &self,
         base: PointerValue<'ctx>,

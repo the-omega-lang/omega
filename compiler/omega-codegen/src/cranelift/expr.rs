@@ -1,6 +1,3 @@
-//! Evaluating one [`MirExprNode`] into its scalar leaves -- the bulk of
-//! what this backend actually does, since every control-flow shape was
-//! already flattened away by `omega-mir` (see `docs/architecture/mir-and-codegen.md`); this is purely expression evaluation.
 
 use super::Codegen;
 use super::leaf::IntoCraneliftLeaves;
@@ -19,16 +16,6 @@ use omega_mir::{
     MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
 };
 
-/// A `ConstValue::Ref(inner)`'s own real type, given the *pointee* type its
-/// enclosing `ResolvedType::Pointer` carries. Usually `inner` and `pointee`
-/// are the same type (`&some_i32`, pointee `I32`), so this returns
-/// `leaf_type` unchanged -- but `CastKind::DropLength` produces a `Ref`
-/// wrapping an `Array` of `leaf_type`-typed elements (see
-/// `comp_eval::Interpreter::eval_cast`), where `inner`'s real type is
-/// `SizedArray(leaf_type, N)`, not `leaf_type` itself; building/hashing/
-/// writing it as the wrong type would panic or produce the wrong bytes.
-/// Reconstructed from `inner`'s own shape rather than carried directly on
-/// `ConstValue::Ref` (which would break `ConstValue`'s self-containment).
 fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedType {
     match inner {
         ConstValue::Array(elements) => {
@@ -39,20 +26,6 @@ fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedTyp
 }
 
 impl Codegen {
-    /// A byte-run constant's two-leaf `[pointer, length]` form -- the
-    /// shape both `ResolvedType::Slice` and `ResolvedType::Str`'s leaf
-    /// flattening expect (identical for both) -- the underlying data is
-    /// deduplicated per module (`bytes`, a `DataId` cache). Shared by
-    /// string literal expressions, byte-string literal expressions, and
-    /// enum header/dynamic-field constants -- the caller alone decides
-    /// whether the surrounding value is typed `*str` or `*[u8]`.
-    ///
-    /// Both leaves are recomputed at every call site, never cached
-    /// *within* a function the way the underlying `DataId` is across the
-    /// module: a `Value` is tied to the block that defines it under
-    /// Cranelift's strict SSA, so reusing one across two sibling blocks
-    /// (e.g. the same literal in two separate, non-nested loops) is a
-    /// dominance violation, not a valid optimization.
     fn emit_bytes(&mut self, builder: &mut FunctionBuilder, s: String) -> Vec<Value> {
         let len = builder.ins().iconst(types::I32, s.len() as i64);
 
@@ -65,18 +38,10 @@ impl Codegen {
         vec![ptr, len]
     }
 
-    /// An anonymous data object's symbol -- the shared content-hashed name
-    /// (`omega_mir::mangle::data_symbol`), moved out of this backend so
-    /// both backends name identical constants identically (see its doc
-    /// comment).
     fn data_symbol(bytes: &[u8]) -> String {
         omega_mir::mangle::data_symbol(bytes)
     }
 
-    /// Declares (and defines) `s`'s bytes as an anonymous module-level data
-    /// object, verbatim -- no null terminator, shared by `"..."` (`*str`)
-    /// and `b"..."` (`*[u8]`) literals alike (see `bytes`'s own doc
-    /// comment for why one function/map correctly serves both now).
     fn get_or_declare_global_bytes(&mut self, s: String) -> DataId {
         let bytes = s.clone().into_bytes();
         let sym = Self::data_symbol(&bytes);
@@ -95,14 +60,6 @@ impl Codegen {
         self.module.declare_func_in_func(func_id, builder.func)
     }
 
-    /// Emits one `ConstValue` (an enum tag/header constant, or a
-    /// `MirExpr::Const`) as its leaves, in leaf order -- every
-    /// variant but `Slice`/`Array` is exactly one IR leaf; `Slice` is the
-    /// two-leaf `[ptr, len]` fat pointer every other `ResolvedType::Slice`
-    /// value already is (see `emit_const_slice`); `Array` is every
-    /// element's own leaves concatenated in order, with no indirection at
-    /// all -- the same packed, no-padding layout a `SizedArray`'s own leaf
-    /// flattening already uses.
     fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Vec<Value> {
         match value {
             ConstValue::Number(number) => {
@@ -133,12 +90,7 @@ impl Codegen {
                 }
                 values
             }
-            // A `comp`-evaluated struct value -- fields in declared
-            // (`field_index`) order, mirroring `ConstValue::Struct`'s own
-            // doc comment. No byte-offset math needed, exactly like
-            // `MirExpr::StructLiteral`'s ordinary runtime codegen (a
-            // struct's fields never overlap, so its leaves are just every
-            // field's own leaves concatenated in order).
+            // Materialize compile-time aggregate fields in declared layout order.
             ConstValue::Struct(fields) => {
                 let ResolvedType::Struct(struct_type) = r#type else {
                     unreachable!("a Struct constant's own type is always ResolvedType::Struct");
@@ -151,18 +103,7 @@ impl Codegen {
                     .flat_map(|(value, field_type)| self.emit_const_value(builder, value, field_type))
                     .collect()
             }
-            // A `comp`-evaluated enum value -- unlike `Struct`, tag/header/
-            // body regions *do* overlap a union's worth of payload storage,
-            // so this needs the same memory-backed approach `MirExpr::
-            // EnumConstruct`'s ordinary runtime codegen uses: build an
-            // anonymous scratch stack slot, write tag/header/body at their
-            // real byte offsets (`layout.rs`, identical helpers), then read
-            // the whole thing back out as flattened leaves. The header is
-            // read from the enum's own shared cell (a per-variant constant,
-            // not per-instance data), same source `ConstValue::Enum::header`
-            // itself was cloned from -- re-derived here anyway since this
-            // already needs the cell for the dynamic/body field types and
-            // offsets regardless.
+            // Materialize enum tag/prefix/payload according to shared enum layout.
             ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
@@ -218,10 +159,7 @@ impl Codegen {
 
                 self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, r#type)
             }
-            // A `comp`-evaluated union value -- mirrors `MirExpr::
-            // UnionConstruct`'s ordinary runtime codegen (anonymous slot,
-            // zero the whole region, store the one active field, read the
-            // whole thing back as flattened leaves).
+            // Materialize the active union field at offset zero in shared union storage.
             ConstValue::Union { value, .. } => {
                 let total = layout::total_bytes(r#type, self.pointer_bytes());
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
@@ -242,10 +180,7 @@ impl Codegen {
 
                 self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, r#type)
             }
-            // `&<comp place>` -- the address of a separately-built piece of
-            // `comp`-evaluated data, mirroring how `Str`/a nested `Slice`
-            // already embed "pointer to a separately-built rodata blob" --
-            // generalized here to any `ConstValue` shape via `build_const_data`.
+            // Materialize address-taken compile-time values in storage before taking their address.
             ConstValue::Ref(inner) => {
                 let ResolvedType::Pointer { pointee, .. } = r#type else {
                     unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
@@ -258,13 +193,6 @@ impl Codegen {
         }
     }
 
-    /// A compile-time slice's `[ptr, len]` leaves -- unlike `emit_bytes`,
-    /// deliberately *not* deduplicated across call sites: `ConstValue`
-    /// isn't cheaply hashable (it nests, and `NumberValue::Float` has no
-    /// total order), and each occurrence is a one-shot codegen site (one
-    /// enum construction, or one `&[...]` expression) rather than
-    /// something plausibly repeated many times per function the way
-    /// string literals are.
     fn emit_const_slice(&mut self, builder: &mut FunctionBuilder, elements: &[ConstValue], item_type: &ResolvedType) -> Vec<Value> {
         let ptr_type = self.pointer_type();
         let len = builder.ins().iconst(types::I32, elements.len() as i64);
@@ -274,13 +202,6 @@ impl Codegen {
         vec![ptr, len]
     }
 
-    /// Builds one anonymous, module-level data object holding `elements`
-    /// laid out at consecutive `total_bytes(item_type)`-sized slots -- the
-    /// same packed layout a `SizedArray`'s own leaf flattening already
-    /// uses, so the result is byte-for-byte what an ordinary runtime slice
-    /// over this data would expect. `&[]` never reaches here --
-    /// `EmptyArrayLiteral` already rejects it at analysis, same as a bare
-    /// `[]`.
     fn build_const_slice_data(&mut self, elements: &[ConstValue], item_type: &ResolvedType) -> DataId {
         let mut hash_input = Vec::new();
         for element in elements {
@@ -305,12 +226,6 @@ impl Codegen {
         id
     }
 
-    /// `build_const_slice_data`'s `ConstValue::Ref` counterpart: one
-    /// `comp`-evaluated value (not an array of them) as its own separately
-    /// addressable static data object -- what a `Ref`'s own leaf (an
-    /// ordinary thin pointer, see `ConstValue::Ref`'s doc comment) points
-    /// at. Same anonymous, content-hashed, deduplicated `Preemptible` data
-    /// object shape as every other rodata blob this module builds.
     fn build_const_data(&mut self, value: &ConstValue, r#type: &ResolvedType) -> DataId {
         let mut hash_input = Vec::new();
         self.hash_const_element(&mut hash_input, value, r#type);
@@ -331,22 +246,6 @@ impl Codegen {
         id
     }
 
-    /// Appends `value`'s canonical, unambiguous content bytes to `out`,
-    /// purely for `data_symbol`'s naming purposes -- deliberately *not*
-    /// the same bytes `write_const_element` writes into the real data
-    /// object. `write_const_element` leaves a pointer-shaped element
-    /// (`Str`, nested `Slice`) as a zero placeholder in the physical
-    /// buffer -- the actual target only exists as a `write_data_addr`
-    /// relocation recorded in `desc`, invisible to a hash over raw bytes
-    /// alone. Hashing the physical buffer directly would let two constant
-    /// slices pointing at *different* strings collide on one symbol name
-    /// whenever their non-pointer bytes coincide (e.g. `&["a"]` and
-    /// `&["b"]`) -- these blobs are declared `Preemptible` (weak), so a
-    /// collision here is a live silent-miscompile risk, not a hypothetical
-    /// one. Walking the *logical* `ConstValue` tree instead (a string's
-    /// real bytes, length-prefixed since it's the only variable-length
-    /// leaf) avoids it; every other leaf is fixed-width or already
-    /// length-prefixed, so no separators are needed.
     fn hash_const_element(&mut self, out: &mut Vec<u8>, value: &ConstValue, r#type: &ResolvedType) {
         match value {
             ConstValue::Number(number) => {
@@ -435,23 +334,6 @@ impl Codegen {
         }
     }
 
-    /// Writes one element's leaves into `bytes`/`desc` at `offset`. A
-    /// scalar (`Number`/`Bool`/`Char`) is written as literal little-endian
-    /// bytes -- its address never depends on the linker. A pointer-shaped
-    /// element (`Str`, or a nested `Slice`) can't have its address known
-    /// until link/load time, so it's written as a
-    /// `DataDescription::write_data_addr` relocation into its own
-    /// (recursively built, for `Slice`) data object instead -- the same
-    /// "embed a pointer to other static data" mechanism object file
-    /// formats already support for e.g. initialized pointer tables. A
-    /// nested `Slice` element's trailing length leaf has no such address
-    /// dependency, so it's still a literal byte write.
-    ///
-    /// `pub(super)`, not private: `cranelift::item`'s `Declaration` arm
-    /// reuses this directly for a top-level global's own initial-value
-    /// bytes -- the same call `build_const_data` makes for an anonymous
-    /// rodata blob, just against a real, named, `Export`-linkage symbol
-    /// instead of an anonymous content-hashed one.
     pub(super) fn write_const_element(
         &mut self,
         desc: &mut DataDescription,
@@ -483,9 +365,7 @@ impl Codegen {
                 let global_value = self.module.declare_data_in_data(str_id, desc);
                 desc.write_data_addr(offset, global_value, 0);
 
-                // `*str` (unlike the old, always-null-terminated `*u8` this
-                // used to be) is a fat pointer -- the length leaf needs
-                // writing too, exactly like `ConstValue::Slice` below.
+                // `*str` carries data and length; do not assume null termination.
                 let ptr_bytes = self.pointer_type().bytes();
                 let len_start = (offset + ptr_bytes) as usize;
                 bytes[len_start..len_start + 4].copy_from_slice(&(s.len() as i32).to_le_bytes());
@@ -502,10 +382,7 @@ impl Codegen {
                 let len_start = (offset + ptr_bytes) as usize;
                 bytes[len_start..len_start + 4].copy_from_slice(&(nested.len() as i32).to_le_bytes());
             }
-            // No indirection at all (unlike `Slice`/`Str` above) -- every
-            // element is written inline, back to back, into this same
-            // buffer, exactly like `emit_const_value`'s `Array` case does
-            // for the function-local (non-static-data) form.
+            // Sized arrays are inline aggregates, unlike slice/string pointer-based storage.
             ConstValue::Array(elements) => {
                 let ResolvedType::SizedArray(item, _) = r#type else {
                     unreachable!("mir body guarantees a nested Array constant's own type is SizedArray");
@@ -515,11 +392,7 @@ impl Codegen {
                     self.write_const_element(desc, bytes, offset + i as u32 * stride, element, item);
                 }
             }
-            // Real byte offsets this time (unlike `emit_const_value`'s
-            // `Struct` case, which needs none for its SSA-leaf-list form)
-            // -- a struct's fields can have interior alignment/pack gaps
-            // in memory, exactly what `MirExpr::EnumConstruct`'s runtime
-            // codegen also has to account for.
+            // Use shared byte offsets for memory-backed aggregate construction, not leaf indices.
             ConstValue::Struct(fields) => {
                 let ResolvedType::Struct(struct_type) = r#type else {
                     unreachable!("a Struct constant's own type is always ResolvedType::Struct");
@@ -532,13 +405,7 @@ impl Codegen {
                     self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
                 }
             }
-            // Tag, header (a per-variant constant read from the enum's own
-            // shared cell, never carried on `ConstValue::Enum` itself --
-            // see its doc comment), then body fields, each at its real
-            // byte offset -- the static-data counterpart of
-            // `emit_const_value`'s identical `Enum` case, one level of
-            // indirection removed (writing into a byte buffer/relocation
-            // list instead of a stack slot).
+            // Emit enum prefix first, then dynamic fields and payload at shared offsets.
             ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
@@ -581,9 +448,7 @@ impl Codegen {
                     self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
                 }
             }
-            // A union's one active field, at offset 0 -- no tag, no header,
-            // mirroring `CheckedProjection::UnionField`'s own "every field
-            // lives at offset 0" layout.
+            // Union construction stores the active field at offset zero with no tag.
             ConstValue::Union { field_index, value } => {
                 let ResolvedType::Union(union_type) = r#type else {
                     unreachable!("a Union constant's own type is always ResolvedType::Union");
@@ -591,10 +456,7 @@ impl Codegen {
                 let field_type = union_type.borrow().fields[*field_index].1.clone();
                 self.write_const_element(desc, bytes, offset, value, &field_type);
             }
-            // `&<comp place>` -- an ordinary thin pointer to a separately
-            // built data object, exactly like `Str`/nested-`Slice` above,
-            // minus the trailing length leaf (a `Ref` is never a fat
-            // pointer -- see `ConstValue::Ref`'s doc comment).
+            // Materialize address-taken compile-time values in storage before taking their address.
             ConstValue::Ref(inner) => {
                 let ResolvedType::Pointer { pointee, .. } = r#type else {
                     unreachable!("a Ref constant's own type is always ResolvedType::Pointer");
@@ -607,20 +469,8 @@ impl Codegen {
         }
     }
 
-    /// C's variadic calling convention requires the caller to promote each
-    /// *variadic* argument (never a fixed/named one, whose width is fixed by
-    /// the callee's prototype) before passing it: any integer narrower than
-    /// `int` is sign/zero-extended to 32 bits, and `float` is promoted to
-    /// `double` -- otherwise a callee like `printf` (which reads variadic
-    /// arguments according to those default-promoted widths, per its format
-    /// string) would read garbage. Only applies to `arg_type`s that flatten
-    /// to exactly one IR leaf (every numeric primitive does); called
-    /// unconditionally on every variadic argument, so anything else (a
-    /// pointer, already the right width) just passes through unchanged.
     fn promote_variadic_arg(&mut self, builder: &mut FunctionBuilder, value: Value, arg_type: &ResolvedType) -> Value {
-        // The *decision* (what promotes to what) is the shared C ABI rule
-        // in `crate::abi::variadic_promotion`; only the conversion emission
-        // is backend work.
+        // C variadic promotion is shared; this backend only translates the promoted type.
         match crate::abi::variadic_promotion(arg_type, self.target) {
             Some(NumericKind::Float(_)) => builder.ins().fpromote(types::F64, value),
             Some(NumericKind::Signed(_)) => builder.ins().sextend(types::I32, value),
@@ -629,11 +479,6 @@ impl Codegen {
         }
     }
 
-    /// If `fn_type`'s return value needs the hidden struct-return
-    /// convention (see `needs_sret`), allocates the scratch slot for it
-    /// and prepends its address to `ir_args` -- shared by an ordinary call
-    /// and a dynamic (vtable) one, which otherwise duplicated this
-    /// verbatim.
     fn maybe_sret_arg(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -650,11 +495,6 @@ impl Codegen {
         })
     }
 
-    /// Builds the (possibly variadic-patched) signature for an indirect
-    /// call and emits it -- shared by an ordinary call and a dynamic
-    /// (vtable) one (the latter's `fn_type` is never actually variadic,
-    /// but there's nothing wrong with asking; the patch is a no-op unless
-    /// `ir_args` genuinely has more entries than the declared params).
     fn emit_call_indirect(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -662,12 +502,7 @@ impl Codegen {
         fn_type: &ResolvedFunctionType,
         ir_args: &[Value],
     ) -> Inst {
-        // Cranelift does not support variadic functions directly. To
-        // bypass that, the call convention is already `SystemV` (see
-        // `make_function_sig`), and any *extra* (variadic) arguments
-        // beyond the fixed, declared params just get their own
-        // already-materialized Cranelift type appended to the signature
-        // used for this one call site.
+        // Cranelift variadic calls use a fixed signature synthesized for the concrete call site.
         let mut sig = self.make_function_sig(fn_type.clone());
         if fn_type.is_variadic && ir_args.len() > sig.params.len() {
             for arg in &ir_args[sig.params.len()..] {
@@ -678,10 +513,6 @@ impl Codegen {
         builder.ins().call_indirect(sigref, fnaddr, ir_args)
     }
 
-    /// Reads a call's return value back -- through `sret_slot`'s memory if
-    /// one was allocated (see `maybe_sret_arg`), or straight from the
-    /// instruction's own results otherwise. Shared by an ordinary call and
-    /// a dynamic (vtable) one.
     fn call_result(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -708,10 +539,7 @@ impl Codegen {
             MirExpr::Const(value) => self.emit_const_value(builder, &value, &node.r#type),
 
             MirExpr::FunctionCall(MirFunctionCall { callee, fn_type, args }) => {
-                // The mir guarantees the callee resolves to exactly one
-                // Function-typed value -- there is no way to construct a
-                // Function-typed expression other than a function place
-                // root, which always yields a single address.
+                // MIR guarantees a single resolved callee; codegen performs no overload selection.
                 let fnaddr = self.process_expr(builder, *callee)[0];
 
                 let fixed_count = fn_type.params.len();
@@ -719,9 +547,6 @@ impl Codegen {
                 for (i, arg) in args.into_iter().enumerate() {
                     let arg_type = arg.r#type.clone();
                     let mut value = self.process_expr(builder, arg);
-                    // Only the variadic tail needs default-argument
-                    // promotion; a fixed/named parameter's width is already
-                    // pinned by the callee's declared signature.
                     if fn_type.is_variadic && i >= fixed_count && let [v] = value.as_mut_slice() {
                         *v = self.promote_variadic_arg(builder, *v, &arg_type);
                     }
@@ -734,13 +559,7 @@ impl Codegen {
                 self.call_result(builder, &fn_type, sret_slot, call)
             }
 
-            // `*Concrete` -> `spec *Spec`: builds the fat pointer's two
-            // leaves -- `base`'s own value unchanged (the data pointer)
-            // plus the address of a lazily-built, memoized vtable (see
-            // `vtable_for`). `node.r#type` is always `SpecObject` here
-            // (`Analyzer::coerce_to_expected` guarantees it); `base`'s own
-            // type is always a plain `Pointer` to the concrete struct/enum/
-            // union that vtable is built for.
+            // Dynamic-spec coercion builds the data-pointer/vtable-pointer pair.
             MirExpr::SpecCoerce(MirSpecCoerce { base, slots }) => {
                 let ResolvedType::SpecObject { spec, type_args, .. } = &node.r#type else {
                     unreachable!("mir body guarantees a SpecCoerce's own type is SpecObject");
@@ -758,15 +577,7 @@ impl Codegen {
                 vec![data_ptr, vtable_ptr]
             }
 
-            // `base.method(args)` through a `spec *Spec` value -- loads the
-            // function pointer out of `base`'s own vtable leaf at
-            // `slot_index * pointer_width` and calls through it, reusing
-            // the exact same `call_indirect`/`make_function_sig` path
-            // every ordinary call already goes through; only how the
-            // callee address itself is obtained differs (a vtable load
-            // here, `func_addr`/`get_place_value` for an ordinary call).
-            // `self` is `base`'s own data-pointer leaf, prepended exactly
-            // like an ordinary method call's own implicit self.
+            // Dynamic-spec calls load the resolved slot from the vtable and call it indirectly.
             MirExpr::DynamicCall(MirDynamicCall { base, slot_index, fn_type, args }) => {
                 let base_leaves = self.get_place_value(&base, builder);
                 let [data_ptr, vtable_ptr] = base_leaves.as_slice() else {
@@ -789,12 +600,7 @@ impl Codegen {
             }
 
             MirExpr::Number(value) => {
-                // The one and only leaf of `node.r#type`'s own flattening --
-                // every resolved numeric type is exactly one IR leaf --
-                // picks the concrete width/kind to narrow `value` into.
-                // `value` itself is already range-checked against this same
-                // type by analysis, so this never has to reject anything,
-                // only narrow losslessly.
+                // This path requires a scalar leaf; aggregate shapes were rejected/resolved earlier.
                 let ir_type = node.r#type.cranelift_leaves(self)[0];
                 let result = match value {
                     NumberValue::Signed(v) => builder.ins().iconst(ir_type, v),
@@ -807,32 +613,20 @@ impl Codegen {
 
             MirExpr::Bool(b) => vec![builder.ins().iconst(types::I8, b as i64)],
 
-            // `sizeof<Type>` -- a compile-time-known `usize` constant.
-            // Fully general (unlike `sizeof<Type>` used *inside* an
-            // `@layout` argument, which is scoped to primitives -- see
-            // `ResolvedType::primitive_byte_size`'s doc comment): `Type`
-            // may be any struct/enum/primitive, since `total_bytes` already
-            // handles all of them uniformly.
+            // `sizeof` is emitted as a target-sized compile-time integer constant.
             MirExpr::Sizeof(target_type) => {
                 let size = layout::total_bytes(&target_type, self.pointer_bytes());
                 vec![builder.ins().iconst(self.pointer_type(), size as i64)]
             }
 
-            // Cranelift has no dedicated char/codepoint type -- a `char`'s
-            // one IR leaf is just its `u32` codepoint stored in an `I32`
-            // (see `Char`'s leaf-flattening arm).
+            // Represent `char` as its 32-bit integer leaf.
             MirExpr::Char(c) => vec![builder.ins().iconst(types::I32, c as i64)],
 
             MirExpr::Place(place) => self.get_place_value(&place, builder),
 
             MirExpr::Assignment(MirAssignment { target, value }) => {
                 let values = self.process_expr(builder, *value);
-                // Uniformly covers assignment to a local, through any depth
-                // of explicit/seamless deref (`*ptr = 5;`, `ptr.field = 5;`),
-                // and through array indexing -- whatever `target` resolved
-                // to, `store_scalars` only cares whether it has an address.
-                // A bare parameter (no deref in between) never reaches here:
-                // `crate::preflight` rejects that shape before any backend runs.
+                // All assignment destinations flow through the same resolved-place store path.
                 let (storage, _) = self.resolve_place_storage(&target, builder);
                 self.store_scalars(builder, &storage, &values);
                 values
@@ -844,9 +638,6 @@ impl Codegen {
             }
 
             MirExpr::Negate(base) => {
-                // The mir guarantees only signed ints or floats reach here
-                // -- `fneg` for the latter, `ineg` (two's-complement
-                // negation) for the former.
                 let is_float = matches!(base.r#type.numeric_kind(self.pointer_bytes() * 8), Some(NumericKind::Float(_)));
                 let value = self.process_expr(builder, *base)[0];
                 let result = if is_float { builder.ins().fneg(value) } else { builder.ins().ineg(value) };
@@ -854,25 +645,11 @@ impl Codegen {
             }
 
             MirExpr::BitNot(base) => {
-                // The mir guarantees only signed/unsigned integers reach
-                // here.
                 let value = self.process_expr(builder, *base)[0];
                 vec![builder.ins().bnot(value)]
             }
 
             MirExpr::BinaryOp(MirBinaryOp { op, left, right }) => {
-                // The mir guarantees both operands share the same resolved
-                // type, so either one's `numeric_kind` picks the right
-                // instruction for the whole operation. `Char`/`Bool` are the
-                // two exceptions: neither has a `numeric_kind` of its own
-                // (see `ResolvedType::arithmetic_repr`'s doc comment for why
-                // arithmetic on either coerces away instead of operating on
-                // them directly), but analysis lets each reach here
-                // uncoerced for a handful of ops where they behave exactly
-                // like their underlying representation: `Char` for a
-                // comparison (an unsigned 4-byte scalar, ordered by
-                // codepoint), `Bool` for `== != & | ^` (an unsigned byte,
-                // always `0`/`1`).
                 let kind = match &left.r#type {
                     ResolvedType::Char => NumericKind::Unsigned(32),
                     ResolvedType::Bool => NumericKind::Unsigned(8),
@@ -882,10 +659,7 @@ impl Codegen {
                 };
                 let left = self.process_expr(builder, *left)[0];
                 let right = self.process_expr(builder, *right)[0];
-                // Division/modulo by zero traps at the instruction level --
-                // consistent with this language having no other runtime
-                // safety net (no bounds checks either), so no special
-                // handling is needed here.
+                // Rely on backend integer div/rem traps; semantic checks need not duplicate them here.
                 let result = match (op, kind) {
                     (BinaryOp::Add, NumericKind::Float(_)) => builder.ins().fadd(left, right),
                     (BinaryOp::Add, _) => builder.ins().iadd(left, right),
@@ -901,10 +675,6 @@ impl Codegen {
                     (BinaryOp::Rem, NumericKind::Float(_)) => {
                         unreachable!("mir body rejects '%' on float operands")
                     }
-                    // The mir guarantees neither operand is a float for any
-                    // of these -- signedness never matters except for
-                    // `>>`, which needs to pick arithmetic (sign-extending)
-                    // vs. logical shift.
                     (BinaryOp::BitAnd, _) => builder.ins().band(left, right),
                     (BinaryOp::BitOr, _) => builder.ins().bor(left, right),
                     (BinaryOp::BitXor, _) => builder.ins().bxor(left, right),
@@ -955,30 +725,18 @@ impl Codegen {
             }
 
             MirExpr::ArrayLiteral(MirArrayLiteral { elements, .. }) => {
-                // Each element contributes its own leaves, in order -- the
-                // exact flattening a `SizedArray`'s own leaves expect, so
-                // the result is usable anywhere a `SizedArray` value
-                // already is (assignment, a walrus's inferred value, ...).
+                // Flatten array elements in source order into the aggregate leaf sequence.
                 elements.into_iter().flat_map(|e| self.process_expr(builder, e)).collect()
             }
 
             MirExpr::EnumConstruct(MirEnumConstruct { variant_index, fields }) => {
-                // Built in an anonymous scratch slot -- constants (tag,
-                // header), the shared dynamic fields, and typed body fields
-                // all land at their byte offsets, the rest of the payload
-                // region is zeroed (deterministic bytes for the chunk-wise
-                // copies the leaf model does; the dynamic-fields region
-                // needs no such zeroing -- every dynamic field is always
-                // supplied by `fields` below, unlike the payload's union
-                // slack) -- then the whole value is read back out as
-                // ordinary leaves.
+                // Build enums in scratch storage because payload layout is byte-addressed, not purely leaf-addressed.
                 let ResolvedType::Enum { cell, .. } = &node.r#type else {
                     unreachable!("mir body guarantees a construction's own type is its enum");
                 };
                 let cell = cell.clone();
                 let pointer_bytes = self.pointer_bytes();
-                // Snapshot everything needed so the cell isn't borrowed
-                // across the field-value evaluation below.
+                // Copy layout facts before mutation to avoid holding the metadata-cell borrow.
                 let (tag, tag_type, header, payload_offset, chunk_leaves, field_offsets) = {
                     let enum_type = cell.borrow();
                     let variant = &enum_type.variants[variant_index];
@@ -988,11 +746,6 @@ impl Codegen {
                         .zip(&variant.header_values)
                         .map(|((_, r#type, _), value)| (r#type.clone(), value.clone()))
                         .collect();
-                    // `field.field_index` (from `MirEnumConstruct::fields`)
-                    // spans the *combined* declared list analysis built --
-                    // shared dynamic fields first, then this variant's own
-                    // body fields -- so this offset table is built in that
-                    // exact same order.
                     let field_offsets: Vec<u32> = (0..enum_type.dynamic_fields.len())
                         .map(|i| layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes))
                         .chain(
@@ -1031,9 +784,7 @@ impl Codegen {
                     chunk_offset += leaf.bytes(pointer_bytes);
                 }
 
-                // Dynamic and body field values run in source order (their
-                // side effects must); each lands at its declared field's
-                // offset.
+                // Preserve source evaluation order even though fields are stored by resolved layout.
                 for field in fields {
                     let field_offset = field_offsets[field.field_index];
                     let values = self.process_expr(builder, field.value);
@@ -1044,13 +795,7 @@ impl Codegen {
             }
 
             MirExpr::StructLiteral(MirStructLiteral { fields }) => {
-                // Values are evaluated in the order the user wrote them
-                // (their side effects must run in source order), but the
-                // result's leaves are concatenated in *declared field*
-                // order -- the exact flattening a struct's own leaves
-                // expect, so the result is usable anywhere a struct value
-                // already is. The mir guarantees every declared field
-                // appears exactly once.
+                // Evaluate aggregate initializers in source order; layout order affects storage only.
                 let ResolvedType::Struct(struct_type) = &node.r#type else {
                     unreachable!("mir body guarantees a struct literal's own type is a struct");
                 };
@@ -1070,16 +815,7 @@ impl Codegen {
                 let (storage, base_type) = self.resolve_place_storage(&base, builder);
                 let ptr_type = self.pointer_type();
 
-                // A slice's data pointer and full length, however `base` is
-                // stored: a `SizedArray`'s elements live inline, so the
-                // pointer is the storage's own address and the length a
-                // compile-time constant; `Slice`/`Str` already carry both as
-                // their two flattened leaves; `Array` (`*[]T`) has no length
-                // at compile or runtime, so its own value (not its storage's
-                // address) is the data pointer, and the `0` placeholder for
-                // `full_len` is never read -- `Analyzer::analyze_slice`
-                // requires an explicit `end` whenever the base has no length
-                // to default to. A plain `Pointer` never reaches this match.
+                // Range slicing derives the new data pointer and length from the original slice pair.
                 let (data_ptr, full_len) = match &base_type {
                     ResolvedType::SizedArray(_, size) => {
                         let ptr = self.place_storage_address(builder, &storage);
@@ -1103,12 +839,7 @@ impl Codegen {
                     Some(e) => self.process_expr(builder, *e)[0],
                     None => builder.ins().iconst(types::I32, 0),
                 };
-                // An inclusive end (`...`) with an explicit bound includes
-                // that element itself, so it's one past `end` in the
-                // exclusive terms the rest of this function computes in; an
-                // absent end always means "through the real end of `base`"
-                // regardless of `inclusive` -- there's nothing to be
-                // exclusive *of* when there's no bound at all.
+                // Inclusive ranges add one element to the computed slice length.
                 let end_val = match end {
                     Some(e) => {
                         let v = self.process_expr(builder, *e)[0];
@@ -1130,9 +861,7 @@ impl Codegen {
             }
 
             MirExpr::Cast(MirCast { kind, target_type, base }) => {
-                // `Unsize`'s synthesized length leaf needs `base`'s own
-                // resolved type (`Pointer { pointee: SizedArray(_, N), .. }`)
-                // -- read before `base` is consumed by `process_expr` below.
+                // Unsizing uses the source aggregate length, not a reconstructed backend guess.
                 let unsize_len = match &base.r#type {
                     ResolvedType::Pointer { pointee, .. } => match pointee.as_ref() {
                         ResolvedType::SizedArray(_, size) => Some(*size),
@@ -1140,15 +869,7 @@ impl Codegen {
                     },
                     _ => None,
                 };
-                // Captures every leaf, not just the first -- `Reinterpret`
-                // needs all of them (a fat pointer's `[ptr, len]` passed
-                // through unchanged, same as a numeric cast's own single
-                // leaf passed through unchanged); every other `CastKind`
-                // only ever applies to a single-leaf numeric source (`Str`/
-                // `Slice` never reach them -- `cast_class` stays `None` for
-                // both, so `byte_pointer_cast_kind` always intercepts
-                // first), so indexing `[0]` for those is still exactly
-                // right.
+                // Reinterpretation preserves the full flattened value before rebuilding the destination shape.
                 let base_leaves = self.process_expr(builder, *base);
                 let target_ir = target_type.cranelift_leaves(self)[0];
                 match kind {
@@ -1168,11 +889,7 @@ impl Codegen {
                     CastKind::FloatToInt { signed: false } => vec![builder.ins().fcvt_to_uint_sat(target_ir, base_leaves[0])],
                     CastKind::FloatExtend => vec![builder.ins().fpromote(target_ir, base_leaves[0])],
                     CastKind::FloatTruncate => vec![builder.ins().fdemote(target_ir, base_leaves[0])],
-                    // A narrowing spec-object cast: `[data_ptr, vtable_ptr]`
-                    // stays `[data_ptr, vtable_ptr]` -- the data half is
-                    // untouched, the vtable half moves onto the target
-                    // spec's own section by a compile-time-constant offset
-                    // (in *slots*, multiplied by the pointer width here).
+                    // Spec narrowing preserves the data pointer and swaps in the resolved narrower vtable.
                     CastKind::SpecNarrow { slot_offset } => {
                         let byte_offset = slot_offset as i64 * self.pointer_bytes() as i64;
                         let vtable = builder.ins().iadd_imm(base_leaves[1], byte_offset);
@@ -1182,10 +899,7 @@ impl Codegen {
             }
 
             MirExpr::UnionConstruct(MirUnionConstruct { field_index: _, value }) => {
-                // Mirrors `EnumConstruct`'s shape (anonymous slot, zero the
-                // whole region deterministically, store the one field's
-                // scalars, read the whole thing back as flattened leaves) --
-                // minus the tag/header steps, since a union has neither.
+                // Enum constants use the same scratch-storage layout path as runtime enum construction.
                 let total = layout::total_bytes(&node.r#type, self.pointer_bytes());
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
 

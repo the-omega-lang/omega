@@ -1,9 +1,3 @@
-//! Turns a `Symbol` into a mangled string, with RFC 2603-style backref
-//! compression built directly into the recursive descent: before
-//! encoding a substitutable node, check whether it's already been
-//! written and emit a backref instead; otherwise encode it normally and
-//! record its start position. Parents are always encoded before
-//! children, so the longest match is automatically preferred.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -14,10 +8,7 @@ use crate::symbol::{ManglePath, MangleType, Symbol};
 
 struct Encoder {
     out: String,
-    /// Byte offset in `out` where each already-encoded `ManglePath`
-    /// began, including every prefix, not just whole paths.
     path_subs: HashMap<ManglePath, usize>,
-    /// Same, for non-basic `MangleType`s.
     type_subs: HashMap<MangleType, usize>,
 }
 
@@ -90,9 +81,7 @@ impl Encoder {
             self.out.push(letter as char);
             return;
         }
-        // `Str` is a leaf (just a `mutable` flag) -- never worth
-        // registering as a substitution candidate, since a backref is
-        // never shorter than repeating this one tag byte.
+        // Do not register `Str` as a substitution candidate; a backreference cannot beat its one-byte tag.
         if let MangleType::Str(mutable) = ty {
             self.out.push(if *mutable { TAG_STR_MUT } else { TAG_STR } as char);
             return;

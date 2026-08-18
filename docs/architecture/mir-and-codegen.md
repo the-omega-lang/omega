@@ -130,6 +130,8 @@ Fast paths can avoid a temporary where an expression is immediately assigned/ret
 root + typed projections + final type/alignment
 ```
 
+The final type and base alignment are carried from checked lowering so backends do not re-derive them independently. The alignment is a property of the place base; projected byte offsets can require weaker effective alignment. The current `@layout(align = n)` address-guarantee limitation remains tracked in `docs/issues/`.
+
 Roots include local/global/expression-derived storage; projections encode operations such as dereference, field, index, and related place transformations.
 
 The analyzer already proved the operation legal and resolved field/type/mutability facts. MIR maps HIR/checked storage identity into `LocalId`/global forms; codegen realizes the memory/SSA mechanics.
@@ -223,6 +225,8 @@ See [`abi-and-representation.md`](abi-and-representation.md).
 `Codegen` keeps caches for functions, data blobs, globals, vtables, and symbol-collision detection plus per-function local/stack state.
 
 Cranelift validates block/function structure while building; target ISA/triple and optimization settings remain backend-local.
+
+Cranelift does not expose a native variadic-function call shape suitable for Omega's current path, so a variadic call is emitted with a fixed signature synthesized for that concrete call site after shared C default-argument promotion. This is a backend translation detail; promotion policy remains in the shared ABI layer.
 
 ## LLVM backend
 

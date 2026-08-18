@@ -1,7 +1,3 @@
-//! Round-trip and compression coverage across every grammar production.
-//! `omega-mangle` never depends on `omega-analyzer`, so these `Symbol`s
-//! are hand-built rather than derived from real `ResolvedType`s -- exactly
-//! how `omega-codegen` builds them in practice.
 
 use omega_mangle::{ManglePath, MangleType, Namespace, Symbol, decode, demangle, encode};
 
@@ -21,8 +17,6 @@ fn named(path: ManglePath) -> MangleType {
     MangleType::Named(path, None)
 }
 
-/// Every mangled symbol must round-trip through `decode` back to a
-/// structurally identical `Symbol`, and `demangle` must succeed.
 fn assert_round_trips(symbol: &Symbol) -> String {
     let mangled = encode(symbol);
     assert!(
@@ -49,8 +43,7 @@ fn free_function() {
 
 #[test]
 fn overloaded_free_functions_differ() {
-    // Same path, different params -- the deliberate deviation from RFC
-    // 2603, which never needs this since Rust has no overloading.
+    // Overload signatures must participate in symbol identity.
     let path = nested(root("mymod"), Namespace::Value, "do_thing");
     let a = Symbol { path: path.clone(), signature: Some((vec![MangleType::I32], MangleType::Void)), vendor_suffix: None };
     let b = Symbol {
@@ -69,7 +62,7 @@ fn all_four_self_modes() {
     let method_path = nested(owner.clone(), Namespace::Value, "gets");
 
     let value_self = named(owner.clone());
-    let mut_value_self = named(owner.clone()); // `mut self` desugars identically
+    let mut_value_self = named(owner.clone());
     let pointer_self = MangleType::Pointer(Box::new(named(owner.clone())), false);
     let mut_pointer_self = MangleType::Pointer(Box::new(named(owner.clone())), true);
 
@@ -84,20 +77,16 @@ fn all_four_self_modes() {
     let m_pointer = assert_round_trips(&make(pointer_self));
     let m_mut_pointer = assert_round_trips(&make(mut_pointer_self));
 
-    // `self` and `mut self` are indistinguishable at the type level
-    // (mutability of a by-value self is a local-binding property, not
-    // part of the parameter's type) -- a documented, harmless collision,
-    // since `AmbiguousSelfOverload` already forbids the two coexisting.
+    // Receiver mutability alone does not change type-level symbol identity.
     assert_eq!(m_value, m_mut_value);
-    // Value vs. pointer, and immutable vs. mutable pointer, are distinct,
-    // independently linkable functions and must all differ.
+    // Value/pointer shape and pointer mutability must remain distinct identities.
     assert_ne!(m_value, m_pointer);
     assert_ne!(m_pointer, m_mut_pointer);
 }
 
 #[test]
 fn generic_method_with_nested_generic_args_and_repeated_owner() {
-    // <mymod::GenericPair<i32>>::add(*self, other: *mymod::GenericPair<i32>) -> void
+    // Generic method signatures must round-trip with instantiated owner/parameter types.
     let owner = generic(nested(root("mymod"), Namespace::Type, "GenericPair"), vec![MangleType::I32]);
     let method_path = nested(owner.clone(), Namespace::Value, "add");
     let self_ty = MangleType::Pointer(Box::new(named(owner.clone())), false);
@@ -106,14 +95,10 @@ fn generic_method_with_nested_generic_args_and_repeated_owner() {
     let sym = Symbol { path: method_path, signature: Some((vec![self_ty, other_ty], MangleType::Void)), vendor_suffix: None };
     let mangled = assert_round_trips(&sym);
 
-    // `other`'s type is structurally identical to `self`'s, and the owner
-    // path was already spelled out once encoding the symbol's own path --
-    // both should collapse to backrefs.
+    // Repeated structural types should use backreferences.
     assert!(mangled.matches('B').count() >= 2, "expected backref compression in {mangled}");
 
-    // Three real occurrences of `*GenericPair<i32>` should cost far less
-    // than three independent full spellings, confirming compression pays
-    // off rather than just being present.
+    // Backreference compression should materially shorten repeated complex types.
     let baseline = Symbol {
         path: nested(root("mymod"), Namespace::Value, "baseline"),
         signature: Some((vec![MangleType::Pointer(Box::new(named(generic(
@@ -152,9 +137,7 @@ fn wrapped_types() {
 
 #[test]
 fn str_never_collides_with_slice_u8() {
-    // `*str` and `*[]u8` share an identical runtime shape but must never
-    // mangle to the same symbol, or overloads differing only in taking
-    // one vs. the other would collide.
+    // Runtime-shape equivalence must not collapse semantically distinct types.
     let path = nested(root("mymod"), Namespace::Value, "do_thing");
     let str_sym = Symbol {
         path: path.clone(),
@@ -187,9 +170,7 @@ fn mut_str_round_trips_and_demangles() {
 
 #[test]
 fn vendor_suffix_round_trips() {
-    // The general RFC-2603-style escape hatch for external tooling (e.g.
-    // an LTO pass) -- omega_codegen's own vtable symbols don't use this
-    // (see `vtable_symbol`), but the mechanism must still work.
+    // Vendor suffixes must round-trip even though compiler-generated vtables do not rely on them.
     let owner = nested(root("mymod"), Namespace::Type, "Dog");
     let sym = Symbol { path: owner, signature: None, vendor_suffix: Some("llvm.1234".to_string()) };
     let mangled = assert_round_trips(&sym);
@@ -198,8 +179,7 @@ fn vendor_suffix_round_trips() {
 
 #[test]
 fn vtable_symbol_shape_stays_alphanumeric() {
-    // omega_codegen mangles a vtable as an ordinary nested `vtable`
-    // identifier under the owner type, not a vendor suffix.
+    // Vtables use ordinary nested path identity rather than a vendor suffix.
     let owner = nested(root("mymod"), Namespace::Type, "Dog");
     let sym = Symbol { path: nested(owner, Namespace::Value, "vtable"), signature: None, vendor_suffix: None };
     let mangled = assert_round_trips(&sym);
@@ -217,19 +197,14 @@ fn identifier_edge_cases_round_trip() {
 
 #[test]
 fn malformed_backref_is_rejected_not_looped() {
-    // A backref pointing forward (or at/past itself) can never occur in
-    // honest output -- the decoder must reject it, not loop or panic.
+    // Reject forward/self backreferences instead of looping or panicking.
     assert!(decode("_omg_BZ_").is_none());
     assert!(decode("_omg_B_").is_none());
 }
 
 #[test]
 fn structural_conformance_owner_paths_round_trip() {
-    // `omega_codegen::mangle::conformance_method_symbol` wraps an unnamed
-    // conformance target (e.g. `conform []u8 to Eq`) in `ManglePath::Type`
-    // rather than rendering the type through `Display`. Every such owner
-    // must stay inside `[A-Za-z0-9_]` and decode back to the same
-    // structural type.
+    // Unnamed conformance targets must round-trip through structural type owners.
     for owner in [
         MangleType::Slice(Box::new(MangleType::U8), false),
         MangleType::Slice(Box::new(MangleType::U8), true),
@@ -267,8 +242,7 @@ fn structural_owners_of_different_shape_never_collide() {
         signature: Some((vec![], MangleType::Bool)),
         vendor_suffix: None,
     };
-    // `*str` and `*[?]u8` are the two fat pointers; they must stay
-    // distinct symbols, as must a slice's two mutabilities.
+    // Fat-pointer types and slice mutabilities remain distinct symbol identities.
     let mangled: Vec<String> = [
         MangleType::Str(false),
         MangleType::Str(true),

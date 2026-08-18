@@ -20,6 +20,9 @@ all backends consume same symbol + linkage
 
 ## `omega-mangle` is standalone
 
+The mangling grammar keeps encoder and decoder tag definitions centralized in `omega-mangle::grammar`. Backreferences are byte offsets into already-emitted mangled text and must always point strictly backward; the decoder rejects forward/self references rather than attempting recursive recovery.
+
+
 The `omega-mangle` crate intentionally does not depend on `omega-analyzer`, HIR, MIR, or a backend.
 
 It owns:
@@ -148,7 +151,11 @@ External symbol identity for a vtable cannot rely on local `HirId`s, because IDs
 
 ## Anonymous data symbols
 
-Compiler-generated constant blobs can use content-addressed symbols. Content hashing/deduplication is an emission implementation detail distinct from source item mangling, but it follows the same requirement that a repeated compiler-generated identity be deterministic.
+Compiler-generated constant blobs use content-addressed symbols so identical data receives the same weak identity across modules, separate compilations, and backends. The hash is deliberately non-cryptographic; the threat model is accidental collision among compiler-produced constants, not adversarial input.
+
+The hash input is the constant's **logical canonical content**, not merely the raw bytes of the eventual object buffer. Pointer-bearing constants can contain zero placeholders in the physical bytes while their actual targets live in relocations; hashing only those bytes could collapse distinct constants onto one weak symbol and silently select the wrong data. Canonical serialization therefore includes the pointed-to logical content (with explicit length where needed) before deriving the symbol.
+
+Content hashing/deduplication is an emission implementation detail distinct from source item mangling, but it follows the same requirement that a repeated compiler-generated identity be deterministic.
 
 ## Mangling changes checklist
 

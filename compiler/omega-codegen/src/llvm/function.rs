@@ -1,6 +1,3 @@
-//! Building an LLVM function type from the shared ABI (the exact
-//! counterpart of `cranelift/function.rs`'s `make_function_sig`), and
-//! declaring/defining a function's own body.
 
 use super::leaf;
 use super::Codegen;
@@ -15,29 +12,10 @@ use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
 
 impl<'ctx> Codegen<'ctx> {
-    /// Whether `return_type` is returned through a hidden struct-return
-    /// pointer instead of in registers -- the shared ABI's answer, same
-    /// call the Cranelift backend makes.
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
         matches!(AbiReturn::for_type(self.target, return_type), AbiReturn::Indirect)
     }
 
-    /// The LLVM function type for one `ResolvedFunctionType` -- a pure
-    /// translation of `AbiSignature` into LLVM types, built identically
-    /// for definitions, externs, and call sites (call sites don't *use*
-    /// this directly -- they call through `FunctionValue`s whose type was
-    /// built here -- but the single builder keeps every consumer on the
-    /// same convention).
-    ///
-    /// - `Direct` returns become one scalar (single leaf) or an aggregate
-    ///   struct of the leaves (LLVM's own ABI lowering flattens that
-    ///   aggregate into the same rax/rdx pair Cranelift's two-return-value
-    ///   lowering produces -- both follow the same SysV rule).
-    /// - `Indirect` adds a hidden `sret` pointer parameter; the return
-    ///   type is `void`, and LLVM's ABI lowering handles the SysV "return
-    ///   the pointer in rax" requirement from the attribute alone, exactly
-    ///   like Cranelift's `ArgumentPurpose::StructReturn`.
-    /// - `Void`/`Never` are plain `void`.
     pub(super) fn llvm_function_type(&self, fn_type: &ResolvedFunctionType) -> inkwell::types::FunctionType<'ctx> {
         let abi = AbiSignature::build(self.target, fn_type);
         let mut param_types: Vec<BasicTypeEnum> = Vec::new();
@@ -69,11 +47,6 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Declares one local function/method -- `Linkage::External` (strong)
-    /// for `MirLinkage::Export`, `Linkage::Weak` for `MirLinkage::Weak`,
-    /// the same strong/weak distinction `cranelift::item` makes. The
-    /// symbol-collision guard mirrors the Cranelift backend's
-    /// `declare_function_def` exactly (same message, same dedup trick).
     pub(super) fn declare_function_def(&mut self, function_def: &MirFunctionDef) {
         let symbol = function_def.symbol.clone();
         if let Some(&existing_id) = self.declared_symbols.get(&symbol)
@@ -97,20 +70,13 @@ impl<'ctx> Codegen<'ctx> {
             omega_mir::MirLinkage::Export => Linkage::External,
             omega_mir::MirLinkage::Weak => Linkage::WeakODR,
         });
-        // One function per section, so `--gc-sections` can reclaim dead
-        // copies -- the LLVM counterpart of Cranelift's
-        // `per_function_section(true)`. (Mach-O uses subsections-via-
-        // symbols instead; its own conventions are the one place this
-        // naming is skipped -- see `docs/16`.)
+        // Keep each function in its own section so linker GC can reclaim dead code.
         if self.target.os != omega_analyzer::Os::MacOs {
             function.set_section(Some(&format!(".text.{symbol}")));
         }
         self.functions.insert(function_def.id, function);
     }
 
-    /// Declares a link against an extern-owned function/method --
-    /// `Linkage::External` declaration only, no body. The symbol comes
-    /// from the shared `omega_mir::mangle::extern_function_ref_symbol`.
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
         let symbol = omega_mir::mangle::extern_function_ref_symbol(extern_fn);
         let fn_type = self.llvm_function_type(&extern_fn.fn_type);
@@ -119,9 +85,6 @@ impl<'ctx> Codegen<'ctx> {
         self.functions.insert(extern_fn.decl_id, function);
     }
 
-    /// Externs have no body -- fully handled by the declare pass
-    /// (`cranelift::update_extern_decl`'s LLVM counterpart; the symbol is
-    /// MIR-carried).
     pub(super) fn declare_extern_decl(&mut self, extern_decl: &MirExternDeclaration) {
         let ResolvedType::Function(resolved_fntype) = &extern_decl.r#type else {
             unreachable!(
@@ -134,11 +97,6 @@ impl<'ctx> Codegen<'ctx> {
         self.functions.insert(extern_decl.id, function);
     }
 
-    /// Builds a function/method's body -- the same shape as
-    /// `cranelift/function.rs`'s `define_function_def`: one LLVM block
-    /// per `MirBlockData`, then translate each one's statements and its
-    /// single terminator. There is no control-flow bookkeeping here -- the
-    /// mir body already *is* the control-flow graph.
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
         if self.symbol_error.is_some() {
             return;
@@ -164,8 +122,7 @@ impl<'ctx> Codegen<'ctx> {
             .max()
             .unwrap_or(1);
 
-        // Entry block first, in MIR order, so a forward reference (or a
-        // loop's back-edge) always resolves regardless of fill order.
+        // Create all LLVM blocks before emission so forward and back edges always resolve.
         let blocks: Vec<inkwell::basic_block::BasicBlock<'ctx>> = body
             .blocks
             .iter()
@@ -176,15 +133,11 @@ impl<'ctx> Codegen<'ctx> {
             })
             .collect();
 
-        // Every `alloca` this backend emits goes in the entry block, not
-        // just this one -- see `Codegen::entry_alloca`.
+        // Emit allocas in the entry block; loop-local allocas would grow the stack per iteration.
         self.entry_block = Some(blocks[0]);
         self.builder.position_at_end(blocks[0]);
 
-        // One combined alloca for every non-parameter local, laid out by
-        // `layout::locals_layout` -- the counterpart of Cranelift's
-        // `frame_slot`. `stack_align_shift` answers in shift units, so
-        // `1 << shift` converts to the bytes `entry_alloca` wants.
+        // Pack non-parameter locals into one shared frame so zero-sized offsets match shared layout.
         let frame_slot = if frame.packed_end == 0 {
             None
         } else {
@@ -199,10 +152,7 @@ impl<'ctx> Codegen<'ctx> {
         local_offsets[body.arg_count..].copy_from_slice(&frame.byte_offsets);
         self.local_offsets = local_offsets;
 
-        // Seed parameter SSA values from the function's own parameters --
-        // the sret pointer (when present) is the signature's first
-        // parameter and is peeled off before mapping the declared ones,
-        // exactly like `cranelift/function.rs`.
+        // Seed local parameter storage from the flattened ABI parameter sequence.
         let params: Vec<BasicValueEnum> = function.get_params().into_iter().collect();
         let sret_offset = usize::from(self.needs_sret(&return_type));
         let declared_params = &params[sret_offset..];
@@ -218,7 +168,7 @@ impl<'ctx> Codegen<'ctx> {
             self.local_args[argmap[i]].push(*arg);
         }
 
-        // The sret pointer, for the Return terminator below.
+        // Keep the hidden sret destination available for the final return terminator.
         let sret_ptr: Option<PointerValue> = self.needs_sret(&return_type).then(|| {
             params[0].into_pointer_value()
         });
@@ -234,10 +184,6 @@ impl<'ctx> Codegen<'ctx> {
         self.clear_local();
     }
 
-    /// Translates one `MirBlockData`'s single terminator into the LLVM
-    /// instruction(s) that end its block -- `sret`, when `Some`, is the
-    /// hidden struct-return pointer every `Return` stores its value
-    /// through (see `llvm_function_type`'s doc comment).
     fn emit_terminator(
         &mut self,
         terminator: MirTerminator,
@@ -252,8 +198,7 @@ impl<'ctx> Codegen<'ctx> {
                     .expect("builder positioned");
             }
             MirTerminator::Branch { condition, then_block, else_block } => {
-                // Omega's `bool` is an `i8` (`Leaf::I8`); `br` wants an `i1`
-                // -- see `expr::to_i1`.
+                // Convert Omega `i8` booleans to LLVM `i1` branch conditions.
                 let cond = self.process_expr(&condition)[0].into_int_value();
                 let cond = self.to_i1(cond);
                 self.builder
@@ -278,10 +223,7 @@ impl<'ctx> Codegen<'ctx> {
                                 .expect("builder positioned");
                         }
                         multiple => {
-                            // Aggregate-return: build the struct value from
-                            // the leaves -- LLVM's ABI lowering flattens it
-                            // into the same registers Cranelift's
-                            // multi-value return uses.
+                            // Repack direct multi-leaf returns into LLVM's aggregate return value.
                             let struct_type = self
                                 .context
                                 .struct_type(

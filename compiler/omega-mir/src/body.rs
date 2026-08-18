@@ -1,17 +1,3 @@
-//! A function's control-flow graph -- the whole reason this crate exists.
-//! `CheckedBlock`/`CheckedStmt`'s `if`/`match`/`while`/`for`/`break`/
-//! `continue`/`return`/`defer` are all expression- or statement-shaped in
-//! the checked tree; here they're already flattened into an explicit graph
-//! of [`MirBlockData`]s ending in one [`MirTerminator`] each, exactly the
-//! shape both Cranelift and (eventually) an LLVM backend want. See
-//! `docs/architecture/mir-and-codegen.md` for the full rationale and worked
-//! examples of how each construct lowers.
-//!
-//! What's *not* flattened: ordinary computation (arithmetic, calls, casts,
-//! aggregates, place projections) stays a tree ([`MirExpr`]), deliberately
-//! not reduced to three-address form -- see the module doc comment's
-//! sibling note in the design docs for why. A [`MirStatement`] is just one
-//! such tree, evaluated for its side effects with its value discarded.
 
 use crate::ids::{BlockId, LocalId};
 use omega_analyzer::checked::{CastKind, NumberValue};
@@ -19,76 +5,30 @@ use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedTy
 use omega_hir::{BinaryOp, HirId};
 use omega_parser::prelude::{Ident, Span};
 
-/// One function's whole control-flow graph plus every local it declares.
 #[derive(Debug, Clone)]
 pub struct MirBody {
-    /// `0..arg_count` are the function's own parameters, in declaration
-    /// order; everything from `arg_count` onward is either a user-declared
-    /// local (`source: Some`) or a lowering-synthesized temporary --
-    /// today, only a `defer`'s own flag (`source: None`). Unified into one
-    /// unified index space (rather than a separate `Storage::Parameter`
-    /// case, as `CheckedPlaceRoot` has) because codegen treats both
-    /// identically except for *where* their initial value comes from: a
-    /// parameter is seeded from the entry block's own Cranelift block
-    /// params, a declared/synthetic local gets a stack slot -- a single
-    /// `local_id < arg_count` check, not two data shapes.
     pub locals: Vec<MirLocalDecl>,
     pub arg_count: usize,
-    /// Block `0` is always this body's entry block. Built by
-    /// `crate::lower::function::FunctionLowerer`, which mints `BlockId`s
-    /// sequentially as it walks the checked body.
     pub blocks: Vec<MirBlockData>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MirLocalDecl {
-    /// `Some` for a user-declared variable or parameter -- the `HirId` its
-    /// `CheckedDeclaration`/`CheckedParam` carried, kept for diagnostics and
-    /// for `crate::lower::place`'s `HirId -> LocalId` lookup table. `None`
-    /// for a lowering-synthesized temporary (a `defer` flag today).
     pub source: Option<HirId>,
     pub r#type: ResolvedType,
 }
 
-/// One basic block: a straight-line run of statements, ending in exactly
-/// one terminator.
-///
-/// Deliberately *not* Cranelift-style block parameters: every cross-block
-/// value (an `if`/`match` join's result, the function's return value
-/// threaded through its `defer` exit chain) is an ordinary synthetic
-/// [`LocalId`] instead (see `MirPlaceRoot::Local`), written by an `Assign`
-/// in each producing block and read back by a `Place` wherever it's
-/// needed -- see [mir-and-codegen.md](../../../docs/architecture/mir-and-codegen.md)'s
-/// "Block-arguments were tried and rejected" for why.
 #[derive(Debug, Clone)]
 pub struct MirBlockData {
-    /// Evaluated in order, purely for side effects -- each is a whole
-    /// `MirExprNode` tree (an assignment, a call, ...), never a value this
-    /// block itself consumes (that's what `terminator`'s own operand(s) are
-    /// for).
     pub statements: Vec<MirExprNode>,
     pub terminator: MirTerminator,
 }
 
 #[derive(Debug, Clone)]
 pub enum MirTerminator {
-    /// Unconditional jump -- carries no value (see `MirBlockData`'s doc
-    /// comment for why).
     Goto(BlockId),
-    /// A single two-way test -- `if`/`while`/`for`'s own condition, and one
-    /// bound of a `match` arm's (possibly multi-bound) pattern test. A
-    /// multi-condition arm is nested `Branch`es chained by lowering, exactly
-    /// like today's `emit_match`'s nested `brif` chain -- there is no
-    /// multi-way/jump-table terminator (yet).
     Branch { condition: MirExprNode, then_block: BlockId, else_block: BlockId },
-    /// The function's one real return, sitting at the end of its exit
-    /// chain (see `MirBlockData`'s doc comment) -- never emitted directly
-    /// at a nested `return`'s own position; those always `Goto` the chain
-    /// instead.
     Return(Option<MirExprNode>),
-    /// A provably-unreachable point, e.g. an exhaustive `match` with no
-    /// `else` falling off the end -- codegen traps here, exactly like
-    /// today's `emit_match`'s `TrapCode` use.
     Unreachable,
 }
 
@@ -100,9 +40,6 @@ pub struct MirExprNode {
     pub kind: MirExpr,
 }
 
-/// `CheckedExpr`'s direct analogue, minus `If`/`Match`/`Codeblock` -- those
-/// three are exactly the variants that become [`MirBlockData`] graphs
-/// instead of expression nodes (see the module doc comment).
 #[derive(Debug, Clone)]
 pub enum MirExpr {
     Place(MirPlace),
@@ -165,9 +102,6 @@ pub struct MirStructLiteral {
     pub fields: Vec<MirFieldInit>,
 }
 
-/// One `field_index`-tagged initializer -- shared shape for a struct
-/// literal's own fields and an enum variant's body fields, same as
-/// `CheckedStructLiteralField` covers both today.
 #[derive(Debug, Clone)]
 pub struct MirFieldInit {
     pub field_index: usize,
@@ -202,10 +136,6 @@ pub struct MirCast {
     pub base: Box<MirExprNode>,
 }
 
-/// See `omega_analyzer::checked::CheckedSpecCoerce`, which this is lowered
-/// 1:1 from -- `slots` is already fully resolved (one concrete method's
-/// `decl_id` per vtable slot, in order) by the time this exists, so codegen
-/// never has to re-derive which concrete method satisfies which slot.
 #[derive(Debug, Clone)]
 pub struct MirSpecCoerce {
     pub base: Box<MirExprNode>,
@@ -224,50 +154,25 @@ pub struct MirDynamicCall {
 pub struct MirPlace {
     pub root: MirPlaceRoot,
     pub projections: Vec<MirProjection>,
-    /// The place's *final* type, after every projection -- carried straight
-    /// from `CheckedPlace::r#type` (which the analyzer already computed);
-    /// codegen seeds its own projection walk from the root and never needs
-    /// this to *re-derive* the type, but both backends load/store the whole
-    /// place as one value, and the type is what tells them the leaf shape.
     pub r#type: ResolvedType,
-    /// The alignment of every load/store made *through* this place --
-    /// `layout::type_alignment(r#type)`, computed once here at lowering
-    /// instead of being re-derived by each backend. A claim about the
-    /// place's **base** address only; an access at a byte offset into it is
-    /// weaker (see `llvm::place::offset_align`). Not yet a real guarantee
-    /// under `@layout(align = n)` -- see `docs/issues/known-issues.md`'s
-    /// "`@layout(align = n)` is not yet a real address guarantee".
     pub align: u32,
 }
 
 #[derive(Debug, Clone)]
 pub enum MirPlaceRoot {
-    /// Covers both a function parameter and a declared local uniformly --
-    /// see `MirBody::locals`'s doc comment.
     Local { id: LocalId, r#type: ResolvedType },
-    /// A named function, resolved to a callable symbol -- never itself
-    /// further-projected, same invariant `Storage::Function` documents
-    /// today.
     Function(HirId),
-    /// A top-level variable, ordinary globals fully implemented; a
-    /// non-function `extern` still has no storage story in codegen
-    /// (`todo!()`) -- see `docs/issues/known-issues.md`.
     Global { id: HirId, r#type: ResolvedType },
-    /// The base of a projection chain that isn't a bare name, e.g.
-    /// `foo().bar` -- the root is the `foo()` call expression.
     Expr(Box<MirExprNode>),
 }
 
-/// `CheckedProjection`'s direct analogue.
 #[derive(Debug, Clone)]
 pub enum MirProjection {
     FieldAccess { field: Ident, index: usize, r#type: ResolvedType },
     Index { index_expr: Box<MirExprNode>, item_type: ResolvedType },
     Deref { r#type: ResolvedType },
     SliceLength,
-    /// `CheckedProjection::SpecObjectPtr`'s direct analogue.
     SpecObjectPtr { mutable: bool },
-    /// `CheckedProjection::SpecObjectVtable`'s direct analogue.
     SpecObjectVtable,
     EnumTag { r#type: ResolvedType },
     EnumHeader { field: Ident, index: usize, r#type: ResolvedType },
