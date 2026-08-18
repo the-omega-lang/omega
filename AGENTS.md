@@ -16,7 +16,7 @@ Omega deliberately separates language semantics from implementation knowledge:
 
 - **Writing/modifying `.omg`:** start with [`docs/guide/quick-reference.md`](docs/guide/quick-reference.md). Do **not** infer Omega syntax from Rust, C, C++, or another similar language.
 - **Exact language semantics:** [`docs/language/`](docs/language/) is the normative **Omega Language Specification**. Read only the chapter(s) relevant to the task.
-- **Compiler/runtime implementation:** start with [`ARCHITECTURE.md`](ARCHITECTURE.md), then use [`docs/architecture/`](docs/architecture/) only when deeper implementation detail is needed.
+- **Compiler/runtime implementation:** start with [`ARCHITECTURE.md`](ARCHITECTURE.md), then use [`docs/architecture/README.md`](docs/architecture/README.md) to select the one or two deep architecture documents needed. Do not survey the architecture directory broadly.
 - **Programmer/library usage:** [`docs/guide/`](docs/guide/) is explanatory and example-oriented; it does not override `docs/language/`.
 - **Known bugs/limitations/design debt:** [`docs/issues/`](docs/issues/) is non-normative exception/debt tracking. Consult relevant entries when working in that area or when observed behavior conflicts with the specification; do not load it globally by default.
 - **Historical plans:** [`docs/plan/`](docs/plan/) is cold storage. Read it only when current docs/source leave a necessary rationale unresolved.
@@ -46,12 +46,12 @@ For large tasks, prefer fresh contexts between thinking, planning, implementatio
 
 - **Syntax/parsing:** `compiler/omega-parser` + relevant `docs/language/` grammar/feature chapter. Add HIR only if representation changes.
 - **HIR/desugaring:** `compiler/omega-hir` + parser-facing types + `docs/architecture/parsing-and-hir.md`. Analyzer stays closed unless semantics change.
-- **Semantic analysis:** `compiler/omega-analyzer` + HIR types it consumes + relevant `docs/language/`. Parser/MIR/codegen stay closed unless their contracts change.
+- **Semantic analysis:** `compiler/omega-analyzer` + HIR types it consumes + relevant `docs/language/` + `docs/architecture/semantic-analysis.md` when implementation mechanics matter. Parser/MIR/codegen stay closed unless their contracts change.
 - **Module/package orchestration:** `compiler/omega-driver` + analyzer resolver interfaces + `docs/language/modules-and-imports.md` + `docs/architecture/module-driver-and-linkage.md` as needed.
 - **MIR:** `compiler/omega-mir` + checked representation it consumes + `docs/architecture/mir-and-codegen.md`.
-- **Backend emission:** relevant backend in `compiler/omega-codegen` + MIR interfaces. Do not automatically inspect both backends unless behavior must remain synchronized.
-- **Diagnostics infrastructure:** `compiler/omega-diagnostics`; feature-specific diagnostic construction stays with the owning frontend/semantic crate.
-- **Runtime/library:** relevant tree under `runtime/` + `docs/guide/` public contract and relevant `docs/language/` semantics. Compiler internals remain closed unless language/compiler support changes.
+- **Backend emission:** relevant backend in `compiler/omega-codegen` + MIR interfaces + `docs/architecture/mir-and-codegen.md`; add `docs/architecture/abi-and-representation.md` only for shared representation/calling-convention work. Do not automatically inspect both backends unless behavior must remain synchronized.
+- **Diagnostics infrastructure:** `compiler/omega-diagnostics` + `docs/architecture/diagnostics.md`; feature-specific diagnostic construction stays with the owning frontend/semantic crate.
+- **Runtime/library:** relevant tree under `runtime/` + `docs/architecture/runtime-and-platform.md` + relevant guide/language docs. Compiler internals remain closed unless language/compiler support changes.
 
 See `ARCHITECTURE.md` for the full ownership map.
 

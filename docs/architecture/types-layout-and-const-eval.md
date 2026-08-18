@@ -1,0 +1,200 @@
+# Semantic types, layout, target width, and compile-time values
+
+Several cross-cutting compiler facts live in `omega-analyzer` because they are semantic/representation decisions that both MIR and all backends must consume identically.
+
+The two most important are:
+
+- the canonical resolved type graph (`resolved_type.rs`);
+- the shared aggregate/leaf layout algorithms (`layout.rs`).
+
+Compile-time values (`ConstValue`, `comp_eval.rs`) are built against the same type/layout/target vocabulary.
+
+## Resolved types as shared semantic data
+
+`ResolvedType` is the post-resolution type vocabulary. It is used by:
+
+- analyzer checking;
+- driver query keys and conformance/generic matching;
+- checked tree;
+- MIR;
+- shared ABI construction;
+- both backends.
+
+This is intentional: later stages should not translate semantic types into backend-private competing definitions before common layout/ABI facts are decided.
+
+### Nominal aggregate cells
+
+Structs, enums, unions, and specs use shared reference-counted cells.
+
+For aggregates the cell holds facts such as:
+
+- stable HIR/synthetic identity;
+- declared name/module/type args;
+- resolved fields/methods/variants;
+- resolved layout annotation data;
+- suppression/marker metadata.
+
+The driver can create the cell before collection completes, allowing safe recursive indirection to reference stable nominal identity. The owning signature analysis fills it exactly once.
+
+Consumers should keep/reference the cell rather than copy a second aggregate definition into every expression.
+
+## Function types
+
+`ResolvedFunctionType` contains resolved parameter types, return type, variadic flag, and self-mode information. It is the input to shared ABI construction.
+
+Method receiver shape is semantically explicit by this point; backends should not re-infer source receiver modes.
+
+## Target vocabulary
+
+`omega_analyzer::Target` contains the compiler-wide architecture/OS choice and provides `pointer_bytes()` / `pointer_bits()`.
+
+Width-sensitive semantic operations must take that target information rather than assuming host width.
+
+Examples include:
+
+- `isize`/`usize` numeric domains;
+- casts;
+- `sizeof`/layout;
+- compile-time arithmetic that depends on pointer width;
+- ABI leaf sizing.
+
+Backend target triples are derived later from the shared target.
+
+## Layout ownership
+
+`omega-analyzer::layout` is the **one source of truth** for byte/leaf layout used by both backends.
+
+It provides:
+
+- scalar/aggregate flattening to abstract `Leaf`s;
+- field byte offsets and positional leaf starts;
+- total byte size;
+- alignment;
+- struct field placement/packing;
+- enum prefix/payload layout;
+- union storage size;
+- function local-frame layout;
+- stack alignment requirements.
+
+A backend may map a `Leaf` to its native scalar type, but it must not invent different aggregate offsets.
+
+## Abstract leaves
+
+A `Leaf` is a backend-neutral scalar storage component. Aggregate values are commonly represented as ordered leaf lists for registers/SSA transfer while memory access uses byte offsets from the same layout algorithm.
+
+This dual view is why `FieldLayout` records both:
+
+```text
+byte_offsets   memory-backed field positions
+leaf_starts    positions inside flattened value lists
+leaves         flattened storage sequence
+packed_end     byte end before whole-sequence trailing alignment
+```
+
+When explicit layout padding exists, leaf-list position and byte offset are not safely derivable from one another, so both are computed together.
+
+## Struct layout
+
+For a struct, field types are passed through `layout_fields` using the resolved `@layout(pack = ...)` value. The algorithm applies:
+
+1. field's transitive alignment;
+2. enclosing pack/chunk constraint;
+3. field size from its leaf representation;
+4. explicit padding leaves where needed.
+
+The struct's resolved alignment/packing annotation data lives on the resolved struct cell, not in either backend.
+
+## Local stack-frame layout
+
+Non-parameter MIR locals are laid out through `locals_layout`, using the same field-layout machinery as an unannotated aggregate.
+
+Both backends consume this one result. This ensures local offsets and zero-sized local address behavior do not vary by backend.
+
+Parameters are a distinct storage source at function entry and occupy `MirBody.locals[0..arg_count]`; backend code may materialize/spill them to memory when an address is required.
+
+## Enum layout
+
+An enum's storage is conceptually:
+
+```text
+tag
+header fields
+shared dynamic fields
+variant payload region
+```
+
+The prefix is one normal field sequence. Every variant payload shares one payload start, and that start is aligned for the strongest variant-field requirement. The payload's storage size is the maximum variant body size.
+
+Memory offsets for header/dynamic/body fields are provided by shared helpers such as:
+
+- `enum_header_offset`;
+- `enum_dynamic_field_offset`;
+- `enum_payload_offset`;
+- `enum_body_field_offset`.
+
+The payload can be represented as opaque integer leaves for flattened transfer; those leaves are storage chunks, not semantic numeric values.
+
+## Union layout
+
+A union's byte storage is the maximum of its fields. Flattened payload chunks cover that storage so unions can pass through the same leaf machinery while field access itself remains a reinterpretation of the shared memory region.
+
+## ABI vs layout
+
+Layout and calling convention are separate owners:
+
+- `omega-analyzer::layout` answers **how a value is represented/laid out**;
+- `omega-codegen::abi` answers **how function parameters/results travel across a call boundary** using that representation.
+
+See [`abi-and-representation.md`](abi-and-representation.md).
+
+## Compile-time values
+
+`ConstValue` is the compiler's typed compile-time value representation. It can represent scalar values and supported aggregate/reference forms that analysis has proven constant.
+
+A successful `comp` expression can collapse into `CheckedExpr::Const(value)`. Runtime codegen then emits/materializes the known value rather than re-executing the original source subtree.
+
+## Compile-time evaluator boundary
+
+`comp_eval.rs` evaluates an already semantically understood checked expression environment. It is not a second parser/type checker.
+
+When compile-time execution calls an Omega function, the evaluator obtains the checked function body through a resolver callback (`CompFunctionResolver`/driver implementation) rather than reaching into driver caches/filesystem directly.
+
+Likewise, references to other compile-time declarations use already resolved `ConstValue`s when available.
+
+This keeps compile-time execution inside the same item-query/semantic ownership model.
+
+## Fuel
+
+Compile-time evaluation has an implementation fuel budget to turn runaway loops/recursive calls into a diagnostic rather than hanging the compiler. The exact numeric limit is non-normative and tracked as an implementation limitation under [`../issues/compiler-limitations.md`](../issues/compiler-limitations.md).
+
+Do not write language semantics that depend on “N evaluator steps”.
+
+## Compile-time values and dead-code usage
+
+A checked subtree replaced by a `ConstValue` is no longer visible to later checked-tree usage traversal. Therefore the analyzer records relevant field/variant usage during compile-time evaluation and returns it separately to the driver, which merges it into whole-program usage before dead-code warnings.
+
+## Constant emission
+
+Codegen owns conversion of `ConstValue` into backend values/memory/data objects. Shared architecture rules include:
+
+- scalar constants become ordinary backend constants;
+- aggregate constants follow the same shared field/leaf/byte layout as runtime-built values;
+- addressable byte blobs are emitted as anonymous data;
+- repeated content-addressed const blobs may be deduplicated within a backend compilation unit;
+- codegen does not re-run compile-time semantic evaluation.
+
+## Representation changes checklist
+
+Changing a type's runtime representation is cross-cutting. Audit, in order:
+
+1. normative language/ABI promise if observable;
+2. `ResolvedType` shape;
+3. `layout.rs` leaves/size/alignment/offsets;
+4. `ConstValue` if constants can contain the type;
+5. shared ABI;
+6. MIR place/expression shape only if needed;
+7. both backends' leaf/place/constant handling;
+8. mangling if the type's external identity changes;
+9. mixed-backend/separate-compilation tests.
+
+Do not patch one backend's offset arithmetic as the primary implementation of a new layout rule.

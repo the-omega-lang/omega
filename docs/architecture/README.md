@@ -1,14 +1,40 @@
-# Omega compiler architecture documentation
+# Omega compiler architecture
 
-This directory explains **how this implementation realizes Omega**. It is not the language definition.
+This directory describes **how the current Omega compiler and runtime are structured**. It is implementation documentation, not the language definition.
 
-Start with the repository root [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), which is deliberately compact and routes tasks to the correct subsystem. Read files here only when a task needs deeper implementation detail.
+Use the root [`ARCHITECTURE.md`](../../ARCHITECTURE.md) as the compact map. Open one of these files only when the task needs the deeper mechanism.
 
-Current migrated notes:
+## Reading map
 
-- [`parsing-and-hir.md`](parsing-and-hir.md) — parser/macro-expansion/HIR ownership and invariants.
-- [`mir-and-codegen.md`](mir-and-codegen.md) — MIR structure, backend seam, lowering/codegen responsibilities.
-- [`module-driver-and-linkage.md`](module-driver-and-linkage.md) — driver orchestration, module discovery, external roots, symbol/linkage model.
-- [`abi-and-representation.md`](abi-and-representation.md) — implementation representation/ABI facts extracted from the old mixed technical docs.
+| Question | Read |
+|---|---|
+| How does a compilation move through the repository? | [`compiler-overview.md`](compiler-overview.md) |
+| How do lexing, parsing, macro expansion, IDs, and HIR lowering fit together? | [`parsing-and-hir.md`](parsing-and-hir.md) |
+| How are packages discovered, items memoized, generics instantiated, and analyzer queries orchestrated? | [`module-driver-and-linkage.md`](module-driver-and-linkage.md) |
+| How does semantic analysis resolve names/types/calls/specs and build the checked tree? | [`semantic-analysis.md`](semantic-analysis.md) |
+| Where do semantic types, layouts, target widths, and compile-time values live? | [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md) |
+| How are control flow, MIR, and the two backends structured? | [`mir-and-codegen.md`](mir-and-codegen.md) |
+| What representation/calling-convention facts must both backends agree on? | [`abi-and-representation.md`](abi-and-representation.md) |
+| How are linker symbols constructed and where is linkage decided? | [`symbol-mangling.md`](symbol-mangling.md) |
+| How do spans/errors/warnings become rendered diagnostics? | [`diagnostics.md`](diagnostics.md) |
+| How do `core`, `std`, platform glue, and shims relate to compiler packages? | [`runtime-and-platform.md`](runtime-and-platform.md) |
+| Which tests protect which architectural boundaries? | [`testing-and-validation.md`](testing-and-validation.md) |
 
-Architecture documentation can grow later as needed; it should not duplicate the normative semantics in `docs/language/`.
+## Authority and scope
+
+- [`docs/language/`](../language/) is normative for Omega language semantics.
+- This directory is authoritative for **intended implementation architecture and ownership**, but source code remains authoritative for exact current mechanics.
+- [`docs/issues/`](../issues/) records known deviations, unsupported cases, and design debt. Do not copy those limitations into architecture docs as if they were desired architecture.
+- [`docs/plan/`](../plan/) is historical cold storage.
+
+Architecture documents should explain **ownership, phase boundaries, data flow, invariants, cache/query structure, and extension points**. They should not duplicate syntax/semantic rules already specified under `docs/language/`, and they should avoid historical “before/after” narratives unless the history is necessary to explain a current invariant.
+
+## Cross-cutting rules
+
+Several rules recur across the compiler:
+
+1. **One fact, one owner.** Grammar facts belong to the parser; semantic decisions to the analyzer/driver; layout to `omega-analyzer::layout`; ABI to `omega-codegen::abi`; final symbols/linkage to MIR lowering.
+2. **Resolve once, read back later.** Later phases should consume already-decided facts rather than re-derive them independently.
+3. **Backend parity is enforced above the backends.** Accepted-program checks, layout, ABI, symbols, and linkage must not silently diverge between Cranelift and LLVM.
+4. **Crate boundaries are real architecture boundaries.** Crossing one should happen through its public data/interface, not by duplicating the other crate's logic.
+5. **Determinism is observable.** Any cache/set that feeds IDs, diagnostics, declaration order, symbols, or emitted output must not depend on randomized iteration order.

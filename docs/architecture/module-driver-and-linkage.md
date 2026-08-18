@@ -1,74 +1,292 @@
-# Driver, module discovery, and linkage
+# Driver, modules, queries, and whole-program semantic orchestration
 
-This document is implementation architecture. Source-level module/import semantics live in [`../language/modules-and-imports.md`](../language/modules-and-imports.md); CLI usage lives in [`../guide/compiler-cli.md`](../guide/compiler-cli.md).
+`omega-driver` is the long-lived semantic/package coordinator. It owns the filesystem/module/query lifetime that `omega-analyzer` deliberately does not.
 
-## Orchestration boundary
+The central architecture is:
 
-`omgc` constructs `omega_driver::Driver` from the local package root, external roots, target/options, then calls `Driver::compile`. The driver owns whole-package orchestration; the parser is the first source-transformation stage, not the compilation entry point.
+> **Every named top-level item is an independent memoized query.**
 
-The high-level control flow is:
+Same-module references, cross-module references, and concrete generic instantiations all converge on that model.
+
+This document also explains where package identity and emission ownership feed later linkage decisions. The encoding grammar itself is documented in [`symbol-mangling.md`](symbol-mangling.md).
+
+## Entry point
+
+`omgc` constructs a `Driver` with:
+
+- local package root;
+- optional declared-name override;
+- registered `--extern` roots;
+- compilation target.
+
+It then calls:
 
 ```text
-omgc
-  -> Driver / ModuleRoots
-  -> discover local + external module inventories
-  -> parse + macro-expand + HIR lower required modules
-  -> collect/resolve/analyze items
-  -> CompiledProgram / checked modules
-  -> omega-mir
-  -> omega-codegen backend
+Driver::compile(entry_module, target) -> CompiledProgram
 ```
 
-## Module roots and discovery
+`Driver::compile` is the main semantic-compilation entry point.
 
-`ModuleRoots` records:
+## `Driver` state
 
-- the local package's declared identity and physical root;
-- every `--extern` root keyed by its declared identity;
-- eagerly discovered module-path inventories used for deterministic lookup.
+`Driver` deliberately groups long-lived state by concern:
 
-The local root is recursively inventoried and every local module is part of the local build set. External roots are inventoried so the driver can answer whether module paths exist and preserve aliases/declared identities without repeated live filesystem guessing.
+```text
+ModuleRoots     filesystem inventory + package identities
+ModuleStore     source / AST / HIR / module index caches
+Diagnostics     accumulated structured findings
+ItemQueries     memoized signatures, type cells, bodies, instantiations
+ImportState     lazy import-alias resolution + usage
+Primitives      primitive declaration/templates
+Conformances    concrete + generic conformance registrations
+prelude_macros  cached ambient exposed core macros
+Target          target used by semantic/layout questions
+```
 
-`core` receives additional eager treatment because primitive/conformance registration and ambient/prelude lookup require its declaration surface independently of ordinary import demand.
+The analyzer borrows this state only through `ModuleResolver` queries or focused driver-owned orchestration calls.
 
-Filesystem discovery should remain metadata-oriented: discovering that a module path exists is separate from parsing/resolving all of its contents.
+## Filesystem discovery and module identity
 
-A same-name-directory discovery edge case remains tracked in [`../issues/known-issues.md`](../issues/known-issues.md).
+`roots.rs` + `fs_resolve.rs` are the only layer where an absolute Omega module path becomes a filesystem lookup.
 
-## Parse/index/resolve state
+At `Driver::new` time:
 
-Driver state is grouped by concern rather than one flat global map: roots/discovery, parsed/indexed modules, resolution/import state, primitive/conformance surfaces, diagnostics, and compilation results.
+- the entire local package tree is discovered into metadata;
+- every registered extern tree is also discovered into metadata;
+- declared identity overrides relabel module paths in that inventory;
+- duplicate package identities are rejected.
 
-The item-resolution model is deliberately lazy at item granularity where needed (especially generics/imported declarations), while local module membership is eager. Do not conflate “module belongs to package” with “every body is eagerly semantically instantiated.”
+After construction, `ModuleRoots::locate` is a map lookup rather than a live filesystem traversal.
 
-## Imports
+This separation matters:
 
-The driver maps an import alias to a concrete declaration/module target, preserving external/local identity. Resolution must distinguish ordinary imported items, generic item templates, modules, macros, and spec/conformance identities rather than rebuilding paths as if every import were local.
+- **existence/discovery is eager metadata**;
+- **parsing/semantic resolution is demand-sensitive**.
 
-Ambient `core` resolution is a fallback layered on normal local/import lookup.
+### Local vs extern eagerness
 
-## Generic instantiations across packages
+The local package is the compilation unit being emitted, so every discovered local module is parsed and participates in the compilation even if no sibling imports it.
 
-Generic templates may be declared in an external package and instantiated by a local consumer. The analyzer/driver must retain those instantiations for emission even though the template's source module is not part of the local package's module list.
+Extern packages are separate compilation units. Their discovered inventories are available for resolution, but bodies are not compiled as if they belonged to the local package. Required declaration/signature surfaces are collected, and ordinary referenced content is resolved on demand.
 
-Separate `omgc` processes may independently generate byte-identical instantiations. Linkage permits the final linker to coalesce the duplicates; this is not a cross-process compiler cache.
+## `ModuleStore`
+
+`ModuleStore` keeps every module artifact needed beyond one parse call:
+
+- retained `SourceFile` for diagnostics;
+- raw unexpanded `SourceModule` AST;
+- module-local raw macro definitions;
+- shared macro `ExpansionState` provenance;
+- expanded/lowered `HirModule`;
+- lazily built `ModuleIndex`;
+- structured load failures;
+- next real `ModuleId`.
+
+### Parse once
+
+`ensure_ast` reads and parses a physical source file once.
+
+`parse_module` is the memoized module-level pipeline:
+
+```text
+locate module
+  -> obtain raw AST (cached)
+  -> construct visible macro environment
+  -> expand macros with provenance
+  -> lower expanded AST to HIR
+  -> cache ParsedModule
+```
+
+A namespace-only directory module has a valid empty `HirModule` and no own source file.
+
+### Index once
+
+`ensure_module_indexed` creates a module's:
+
+- top-level name -> item position map;
+- overload-group indexes;
+- import alias table.
+
+The local item index is published before imports are fully indexed, because resolving annotations/import metadata may re-enter lookup for the same module. This ordering prevents infinite recursive indexing.
+
+## Import resolution
+
+Imports are stored structurally first and resolved lazily where possible.
+
+`ImportState` memoizes what an alias means and whether it was used. The analyzer can ask the driver for:
+
+- resolved import target;
+- raw absolute import path (important for overload resolution);
+- candidate import alias names for diagnostics;
+- visibility facts;
+- ambient `core` fallback candidates.
+
+`core` is special only in well-defined places: exposed ambient names/macros and primitive ownership. Ordinary extern packages do not receive ambient lookup.
+
+## Item query identity
+
+The primary item-query key is:
+
+```rust
+ItemKey {
+    module: ModulePath,
+    name: Ident,
+    type_args: Vec<ResolvedType>,
+}
+```
+
+An ordinary item has empty `type_args`. A concrete generic instantiation is the same query shape with concrete type arguments.
+
+This means there is no second parallel “generic instantiation engine” for named items. It participates in the same caching/cycle machinery.
+
+## Query states and cycles
+
+An item query has a white/gray/black-style state:
+
+```text
+absent      -> not started
+InProgress  -> signature currently being collected
+Done        -> memoized resolved signature available
+```
+
+If resolution requests an item already `InProgress`, the driver decides whether the reference is safely indirect or forms an illegal by-value recursive type cycle.
+
+`ModuleResolver::resolve_item` receives an `indirect` flag specifically for this reason: pointers/function type positions can refer through an in-progress type identity without embedding its unfinished layout, while by-value fields/array elements cannot.
+
+## Shared type cells
+
+Struct/enum/union identities use `Rc<RefCell<Resolved*Type>>` cells stored in `TypeCells`.
+
+A cell can be created before all fields/methods/layout facts are populated. This allows recursive **indirect** references to point at stable nominal identity while the signature is still being built.
+
+The cell is then filled by the owning signature analysis and reused everywhere. Downstream references do not copy/reconstruct an aggregate definition independently.
+
+The caches that have output-affecting iteration use deterministic insertion-order maps.
+
+## Two-phase local compilation
+
+`Driver::compile` performs a deliberate signature/body split.
+
+High-level order:
+
+```text
+1. discover/parse all local modules
+2. collect relevant extern signature surface
+3. collect primitive declarations/templates
+4. collect conformance declarations/templates
+5. collect local item signatures
+6. collect gap/glue signature information
+7. check local bodies
+8. materialize bodies discovered lazily (generic/conformance/primitive)
+9. drain diagnostics/warnings
+10. run whole-program/local-package analyses such as dead-code/gap checks
+11. collect extern-function references
+12. return CompiledProgram
+```
+
+The exact helper ordering in `compile.rs` is the executable source of truth, but the architectural split is stable: **resolve declarations before body checking consumes them**.
+
+Generic templates themselves have no emitted generic body. Their concrete instantiations are discovered from use sites and checked on demand.
+
+## Analyzer lifetime
+
+The driver constructs a fresh `omega_analyzer::analysis::Analyzer` for focused work such as one item signature or body. The analyzer is then consumed through `finish`, and its errors/warnings/compile-time field-usage information are folded back into driver-owned diagnostics.
+
+This prevents module/query caches from leaking into analyzer-local scope state and prevents one analyzer instance from silently accumulating state across unrelated items.
+
+## The `ModuleResolver` seam
+
+`omega-analyzer::resolver::ModuleResolver` is the explicit dependency-inversion boundary.
+
+The analyzer asks for semantic/module facts such as:
+
+- resolve named item;
+- resolve import alias;
+- lookup overload candidates;
+- obtain raw generic signatures for inference;
+- obtain canonical spec declarations;
+- prove/query conformances;
+- resolve primitive methods;
+- request another function body for compile-time execution;
+- fetch a previously resolved `comp` value;
+- mint a synthetic ID.
+
+The analyzer never calls the filesystem and never owns cross-module query state.
+
+## Generic inference vs instantiation
+
+For argument/field-driven inference, the analyzer sometimes needs the **raw declared shape** of a generic function/type before deciding concrete type arguments. `ModuleResolver` exposes focused raw-signature queries that do not instantiate the item just to inspect its generic pattern.
+
+Once concrete arguments are known, the ordinary `ItemKey` path resolves/checks that instantiation.
+
+Concrete instantiations declared in extern packages may still be emitted by the local compilation that uses them. They are merged into an emitted local `CheckedModule` after semantic phases finish, because this compilation is responsible for producing that concrete body.
+
+## Specs, conformances, and primitives
+
+Specs have a canonical args-independent declaration cell because their raw member/dependency declarations are substituted later against a concrete use.
+
+Conformance and primitive declarations sit beside the ordinary named-item query model because they are relationship/declaration blocks rather than ordinary top-level names.
+
+The driver owns:
+
+- registration;
+- template matching;
+- goal-directed conformance lookup;
+- concrete/lazy template instantiation;
+- collecting bodies that become reachable through these relationships.
+
+The analyzer owns the semantic rules for whether a particular declaration/method set satisfies the requested spec/primitive behavior.
+
+## Gaps and glue
+
+Gap declarations define static capability symbol surfaces. Glue declarations implement one gap.
+
+The driver collects/compares these at package scope because uniqueness/completeness is not a local expression-level property. MIR/codegen later receive ordinary function definitions/declarations with the final shared symbol identity; there is no runtime registry.
+
+## Diagnostics and finalization
+
+Errors can arise while queries are triggered indirectly. They are accumulated structurally rather than forcing every lookup caller to own final presentation.
+
+At the end of semantic compilation the driver:
+
+- drains errors for the relevant local + extern signature scope;
+- drains local warnings;
+- merges field usage from checked and compile-time-evaluated trees;
+- performs dead-code and gap sweeps;
+- returns errors or `CompiledProgram`.
+
+## `CompiledProgram`
+
+The semantic output contains:
+
+```text
+modules            checked modules this compilation will emit
+entry              declared entry-module path
+warnings           module-tagged analysis warnings
+extern_functions   extern-owned function references needed by codegen
+```
+
+MIR lowering consumes the checked modules only after this whole semantic stage has succeeded.
 
 ## Determinism
 
-Caches that are iterated as ordered declaration/result sets must preserve deterministic order. The current implementation uses insertion-order-preserving maps at sites where iteration has observable consequences (diagnostic order, synthetic IDs, emitted declaration order, tie-breaking).
+Deterministic ordering is a compiler architecture requirement because query discovery order can feed:
 
-Do not introduce process-random hash iteration into an output-affecting sweep.
+- synthetic IDs;
+- emitted item order;
+- diagnostic order;
+- tie-breaking;
+- symbol/linkage sets.
 
-## Symbols and linkage
+Do not replace an ordered cache with randomized iteration where traversal order can escape into output.
 
-Omega symbol identity is computed in shared compiler layers above individual backends. The mangling input includes the declaration's module/item identity and generic instantiation identity as required.
+## Linkage ownership
 
-Linkage choices support separately compiled packages and duplicate generic instantiations. Backend implementations must consume the already-decided symbol/linkage contract rather than invent their own naming policy.
+The driver decides **which concrete items this compilation owns/emits** and supplies provenance such as generic/conformance origin. It does not encode final object-backend linkage itself.
 
-`@mangling(...)`, root `main`, `gap`/`glue`, and extern declarations create explicit exceptions/bridges; their source-level rules are specified under `docs/language/`.
+During checked -> MIR lowering, that ownership/provenance becomes:
 
-## Backend seam
+- final linker symbol;
+- `MirLinkage::Export` or `MirLinkage::Weak`.
 
-The driver does not encode backend-specific semantic acceptance. Once semantic analysis/MIR accepts a program, backend selection should not change the language accepted program set except for an explicitly unsupported target/backend capability reported before emission.
-
-See [`mir-and-codegen.md`](mir-and-codegen.md) for the backend interface and verifier.
+See [`symbol-mangling.md`](symbol-mangling.md).

@@ -48,6 +48,6 @@ The old numbered-doc reading order no longer exists. Agents should not read this
 
 - When generating or modifying `.omg`, start with `guide/quick-reference.md`.
 - For exact semantics, open only the relevant file(s) in `language/`.
-- For compiler implementation questions, use the root `ARCHITECTURE.md`, then relevant `architecture/` docs/source.
+- For compiler implementation questions, use the root `ARCHITECTURE.md`, then `architecture/README.md` to select only the relevant deep architecture document(s) before reading source.
 - Consult `issues/` only when working in the affected area or when observed behavior conflicts with the language/architecture documentation.
 - Treat `plan/` as cold storage.

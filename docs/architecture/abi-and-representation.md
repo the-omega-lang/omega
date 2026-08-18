@@ -1,70 +1,153 @@
-# ABI and implementation representation notes
+# ABI and implementation representation
 
-These implementation notes were separated from the language chapters during the documentation migration. Observable language/ABI promises remain normative under `docs/language/`; this file explains current compiler representation choices.
+This document describes the current compiler-wide representation/calling-convention architecture. Normative source-level FFI rules are in [`../language/foreign-function-interface.md`](../language/foreign-function-interface.md). Known gaps between Omega's current internal convention and platform C ABIs are tracked under [`../issues/`](../issues/).
 
-<!-- migrated from ../language/functions.md -->
-## Return-value ABI: hidden struct-return pointer
+## One representation owner, one ABI owner
 
-A return type that flattens to more than the platform's small-value leaf
-budget is passed via a hidden struct-return (`sret`) pointer parameter
-instead of real return registers — decided once, in `make_function_sig`,
-consulted identically by both a function's own definition and every call
-site, so the two always agree. This is invisible at the Omega source
-level; it only matters when reasoning about generated IR/assembly directly
-(`--emit=ir`/`--emit=asm`).
+Two shared modules deliberately sit above the backends:
 
-<!-- migrated from ../language/types-and-primitives.md -->
-## Codegen representation
+- `omega_analyzer::layout` — byte/leaf representation and aggregate offsets;
+- `omega_codegen::abi` — function parameter/result transport.
 
-Every `ResolvedType` lowers to a flat list of Cranelift IR leaves
-(`IntoIRType::into_ir_type`). A struct/enum-typed value passed as a
-parameter or held in a register-backed local is literally that leaf list —
-not a single aggregate IR type — which is what makes struct-by-value
-parameter passing and the whole `Storage::Parameter` model work without a
-real C-ABI aggregate-passing implementation (see the caveat at the bottom).
+Cranelift and LLVM consume these decisions. They must not independently “approximate the ABI”.
 
-| Type | Leaves |
+## Backend-neutral leaves
+
+Runtime values flatten to an ordered sequence of abstract `Leaf`s.
+
+Typical shapes include:
+
+| Omega shape | Abstract representation |
 |---|---|
-| `void` | *(none)* |
-| `never` | *(none)* -- see below |
-| `bool` | `i8` (Cranelift has no boolean type; `0`/`1`) |
-| `char` | `i32` (a decoded scalar, not a byte) |
-| `i8`/`u8` | `i8` |
-| `i16`/`u16` | `i16` |
-| `i32`/`u32` | `i32` |
-| `i64`/`u64` | `i64` |
-| `isize`/`usize` | the target's pointer type |
-| `f32` / `f64` | `f32` / `f64` |
-| `*T` / `*mut T` | one thin pointer |
-| `*[?]T` / `*mut [?]T` (`Array`) | one thin pointer, **no length** |
-| `*[]T` / `*mut []T` (`Slice`) | `[data pointer, i32 length]` |
-| `[N]T` (`SizedArray`) | `N` copies of `T`'s own leaves, inline, no indirection |
-| struct | each field's leaves, back to back (+ padding, see `@layout`) |
-| union | one opaque run of `i32`/`i8` chunks sized to the largest member |
-| enum | `[tag][header][dynamic fields][payload]`, each region flattened the same way |
-| `spec *T` (dynamic dispatch) | two pointers |
+| `void`, `never` result | no value leaves |
+| `bool` | one byte-sized integer leaf |
+| `char` | 32-bit integer leaf |
+| fixed integers/floats | matching scalar leaf |
+| `isize` / `usize` | target pointer-width integer leaf |
+| thin pointer / unsized-array pointer | one pointer leaf |
+| slice / `str` pointer | data pointer + length |
+| `[N]T` | N repetitions of `T`'s leaves, inline |
+| struct | field leaves + explicit layout padding |
+| union | opaque payload chunks covering largest member |
+| enum | tag/header/dynamic prefix + opaque payload region |
+| dynamic spec object | data pointer + vtable pointer |
 
-<!-- migrated from ../language/compile-time-evaluation.md -->
-## Codegen
+The exact functions live in `omega_analyzer::layout`; this table is a routing summary, not a replacement for the code.
 
-A `comp`-bound identifier never reaches codegen as a place at all — it's
-substituted away during analysis into `CheckedExpr::Const(value)`, exactly
-like an ordinary literal, so codegen's job is no larger than "emit a
-constant" (already-proven machinery, now extended to structs/enums/unions/
-refs, not just numbers/strings/slices). A non-`comp` binding with a `comp`
-initializer is an ordinary place whose *initial* bytes happen to already
-be known — struct fields are emitted as concatenated leaves (no byte-offset
-math needed, mirroring an ordinary struct literal), while enum/union
-values are built in an anonymous stack slot at their real byte offsets
-(mirroring ordinary `EnumConstruct`/`UnionConstruct` codegen) and read
-back out as leaves.
+## Memory vs register representation
 
-Every anonymous rodata blob a `ConstValue` (or a `&[...]` compile-time
-slice) gets emitted into is content-addressed and deduplicated by
-`Codegen::const_blobs`, keyed by the same content hash used to name the
-blob's own symbol — needed once const promotion (above) could reasonably
-emit *the same* comp value's content from two independent call sites
-(e.g. `&SIZE` and a `*self`-receiver method call on `SIZE`, both in the
-same compile): without a dedup check before `define_data`, the second
-emission would try to define an already-defined symbol and the linker
-step would reject it.
+Omega deliberately uses both:
+
+- **byte offsets** for memory-backed place access;
+- **leaf positions** for register/SSA value transfer.
+
+They are computed from the same `FieldLayout`. An explicitly padded layout can make the two sequences diverge, so codegen must not derive one by counting the other.
+
+## Shared function ABI
+
+`omega_codegen::abi::AbiSignature::of(target, fn_type)` (or equivalent constructor in current source) produces the complete backend-neutral call shape from one `ResolvedFunctionType`.
+
+It contains:
+
+- flattened leaf sequence for each explicit parameter;
+- result convention (`AbiReturn`);
+- implicit hidden return-pointer decision when required.
+
+Definitions and call sites in both backends consume the same result.
+
+## Return convention
+
+`AbiReturn` has three conceptual forms:
+
+```text
+Void       no return value
+Direct     flattened result leaves returned directly
+Indirect   caller provides hidden destination pointer
+```
+
+Large/complex flattened results can use the hidden struct-return path. The current threshold/convention is an Omega compiler convention, not a claim that every target's platform C ABI uses the same rule.
+
+That distinction matters at `extern`/C boundaries and is tracked as design debt until a true per-platform C aggregate ABI is implemented.
+
+## Parameter flattening
+
+Ordinary Omega-to-Omega calls pass parameter values as their flattened leaf sequence. Aggregate parameters are not represented by a backend-specific opaque aggregate ABI chosen independently by LLVM/Cranelift.
+
+This gives both backends a simple, identical internal convention and lets objects generated by different backends call each other as long as both consume the same shared signature.
+
+## C variadics
+
+Variadic `extern` calls use shared promotion logic (`variadic_promotion`) before backend emission.
+
+Typical C default argument promotions are decided in the shared layer rather than duplicated per backend. The backend only maps the resulting promoted semantic numeric type to its native call argument type.
+
+## External C boundary
+
+Omega's current internal ABI is intentionally consistent across Omega backends, but it is not yet a full implementation of every platform's C ABI for aggregates.
+
+The compiler therefore has responsibility to reject or constrain unsupported FFI shapes rather than silently emit an object with a call convention that merely happens to work on one backend/target.
+
+Current unsupported cases belong in [`../issues/known-issues.md`](../issues/known-issues.md) / [`../issues/design-debt.md`](../issues/design-debt.md).
+
+## Aggregate layout
+
+Byte layout is target-aware through pointer width and resolved layout annotations. Backends call shared helpers for:
+
+- struct fields;
+- enum regions/fields;
+- union storage;
+- local frames;
+- type size/alignment.
+
+See [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md).
+
+## Places and materialization
+
+A value can be held as SSA/register leaves or in addressable memory. Backend place code handles transitions such as:
+
+- reading leaves from memory;
+- storing leaves to memory;
+- projecting fields/slices/indexes;
+- spilling a parameter/temporary when its address is required;
+- materializing union/enum payload storage.
+
+The legality and resolved type of a place operation have already been decided by the analyzer. The backend handles storage realization only.
+
+## Globals
+
+Top-level non-`comp` declarations become real object-file globals. A compile-time-known initializer can be emitted directly according to the shared type layout.
+
+Extern data declarations remain a separately tracked unsupported storage boundary; they are rejected by shared codegen preflight rather than failing in only one backend.
+
+## Dynamic spec representation
+
+A dynamic `spec *T` / `spec *mut T` value is represented as a pair:
+
+```text
+data pointer
+vtable pointer
+```
+
+The analyzer decides the concrete conformance/method-slot meaning. MIR/codegen use that resolved slot set to materialize/select the vtable and emit dynamic calls.
+
+Vtable symbol identity is generated above backend-specific code; see [`symbol-mangling.md`](symbol-mangling.md).
+
+## Zero-sized values
+
+Zero-sized semantic types can have no value leaves while still participating in address/layout logic. Shared layout functions, not backend ad-hoc behavior, decide where zero-sized fields/locals conceptually reside.
+
+A backend may need a minimum-sized physical scratch allocation because of its API, but that does not redefine the semantic size/layout.
+
+## Cross-backend contract
+
+The repository intentionally supports linking objects generated by Cranelift and LLVM. The following therefore must remain backend-independent:
+
+- target-width semantic decisions;
+- aggregate layout;
+- parameter/result ABI;
+- variadic promotions;
+- mangled symbols;
+- strong/weak linkage;
+- vtable slot order and symbol identity.
+
+A change to any of those should receive mixed-backend/separate-compilation validation, not just one backend's unit tests.

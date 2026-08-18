@@ -1,297 +1,299 @@
-# The MIR, and how it reaches Cranelift
+# MIR and code generation
 
-## Why this exists
+`omega-mir` is the backend-independent control-flow boundary between the fully checked semantic tree and native emission. `omega-codegen` consumes MIR through either Cranelift or LLVM.
 
-Through `omega-analyzer`, the pipeline is HIR → `CheckedModule`: a fully
-resolved, monomorphized tree (see [generics.md](../language/generics.md) — a generic
-is re-analyzed per concrete instantiation, so by the time a `CheckedModule`
-exists there are no type parameters left anywhere in it). Until this stage
-was added, `omega-codegen` walked that checked tree directly, doing
-control-flow-graph construction and Cranelift instruction emission in the
-same recursive walk.
-
-That coupling is fine for exactly one backend. The plan has always been
-more than one — Cranelift now, and an LLVM or self-made backend later — and
-a second backend built against the checked tree directly would mean
-re-solving CFG construction from scratch, in a different crate, using a
-different backend's block/value APIs. `omega-mir` is that CFG built once,
-as data, with no backend attached to it at all: `omega-codegen` (or any
-future backend) consumes it by walking an already-explicit graph of blocks
-and terminators, not by re-deriving one from a tree of `if`/`while`/`return`
-on the fly.
-
-**Scope note:** this only replaces the *control-flow* half of what
-`omega-codegen` used to do itself. Expression evaluation (arithmetic,
-calls, casts, aggregates, place projections) is deliberately **not**
-flattened to three-address form — see "What's still a tree" below. A
-`Vec<Value>`-per-leaf value model (structs/enums/slices as several
-positional scalars, not one register or one memory blob) and the rest of
-`omega-codegen`'s own architecture are unchanged; a dedicated refactor of
-that crate is its own future task.
-
-## Pipeline position
-
-```
-HIR → [omega-analyzer] → CheckedModule → [omega-mir] → MirModule → [omega-codegen] → Cranelift IR
+```text
+CheckedModule
+   |
+   | omega_mir::lower_program
+   v
+MirModule / MirBody CFG
+   |
+   | omega_codegen::generate
+   v
+shared preflight + ABI
+   |
+   +--> Cranelift
+   |
+   +--> LLVM
 ```
 
-`omega_mir::lower_program` is the one entry point: every checked module a
-compilation produced lowers independently into its `MirModule` counterpart,
-one-to-one, in the same order. Nothing here is whole-program-aware —
-monomorphization has already fully run by the time a `CheckedModule` exists
-(see `omega_driver::compile`), so there's no cross-module state to thread
-through a lowering pass that isn't already settled.
+## Why MIR exists
 
-## Item level: a mechanical mirror of `CheckedModule`
+The checked tree is excellent for semantic analysis but still represents source control flow recursively. A backend wants explicit blocks and branch/return edges.
 
-`MirModule`/`MirItem`/`MirStructDef`/`MirEnumDef`/`MirUnionDef` are a
-straight field-for-field copy of their `Checked*` counterparts — a
-struct/enum/union/extern/global declaration carries no control flow of its
-own, so there's nothing to lower there. `CheckedParam`, `ResolvedType`,
-`ResolvedFunctionType`, `ManglingMode`, `InlineMode` are all reused directly
-from `omega-analyzer` rather than re-wrapped, the same way `Ident`/`Type`
-already cross the HIR/checked-tree boundary unchanged — they're inert data
-with no control-flow shape of their own.
+Without MIR, each backend would independently have to rediscover how `if`, `match`, loops, `break`, `continue`, `return`, and `defer` form a CFG. That would duplicate semantics at the worst possible boundary.
 
-Only `MirFunctionDef::body` actually changes shape: a `CheckedBlock` tree
-becomes a `MirBody` graph.
+MIR builds the CFG once.
 
-## The body: locals and a control-flow graph
+## MIR scope
+
+MIR is intentionally **not** a full three-address SSA IR.
+
+It lowers control flow, while ordinary computation remains tree-shaped:
+
+- arithmetic/logical operations;
+- calls;
+- casts;
+- aggregate construction;
+- places/projections;
+- constants;
+- dynamic calls.
+
+This keeps MIR's current responsibility narrow: backend-independent control-flow structure + final emission facts.
+
+A future expression-normalization/optimization IR can be added deliberately; it should not emerge accidentally as one backend grows local rewrites.
+
+## Program lowering
+
+`omega_mir::lower_program` is the crate entry point.
+
+It receives the checked modules and package entry path and returns corresponding `MirModule`s. Semantic monomorphization is already complete; lowering does not resolve new cross-module semantic facts.
+
+Modules lower independently.
+
+## Item-level MIR
+
+Most item shapes mechanically mirror checked items:
+
+- global declaration;
+- extern declaration;
+- struct/union/enum definition;
+- function definition.
+
+Only function bodies fundamentally change shape.
+
+`MirFunctionDef` also adds two facts computed once for all backends:
+
+- final linker `symbol`;
+- `MirLinkage`.
+
+See [`symbol-mangling.md`](symbol-mangling.md).
+
+## Function-body CFG
 
 ```rust
-pub struct MirBody {
-    pub locals: Vec<MirLocalDecl>,  // 0..arg_count are the parameters, in order
-    pub arg_count: usize,
-    pub blocks: Vec<MirBlockData>,  // block 0 is always the entry block
+MirBody {
+    locals: Vec<MirLocalDecl>,
+    arg_count: usize,
+    blocks: Vec<MirBlockData>,
 }
 
-pub struct MirBlockData {
-    pub statements: Vec<MirExprNode>,
-    pub terminator: MirTerminator,  // Goto | Branch | Return | Unreachable
+MirBlockData {
+    statements: Vec<MirExprNode>,
+    terminator: MirTerminator,
 }
 ```
 
-Every `if`/`match`/`while`/`for`/`break`/`continue`/`return`/`defer` in the
-checked tree is gone by the time a `MirBody` exists — replaced by an
-explicit graph of blocks, each ending in exactly one of four terminators.
-This is the actual payoff: `omega-codegen`'s own job shrinks to "for each
-`MirBlockData`, translate its statements, translate its one terminator,"
-because the graph-construction work already happened once, in
-`omega-mir`'s lowering pass, instead of being redone (recursively,
-tangled with instruction emission) by every backend.
+Block 0 is the entry block. Every block ends in exactly one terminator:
 
-**Parameters and declared locals share one index space.** `MirBody::locals`
-doesn't distinguish a parameter from an ordinary declared variable the way
-the checked tree's `Storage::Parameter`/`Storage::Local` tags do — `id <
-arg_count` is the only thing that tells them apart, and codegen uses that
-one check to decide whether a local's value comes from the entry block's
-own Cranelift parameters or a stack slot. A `MirLocalDecl` also covers
-lowering-synthesized temporaries with no source declaration of their own
-(`source: None`) — today, only a `defer`'s own flag (see below).
-
-## What's still a tree
-
-`MirExpr` mirrors `CheckedExpr` almost exactly (`Place`, `FunctionCall`,
-`Assignment`, `BinaryOp`, `Cast`, `StructLiteral`, `EnumConstruct`,
-`DynamicCall`, …) — **minus** `If`, `Match`, and `Codeblock`, which are
-precisely the variants that become graph shapes instead of expression
-nodes. Everything else stays a nested tree, evaluated by
-`omega-codegen`'s `process_expr` largely unchanged from before this crate
-existed.
-
-This is a deliberate stopping point, not an oversight. A "purer" MIR (and
-`rustc`'s own) flattens *everything* to three-address form — every
-sub-expression gets its own temporary and its own statement, so a backend
-never recurses, only iterates a flat statement list. That buys real things
-(local optimizations like CSE become straightforward over a flat
-statement stream), but it also means rebuilding `process_expr`'s
-arithmetic/call/cast/aggregate/place-projection logic around flat
-statements instead of a tree walk — which *is* the dedicated
-`omega-codegen` refactor this work was explicitly scoped to not do yet.
-Keeping `MirExpr` tree-shaped means that logic ports over with signature
-renames only (`Checked*` → `Mir*`), and the door stays open to flattening
-it later, inside the CFG shape this crate already establishes, without
-another crate-boundary change.
-
-## How control flow lowers
-
-- **`if`/`match` (as a statement or as a value — no distinction needed
-  anymore):** each arm's own block ends in a jump to a shared join point.
-  Bare `{ }` blocks used as a value lower through the identical machinery,
-  treated as a single unconditional arm. A `match` arm's (possibly
-  multi-bound) pattern test is a chain of two-way branches, same shape as
-  a range pattern's low/high bound; an exhaustive `match` with no `else`
-  traps on fall-through, matching the language's own guarantee that this
-  point is unreachable.
-- **`while`/`for`:** header/body/exit blocks, with `for`'s `continue`
-  target being a dedicated block that runs the post-clause before jumping
-  back to the header (`continue` still has to run `i++`). `break`/
-  `continue` resolve to a direct jump to a block id the lowering pass
-  already knows, resolved against its own lexical loop-target stack —
-  there is no `HirId`-keyed runtime lookup left anywhere in codegen for
-  this.
-- **`return`:** never a direct jump out of a nested position. Every
-  `return`, and a function body's own implicit tail-expression return,
-  routes into one shared exit chain per function — the same "one
-  shared exit point" idea the pre-MIR codegen already used, just built as
-  real graph structure instead of an `Option<Block>` filled in ad hoc
-  during instruction emission.
-- **`defer`:** the one genuine unification this crate made possible. A
-  `defer`'s flag is just an ordinary synthetic `Bool` local (`source:
-  None`) — ordinary in the sense that codegen has no defer-specific
-  concept at all: it's a ordinary `Assign` statement setting it `true` at
-  the `defer` statement's own position, and an ordinary chain of blocks
-  reading it back (FILO, last-declared torn down first) as part of the
-  function's exit chain. Before this crate existed, `omega-codegen` had a
-  dedicated pre-pass (`collect_defer_ids`) and dedicated per-function
-  state (`defer_flags`/`defer_bodies`) just to make this work; none of
-  that survived the move — it's exactly the same mechanism every other
-  local already uses.
-
-## Avoiding a synthetic local where the value already has a home
-
-The first working version of this crate allocated a fresh temporary local
-for *every* `if`/`match` used as a value, unconditionally — correct, but
-wasteful: `x := if a { 1 } else { 2 };`, the overwhelmingly common shape,
-doesn't need a temporary at all, since the value's real destination (`x`)
-is already known before either arm is lowered. The fast path (see
-`FunctionLowerer::lower_control_flow_stmt` in `omega-mir`) detects exactly
-this — a bare `if`/`match` statement, an assignment to a plain local, or a
-`return`/implicit-tail position — and has each arm write straight into the
-real destination (or nothing at all, for a bare discarded statement),
-skipping both the temporary and the copy. The general (nested-operand)
-path is unchanged and still always allocates a temporary, since a sibling
-sub-expression lowered afterward could still need to build more blocks
-before the value is actually consumed — a real hazard, not a theoretical
-one (see Caveats).
-
-## What changed in `omega-codegen`
-
-Deleted outright: `BlockOutcome`, `Codegen::return_block`/`loop_stack`/
-`defer_flags`/`defer_bodies`, `LoopTargets`, `collect_defer_ids` and its
-three mutually-recursive helpers, and `emit_if`/`emit_match`/`emit_while`/
-`emit_for`/`emit_block`/`emit_expr_stmt`/`process_statement`'s
-control-flow arms. Replaced by one generic translator in
-`define_function_def`: declare a Cranelift `Block` per `MirBlockData` up
-front (so a loop's own back-edge always resolves regardless of visit
-order), then for each, translate its statements via the largely-unchanged
-`process_expr`, then translate its one terminator (`Goto` → `jump`,
-`Branch` → `brif`, `Return` → the existing struct-return/plain-return
-logic, `Unreachable` → `trap`). Every block is sealed in one pass at the
-end, once every terminator (hence every block's predecessor set) is
-already known.
-
-`process_decl` disappears as a per-statement operation: since `MirBody::
-locals` already lists every local up front, non-parameter locals get their
-stack slots allocated lazily, the first time `resolve_place_storage`
-actually resolves that local — a branch that never runs never pays for a
-slot it never touches, matching what a per-statement-position allocation
-already achieved, just triggered by first use instead of by walking a
-`Declaration` statement's own lexical position.
-
-## Multiple backends
-
-There are two backends: **Cranelift** (`default`, the fast development
-backend) and **LLVM** (the `llvm` feature, via `inkwell`/LLVM 21 — target
-breadth, and the features Cranelift lacks). `omgc --backend=<name>` picks
-one; `BackendKind::supports(target)` decides whether the chosen one can
-serve the chosen target, and a mismatch is one clear error naming both:
-
-```
-error: target 'riscv32-unknown-none' is not supported by the 'cranelift'
-       backend (supported: x86_64, aarch64)
+```text
+Goto
+Branch
+Return
+Unreachable
 ```
 
-### One decision, one home
+An unterminated final builder block is a MIR-lowering bug.
 
-The rule the second backend forced: **the shared layers compute every
-decided fact exactly once, and a backend reads it rather than re-deriving
-it.** Anything re-derived per backend is somewhere the two can silently
-disagree — and they must not, because separate compilation means a
-Cranelift `core.o` gets linked against an LLVM `main.o` (`just
-test-mixed`). Concretely:
+## Unified locals
 
-| Fact | Home | Backends |
-| --- | --- | --- |
-| linker symbol, linkage | `MirFunctionDef::symbol`/`linkage` (`omega-mir::mangle`) | read it |
-| entry-point `main` | MIR lowering, from `lower_program`'s `entry` | read it |
-| sret, parameter flattening, variadic promotion | `omega-codegen::abi` | read it |
-| scalar leaf list | `omega_analyzer::layout` (`Leaf`) | map it |
-| per-access alignment | `MirPlace::align` | emit it |
-| what is not implemented yet | `omega-codegen::preflight` | neither runs |
+Function parameters and locals share one `LocalId` space:
 
-`preflight` matters more than it looks: with one backend, "unimplemented"
-could be a `todo!()` wherever it was noticed. With two, that would make the
-*accepted language* depend on `--backend`, so the rejections are shared and
-both backends refuse exactly the same programs.
-
-### `Leaf::Ptr` vs `Leaf::Size`
-
-`Leaf` splits the pointer-width scalar in two: `Ptr` is a genuine address,
-`Size` a pointer-width *integer* (`usize`/`isize`). Cranelift maps both to
-`pointer_type()` and always did — its pointer type *is* an integer type, so
-the distinction is invisible there. LLVM cannot: `ptr` and `iN` are
-distinct, and typing a `usize` as `ptr` makes arithmetic on it
-unrepresentable. This is the shape every such conflation takes — one
-backend not needing a distinction is not evidence the shared layer may drop
-it.
-
-The LLVM backend holds one invariant throughout: **a value's LLVM type
-always matches the leaf list of its MIR type.** `Reinterpret` casts and
-pointer arithmetic maintain it with explicit `ptrtoint`/`inttoptr`, and
-`bool` is always `i8` (`Leaf::I8`) except at `br`, which is the one
-instruction requiring `i1`.
-
-### The verifier
-
-The LLVM backend runs `Module::verify()` before emitting, and turns a
-failure into a compile error labelled *"this is a compiler bug, not a
-problem with your program"*. LLVM will otherwise write malformed IR — a
-type-mismatched `icmp`, a wrong-arity call — straight into an object file
-that then crashes at run time with nothing pointing back at the compiler.
-Cranelift needs no counterpart: its builder validates as it goes and panics
-at the point of construction. This check found real bugs the moment it was
-added, which is the argument for it.
-
-### Dispatch
-
-`omega-codegen` doesn't hand `MirModule`s straight to Cranelift-specific
-code -- it dispatches through `BackendKind`, an enum with one variant per
-Cargo feature the crate enables, each variant gated by its own feature so a
-backend nobody compiled in isn't even a choice the type system offers:
-
-```rust
-pub fn generate(backend: BackendKind, request: CodegenRequest) -> Result<EmitOutput, String>;
+```text
+0 .. arg_count                 parameters
+arg_count .. locals.len()      declared or synthesized locals
 ```
 
-`CodegenRequest` bundles everything any backend needs (target, opt level,
-emit kind, the mir modules themselves, the entry path, extern functions)
-into one named-field struct, replacing what used to be a seven-positional-
-argument call. `omgc`'s own `--backend=<name>` flag (`BackendKind::parse`)
-is the only place a user ever picks one; `cranelift` is the default, and
-`llvm` is available when the crate is built with its feature.
+A `MirLocalDecl.source` is the originating `HirId` when one exists; synthesized temporaries have no source ID.
 
-Each backend lives in its own module (both module-private -- nothing
-outside the crate ever sees a Cranelift or an LLVM type), and the two are
-split by the *same* concerns, file for file, so a change to one has an
-obvious counterpart in the other: `mod.rs` (the `Codegen` state struct
-itself, `generate`/`finish`), `place.rs` (resolving a `MirPlace` to its
-storage), `expr.rs` (evaluating a `MirExprNode`), `function.rs` (building
-signatures, declaring/defining a function's body), `item.rs` (the
-declare-then-define sweep over every module), `vtable.rs` (spec dynamic-
-dispatch vtables), and `leaf.rs` (the one backend-specific seam, below).
+Codegen uses `id < arg_count` to distinguish parameter-entry storage from ordinary local-frame storage.
 
-**The actual multi-backend enabler** is `crate::layout`, not the
-`BackendKind` dispatch itself: struct/enum/union byte-offset/padding/leaf-
-count math (`FieldLayout`, `layout_fields`, `type_alignment`,
-`enum_*_offset`, ...) used to compute `cranelift::Type`s directly and take
-`&Codegen`. It's now backend-agnostic, expressed over a small `Leaf` enum
-(`I8`/`I16`/`I32`/`I64`/`F32`/`F64`/`Ptr`/`Size`) and a plain
-`pointer_bytes: u32` instead of a Cranelift handle -- `Target::pointer_bytes`
-is the one place that width comes from, and `Target` itself lives in
-`omega-analyzer` precisely so analysis (`comp` `sizeof`, `usize` range
-checking) answers with the *same* width codegen will lay out.
-`cranelift::leaf::cranelift_type` and `llvm::leaf::llvm_type` are the only
-places a `Leaf` becomes a native type; each backend is that one small
-mapping rather than another copy of ~250 lines of layout math. That claim
-has now actually been tested by a second backend, and it held.
+## Cross-block values
+
+MIR does not use block arguments as its general value-merge mechanism. Values that must survive across control-flow joins are stored in ordinary synthetic locals.
+
+Examples include:
+
+- `if`/`match` expression results;
+- function return value while routing through `defer` cleanup.
+
+This is deliberately backend-neutral and avoids coupling MIR to one backend's block-parameter model.
+
+Fast paths can avoid a temporary where an expression is immediately assigned/returned and no sibling expression needs the value later.
+
+## Place representation
+
+`MirPlace` is a resolved storage path:
+
+```text
+root + typed projections + final type/alignment
+```
+
+Roots include local/global/expression-derived storage; projections encode operations such as dereference, field, index, and related place transformations.
+
+The analyzer already proved the operation legal and resolved field/type/mutability facts. MIR maps HIR/checked storage identity into `LocalId`/global forms; codegen realizes the memory/SSA mechanics.
+
+## Control-flow lowering
+
+`lower/function.rs` owns function CFG construction.
+
+### `if` / `match`
+
+Branches become explicit blocks. Value-producing branches write the selected result to a shared local before joining when a value must outlive the branch.
+
+### loops
+
+Loop lowering creates explicit condition/body/post/exit blocks as required. `CheckedBreak`/`CheckedContinue` already carry the target loop's `HirId`; the lowerer maps that ID through its loop-target stack instead of assuming all control flow targets the innermost backend block.
+
+### `return`
+
+Returns route to the function's exit path. If the function has defers, return values are stored before cleanup so all active deferred bodies run before the final `Return` terminator.
+
+### `defer`
+
+A pre-pass allocates a boolean flag for each supported defer. Reaching the source `defer` statement sets its flag; the function exit chain checks flags in reverse order and executes enabled bodies before the final return.
+
+The language restrictions on where defer is currently allowed are semantic-analysis concerns and tracked in language/issues docs; MIR assumes checked input satisfies them.
+
+### `never`
+
+Expressions typed `never` have no usable fallthrough result. MIR terminates unreachable continuation appropriately rather than inventing a value for later blocks.
+
+## Final symbols and linkage in MIR
+
+MIR lowering translates checked declaration provenance into final object identity before any backend runs.
+
+A function definition therefore reaches codegen with:
+
+```text
+symbol: String
+linkage: Export | Weak
+```
+
+This guarantees Cranelift and LLVM cannot disagree about names/duplicate-folding policy.
+
+## Codegen shared layer
+
+`omega-codegen` exposes:
+
+```text
+BackendKind
+CodegenRequest
+OptLevel
+EmitKind
+EmitOutput
+generate(...)
+```
+
+`CodegenRequest` contains the target, modules, entry path, extern-function references, optimization level, and requested output kind.
+
+### Shared preflight
+
+`preflight.rs` rejects constructs that are currently unsupported and must fail identically regardless of backend (for example current parameter-assignment / extern-data gaps).
+
+If a new unsupported construct is common to all backends, put the rejection here or earlier in semantic analysis—not in two backend-specific `todo!()` branches.
+
+### Backend support check
+
+`BackendKind::supports(target)` is checked before emission. The shared compiler target vocabulary can be broader than one backend's supported set.
+
+## Shared ABI and layout
+
+Before backend-native call construction, both backends consume:
+
+- `omega_analyzer::layout` for leaves/offsets/size/alignment;
+- `omega_codegen::abi` for parameter/result calling convention;
+- MIR-provided final symbol/linkage.
+
+See [`abi-and-representation.md`](abi-and-representation.md).
+
+## Cranelift backend
+
+`src/cranelift/` is split by concern:
+
+- `mod.rs` — ISA/module setup, shared backend state, final output;
+- `item.rs` — declarations/definitions/globals/externs;
+- `function.rs` — function CFG/block emission;
+- `expr.rs` — computation/calls/casts/aggregate construction;
+- `place.rs` — address/storage/projection loads and stores;
+- `leaf.rs` — abstract leaf -> Cranelift types;
+- `vtable.rs` — dynamic-spec table materialization.
+
+`Codegen` keeps caches for functions, data blobs, globals, vtables, and symbol-collision detection plus per-function local/stack state.
+
+Cranelift validates block/function structure while building; target ISA/triple and optimization settings remain backend-local.
+
+## LLVM backend
+
+`src/llvm/` intentionally mirrors the same conceptual split:
+
+- `mod.rs`;
+- `item.rs`;
+- `function.rs`;
+- `expr.rs`;
+- `place.rs`;
+- `leaf.rs`;
+- `vtable.rs`.
+
+LLVM-specific target machine/triple/data layout/optimization configuration stays in this backend.
+
+LLVM `alloca` placement is deliberately centralized in the function entry block because allocating in a loop block would allocate on each execution. The backend temporarily repositions its builder to the entry before emitting scratch/local allocations.
+
+The completed LLVM module is always verified before output. A verifier failure is reported as an internal compiler bug because program-invalid inputs should already have been rejected upstream/shared preflight.
+
+## Declare before define
+
+Both backends use a declare/update pattern so references do not depend on source definition order:
+
+1. declare externally visible/local functions/globals needed by symbols;
+2. define function bodies/data after identities exist.
+
+This mirrors the compiler-wide rule that declaration order must not determine semantic availability.
+
+## Backend-local caches
+
+Backends may cache native objects keyed by already stable compiler identities, for example:
+
+- `HirId -> native function/global`;
+- content hash -> anonymous byte/const blob;
+- resolved vtable slot list -> emitted table;
+- linker symbol -> declaring ID collision guard.
+
+These caches optimize/organize emission; they must not become new semantic resolution tables.
+
+## Output modes
+
+The same backend pipeline can produce:
+
+- object bytes;
+- textual backend IR;
+- assembly.
+
+Textual IR is inherently backend-specific; object-level external identity/ABI must not be.
+
+## Backend parity rule
+
+When a change affects a shared contract, inspect/test both backends. When a bug is truly backend-local, do not read/edit the other backend merely for symmetry.
+
+Shared-contract examples:
+
+- new MIR variant;
+- new `ResolvedType` representation;
+- layout/ABI change;
+- vtable shape;
+- constant representation;
+- final symbol/linkage change;
+- new target-width behavior.
+
+## Codegen should not do
+
+Do not place these in backend code:
+
+- overload/name resolution;
+- generic inference/instantiation;
+- visibility/spec conformance selection;
+- source-level control-flow reconstruction;
+- independent aggregate field offsets;
+- independent linker mangling policy;
+- backend-specific acceptance of an otherwise shared language construct.

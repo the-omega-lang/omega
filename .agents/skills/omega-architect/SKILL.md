@@ -37,7 +37,7 @@ If the task is purely local/mechanical and does not require architectural decisi
 Use `ARCHITECTURE.md` to identify the owning crate/subsystem, then choose documentation by responsibility:
 
 - language semantics: the relevant chapter(s) in `docs/language/`;
-- implementation architecture: relevant `docs/architecture/` only when needed;
+- implementation architecture: use `docs/architecture/README.md` to select only the relevant deep architecture document(s) when needed;
 - known deviations/debt: relevant `docs/issues/` only when the task touches them or behavior contradicts the language docs;
 - `.omg` syntax/examples: `docs/guide/quick-reference.md` when the plan will require writing Omega source.
 

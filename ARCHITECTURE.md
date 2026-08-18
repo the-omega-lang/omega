@@ -1,503 +1,260 @@
 # Omega Architecture
 
-This file is a **navigation map for contributors and coding agents**. It is intentionally compact. It does not replace the source code or the topic documentation under `docs/`.
+This file is the **compact implementation map** for contributors and coding agents. It answers where a behavior lives and which deeper architecture document to open. It is not the Omega language definition and should not grow into a second architecture manual.
 
-Use it to answer two questions before exploring:
+For exact language semantics, use [`docs/language/`](docs/language/). For deeper compiler/runtime mechanics, use [`docs/architecture/`](docs/architecture/). For writing Omega code, start with [`docs/guide/quick-reference.md`](docs/guide/quick-reference.md).
 
-1. **Which subsystem owns this behavior?**
-2. **What is the smallest set of docs and source files needed for this task?**
+## Navigation rules
 
-## Agent navigation rules
+1. Identify the owning subsystem here.
+2. Open at most the relevant deep architecture document(s) from [`docs/architecture/README.md`](docs/architecture/README.md).
+3. Search for the concrete symbols involved before opening large source files.
+4. Treat crate boundaries as context boundaries; cross them only when the contract actually changes.
+5. Do not read both backends, all callers/callees, or historical plans “for completeness”.
+6. Stop once ownership, affected interfaces, invariants, and verification boundaries are clear.
 
-- Start here, then select the smallest documentation layer from `docs/README.md`, then search source for concrete symbols.
-- When writing `.omg`, consult `docs/guide/quick-reference.md`; do not infer Omega syntax from Rust/C/C++.
-- For exact language behavior, `docs/language/` is normative. For compiler mechanics, use `docs/architecture/`. `docs/issues/` tracks deviations/debt and is not default context.
-- Prefer symbol/reference search and targeted source reads over reading large files in full.
-- A crate boundary is a default context boundary. Cross it only when a concrete dependency requires it.
-- Do not recursively inspect callers, callees, neighboring modules, tests, or backends "for completeness".
-- Stop exploring once the behavior, affected interfaces, invariants, and verification path are clear enough to act safely.
-- `docs/plan/` is historical planning material and should be treated as **cold storage**; inspect it only when current docs/source do not explain necessary rationale.
-- Source is authoritative for what the compiler currently implements. `docs/language/` is authoritative for intended language semantics; known implementation mismatches belong in `docs/issues/`.
+`docs/issues/` records known deviations/debt. `docs/plan/` is historical cold storage.
 
----
+## Two pipeline views
 
-## Repository map
+Omega has a **control/orchestration flow** and a **representation/data flow**. They answer different questions.
 
-There are two useful views of the compiler. Do not confuse the **control/orchestration flow** with the **representation/data flow**.
+### Control / orchestration
 
-### Control / orchestration flow
-
-`omgc` is the CLI entry point. It constructs `omega_driver::Driver` and calls `Driver::compile`. The driver owns whole-program discovery and semantic-compilation orchestration: it discovers modules, asks the parser/HIR pipeline to load them, and drives analyzer queries. After `Driver::compile` returns a `CompiledProgram`, `omgc` lowers the checked modules to MIR and invokes code generation.
+Compilation is initiated by the CLI and semantically orchestrated by the driver:
 
 ```text
 omgc
   |
+  | constructs Driver
   v
-omega-driver          package/module discovery + whole semantic compilation
-  |
-  +---- invokes ------> omega-parser -> omega-hir
-  |                          |
-  +---- drives --------> omega-analyzer
-  |
+omega-driver
+  |  package/module discovery
+  |  parse + HIR loading
+  |  per-item semantic queries
   v
 CompiledProgram
   |
+  | omega_mir::lower_program
   v
-omgc -> omega-mir -> omega-codegen -> object / IR / asm
+MIR modules
+  |
+  | omega_codegen::generate
+  v
+object / backend IR / assembly
 ```
 
-### Representation / data flow
+`omega-driver::Driver::compile` is the main semantic-compilation entry point. `omgc` owns the outer toolchain handoff from semantic compilation to MIR/codegen and output files.
 
-If the question is instead "what representation does source pass through?", the pipeline is:
+### Representation / data
 
 ```text
 source text
-    |
-    v
-omega-parser      tokens, AST, macro expansion
-    |
-    v
-omega-hir         stable post-expansion HIR
-    |
-    v
-omega-analyzer    checked/typed representation
-    |
-    v
-omega-mir         backend-independent control-flow representation
-    |
-    v
-omega-codegen     Cranelift / LLVM
-    |
-    v
-object / IR / asm
+   |
+   v
+omega-parser       tokens -> AST -> macro-expanded AST
+   |
+   v
+omega-hir          stable post-expansion HIR
+   |
+   v
+omega-analyzer     checked tree + resolved semantic types
+   |                ^
+   |                | cross-module/query lifetime owned by omega-driver
+   v
+omega-mir          explicit CFG + tree-shaped computations
+   |
+   v
+omega-codegen      Cranelift or LLVM
+   |
+   v
+native output
 ```
 
-The parser is therefore the first **source transformation stage**, but it is not the top-level compilation orchestrator. For whole-build control flow, start at `omgc` / `omega-driver`.
+The parser is the first source transformation stage, not the whole-compilation orchestrator.
 
-Supporting crates and trees:
+Deep overview: [`docs/architecture/compiler-overview.md`](docs/architecture/compiler-overview.md).
+
+## Ownership map
+
+| Area | Primary owner | Deep architecture doc |
+|---|---|---|
+| spans, structured diagnostics, rendering | `omega-diagnostics` | [`diagnostics.md`](docs/architecture/diagnostics.md) |
+| lexing, grammar, AST, macros/reparse | `omega-parser` | [`parsing-and-hir.md`](docs/architecture/parsing-and-hir.md) |
+| post-expansion identity and syntax-only desugaring | `omega-hir` | [`parsing-and-hir.md`](docs/architecture/parsing-and-hir.md) |
+| semantic rules, checked representation | `omega-analyzer` | [`semantic-analysis.md`](docs/architecture/semantic-analysis.md) |
+| semantic type graph, layout, const-eval, shared target vocabulary | `omega-analyzer` | [`types-layout-and-const-eval.md`](docs/architecture/types-layout-and-const-eval.md) |
+| package/module discovery, query caches, cross-module resolver | `omega-driver` | [`module-driver-and-linkage.md`](docs/architecture/module-driver-and-linkage.md) |
+| CFG lowering and final linker symbol/linkage assignment | `omega-mir` | [`mir-and-codegen.md`](docs/architecture/mir-and-codegen.md), [`symbol-mangling.md`](docs/architecture/symbol-mangling.md) |
+| shared Omega calling convention | `omega-codegen::abi` | [`abi-and-representation.md`](docs/architecture/abi-and-representation.md) |
+| native emission | `omega-codegen` | [`mir-and-codegen.md`](docs/architecture/mir-and-codegen.md) |
+| symbol grammar/encoding/decoding | `omega-mangle` | [`symbol-mangling.md`](docs/architecture/symbol-mangling.md) |
+| CLI/output/toolchain orchestration | `omgc` | [`compiler-overview.md`](docs/architecture/compiler-overview.md) |
+| portable/runtime library layers | `runtime/` | [`runtime-and-platform.md`](docs/architecture/runtime-and-platform.md) |
+| architectural verification boundaries | tests + `justfile` recipes | [`testing-and-validation.md`](docs/architecture/testing-and-validation.md) |
+
+## Compiler crates
+
+### `compiler/omega-diagnostics`
+
+Language-agnostic diagnostic substrate: spans, source positions, structured findings, labels/footers, rendering, and the highlighting interface.
+
+**Boundary:** feature crates decide *what is wrong*; this crate decides how structured diagnostics are represented/rendered.
+
+### `compiler/omega-parser`
+
+Owns source text through macro-expanded AST:
 
 ```text
-omega-diagnostics   spans, structured diagnostics, rendering
-omega-mangle        standalone Omega linker-symbol encoding/decoding
-omgc                CLI frontend that connects driver -> MIR -> codegen
-runtime/core        portable core language/runtime facilities
-runtime/std         standard library
-runtime/plat        default platform glue
-runtime/shims       target-specific low-level assembly glue
-examples/           end-to-end example programs
+text -> lexer -> tokens -> recursive parser -> AST -> macro expansion/reparse -> AST
 ```
 
----
+Important areas: `lexer.rs`, `ast/`, `parser/`, `macros.rs`, `diagnostics.rs`, `prelude.rs`.
 
-# Compiler crates
+**Boundary:** syntax only. Semantic validity requiring names/types belongs downstream.
 
-## `compiler/omega-diagnostics`
+### `compiler/omega-hir`
 
-**Owns:** the compiler-wide diagnostic foundation.
+Owns the first stable post-macro-expansion representation and `HirId` identity. `lower.rs` performs infallible syntax-only normalization/desugaring.
 
-- `span.rs` — source spans.
-- `source.rs` — source-file position translation.
-- `diagnostic.rs` — structured findings, labels, severity, footers.
-- `render.rs` — Rust-style terminal rendering.
-- `highlight.rs` — syntax-highlighting interface used by renderers.
+**Boundary:** no name resolution, type checking, or backend behavior.
 
-**Boundary:** this crate deliberately knows nothing about Omega syntax, types, modules, or semantic analysis. Compiler stages convert their own structured errors into diagnostics; rendering happens above them.
+### `compiler/omega-analyzer`
 
-**Look here when:** changing diagnostic infrastructure, span representation, rendering, or highlighting contracts shared by multiple stages.
+Owns semantic analysis. A short-lived `analysis::Analyzer` checks a focused top-level signature/body and obtains cross-module facts through `ModuleResolver`.
 
----
+Important areas: `analysis/`, `checked.rs`, `resolved_type.rs`, `resolver.rs`, `generics.rs`, `comp_eval.rs`, `layout.rs`, `target.rs`, `error/`.
 
-## `compiler/omega-parser`
+**Boundary:** semantic algorithms live here; filesystem/module/query lifetime does not.
 
-**Owns:** source text through macro-expanded AST.
+### `compiler/omega-driver`
 
-Pipeline inside the crate:
+Owns long-lived semantic-compilation state and cross-module orchestration:
 
-```text
-text -> lexer -> tokens -> parser -> AST -> macro expansion/reparse -> AST
-```
+- package/module discovery and source inventory;
+- parsed AST/HIR/module-index caches;
+- imports and resolver state;
+- memoized item/spec/overload queries;
+- primitive/conformance registrations;
+- generic-instantiation discovery/materialization;
+- accumulation of diagnostics across short-lived analyzers.
 
-Key areas:
+The core named-item query identity is conceptually `(module, name, type_args)`, allowing local, external, and concrete generic items to use the same demand-driven machinery.
 
-- `lexer.rs` — tokenization.
-- `ast/` — parser AST definitions.
-- `parser/` — recursive-descent parser.
-  - `expression.rs` — expression grammar.
-  - `item.rs` — top-level/item grammar.
-  - `statement.rs` — statement grammar.
-  - `type.rs` — type grammar.
-  - `contextual.rs` — contextual-keyword registry/recognition.
-  - `recovery.rs` — parser recovery.
-  - `macro_syntax.rs` — macro syntax parsing.
-- `macros.rs` — token substitution and re-parsing for macro expansion.
-- `diagnostics.rs` — lexer/parser diagnostics.
-- `prelude.rs` — supported public surface consumed by other crates.
-- `lib.rs` — `SourceModule::parse` entry point.
+**Boundary:** the driver orchestrates/owns lifetime; semantic rules remain in the analyzer.
 
-**Important invariants:**
+### `compiler/omega-mir`
 
-- Macro expansion reparses tokens, so identities assigned before expansion are not stable.
-- Contextual keywords should commit only when the surrounding grammar shape confirms the keyword use.
-- The parser handles syntax, not semantic validity that requires name/type information.
+Lowers checked functions into backend-independent basic-block CFGs while keeping ordinary computations tree-shaped. Parameters and locals share a `LocalId` space; terminators make control transfer explicit.
 
-**Primary docs:**
+MIR lowering also assigns final linker symbols and strong/weak linkage so both backends receive identical linkage decisions.
 
-- `docs/architecture/parsing-and-hir.md`
-- `docs/language/macros.md`
-- Topic-specific language docs for the syntax being changed.
+### `compiler/omega-codegen`
 
-**Default context wall:** do not enter analyzer/MIR/codegen for a parser-only grammar change unless downstream representation or semantics actually change.
-
----
-
-## `compiler/omega-hir`
-
-**Owns:** the first stable post-macro-expansion representation.
-
-Key files:
-
-- `hir.rs` — HIR node definitions.
-- `ids.rs` — `HirId`, `ModuleId`, stable identities used downstream.
-- `lower.rs` — AST -> HIR lowering.
-- `lib.rs` — public surface and architectural rationale.
-
-HIR lowering is intentionally **infallible** and performs syntax-only normalization/desugaring. It currently owns structural transformations such as synthetic `self` handling, `spec T` parameter lowering, and flattened place chains.
-
-**Does not own:** name resolution, type checking, semantic validation, or backend concerns.
-
-**Primary doc:** `docs/architecture/parsing-and-hir.md`.
-
-**Look here when:** a syntax change must survive macro expansion with stable identity, or when a syntax-only desugaring should be represented consistently for all later phases.
-
----
-
-## `compiler/omega-analyzer`
-
-**Owns:** semantic analysis: HIR in, fully typed/checked representation out.
-
-One `analysis::Analyzer` checks one top-level signature or body and is then discarded. Cross-module knowledge is obtained through `resolver::ModuleResolver`; the analyzer itself does not own filesystem/module caches.
-
-Major areas:
-
-- `analysis/`
-  - `items.rs` — item/signature analysis.
-  - `exprs.rs` — expression analysis.
-  - `calls.rs` — function/method call resolution.
-  - `specs.rs` — spec/conformance behavior.
-  - `paths.rs` — semantic path resolution.
-  - `patterns.rs` — pattern analysis.
-  - `places.rs` — place/addressability semantics.
-  - `stmts.rs` — statement analysis.
-  - `consts.rs`, `literals.rs`, `visibility.rs` — focused semantic areas.
-- `checked.rs` — checked tree consumed by later phases.
-- `resolved_type.rs` — semantic type representation.
-- `resolver.rs` — resolver interface the driver implements.
-- `context.rs` — analyzer-local/context machinery.
-- `generics.rs` — generic analysis/instantiation support.
-- `comp_eval.rs` — compile-time evaluation.
-- `layout.rs` — struct/enum/union byte layout.
-- `exhaustiveness.rs` — pattern exhaustiveness.
-- `annotations.rs` — semantic annotation handling.
-- `dead_code.rs` — dead-code analysis.
-- `target.rs` — backend-independent target vocabulary.
-- `error/` — structured analysis errors and rendering conversion.
-
-**Important invariants:**
-
-- Nodes are identified by the explicit `(HirId, Span)` pair.
-- Resolve facts once at signature time and read them back later rather than re-deriving them.
-- Generic instantiations are re-analyzed/monomorphized rather than type-erased.
-- Module/filesystem ownership belongs to the driver, not the analyzer.
-
-**Primary docs:** topic docs under `docs/`, especially:
-
-- `docs/language/generics.md`
-- `docs/language/visibility.md`
-- `docs/language/specs-and-conformance.md`
-- `docs/language/annotations-and-sizeof.md`
-- `docs/language/compile-time-evaluation.md`
-- `docs/issues/design-debt.md`
-
-**Default context wall:** for semantic work, begin inside `omega-analyzer`, the HIR types it consumes, and the relevant design docs. Parser, MIR, and codegen remain closed unless the semantic change affects their contracts.
-
----
-
-## `compiler/omega-driver`
-
-**Owns:** whole-compilation orchestration above the per-item analyzer. `omgc` constructs `Driver` and calls `Driver::compile`; this is the main entry point for the semantic compilation of a package.
-
-Core architectural rule: **every top-level item is an independent memoized query**. Same-module references, cross-module references, and generic instantiations all go through the same query model.
-
-Key files, roughly in dependency/order-of-work order:
-
-- `roots.rs` / `fs_resolve.rs` — package roots and filesystem lookup.
-- `modules.rs` — parsing, module indexing, import-graph walking.
-- `diagnostics.rs` — collection of findings and analyzer invocation.
-- `items.rs` — phase-1 item/signature queries.
-- `bodies.rs` — phase-2 body checking using signature results.
-- `conformances.rs` — project-level conformance collection/handling.
-- `compile.rs` — whole-program two-phase sweep.
-- `resolver.rs` — implementation of the analyzer's `ModuleResolver` interface.
-- `error.rs` — `CompileError` and final `CompiledProgram`.
-
-`CompiledProgram` contains checked modules, the entry module, warnings, and referenced extern functions. It is the semantic output consumed by the CLI before MIR lowering.
-
-**Primary docs:**
-
-- `docs/architecture/module-driver-and-linkage.md`
-- `docs/language/generics.md`
-- Relevant feature docs when changes affect cross-module semantics.
-
-**Look here when:** changing module discovery/imports, package roots, declaration order/query behavior, cross-module resolution, compile orchestration, or how analyzer queries are memoized.
-
----
-
-## `compiler/omega-mangle`
-
-**Owns:** Omega's standalone linker-symbol grammar and encode/decode implementation.
-
-Key files:
-
-- `symbol.rs` — backend/compiler-independent symbol model.
-- `encode.rs` — symbol encoding.
-- `demangle.rs` — decoding and human-readable demangling.
-- `grammar.rs` — grammar/tag definitions.
-- `base62.rs` — encoding helper.
-- `bin/omg_demangle.rs` — demangler CLI.
-
-**Boundary:** intentionally does not depend on analyzer/HIR compiler representations. Callers translate their own data into the standalone mangling model.
-
-**Look here when:** changing linker identity, encoded type/path grammar, overload uniqueness, or demangling behavior.
-
-**Related doc:** `docs/architecture/module-driver-and-linkage.md`.
-
----
-
-## `compiler/omega-mir`
-
-**Owns:** the backend-independent control-flow representation between semantic analysis and code generation.
-
-Pipeline position:
-
-```text
-CheckedModule -> omega_mir::lower_program -> MirModule -> omega-codegen
-```
-
-Key files:
-
-- `mir.rs` — MIR item/expression/module data.
-- `body.rs` — CFG body, blocks, locals, terminators.
-- `ids.rs` — block/local identities.
-- `lower/` — checked-tree -> MIR lowering.
-  - `function.rs` — function/body lowering.
-  - `item.rs` — item lowering.
-  - `place.rs` — place lowering.
-- `mangle.rs` — construction of final symbols/linkage using `omega-mangle`.
-- `lib.rs` — `lower_program` entry point.
-
-**Important invariants:**
-
-- Monomorphization is already complete before MIR lowering.
-- MIR makes control flow explicit as a CFG; most non-control-flow expressions remain tree-shaped.
-- Shared backend facts such as final linker symbols/linkage are decided here once and read by all backends.
-- Modules lower independently; MIR lowering is not a whole-program semantic pass.
-
-**Primary doc:** `docs/architecture/mir-and-codegen.md`.
-
-**Default context wall:** backend internals are normally irrelevant to MIR changes unless changing the MIR/backend contract.
-
----
-
-## `compiler/omega-codegen`
-
-**Owns:** translating MIR into final backend output.
-
-Shared/backend-neutral areas:
-
-- `lib.rs` — backend selection, `CodegenRequest`, output kinds, optimization level.
-- `abi.rs` — shared ABI decisions.
-- `preflight.rs` — backend-independent preflight rejection/checks.
+Consumes MIR through a shared `CodegenRequest`. Shared preflight, layout/ABI inputs, symbols, and linkage must agree before backend-specific emission.
 
 Backends:
 
-- `cranelift/` — Cranelift implementation.
-- `llvm/` — LLVM implementation.
+- `cranelift/`
+- `llvm/`
 
-Each backend has mirrored areas such as `function.rs`, `expr.rs`, `place.rs`, `item.rs`, `leaf.rs`, and `vtable.rs`.
+**Boundary:** backends translate already-decided semantics. They should not independently implement overload resolution, language validity, aggregate layout policy, or symbol identity.
 
-**Important boundaries:**
+### `compiler/omega-mangle`
 
-- Codegen consumes already-lowered MIR control flow; it should not reconstruct source-level CFG semantics.
-- Final linker symbols/linkage come from MIR rather than being re-derived by each backend.
-- Aggregate layout is owned by `omega-analyzer::layout`, not independently by backends.
-- Backend-specific target vocabulary stays inside the corresponding backend; `omega-analyzer::Target` is the shared compiler vocabulary.
+Standalone symbol encoder/decoder/demangler. It intentionally does not depend on analyzer/compiler representations; `omega-mir` adapts compiler identities/types to the mangling vocabulary.
 
-**Primary doc:** `docs/architecture/mir-and-codegen.md`.
+### `compiler/omgc`
 
-**Default context wall:** when fixing one backend, do not automatically inspect the other. Compare both only when changing a shared contract or enforcing backend parity.
+CLI/toolchain frontend. Parses options, constructs the driver, calls semantic compilation, lowers the returned program to MIR, chooses a backend, invokes codegen, and writes output.
 
----
+## Cross-cutting owners
 
-## `compiler/omgc`
+Some concepts span multiple phases but must still have one decision owner:
 
-**Owns:** the command-line compiler frontend.
+- **Grammar/source shape:** parser.
+- **Stable source identity:** HIR.
+- **Language semantics:** analyzer; driver supplies cross-module/query state.
+- **Aggregate size/alignment/field offsets/leaves:** `omega-analyzer::layout`.
+- **Compile-time semantic values:** analyzer/driver const-eval query path.
+- **Shared Omega parameter/result ABI:** `omega-codegen::abi`.
+- **Mangled symbol grammar:** `omega-mangle`.
+- **Concrete final symbol + strong/weak linkage:** MIR lowering.
+- **Backend-native values/blocks/objects:** the selected codegen backend.
+- **Source diagnostic rendering:** `omega-diagnostics` + CLI source lookup/highlighting.
 
-`src/main.rs` handles CLI arguments and connects the major phases:
+Later phases should consume these decisions rather than re-derive them.
+
+## Runtime and packages
+
+The runtime is separate from the compiler workspace and is compiled as ordinary Omega packages/objects:
 
 ```text
-CLI / package roots
-    -> omega_driver::Driver
-    -> CompiledProgram
-    -> omega_mir::lower_program
-    -> omega_codegen::generate
-    -> object / textual output
+runtime/core       portable foundational package; limited ambient compiler privilege
+runtime/std        higher-level standard library
+runtime/plat/*     platform capability implementations presented as package `plat`
+runtime/shims      target-specific low-level assembly glue
 ```
 
-It also selects target/backend/optimization/output mode and renders diagnostics/progress.
+`core` owns primitives/inherent methods and ambient exposed names/macros. `std` and `plat` are ordinary explicitly registered packages. Platform capability composition uses Omega `gap`/`glue`, not an implicit native runtime registry.
 
-**Look here when:** changing CLI flags, compiler invocation behavior, phase wiring, output handling, or user-facing command-line behavior.
+## Architectural invariants
 
----
+When changing the compiler, preserve these unless the change intentionally redesigns them:
 
-# Runtime and libraries
+1. **One fact, one owner.** Do not duplicate semantic/layout/ABI/symbol decisions across phases.
+2. **Resolve once, read back later.** Store decided facts and consume them downstream.
+3. **Backend parity above backends.** Shared validity, layout, ABI, symbols, and linkage cannot silently diverge between LLVM and Cranelift.
+4. **Crate boundaries are contracts.** Cross them through public data/interfaces rather than duplicating another crate's logic.
+5. **Determinism is observable.** IDs, diagnostics, declarations, symbols, and output order must not accidentally depend on randomized map/set iteration.
+6. **Separate compilation is real.** Package identity, mangling, ABI, and duplicate weak monomorphization behavior are cross-process contracts.
+7. **Semantic invalidity belongs before backend emission** wherever it can be rejected uniformly.
 
-## `runtime/core`
+## Task routing
 
-Portable core facilities and primitive-facing language support.
+### Syntax/grammar only
 
-Includes primitives, comparison, iteration/ranges, `Option`, and the platform capability declarations used by higher-level libraries.
+Start with `omega-parser` + relevant `docs/language/` grammar/feature chapter. Open HIR only if the downstream source shape changes.
 
-Relevant docs include:
+### Syntax desugaring / stable identity
 
-- `docs/guide/core-library.md`
-- `docs/language/iteration-and-ranges.md`
-- `docs/language/gaps-and-glue.md`
+Start with `omega-hir` + [`parsing-and-hir.md`](docs/architecture/parsing-and-hir.md). Open analyzer only if semantics change.
 
-## `runtime/plat`
+### Names, types, calls, generics, specs, patterns, compile-time semantics
 
-Default platform glue. Today it provides platform implementations on top of libc-facing declarations.
+Start with `omega-analyzer` + the relevant normative language chapter. Open driver only for cross-module/query/cache/instantiation-lifetime questions.
 
-Primary doc: `docs/guide/platform-glue.md`.
+### Packages, imports, externs, demand-driven item resolution
 
-## `runtime/std`
+Start with `omega-driver` + [`module-driver-and-linkage.md`](docs/architecture/module-driver-and-linkage.md).
 
-Portable standard-library data structures and facilities built above `core` and platform capabilities.
+### Runtime control flow
 
-Includes allocation helpers, formatting/I/O, strings, lists, linked lists, hashing, maps, and sets.
+Start with `omega-mir` + [`mir-and-codegen.md`](docs/architecture/mir-and-codegen.md).
 
-Primary docs:
+### Representation / ABI change
 
-- `docs/guide/standard-library.md`
-- `docs/guide/console-io.md`
+Start with semantic type + [`types-layout-and-const-eval.md`](docs/architecture/types-layout-and-const-eval.md) and [`abi-and-representation.md`](docs/architecture/abi-and-representation.md). Audit MIR, both backends, mangling, and mixed-backend/separate-compilation tests only if their contracts are affected.
 
-## `runtime/shims`
+### Backend-only emission issue
 
-Target-specific assembly/low-level glue that cannot live as ordinary portable Omega code.
+Start with the selected backend. Inspect both backends only when the behavior belongs to a shared contract or parity requirement.
 
-Do not inspect this directory for ordinary language/compiler work unless the behavior crosses the compiler/runtime ABI or target boundary.
+### Symbols / linkage / duplicate monomorphizations
 
----
+Start with [`symbol-mangling.md`](docs/architecture/symbol-mangling.md), then `omega-mir` and `omega-mangle`; include driver only when ownership/provenance changes.
 
-# Tests and examples
+### Runtime/core/std/platform capability
 
-- Most compiler crates contain focused Rust unit/regression tests near the implementation they exercise.
-- `examples/` contains end-to-end Omega packages used to exercise full compilation/runtime behavior.
-- Root `tests/*.expected` and `.stdin` files support end-to-end `just` recipes.
-- `justfile` is the main integration build/test entry point, including Cranelift, LLVM, and mixed-backend scenarios.
+Start with the relevant `runtime/` package + [`runtime-and-platform.md`](docs/architecture/runtime-and-platform.md). Keep compiler internals closed unless compiler privilege/language support changes.
 
-When planning verification, prefer the narrowest existing test layer that proves the behavior, then add an end-to-end recipe only when the behavior crosses compiler/runtime/backend boundaries.
+## Documentation authority
 
----
+- `docs/language/` — normative intended Omega semantics.
+- `docs/architecture/` — intended compiler/runtime architecture and ownership.
+- current source — exact mechanics the compiler currently implements.
+- `docs/guide/` — explanatory/programmer-facing material.
+- `docs/issues/` — known deviations, unsupported cases, and design debt.
+- `docs/plan/` — historical intent; not current authority.
 
-# Where to look by task
-
-| Task / question | Start here | Usually also relevant | Usually avoid initially |
-|---|---|---|---|
-| Lexing/token spelling | `omega-parser/src/lexer.rs` | parser diagnostics, `docs/language/grammar.md`, `docs/architecture/parsing-and-hir.md` | analyzer/MIR/codegen |
-| Grammar / syntax | `omega-parser/src/parser/` | AST, relevant language doc | MIR/backends |
-| Macro behavior | `omega-parser/src/macros.rs` | macro parser, `docs/language/macros.md`, HIR boundary | analyzer unless semantics change |
-| Post-expansion representation | `omega-hir` | parser AST, `docs/language/grammar.md`, `docs/architecture/parsing-and-hir.md` | backends |
-| Name resolution | `omega-analyzer/src/analysis/paths.rs`, `resolver.rs` | driver resolver/module queries, `docs/language/modules-and-imports.md`, `docs/architecture/module-driver-and-linkage.md` | MIR/codegen |
-| Types / semantic checking | `omega-analyzer` | HIR types, relevant feature docs | backend internals |
-| Calls / overload resolution | `analysis/calls.rs` | `resolved_type.rs`, generics/specs as required | parser/codegen unless contract changes |
-| Specs / conformances | `analysis/specs.rs` | driver conformances, `docs/language/specs-and-conformance.md` | backends initially |
-| Generics / monomorphization | analyzer generics + driver item queries | `docs/language/generics.md` | codegen unless representation changes |
-| Compile-time evaluation | `comp_eval.rs` | `docs/language/compile-time-evaluation.md` | backends |
-| Modules/imports/packages | `omega-driver` | analyzer resolver interface, `docs/language/modules-and-imports.md`, `docs/architecture/module-driver-and-linkage.md` | MIR/codegen |
-| Layout / ABI representation | analyzer `layout.rs` + codegen `abi.rs` | relevant type docs | parser unless syntax changes |
-| Control-flow lowering | `omega-mir/src/lower/` | checked tree, `docs/architecture/mir-and-codegen.md` | backend internals initially |
-| Mangling / linker identity | `omega-mir/src/mangle.rs`, `omega-mangle` | module/linkage docs | parser |
-| Backend-independent codegen | codegen root/ABI/preflight | MIR | parser/HIR |
-| Cranelift bug | `omega-codegen/src/cranelift/` | MIR contract | LLVM unless shared issue |
-| LLVM bug | `omega-codegen/src/llvm/` | MIR contract | Cranelift unless shared issue |
-| CLI / compile invocation | `omgc/src/main.rs` | driver/codegen public APIs | compiler internals not implicated |
-| Core library behavior | `runtime/core` | relevant docs | compiler unless language behavior is involved |
-| Standard library behavior | `runtime/std` | `runtime/core`, `docs/guide/standard-library.md` | compiler unless necessary |
-| Platform glue | `runtime/plat`, `runtime/shims` | `docs/language/gaps-and-glue.md`, `docs/guide/platform-glue.md` | unrelated compiler passes |
-
----
-
-# Cross-cutting design principles
-
-These are established project-wide patterns; consult `docs/README.md` and the relevant topic doc before changing them.
-
-- **Structured, span-anchored diagnostics.** Avoid raw diagnostic strings and speculative hints.
-- **Monomorphization, not erasure.** Generic code is analyzed per concrete instantiation.
-- **Mirror, don't unify by default.** Parallel struct/enum/union pipelines are often intentional rather than accidental duplication.
-- **Resolve once; read back everywhere.** Cache semantic decisions at the owning phase instead of re-deriving them later.
-- **Root-cause fixes over narrow patches.** Generalize a bug fix to the actual pattern when the evidence supports it.
-- **One fact, one owner.** Avoid maintaining the same semantic/grammar/backend decision independently in multiple places.
-
----
-
-# Documentation routing
-
-`docs/README.md` defines the documentation authority model. Do not read documentation sequentially; route by question:
-
-| Question | Primary documentation |
-|---|---|
-| “How do I write valid Omega syntax?” | `docs/guide/quick-reference.md` |
-| “What does this Omega program mean?” | relevant `docs/language/` chapter |
-| “How does this compiler implement it?” | this file -> relevant `docs/architecture/` -> source |
-| “Is this broken/incomplete/known debt?” | relevant `docs/issues/` entry |
-| “How do I use/build core/std/platform facilities?” | `docs/guide/` |
-| “Why was an old implementation decision made?” | `docs/plan/` / git history, only if current sources are insufficient |
-
-Common language routes:
-
-- lexical tokens/comments/literals: `docs/language/lexical-structure.md`
-- complete syntax shape: `docs/language/grammar.md`
-- functions: `docs/language/functions.md`
-- types/primitives/pointers/arrays: `docs/language/types-and-primitives.md`
-- bindings/mutability: `docs/language/bindings-and-mutability.md`
-- control flow/operators: `docs/language/control-flow-and-operators.md`
-- structs/unions: `docs/language/structs-and-unions.md`
-- enums/patterns: `docs/language/enums-and-pattern-matching.md`
-- generics: `docs/language/generics.md`
-- visibility/reveal: `docs/language/visibility.md`
-- specs/conformance/dispatch: `docs/language/specs-and-conformance.md`
-- annotations/sizeof: `docs/language/annotations-and-sizeof.md`
-- modules/imports: `docs/language/modules-and-imports.md`
-- FFI/extern: `docs/language/foreign-function-interface.md`
-- strings/casts/slices: `docs/language/strings-casts-arrays-and-slices.md`
-- macros: `docs/language/macros.md`
-- iteration/ranges: `docs/language/iteration-and-ranges.md`
-- compile-time evaluation: `docs/language/compile-time-evaluation.md`
-- zero-sized markers: `docs/language/marker-types.md`
-- gaps/glue: `docs/language/gaps-and-glue.md`
-
-`docs/plan/` contains historical implementation plans. Do not search or read it by default during feature work, cleanup, review, or debugging.
-
----
-
-# Updating this file
-
-Update `ARCHITECTURE.md` only when a **navigation-level architectural fact** changes, for example:
-
-- a crate/subsystem gains or loses ownership of a responsibility;
-- a major pipeline boundary moves;
-- a new major crate/backend/runtime layer appears;
-- the canonical entry point for a concern changes;
-- a new current design document becomes the primary route for a subsystem.
-
-Do **not** expand this file with detailed algorithms, exhaustive symbol lists, historical rationale, feature specifications, or implementation notes. Those belong in source documentation or the relevant topic document.
+If implementation behavior conflicts with `docs/language/`, check `docs/issues/` rather than silently redefining the language. If source mechanics conflict with architecture docs, establish whether the source or architecture documentation is stale before propagating the discrepancy.

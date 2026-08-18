@@ -42,7 +42,7 @@ For each changed hunk:
 Use documentation according to responsibility when the diff changes behavior:
 
 - `docs/language/` for normative language semantics;
-- `docs/architecture/` for implementation architecture;
+- `docs/architecture/README.md` to route to the relevant implementation-architecture document;
 - `docs/guide/quick-reference.md` when reviewing generated/changed `.omg` syntax;
 - relevant `docs/issues/` for known deviations/debt.
 
