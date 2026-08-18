@@ -1,21 +1,8 @@
-//! Omega deliberately reserves as few words as it can: 18 words are
-//! keywords only at one grammar position and ordinary identifiers
-//! everywhere else (see `omega_parser::parser::contextual`). That property
-//! is easy to break by accident -- promoting a word to a real
-//! `TokenKind`, or widening a lookahead so it commits too early, silently
-//! narrows the language.
-//!
-//! These tests are driven by the registry itself, so a newly-added
-//! contextual keyword is covered the moment it is registered rather than
-//! whenever someone remembers to write a test for it.
 
 use omega_parser::SourceModule;
 use omega_parser::parser::contextual;
 use omega_parser::prelude::Item;
 
-/// Every registered word, used in the three positions an ordinary
-/// identifier can appear in: a binding name, a function name, and a
-/// referenced value.
 #[test]
 fn every_contextual_keyword_stays_an_ordinary_identifier() {
     for word in contextual::ALL {
@@ -34,14 +21,9 @@ fn every_contextual_keyword_stays_an_ordinary_identifier() {
     }
 }
 
-/// The same words as a *function parameter* name and a struct field name --
-/// positions where a lookahead that commits on the bare word (rather than
-/// on the whole shape) would misfire.
 #[test]
 fn every_contextual_keyword_works_as_a_parameter_and_field_name() {
     for word in contextual::ALL {
-        // `self` is genuinely reserved in first-parameter position -- that
-        // is the one place it is a keyword, so it is not a counterexample.
         let params = if *word == contextual::SELF {
             format!("a: i32, {word}: i32")
         } else {
@@ -57,8 +39,6 @@ fn every_contextual_keyword_works_as_a_parameter_and_field_name() {
     }
 }
 
-/// The registry must not drift out of sync with itself: duplicate entries
-/// would make `ALL` a misleading answer to "which words are reserved".
 #[test]
 fn the_registry_has_no_duplicates() {
     let mut sorted = contextual::ALL.to_vec();

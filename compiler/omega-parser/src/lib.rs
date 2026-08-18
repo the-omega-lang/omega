@@ -1,6 +1,3 @@
-//! Omega's lexer, parser, macro expander, and syntax tree.
-//! [`prelude`] is this crate's supported surface; the module layout under
-//! [`ast`] and [`parser`] is an implementation detail.
 
 pub mod ast;
 pub mod diagnostics;
@@ -40,9 +37,6 @@ mod tests {
     use crate::ast::item::Item;
     use crate::diagnostics::ParseErrorKind;
 
-    /// Every `ParseErrorKind` `source` reports, in order -- lets a negative
-    /// test assert the *specific* diagnostic rather than just "some error",
-    /// which is what makes it a regression test instead of a smoke test.
     fn errors(source: &str) -> Vec<ParseErrorKind> {
         SourceModule::parse(source)
             .err()
@@ -76,9 +70,6 @@ mod tests {
         ));
     }
 
-    /// Both forms are implicitly global (see `PLAN.md`), so a visibility
-    /// modifier is a syntax error rather than something analysis has to
-    /// decide the meaning of later.
     #[test]
     fn gap_and_glue_reject_a_visibility_modifier() {
         for source in [
@@ -97,10 +88,6 @@ mod tests {
         }
     }
 
-    /// Exactly *one* error each -- the generics list is consumed as recovery
-    /// (`reject_gap_glue_generics`) so the rest of the item still parses,
-    /// rather than being resynchronized into a second and third report of
-    /// the same mistake.
     #[test]
     fn gap_and_glue_reject_generics_without_cascading() {
         assert!(matches!(
@@ -122,10 +109,6 @@ mod tests {
         .expect("both new contextual grammar forms should parse");
     }
 
-    /// `gap`/`glue` are contextual keywords recognized only at item
-    /// position, and only when followed by another identifier -- so both
-    /// stay usable as ordinary names, including as top-level bindings in
-    /// the same file as a real declaration (the one-token lookahead case).
     #[test]
     fn gap_and_glue_stay_ordinary_identifiers() {
         let module = SourceModule::parse(
@@ -148,11 +131,6 @@ mod tests {
         assert!(matches!(module.nodes[5].item, Item::FunctionDefinition(_)));
     }
 
-    /// A module genuinely named `glue` (the only remaining first-party
-    /// collision shape after `core::glue` was renamed to `core::platform`)
-    /// must still be importable and path-referencable alongside a real
-    /// `glue` declaration -- `glue` leads an item only when it isn't
-    /// followed by `::`-style path continuation handled by other arms.
     #[test]
     fn a_module_named_glue_coexists_with_a_glue_declaration() {
         let module = SourceModule::parse(
@@ -218,7 +196,6 @@ mod tests {
         assert!(
             SourceModule::parse("spec Ops { value(*self) => i32; } struct S : Ops {}").is_err()
         );
-        // `conform Target : Spec` -- the separator the `to` spelling replaced.
         assert!(matches!(
             errors("spec Show { show(*self) => i32; } struct S {} conform S : Show { show(*self) => i32 { 1 } }")
                 .as_slice(),
@@ -233,9 +210,6 @@ mod tests {
         ));
     }
 
-    /// A `glue` function may be neither generic nor `self`-taking. This has
-    /// its own error rather than reusing `Expected`, whose `found` field is
-    /// documented as built from a `TokenKind`, not prose.
     #[test]
     fn glue_rejects_generic_and_self_taking_functions() {
         for source in [
@@ -252,10 +226,6 @@ mod tests {
         }
     }
 
-    /// The names of the members the *last* item in `source` parsed, and how
-    /// many errors were reported. `SourceModule::parse` discards the tree
-    /// whenever anything failed, which is exactly what a recovery test needs
-    /// to see, so this drives the parser directly.
     fn recovered_members(source: &str) -> (Vec<String>, usize) {
         let (tokens, lex_errors) = lexer::tokenize(source);
         let mut parser = parser::Parser::new(&tokens);
@@ -275,15 +245,8 @@ mod tests {
         )
     }
 
-    /// Every item body recovers per member: one malformed declaration
-    /// reports one error, and the members after it still parse. `conform`,
-    /// `primitive`, `gap` and `glue` used to abandon the whole item on the
-    /// first bad member while `struct`/`union`/`enum` recovered -- the same
-    /// mistake reported differently depending on which block it was in.
     #[test]
     fn every_item_body_recovers_per_member() {
-        // `?` is not a type, so `bad` is malformed; `good` must still land
-        // in the *same* item rather than being lost with it.
         for source in [
             "struct S { bad(*self) => ? { } good(*self) => i32 { 1 } }",
             "spec Sp { m(*self) => i32; }\n\
@@ -306,14 +269,6 @@ mod tests {
         }
     }
 
-    /// `ParseError::to_diagnostic` is now the single definition site for
-    /// every error's text, and `Display` reads its headline back from there.
-    /// The compiler still forces a *new* variant to be given an arm (that
-    /// match is exhaustive), but nothing forces the arm it gets to actually
-    /// say anything -- an arm returning a bare `Diagnostic::error("")` would
-    /// compile and render a blank error. This asserts the two properties
-    /// every arm must have: a non-empty headline, and at least one label to
-    /// anchor it.
     #[test]
     fn every_parse_error_renders_a_headline_and_a_label() {
         use crate::ast::identifier::Ident;
@@ -371,7 +326,6 @@ mod tests {
                 "{kind:?} renders no headline"
             );
             assert!(!rendered.labels.is_empty(), "{kind:?} renders no label");
-            // `Display` must agree with the headline it now reads back.
             assert_eq!(kind.to_string(), rendered.message, "{kind:?}");
         }
     }

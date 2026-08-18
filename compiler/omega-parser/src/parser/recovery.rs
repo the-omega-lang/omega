@@ -1,39 +1,11 @@
-//! Panic-mode error recovery: after a construct fails to parse, skip
-//! forward to a plausible boundary and keep going, so one mistake produces
-//! one error instead of aborting the whole file. Two granularities --
-//! top-level item boundaries and function-body statement boundaries -- since
-//! a malformed sub-expression already means its enclosing statement can't be
-//! trusted.
-//!
-//! Both helpers here are bracket-depth-aware: an entire `(...)`/`[...]`/
-//! `{...}` is skipped as one atomic unit, so e.g. a `;` inside a function
-//! call's argument list is never mistaken for a statement terminator.
-//!
-//! **Not** handled here: `for init; cond; post { ... }`'s own two internal,
-//! unparenthesized clause-separator `;`s -- stopping at the next depth-0 `;`
-//! while still inside the header would resynchronize mid-header rather than
-//! at the loop's actual boundary. `for`'s own parsing function handles that
-//! separately, by skipping its whole body as a unit instead (see
-//! `parser::statement::parse_for`).
 
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 
-/// Recovers after a failed top-level item: skips to the next depth-0 `;`
-/// (consumed) or a token that plausibly starts a new item, whichever comes
-/// first. A stray depth-0 `}` is consumed and skipped -- there is no
-/// enclosing block at item level for it to close, and stopping *at* it
-/// (like statement recovery does) would stall `parse_source_module` on the
-/// same token forever.
 pub fn synchronize_to_item_boundary(p: &mut Parser) {
     synchronize(p, starts_item, false);
 }
 
-/// Recovers after a failed statement: skips to the next depth-0 `;`
-/// (consumed) or a token that plausibly starts a new statement, whichever
-/// comes first -- additionally stopping (without consuming) at an
-/// unconsumed `}`, so the enclosing block still finishes cleanly instead of
-/// recovery eating its way out of the block entirely.
 pub fn synchronize_to_statement_boundary(p: &mut Parser) {
     synchronize(p, starts_statement, true);
 }
@@ -58,12 +30,6 @@ fn synchronize(p: &mut Parser, starts_boundary: fn(&TokenKind) -> bool, stop_at_
     }
 }
 
-/// Consumes a `(...)`/`[...]`/`{...}` group wholesale, tracking nesting
-/// depth across all three bracket kinds together rather than per-kind --
-/// fine here since recovery is already operating on malformed input and
-/// only needs to be a reasonable best effort. Assumes `p.peek()` is
-/// currently one of the three opening delimiters. `pub(crate)`: also used
-/// by `parser::statement::recover_for_header`.
 pub(crate) fn skip_balanced_group(p: &mut Parser) {
     let mut depth = 0usize;
     loop {

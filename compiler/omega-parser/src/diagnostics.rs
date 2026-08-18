@@ -1,18 +1,9 @@
-//! Parse-time error types, and their conversion into renderable
-//! [`Diagnostic`]s. The position/rendering machinery itself
-//! ([`Span`], `SourceFile`, `Renderer`) lives in `omega_diagnostics` -- this
-//! module only owns what a *parser* knows: which grammar rule failed, and
-//! what advice helps fix it.
 
 use crate::ast::identifier::Ident;
 use omega_diagnostics::Diagnostic;
 pub use omega_diagnostics::Span;
 use std::fmt;
 
-/// One parse-time problem, anchored at the span it concerns. Recoverable:
-/// `omega_parser`'s lexer/parser keep going after producing one of these
-/// (see `parser::recovery`), collecting as many as it can into one
-/// `Vec<ParseError>` rather than stopping at the first.
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub span: Span,
@@ -24,13 +15,6 @@ impl ParseError {
         Self { span, kind }
     }
 
-    /// This error's complete renderable form -- headline, the caret label at
-    /// the offending span, and any `note:`/`help:` footers. The **one**
-    /// place an error's text lives; `Display` reads its headline back from
-    /// here (see below), so adding an error means adding exactly one arm.
-    ///
-    /// Advice is attached only where it is always true; a wrong hint is
-    /// worse than none.
     pub fn to_diagnostic(&self) -> Diagnostic {
         match &self.kind {
             ParseErrorKind::Expected { expected, found } => Diagnostic::error(format!("expected {expected}, found {found}")).with_label(self.span, format!("expected {expected}")),
@@ -153,19 +137,10 @@ impl ParseError {
     }
 }
 
-/// A short, human-readable name for what was actually found at a failure
-/// point -- built directly from a `TokenKind` by the lexer/parser, kept as
-/// an owned `String` here (rather than borrowing a `Token`) so a
-/// `ParseError` never needs to outlive the token stream it was produced
-/// from.
 pub type TokenDescription = String;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseErrorKind {
-    /// The general-purpose "this grammar rule didn't match" case, covering
-    /// most parser call sites -- `expected` is a short, static description
-    /// of what the parser was looking for (e.g. `"a type"`, `"';'"`,
-    /// `"an expression"`).
     Expected {
         expected: &'static str,
         found: TokenDescription,
@@ -173,136 +148,50 @@ pub enum ParseErrorKind {
     UnterminatedString,
     UnterminatedChar,
     UnterminatedComment,
-    /// A multi-line string's opening delimiter (`"""..."""`-style, N >= 3
-    /// quotes) used an even `count` -- disallowed, since an even-length
-    /// delimiter could otherwise be confused with two shorter,
-    /// separately-closed runs; see `Lexer::scan_string_or_multiline`.
-    /// Recorded but non-fatal: lexing still produces a best-effort `Str`
-    /// token (searching for a closing run of the same `count` regardless)
-    /// so a single malformed delimiter doesn't cascade into unrelated
-    /// downstream errors.
     EvenMultilineStringDelimiter {
         count: usize,
     },
-    /// A macro-body/argument capture (`{ ... }`/`( ... )`) never found its
-    /// matching close delimiter before EOF.
     UnterminatedGroup {
         open: char,
     },
     InvalidCharacter(char),
     InvalidUnicodeEscape(String),
-    /// An empty character literal (`''`), or one containing more than one
-    /// character/escape.
     InvalidCharLiteral,
-    /// A struct literal written directly in `if`/`while`/`for` condition
-    /// position, where its `{` would be ambiguous with the statement's own
-    /// body block -- only reported when the speculative parse is *sure*
-    /// (see `parser::expression::parse_primary`'s restricted-`Ident` case),
-    /// never on a mere possibility.
     StructLiteralNotAllowedHere,
-    /// A function definition where an enum variant was expected -- the
-    /// variant list must be ended with `;` before functions can follow
-    /// (see `parser::item::parse_enum_def`).
     EnumFunctionBeforeSemi,
-    /// An `enum` declaration in statement position -- enums are top-level
-    /// items only.
     EnumNotAllowedHere,
-    /// A `struct` declaration in statement position -- structs are
-    /// top-level items only: a locally-nested one would bypass the
-    /// driver's whole module-level query/cache/cycle-detection system, with
-    /// no forward-reference or cross-item support and no working
-    /// self-reference-cycle guard.
     StructNotAllowedHere,
-    /// A `union` declaration in statement position -- same reasoning as
-    /// `StructNotAllowedHere`.
     UnionNotAllowedHere,
-    /// A `spec` declaration in statement position -- same reasoning as
-    /// `StructNotAllowedHere`.
     SpecNotAllowedHere,
-    /// `spec Name = A | B { ... }` -- the alias form is pure union syntax
-    /// sugar (see `ast::statement::spec::SpecStmt`'s doc comment) and can't
-    /// carry its own function members the way a `spec Name : A, B { ... }`
-    /// declaration can.
     SpecAliasCannotDeclareFunctions,
-    /// `..<`/`..=` with no end bound (`a..<`/`a..=`, or bare `..<`/`..=`)
-    /// -- unlike `..`, an inclusive or exclusive range's whole point is a
-    /// specific end, so an open-ended one is meaningless; write bare `..`
-    /// instead if that's really what's meant. See `ast::range::RangeExpr`.
     RangeMissingEnd,
-    /// `..` immediately followed by something other than the range's own
-    /// terminator (`]` for a slice, `=>` for a match pattern, `{` for a
-    /// range-driven `for` loop's body) -- `..` never takes an end at all;
-    /// this almost always means `..=`/`..<` was meant instead.
     OpenRangeHasEnd,
-    /// A second comparison operator after a non-associative comparison.
     ChainedComparison,
-    /// Grammar nesting exceeded `parser::MAX_NESTING_DEPTH`. Reported once
-    /// per module rather than per offending token: the parser refuses to
-    /// descend, and block-level error recovery would otherwise re-enter and
-    /// re-report the same overflow for every remaining statement.
     NestingTooDeep { limit: usize },
-    /// One or more `@name(...)` annotations directly above an item that has
-    /// nowhere to store them -- only structs, enums, unions, and functions
-    /// (top-level or member) carry an `annotations` list at all; annotating
-    /// an `extern`/`import`/plain declaration/macro is rejected here rather
-    /// than silently dropped.
     AnnotationNotAllowedHere,
-    /// A leading `exposed`/`internal` directly above an item that has
-    /// nowhere to store a visibility (`import`/macro definition/macro
-    /// invocation) -- rejected here rather than silently dropped, same
-    /// precedent as `AnnotationNotAllowedHere`.
     VisibilityNotAllowedHere,
     GapOrGlueVisibility,
     ConformMethodVisibility,
     PrimitiveVisibility,
-    /// A `<...>` list on a `gap` name or a `glue` target path. Reported
-    /// (and then *consumed* by the caller, see `parse_gap_def`) rather than
-    /// aborting the item, so the one real mistake produces one error
-    /// instead of a cascade from re-reading `<T>` as a fresh top-level item.
     GapOrGlueGeneric,
-    /// A `gap` function written with a body. Default-bodied gap functions
-    /// are a deliberately deferred *feature*, not a shape rule -- see this
-    /// error's own note in `ParseError::to_diagnostic` for what implementing
-    /// one would take, and `docs/issues/known-issues.md`.
     GapFunctionBody {
         name: Ident,
     },
-    /// A `gap` function declared with any `self` at all -- gap functions
-    /// are static, symbol-bound calls; there is no instance to hang a
-    /// `self` off of.
     GapFunctionSelf {
         name: Ident,
     },
-    /// A glue function is generic or takes `self`; glue functions are static.
     GlueFunctionShape { name: Ident },
-    /// A generic parameter with no default followed one that does have one
-    /// (`<T = i32, U>`) -- positional generic arguments make "explicit
-    /// prefix, defaulted suffix" the only unambiguous omission shape, so
-    /// this is rejected right where the full `<...>` list is known, before
-    /// it ever reaches HIR. See `omega_parser::ast::generics::GenericParam`'s
-    /// doc comment.
     DefaultGenericParamNotTrailing {
         name: Ident,
     },
-    /// The removed `spec Name : Dep, Dep` provisioning form. A spec is a
-    /// contract about what an implementer provides, never a list of other
-    /// specs to also satisfy -- name the combination with an alias
-    /// (`spec Name = A + B;`) or spell the conjunction at the bound
-    /// (`<T: A + B>`), and conform each member separately.
     SpecDependenciesRemoved,
     MacroInvocationNotAllowedAfterDefer,
     VariadicMacroParamNotLast,
     InvalidMacroSeparator,
     NestedMacroRepetition,
-    /// An `import` in a macro body would mutate the caller's namespace even
-    /// though the body's own paths are definition-site resolved.
     ImportInMacroBody,
 }
 
-/// The headline only, read back from `ParseError::to_diagnostic` so the two
-/// can never disagree. Used where there is no span to render against -- most
-/// visibly `omega_parser::macros`, which joins parse failures from a
-/// re-parsed expansion into one message.
 impl fmt::Display for ParseErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let rendered = ParseError::new(Span::default(), self.clone()).to_diagnostic();

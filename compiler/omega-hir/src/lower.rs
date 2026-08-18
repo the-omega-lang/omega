@@ -17,10 +17,6 @@ use omega_parser::prelude::{
     SpecStmt, Statement, StatementNode, StructStmt, Type, UnionStmt, Visibility,
 };
 
-/// Lowers a freshly parsed module into HIR. Infallible: everything this does
-/// is a pure structural transform (assigning ids, desugaring `self`-insertion
-/// and place-chains) with no rejectable cases -- semantic analysis remains
-/// the only pass that can reject a program.
 pub fn lower_module(module: ModuleId, ast: &SourceModule) -> HirModule {
     let mut lowerer = Lowerer {
         ids: HirIdGen::new(module),
@@ -146,14 +142,6 @@ impl Lowerer {
         self.lower_statement(&node.statement, node.span)
     }
 
-    /// Most statements lower into exactly one `HirStmt`; `ident : type =
-    /// value;` lowers into two (a plain `Declaration` followed by an
-    /// assignment expression statement).
-    ///
-    /// Split out from `lower_stmt` (which just supplies `node.span`) so a
-    /// `for` loop's init clause -- a bare `Statement` with no
-    /// `StatementNode` span of its own -- can reuse this logic against the
-    /// enclosing `for` statement's span instead.
     fn lower_statement(&mut self, statement: &Statement, span: Span) -> Vec<HirStmt> {
         match statement {
             Statement::Declaration(decl) => {
@@ -275,9 +263,6 @@ impl Lowerer {
         }
     }
 
-    /// Lowers a `{ stmt; ... tail }` into the equivalent `HirBlock`. Shared
-    /// by bare codeblock expressions, `if`/`else` branches, `while`/`for`
-    /// bodies, and function bodies -- all identical in shape.
     fn lower_block(&mut self, block: &CodeblockExpr) -> HirBlock {
         let stmts = block
             .statements
@@ -292,11 +277,6 @@ impl Lowerer {
         }
     }
 
-    /// `is_member` is `true` when lowering a struct/union/enum method, in
-    /// which case a member function's synthetic `self: *Self` parameter is
-    /// inserted here -- this needs no type information beyond the flag, so
-    /// it belongs in lowering rather than semantic analysis, which used to
-    /// do this ad hoc.
     fn lower_function_def(
         &mut self,
         f: &FunctionDefinitionStmt,
@@ -334,32 +314,6 @@ impl Lowerer {
         }
     }
 
-    /// `f(x: spec Foo)` sugar -- an implicit, bound generic parameter,
-    /// exactly as if the caller had written `f<$ParamN: Foo>(x: $ParamN)`.
-    /// Purely mechanical (no semantic decisions: `item_generics`/
-    /// `collect_function_signature`/`ensure_item`'s bound-checking all run
-    /// completely unmodified afterward, seeing an ordinary bound generic
-    /// function) -- which is exactly why this belongs in lowering rather
-    /// than analysis, mirroring `self_param`'s identical "no type
-    /// information needed, so do it here" reasoning above. `self` can never
-    /// be `spec T`-typed (always `Self`), so it's harmless that it's
-    /// included in `params`' own indexing here.
-    ///
-    /// Recurses into the same compound shapes `unify_generic_type`/
-    /// `type_references_generics` already do (`*spec Foo`, `[spec Foo]`,
-    /// a function-typed parameter's own params/return, ...) rather than
-    /// only matching a bare top-level `spec Foo` -- `thing: *spec Speak`
-    /// (the common "pass by pointer" idiom this codebase already uses for
-    /// explicit bound generics, e.g. `animal: *T` in the specs docs) works
-    /// the same way a bare `thing: spec Speak` does.
-    ///
-    /// Every occurrence gets its *own* fresh generic (never shares one
-    /// across two `spec Foo` occurrences) -- matching Rust's `impl Trait`:
-    /// `f(a: impl Foo, b: impl Foo)` doesn't require `a`/`b` to be the same
-    /// concrete type. `$`-prefixed, matching the `$iter`/`$next` synthetic-
-    /// identifier convention the for-in loop desugaring already established
-    /// (`$` can't start a user identifier, so this can never collide with a
-    /// real generic parameter's name).
     fn desugar_spec_static_params(params: &mut [HirParam], generics: &mut Vec<HirGenericParam>) {
         let mut next = 0usize;
         for param in params.iter_mut() {
@@ -400,21 +354,6 @@ impl Lowerer {
         }
     }
 
-    /// The synthetic `self` parameter every member function gets -- struct/
-    /// union/enum methods and spec functions alike, always typed
-    /// `Type::Named("Self")` (never the owning type's own literal name).
-    /// `None` for a non-member function, so callers can push the result
-    /// unconditionally via `if let Some(p) = ...`. The built type depends on
-    /// `self_mode`: `Type::Pointer(Named("Self"), mutable)` for
-    /// `Pointer`/`MutPointer`, or plain `Type::Named("Self")` for
-    /// `Value`/`MutValue` -- `MutValue`'s local mutability is *not*
-    /// represented here at all, since parameters can never be mutable
-    /// bindings; see `self_shadow_stmt`.
-    ///
-    /// Deliberately never the owner's own bare name: `Self` is what every
-    /// struct/union/enum/spec method's own analysis substitution already
-    /// binds to the concrete owner type, so resolving through it needs no
-    /// further lookup of the owner itself.
     fn self_param(&mut self, self_mode: Option<SelfMode>, span: Span) -> Option<HirParam> {
         let mode = self_mode?;
         let self_type = Ident("Self".to_string());
@@ -436,17 +375,6 @@ impl Lowerer {
         })
     }
 
-    /// Desugars `mut self` (by value) into an implicit `mut self := self;`
-    /// as the body's first statement -- parameters can never be mutable
-    /// bindings themselves (`Analyzer::analyze_param` always declares them
-    /// immutable, and codegen has no support for writing into one), but a
-    /// parameter can always be *shadowed* by a mutable local of the same
-    /// name (the pre-existing, hand-writable `mut x := param;` idiom -- see
-    /// `Analyzer::analyze_param`'s doc comment). Auto-generating exactly
-    /// that shadow here means `mut self` needs zero new mutability
-    /// machinery anywhere downstream: the shadow is just an ordinary
-    /// mutable local in a stack slot, ranging over the rest of the body,
-    /// which already works.
     fn self_shadow_stmt(&mut self, span: Span) -> HirStmt {
         let self_ident = Ident("self".to_string());
         HirStmt::WalrusDeclaration(HirWalrusDeclaration {
@@ -467,8 +395,6 @@ impl Lowerer {
         })
     }
 
-    /// Mechanical clone of a parsed generics list into HIR's own shape --
-    /// bounds and defaults stay raw/unresolved, same as everywhere else.
     fn lower_generics(generics: &[GenericParam]) -> Vec<HirGenericParam> {
         generics
             .iter()
@@ -480,9 +406,6 @@ impl Lowerer {
             .collect()
     }
 
-    /// Mechanical clone of a parsed annotation list into HIR's own shape --
-    /// unvalidated, same as everywhere else (see `HirAnnotation`'s doc
-    /// comment).
     fn lower_annotations(annotations: &[AnnotationNode]) -> Vec<HirAnnotation> {
         annotations
             .iter()
@@ -571,12 +494,6 @@ impl Lowerer {
         }
     }
 
-    /// A function/spec/gap parameter.
-    ///
-    /// Separate from `lower_field` below because the AST distinguishes the
-    /// two -- a field carries a visibility modifier, a parameter cannot --
-    /// even though both still land in `HirParam` today (see
-    /// `docs/issues/known-issues.md`).
     fn lower_param(&mut self, param: &Param) -> HirParam {
         HirParam {
             id: self.ids.next(),
@@ -589,7 +506,6 @@ impl Lowerer {
         }
     }
 
-    /// A struct/union/enum field -- see `lower_param`.
     fn lower_field(&mut self, field: &DeclarationStmt) -> HirParam {
         HirParam {
             id: self.ids.next(),
@@ -624,8 +540,6 @@ impl Lowerer {
         }
     }
 
-    /// Same treatment as `lower_struct_def` -- member functions get their
-    /// synthetic `self: *Self` inserted by `lower_function_def`.
     fn lower_union_def(&mut self, u: &UnionStmt, span: Span) -> HirUnionDef {
         let id = self.ids.next();
         let fields = u.fields.iter().map(|f| self.lower_field(f)).collect();
@@ -647,12 +561,6 @@ impl Lowerer {
         }
     }
 
-    /// Same treatment as `lower_struct_def` -- member functions get their
-    /// synthetic `self: *Self` inserted by `lower_function_def`, exactly
-    /// like a struct's. Every field here -- header entries, the shared
-    /// dynamic fields and each variant's body fields alike -- carries its
-    /// own real span, recorded by the parser (see `lower_param`); none of
-    /// them inherits the enum's or its variant's any more.
     fn lower_enum_def(&mut self, e: &EnumStmt, span: Span) -> HirEnumDef {
         let id = self.ids.next();
         let header = e
@@ -708,16 +616,6 @@ impl Lowerer {
         }
     }
 
-    /// One lowered expression node.
-    ///
-    /// Every arm of `lower_expr` needs the same three fields, and writing
-    /// them out per arm made the id-minting *order* accidental: an arm that
-    /// bound its children in a preceding `let` minted the parent's id after
-    /// theirs, while an inline arm minted it before (Rust evaluates struct
-    /// fields in source order). Nothing depends on that order today, which
-    /// is exactly why it is worth making uniform now rather than after
-    /// something does -- here the parent's id is always minted last, after
-    /// its children.
     fn node(&mut self, span: Span, expr: HirExpr) -> HirExprNode {
         HirExprNode {
             id: self.ids.next(),
@@ -913,8 +811,6 @@ impl Lowerer {
         }
     }
 
-    /// See `HirRange`'s doc comment -- shared, structural lowering for
-    /// `HirSlice`, `HirPattern::Range`, and `HirExpr::Range` alike.
     fn lower_range(&mut self, range: &RangeExpr) -> HirRange {
         let end = match &range.end {
             RangeEnd::Inclusive(e) => HirRangeEnd::Inclusive(Box::new(self.lower_expr(e))),
@@ -935,16 +831,6 @@ impl Lowerer {
         }
     }
 
-    /// Flattens the parser's nested `FieldAccessExpr`/`IndexExpr` chains
-    /// (built left-to-right by postfix folding, e.g. `a.b.c` is
-    /// `((a).b).c`) into one `HirPlace` with a flat `Vec<HirProjection>`, in
-    /// source order. The parser itself has no idea any of this denotes an
-    /// addressable location -- `FieldAccess`/`Index`/`Ident` are just plain
-    /// expression-forming constructs to it (see `omega_parser::prelude::Expression`).
-    /// Recognizing that a chain of them rooted in an identifier (or some other
-    /// base expression) is a "place" is entirely this function's job, and it
-    /// replaces `analyze_place`'s old "hacky mutation" approach of building
-    /// the place incrementally in a shared side-table.
     fn lower_place_chain(&mut self, expr: &ExpressionNode) -> HirPlace {
         match &expr.expression {
             Expression::Path(path) => HirPlace {

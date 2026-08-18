@@ -14,24 +14,6 @@ use crate::parser::expression::{
 use crate::parser::macro_syntax::parse_macro_invocation;
 use crate::parser::{Parser, contextual, recovery};
 
-/// One statement, function-body scope. Every statement's *content* parses
-/// through one dispatch (`parse_statement_content`), and whether a trailing
-/// `;` is required is decided *after the fact*, purely by checking whether
-/// what was actually parsed is block-shaped -- not by which grammar
-/// production matched. This lets `if`/a bare `{ ... }` fall through to the
-/// plain "parse an expression" case with no special-casing: `if`/`Codeblock`
-/// are already ordinary `Expression` primaries (see `parser::expression`),
-/// and the block-shaped check recognizes them by their *outermost* shape --
-/// `{ f(); } - g()` (outermost shape `BinaryOp`) still requires `;`, while a
-/// bare `{ f(); }` (outermost shape `Codeblock`) doesn't.
-///
-/// `struct`/`while`/`for` still get dedicated dispatch (they aren't
-/// `Expression` variants at all) and are unconditionally block-shaped.
-/// `defer`'s own body just parses one statement's *content* recursively,
-/// inheriting its wrapped statement's block-shaped-ness -- terminator
-/// handling stays the sole responsibility of the outer `parse_statement`,
-/// called exactly once per statement, which is what avoids `defer foo();`
-/// having its `;` consumed twice.
 pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
     let start = p.peek_span();
     let (statement, block_shaped) = parse_statement_content(p)?;
@@ -44,11 +26,6 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
     Some(StatementNode { statement, span })
 }
 
-/// Parses one statement's content and reports whether it's block-shaped --
-/// `parse_statement` is the only caller that ever consumes a terminator for
-/// it; `defer`'s own body recurses here directly (not into `parse_statement`)
-/// specifically to avoid double-consuming a terminator (see this module's
-/// top doc comment).
 fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
     if let Some(prefix) = crate::parser::parse_binding_prefix(p) {
         return parse_walrus_or_declaration(p, prefix.mutable, prefix.comp);
@@ -124,12 +101,6 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
     }
 }
 
-/// `struct`/`enum` (or, one day, any other type-defining keyword) in
-/// statement position: both are top-level-only, so this reports `kind`
-/// once, then skips the whole declaration (name, optional header, braced
-/// body) wholesale -- leaving its remains for generic recovery would
-/// cascade into spurious errors -- and lets the caller treat this exactly
-/// like any other unparseable statement (`None`).
 fn reject_local_type_decl(p: &mut Parser, kind: ParseErrorKind) {
     p.error(kind);
     p.advance(); // 'struct'/'enum'
@@ -144,13 +115,6 @@ fn reject_local_type_decl(p: &mut Parser, kind: ParseErrorKind) {
     }
 }
 
-/// `ident := value` or `ident : Type` (optionally `= value`) -- `mutable`/
-/// `comp` are already known by the time this runs (any leading `mut`/`comp`
-/// is handled by the caller, `parse_statement_content`, since it has to
-/// decide *before* seeing which of these two shapes follows). `p.peek_at(1)`
-/// (the token right after `ident`) is what tells them apart. `comp` is only
-/// supported on the inferred (`:=`) form -- a typed declaration reports a
-/// clean error rather than silently dropping the flag.
 fn parse_walrus_or_declaration(
     p: &mut Parser,
     mutable: bool,
@@ -183,11 +147,6 @@ fn parse_walrus_or_declaration(
     }
 }
 
-/// `ident : Type` -- shared by declarations (function-body and struct-field
-/// position), and by the leading name of a function/struct's own parameter/
-/// field list. Always `mutable: false` here -- a leading `mut` (only
-/// meaningful in statement/item position) is applied by the caller
-/// afterward; struct/enum fields and parameters never check for one at all.
 pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
     let (ident, origin) = p.expect_ident_with_origin()?;
     let name_span = p.last_span();
@@ -220,8 +179,6 @@ fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {
     Some(ReturnStmt { return_value })
 }
 
-/// Always `mutable: false`/`comp: false` here -- see `parse_declaration`'s
-/// identical note; both are applied by the caller afterward.
 fn parse_walrus(p: &mut Parser) -> Option<WalrusStmt> {
     let (ident, origin) = p.expect_ident_with_origin()?;
     p.expect(&TokenKind::ColonEq, "':='");
@@ -246,31 +203,12 @@ fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
     Some(WhileStmt { condition, body })
 }
 
-/// `loop { ... }` -- no condition to parse at all, unlike `while`.
 fn parse_loop(p: &mut Parser) -> Option<LoopStmt> {
     p.expect(&TokenKind::Loop, "'loop'");
     let body = parse_codeblock(p)?;
     Some(LoopStmt { body })
 }
 
-/// `for init; cond; post { ... }` -- three semicolon-separated clauses, each
-/// independently optional, with no enclosing parens (unlike C). `init`
-/// reuses the same shapes `Statement` already has for declare-and-assign
-/// (`Walrus`, `Declaration`(`WithInit`)) or a plain expression; `return`/
-/// `extern`/`struct`/`defer` aren't included since none make sense as a
-/// loop's init clause. The `post` clause sits directly before the mandatory
-/// body `{...}` with no separating `;`, and a bare `{...}` is itself a
-/// valid expression -- so an *empty* post clause is told apart from "this
-/// `{` is the body" by checking for `{` first, with no attempt to parse an
-/// expression there at all.
-///
-/// If any clause fails to parse, recovery is local and specific to this
-/// construct rather than delegating to the generic statement-level
-/// synchronizer: `for`'s own two internal `;`s sit at bracket depth 0,
-/// indistinguishable by the generic synchronizer from a real statement
-/// terminator (see `parser::recovery`'s module doc comment) -- so instead,
-/// this scans forward for its own body's opening `{` and skips the whole
-/// body as one balanced unit, rather than resynchronizing mid-header.
 fn parse_for(p: &mut Parser) -> Option<Statement> {
     p.expect(&TokenKind::For, "'for'");
 
@@ -311,14 +249,6 @@ fn parse_for(p: &mut Parser) -> Option<Statement> {
     })))
 }
 
-/// Whether the tokens right after `for` (already consumed) spell a
-/// `for <mut>? binding in ...` header, without consuming anything --
-/// `parse_for` uses this to decide which of the two `for` grammars to
-/// commit to before parsing either. `in` is a contextual keyword here,
-/// exactly like `mut`/`self` elsewhere in this grammar (see
-/// `parse_statement_content`'s identical `mut` check) -- never reserved
-/// outside this one lookahead position, so it stays usable as an ordinary
-/// identifier everywhere else.
 fn is_for_in_lookahead(p: &mut Parser) -> bool {
     let offset = usize::from(p.at_contextual(contextual::MUT));
     matches!(p.peek_at(offset), TokenKind::Ident(_))
@@ -326,9 +256,6 @@ fn is_for_in_lookahead(p: &mut Parser) -> bool {
             || for_in_annotation_follows(p, offset + 1))
 }
 
-/// Looks only far enough to distinguish `for x : T in source` from the
-/// C-style loop's typed initializer (`for x : T = ...;`). The type parser
-/// remains the authority on whether the intervening tokens form a type.
 fn for_in_annotation_follows(p: &Parser, colon_offset: usize) -> bool {
     if !matches!(p.peek_at(colon_offset), TokenKind::Colon) {
         return false;
@@ -347,9 +274,6 @@ fn for_in_annotation_follows(p: &Parser, colon_offset: usize) -> bool {
     }
 }
 
-/// `for <mut>? binding in iterator { ... }` -- called only once
-/// `is_for_in_lookahead` has already confirmed the shape, so every
-/// `expect`/`advance` here is expected to succeed.
 fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     let mutable = p.eat_contextual(contextual::MUT);
     let TokenKind::Ident(binding) = p.peek().clone() else {
@@ -412,12 +336,6 @@ fn parse_for_init(p: &mut Parser) -> Option<Statement> {
     parse_expression(p).map(Statement::Expression)
 }
 
-/// See `parse_for`'s doc comment. Scans forward (bracket-depth-aware, so a
-/// `{`/`;` nested inside e.g. a call's argument list is never mistaken for
-/// the loop's own boundary) for this `for`'s own body's `{`, then skips the
-/// whole body as one balanced unit -- or, if a top-level-item-looking token
-/// or EOF is hit first, stops there instead, leaving the rest to the
-/// caller's own recovery.
 fn recover_for_header(p: &mut Parser) -> Option<ForStmt> {
     let mut depth = 0usize;
     loop {

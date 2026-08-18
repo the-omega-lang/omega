@@ -189,3 +189,42 @@ Start in `macros.rs` plus the parser entry point for the expansion position. Cro
 ### New identity-bearing construct
 
 Ensure the construct receives a HIR ID and useful specific spans during lowering. Do not mint ordinary source-node `HirId`s downstream.
+
+## Frontend implementation invariants
+
+The source previously carried these facts as scattered Rust doc comments. They are consolidated here because they are durable frontend architecture rather than local API documentation.
+
+### Parser state and backtracking
+
+- The token stream always ends in an `Eof` sentinel. Parser lookahead clamps to that sentinel and `advance` does not consume it, so recovery and speculative parsing can safely observe EOF repeatedly.
+- `Parser::mark` / `Parser::reset` is the limited backtracking mechanism. Resetting also discards diagnostics emitted after the mark, so an abandoned speculative parse cannot leak errors. The main use is code-block tail-expression versus statement disambiguation; ordinary grammar choices should prefer bounded lookahead.
+- Nested generic closers reuse the lexer's maximal-munch `>>` token. The parser may split it into two synthetic `>` observations via `pending_gt`; `last_span` therefore tracks the last consumed token explicitly rather than deriving it from the immutable token slice.
+- Recursive expression/type descent shares `MAX_NESTING_DEPTH`. The limit protects the native stack and indirectly bounds later AST/HIR traversal depth. It is an implementation safety limit, not a language-semantic maximum.
+
+### Ambiguous braces and contextual syntax
+
+In `if`/`while`/`for` condition positions, an immediately following `{` must be available to start the body, so bare struct-literal syntax is temporarily restricted. Bracketed subexpressions restore normal struct-literal parsing because the body brace can no longer be confused with a literal brace. Keep this state restoration scoped: parser functions have many early-return paths.
+
+Contextual words must likewise be committed only after the surrounding token shape proves their grammatical role. Adding a contextual construct must not accidentally reserve that spelling in unrelated identifier positions.
+
+### AST representation
+
+The AST is deliberately syntax-shaped. Semantic facts such as addressability, resolved declarations, types, and conformance do not belong in parser nodes. Paths additionally carry macro-resolution provenance, but structural path/type comparisons remain based on source structure rather than provenance; provenance affects later lookup, not syntactic identity.
+
+Specific child spans are intentional. Fields, parameters, names, signatures, and return types retain their own spans so later diagnostics can underline the smallest honest region instead of an enclosing declaration.
+
+### Macro spans and provenance
+
+`Span` itself has no source-file identity. A macro definition may come from another module, so definition-module byte offsets cannot safely survive as ordinary spans inside the caller's expanded AST: rendering them against the caller's source would point at unrelated text. Macro-authored generated tokens therefore use invocation/call-site spans for diagnostics while separate origin metadata preserves definition-site module/visibility provenance for resolution. Substituted argument tokens retain caller provenance.
+
+The macro body is not independently type-checked or semantically validated. Expansion substitutes tokens and reparses them at the invocation's syntactic position; normal downstream analysis validates the resulting program.
+
+### HIR identity and synthetic nodes
+
+Real-source `HirId`s are minted only during post-expansion HIR lowering from a per-module counter. Downstream phases must not invent ordinary source IDs. Semantic artifacts without source HIR nodes use the driver's reserved synthetic module identity, keeping synthetic IDs disjoint from real module IDs.
+
+Synthetic nodes may have no token of their own. For example, the implicit `self` parameter uses the enclosing function's span because there is no source token to point at. This is preferable to manufacturing a meaningless byte offset.
+
+### HIR structural lowering
+
+HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, by-value `mut self` shadowing, static-spec parameter desugaring to fresh bound generics, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order.

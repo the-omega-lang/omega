@@ -8,7 +8,6 @@ use crate::diagnostics::ParseErrorKind;
 use crate::lexer::{Token, TokenKind};
 use crate::parser::Parser;
 
-/// `name$(arg, ...)`, shared by item, statement, and expression position.
 pub fn parse_macro_invocation(p: &mut Parser) -> Option<MacroInvocationExpr> {
     let (name, origin) = p.expect_ident_with_origin()?;
     p.expect(&TokenKind::Dollar, "'$'");
@@ -18,8 +17,6 @@ pub fn parse_macro_invocation(p: &mut Parser) -> Option<MacroInvocationExpr> {
     Some(MacroInvocationExpr { name, args, origin })
 }
 
-/// Captures comma-separated raw argument token runs. This is deliberately the
-/// only remaining use of `capture_token_run`.
 fn parse_macro_args(p: &mut Parser) -> Option<Vec<Vec<Token>>> {
     let mut args = Vec::new();
     if p.check(&TokenKind::RParen) {
@@ -70,7 +67,6 @@ fn capture_token_run(p: &mut Parser, stop: impl Fn(&TokenKind) -> bool) -> Vec<T
     tokens
 }
 
-/// `macro name($a: expr, $rest: expr...) => { ... }`.
 pub fn parse_macro_definition(
     p: &mut Parser,
     visibility: Visibility,
@@ -148,12 +144,6 @@ fn parse_fragment_kind(p: &mut Parser) -> Option<FragmentKind> {
     }
 }
 
-/// Parses a body tree. Ordinary bracketed groups stay flat token pieces
-/// (only their depth is tracked, so the depth-0 `}` that closes this body is
-/// recognized); a repetition is recognized by the fixed two-token prefix
-/// `$` `...` at *any* depth -- `$f($...(,){ $args })` deliberately puts one
-/// inside an argument list. `in_repetition` is what rejects a repetition
-/// nested inside another one, at any depth.
 fn parse_macro_body(p: &mut Parser, in_repetition: bool) -> Option<Vec<MacroBodyPiece>> {
     let mut body = Vec::new();
     let mut depth = 0usize;

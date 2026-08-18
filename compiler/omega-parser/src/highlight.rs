@@ -1,9 +1,3 @@
-//! Omega's [`Highlighter`] implementation -- classifies a source file for
-//! diagnostic-snippet colorization by running the real lexer over it, so
-//! the colors in an error snippet can never disagree with what the
-//! compiler actually lexed. Lex errors are simply dropped: broken regions
-//! render unclassified (default color), which is exactly right for source
-//! that is, after all, being quoted *because* it's broken.
 
 use crate::lexer::{self, TokenKind};
 use omega_diagnostics::{Highlighter, Span, TokenClass};

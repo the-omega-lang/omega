@@ -1,17 +1,3 @@
-//! Compile-time macro expansion: a pure `SourceModule -> SourceModule`
-//! syntax transform. This is the only place `Item::
-//! MacroDefinition`/`MacroInvocation` and `Expression::MacroInvocation`
-//! exist -- nothing downstream of `omega-parser` needs any notion of macros.
-//!
-//! A macro's body is captured as a [`MacroBodyPiece`] tree at parse time and
-//! substituted at each invocation, then fed directly into the ordinary
-//! parser's token-based entry points -- no render-to-text-then-re-lex
-//! round-trip. Generated tokens are re-anchored at the invocation's span
-//! (call-site attribution) rather than keeping definition-site spans, since
-//! a [`Span`] carries no source-file identity.
-//!
-//! A macro's body is never type- or syntax-checked on its own, only once
-//! fully substituted at a specific invocation ("duck typed" expansion).
 
 use crate::ast::identifier::{ExpansionId, Ident, Origin};
 use crate::ast::range::{RangeEnd, RangeExpr};
@@ -24,14 +10,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Caps the total number of macro expansions performed while processing one
-/// module, so a runaway recursive macro (`macro a() => { a$() }`)
-/// produces a clean [`MacroError::ExpansionLimitExceeded`] instead of a
-/// stack overflow.
 const MAX_EXPANSIONS: u32 = 256;
 
-/// Driver-owned provenance for macro expansions. It lives for one compilation
-/// so expansion ids remain unique across every module expanded in that run.
 #[derive(Debug, Default)]
 pub struct ExpansionState {
     next_id: u32,
@@ -89,12 +69,6 @@ impl ExpansionState {
         self.environments.get(module).cloned()
     }
 
-    /// The macro environment an invocation resolves in, chosen by where its
-    /// name token was *written*: a body-emitted invocation resolves in the
-    /// emitting macro's defining module, one that arrived through argument
-    /// substitution keeps `ambient`. Selecting per invocation (rather than
-    /// swapping the environment for a whole expanded subtree) keeps an
-    /// invocation passed *as an argument* resolvable in the caller's module.
     fn environment_for<'a>(
         &'a self,
         origin: Origin,
@@ -149,9 +123,6 @@ pub enum MacroError {
         position: MacroPosition,
         errors: String,
     },
-    /// Reached when an item-position expansion itself produces a definition:
-    /// item reparsing permits `macro`, but definitions are only collected from
-    /// the source module before expansion.
     MacroDefinitionInExpansion {
         macro_name: Ident,
     },
@@ -276,9 +247,6 @@ impl fmt::Display for MacroError {
     }
 }
 
-/// Expands every macro definition and invocation in `module`, returning a
-/// module that contains only the five ordinary [`Item`] variants
-/// that existed before macros were added.
 pub fn expand(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
@@ -287,8 +255,6 @@ pub fn expand(
     expand_with_origins(module, imported, &[], &mut state)
 }
 
-/// Expands one module while recording where every body-emitted token was
-/// written. The ordinary [`expand`] wrapper is retained for parser-only tests.
 pub fn expand_with_origins(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
@@ -311,8 +277,6 @@ pub fn expand_with_origins(
     Ok(SourceModule { nodes })
 }
 
-/// Splits `nodes` into macro definitions (by name, rejecting a duplicate
-/// name outright) and everything else, in original order.
 fn collect_definitions(
     nodes: Vec<ItemNode>,
     module_path: &[Ident],
@@ -337,22 +301,6 @@ fn collect_definitions(
     Ok((defs, items))
 }
 
-/// Definition-time checks, all of them real definition bugs (a typo, most
-/// likely) rather than something duck typing should hide, so all are made
-/// once up front rather than only surfacing confusingly if/when some
-/// invocation happens to reach them:
-///
-/// - every `$name` names one of that macro's own parameters;
-/// - the variadic parameter is only referenced *inside* a repetition (it
-///   has no single value anywhere else);
-/// - a repetition only appears in a macro that declares a variadic;
-/// - a repetition's body actually mentions the variadic -- otherwise it
-///   would emit N identical copies, which is always a bug.
-///
-/// This recurses only into [`MacroBodyPiece::Repetition`]: a bracketed group
-/// is *not* nesting here, since the lexer's token stream is flat (`(`/`)`/
-/// etc. are ordinary tokens like any other), so repetition is the only
-/// construct a `$name` reference can be nested inside.
 fn validate_definition(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
     fn walk(
         def: &MacroDefinitionStmt,
@@ -405,11 +353,6 @@ fn validate_definition(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
     }
     walk(def, &def.body, false).map(|_| ())
 }
-/// Parses `arg` against `param`'s declared fragment grammar -- this is what
-/// gives a fragment specifier real meaning (it constrains what can legally
-/// be captured there) rather than being documentation only, and reports a
-/// mismatch at the invocation site instead of letting it surface
-/// confusingly deep inside expanded code.
 fn validate_fragment(
     def: &MacroDefinitionStmt,
     param: &MacroParam,
@@ -504,13 +447,6 @@ fn render(
     }
 }
 
-/// The parser's entry points expect a token slice ending in `Eof` (see
-/// `Parser::new`'s doc comment) -- a spliced/substituted token slice has no
-/// such sentinel of its own, so one is synthesized here. Its span is
-/// otherwise meaningless (these tokens don't span one contiguous file
-/// range to begin with -- see this module's top doc comment), so it just
-/// reuses the last real token's span, a reasonable place for a "found end
-/// of input" error to point at.
 fn with_eof(tokens: &[Token]) -> Vec<Token> {
     let eof_span = tokens.last().map(|t| t.span).unwrap_or_default();
     let mut out = tokens.to_vec();
@@ -530,25 +466,13 @@ fn join_errors(errors: &[ParseError]) -> String {
         .join("; ")
 }
 
-/// The state every expansion step needs, in one place instead of a
-/// `(defs, budget, state)` triple threaded by hand through seventeen
-/// functions -- several of whose signatures were longer than their bodies.
-///
-/// `defs` is fixed for a whole module's expansion: an invocation may resolve
-/// in a *different* environment (see `ExpansionState::environment_for`), but
-/// that choice is local to the invocation and never changes what the
-/// surrounding tree expands against.
 struct Expander<'a> {
     defs: &'a HashMap<Ident, MacroDefinitionStmt>,
-    /// Remaining expansions for this module -- see `MAX_EXPANSIONS`.
     budget: u32,
     state: &'a mut ExpansionState,
 }
 
 impl Expander<'_> {
-    /// Walks a list of top-level items, splicing each macro invocation's
-    /// expansion in place and recursing into every function/struct body for
-    /// expression-position invocations nested inside expressions.
     fn expand_item_list(&mut self, nodes: Vec<ItemNode>) -> Result<Vec<ItemNode>, MacroError> {
         let mut result = Vec::with_capacity(nodes.len());
         for node in nodes {
@@ -640,11 +564,6 @@ impl Expander<'_> {
         Ok(result)
     }
 
-    /// Expands one item-position invocation into its (recursively expanded)
-    /// replacement items -- recursing through `expand_item_list` again so an
-    /// invocation nested inside the expansion (either written directly in the
-    /// macro's body, or introduced via a substituted argument) is itself
-    /// expanded, with no separate token-level nested-invocation handling needed.
     fn expand_items_invocation(&mut self, inv: &MacroInvocationExpr, call_span: Span) -> Result<Vec<ItemNode>, MacroError> {
         // Owned so the environment borrow ends before `substitute_invocation`
         // takes `self` mutably.
@@ -671,16 +590,6 @@ impl Expander<'_> {
         self.expand_item_list(nodes)
     }
 
-    /// Expands one expression-position invocation, recursing into the (possibly
-    /// invocation-containing) result the same way `expand_items_invocation`
-    /// does. The returned node's *own* span is the freshly parsed expression's;
-    /// the caller (`expand_expr`) is the one that pins the invocation's
-    /// original (real, call-site) span onto the outer wrapping node -- kept
-    /// deliberately, even though every token now carries a real span: a
-    /// min/max composite of tokens mixing the invocation site and the macro's
-    /// (possibly much earlier or later in the file) definition site would be a
-    /// well-formed but not especially meaningful span for a top-level
-    /// diagnostic to point at, whereas the call site always is.
     fn expand_expr_invocation(&mut self, inv: &MacroInvocationExpr, call_span: Span) -> Result<ExpressionNode, MacroError> {
         // Owned so the environment borrow ends before `substitute_invocation`
         // takes `self` mutably.
@@ -716,9 +625,6 @@ impl Expander<'_> {
         self.expand_expr(node)
     }
 
-    /// Expands a whole-statement invocation through the ordinary block-content
-    /// grammar. A tail expression becomes an expression statement before being
-    /// spliced into its surrounding block.
     fn expand_statements_invocation(&mut self, inv: &MacroInvocationExpr, call_span: Span) -> Result<Vec<StatementNode>, MacroError> {
         // Owned so the environment borrow ends before `substitute_invocation`
         // takes `self` mutably.
@@ -760,11 +666,6 @@ impl Expander<'_> {
         self.expand_statement_list(cb.statements)
     }
 
-    /// Validates argument count and each argument's shape against its
-    /// parameter's declared [`FragmentKind`], then substitutes every `$name` in
-    /// `def`'s body with the corresponding argument's tokens. Also where the
-    /// expansion budget (see [`MAX_EXPANSIONS`]) is spent -- one unit per
-    /// invocation, regardless of its position.
     fn substitute_invocation(&mut self, def: &MacroDefinitionStmt, args: &[Vec<Token>], call_span: Span) -> Result<Vec<Token>, MacroError> {
         let fixed_len = def.signature.fixed.len();
         let expected = if def.signature.variadic.is_some() {
@@ -810,11 +711,7 @@ impl Expander<'_> {
             origin,
             &mut out,
         );
-        // `Span` has no file identity. Macro definitions can come from an
-        // imported module, so retaining their token spans would later render
-        // offsets from that module against the caller's source file. Attribute
-        // all generated code to the invocation instead: precise enough to find
-        // the expansion and always guaranteed to belong to the rendered file.
+        // Generated tokens use call-site spans because `Span` has no file identity.
         Ok(out
             .into_iter()
             .map(|token| Token {
@@ -832,13 +729,6 @@ impl Expander<'_> {
         })
     }
 
-    /// A member-function list, expanded in place.
-    ///
-    /// Shared by all four item kinds that have one. Like
-    /// `parser::item::parse_member_functions`, this shares an *operation*,
-    /// not an item pipeline: `struct`/`enum`/`union` still each build their
-    /// own node and stay the three separate pipelines `docs/README.md`
-    /// calls for.
     fn expand_member_functions(
         &mut self,
         functions: Vec<FunctionDefinitionStmt>,
@@ -1010,12 +900,6 @@ impl Expander<'_> {
         })
     }
 
-    /// Recursively expands every `Expression::MacroInvocation` found anywhere in
-    /// `node`'s subtree. The `MacroInvocation` arm returns early rather than
-    /// falling through to the generic rewrap at the bottom, specifically so the
-    /// *outer* node keeps the invocation's own original (real, call-site) span
-    /// while the expansion's own internal spans (also real now, but possibly
-    /// from the macro's definition site) are left as they were parsed.
     fn expand_expr(&mut self, node: ExpressionNode) -> Result<ExpressionNode, MacroError> {
         let span = node.span;
         if let Expression::MacroInvocation(inv) = node.expression {
@@ -1068,10 +952,7 @@ impl Expander<'_> {
                 target: cast.target,
                 base: self.expand_expr(cast.base)?,
             })),
-            // No `base` expression to recurse into, and a bare `Type` can never
-            // contain a macro metavariable (`$name` is only meaningful in
-            // expression position -- see `lexer::TokenKind::Metavar`'s doc
-            // comment) -- a plain passthrough, like `Expression::Path` above.
+            // Bare types cannot contain expression-position macro metavariables.
             Expression::Sizeof(sizeof) => Expression::Sizeof(sizeof),
             Expression::Increment(incr) => Expression::Increment(Box::new(IncrementExpr {
                 base: self.expand_expr(incr.base)?,

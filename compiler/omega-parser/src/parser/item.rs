@@ -14,10 +14,6 @@ use crate::parser::macro_syntax::{parse_macro_definition, parse_macro_invocation
 use crate::parser::statement::{parse_declaration, parse_extern_declaration};
 use crate::parser::{Parser, contextual, parse_path, recovery};
 
-/// Parses a whole source file's top-level items, recovering after each
-/// failed one (see `recovery::synchronize_to_item_boundary`) so a single
-/// mistake reports one error and the rest of the file still gets checked,
-/// rather than aborting on the first problem.
 pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
     let mut nodes = Vec::new();
     while !p.is_eof() {
@@ -53,23 +49,14 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Import => {
             reject_visibility(p, visibility, visibility_span);
             p.advance();
-            // `reveal` is a contextual keyword here too (same text-
-            // comparison pattern as `root`/`mut` below) -- see
-            // `ImportStmt::reveal`'s doc comment.
+            // Commit contextual `reveal` only in import position.
             let reveal = if p.at_contextual(contextual::REVEAL) {
                 p.advance();
                 true
             } else {
                 false
             };
-            // `root::`/`extern::` are contextual keywords here (matching
-            // `mut`'s own text-comparison pattern above, and `lexer::
-            // TokenKind`'s general "stay a plain token, recognized by
-            // position" philosophy) -- `extern` is already a real keyword
-            // token, `root` an ordinary `Ident` whose text is checked; only
-            // committed to when immediately followed by `::`, so a module
-            // genuinely named `root` still parses as an ordinary `Local`
-            // import (`import root;` alone, with no trailing `::`).
+            // `root` is contextual here; `root` without `::` remains a normal module name.
             let root =
                 if p.check(&TokenKind::Extern) && matches!(p.peek_at(1), TokenKind::ColonColon) {
                     p.advance(); // 'extern'
@@ -96,15 +83,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations, visibility)?),
         TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations, visibility)?),
         TokenKind::Union => Item::Union(parse_union_def(p, annotations, visibility)?),
-        // `marker` is contextual, matching `mut`/`comp`/`reveal`'s own
-        // precedent (`lexer::TokenKind`'s doc comment) -- only committed to
-        // once followed by another identifier (the marker's own name),
-        // exactly like `mut`/`comp` above are only committed to once the
-        // *whole* binding shape is confirmed. This keeps `marker` usable as
-        // an ordinary function/variable name everywhere else (in
-        // particular, `marker(...)` -- a call/function definition named
-        // `marker` -- is never followed by a bare `Ident`, so it falls
-        // through to the ordinary function-definition arm below untouched).
+        // Commit contextual `marker` only once the following identifier proves the item shape.
         TokenKind::Ident(name)
             if name == contextual::MARKER && matches!(p.peek_at(1), TokenKind::Ident(_)) =>
         {
@@ -167,10 +146,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
         }
-        // No leading `mut`/`comp` (handled above) -- `ident := value;`, a
-        // plain (non-`comp`) top-level walrus. Still parses (`comp` isn't
-        // required by the grammar), rejected during analysis instead (see
-        // `Item::Walrus`'s doc comment).
+        // Plain top-level walrus parses here; semantic analysis decides whether it is valid.
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq) => {
             reject_annotations(p, &annotations);
             Item::Walrus(parse_item_walrus(p, false, false, visibility)?)
@@ -191,20 +167,8 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     Some(ItemNode { item, span })
 }
 
-/// An optional leading `exposed`/`internal` -- contextual keywords, same
-/// text-comparison recognition as `mut` (see `lexer::TokenKind`'s doc
-/// comment). Returns the visibility (defaulting to `Hidden` when neither
-/// is written) and, when one was, its own span -- for `reject_visibility`
-/// to anchor an error at, for item kinds with nowhere to store one.
 fn parse_optional_visibility(p: &mut Parser) -> (Visibility, Option<Span>) {
-    // Only committed to once the word is followed by something that could
-    // actually begin an item or field -- the same "confirm the whole shape
-    // first" discipline `mut`/`comp`/`marker`/`gap`/`glue` already follow.
-    // A visibility modifier always precedes a declaration, which starts with
-    // an identifier or a leading keyword; it is never followed by `:`/`:=`.
-    // So seeing one of those means the word is a *name*, and `exposed: i32;`
-    // is a field called `exposed` rather than a modifier with its name
-    // missing.
+    // Commit contextual visibility only when a declaration shape follows; `exposed: T` is a field name.
     if matches!(p.peek_at(1), TokenKind::Colon | TokenKind::ColonEq) {
         return (Visibility::Hidden, None);
     }
@@ -222,10 +186,6 @@ fn parse_optional_visibility(p: &mut Parser) -> (Visibility, Option<Span>) {
     }
 }
 
-/// Errors (without aborting the surrounding item) if `visibility` isn't the
-/// default -- for item kinds that have nowhere to store one at all
-/// (`import`/macro definition/macro invocation). Same precedent as
-/// `reject_annotations`.
 fn reject_visibility(p: &mut Parser, visibility: Visibility, span: Option<Span>) {
     if visibility != Visibility::Hidden {
         p.error_at(
@@ -244,10 +204,6 @@ fn reject_gap_glue_visibility(p: &mut Parser, visibility: Visibility, span: Opti
     }
 }
 
-/// Zero or more `@name(args)` annotations, one per line, immediately above
-/// an item -- see `AnnotationNode`'s doc comment. Consumes nothing (and
-/// allocates nothing) when no `@` is present, the overwhelmingly common
-/// case.
 fn parse_annotations(p: &mut Parser) -> Vec<AnnotationNode> {
     let mut annotations = Vec::new();
     while p.check(&TokenKind::At) {
@@ -259,11 +215,6 @@ fn parse_annotations(p: &mut Parser) -> Vec<AnnotationNode> {
     annotations
 }
 
-/// `@name` or `@name(arg, arg, ...)` -- parens (and their whole contents)
-/// are optional: an absent `(...)` means the same thing an empty `()` would
-/// (zero arguments), for an annotation whose resolver gives every argument
-/// a default (see `omega_analyzer::annotations::resolve`, e.g. bare
-/// `@inline` means `@inline(always)`).
 fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
     let start = p.peek_span();
     p.expect(&TokenKind::At, "'@'");
@@ -284,13 +235,6 @@ fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
     Some(AnnotationNode { name, args, span })
 }
 
-/// `ident` (`always`, `enabled`, a `@suppress` warning name, ...) or
-/// `ident = value`, where `value` is a plain integer (kept as raw decimal
-/// digit text, exactly like `parser::type::parse_array_size`'s "shape, not
-/// value" convention: no base prefix, suffix, or fraction is accepted here,
-/// so a malformed numeric shape is rejected at parse time rather than
-/// silently misread later), `sizeof<Type>` (`align = 4`, `pack =
-/// sizeof<usize>`), or a string literal (`force = "some_symbol_name"`).
 fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
     let ident = p.expect_ident()?;
     if !p.eat(&TokenKind::Eq) {
@@ -338,24 +282,12 @@ fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
     }
 }
 
-/// Errors (without aborting the surrounding item) if `annotations` is
-/// non-empty -- for item kinds that have nowhere to store an annotation list
-/// at all (`extern`/`import`/plain declarations/macros/specs). Anchored at
-/// the first annotation's own span, not wherever parsing has reached by
-/// the time the surrounding item finishes.
 fn reject_annotations(p: &mut Parser, annotations: &[AnnotationNode]) {
     if let Some(first) = annotations.first() {
         p.error_at(first.span, ParseErrorKind::AnnotationNotAllowedHere);
     }
 }
 
-/// A leading identifier could start either a plain `Declaration`
-/// (`ident: Type;`) or a `FunctionDefinition` (`ident<generics>(params) =>
-/// Type { ... }`) -- disambiguated with a single-token lookahead, no
-/// backtracking needed: only a function definition can have `<generics>` or
-/// `(params)` at all in this position, so seeing `<` or `(` immediately
-/// after the name is already conclusive on its own, without needing to look
-/// *past* the (possibly absent, possibly multi-token) generics list first.
 fn parse_declaration_or_function_definition(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -381,13 +313,6 @@ fn parse_declaration_or_function_definition(
     }
 }
 
-/// `ident := value;` / `ident : Type;` at item position -- `mutable`/`comp`
-/// are already known by the time this runs (see `parse_item`'s combined
-/// lookahead). `p.peek_at(1)` (the token right after `ident`) is what tells
-/// the two shapes apart, exactly like `parser::statement::
-/// parse_walrus_or_declaration`'s identical local-scope dispatch. `comp` on
-/// the typed (`:`) shape reports a clean error rather than silently
-/// dropping the flag -- `comp` only makes sense on an inferred binding.
 fn parse_item_declaration_or_walrus(
     p: &mut Parser,
     mutable: bool,
@@ -441,14 +366,6 @@ fn parse_item_walrus(
     })
 }
 
-/// `name<T, U, ...>(params) => ReturnType { body }` -- shared verbatim
-/// between a top-level function definition and a struct method (see
-/// `parse_struct_def`), exactly like the old grammar's single
-/// `FunctionDefinitionStmt::parser` was. `annotations` is whatever
-/// `parse_annotations` already consumed immediately above this function --
-/// passed in rather than parsed here, since the caller (a member-function
-/// loop, or `parse_declaration_or_function_definition`) needs to see them
-/// *before* deciding this is a function at all.
 pub fn parse_function_definition(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -483,9 +400,6 @@ pub fn parse_function_definition(
     })
 }
 
-/// `<T, U: Bound + Bound2, ...>` -- optional, at least one name if present.
-/// Each name may carry zero or more `+`-separated spec bounds (`T: Animal +
-/// Display`) -- see `GenericParam`'s doc comment.
 fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
     if !p.eat(&TokenKind::Lt) {
         return Some(Vec::new());
@@ -499,13 +413,6 @@ fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam>> {
     Some(generics)
 }
 
-/// `seen_default` tracks whether an earlier parameter in this same `<...>`
-/// list already had a default -- once one does, every parameter after it
-/// must too (see `GenericParam`'s doc comment), checked and reported right
-/// here (anchored at this parameter's own name) rather than in a later pass
-/// that would have lost the per-parameter span. Non-fatal: recorded, and
-/// this parameter's `default` (or lack of one) is still returned as
-/// written, matching this parser's general recovery philosophy.
 fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<GenericParam> {
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
@@ -542,12 +449,6 @@ fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<Generi
     })
 }
 
-/// `struct Name<T, ...> { field: Type; ... method(...) => T { ... } ... }`
-/// -- fields and methods are structurally two separate phases, fields
-/// always first (matching the old grammar's `declarations_parser.repeated()`
-/// *then* `functions_parser.repeated()`, not an interleaved single loop):
-/// once the field-shaped lookahead (`Ident` + `:`) stops matching, the
-/// struct body is assumed to be all methods from there on.
 pub fn parse_struct_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -557,15 +458,6 @@ pub fn parse_struct_def(
     parse_struct_or_marker_body(p, annotations, visibility, false)
 }
 
-/// `marker Name<T, ...> { method(...) => T { ... } ... }` --
-/// `marker`'s own doc comment (`ast::statement::struct::StructStmt::
-/// is_marker`) covers the *semantics*; here it's purely a grammar fact that
-/// a marker's field-list section doesn't exist: `parse_struct_or_marker_body`
-/// below is handed `is_marker = true` and never even calls `field_follows`,
-/// so `marker Foo { x: i32; }` fails to parse as a field at all (it falls
-/// through into the *functions* loop, which then rejects `x: i32;` as an
-/// invalid method) rather than being silently accepted and only rejected
-/// later during analysis.
 pub fn parse_marker_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -575,10 +467,6 @@ pub fn parse_marker_def(
     parse_struct_or_marker_body(p, annotations, visibility, true)
 }
 
-/// The shared tail both `struct` and `marker` parse into, after their own
-/// leading keyword: name, generics, an optional field-list
-/// section (skipped entirely for a marker -- see `parse_marker_def`), and
-/// the trailing method list.
 fn parse_struct_or_marker_body(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -604,28 +492,12 @@ fn parse_struct_or_marker_body(
     })
 }
 
-/// What a member-function list does with a `exposed`/`internal` written on
-/// one of its members. The three aggregate kinds, `primitive` and `conform`
-/// differ *only* in this, so it is the one parameter
-/// `parse_member_functions` takes rather than five near-copies of the loop.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MemberVisibility {
-    /// `struct`/`union`/`enum`/`primitive` -- the modifier is kept and
-    /// applies to the member.
     Allowed,
-    /// `conform` -- a conforming method inherits its spec's visibility, so
-    /// writing one is an error and the member is parsed as `Hidden`.
     InheritedFromSpec,
 }
 
-/// `field: Type;` repeated -- the field section of a `struct`, `union`,
-/// `enum`'s shared dynamic fields, and an `enum` variant's own body, which
-/// are one grammar production written four times before this existed.
-///
-/// Note this shares a *grammar production*, not an item pipeline: the four
-/// callers still build their own distinct AST nodes, and `struct`/`enum`/
-/// `union` remain the three separate hand-mirrored pipelines `docs/README.md`
-/// calls for.
 fn parse_aggregate_fields(p: &mut Parser) -> Vec<DeclarationStmt> {
     let mut fields = Vec::new();
     while field_follows(p) {
@@ -642,14 +514,6 @@ fn parse_aggregate_fields(p: &mut Parser) -> Vec<DeclarationStmt> {
     fields
 }
 
-/// The trailing member-function list shared by `struct`/`marker`, `union`,
-/// `enum`, `conform` and `primitive` bodies.
-///
-/// Every caller recovers per member (`synchronize_to_statement_boundary`)
-/// and keeps parsing the rest of the body. `conform`/`primitive` previously
-/// used `?` here and abandoned the whole item on the first malformed member,
-/// so the same mistake reported differently depending on which block it was
-/// written in -- with no stated reason for the difference.
 fn parse_member_functions(
     p: &mut Parser,
     visibility_policy: MemberVisibility,
@@ -678,12 +542,6 @@ fn parse_member_functions(
     functions
 }
 
-/// Whether a field declaration (as opposed to the start of the methods
-/// section) follows at the current position -- an `Ident` + `:` lookahead,
-/// same as before, extended to see past an optional leading
-/// `exposed`/`internal` (which would otherwise break the lookahead: `exposed
-/// name: Type;` has `peek() = Ident("exposed")`, `peek_at(1) =
-/// Ident("name")`, not `Colon`).
 fn field_follows(p: &Parser) -> bool {
     // A field named `exposed`/`internal` (`exposed: i32;`) is a field, not a
     // modifier with a missing name -- so the no-modifier reading is tried
@@ -698,10 +556,6 @@ fn field_follows(p: &Parser) -> bool {
     })
 }
 
-/// `union Name<T, ...> { field: Type; ... method(...) => T { ... } ... }`
-/// -- identical shape and parsing strategy to `parse_struct_def`; the only
-/// difference is semantic (fields overlap in storage instead of being laid
-/// out sequentially), which is entirely an analyzer/codegen concern.
 pub fn parse_union_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -726,13 +580,6 @@ pub fn parse_union_def(
     })
 }
 
-/// `spec Name<T, ...> { functions }` (declaration form) or
-/// `spec Name<T, ...> = Member + Member;` (alias form). The leading `=` token
-/// disambiguates the forms; an alias's member list is `+`-separated, the same
-/// separator a generic bound conjunction uses. The old `spec Name : Dep, Dep`
-/// provisioning form no longer exists in the grammar at all -- a `:` after
-/// the name is a targeted `SpecDependenciesRemoved` error (see
-/// `parse_spec_def`'s declaration arm).
 pub fn parse_spec_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -797,10 +644,6 @@ pub fn parse_spec_def(
     })
 }
 
-/// `name(params) => Ret;` (required -- every implementor must provide a
-/// matching method) or `name(params) => Ret { block }` (default -- used
-/// as-is unless overridden). No per-function generics here (unlike
-/// `parse_function_definition`) -- not part of the language's spec design.
 fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
@@ -842,13 +685,6 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
     })
 }
 
-/// Reports, then *consumes and discards*, a `<...>` list written on a `gap`
-/// name or a `glue` target path -- neither form has generics in its grammar
-/// (see `ParseErrorKind::GapOrGlueGeneric`). Recovering by consuming is what
-/// keeps this to one error: bailing out instead leaves `<T>` in the token
-/// stream for `synchronize_to_item_boundary`, which re-reads it as a fresh
-/// top-level item and reports the same mistake two or three more times.
-/// `None` only ever means the generics list itself was malformed.
 fn reject_gap_glue_generics(p: &mut Parser) -> Option<()> {
     if !p.check(&TokenKind::Lt) {
         return Some(());
@@ -926,10 +762,7 @@ fn parse_conform_def(p: &mut Parser) -> Option<ConformStmt> {
     p.advance();
     let generics = parse_optional_generics(p)?;
     let target = crate::parser::r#type::parse_type(p)?;
-    // `to` is contextual, exactly like `conform` itself -- it is only the
-    // conformance separator in this one position, and stays an ordinary
-    // identifier everywhere else (see `TokenKind`'s own note on why the
-    // grammar reserves as few words as it can get away with).
+    // `to` is contextual: only this conformance position gives it keyword meaning.
     p.expect_contextual(crate::parser::contextual::TO);
     let spec = crate::parser::r#type::parse_type(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
@@ -957,15 +790,6 @@ fn parse_primitive_def(p: &mut Parser) -> Option<PrimitiveStmt> {
     })
 }
 
-/// `enum Name<T, ...>(header) { [dynamic_fields] Variant(args) { fields }, ...; functions }`
-/// -- see `EnumStmt`'s doc comment for the full shape. The optional shared
-/// dynamic fields (if any) come first, parsed exactly like `parse_struct_def`'s
-/// field loop; a variant name is never followed by `:`, so the same `Ident`
-/// + `:` lookahead unambiguously tells the two apart. Variants are
-/// separated by `,` (optional after a `{...}` body, so a body can be
-/// followed directly by the next variant); the variant list ends at `}`
-/// (no functions) or at a `;`, after which only function definitions may
-/// follow -- Java's "constants first, then a `;`, then members" rule.
 pub fn parse_enum_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
@@ -1008,9 +832,7 @@ pub fn parse_enum_def(
         if p.check(&TokenKind::RBrace) {
             break;
         }
-        // After a `{...}` body the separator is optional -- the body's own
-        // closing brace already delimits the variant (see Example 3 in the
-        // language design).
+        // A variant body closes itself, so no extra separator is required.
         if had_body && matches!(p.peek(), TokenKind::Ident(_)) {
             continue;
         }
@@ -1048,10 +870,6 @@ pub fn parse_enum_def(
     })
 }
 
-/// The optional `(name: Type, ...)` header after the enum's name -- each
-/// entry keeps its own span (unlike struct fields) because header entries
-/// have position-sensitive rules (`tag` must be the first one) worth an
-/// error pointing at the exact entry.
 fn parse_enum_header(p: &mut Parser) -> Option<Vec<EnumHeaderField>> {
     let mut header = Vec::new();
     if !p.eat(&TokenKind::LParen) {
@@ -1079,7 +897,6 @@ fn parse_enum_header(p: &mut Parser) -> Option<Vec<EnumHeaderField>> {
     Some(header)
 }
 
-/// `Name`, `Name(args)`, `Name { fields }`, or `Name(args) { fields }`.
 fn parse_enum_variant(p: &mut Parser) -> Option<EnumVariantStmt> {
     let span = p.peek_span();
     let ident = p.expect_ident()?;
@@ -1118,12 +935,6 @@ fn parse_enum_variant(p: &mut Parser) -> Option<EnumVariantStmt> {
     })
 }
 
-/// Whether the `Ident` at the current position starts a *function
-/// definition* rather than a variant -- a pure token-lookahead check (no
-/// consumption, no speculative errors): a `<` right after the name can only
-/// be a function's generics in this position, and a `(...)` whose matching
-/// `)` is followed by `=>` can only be a function's parameter list (a
-/// variant's `(args)` is never followed by `=>`).
 fn enum_function_follows(p: &Parser) -> bool {
     match p.peek_at(1) {
         TokenKind::Lt => true,

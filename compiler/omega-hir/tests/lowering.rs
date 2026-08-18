@@ -1,7 +1,3 @@
-//! `omega-hir` had no tests at all before this file, despite owning four
-//! desugarings that every later pass depends on being correct (see the
-//! crate doc). These cover exactly those, plus the two invariants the rest
-//! of the compiler assumes: ids are unique, and spans are real.
 
 use omega_hir::{
     HirExpr, HirItem, HirPlaceRoot, HirProjection, HirRangeEnd, HirStmt, ModuleId, lower_module,
@@ -14,8 +10,6 @@ fn lower(source: &str) -> omega_hir::HirModule {
     lower_module(ModuleId(0), &ast)
 }
 
-/// The single function/method in a lowered module's first struct, or the
-/// module's first top-level function.
 fn only_function(module: &omega_hir::HirModule) -> &omega_hir::HirFunctionDef {
     module
         .items
@@ -136,8 +130,6 @@ fn a_non_place_base_roots_at_an_expression() {
 
 #[test]
 fn every_range_spelling_survives_lowering_distinctly() {
-    // See `HirRangeEnd`'s doc comment for why the three spellings are kept
-    // distinguishable rather than flattened.
     for (source, expect_open, expect_inclusive) in [
         ("f() => void { for i in 0..=3 { } }", false, true),
         ("f() => void { for i in 0..<3 { } }", false, false),
@@ -174,13 +166,9 @@ fn every_id_in_a_lowered_module_is_unique() {
     ids.sort_unstable_by_key(|id| (id.module.0, id.local));
     ids.dedup();
     assert_eq!(before, ids.len(), "HirIds must be unique within a module");
-    // Guards against `collect_ids` silently walking nothing, which would
-    // make the uniqueness assertion above vacuously true.
     assert!(before > 10, "expected ids from every item, got {before}");
 }
 
-/// Ids of the item-level nodes and their immediate members -- enough to
-/// catch a shared counter being reset or reused, which is what this guards.
 fn collect_ids(module: &omega_hir::HirModule, out: &mut Vec<omega_hir::HirId>) {
     for item in &module.items {
         match item {

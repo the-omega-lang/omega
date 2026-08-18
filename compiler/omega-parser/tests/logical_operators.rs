@@ -1,11 +1,7 @@
-//! `!`, `&&` and `||`: the grammar side. Semantics (both operands must be
-//! `bool`) and the short-circuit itself are the analyzer's, and are covered
-//! end-to-end by the compiled gates.
 
 use omega_parser::SourceModule;
 use omega_parser::prelude::{Expression, Item, LogicalOp, Statement};
 
-/// The single expression `f`'s body binds with `:=`.
 fn bound_expression(body: &str) -> Expression {
     let source = format!("f() => void {{ v := {body}; }}");
     let module = SourceModule::parse(&source).unwrap_or_else(|e| panic!("`{body}`: {e:?}"));
@@ -21,7 +17,6 @@ fn bound_expression(body: &str) -> Expression {
 #[test]
 fn bang_parses_as_a_prefix_operator() {
     assert!(matches!(bound_expression("!flag"), Expression::Not(_)));
-    // Stacking is fine, and right-associative like every other prefix.
     let Expression::Not(outer) = bound_expression("!!flag") else {
         panic!("expected the outer `!`");
     };
@@ -30,8 +25,6 @@ fn bang_parses_as_a_prefix_operator() {
 
 #[test]
 fn bang_does_not_disturb_the_not_equal_token() {
-    // `!=` must still lex as one token -- maximal munch puts it ahead of
-    // the new single-character `!`.
     let Expression::BinaryOp(op) = bound_expression("a != b") else {
         panic!("expected `!=` to stay a comparison");
     };
@@ -43,7 +36,6 @@ fn bang_does_not_disturb_the_not_equal_token() {
 
 #[test]
 fn logical_operators_parse_with_rust_precedence() {
-    // `&&` binds tighter than `||`.
     let Expression::Logical(or) = bound_expression("a || b && c") else {
         panic!("expected `||` at the root");
     };
@@ -56,8 +48,6 @@ fn logical_operators_parse_with_rust_precedence() {
 
 #[test]
 fn comparison_binds_tighter_than_the_logical_operators() {
-    // The whole reason these tiers sit between assignment and comparison:
-    // `a < b && c < d` must need no parentheses.
     let Expression::Logical(and) = bound_expression("a < b && c < d") else {
         panic!("expected `&&` at the root");
     };
@@ -67,7 +57,6 @@ fn comparison_binds_tighter_than_the_logical_operators() {
 
 #[test]
 fn bitwise_and_binds_tighter_than_logical_and() {
-    // `&` and `&&` coexist: `a & b && c` is `(a & b) && c`.
     let Expression::Logical(and) = bound_expression("a & b && c") else {
         panic!("expected `&&` at the root");
     };
@@ -87,9 +76,6 @@ fn logical_operators_are_left_associative() {
 
 #[test]
 fn address_of_a_pointer_still_parses() {
-    // `&&` is one token now, so a doubled address-of needs the space --
-    // but taking the address of a pointer *variable* (the common shape) is
-    // untouched.
     SourceModule::parse("f() => void { x := 5; p := &x; q := &p; }")
         .expect("`&p` must still parse as address-of");
 }

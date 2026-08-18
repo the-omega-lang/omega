@@ -3,30 +3,16 @@ use crate::ast::identifier::Ident;
 use crate::ast::identifier::Origin;
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 
-/// One lexical unit -- everything the parser sees is one of these; comments
-/// and whitespace are consumed internally by [`tokenize`] and never turn
-/// into tokens at all.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Ident(String),
-    /// Captures shape (radix, digit text, suffix), not value -- semantic
-    /// analysis still range-checks.
     Number(NumberExpr),
-    /// Decoded content (escapes already resolved).
     Str(String),
-    /// `b"..."` -- same decoded-content shape as `Str`, tagged separately so
-    /// the parser produces a `ByteStringExpr` (a raw byte run, no implicit
-    /// null terminator) instead of a `StringExpr`.
     ByteStr(String),
     Char(char),
-    /// `$name` -- a macro metavariable, recognized atomically.
     Metavar(String),
 
-    // Deliberately not keywords here: `self`/`mut`/`type`/`usize`/`isize`
-    // are context-sensitive (e.g. `self` only in a function's first
-    // parameter, `mut` only after `*` or leading a binding) and stay plain
-    // `Ident` tokens so they remain usable as ordinary names; the parser
-    // recognizes them contextually by comparing ident text.
+    // Contextual words stay `Ident` tokens so they remain usable as names.
     True,
     False,
     If,
@@ -49,8 +35,6 @@ pub enum TokenKind {
 
     // Multi-char punctuation, maximal-munch (tried longest-first during
     // lexing so e.g. `...` is never mistaken for `..` followed by `.`).
-    /// `...` -- variadic function-type parameters ONLY (`(s: *u8, ...) =>
-    /// i32`); not a range operator. See `ast::range::RangeExpr`'s doc comment.
     DotDotDot,
     ColonColon,
     FatArrow,
@@ -59,29 +43,15 @@ pub enum TokenKind {
     NotEq,
     LtEq,
     GtEq,
-    /// `..=` -- an inclusive-end range; always requires an explicit end
-    /// (`a..=` alone is a parse error).
     DotDotEq,
-    /// `..<` -- an exclusive-end range; always requires an explicit end.
     DotDotLt,
-    /// `..` -- an open range with no end, ever; the only range spelling
-    /// legal with nothing written. Its bound is inferred from context; see
-    /// `ast::range::RangeExpr`'s doc comment.
     DotDot,
     PlusPlus,
     MinusMinus,
-    /// `&&` -- short-circuiting logical AND. Unlike `&`, the right operand
-    /// is evaluated only when the left is `true`; see `LogicalOp`.
     AmpAmp,
-    /// `||` -- short-circuiting logical OR; see `LogicalOp`.
     PipePipe,
-    /// `<<` -- see `BinaryOp::Shl`.
     Shl,
-    /// `>>` -- see `BinaryOp::Shr`.
     Shr,
-    /// `+= -= *= /= %= &= |= ^= <<= >>=` -- an "operate and assign" of the
-    /// matching `BinaryOp`, desugared during analysis (see `Analyzer::
-    /// analyze_compound_assign`) into `target = target op value`.
     PlusEq,
     MinusEq,
     StarEq,
@@ -93,9 +63,6 @@ pub enum TokenKind {
     ShlEq,
     ShrEq,
 
-    // Single-char punctuation.
-    /// `$` as the macro invocation suffix (`name$(...)`) and repetition
-    /// prefix (`$...`); `$name` remains a `Metavar` token.
     Dollar,
     Percent,
     Amp,
@@ -110,26 +77,14 @@ pub enum TokenKind {
     Lt,
     Eq,
     Gt,
-    /// `|` -- see `BinaryOp::BitOr`.
     Pipe,
-    /// `^` -- see `BinaryOp::BitXor`.
     Caret,
-    /// `~base` -- unary bitwise-not on an integer; see `BitNotExpr`.
     Tilde,
-    /// `!base` -- unary logical-not on a `bool`; see `NotExpr`. Distinct
-    /// from `Tilde`: `~` is a bit pattern operation and is rejected on
-    /// `bool` (flipping `0`/`1`'s bits leaves `{0,1}`), while `!` is
-    /// defined only on `bool`.
     Not,
-    /// `@` -- leads an item annotation (`@inline(always)`); see
-    /// `parser::item::parse_annotations`.
     At,
-    /// `?` -- marks `[?]T`, an unsized array; see
-    /// `parser::r#type::parse_bracket_type`.
     Question,
 
-    // Delimiters -- flat, individual tokens; nesting is the parser's
-    // concern, not the lexer's (unlike the old macro-only `Token::Group`).
+    // Delimiters stay flat; nesting belongs to the parser.
     LParen,
     RParen,
     LBracket,
@@ -141,8 +96,6 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
-    /// The exact source spelling of a fixed token. Payload-bearing tokens and
-    /// end-of-input have no fixed spelling.
     pub fn spelling(&self) -> Option<&'static str> {
         match self {
             Self::Ident(_)
@@ -227,7 +180,6 @@ impl TokenKind {
         }
     }
 
-    /// A short, human-readable name for "found X" diagnostics.
     pub fn describe(&self) -> String {
         match self {
             Self::Ident(s) => format!("identifier '{s}'"),
@@ -249,9 +201,6 @@ pub struct Token {
     pub origin: Origin,
 }
 
-
-/// Multi-character punctuation. `scan_punct` selects the longest matching
-/// spelling, so table order cannot affect maximal-munch behavior.
 const MULTI_CHAR_PUNCT: &[(&str, TokenKind)] = &[
     ("...", TokenKind::DotDotDot),
     ("..=", TokenKind::DotDotEq),
@@ -290,23 +239,13 @@ fn is_ident_continue(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// Tokenizes a whole source file, consuming comments/whitespace internally.
-/// Recovers from lexical errors rather than aborting: an unexpected
-/// character is skipped and lexing continues; an unterminated
-/// string/char/comment consumes to end-of-input.
 pub fn tokenize(source: &str) -> (Vec<Token>, Vec<ParseError>) {
     let lexed = lex(source);
     (lexed.tokens, lexed.errors)
 }
 
-/// [`tokenize`]'s full output, comment spans included. The parser never
-/// wants comments (that's the whole point of consuming them as trivia), but
-/// the diagnostics highlighter does -- a snippet's comments should render
-/// dimmed, same as every other token class gets its color.
 pub struct Lexed {
     pub tokens: Vec<Token>,
-    /// Each comment's whole span (single-line and multi-line alike), in
-    /// source order.
     pub comments: Vec<Span>,
     pub errors: Vec<ParseError>,
 }
@@ -329,8 +268,6 @@ pub fn lex(source: &str) -> Lexed {
 
 struct Lexer<'a> {
     source: &'a str,
-    /// A *byte* offset into `source`, not a char index -- `Span`s are byte
-    /// ranges.
     pos: usize,
     tokens: Vec<Token>,
     comments: Vec<Span>,
@@ -393,11 +330,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Mirrors the old `trivia::comment`'s hashes-counting rule exactly:
-    /// `#` alone is a single-line comment (to EOL/EOF); a run of N >= 2
-    /// `#`s starts a multi-line comment closed only by a run of exactly N
-    /// `#`s. An unterminated multi-line comment records an error and
-    /// consumes to EOF, rather than aborting the whole tokenize pass.
     fn skip_comment(&mut self) {
         let start = self.pos;
         let mut hashes = 0usize;
@@ -576,15 +508,7 @@ impl<'a> Lexer<'a> {
         Ok(kind)
     }
 
-    // --- Literals ---
 
-    /// Mirrors `NumberExpr::parser`'s exact shape (see that type's doc
-    /// comment) -- adjacency matters: no whitespace is tolerated between a
-    /// based prefix and its digits, between the digit run and a decimal
-    /// point, or between the digits and a type suffix. Doesn't validate the
-    /// value (radix-correctness, suffix range, ...), only consumes the
-    /// right character shape as one atom -- semantic analysis still does
-    /// real validation.
     fn scan_number(&mut self) -> TokenKind {
         let (base, integer_part) = if self.peek() == Some('0') {
             match self.peek_at(1) {
@@ -629,10 +553,6 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    /// One or more base-`radix` digits, `_` allowed anywhere after the
-    /// first as a visual separator (stripped from the result) -- matching
-    /// `radix_digits`'s existing rule exactly. Assumes the caller already
-    /// confirmed a valid first digit is present.
     fn scan_radix_digits(&mut self, radix: u32) -> String {
         let mut out = String::new();
         loop {
@@ -650,8 +570,6 @@ impl<'a> Lexer<'a> {
         out
     }
 
-    /// `usize`/`isize` (tried first, whole-word so `5isize` isn't parsed as
-    /// `5i` + a dangling `size`), or `i`/`u`/`f` + decimal digits.
     fn scan_number_suffix(&mut self) -> Option<Ident> {
         if self.try_consume_word("usize") {
             return Some(Ident("usize".to_string()));
@@ -672,10 +590,6 @@ impl<'a> Lexer<'a> {
         None
     }
 
-    /// Consumes `word` if it's here *and* isn't immediately followed by
-    /// another identifier character (so e.g. `usizeish` doesn't wrongly
-    /// match a `usize` suffix) -- mirrors `text::keyword`'s word-boundary
-    /// check.
     fn try_consume_word(&mut self, word: &str) -> bool {
         if self.starts_with(word) {
             let after = self.pos + word.len();
@@ -691,12 +605,6 @@ impl<'a> Lexer<'a> {
         false
     }
 
-    /// Dispatches between an ordinary single-quote string (a run of exactly
-    /// 2 quotes) and a multi-line string (`"""..."""`, N >= 3 quotes, closed
-    /// by a matching run of N, same hashes-counting shape as
-    /// `skip_comment`). An even N is rejected with a dedicated diagnostic
-    /// rather than silently reinterpreted, since it could be confused with
-    /// two shorter, separately-closed runs.
     fn scan_string_or_multiline(&mut self, start: usize) -> Result<TokenKind, ParseError> {
         let quote_run = self.source[self.pos..]
             .chars()
@@ -776,11 +684,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Exactly one character or one escape between the quotes -- an empty
-    /// (`''`) or multi-character literal is `InvalidCharLiteral`. On a
-    /// malformed shape, skips to the literal's closing `'` (or
-    /// newline/EOF) before returning, so e.g. `'ab'` doesn't cascade into a
-    /// second spurious error from the leftover `b'`.
     fn scan_char(&mut self, start: usize) -> Result<TokenKind, ParseError> {
         self.advance(); // opening quote
         let c = match self.peek() {
@@ -834,14 +737,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// `\n \t \r \0 \\ \" \' \u{XXXX}`. Called with `self.peek() ==
-    /// Some('\\')`. An *unrecognized* escape letter (e.g. `\q`) is not an
-    /// error: returns `Ok(None)` so the caller treats the backslash as a
-    /// literal character and reads the next character normally. A
-    /// `\u{...}` that's structurally well-formed but names an invalid
-    /// Unicode scalar value is a real `InvalidUnicodeEscape` error -- the
-    /// one case that doesn't fall back silently, since the delimiter/digit
-    /// structure already committed.
     fn try_scan_escape(&mut self, literal_start: usize) -> Result<Option<char>, ParseError> {
         let simple = match self.peek_at(1) {
             Some('n') => Some('\n'),
@@ -901,20 +796,10 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// `spelling()` and the scanners must stay one fact: every fixed token's
-/// spelling has to lex back to that same token, as *one* token. This is what
-/// makes deriving `describe()` from `spelling()` safe, and it catches a
-/// maximal-munch mistake directly -- `<<=` lexing as `<` `<=` fails here.
-///
-/// The witness list below is written independently of the tables it checks,
-/// on purpose: a test that read the same table it verifies would agree with
-/// any edit, including a wrong one.
 #[cfg(test)]
 mod spelling_tests {
     use super::{MULTI_CHAR_PUNCT, TokenKind, lex};
 
-    /// Lexes `source`, asserting it produced exactly one token, and returns
-    /// it.
     fn sole_token(source: &str) -> TokenKind {
         let lexed = lex(source);
         assert!(
@@ -936,10 +821,6 @@ mod spelling_tests {
         kinds[0].clone()
     }
 
-    /// Every fixed token this crate can produce, as source text. Keywords
-    /// come from `scan_ident`'s match, punctuation from `scan_punct`'s
-    /// single-character match; the multi-character forms are checked against
-    /// `MULTI_CHAR_PUNCT` itself in the test below.
     const FIXED: &[&str] = &[
         "true", "false", "if", "else", "match", "extern", "import", "return", "struct", "enum",
         "union", "spec", "while", "loop", "for", "break", "continue", "defer", "macro", "%", "&",

@@ -40,10 +40,6 @@ fn imported_macro_definitions_merge_and_local_definitions_shadow() {
 
 #[test]
 fn imported_macro_expansions_are_attributed_to_the_call_site() {
-    // Imported definitions were lexed from another source file. Since spans
-    // do not carry a source-file identity, their original offsets must never
-    // survive into this module's AST: later diagnostics would render them
-    // against this caller's unrelated text.
     let imported = macro_definition("exposed macro foreign() => { side_effect(); }");
     let mut definitions = HashMap::new();
     definitions.insert(imported.name.clone(), imported);

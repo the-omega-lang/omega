@@ -11,33 +11,10 @@ use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement};
 
-/// The full expression grammar's single entry point. A deliberate hybrid,
-/// not one generic precedence-climbing loop for everything: assignment
-/// (right-associative, recurses into the whole grammar again on the RHS)
-/// and comparison (non-associative -- at most one `==`/`!=`/`<`/`<=`/`>`/
-/// `>=`; `a < b < c` must be a parse error, not `(a < b) < c`) are explicit
-/// outer layers matching their exact non-standard semantics; only the
-/// genuinely standard left-associative additive/multiplicative tiers use
-/// real precedence-climbing (see `parse_additive`/`parse_multiplicative`).
-/// Precedence, loosest to tightest: range, assignment, comparison, bitor, bitxor,
-/// bitand, shift, additive, multiplicative, prefix unary, postfix, primary.
-/// The bitwise tiers sit *tighter* than comparison and *looser* than shift,
-/// matching Rust's precedence rather than C's -- C famously binds `&`/`|`
-/// looser than `==`, so `a & b == c` silently means `a & (b == c)`; putting
-/// the bitwise ops above comparison here avoids that footgun entirely.
-///
-/// This is one of the grammar's two genuine cycles (the other is
-/// `parse_type`), so it carries the nesting guard: every nested `(...)`,
-/// `[...]`, block, call argument, match arm and index re-enters here, which
-/// is what lets a single `descend` bound the parser's native stack use. See
-/// `Parser::descend` and `MAX_NESTING_DEPTH`.
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
     p.descend(parse_range_or_expression)
 }
 
-/// Plain `=` and every "operate and assign" form (`+= -= *= /= %= &= |= ^=
-/// <<= >>=`) share this one outer layer -- the latter just carries which
-/// `BinaryOp` it desugars through (see `CompoundAssignExpr`'s doc comment).
 fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
     let target = parse_logical_or(p)?;
     let op = match p.peek() {
@@ -71,10 +48,6 @@ fn parse_assignment(p: &mut Parser) -> Option<ExpressionNode> {
     Some(ExpressionNode { expression, span })
 }
 
-/// `== != < <= > >=`, non-associative: at most one comparison is matched
-/// here (not a loop), matching Rust's own rule that `a < b < c` must be
-/// parenthesized rather than either chaining or silently meaning
-/// `(a < b) < c`.
 const BINARY_TIERS: &[&[(TokenKind, BinaryOp)]] = &[
     &[(TokenKind::Pipe, BinaryOp::BitOr)],
     &[(TokenKind::Caret, BinaryOp::BitXor)],
@@ -88,14 +61,6 @@ const BINARY_TIERS: &[&[(TokenKind, BinaryOp)]] = &[
     ],
 ];
 
-/// `a || b`, left-associative and looser than `&&` -- Rust's precedence, so
-/// `a || b && c` is `a || (b && c)`.
-///
-/// These two tiers sit between assignment and comparison, which is what
-/// makes `a < b && c < d` parse the obvious way without parentheses. They
-/// are separate from `BINARY_TIERS` because their right operand is
-/// conditionally evaluated: the table drives operators that always evaluate
-/// both sides, and folding these into it would quietly misrepresent them.
 fn parse_logical_or(p: &mut Parser) -> Option<ExpressionNode> {
     let mut left = parse_logical_and(p)?;
     while p.check(&TokenKind::PipePipe) {
@@ -114,7 +79,6 @@ fn parse_logical_or(p: &mut Parser) -> Option<ExpressionNode> {
     Some(left)
 }
 
-/// `a && b`, left-associative and tighter than `||`.
 fn parse_logical_and(p: &mut Parser) -> Option<ExpressionNode> {
     let mut left = parse_comparison(p)?;
     while p.check(&TokenKind::AmpAmp) {
@@ -185,25 +149,10 @@ fn binary_op_expr(left: ExpressionNode, op: BinaryOp, right: ExpressionNode) -> 
     Expression::BinaryOp(Box::new(BinaryOpExpr { left, op, right }))
 }
 
-/// Binds tighter than the arithmetic operators and assignment, but looser
-/// than postfix: `*base`/`&base`/`-base`. So `*p.f` is `*(p.f)` (postfix
-/// runs first, see `parse_postfix`), while `(*p).f` needs explicit parens,
-/// and `-a * b` is `(-a) * b` -- matching C/Rust precedence. `++`/`--` need
-/// no special ordering against `+`/`-` here (unlike the old char-by-char
-/// grammar, which had to try the two-char forms first) -- the lexer already
-/// maximal-munched them into their own distinct token kinds, so there's no
-/// way for `--x` to be mistaken for two stacked unary minuses at this
-/// layer. Right-associative via plain recursion: `prefix.repeated()`'s old
-/// fold-right becomes just "the operand is itself a `parse_unary` call."
 fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
     use crate::parser::contextual::{COMP, MUT, REVEAL};
     let start = p.peek_span();
-    // `<Type>base` -- a bare `<` can never start a primary expression any
-    // other way (it's only ever infix, in `parse_comparison`, or inside an
-    // already-committed generic-args parse), so this is unambiguous with no
-    // lookahead beyond "is the very next token `<`" needed. Checked before
-    // the single-token `Prefix` dispatch below since it doesn't fit that
-    // shape (a whole type, not one token, precedes the operand).
+    // A leading `<` uniquely starts cast syntax here; comparison `<` is infix.
     if p.check(&TokenKind::Lt) {
         return parse_cast(p, start);
     }
@@ -253,15 +202,6 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
     Some(ExpressionNode { expression, span })
 }
 
-/// `<Type>base` -- same binding tightness as `parse_unary`'s other
-/// prefixes (right-associative via recursing into `parse_unary` again for
-/// `base`), just with a whole type between the operator's `<`/`>` instead
-/// of one token. Also `<Type : Spec>::function`, the fully-qualified
-/// spec-function path: distinguished from a cast purely by the `:` right
-/// after the first type (no type contains one), so a single-token lookahead
-/// after the already-parsed type decides, with no backtracking -- and `<`
-/// begins either form only in prefix position, so infix `a < b` is
-/// untouched.
 fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
     p.advance(); // '<'
     let target = crate::parser::r#type::parse_type(p)?;
@@ -298,18 +238,11 @@ fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
     })
 }
 
-/// Binds tightest: `.field`, `[index]`/`[a..b]`, `(args)`, left-associative
-/// via a post-primary loop (the old grammar's `foldl_with(postfix.repeated())`
-/// translates directly).
 fn parse_postfix(p: &mut Parser) -> Option<ExpressionNode> {
     let expr = parse_primary(p)?;
     parse_postfix_loop(p, expr)
 }
 
-/// The shared postfix loop, split out of `parse_postfix` so a
-/// fully-qualified spec path (already parsed, not a primary) can hand its
-/// callee in for `(...)`/`.field`/`[index]` attachment -- see
-/// `parse_cast`'s qualified branch.
 fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<ExpressionNode> {
     loop {
         match p.peek() {
@@ -338,14 +271,6 @@ fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<Expres
     Some(expr)
 }
 
-/// `base[index]` vs `base[range]` -- told apart by whether a range operator
-/// (`...`/`..<`) appears right after `[` (no start bound) or right after one
-/// mandatory expression is parsed first -- either way, no real backtracking
-/// is needed (unlike the old grammar's `choice((range, item))`, which had to
-/// speculatively try the whole range shape first): the operator decides
-/// which shape this is only once we've seen it, and everything up to that
-/// point is identical for both. See `RangeExpr`'s doc comment for the range
-/// grammar itself, shared verbatim with match patterns.
 fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<ExpressionNode> {
     p.advance(); // '['
     if is_range_operator(p.peek()) {
@@ -371,8 +296,6 @@ fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<Expressi
     })
 }
 
-/// Whether `kind` is one of the three range operators (`..=`/`..<`/`..`) --
-/// shared by every range-recognizing call site so they all stay in sync.
 fn is_range_operator(kind: &TokenKind) -> bool {
     matches!(
         kind,
@@ -380,25 +303,6 @@ fn is_range_operator(kind: &TokenKind) -> bool {
     )
 }
 
-/// Consumes the range operator at the parser's current position (`..=`,
-/// `..<`, or `..` -- the caller has already confirmed one is here) and
-/// parses the rest of the shared range grammar, identically in all three
-/// positions (slice index, match pattern, ordinary expression).
-///
-/// Whether an end bound follows is decided structurally, by whether an
-/// expression can begin at the current token (`expression_starts_here`),
-/// rather than by a caller-supplied terminator token. Ordinary expression
-/// position has no single terminator to name -- `r := 1..;`, `f(1..)` and
-/// `for i in 1.. { }` all end the range with a different token -- so a
-/// terminator parameter could not describe it at all.
-///
-/// The end bound is parsed *inheriting* the ambient struct-literal
-/// restriction rather than forcing it on or off. That is what makes
-/// `for i in a..<b { }` work: the `for` header already restricts struct
-/// literals (see `parse_for_in`), so `b` is the bound and `{` opens the
-/// loop body instead of being eaten as `b { ... }`. Callers whose own
-/// brackets remove that ambiguity (a slice, a match pattern) re-allow
-/// struct literals around their call.
 fn parse_range_tail(
     p: &mut Parser,
     start: Option<ExpressionNode>,
@@ -407,13 +311,7 @@ fn parse_range_tail(
     let op = p.peek().clone();
     p.advance();
     let end = match op {
-        // `..` is the contextual range operator -- the spelling for "no bound
-        // is written on this side". An end after it is therefore a
-        // contradiction, and rejected identically in every position: both
-        // `a..b` and `..5` land here. This is not a restriction on
-        // leading-open ranges, which are spelled `..<b`/`..=b` with their own
-        // tokens and stay perfectly valid; it only stops `..` acquiring a
-        // second meaning that would differ between an expression and a slice.
+        // Bare `..` means an omitted end; an explicit end must use `..<` or `..=`.
         TokenKind::DotDot => {
             if expression_starts_here(p) {
                 p.error_at(op_span, ParseErrorKind::OpenRangeHasEnd);
@@ -421,8 +319,7 @@ fn parse_range_tail(
             }
             RangeEnd::Open
         }
-        // `..=`/`..<` always require an explicit end -- an open-ended
-        // exclusive range has nothing to exclude (see `RangeEnd`).
+        // `..=`/`..<` require an explicit end.
         TokenKind::DotDotLt | TokenKind::DotDotEq => {
             if !expression_starts_here(p) {
                 p.error_at(op_span, ParseErrorKind::RangeMissingEnd);
@@ -446,9 +343,6 @@ fn parse_range_tail(
     })
 }
 
-/// The lowest-precedence range layer. A range is a real expression in every
-/// expression position; slices and match patterns still consume the same
-/// syntax structurally through `parse_range_tail` above.
 pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode> {
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
@@ -473,40 +367,14 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
     Some(first)
 }
 
-/// The subset of tokens that can begin a primary/prefix expression. It is
-/// deliberately syntactic: semantic rejection remains the ordinary parser or
-/// analyzer's job, but range parsing must know whether `a..` ends here.
-///
-/// `{` counts only where a struct literal would (`struct_literals_allowed`),
-/// which is the same ambient signal that already tells `while`/`for`/`if`
-/// headers apart from the block that follows them (see
-/// `Parser::restrict_struct_literals`). Without that gate `for i in 1.. { }`
-/// consumes its own loop body as the range's end bound.
 fn expression_starts_here(p: &Parser) -> bool {
     expression_starts_at(p, 0)
 }
 
-/// The commit rule for `reveal`/`comp`, the two prefix operators spelled as
-/// ordinary identifiers: they take the operator reading only when something
-/// that could actually *be* an operand follows. That is what keeps a *use*
-/// of a variable that merely shares their name working -- in `return comp;`
-/// nothing follows that could be an operand, so `comp` is the variable.
-///
-/// One token wider than `expression_starts_at`: a leading `<` begins a cast
-/// (`comp <usize>N`) or a qualified spec path, both of which `parse_unary`
-/// accepts as an operand. Range parsing must *not* treat `<` that way (`a..
-/// < b` compares against an open range), which is why this is a separate
-/// predicate rather than an extra arm in the shared table.
-///
-/// The cost is that `comp`/`reveal` followed by `<` is always read as the
-/// operator, so a variable of either name can never be the left side of a
-/// `<` comparison. That ambiguity is inherent to a single-token lookahead
-/// and is recorded in `docs/issues/known-issues.md`.
 fn operand_follows(p: &Parser) -> bool {
     expression_starts_at(p, 1) || matches!(p.peek_at(1), TokenKind::Lt)
 }
 
-/// Whether an expression could start `offset` tokens ahead.
 fn expression_starts_at(p: &Parser, offset: usize) -> bool {
     if matches!(p.peek_at(offset), TokenKind::LBrace) {
         return p.struct_literals_allowed();
@@ -544,11 +412,6 @@ fn finish_slice(p: &mut Parser, base: ExpressionNode, range: RangeExpr) -> Optio
     })
 }
 
-/// `callee(args)` -- comma-separated, no trailing comma tolerated (matching
-/// the old grammar's plain `separated_by`, which has the same rule: a
-/// trailing comma leaves nothing for the next iteration to parse, reported
-/// as an ordinary "expected an expression" error there rather than silently
-/// accepted).
 fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> {
     p.advance(); // '('
     let mut args = Vec::new();
@@ -572,13 +435,6 @@ fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> 
     })
 }
 
-/// `{ ... }`/`if ... { ... }`/`match ... { ... }` -- the three block-shaped
-/// primaries, factored out of `parse_primary` so
-/// `parse_statement_leading_expression` below can reach the identical
-/// parsing logic without going through `parse_primary`'s own `match` (and,
-/// critically, without climbing back through any of the postfix/binary
-/// tiers built on top of it). Only ever called once `p.peek()` is already
-/// confirmed to be `LBrace`/`If`/`Match`.
 fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
     match p.peek() {
         TokenKind::LBrace => {
@@ -609,19 +465,6 @@ fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionN
     }
 }
 
-/// Like `parse_expression`, but for a statement's own leading expression
-/// (and `parse_codeblock`'s speculative tail-value attempt, which parses at
-/// that identical leading position). When the very next token starts a
-/// block-shaped primary (`{`, `if`, `match`), *only* that block is parsed --
-/// postfix/unary/binary/assignment continuation is skipped entirely,
-/// matching Rust's own rule that a block-like expression in statement
-/// position is never continued as an operand by whatever follows it.
-/// Without this, `*p = 5;` right after an `if` block would fold into
-/// `(if cond {...}) * p = 5` (`*` also being a valid infix continuation),
-/// failing analysis with a confusing "invalid assignment target" instead of
-/// parsing as two statements. Explicitly wanting the continuation still
-/// works by parenthesizing the block, which recurses into the ordinary
-/// `parse_expression` inside `parse_primary`'s `LParen` arm.
 pub(crate) fn parse_statement_leading_expression(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
     if matches!(
@@ -633,12 +476,6 @@ pub(crate) fn parse_statement_leading_expression(p: &mut Parser) -> Option<Expre
     parse_expression(p)
 }
 
-/// The atom tier. Order matters and matches the old grammar's `choice`
-/// exactly: `Bool` is tried before `Path` (`true`/`false` are keywords in
-/// this position, not identifiers -- see `lexer::TokenKind`'s doc comment
-/// on why they're global keywords now), and macro invocation is tried
-/// before `Path` (an identifier immediately followed by `!` must not be
-/// parsed as a bare path with `!(...)` left dangling).
 fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
     match p.peek() {
@@ -713,10 +550,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
                 span,
             })
         }
-        // `sizeof<Type>` -- `sizeof` is a contextual keyword (see
-        // `lexer::TokenKind`'s doc comment), committed to only when
-        // immediately followed by `<`; a variable actually named `sizeof`
-        // used any other way still parses as a plain identifier below.
+        // Commit contextual `sizeof` only when `<Type>` follows.
         TokenKind::Ident(name) if name == contextual::SIZEOF && matches!(p.peek_at(1), TokenKind::Lt) => {
             p.advance(); // 'sizeof'
             p.advance(); // '<'
@@ -755,18 +589,6 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
     }
 }
 
-/// A path in expression position, with speculative support for explicit
-/// generic arguments on one segment: `Optional<u32>::Some`,
-/// `MyNode<i32> { ... }`. Unlike type position -- where `<` can only mean
-/// generic arguments -- a `<` here is usually the comparison operator
-/// (`a < b`), so the generic reading is only *committed* when what follows
-/// the closing `>` proves it: another `::` segment, or a `{` opening a
-/// struct literal where one is allowed. (`a < b > c` isn't valid syntax
-/// anyway -- comparison is non-associative, see `parse_comparison` -- so
-/// nothing parseable is ever stolen by committing on those two tokens.)
-/// Anything less conclusive resets and leaves the `<` for the comparison
-/// tier, exactly like `recover_restricted_struct_literal`'s mark/reset
-/// discipline -- abandoned speculation never leaks errors.
 fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     use crate::ast::identifier::ExprPath;
 
@@ -803,9 +625,6 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     })
 }
 
-/// The speculative `<Type, ...>` attempt behind `parse_expr_path` -- returns
-/// the parsed arguments only when the commit rule holds (see its doc
-/// comment), resetting the parser to just before the `<` otherwise.
 fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type>> {
     let mark = p.mark();
     p.advance(); // '<'
@@ -835,16 +654,6 @@ fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type
     Some(args)
 }
 
-/// A struct literal written where they're restricted (`if Name { ... }` --
-/// see `Parser::restrict_struct_literals`): normally the `{` simply starts
-/// the statement's body and the path stands alone, but when what follows can
-/// *only* be read as a struct literal, silently mis-parsing it as
-/// "condition, then body" would bury the user in nonsense errors inside the
-/// "body". So this speculatively parses the literal and keeps it -- with one
-/// precise `StructLiteralNotAllowedHere` error -- exactly when the token
-/// after its closing `}` proves the literal reading. Anything less
-/// conclusive resets and lets the ordinary "path, then body" interpretation
-/// proceed untouched.
 fn recover_restricted_struct_literal(
     p: &mut Parser,
     path: &crate::ast::identifier::ExprPath,
@@ -879,13 +688,6 @@ fn recover_restricted_struct_literal(
     Some(literal)
 }
 
-/// `Name { field = value; ... }` -- the caller has already parsed `path`
-/// and confirmed both that a `{` follows and that a struct literal is
-/// allowed here (see `Parser::struct_literals_allowed`). Field
-/// initializers are `;`-terminated, matching struct *definition* syntax's
-/// own terminator (`field: Type;` there) without borrowing its `:` --
-/// a literal's field is an assignment, not a declaration, so it uses the
-/// assignment operator instead.
 fn parse_struct_literal(
     p: &mut Parser,
     path: crate::ast::identifier::ExprPath,
@@ -922,7 +724,6 @@ fn parse_struct_literal(
     })
 }
 
-/// `[e1, e2, ...]` -- same "no trailing comma" rule as `parse_call`.
 fn parse_array_literal(p: &mut Parser) -> Option<ExpressionNode> {
     let start = p.peek_span();
     p.advance(); // '['
@@ -943,7 +744,6 @@ fn parse_array_literal(p: &mut Parser) -> Option<ExpressionNode> {
     })
 }
 
-/// `if cond { ... } else if cond { ... } else { ... }`.
 fn parse_if_expr(p: &mut Parser) -> Option<IfExpr> {
     p.expect(&TokenKind::If, "'if'");
     let mut branches = vec![parse_if_branch_body(p)?];
@@ -966,21 +766,12 @@ fn parse_if_expr(p: &mut Parser) -> Option<IfExpr> {
     })
 }
 
-/// `cond { ... }` -- the leading `if`/`else if` keyword itself is always
-/// consumed by the caller before this runs. The condition parses with
-/// struct literals restricted: `if flag { ... }` must mean "condition
-/// `flag`, then the branch body," never a `flag { ... }` literal (see
-/// `Parser::restrict_struct_literals`).
 fn parse_if_branch_body(p: &mut Parser) -> Option<(ExpressionNode, CodeblockExpr)> {
     let condition = p.restrict_struct_literals(parse_expression)?;
     let body = parse_codeblock(p)?;
     Some((condition, body))
 }
 
-/// `match scrutinee { pattern => body, ... } else { ... }`. The scrutinee
-/// parses with struct literals restricted, exactly like an `if` condition
-/// (`parse_if_branch_body`) -- `match flag { ... }` must mean "scrutinee
-/// `flag`, then the arm list," never a `flag { ... }` literal.
 fn parse_match_expr(p: &mut Parser) -> Option<MatchExpr> {
     let start = p.peek_span();
     p.expect(&TokenKind::Match, "'match'");
@@ -1008,10 +799,6 @@ fn parse_match_expr(p: &mut Parser) -> Option<MatchExpr> {
     })
 }
 
-/// `pattern => body` -- arms are comma-separated with an optional trailing
-/// comma, uniformly regardless of whether `body` is a bare expression or a
-/// `{ ... }` block (simpler than Rust's "comma optional after a block"
-/// special case).
 fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
     let start = p.peek_span();
     let pattern = parse_pattern(p)?;
@@ -1025,15 +812,6 @@ fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
     })
 }
 
-/// One pattern: a range (leading `..=`/`..<`/`..`, or one expression
-/// followed by one of those), or else that one expression stands alone as
-/// `Pattern::Value` -- a literal or an `Enum::Variant` path, told apart by
-/// analysis (see `Pattern`'s doc comment), not here. Reuses
-/// `parse_range_tail` verbatim, so the range grammar is defined in exactly
-/// one place. A bare `..` range here (`RangeExpr::is_catch_all`) is the
-/// match catch-all arm -- see `Analyzer::analyze_match`. An arm's own `=>`
-/// can never start an expression, so `..` correctly reads as open here
-/// without needing a terminator token to say so.
 fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
@@ -1051,16 +829,6 @@ fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
     Some(Pattern::Value(value))
 }
 
-/// `{ stmt; stmt; ... tail }` -- at every position, tries the tail
-/// interpretation first (does a full expression parse here *and* get
-/// immediately followed by `}`?), falling back to "one ordinary statement"
-/// only if that fails, so a trailing `if`/`{}` expression meant as the
-/// block's value isn't instead swallowed as just another statement and
-/// silently discarded. `mark`/`reset` is the backtracking primitive this
-/// genuinely needs: an ordinary statement can itself start by parsing the
-/// very same expression grammar, so there is no cheaper way to tell "this
-/// is the tail" from "this is a statement" apart than trying the expression
-/// interpretation and checking what follows.
 pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
     // Inside the block's own braces, struct literals are unambiguous again
     // regardless of what position the block itself sits in.
@@ -1076,9 +844,6 @@ pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {
     })
 }
 
-/// Parses a block's statements and optional tail without consuming braces.
-/// This is shared with statement-position macro expansion so substituted
-/// tokens obey exactly the ordinary block grammar.
 pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
     let start = p.peek_span();
     let mut statements = Vec::new();
@@ -1112,15 +877,6 @@ mod nesting_tests {
     use crate::diagnostics::ParseErrorKind;
     use crate::parser::MAX_NESTING_DEPTH;
 
-    /// Parsing at (or near) `MAX_NESTING_DEPTH` genuinely needs more native
-    /// stack than a default test thread has -- cargo's harness threads get
-    /// roughly 2MiB, and the limit is calibrated against the much larger
-    /// stack `omgc` runs its real work on. So these cases run on an
-    /// explicitly sized thread, the same mitigation `omgc::main` uses.
-    ///
-    /// That this is necessary *is* the point of the limit: nesting costs
-    /// stack, the cost is bounded but not small, and the bound is what turns
-    /// the failure into a diagnostic rather than an abort.
     fn on_a_deep_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
@@ -1152,8 +908,6 @@ mod nesting_tests {
         }
     }
 
-    /// Just inside the limit still parses -- the guard must not take away
-    /// headroom that real (or generated) programs already had.
     #[test]
     fn nesting_just_inside_the_limit_is_accepted() {
         // Two levels of slack: the function body's own block and the walrus
@@ -1162,27 +916,18 @@ mod nesting_tests {
         assert!(on_a_deep_stack(move || SourceModule::parse(&source).is_ok()));
     }
 
-    /// ... and past it, a diagnostic instead of a stack overflow. Before this
-    /// guard the process aborted with `fatal runtime error: stack overflow`:
-    /// no file, no line, no span.
     #[test]
     fn nesting_past_the_limit_is_a_diagnostic() {
         let source = nested_parens(MAX_NESTING_DEPTH + 8);
         assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
     }
 
-    /// Types recurse entirely within `parse_type` (`*[?]*[?]T` never reaches
-    /// expression parsing), so they need the guard independently -- one
-    /// shared counter, two call sites.
     #[test]
     fn deeply_nested_types_are_bounded_too() {
         let source = nested_pointers(MAX_NESTING_DEPTH + 8);
         assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
     }
 
-    /// Reported once per module, not once per recovery attempt: block-level
-    /// error recovery re-enters the grammar after each refusal, so without
-    /// the latch every following statement reports the same overflow again.
     #[test]
     fn the_nesting_limit_is_reported_once() {
         let deep = "(".repeat(MAX_NESTING_DEPTH + 8) + "1" + &")".repeat(MAX_NESTING_DEPTH + 8);
@@ -1190,10 +935,6 @@ mod nesting_tests {
         assert_eq!(on_a_deep_stack(move || nesting_errors(&source)), 1);
     }
 
-    /// The property the original stack-overflow diagnosis got wrong: block
-    /// parsing is a `loop`, so a long *sequence* of statements costs no stack
-    /// at all and must never trip a depth limit. This runs on the ordinary
-    /// test stack deliberately -- 20k statements need no headroom whatsoever.
     #[test]
     fn a_long_statement_sequence_is_not_nesting() {
         let body = "acc = acc + 1;\n".repeat(20_000);
@@ -1209,7 +950,6 @@ mod tests {
     use crate::ast::statement::Statement;
     use crate::diagnostics::ParseErrorKind;
 
-    /// The statements of `source`'s first (and only) function definition.
     fn body_statements(source: &str) -> Vec<Statement> {
         let module = SourceModule::parse(source).expect("source must parse");
         let Item::FunctionDefinition(f) = &module.nodes[0].item else {
@@ -1238,8 +978,6 @@ mod tests {
 
     #[test]
     fn generic_args_commit_on_path_continuation() {
-        // `Optional<u32>::Some { ... }` -- the `::` after `>` proves the
-        // generic reading; the literal's path carries the args on segment 0.
         let stmts = body_statements("f() => void { a := Optional<u32>::Some { value = 10; }; }");
         let Statement::Walrus(w) = &stmts[0] else {
             panic!("expected a walrus statement")
@@ -1255,9 +993,6 @@ mod tests {
 
     #[test]
     fn generic_args_do_not_steal_comparisons() {
-        // `a < b` followed by something that is neither `::` nor `{` must
-        // stay a comparison -- including the nasty `f(a < b, c > d)` shape,
-        // where a C++-style greedy reading would see `a<b, c>(d)`.
         let stmts = body_statements("f() => void { x := a < b; g(a < b, c > d); }");
         let Statement::Walrus(w) = &stmts[0] else {
             panic!("expected a walrus statement")
@@ -1325,9 +1060,6 @@ mod tests {
 
     #[test]
     fn condition_position_reads_brace_as_body_not_literal() {
-        // `flag { ... }` in a `while` condition must be "condition `flag`,
-        // then the body" -- including when the body's first statement is a
-        // declaration (`x: i32;`), which is field-initializer-shaped.
         let stmts = body_statements("f() => void { while flag { x: i32; } }");
         let Statement::While(w) = &stmts[0] else {
             panic!("expected a while statement")
@@ -1341,8 +1073,6 @@ mod tests {
 
     #[test]
     fn unambiguous_literal_in_condition_reports_dedicated_error() {
-        // The `.x > 0` after the closing `}` proves the literal reading --
-        // one precise error, not a cascade from mis-parsing the "body".
         let errors = SourceModule::parse("f() => void { if Vec2 { x = 1; }.x > 0 { g(); } }")
             .expect_err("must not parse");
         assert_eq!(errors.len(), 1);
@@ -1354,9 +1084,6 @@ mod tests {
 
     #[test]
     fn parenthesized_literal_in_condition_parses() {
-        // The suggested fix for the case above must itself parse. (The
-        // trailing `done();` keeps the `if` in statement position rather
-        // than the block's tail.)
         let stmts = body_statements("f() => void { if (Vec2 { x = 1; }).x > 0 { g(); } done(); }");
         assert!(matches!(stmts[0], Statement::Expression(_)));
         assert_eq!(stmts.len(), 2);
@@ -1364,15 +1091,11 @@ mod tests {
 
     #[test]
     fn literal_inside_call_arguments_in_condition_parses() {
-        // Bracketed sub-contexts lift the restriction: the `{` inside
-        // `check(...)`'s arguments can't be the statement's body.
         let stmts = body_statements("f() => void { if check(Vec2 { x = 1; }) { g(); } done(); }");
         assert!(matches!(stmts[0], Statement::Expression(_)));
         assert_eq!(stmts.len(), 2);
     }
 
-    /// A fully-parenthesized rendering of an expression's operator tree --
-    /// the shape assertion below is unreadable written as nested `matches!`.
     fn shape(expr: &Expression) -> String {
         match expr {
             Expression::BinaryOp(b) => format!(
@@ -1394,9 +1117,6 @@ mod tests {
         shape(&w.value.expression)
     }
 
-    /// The table-driven tier walk (`BINARY_TIERS`) must produce exactly the
-    /// grouping the six hand-written tier functions did. One expression
-    /// exercises every tier boundary at once, loosest to tightest.
     #[test]
     fn binary_tiers_group_loosest_to_tightest() {
         assert_eq!(
@@ -1405,23 +1125,16 @@ mod tests {
         );
     }
 
-    /// The C footgun Omega deliberately avoids: comparison is *looser* than
-    /// the bitwise operators, so this is `(a & b) == c`, not `a & (b == c)`.
     #[test]
     fn comparison_is_looser_than_the_bitwise_tiers() {
         assert_eq!(bound_shape("a & b == c"), "((a BitAnd b) Eq c)");
     }
 
-    /// Every tier is left-associative, which the shared walk must not have
-    /// turned into right-association.
     #[test]
     fn binary_tiers_are_left_associative() {
         assert_eq!(bound_shape("a - b - c"), "((a Sub b) Sub c)");
     }
 
-    /// `comp`/`reveal` commit only when an operand follows -- and a cast is
-    /// an operand. Without the `<` case, `comp <i32>5` reads as the
-    /// comparison chain `comp < i32 > 5`.
     #[test]
     fn comp_and_reveal_accept_a_cast_operand() {
         for word in ["comp", "reveal"] {

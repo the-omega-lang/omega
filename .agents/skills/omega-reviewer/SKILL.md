@@ -48,6 +48,23 @@ Use documentation according to responsibility when the diff changes behavior:
 
 Historical plans and git history are cold storage unless current rationale is genuinely missing. If implementation and `docs/language/` disagree, do not silently bless the implementation; check whether the mismatch is a known issue or an unintended semantic change.
 
+## Comment review
+
+Treat comments/doc-comments in the diff as part of the implementation, not harmless decoration. Flag comments that add context cost without preserving necessary information.
+
+A changed/new comment should normally earn its place by documenting non-obvious rationale, a local invariant/safety argument, an external constraint, or a contract a caller genuinely needs. Prefer code clarity over narration.
+
+Specifically check that the change does **not**:
+
+- restate code, signatures, or control flow;
+- add decorative section headings or commented-out implementations;
+- duplicate semantics from `docs/language/` or architecture from `docs/architecture/`;
+- leave stale comments after behavior changed;
+- encode a durable bug/limitation only as a source TODO when it belongs in `docs/issues/`;
+- remove a concise local rationale/safety invariant merely to reduce comment count.
+
+Do not enforce a comment-density target. The goal is high signal, not fewest comments.
+
 ## Three passes
 
 ### 1. Code correctness

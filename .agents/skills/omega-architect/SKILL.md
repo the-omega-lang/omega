@@ -83,7 +83,19 @@ Pressure-test the requested direction:
 
 If there is a real unresolved design problem, raise it with the user before writing a plan. Do not quietly route around it.
 
-### 5. Write a concise `PLAN.md`
+### 5. Decide where explanatory knowledge belongs
+
+When the planned change introduces or changes important reasoning, place that knowledge deliberately rather than defaulting to source comments:
+
+- normative language behavior -> `docs/language/`;
+- cross-module/compiler/runtime design and durable architectural invariants -> `docs/architecture/`;
+- user-facing examples/usage -> `docs/guide/`;
+- unresolved limitation/debt -> `docs/issues/`;
+- reasoning that is inherently local to a branch, unsafe operation, representation trick, or algorithm -> a short nearby source comment.
+
+Do not plan comments that merely narrate the implementation or duplicate documentation. Likewise, do not move line-level reasoning into broad docs just to reduce comment count. If the task itself is comment cleanup, partition it into bounded directories/crates and require behavior-preserving edits rather than a repository-wide semantic sweep.
+
+### 6. Write a concise `PLAN.md`
 
 Write for a fresh developer agent that has not seen the conversation. The plan should tell it where to start and what decisions are already settled so it does **not** repeat your investigation.
 

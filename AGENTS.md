@@ -64,6 +64,40 @@ See `ARCHITECTURE.md` for the full ownership map.
 - Abstractions should compile away rather than obscure the machine.
 - Prefer simple, intentional architecture over hacks, duplicate mechanisms, or unexplained special cases.
 
+## Comment policy
+
+Comments are part of the context budget. Prefer code whose structure and names make the implementation understandable without narration. Add or keep a comment only when removing it would hide information that is difficult or unreasonable to express in code.
+
+**Good comments explain:**
+
+- *why* a non-obvious choice exists, especially when the obvious alternative is wrong;
+- a local invariant, precondition, aliasing/lifetime assumption, safety argument, or subtle algorithmic constraint;
+- an external ABI/platform/toolchain requirement that directly constrains the nearby code;
+- a deliberately surprising workaround that cannot yet be removed, preferably with a pointer to the relevant `docs/issues/` entry when the problem is durable.
+
+**Do not add or preserve comments that:**
+
+- restate what the next line/function/type already says;
+- narrate control flow step by step;
+- act as section headings for straightforward code that should instead be structured with functions/types/modules;
+- preserve dead code, old implementations, debugging notes, or historical narrative;
+- duplicate language semantics or architectural knowledge already owned by current documentation;
+- speculate about possible future work without a concrete, durable issue.
+
+Documentation comments (`///`, `//!`) are not exempt: keep them when they document a real public/internal contract that users or callers need, but do not rustdoc every private helper merely to describe its name or signature.
+
+When a comment contains durable knowledge, put the knowledge at the narrowest correct home:
+
+- language semantics -> `docs/language/`;
+- compiler/runtime architecture or cross-module invariants -> `docs/architecture/`;
+- user-facing usage -> `docs/guide/`;
+- unresolved bug/limitation/debt -> `docs/issues/`;
+- line-level/local implementation reasoning -> keep a concise comment beside the code.
+
+Do **not** move every useful comment into documentation. Local reasoning that only makes sense next to a particular branch, unsafe operation, representation trick, or algorithm belongs next to that code. Conversely, do not use source comments as a second specification or architecture manual.
+
+For comment cleanup, never optimize for a comment percentage or delete comments mechanically. Work in bounded crate/directory batches, classify each comment by purpose, remove low-signal narration/duplication, migrate only genuinely durable knowledge, and verify that behavior is unchanged.
+
 ## Documentation maintenance
 
 When behavior changes, update the layer that owns the fact:

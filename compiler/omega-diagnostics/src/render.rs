@@ -1,43 +1,9 @@
-//! The terminal renderer: turns one [`Diagnostic`] plus its [`SourceFile`]
-//! into a Rust-style annotated snippet --
-//!
-//! ```text
-//! error: mismatched types
-//!   --> examples/dev/dev.omg:88:13
-//!    |
-//! 88 |     total = total + "hi";
-//!    |             ^^^^^^^^^^^^ expected `i32`, found `*u8`
-//!    |
-//!    = help: Omega has no implicit conversions; the operand types must match
-//! ```
-//!
-//! Layout rules follow rustc's renderer closely (it's the convention users
-//! already know how to read): a severity-colored headline, a `-->` location
-//! header pointing at the primary label, a `|`-guttered snippet with one
-//! underline row per label (`^^^` primary, `---` secondary), and
-//! `= note:`/`= help:` footers. Multi-line spans get the bracket form:
-//!
-//! ```text
-//! 12 |   testvar := if x {
-//!    |  ____________^
-//! 13 | |     "yes"
-//! 14 | | };
-//!    | |_^ the branches disagree
-//! ```
-//!
-//! Labels render as independent, sequentially-emitted blocks (sorted by
-//! start offset) rather than being merged into one shared multi-column
-//! layout -- overlapping multi-line labels repeat their shared lines
-//! instead of stacking extra bar columns.
 
 use crate::diagnostic::{Diagnostic, Footer, Label, LabelStyle, Severity};
 use crate::highlight::{Highlighter, TokenClass};
 use crate::source::SourceFile;
 use crate::span::Span;
 
-/// ANSI color/style codes -- `pub` so callers outside this crate (e.g.
-/// `omgc`'s `-h`/`-v` output) can render text in the same palette as
-/// diagnostics without duplicating escape-code logic; see `paint`.
 pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
 pub const RED: &str = "\x1b[1;31m";
@@ -51,10 +17,6 @@ const SYNTAX_STRING: &str = "\x1b[32m";
 const SYNTAX_NUMBER: &str = "\x1b[36m";
 const SYNTAX_COMMENT: &str = "\x1b[90m";
 
-/// Wraps `text` in `code`/`RESET` when `colors` is on and `text` isn't
-/// empty (an empty span shouldn't grow escape codes around nothing) --
-/// the single place every color decision in this crate (and any caller
-/// reusing it) funnels through.
 pub fn paint(colors: bool, code: &str, text: &str) -> String {
     if colors && !text.is_empty() {
         format!("{code}{text}{RESET}")
@@ -63,13 +25,8 @@ pub fn paint(colors: bool, code: &str, text: &str) -> String {
     }
 }
 
-/// How many display columns a tab expands to -- rustc uses 4 as well; the
-/// expansion is what keeps underline carets aligned under tabbed source.
 const TAB_WIDTH: usize = 4;
 
-/// A multi-line label spanning more than this many lines elides its middle
-/// with a `...` gutter row -- nobody needs 200 quoted lines to see where a
-/// brace opened and where it failed to close.
 const MAX_MULTILINE_LINES: usize = 5;
 
 pub struct Renderer {
@@ -90,11 +47,6 @@ impl Renderer {
         self
     }
 
-    /// Renders one diagnostic to a string (no trailing newline). `file` is
-    /// the source every label span indexes into; pass `None` for a
-    /// file-less diagnostic (e.g. a module-resolution failure with no
-    /// meaningful span) -- labels are then skipped and only the headline
-    /// and footers render.
     pub fn render(&self, diagnostic: &Diagnostic, file: Option<&SourceFile>) -> String {
         let mut out = String::new();
         self.render_header(&mut out, diagnostic);
@@ -143,8 +95,6 @@ impl Renderer {
         out.push_str(&self.paint(BOLD, &format!(": {}", d.message)));
     }
 
-    /// The `-->` header plus the annotated snippet block. Returns the
-    /// gutter width so the footers can align under it.
     fn render_snippet(&self, out: &mut String, d: &Diagnostic, file: &SourceFile) -> usize {
         let mut labels: Vec<&Label> = d.labels.iter().collect();
         labels.sort_by_key(|l| (l.span.start, l.span.end));
@@ -209,9 +159,6 @@ impl Renderer {
         width
     }
 
-    /// A `...` gutter row when the next printed line isn't adjacent to the
-    /// last one; the intervening line itself when the gap is exactly one
-    /// (showing it beats eliding it).
     fn render_gap(&self, out: &mut String, ctx: &SnippetCtx, last: Option<usize>, next: usize) {
         let Some(last) = last else { return };
         if next == last + 2 {
@@ -223,10 +170,6 @@ impl Renderer {
         }
     }
 
-    /// `12 |   text` -- one syntax-highlighted source line. `bar` fills the
-    /// 2-column bar area (`"| "` inside an open multi-line span, `"  "`
-    /// otherwise) and is skipped entirely when the snippet has no
-    /// multi-line labels.
     fn render_source_line(&self, out: &mut String, ctx: &SnippetCtx, line: usize, bar: &str) {
         out.push_str(&self.paint(BLUE, &format!("{:>width$} | ", line, width = ctx.width)));
         if ctx.pad > 0 {
@@ -235,7 +178,6 @@ impl Renderer {
         out.push_str(&self.highlighted_line(ctx, line));
     }
 
-    /// `   |    ^^^^ message` under the given line.
     fn render_single_underline(
         &self,
         out: &mut String,
@@ -264,9 +206,6 @@ impl Renderer {
         out.push_str(&self.paint(self.label_color(severity, label.style), &row));
     }
 
-    /// The bracket form: start line, ` ___^` opening row, barred body lines
-    /// (middle elided past `MAX_MULTILINE_LINES`), and a `|___^ message`
-    /// closing row.
     fn render_multiline_label(
         &self,
         out: &mut String,
@@ -334,9 +273,6 @@ impl Renderer {
         out.push_str(&self.paint(color, &row));
     }
 
-    /// Like `render_source_line`, but the bar area's `|` is the label's own
-    /// continuation bar, painted in the label's color rather than gutter
-    /// blue.
     fn render_source_line_with_open_bar(
         &self,
         out: &mut String,
@@ -354,9 +290,6 @@ impl Renderer {
         out.push_str(&self.paint(BLUE, &format!("{:>width$} |", "", width = width)));
     }
 
-    /// `   = note: text`, continuation lines aligned under the text.
-    /// `width == 0` means no snippet was rendered, so there's no gutter to
-    /// align under.
     fn render_footer(&self, out: &mut String, width: usize, kind: &str, text: &str) {
         if width > 0 {
             out.push_str(&" ".repeat(width + 1));
@@ -368,9 +301,6 @@ impl Renderer {
         out.push_str(&text.replace('\n', &format!("\n{indent}")));
     }
 
-    /// One line's text, tab-expanded, with syntax-class coloring applied
-    /// per character run (colors precomputed once per snippet in
-    /// `SnippetCtx::highlights`).
     fn highlighted_line(&self, ctx: &SnippetCtx, line: usize) -> String {
         let text = ctx.file.line_text(line);
         if ctx.highlights.is_empty() {
@@ -411,8 +341,6 @@ impl Renderer {
 struct SnippetCtx<'a> {
     file: &'a SourceFile,
     width: usize,
-    /// Extra columns between the gutter and source text: 2 when any label
-    /// is multi-line (room for continuation bars), else 0.
     pad: usize,
     highlights: Vec<(Span, TokenClass)>,
 }
@@ -447,11 +375,6 @@ fn expand_tabs(text: &str) -> String {
     text.replace('\t', &" ".repeat(TAB_WIDTH))
 }
 
-/// 0-based display column for a byte offset within one line's text --
-/// counts chars, with tabs expanded, so carets line up under what the
-/// terminal actually shows. An offset past the line's end just keeps
-/// counting past the last character (a zero-width "just past EOF" span
-/// lands one column after the text).
 fn display_col(text: &str, byte_offset: usize) -> usize {
     let mut col = 0;
     for (i, ch) in text.char_indices() {
@@ -463,7 +386,6 @@ fn display_col(text: &str, byte_offset: usize) -> usize {
     col + byte_offset.saturating_sub(text.len())
 }
 
-/// The sorted `highlights` entries overlapping `[line_start, line_end)`.
 fn line_highlights(
     highlights: &[(Span, TokenClass)],
     line_start: usize,

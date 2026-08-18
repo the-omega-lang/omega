@@ -19,6 +19,20 @@ Read the root agent guide and `ARCHITECTURE.md` as navigation aids. Treat contex
 - Preserve stable ABI/C interoperability unless the approved plan explicitly changes it.
 - Prefer simple abstractions that compile away; no hacks or unrelated cleanup.
 
+## Comment discipline
+
+Treat comments as code that consumes maintainer and agent attention. New or modified code should not gain narration by default.
+
+- Prefer clearer names, smaller functions, types, and control flow over explanatory comments.
+- Comment non-obvious *why*, local invariants/safety assumptions, external constraints, or intentionally surprising behavior—not obvious *what*.
+- Do not add step-by-step narration, decorative section comments, commented-out code, historical notes, or comments that merely repeat a symbol/signature.
+- Do not duplicate normative semantics or subsystem architecture in source comments. Update the owning `docs/language/` or `docs/architecture/` document instead when that durable knowledge changes.
+- Keep concise local reasoning beside the code when moving it to docs would make the code harder to understand in isolation.
+- Use `docs/issues/` for durable unresolved bugs/limitations/debt rather than accumulating TODO essays in source. A tiny local TODO is acceptable only when it is specific, actionable, and truly local.
+- Do not add rustdoc to private helpers just for coverage. Documentation comments should describe a contract that a caller/user actually needs.
+
+When touching existing code, remove or tighten clearly redundant/stale comments within the approved scope when doing so is low-risk, but do **not** turn an unrelated feature implementation into a broad comment-cleanup pass.
+
 ## PLAN.md rules
 
 When executing a plan:
