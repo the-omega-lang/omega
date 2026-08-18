@@ -123,7 +123,7 @@ Owns the first stable post-macro-expansion representation and `HirId` identity. 
 
 Owns semantic analysis. A short-lived `analysis::Analyzer` checks a focused top-level signature/body and obtains cross-module facts through `ModuleResolver`.
 
-Important areas: `analysis/`, `checked.rs`, `resolved_type.rs`, `resolver.rs`, `generics.rs`, `comp_eval.rs`, `layout.rs`, `target.rs`, `error/`.
+Important areas: `analysis/items/`, `analysis/stmts.rs`, `analysis/places/`, `analysis/paths.rs`, `analysis/calls/`, `analysis/exprs/`, `analysis/specs.rs`, `checked.rs`, `resolved_type.rs`, `resolver.rs`, `generics.rs`, `comp_eval.rs`, `layout.rs`, `target.rs`, `error/`. Item signature work and body checking are separated inside `analysis/items/`; place roots, field/index projection, and slicing are separated inside `analysis/places/`.
 
 **Boundary:** semantic algorithms live here; filesystem/module/query lifetime does not.
 
@@ -139,7 +139,7 @@ Owns long-lived semantic-compilation state and cross-module orchestration:
 - generic-instantiation discovery/materialization;
 - accumulation of diagnostics across short-lived analyzers.
 
-The core named-item query identity is conceptually `(module, name, type_args)`, allowing local, external, and concrete generic items to use the same demand-driven machinery.
+The core named-item query identity is conceptually `(module, name, type_args)`, allowing local, external, and concrete generic items to use the same demand-driven machinery. Item/spec queries have explicit `InProgress / Resolved / Failed` states, and ordered resolution stacks preserve dependency chains for cycle diagnostics. Primitive registration/materialization lives in `primitives.rs`; conformance registration and goal solving are separated under `conformances/`. Compilation orchestration is split under `compile/` into signature collection, body materialization, and final output sweeps.
 
 **Boundary:** the driver orchestrates/owns lifetime; semantic rules remain in the analyzer.
 

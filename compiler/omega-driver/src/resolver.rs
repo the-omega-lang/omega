@@ -8,7 +8,8 @@ use omega_analyzer::resolved_type::{
 };
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
-    ItemNamespace, ModuleResolver, ResolveError, ResolvedItem,
+    ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, ResolveError,
+    ResolveItemOptions, ResolvedItem,
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
@@ -17,18 +18,61 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+type AliasKey = (ModulePath, Ident);
+
 enum AliasState {
     InProgress,
-    Done(Result<ImportTarget, ResolveError>),
+    Resolved(ImportTarget),
+    Failed(ResolveError),
 }
 
 #[derive(Default)]
 pub(crate) struct ImportState {
-    resolved: HashMap<(ModulePath, Ident), AliasState>,
-    used: HashSet<(ModulePath, Ident)>,
+    resolved: HashMap<AliasKey, AliasState>,
+    used: HashSet<AliasKey>,
+    resolution_stack: Vec<AliasKey>,
 }
 
 impl ImportState {
+    fn begin_resolution(&mut self, key: &AliasKey) {
+        self.resolved.insert(key.clone(), AliasState::InProgress);
+        self.resolution_stack.push(key.clone());
+    }
+
+    fn finish_resolution(
+        &mut self,
+        key: &AliasKey,
+        result: Result<ImportTarget, ResolveError>,
+    ) {
+        let active = self
+            .resolution_stack
+            .pop()
+            .expect("finishing an import resolution requires an active query");
+        assert_eq!(&active, key, "query stack must unwind in LIFO order");
+        let state = match result {
+            Ok(target) => AliasState::Resolved(target),
+            Err(error) => AliasState::Failed(error),
+        };
+        self.resolved.insert(key.clone(), state);
+    }
+
+    fn cycle_path(&self, key: &AliasKey) -> Vec<ModulePath> {
+        let start = self
+            .resolution_stack
+            .iter()
+            .position(|active| active == key)
+            .expect("an in-progress query must be present in the resolution stack");
+        self.resolution_stack[start..]
+            .iter()
+            .chain(std::iter::once(key))
+            .map(|(module, alias)| {
+                let mut path = module.clone();
+                path.push(alias.clone());
+                path
+            })
+            .collect()
+    }
+
     fn mark_used(&mut self, module: &[Ident], alias: &Ident) {
         self.used.insert((module.to_vec(), alias.clone()));
     }
@@ -48,20 +92,17 @@ impl Driver {
     ) -> Result<ImportTarget, ResolveError> {
         let key = (module_path.to_vec(), alias.clone());
         match self.imports.resolved.get(&key) {
-            Some(AliasState::Done(result)) => return result.clone(),
+            Some(AliasState::Resolved(target)) => return Ok(target.clone()),
+            Some(AliasState::Failed(error)) => return Err(error.clone()),
             Some(AliasState::InProgress) => {
-                return Err(ResolveError::Cycle(vec![module_path.to_vec()]));
+                return Err(ResolveError::Cycle(self.imports.cycle_path(&key)));
             }
             None => {}
         }
 
-        self.imports
-            .resolved
-            .insert(key.clone(), AliasState::InProgress);
+        self.imports.begin_resolution(&key);
         let result = self.resolve_import_target(module_path, target, reveal);
-        self.imports
-            .resolved
-            .insert(key, AliasState::Done(result.clone()));
+        self.imports.finish_resolution(&key, result.clone());
         result
     }
 
@@ -87,7 +128,13 @@ impl Driver {
             return Ok(ImportTarget::GenericItem(segments.to_vec()));
         }
 
-        let item = self.ensure_item(accessor, module_path, item_name, &[], true, reveal)?;
+        let item = self.ensure_item(
+            accessor,
+            module_path,
+            item_name,
+            &[],
+            ResolveItemOptions::INDIRECT.bypassing_visibility(reveal),
+        )?;
         Ok(ImportTarget::Item(segments.to_vec(), item))
     }
 
@@ -208,8 +255,7 @@ impl ModuleResolver for Driver {
         accessor_module_path: &[Ident],
         absolute_path: &[Ident],
         type_args: &[ResolvedType],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
         let Some((item_name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
@@ -219,8 +265,7 @@ impl ModuleResolver for Driver {
             module_path,
             item_name,
             type_args,
-            indirect,
-            bypass,
+            options,
         )
     }
 
@@ -372,7 +417,7 @@ impl ModuleResolver for Driver {
         &mut self,
         module_path: &[Ident],
         name: &Ident,
-    ) -> Result<Option<Vec<(HirId, ResolvedFunctionType, Visibility)>>, ResolveError> {
+    ) -> Result<Option<OverloadCandidates>, ResolveError> {
         if self.ensure_module_indexed(module_path).is_err() {
             return Ok(None);
         }
@@ -385,11 +430,11 @@ impl ModuleResolver for Driver {
             let HirItem::FunctionDefinition(f) = &hir.items[index] else {
                 unreachable!("only a function is ever recorded as an overload candidate");
             };
-            candidates.push((
-                f.id,
-                self.ensure_overload_signature(module_path, index)?,
-                f.visibility,
-            ));
+            candidates.push(OverloadCandidate {
+                decl_id: f.id,
+                fn_type: self.ensure_overload_signature(module_path, index)?,
+                visibility: f.visibility,
+            });
         }
         Ok(Some(candidates))
     }
@@ -569,5 +614,32 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
             self_mode: f.self_mode,
         }),
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ident(name: &str) -> Ident {
+        Ident(name.to_string())
+    }
+
+    #[test]
+    fn import_cycle_path_preserves_resolution_order() {
+        let first = (vec![ident("a")], ident("x"));
+        let second = (vec![ident("b")], ident("y"));
+        let mut state = ImportState::default();
+        state.begin_resolution(&first);
+        state.begin_resolution(&second);
+
+        assert_eq!(
+            state.cycle_path(&first),
+            vec![
+                vec![ident("a"), ident("x")],
+                vec![ident("b"), ident("y")],
+                vec![ident("a"), ident("x")],
+            ]
+        );
     }
 }

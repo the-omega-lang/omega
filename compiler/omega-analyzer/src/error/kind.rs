@@ -195,6 +195,11 @@ pub enum AnalysisErrorKind {
     EnumTagNotInteger {
         found: ResolvedType,
     },
+    EnumImplicitTagOutOfRange {
+        variant: Ident,
+        value: usize,
+        r#type: ResolvedType,
+    },
     EnumHeaderFieldUnsupportedType {
         field: Ident,
         found: ResolvedType,
@@ -762,6 +767,11 @@ impl fmt::Display for AnalysisErrorKind {
                     "enum tags must be integers, but this tag is declared as '{found}'"
                 )
             }
+            Self::EnumImplicitTagOutOfRange { variant, value, r#type } => write!(
+                f,
+                "implicit tag {value} for variant '{}' does not fit in '{type}'",
+                variant.as_ref(),
+            ),
             Self::EnumHeaderFieldUnsupportedType { field, .. } => {
                 write!(
                     f,

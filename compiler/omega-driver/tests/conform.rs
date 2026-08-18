@@ -703,6 +703,46 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
 }
 
 #[test]
+fn extern_generic_instantiation_keeps_its_declaring_module() {
+    let library = TestPackage::new(
+        r#"
+        exposed identity<T>(value: T) => T { value }
+        "#,
+    );
+    let consumer = TestPackage::new(
+        r#"
+        import extern::lib::identity;
+        main() => i32 { identity(7) }
+        "#,
+    );
+    let program = Driver::new(
+        consumer.0.clone(),
+        None,
+        vec![ExternRoot {
+            name: Ident("lib".to_string()),
+            dir: library.0.clone(),
+        }],
+        Target::DEFAULT,
+    )
+    .expect("construct driver with generic library extern")
+    .compile(&[Ident("main".to_string())], Target::DEFAULT)
+    .expect("using an extern-owned generic should compile");
+
+    let library_path = vec![Ident("lib".to_string())];
+    let library_module = program
+        .modules
+        .iter()
+        .find_map(|(path, module)| (path == &library_path).then_some(module))
+        .expect("the emitted generic instantiation keeps the library module path");
+    assert!(library_module.items.iter().any(|item| {
+        matches!(
+            item,
+            CheckedItem::FunctionDefinition(function) if function.name.as_ref() == "identity"
+        )
+    }));
+}
+
+#[test]
 fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     let library = TestPackage::new(
         r#"

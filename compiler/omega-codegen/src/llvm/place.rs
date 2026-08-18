@@ -187,7 +187,7 @@ impl<'ctx> Codegen<'ctx> {
                         PlaceStorage::Values(values) => {
                             let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
                                 [1 + *index];
-                            let len = leaf::llvm_leaves(self.context, &enum_type.header[*index].1, self.pointer_bytes()).len();
+                            let len = leaf::llvm_leaves(self.context, &enum_type.header[*index].r#type, self.pointer_bytes()).len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
@@ -212,7 +212,7 @@ impl<'ctx> Codegen<'ctx> {
                         PlaceStorage::Values(values) => {
                             let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
                                 [1 + enum_type.header.len() + *index];
-                            let len = leaf::llvm_leaves(self.context, &enum_type.dynamic_fields[*index].1, self.pointer_bytes()).len();
+                            let len = leaf::llvm_leaves(self.context, &enum_type.dynamic_fields[*index].r#type, self.pointer_bytes()).len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
@@ -239,7 +239,7 @@ impl<'ctx> Codegen<'ctx> {
                                 [1 + enum_type.header.len() + enum_type.dynamic_fields.len() + *field_index];
                             let len = leaf::llvm_leaves(
                                 self.context,
-                                &enum_type.variants[*variant_index].fields[*field_index].1,
+                                &enum_type.variants[*variant_index].fields[*field_index].r#type,
                                 self.pointer_bytes(),
                             )
                             .len();

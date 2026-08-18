@@ -3,7 +3,7 @@ use crate::error::{CompileError, ImportSite};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use omega_analyzer::analysis::{item_id_span, item_name};
+use omega_analyzer::analysis::{AnalysisSite, item_id_span, item_name};
 use omega_analyzer::annotations::{self, ItemKind};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolver::ResolveError;
@@ -487,7 +487,7 @@ impl Driver {
                 }
             };
             let annotations = import.annotations.clone();
-            let suppress = self.analyze(path, &[], (import.id, import.span), |analyzer| {
+            let suppress = self.analyze(path, &[], AnalysisSite::new(import.id, import.span), |analyzer| {
                 annotations::resolve(
                     analyzer,
                     import.id,

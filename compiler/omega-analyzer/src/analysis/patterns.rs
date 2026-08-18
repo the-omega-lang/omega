@@ -6,16 +6,24 @@ impl<'r> Analyzer<'r> {
         let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
 
-        let (scrutinee_read, prelude_stmts, narrow_binding) = if let Some((ident, origin, decl_id, storage, mutable)) = narrow_target {
-            (checked_scrutinee.clone(), Vec::new(), Some((ident, origin, decl_id, storage, mutable)))
+        let (scrutinee_place, prelude_stmts, narrow_binding) = if let Some((ident, origin, decl_id, storage, mutable)) = narrow_target {
+            let CheckedExpr::Place(place) = checked_scrutinee.kind else {
+                unreachable!("a narrowable scrutinee is always analyzed as a place")
+            };
+            (place, Vec::new(), Some((ident, origin, decl_id, storage, mutable)))
         } else {
+            let temporary_id = self.resolver.fresh_synthetic_id();
             let target = CheckedPlace {
-                root: CheckedPlaceRoot::Variable { decl_id: node_id, storage: Storage::Local, r#type: scrutinee_type.clone() },
+                root: CheckedPlaceRoot::Variable {
+                    decl_id: temporary_id,
+                    storage: Storage::Local,
+                    r#type: scrutinee_type.clone(),
+                },
                 projections: vec![],
                 r#type: scrutinee_type.clone(),
             };
             let decl = CheckedStmt::Declaration(CheckedDeclaration {
-                id: node_id,
+                id: temporary_id,
                 span,
                 ident: Ident("$scrutinee".to_string()),
                 r#type: scrutinee_type.clone(),
@@ -23,42 +31,51 @@ impl<'r> Analyzer<'r> {
                 initial_value: None,
             });
             let assign = CheckedStmt::Expression(CheckedExprNode {
-                id: node_id,
+                id: self.resolver.fresh_synthetic_id(),
                 span,
                 r#type: scrutinee_type.clone(),
-                kind: CheckedExpr::Assignment(CheckedAssignment { target: target.clone(), value: Box::new(checked_scrutinee) }),
+                kind: CheckedExpr::Assignment(CheckedAssignment {
+                    target: target.clone(),
+                    value: Box::new(checked_scrutinee),
+                }),
             });
-            let read = CheckedExprNode { id: node_id, span, r#type: scrutinee_type.clone(), kind: CheckedExpr::Place(target) };
-            (read, vec![decl, assign], None)
+            (target, vec![decl, assign], None)
         };
 
         let is_enum_scrutinee = matches!(&scrutinee_type, ResolvedType::Enum { .. })
             || matches!(&scrutinee_type, ResolvedType::Pointer { pointee, .. } if matches!(**pointee, ResolvedType::Enum { .. }));
 
         let (arms, else_branch, result_type) = if is_enum_scrutinee {
-            self.analyze_enum_match(node_id, span, m, &scrutinee_type, &scrutinee_read, narrow_binding)?
+            self.analyze_enum_match(node_id, span, m, &scrutinee_type, &scrutinee_place, narrow_binding)?
         } else if scrutinee_type.integer_domain(self.target.pointer_bits()).is_some() {
-            self.analyze_value_match(node_id, span, m, &scrutinee_type, &scrutinee_read)?
+            self.analyze_value_match(node_id, span, m, &scrutinee_type, &scrutinee_place)?
         } else {
             self.error(node_id, span, AnalysisErrorKind::UnsupportedMatchScrutinee { r#type: scrutinee_type });
             return None;
         };
 
-        let checked_match = CheckedExprNode {
-            id: node_id,
-            span,
-            r#type: result_type.clone(),
-            kind: CheckedExpr::Match(CheckedMatch { arms, else_branch }),
-        };
-
         if prelude_stmts.is_empty() {
-            Some(checked_match)
-        } else {
             Some(CheckedExprNode {
                 id: node_id,
                 span,
                 r#type: result_type,
-                kind: CheckedExpr::Codeblock(CheckedBlock { stmts: prelude_stmts, tail: Some(Box::new(checked_match)) }),
+                kind: CheckedExpr::Match(CheckedMatch { arms, else_branch }),
+            })
+        } else {
+            let checked_match = CheckedExprNode {
+                id: self.resolver.fresh_synthetic_id(),
+                span,
+                r#type: result_type.clone(),
+                kind: CheckedExpr::Match(CheckedMatch { arms, else_branch }),
+            };
+            Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: result_type,
+                kind: CheckedExpr::Codeblock(CheckedBlock {
+                    stmts: prelude_stmts,
+                    tail: Some(Box::new(checked_match)),
+                }),
             })
         }
     }
@@ -108,7 +125,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         m: &HirMatch,
         scrutinee_type: &ResolvedType,
-        scrutinee_read: &CheckedExprNode,
+        scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         let (cell, through_pointer) = match scrutinee_type {
@@ -129,18 +146,10 @@ impl<'r> Analyzer<'r> {
             &Ident("tag".to_string()),
             &mut false,
         )?;
-        let CheckedExpr::Place(scrutinee_place) = &scrutinee_read.kind else {
-            unreachable!("analyze_match always builds scrutinee_read as a place read")
-        };
-        let tag_read = CheckedExprNode {
-            id: node_id,
-            span,
+        let tag_place = CheckedPlace {
+            root: scrutinee_place.root.clone(),
+            projections: tag_projections,
             r#type: tag_type.clone(),
-            kind: CheckedExpr::Place(CheckedPlace {
-                root: scrutinee_place.root.clone(),
-                projections: tag_projections,
-                r#type: tag_type.clone(),
-            }),
         };
 
         let mut covered: HashMap<usize, Span> = HashMap::new();
@@ -174,27 +183,33 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
 
-            let condition = Self::tag_variant_condition(&tag_read, &tag_type, &cell, variant_index, node_id, arm.pattern.span());
+            let condition = self.tag_variant_condition(&tag_place, &tag_type, &cell, variant_index, arm.pattern.span());
 
-            self.context.enter_scope();
-            if let Some((ident, origin, decl_id, storage, mutable)) = &narrow_binding {
-                let refined = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
-                let narrowed = match through_pointer {
-                    Some(pointer_mutable) => ResolvedType::Pointer { pointee: Box::new(refined), mutable: pointer_mutable },
-                    None => refined,
-                };
-                self.declare_narrowed_binding(
-                    *decl_id,
-                    arm.span,
-                    ident,
-                    *origin,
-                    narrowed,
-                    *storage,
-                    *mutable,
-                );
-            }
-            let body = self.analyze_match_arm_body(&arm.body);
-            self.context.leave_scope();
+            let (body, _) = self.with_scope(|this| {
+                if let Some((ident, origin, decl_id, storage, mutable)) = &narrow_binding {
+                    let refined = ResolvedType::Enum {
+                        cell: cell.clone(),
+                        variant: Some(variant_index),
+                    };
+                    let narrowed = match through_pointer {
+                        Some(pointer_mutable) => ResolvedType::Pointer {
+                            pointee: Box::new(refined),
+                            mutable: pointer_mutable,
+                        },
+                        None => refined,
+                    };
+                    this.declare_narrowed_binding(
+                        *decl_id,
+                        arm.span,
+                        ident,
+                        *origin,
+                        narrowed,
+                        *storage,
+                        *mutable,
+                    );
+                }
+                this.analyze_match_arm_body(&arm.body)
+            });
 
             checked_arms.push(CheckedMatchArm { conditions: vec![vec![condition]], body: body? });
         }
@@ -210,7 +225,7 @@ impl<'r> Analyzer<'r> {
             }
             let conditions = missing
                 .iter()
-                .map(|&idx| vec![Self::tag_variant_condition(&tag_read, &tag_type, &cell, idx, node_id, arm.pattern.span())])
+                .map(|&idx| vec![self.tag_variant_condition(&tag_place, &tag_type, &cell, idx, arm.pattern.span())])
                 .collect();
             let body = self.analyze_match_arm_body(&arm.body)?;
             checked_arms.push(CheckedMatchArm { conditions, body });
@@ -235,26 +250,32 @@ impl<'r> Analyzer<'r> {
     }
 
     fn tag_variant_condition(
-        tag_read: &CheckedExprNode,
+        &mut self,
+        tag_place: &CheckedPlace,
         tag_type: &ResolvedType,
         cell: &Rc<RefCell<ResolvedEnumType>>,
         variant_index: usize,
-        id: HirId,
         span: Span,
     ) -> CheckedExprNode {
+        let tag_read = CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: tag_type.clone(),
+            kind: CheckedExpr::Place(tag_place.clone()),
+        };
         let tag_const = CheckedExprNode {
-            id,
+            id: self.resolver.fresh_synthetic_id(),
             span,
             r#type: tag_type.clone(),
             kind: CheckedExpr::Number(cell.borrow().variants[variant_index].tag),
         };
         CheckedExprNode {
-            id,
+            id: self.resolver.fresh_synthetic_id(),
             span,
             r#type: ResolvedType::Bool,
             kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
                 op: BinaryOp::Eq,
-                left: Box::new(tag_read.clone()),
+                left: Box::new(tag_read),
                 right: Box::new(tag_const),
             }),
         }
@@ -321,7 +342,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         m: &HirMatch,
         scrutinee_type: &ResolvedType,
-        scrutinee_read: &CheckedExprNode,
+        scrutinee_place: &CheckedPlace,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         let domain = scrutinee_type
             .integer_domain(self.target.pointer_bits())
@@ -348,7 +369,7 @@ impl<'r> Analyzer<'r> {
             if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
                 continue; // resolved separately below, once every other arm's interval is known
             }
-            let (lo, hi, conditions) = self.analyze_value_pattern(&arm.pattern, scrutinee_type, scrutinee_read)?;
+            let (lo, hi, conditions) = self.analyze_value_pattern(&arm.pattern, scrutinee_type, scrutinee_place)?;
             intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
             let body = self.analyze_match_arm_body(&arm.body)?;
             checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
@@ -371,8 +392,15 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
             };
-            let conditions =
-                Self::interval_conditions(scrutinee_read, scrutinee_type, domain, lo, hi, node_id, arm.pattern.span(), self.target.pointer_bits());
+            let conditions = self.interval_conditions(
+                scrutinee_place,
+                scrutinee_type,
+                domain,
+                lo,
+                hi,
+                arm.pattern.span(),
+                self.target.pointer_bits(),
+            );
             intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
             let body = self.analyze_match_arm_body(&arm.body)?;
             checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
@@ -410,13 +438,13 @@ impl<'r> Analyzer<'r> {
         &mut self,
         pattern: &HirPattern,
         scrutinee_type: &ResolvedType,
-        scrutinee_read: &CheckedExprNode,
+        scrutinee_place: &CheckedPlace,
     ) -> Option<(i128, i128, Vec<CheckedExprNode>)> {
         match pattern {
             HirPattern::Value(expr) => {
                 let value = self.const_eval_pattern(expr, scrutinee_type)?;
                 let n = Self::const_value_as_i128(&value);
-                let condition = Self::value_cmp_condition(scrutinee_read, expr.id, expr.span, scrutinee_type, BinaryOp::Eq, value);
+                let condition = self.value_cmp_condition(scrutinee_place, expr.span, scrutinee_type, BinaryOp::Eq, value);
                 Some((n, n, vec![condition]))
             }
             HirPattern::Range(range) => {
@@ -426,7 +454,7 @@ impl<'r> Analyzer<'r> {
                     Some(e) => {
                         let value = self.const_eval_pattern(e, scrutinee_type)?;
                         let n = Self::const_value_as_i128(&value);
-                        conditions.push(Self::value_cmp_condition(scrutinee_read, e.id, e.span, scrutinee_type, BinaryOp::Ge, value));
+                        conditions.push(self.value_cmp_condition(scrutinee_place, e.span, scrutinee_type, BinaryOp::Ge, value));
                         n
                     }
                     None => domain.0,
@@ -437,7 +465,7 @@ impl<'r> Analyzer<'r> {
                         let n = Self::const_value_as_i128(&value);
                         let inclusive = range.inclusive();
                         let op = if inclusive { BinaryOp::Le } else { BinaryOp::Lt };
-                        conditions.push(Self::value_cmp_condition(scrutinee_read, e.id, e.span, scrutinee_type, op, value));
+                        conditions.push(self.value_cmp_condition(scrutinee_place, e.span, scrutinee_type, op, value));
                         if inclusive { n } else { n - 1 }
                     }
                     None => domain.1,
@@ -448,23 +476,23 @@ impl<'r> Analyzer<'r> {
     }
 
     fn interval_conditions(
-        scrutinee_read: &CheckedExprNode,
+        &mut self,
+        scrutinee_place: &CheckedPlace,
         scrutinee_type: &ResolvedType,
         domain: (i128, i128),
         lo: i128,
         hi: i128,
-        id: HirId,
         span: Span,
         pointer_bits: u32,
     ) -> Vec<CheckedExprNode> {
         let mut conditions = Vec::new();
         if lo != domain.0 {
             let value = Self::i128_to_const_value(scrutinee_type, lo, pointer_bits);
-            conditions.push(Self::value_cmp_condition(scrutinee_read, id, span, scrutinee_type, BinaryOp::Ge, value));
+            conditions.push(self.value_cmp_condition(scrutinee_place, span, scrutinee_type, BinaryOp::Ge, value));
         }
         if hi != domain.1 {
             let value = Self::i128_to_const_value(scrutinee_type, hi, pointer_bits);
-            conditions.push(Self::value_cmp_condition(scrutinee_read, id, span, scrutinee_type, BinaryOp::Le, value));
+            conditions.push(self.value_cmp_condition(scrutinee_place, span, scrutinee_type, BinaryOp::Le, value));
         }
         conditions
     }
@@ -544,8 +572,8 @@ impl<'r> Analyzer<'r> {
     }
 
     fn value_cmp_condition(
-        scrutinee_read: &CheckedExprNode,
-        id: HirId,
+        &mut self,
+        scrutinee_place: &CheckedPlace,
         span: Span,
         scrutinee_type: &ResolvedType,
         op: BinaryOp,
@@ -565,12 +593,23 @@ impl<'r> Analyzer<'r> {
                 unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
             }
         };
-        let constant = CheckedExprNode { id, span, r#type: scrutinee_type.clone(), kind };
+        let scrutinee_read = CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: scrutinee_type.clone(),
+            kind: CheckedExpr::Place(scrutinee_place.clone()),
+        };
+        let constant = CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: scrutinee_type.clone(),
+            kind,
+        };
         CheckedExprNode {
-            id,
+            id: self.resolver.fresh_synthetic_id(),
             span,
             r#type: ResolvedType::Bool,
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(scrutinee_read.clone()), right: Box::new(constant) }),
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(scrutinee_read), right: Box::new(constant) }),
         }
     }
 

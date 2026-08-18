@@ -6,11 +6,11 @@ Unresolved design/architecture inconsistencies migrated from the former monolith
 
 The docs describe one unified exhaustiveness mechanism (`exhaustiveness.rs`)
 covering "enums, integers, `bool`, and `char`." In truth `analyze_enum_match`
-(matching the enum value itself, `analysis.rs:5355-5476`) never touches `
-exhaustiveness.rs` — it just tracks a `HashMap\<usize, Span>` of covered variant
+(matching the enum value itself, `analysis/patterns.rs`) never touches
+`exhaustiveness.rs` — it just tracks a `HashMap<usize, Span>` of covered variant
 indices and requires exactly one arm per variant, however many variants there
-are. `analyze_value_match` (matching an integer/bool/char scrutinee, `
-analysis.rs:5544-5575`) is the one that actually runs the interval-sweep
+are. `analyze_value_match` (matching an integer/bool/char scrutinee in the same
+module) is the one that actually runs the interval-sweep
 exhaustiveness checker over the scrutinee type's full domain. Since an enum's `
 .tag` field is an ordinary integer, matching *on the tag* goes through the
 second path, not the first:
@@ -50,53 +50,6 @@ emits exclusive/atomic/SIMD instructions — but the written justification for a
 default that touches every struct/enum layout in the language no longer matches
 the compiler's own stated target surface, and nothing re-derives or gates it
 per-target.
-
-### `cast_class`/`numeric_kind` hardcode pointer width to 64 while codegen's actual pointer type is genuinely target-dependent
-
-Related to the above, and to the already-documented "single-target- assumption"
-note on `isize`/`usize` in `../language/types-and-primitives.md`: `cast_class` and `numeric_kind` (`
-resolved_type.rs:640-712`) hardcode `ISize`/`USize`/ `Pointer` to width 64 for
-every cast-kind decision (this is what decides `Reinterpret` vs. `IntExtend`/`
-IntTruncate`). Codegen's real IR type for these — `codegen.pointer_type()` via `
-target_config()` — genuinely varies by target. Today this is unreachable in
-practice: both currently-supported architectures (`X86_64`, `Aarch64`) are
-64-bit, so the hardcoded value and the real one always agree. But the moment a
-32-bit target is ever added (nothing structurally prevents `Target::Arch` from
-growing one — the CLI already treats `\--target` as a real, user-facing axis), a
-cast like `\<u64>some_usize` would still resolve to `CastKind::Reinterpret`
-(both "width 64" per the hardcoded table) while the real IR leaves involved
-would be I32 vs. I64 — a case `Reinterpret`'s own contract ("same IR
-representation already, no instruction needed") cannot actually satisfy,
-producing either a Cranelift verifier failure or a silent miscompilation
-depending on how it fails. Worth fixing before a 32-bit target is added, not
-after — this is the kind of latent assumption that's cheap to fix now and
-expensive to debug once it's live.
-
-### `reveal reveal x` is accepted by the parser and always produces a spurious `UnnecessaryReveal` warning
-
-`parse_unary` recurses freely on its own prefix set with no special-casing for a
-doubled `reveal`, so `reveal reveal x` lowers to a nested `Reveal(Reveal(x))`
-with two stacked bypass frames. `check_visibility`/ `check_member_visibility`
-only ever mark the *innermost* active frame as used, so if the bypass is
-genuinely needed and gets consumed while evaluating `x`, the *outer* `reveal`'s
-frame is never marked used and always reports `UnnecessaryReveal` — even when
-removing it would break the inner one's own reasoning about redundancy. Not a
-correctness bug (access is still correctly granted either way) and not
-high-value to fix on its own, but it's a real, guaranteed false-positive
-diagnostic for syntax the parser could just as easily reject outright.
-
-### Implicit enum tag auto-assignment has no width bound-check, unlike explicit tags
-
-An explicit tag value goes through `const_eval`/`const_number`, which
-range-checks against the tag's declared width. The implicit-tag path (used when
-no `tag: T` is declared at all) just does `NumberValue::Unsigned(declared_index
-as u64)` against a hardcoded default width of `U16`, with no equivalent check.
-In practice this needs upward of 65536 variants on one enum to matter at all —
-squarely theoretical — but it's the one place the "every variant gets a
-provably-unique tag" guarantee this compiler otherwise takes seriously (see the
-confirmed-sound tag- uniqueness check elsewhere in this same code) isn't
-actually backed by a check, just by an assumption in a code comment about
-what's "far past any real declaration."
 
 ### Overloading is a second, parallel item pipeline that exists only because the query key can't name a candidate
 
@@ -154,23 +107,6 @@ at least one trait method collapse into the ordinary path — and generic
 overloads become possible rather than structurally excluded. Breaking:
 changes the resolver trait's surface and every cache key shape.
 
-### `ResolveError::Cycle` carries a chain it never populates
-
-The variant is `Cycle(Vec<Vec<Ident>>)` — a list of module paths, rendered as
-`a -> b -> a`, and the diagnostic's own label says "this import completes the
-cycle". Both construction sites pass exactly one module, because the query
-state is a *map* of `InProgress` markers with no ordering, so neither site can
-reconstruct the chain. What actually prints is `cyclic module dependency: a`.
-
-Either populate it for real (keep an in-progress *stack* alongside the state
-map; the cycle is then the suffix from wherever the offending key first
-appears, and the diagnostic becomes genuinely Rust-quality: `a::X -> b::Y ->
-a::X`) or collapse the variant to a single module and reword the message so it
-stops implying a chain. The variant is also close to unreachable today — a
-by-value type cycle is caught earlier and more precisely by
-`RecursiveTypeWithoutIndirection` — which is exactly why the gap has gone
-unnoticed.
-
 ### Module paths and item paths are the same untyped `Vec<Ident>`
 
 Everything module-shaped is `Vec<Ident>`: cloned per lookup, hashed per query,
@@ -186,51 +122,71 @@ An interned `ModulePathId` plus a distinct `ItemPath` type would make the
 confusion unrepresentable and cut the cloning. Breaking across crates: the
 `ModuleResolver` trait speaks `&[Ident]` in every method.
 
-### Diagnostic scoping for borrowed modules is three ad-hoc lists
+### `Driver::compile(&mut self)` presents a reusable object even though compilation state is one-shot
 
-Which findings surface depends on which of three lists a module lands in, with
-four different outcomes: errors from a local module surface; errors from an
-extern module are dropped; errors from `core`'s tree surface (it's added to
-the error scope explicitly, so a broken primitive block still reports); warnings
-from `core` are dropped (deliberately — its unused imports shouldn't leak into
-every downstream build); warnings from other externs never exist because their
-bodies are never checked.
+`Driver` owns mutable module/index caches, item/spec query results, import usage,
+primitive/conformance registrations, diagnostics, synthetic-ID allocation, and
+materialized generic bodies. `compile` appends/populates those structures and does
+not reset them before another invocation. The current CLI constructs one `Driver`
+and compiles exactly once, so that lifetime is internally coherent, but the public
+method takes `&mut self` and therefore advertises a repeatable operation it cannot
+soundly promise. Reusing the same driver can retain failed queries, duplicate
+registrations/materialized bodies, or mix diagnostics from the previous run.
 
-Each individual choice is defensible and documented at its site, but there is
-no single stated policy, so the next kind of borrowed module has no rule to
-follow. The underlying distinction is ownership: a module is either *compiled*
-by this invocation or merely *scanned* for it, and a scanned module should
-report exactly the findings that are about something this invocation asked for.
-Stating that once, and deriving the scopes from it, replaces all three lists.
+Target ownership exposes the same ambiguity: `Target` is passed to `Driver::new`
+and again to `compile`, where the latter overwrites the stored target.
 
-### A node's identity is two parameters everywhere, threaded by hand
+The long-term API should make the lifetime explicit. The simplest current shape is
+to make compilation consume the driver. A more extensible shape is a long-lived
+workspace/module store that creates a fresh one-shot `CompilationSession` containing
+target-specific semantic/query state. That second design is also the cleaner path
+toward incremental compilation. This is a public driver/API change and should be
+done deliberately rather than hidden in a refactor.
 
-`(HirId, Span)` is passed as a pair through roughly sixty signatures, most of
-which do nothing with it but forward it to the next call and eventually to
-`AnalysisError::new`. It is the single biggest reason functions here look
-wider than they are, and the reason `clippy::too_many_arguments` is allowed
-crate-wide.
+### Nominal semantic identity is coupled to pervasive `Rc<RefCell<Resolved*Type>>` cells
 
-Collapsing the pair into one small `Copy` type (a `NodeRef`/`Site`) would cut
-two parameters to one across the crate and make "which id goes with which
-span" unrepresentable rather than a convention. It is a breaking change to
-`omega-hir` (every node would want to hand one out) and touches every call
-site in analysis, which is why it wasn't folded into a refactor pass.
+Structs, enums, unions, and specs establish recursive identity by allocating a
+shared `Rc<RefCell<...>>` cell before all semantic facts are known and filling that
+cell during signature analysis. This solves declaration-order/recursive-reference
+requirements today, but it makes interior mutability part of the semantic type
+model consumed across analyzer, driver, MIR, layout, and codegen. Correctness then
+depends on phase conventions such as "this cell is complete before this consumer
+borrows it," with violations expressed as runtime borrow failures rather than type-
+or query-level states.
+
+Before Omega pursues parallel or incremental semantic analysis, consider moving
+nominal identity to stable interned IDs backed by an arena/query store. Recursive
+types can refer to an ID immediately; resolved fields/layout/method facts can be
+queried through explicit completion states instead of mutating a cell embedded in
+every `ResolvedType`. This is a deep cross-crate representation change, so the
+existing cells should remain until that architecture is designed as a focused
+project.
 
 ### `reveal` still has no backstop for the "every position must remember" invariant
 
-The `&reveal base[range]` bug fixed above was the *third* occurrence of one
-pattern: `reveal` is a wrapper the parser can leave in several different
-places, and each write/borrow position has to individually remember to strip
-it and re-activate the bypass. Three positions have now been fixed one at a
-time (`=`, `&`/`&mut` on a plain place, and now the slice/array-literal
-operand forms).
+Reveal activation is now centralized substantially more than it used to be:
+`RevealState` owns nested frame bookkeeping and common operand positions go
+through `with_reveal_operand` / `with_reveal_bypass`. A hidden/internal access
+marks every active frame used, so a nested reveal chain no longer produces the
+old guaranteed false warning.
 
-The invariant itself is unenforced -- a fourth position added later will
-silently drop the bypass again, with no diagnostic pointing at the cause
-(since no frame is pushed, `UnnecessaryReveal` cannot fire either). Making
-the *place resolver itself* own the bypass, rather than every syntactic
-operand position, is the structural fix.
+The remaining weakness is architectural: the place resolver itself does not
+own reveal activation. Call/assignment/address-of paths still have to enter the
+shared helper before they ask place resolution to inspect a revealed operand.
+A new syntactic position can therefore bypass the helper and silently lose the
+visibility bypass. The structural end state is to make a revealed operand/place
+an explicit input shape (or have place resolution activate it itself), so this
+cannot be forgotten by a new caller. That change cuts across analysis entry
+points and should be designed deliberately rather than hidden in a local
+refactor.
+
+### `ModuleResolver` is a broad semantic service facade rather than one coherent capability
+
+`omega-analyzer::resolver::ModuleResolver` is the correct dependency direction — the analyzer does not own filesystem/module/query state — but the trait has accumulated too many unrelated capabilities. One implementation currently provides macro-origin metadata, import and module navigation, item visibility and lookup, generic declaration shapes, overload groups, synthetic IDs, spec declarations, primitive methods, conformance proving/enumeration, checked function bodies for compile-time execution, and resolved `comp` values.
+
+That breadth couples almost every analyzer concern to the entire driver facade, makes focused analyzer tests/mocks expensive, and means adding a new semantic service often grows the same central trait even when the consumer only needs one capability. Splitting it mechanically now would mostly create trait plumbing, so this refactor keeps the facade intact.
+
+Before incremental/parallel compilation or a more independently testable analyzer becomes a priority, design a narrower query boundary: either capability traits (name/module lookup, generic signatures, conformance queries, compile-time body/value queries, synthetic identity) composed by the analyzer, or an explicit semantic query database with focused handles. The goal is not “more traits”; it is that each analysis subsystem depends only on the facts it can actually request. This is a cross-crate architectural/API change and should be reviewed as such.
 
 ### `Span` cannot identify its source file, which leaks into macros and cross-file diagnostics
 

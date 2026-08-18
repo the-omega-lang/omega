@@ -35,11 +35,35 @@ pub struct ResolvedConformance {
     pub methods: Vec<(Ident, ResolvedMethod)>,
 }
 
-pub type ResolvedBound = (
-    ResolvedType,
-    Rc<RefCell<ResolvedSpecType>>,
-    Vec<ResolvedType>,
-);
+#[derive(Debug, Clone)]
+pub struct ResolvedBound {
+    pub target: ResolvedType,
+    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec_args: Vec<ResolvedType>,
+}
+
+impl ResolvedBound {
+    pub fn new(
+        target: ResolvedType,
+        spec: Rc<RefCell<ResolvedSpecType>>,
+        spec_args: Vec<ResolvedType>,
+    ) -> Self {
+        Self { target, spec, spec_args }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedField {
+    pub name: Ident,
+    pub r#type: ResolvedType,
+    pub visibility: Visibility,
+}
+
+impl ResolvedField {
+    pub fn new(name: Ident, r#type: ResolvedType, visibility: Visibility) -> Self {
+        Self { name, r#type, visibility }
+    }
+}
 
 #[derive(Debug)]
 pub struct ResolvedStructType {
@@ -47,7 +71,7 @@ pub struct ResolvedStructType {
     pub name: Ident,
     pub module_path: Vec<Ident>,
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<(Ident, ResolvedType, Visibility)>,
+    pub fields: Vec<ResolvedField>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     pub layout: crate::annotations::Layout,
     pub suppress: Vec<Ident>,
@@ -73,7 +97,7 @@ pub struct ResolvedUnionType {
     pub name: Ident,
     pub module_path: Vec<Ident>,
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<(Ident, ResolvedType, Visibility)>,
+    pub fields: Vec<ResolvedField>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     pub suppress: Vec<Ident>,
 }
@@ -98,8 +122,8 @@ pub struct ResolvedEnumType {
     pub module_path: Vec<Ident>,
     pub type_args: Vec<ResolvedType>,
     pub tag_type: ResolvedType,
-    pub header: Vec<(Ident, ResolvedType, Visibility)>,
-    pub dynamic_fields: Vec<(Ident, ResolvedType, Visibility)>,
+    pub header: Vec<ResolvedField>,
+    pub dynamic_fields: Vec<ResolvedField>,
     pub variants: Vec<ResolvedEnumVariant>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     pub layout: crate::annotations::Layout,
@@ -111,7 +135,7 @@ pub struct ResolvedEnumVariant {
     pub name: Ident,
     pub tag: crate::checked::NumberValue,
     pub header_values: Vec<ConstValue>,
-    pub fields: Vec<(Ident, ResolvedType, Visibility)>,
+    pub fields: Vec<ResolvedField>,
 }
 
 impl ResolvedEnumType {
@@ -588,6 +612,15 @@ impl ResolvedType {
             // `Str`'s own doc comment), only `*mut str` -> `*str` widening.
             (Self::Str { mutable: false }, Self::Str { .. }) => true,
             _ => false,
+        }
+    }
+
+    pub fn declared_methods(&self) -> Option<Vec<(Ident, ResolvedMethod)>> {
+        match self {
+            Self::Struct(cell) => Some(cell.borrow().functions.clone()),
+            Self::Union(cell) => Some(cell.borrow().functions.clone()),
+            Self::Enum { cell, .. } => Some(cell.borrow().functions.clone()),
+            _ => None,
         }
     }
 

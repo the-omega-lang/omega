@@ -109,8 +109,7 @@ impl<'r> Analyzer<'r> {
                 Type::Named(suffix.clone().into()),
                 &mut *self.resolver,
                 &self.module_path,
-                true,
-                !self.reveal_stack.is_empty(),
+                ResolveItemOptions::INDIRECT.bypassing_visibility(self.reveals.active()),
             );
             match suffixed {
                 Ok(t) if t == *expected => {}

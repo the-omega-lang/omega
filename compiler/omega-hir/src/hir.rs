@@ -103,6 +103,16 @@ pub struct HirParam {
     pub ident: Ident,
     pub origin: Origin,
     pub r#type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirField {
+    pub id: HirId,
+    pub span: Span,
+    pub name_span: Span,
+    pub ident: Ident,
+    pub origin: Origin,
+    pub r#type: Type,
     pub visibility: Visibility,
 }
 
@@ -154,7 +164,7 @@ pub struct HirStructDef {
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
-    pub fields: Vec<HirParam>,
+    pub fields: Vec<HirField>,
     pub functions: Vec<HirFunctionDef>,
     pub is_marker: bool,
 }
@@ -167,7 +177,7 @@ pub struct HirUnionDef {
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
-    pub fields: Vec<HirParam>,
+    pub fields: Vec<HirField>,
     pub functions: Vec<HirFunctionDef>,
 }
 
@@ -179,8 +189,8 @@ pub struct HirEnumDef {
     pub visibility: Visibility,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
-    pub header: Vec<HirParam>,
-    pub dynamic_fields: Vec<HirParam>,
+    pub header: Vec<HirField>,
+    pub dynamic_fields: Vec<HirField>,
     pub variants: Vec<HirEnumVariant>,
     pub functions: Vec<HirFunctionDef>,
 }
@@ -191,7 +201,7 @@ pub struct HirEnumVariant {
     pub span: Span,
     pub name: Ident,
     pub args: Vec<HirExprNode>,
-    pub fields: Vec<HirParam>,
+    pub fields: Vec<HirField>,
 }
 
 #[derive(Debug, Clone)]

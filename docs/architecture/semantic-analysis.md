@@ -45,6 +45,15 @@ The driver implements this interface with its item/module/conformance query cach
 
 This dependency direction lets analyzer unit logic remain independent of filesystem discovery and prevents semantic code from growing a second module cache.
 
+Several cross-boundary policies are named data rather than positional booleans/tuples:
+
+- `ResolveItemOptions` names recursive-indirection and deliberate visibility-bypass policy at item lookup sites;
+- `OverloadCandidate` names candidate declaration identity, resolved function type, and visibility;
+- `ResolvedBound` names the bound target, spec identity, and concrete spec arguments;
+- `ResolvedField` / `CheckedField` are distinct from function parameters, so aggregate field semantics are not encoded through parameter-shaped records.
+
+These types are intentionally small: their purpose is to make call sites and invariants readable, not to create another abstraction layer.
+
 ## Analyzer construction
 
 `Analyzer::new`/`new_in` receives:
@@ -53,7 +62,7 @@ This dependency direction lets analyzer unit logic remain independent of filesys
 - absolute owning module path;
 - concrete generic substitution;
 - active resolved bounds when needed;
-- owning HIR `(HirId, Span)` for diagnostics;
+- owning `AnalysisSite { id, span }` for diagnostics and semantic ownership;
 - target.
 
 Concrete generic substitutions are inserted as defined types in the initial context. Duplicate generic names are diagnosed at construction.
@@ -62,7 +71,7 @@ Concrete generic substitutions are inserted as defined types in the initial cont
 
 `context.rs` owns lexical scope machinery.
 
-A `Context` tracks nested `ScopeContext`s containing facts such as:
+A `Context` tracks nested `LexicalScope`s containing facts such as:
 
 - local variable bindings and storage identities;
 - types/generic substitutions visible in scope;
@@ -72,34 +81,44 @@ A `Context` tracks nested `ScopeContext`s containing facts such as:
 
 Resolution order distinguishes lexical locals/types from module-level names. Module aliases and top-level declarations are not copied wholesale into every analyzer context; the resolver is queried when local scope lookup does not answer the question.
 
-## Node identity convention
+## Analysis sites and synthetic identity
 
-Semantic operations generally carry the explicit `(HirId, Span)` of the source construct being checked.
+Top-level analyzer/query entry points carry an explicit `AnalysisSite { id, span }` rather than an untyped `(HirId, Span)` protocol. The site binds semantic ownership and diagnostic anchoring into one value while nested operations can still report against their own child IDs/spans.
 
 - `HirId` is stable identity for semantic caches/references.
 - `Span` is diagnostic anchoring.
+- `AnalysisSite` is the focused analyzer/query owner.
 
-The pair is not hidden in one global “current node” because nested analysis frequently needs to report against a child while retaining parent context.
-
-Synthetic semantic artifacts use IDs minted by the driver under `SYNTHETIC_MODULE`.
+Synthetic semantic artifacts use fresh IDs minted by the driver under `SYNTHETIC_MODULE`. Desugarings must not reuse one source `HirId` for several distinct checked nodes: the user-written outer node may retain its source ID, while generated temporaries/calls/literals/inner control-flow nodes receive synthetic identity.
 
 ## Main semantic concerns
 
 `analysis/` is split by what is being checked rather than by a monolithic pass:
 
-- `items.rs` — top-level signatures and bodies;
+- `items/mod.rs` — top-level signature/type-shape analysis;
+- `items/bodies.rs` — top-level body checking and checked aggregate/function construction;
 - `stmts.rs` — statements, blocks, return/divergence/loops/defer;
-- `exprs.rs` — general expression typing/operators;
+- `exprs/mod.rs` — expression dispatch, place reads, calls/assignments/address-of;
+- `exprs/operators.rs` — unary/binary operators, casts/coercions, compound assignment;
+- `exprs/ranges.rs` — range construction and synthesized bound calls;
 - `literals.rs` — numeric/aggregate/enum/union literal construction;
-- `places.rs` — addressable places, projections, mutability, slicing;
+- `places/mod.rs` — shared place analysis, mutability and place identity;
+- `places/roots.rs` — place-root lookup and overload roots;
+- `places/fields.rs` — field/index projections and member lookup;
+- `places/slicing.rs` — runtime and compile-time slicing;
 - `paths.rs` — qualified/unqualified semantic path lookup;
-- `calls.rs` — call resolution, overloads, methods, generics, dynamic calls;
+- `calls/mod.rs` — shared callee/receiver/call construction and ordinary/dynamic calls;
+- `calls/spec.rs` — spec-qualified/static/instance dispatch;
+- `calls/overload.rs` — overload candidate resolution/ranking;
+- `calls/generic.rs` — generic inference and concrete generic call completion;
 - `patterns.rs` — match pattern analysis, narrowing, exhaustiveness entry points;
 - `specs.rs` — specs, bounds, conformances, dynamic dispatch facts;
 - `consts.rs` — compile-time expression integration;
 - `visibility.rs` — exposed/internal/hidden/reveal checks.
 
-Each file contributes `impl Analyzer` methods; they share the common state and resolver seam rather than constructing parallel analyzers.
+Each module contributes `impl Analyzer` methods; they share the common state and resolver seam rather than constructing parallel analyzers. The splits follow reasoning domains, not arbitrary file-size thresholds.
+
+Temporary analyzer state is also scoped structurally rather than by repeated manual push/pop sequences. Helpers such as `with_scope`, `with_bounds`, `with_loop`, `with_suppressed`, `with_owner`, and `with_defer_body` restore their state after the focused operation. New temporary semantic state should follow the same pattern so early returns cannot leave the analyzer in a half-mutated context.
 
 ## Signature first, bodies second
 
@@ -154,7 +173,7 @@ More detail: [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md).
 
 ## Calls
 
-Call analysis is one of the densest semantic junctions because it combines:
+Call analysis is one of the densest semantic junctions, so its implementation is deliberately split by resolution mode rather than kept in one dispatcher file. It combines:
 
 - ordinary functions;
 - overload groups;
@@ -173,7 +192,7 @@ When generic type arguments are omitted, call analysis may ask the resolver for 
 
 ## Places and storage semantics
 
-HIR already provides a flattened syntactic place chain. `analysis/places.rs` resolves it into a typed `CheckedPlace`:
+HIR already provides a flattened syntactic place chain. `analysis/places/` resolves it into a typed `CheckedPlace`:
 
 - concrete root identity/storage kind;
 - resolved type after every projection;
@@ -239,7 +258,9 @@ CheckedExpr kind
 
 Control-flow statements retain source-level/tree structure at this point (`CheckedIf`, `CheckedMatch`, loops, `return`, `defer`, etc.). MIR is responsible for converting that control flow into a CFG.
 
-Checked aggregate/function items also carry already resolved metadata needed downstream, including concrete type args, self mode, annotations, conformance/primitive ownership, and method bodies.
+Checked aggregate/function items also carry already resolved metadata needed downstream, including concrete type args, self mode, annotations, conformance/primitive ownership, and method bodies. Aggregate fields are represented by `CheckedField`; function parameters by `CheckedParam`. The distinction exists in HIR (`HirField` / `HirParam`) and resolved semantic data (`ResolvedField`) as well, so field visibility/identity is not smuggled through a parameter-shaped tuple.
+
+Range/slice checking uses an explicit `CheckedRangeEnd::{Inclusive, Exclusive, Open}` shape. Impossible combinations such as “inclusive but no end expression” are therefore unrepresentable in the checked tree; MIR currently performs the compatibility flattening required by its older range representation.
 
 ## Errors and warnings
 
@@ -270,7 +291,7 @@ Several analyzer behaviors depend on local implementation structure rather than 
 
 - Expected-type propagation is deliberately directional in several constructs. Where one operand/branch becomes the inference anchor, later operands are checked against that anchor rather than participating in a global "best type" search. Keep the corresponding language rules in `docs/language/` aligned with any change to this mechanism.
 - A writable alias invalidates flow-sensitive narrowing for the aliased place. Mutable borrow/call paths therefore de-assume refinements before later reads can reuse them.
-- Visibility `reveal` is implemented as a scoped bypass. Syntax paths that peel or special-case an operand before ordinary expression/place analysis must preserve that bypass explicitly; missing one path can silently reintroduce visibility failures. The known structural weakness of this design is tracked in `docs/issues/`.
+- Visibility `reveal` is implemented as a scoped bypass owned by `RevealState`. Operand handlers use shared `with_reveal_operand` / `with_reveal_bypass` helpers rather than manipulating raw frame booleans. A successful hidden/internal access marks every active reveal frame used, so nested `reveal` chains do not generate a false redundant-reveal warning. The remaining architectural limitation—place resolution itself does not structurally own reveal activation—is tracked in `docs/issues/`.
 - Overload scoring may fully analyze user-written arguments before a winner is chosen. The winning path must reuse that checked work rather than analyze the same expression again and risk duplicate diagnostics or side effects in analyzer bookkeeping.
 - Import aliases are re-resolved through the resolver with the actual lookup context when indirection/generic arguments matter. Eager alias snapshots are navigation aids, not a substitute for a context-sensitive item query.
 - Reads/writes of projected compile-time values operate on immutable `ConstValue` trees: a projected write rebuilds the root value with the changed leaf rather than mutating real storage.

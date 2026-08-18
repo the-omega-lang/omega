@@ -132,11 +132,11 @@ impl<'r> Analyzer<'r> {
     )> {
         let (spec, spec_args) = spec.clone();
         let requirements = self.flatten_spec(id, span, &spec, &spec_args, target)?;
-        self.context.enter_scope();
-        let signatures = self.analyze_all(functions, |this, function| {
-            this.collect_function_signature(function)
+        let (signatures, _) = self.with_scope(|this| {
+            this.analyze_all(functions, |this, function| {
+                this.collect_function_signature(function)
+            })
         });
-        self.context.leave_scope();
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
 
@@ -652,8 +652,15 @@ impl<'r> Analyzer<'r> {
         bounds: &[ResolvedBound],
     ) -> Vec<(HirId, Vec<ResolvedType>)> {
         let mut out: Vec<(HirId, Vec<ResolvedType>)> = Vec::new();
-        for (concrete, spec, spec_args) in bounds {
-            self.expand_bound_into(id, span, concrete, spec, spec_args, &mut out);
+        for bound in bounds {
+            self.expand_bound_into(
+                id,
+                span,
+                &bound.target,
+                &bound.spec,
+                &bound.spec_args,
+                &mut out,
+            );
         }
         out
     }

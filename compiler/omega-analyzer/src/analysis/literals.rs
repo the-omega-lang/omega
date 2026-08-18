@@ -5,7 +5,7 @@ struct LiteralTargetFields {
     declaring_module: Vec<Ident>,
     owner_id: HirId,
     base: ResolvedType,
-    declared: Vec<(Ident, ResolvedType, Visibility)>,
+    declared: Vec<ResolvedField>,
 }
 
 enum LiteralTarget {
@@ -59,7 +59,7 @@ impl<'r> Analyzer<'r> {
                 // Snapshot the declared fields so `cell` isn't borrowed
                 // across the value analysis below -- a nested literal of
                 // the same struct type needs to borrow it again.
-                let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
+                let declared = cell.borrow().fields.clone();
                 let struct_name = cell.borrow().name.clone();
                 let declaring_module = cell.borrow().module_path.clone();
                 let owner_id = cell.borrow().id;
@@ -85,8 +85,8 @@ impl<'r> Analyzer<'r> {
                 let (enum_name, variant_name, declared, header_names, declaring_module, owner_id) = {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
-                    let header_names: Vec<Ident> = e.header.iter().map(|(name, _, _)| name.clone()).collect();
-                    let declared: Vec<(Ident, ResolvedType, Visibility)> =
+                    let header_names: Vec<Ident> = e.header.iter().map(|field| field.name.clone()).collect();
+                    let declared: Vec<ResolvedField> =
                         e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
                     (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone(), e.id)
                 };
@@ -98,7 +98,7 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 }
-                let declared_names: Vec<Ident> = declared.iter().map(|(name, _, _)| name.clone()).collect();
+                let declared_names: Vec<Ident> = declared.iter().map(|field| field.name.clone()).collect();
                 let unknown_enum = enum_name.clone();
                 let base = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
                 let target = LiteralTargetFields {
@@ -136,7 +136,7 @@ impl<'r> Analyzer<'r> {
                 let ResolvedType::Union(cell) = &resolved else {
                     unreachable!("LiteralTarget::Union always wraps ResolvedType::Union");
                 };
-                let declared: Vec<(Ident, ResolvedType, Visibility)> = cell.borrow().fields.clone();
+                let declared = cell.borrow().fields.clone();
                 let union_name = cell.borrow().name.clone();
                 let declaring_module = cell.borrow().module_path.clone();
                 let owner_id = cell.borrow().id;
@@ -161,8 +161,8 @@ impl<'r> Analyzer<'r> {
                 let found = declared
                     .iter()
                     .enumerate()
-                    .find(|(_, (name, _, _))| name == &field.name)
-                    .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+                    .find(|(_, declared)| declared.name == field.name)
+                    .map(|(index, declared)| (index, declared.r#type.clone(), declared.visibility));
                 let Some((field_index, expected, visibility)) = found else {
                     self.error(
                         node_id,
@@ -229,8 +229,8 @@ impl<'r> Analyzer<'r> {
             let found = declared
                 .iter()
                 .enumerate()
-                .find(|(_, (name, _, _))| name == &field.name)
-                .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility));
+                .find(|(_, declared)| declared.name == field.name)
+                .map(|(index, declared)| (index, declared.r#type.clone(), declared.visibility));
             let Some((field_index, expected, visibility)) = found else {
                 self.error(node_id, field.name_span, unknown_field(field));
                 ok = false;
@@ -269,7 +269,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let missing: Vec<Ident> =
-            declared.iter().map(|(name, _, _)| name).filter(|name| !seen.contains_key(name)).cloned().collect();
+            declared.iter().map(|field| &field.name).filter(|name| !seen.contains_key(*name)).cloned().collect();
         if !missing.is_empty() {
             self.error(
                 node_id,
@@ -629,8 +629,7 @@ impl<'r> Analyzer<'r> {
                 Type::Named(explicit_type.clone().into()),
                 &mut *self.resolver,
                 &self.module_path,
-                true,
-                !self.reveal_stack.is_empty(),
+                ResolveItemOptions::INDIRECT.bypassing_visibility(self.reveals.active()),
             ) {
                 Ok(r#type) if r#type.numeric_kind(self.target.pointer_bits()).is_some() => r#type,
                 _ => {

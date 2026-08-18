@@ -46,7 +46,7 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // positions must agree.
         ResolvedType::Struct(struct_type) => {
             let struct_type = struct_type.borrow();
-            let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t, _)| t.clone()).collect();
+            let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|field| field.r#type.clone()).collect();
             let layout = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes);
             let mut leaves = layout.leaves;
             let final_size = round_up(layout.packed_end, struct_type.layout.align);
@@ -98,9 +98,9 @@ pub fn project_field_access<T: Clone>(
     field_index: usize,
     pointer_bytes: u32,
 ) -> Vec<T> {
-    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t, _)| t.clone()).collect();
+    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|field| field.r#type.clone()).collect();
     let start = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).leaf_starts[field_index];
-    let len = leaves_of(&struct_type.fields[field_index].1, pointer_bytes).len();
+    let len = leaves_of(&struct_type.fields[field_index].r#type, pointer_bytes).len();
 
     values[start..start + len].to_vec()
 }
@@ -162,7 +162,7 @@ pub fn layout_fields(types: &[ResolvedType], pack: u32, pointer_bytes: u32) -> F
 }
 
 pub fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, pointer_bytes: u32) -> u32 {
-    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|(_, t, _)| t.clone()).collect();
+    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|field| field.r#type.clone()).collect();
     layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).byte_offsets[field_index]
 }
 
@@ -175,7 +175,7 @@ pub fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, pointer_bytes
         .variants
         .iter()
         .map(|v| {
-            let field_types: Vec<ResolvedType> = v.fields.iter().map(|(_, t, _)| t.clone()).collect();
+            let field_types: Vec<ResolvedType> = v.fields.iter().map(|field| field.r#type.clone()).collect();
             layout_fields(&field_types, pack, pointer_bytes).packed_end
         })
         .max()
@@ -183,18 +183,18 @@ pub fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, pointer_bytes
 }
 
 pub fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
-    enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|(_, t, _)| type_alignment(t))).max().unwrap_or(1)
+    enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|field| type_alignment(&field.r#type))).max().unwrap_or(1)
 }
 
 pub fn enum_prefix_layout(enum_type: &ResolvedEnumType, pointer_bytes: u32) -> FieldLayout {
     let mut types = vec![enum_type.tag_type.clone()];
-    types.extend(enum_type.header.iter().map(|(_, t, _)| t.clone()));
-    types.extend(enum_type.dynamic_fields.iter().map(|(_, t, _)| t.clone()));
+    types.extend(enum_type.header.iter().map(|field| field.r#type.clone()));
+    types.extend(enum_type.dynamic_fields.iter().map(|field| field.r#type.clone()));
     layout_fields(&types, enum_type.layout.pack, pointer_bytes)
 }
 
 pub fn union_bytes(union_type: &ResolvedUnionType, pointer_bytes: u32) -> u32 {
-    union_type.fields.iter().map(|(_, ty, _)| total_bytes(ty, pointer_bytes)).max().unwrap_or(0)
+    union_type.fields.iter().map(|field| total_bytes(&field.r#type, pointer_bytes)).max().unwrap_or(0)
 }
 
 pub fn payload_chunks(mut bytes: u32) -> Vec<Leaf> {
@@ -238,7 +238,7 @@ pub fn enum_body_field_offset(
     pointer_bytes: u32,
 ) -> u32 {
     let field_types: Vec<ResolvedType> =
-        enum_type.variants[variant_index].fields.iter().map(|(_, t, _)| t.clone()).collect();
+        enum_type.variants[variant_index].fields.iter().map(|field| field.r#type.clone()).collect();
     enum_payload_offset(enum_type, pointer_bytes)
         + layout_fields(&field_types, enum_type.layout.pack, pointer_bytes).byte_offsets[field_index]
 }

@@ -7,6 +7,7 @@ mod error;
 mod fs_resolve;
 mod items;
 mod modules;
+mod primitives;
 mod resolver;
 mod roots;
 
@@ -15,7 +16,7 @@ pub use fs_resolve::basename;
 pub use roots::ExternRoot;
 
 use conformances::Conformances;
-use conformances::Primitives;
+use primitives::Primitives;
 use diagnostics::Diagnostics;
 use items::ItemQueries;
 use modules::ModuleStore;

@@ -1,7 +1,7 @@
 
 use crate::Driver;
 use crate::items::{CheckedBody, ItemKey};
-use omega_analyzer::analysis::{Analyzer, item_id_span};
+use omega_analyzer::analysis::{AnalysisSite, Analyzer};
 use omega_analyzer::checked::{
     CheckedDeclaration, CheckedEnumDef, CheckedExternDeclaration, CheckedItem, CheckedStructDef,
     CheckedUnionDef,
@@ -40,36 +40,27 @@ impl CheckedAggregate for CheckedUnionDef {
 
 impl Driver {
     pub(crate) fn ensure_item_body(&mut self, key: &ItemKey, index: usize) -> Option<CheckedBody> {
-        if key.is_instantiation() {
-            if let Some(body) = self.items.generic_instantiations.get(key) {
-                return Some(body.clone_of());
-            }
-            if !self.items.body_in_progress.insert(key.clone()) {
-                return None;
-            }
-            self.check_generic_instantiation_body(key, index);
-            self.items.body_in_progress.remove(key);
-            return self
-                .items
-                .generic_instantiations
-                .get(key)
-                .map(CheckedBody::clone_of);
-        }
-
-        if let Some(body) = self.items.checked_bodies.get(key) {
+        if let Some(body) = self.items.cached_body(key) {
             return Some(body.clone_of());
         }
-        if !self.items.body_in_progress.insert(key.clone()) {
+        if !self.items.begin_body(key) {
             return None;
         }
-        let hir = self.modules.hir(&key.module);
-        let body = self.check_item_body(key, &hir.items[index]);
-        self.items.body_in_progress.remove(key);
-        let body = body?;
-        self.items
-            .checked_bodies
-            .insert(key.clone(), body.clone_of());
-        Some(body)
+
+        let body = if key.is_instantiation() {
+            self.check_generic_instantiation_body(key, index);
+            self.items.cached_body(key).map(CheckedBody::clone_of)
+        } else {
+            let hir = self.modules.hir(&key.module);
+            let body = self.check_item_body(key, &hir.items[index]);
+            if let Some(body) = &body {
+                self.items.cache_checked_body(key, body.clone_of());
+            }
+            body
+        };
+
+        self.items.finish_body(key);
+        body
     }
 
     pub(crate) fn check_item_body(&mut self, key: &ItemKey, item: &HirItem) -> Option<CheckedBody> {
@@ -156,7 +147,7 @@ impl Driver {
                     .get(key)
                     .cloned()
                     .unwrap_or_default();
-                let keys_run = self.with_analyzer(&key.module, &substitution, (f.id, f.span), |a| {
+                let keys_run = self.with_analyzer(&key.module, &substitution, AnalysisSite::new(f.id, f.span), |a| {
                     a.expand_bound_set(f.id, f.span, &declared)
                 });
                 self.diagnostics.record_warnings(&key.module, keys_run.warnings);
@@ -172,7 +163,7 @@ impl Driver {
                     &key.module,
                     &substitution,
                     &bounds,
-                    (f.id, f.span),
+                    AnalysisSite::new(f.id, f.span),
                     |analyzer| analyzer.check_function_body(f, &fn_type, decl_id, &annotations),
                 );
                 run.result.map(|mut checked| {
@@ -187,7 +178,7 @@ impl Driver {
             HirItem::Struct(s) => {
                 let cell = self.items.cells.expect_struct(key);
                 let self_type = ResolvedType::Struct(cell.clone());
-                self.check_aggregate_body(key, (s.id, s.span), &s.generics, self_type, |a| {
+                self.check_aggregate_body(key, AnalysisSite::new(s.id, s.span), &s.generics, self_type, |a| {
                     a.check_struct_body(s, &cell)
                 })
             }
@@ -198,7 +189,7 @@ impl Driver {
                     cell: cell.clone(),
                     variant: None,
                 };
-                self.check_aggregate_body(key, (e.id, e.span), &e.generics, self_type, |a| {
+                self.check_aggregate_body(key, AnalysisSite::new(e.id, e.span), &e.generics, self_type, |a| {
                     a.check_enum_body(e, &cell)
                 })
             }
@@ -206,7 +197,7 @@ impl Driver {
             HirItem::Union(u) => {
                 let cell = self.items.cells.expect_union(key);
                 let self_type = ResolvedType::Union(cell.clone());
-                self.check_aggregate_body(key, (u.id, u.span), &u.generics, self_type, |a| {
+                self.check_aggregate_body(key, AnalysisSite::new(u.id, u.span), &u.generics, self_type, |a| {
                     a.check_union_body(u, &cell)
                 })
             }
@@ -222,7 +213,7 @@ impl Driver {
     fn check_aggregate_body<C: CheckedAggregate>(
         &mut self,
         key: &ItemKey,
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         generics: &[HirGenericParam],
         self_type: ResolvedType,
         check: impl FnOnce(&mut Analyzer) -> Option<C>,
@@ -237,7 +228,7 @@ impl Driver {
             .cloned()
             .unwrap_or_default();
         let keys_run = self.with_analyzer(&key.module, &substitution, owner, |a| {
-            a.expand_bound_set(owner.0, owner.1, &declared)
+            a.expand_bound_set(owner.id, owner.span, &declared)
         });
         self.diagnostics.record_warnings(&key.module, keys_run.warnings);
         let keys = keys_run.result;
@@ -292,7 +283,7 @@ impl Driver {
             unreachable!("only ever called with an index confirmed to be a function");
         };
 
-        let checked = self.analyze(module_path, &[], (f.id, f.span), |a| {
+        let checked = self.analyze(module_path, &[], AnalysisSite::new(f.id, f.span), |a| {
             a.collect_function_signature(f)
         });
         let (fn_type, annotations) = checked.ok_or_else(|| ResolveError::ItemFailed {
@@ -326,7 +317,7 @@ impl Driver {
             .cloned()
             .unwrap_or_default();
 
-        let run = self.with_analyzer(module_path, &[], (f.id, f.span), |analyzer| {
+        let run = self.with_analyzer(module_path, &[], AnalysisSite::new(f.id, f.span), |analyzer| {
             analyzer.check_function_body(f, &fn_type, f.id, &annotations)
         });
         let body = CheckedBody {
@@ -355,16 +346,20 @@ impl Driver {
             let Some(j) = (0..i).find(|&j| same_params(&signatures[i], &signatures[j])) else {
                 continue;
             };
-            let (id, span) = item_id_span(&hir.items[indices[i]]);
-            let (_, previous) = item_id_span(&hir.items[indices[j]]);
+            let HirItem::FunctionDefinition(function) = &hir.items[indices[i]] else {
+                unreachable!("overload indices only contain function definitions");
+            };
+            let HirItem::FunctionDefinition(previous_function) = &hir.items[indices[j]] else {
+                unreachable!("overload indices only contain function definitions");
+            };
             self.diagnostics.error(
                 module_path,
                 AnalysisError::new(
-                    id,
-                    span,
+                    function.id,
+                    function.name_span,
                     AnalysisErrorKind::Redeclaration {
                         name: name.clone(),
-                        previous: Some(previous),
+                        previous: Some(previous_function.name_span),
                     },
                 ),
             );

@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
-use crate::resolver::{ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolvedItem};
+use crate::resolver::{ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
 use crate::similarity::best_match;
 use indexmap::IndexMap;
 use omega_hir::HirId;
@@ -20,12 +20,12 @@ pub struct VarBinding {
 }
 
 #[derive(Debug, Clone)]
-pub struct ScopeContext {
-    pub declared_variables: IndexMap<(Ident, Origin), VarBinding>,
-    pub defined_types: IndexMap<Ident, ResolvedType>,
+pub struct LexicalScope {
+    declared_variables: IndexMap<(Ident, Origin), VarBinding>,
+    defined_types: IndexMap<Ident, ResolvedType>,
 }
 
-impl ScopeContext {
+impl LexicalScope {
     fn new() -> Self {
         Self {
             declared_variables: IndexMap::new(),
@@ -45,17 +45,21 @@ impl ScopeContext {
         self.declared_variables.insert((ident, origin), binding);
         Ok(())
     }
+
+    pub fn bindings(&self) -> impl Iterator<Item = (&(Ident, Origin), &VarBinding)> {
+        self.declared_variables.iter()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Context {
-    scopes: Vec<ScopeContext>,
+    scopes: Vec<LexicalScope>,
     comp_values: std::collections::HashMap<HirId, crate::resolved_type::ConstValue>,
 }
 
 impl Context {
     pub fn new() -> Self {
-        let mut global_scope = ScopeContext::new();
+        let mut global_scope = LexicalScope::new();
         global_scope.defined_types.extend([
             (Ident("void".into()), ResolvedType::Void),
             (Ident("never".into()), ResolvedType::Never),
@@ -86,56 +90,66 @@ impl Context {
     }
 
     pub fn find_variable(&self, ident: &Ident, origin: Origin) -> Option<&VarBinding> {
-        let found = self.scopes
+        let key = (ident.clone(), origin);
+        self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.declared_variables.get(&(ident.clone(), origin)));
-        found.or_else(|| {
-            (ident.as_ref() == "self").then(|| {
+            .find_map(|scope| scope.declared_variables.get(&key))
+            .or_else(|| {
+                if ident.as_ref() != "self" || origin == Origin::default() {
+                    return None;
+                }
+                let root_key = (ident.clone(), Origin::default());
                 self.scopes
                     .iter()
                     .rev()
-                    .find_map(|scope| scope.declared_variables.get(&(ident.clone(), Origin::default())))
-            })?
-        })
+                    .find_map(|scope| scope.declared_variables.get(&root_key))
+            })
     }
 
     pub fn widen_variable(&mut self, ident: &Ident, origin: Origin) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.declared_variables.get_mut(&(ident.clone(), origin)) {
-                binding.r#type = binding.r#type.widened();
-                return;
-            }
+        let key = (ident.clone(), origin);
+        if let Some(binding) = self.variable_mut(&key) {
+            binding.r#type = binding.r#type.widened();
+            return;
         }
-        if ident.as_ref() == "self" {
-            for scope in self.scopes.iter_mut().rev() {
-                if let Some(binding) = scope
-                    .declared_variables
-                    .get_mut(&(ident.clone(), Origin::default()))
-                {
-                    binding.r#type = binding.r#type.widened();
-                    return;
-                }
+        if ident.as_ref() == "self" && origin != Origin::default() {
+            let root_key = (ident.clone(), Origin::default());
+            if let Some(binding) = self.variable_mut(&root_key) {
+                binding.r#type = binding.r#type.widened();
             }
         }
     }
 
     pub fn mark_used(&mut self, decl_id: HirId) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.declared_variables.values_mut().find(|b| b.decl_id == decl_id) {
-                binding.used = true;
-                return;
-            }
+        if let Some(binding) = self.binding_mut(decl_id) {
+            binding.used = true;
         }
     }
 
     pub fn mark_written(&mut self, decl_id: HirId) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.declared_variables.values_mut().find(|b| b.decl_id == decl_id) {
-                binding.written = true;
-                return;
-            }
+        if let Some(binding) = self.binding_mut(decl_id) {
+            binding.written = true;
         }
+    }
+
+    fn variable_mut(&mut self, key: &(Ident, Origin)) -> Option<&mut VarBinding> {
+        self.scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| scope.declared_variables.get_mut(key))
+    }
+
+    fn binding_mut(&mut self, decl_id: HirId) -> Option<&mut VarBinding> {
+        self.scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| {
+                scope
+                    .declared_variables
+                    .values_mut()
+                    .find(|binding| binding.decl_id == decl_id)
+            })
     }
 
     pub fn find_defined_type(&self, name: &Ident) -> Option<&ResolvedType> {
@@ -163,19 +177,19 @@ impl Context {
         fntype: FunctionType,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedFunctionType, TypeResolutionError> {
         let params = fntype
             .params
             .into_iter()
             .map(|param| {
-                self.resolve_type(param.r#type, resolver, module_path, true, bypass)
+                self.resolve_type(param.r#type, resolver, module_path, options.through_indirection())
                     .map(|resolved| (param.ident, resolved))
             })
             .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
         Ok(ResolvedFunctionType {
             params,
-            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, true, bypass)?),
+            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, options.through_indirection())?),
             is_variadic: fntype.is_variadic,
             self_mode: fntype.self_mode,
         })
@@ -230,17 +244,16 @@ impl Context {
         typ: Type,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
         match typ {
-            Type::Named(path) => self.resolve_named_type(path, resolver, module_path, indirect, bypass),
-            Type::Generic(path, args) => self.resolve_generic_type(path, args, resolver, module_path, indirect, bypass),
+            Type::Named(path) => self.resolve_named_type(path, resolver, module_path, options),
+            Type::Generic(path, args) => self.resolve_generic_type(path, args, resolver, module_path, options),
             Type::Pointer(pointee, mutable) => {
-                self.resolve_pointer_type(*pointee, mutable, resolver, module_path, bypass)
+                self.resolve_pointer_type(*pointee, mutable, resolver, module_path, options)
             }
             Type::SpecObject(pointee, mutable) => {
-                self.resolve_spec_object_type(*pointee, mutable, resolver, module_path, bypass)
+                self.resolve_spec_object_type(*pointee, mutable, resolver, module_path, options)
             }
             Type::SpecStatic(pointee) => {
                 let name = match pointee.as_ref() {
@@ -250,13 +263,13 @@ impl Context {
                 Err(TypeResolutionError::SpecStaticNotAllowedHere(name))
             }
             Type::Function(fntyp) => {
-                Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, bypass)?))
+                Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, options)?))
             }
             Type::InferredArray(_) => Err(TypeResolutionError::BareUnsizedArray),
             Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
             Type::SizedArray(item, size) => {
                 let size = size.parse::<u32>().map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
-                let item = self.resolve_type(*item, resolver, module_path, indirect, bypass)?;
+                let item = self.resolve_type(*item, resolver, module_path, options)?;
                 Ok(ResolvedType::SizedArray(Box::new(item), size))
             }
         }
@@ -267,14 +280,13 @@ impl Context {
         path: Path,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
         let resolved = {
-            if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, indirect, bypass)? {
+            if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, options)? {
                 resolved
             } else if path.is_unqualified() {
                 if let Some(local) = self.find_defined_type(&path.head) {
@@ -288,7 +300,7 @@ impl Context {
                     // which was always produced with `indirect = true`
                     // (see findings for the cycle-detection bug this
                     // used to cause). Re-running `resolve_item` costs
-                    // nothing extra once the item is already `Done`.
+                    // nothing extra once the item is already resolved.
                     let alias = resolver
                         .resolve_import_alias(&resolution_module, &path.head)
                         .map_err(TypeResolutionError::ModuleResolution)?;
@@ -305,7 +317,12 @@ impl Context {
                             .chain(std::iter::once(path.head.clone()))
                             .collect(),
                     };
-                    match resolver.resolve_item(&resolution_module, &absolute, &[], indirect, bypass) {
+                    match resolver.resolve_item(
+                        &resolution_module,
+                        &absolute,
+                        &[],
+                        options,
+                    ) {
                         Ok(ResolvedItem::Type(t)) => t,
                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => return Err(TypeResolutionError::NotAType(absolute)),
                         // A bare type name that doesn't exist gets one
@@ -317,7 +334,12 @@ impl Context {
                         Err(ResolveError::UnknownItem { .. }) => {
                             match resolver.ambient_core_candidates(&resolution_module, &path.head) {
                                 Ok(Some(ambient_absolute)) => {
-                                    match resolver.resolve_item(&resolution_module, &ambient_absolute, &[], indirect, bypass) {
+                                    match resolver.resolve_item(
+                                        &resolution_module,
+                                        &ambient_absolute,
+                                        &[],
+                                        options,
+                                    ) {
                                         Ok(ResolvedItem::Type(t)) => t,
                                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                                             return Err(TypeResolutionError::NotAType(ambient_absolute));
@@ -344,14 +366,19 @@ impl Context {
             } else {
                 let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
-                    .resolve_item(&resolution_module, &absolute, &[], indirect, bypass)
+                    .resolve_item(
+                        &resolution_module,
+                        &absolute,
+                        &[],
+                        options,
+                    )
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
                     ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => return Err(TypeResolutionError::NotAType(absolute)),
                 }
             }
-        
+
         };
         Ok(resolved)
     }
@@ -362,8 +389,7 @@ impl Context {
         args: Vec<Type>,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
@@ -371,15 +397,25 @@ impl Context {
         let resolved = {
             let resolved_args = args
                 .into_iter()
-                .map(|arg| self.resolve_type(arg, resolver, module_path, true, bypass))
+                .map(|arg| self.resolve_type(arg, resolver, module_path, options.through_indirection()))
                 .collect::<Result<Vec<_>, _>>()?;
             let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
-            let result = resolver.resolve_item(&resolution_module, &absolute, &resolved_args, indirect, bypass);
+            let result = resolver.resolve_item(
+                &resolution_module,
+                &absolute,
+                &resolved_args,
+                options,
+            );
             let result = match (&result, path.is_unqualified()) {
                 (Err(ResolveError::UnknownItem { .. }), true) => {
                     match resolver.ambient_core_candidates(&resolution_module, &path.head) {
                         Ok(Some(ambient_absolute)) => {
-                            resolver.resolve_item(&resolution_module, &ambient_absolute, &resolved_args, indirect, bypass)
+                            resolver.resolve_item(
+                                &resolution_module,
+                                &ambient_absolute,
+                                &resolved_args,
+                                options,
+                            )
                         }
                         Ok(None) => result,
                         Err(e) => Err(e),
@@ -402,22 +438,22 @@ impl Context {
         mutable: bool,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
         match pointee_type {
             Type::InferredArray(item) => {
-                let item = self.resolve_type(*item, resolver, module_path, true, bypass)?;
+                let item = self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
                 Ok(ResolvedType::Slice { item: Box::new(item), mutable })
             }
             Type::UnknownSizeArray(item) => {
-                let item = self.resolve_type(*item, resolver, module_path, true, bypass)?;
+                let item = self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
                 Ok(ResolvedType::Array(Box::new(item), mutable))
             }
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self" => {
-                match self.resolve_named_type(path, resolver, module_path, true, bypass)? {
+                match self.resolve_named_type(path, resolver, module_path, options.through_indirection())? {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
                     ResolvedType::Slice { item, .. } => Ok(ResolvedType::Slice { item, mutable }),
@@ -425,7 +461,7 @@ impl Context {
                 }
             }
             other => {
-                let resolved = self.resolve_type(other, resolver, module_path, true, bypass)?;
+                let resolved = self.resolve_type(other, resolver, module_path, options.through_indirection())?;
                 Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable })
             }
         }
@@ -437,7 +473,7 @@ impl Context {
         mutable: bool,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let pointee = Box::new(pointee);
         let resolved = {
@@ -447,13 +483,13 @@ impl Context {
             };
             let resolved_args = type_args
                 .into_iter()
-                .map(|a| self.resolve_type(a, resolver, module_path, true, bypass))
+                .map(|a| self.resolve_type(a, resolver, module_path, options.through_indirection()))
                 .collect::<Result<Vec<_>, _>>()?;
             let pointee_name = match pointee.as_ref() {
                 Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
                 _ => Ident("<spec>".to_string()),
             };
-            match self.resolve_type(*pointee, resolver, module_path, true, bypass)? {
+            match self.resolve_type(*pointee, resolver, module_path, options.through_indirection())? {
                 ResolvedType::Spec(spec) => {
                     if !spec.borrow().is_object_safe {
                         return Err(TypeResolutionError::SpecNotObjectSafe(pointee_name));
@@ -462,7 +498,7 @@ impl Context {
                 }
                 _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
             }
-        
+
         };
         Ok(resolved)
     }
@@ -472,8 +508,7 @@ impl Context {
         path: &Path,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {
         let Some((variant_name, prefix_tail)) = path.tail.split_last() else { return Ok(None) };
         let prefix = Type::Named(Path {
@@ -481,7 +516,7 @@ impl Context {
             tail: prefix_tail.to_vec(),
             origin: path.origin,
         });
-        let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, indirect, bypass) else {
+        let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, options) else {
             return Ok(None);
         };
         let found = cell.borrow().variant(variant_name).map(|(idx, _)| idx);
@@ -498,24 +533,51 @@ impl Context {
         }
     }
 
-    pub fn current_scope(&mut self) -> &mut ScopeContext {
-        self.scopes.last_mut().unwrap()
-    }
-
-    pub fn enter_scope(&mut self) -> &mut ScopeContext {
-        self.scopes.push(ScopeContext::new());
-        self.current_scope()
-    }
-
-    pub fn leave_scope(&mut self) -> ScopeContext {
-        if self.scopes.len() == 1 {
-            let scope = self.scopes.remove(0);
-            self.scopes.push(ScopeContext::new());
-            return scope;
-        }
-
+    pub fn declare(
+        &mut self,
+        ident: Ident,
+        origin: Origin,
+        binding: VarBinding,
+    ) -> Result<(), (Ident, Span)> {
         self.scopes
-            .pop()
-            .expect("BAD: Context does not have a scope. This should NEVER happen.")
+            .last_mut()
+            .expect("context always has a root scope")
+            .declare(ident, origin, binding)
+    }
+
+    pub fn current_scope_has_type(&self, name: &Ident) -> bool {
+        self.scopes
+            .last()
+            .expect("context always has a root scope")
+            .defined_types
+            .contains_key(name)
+    }
+
+    pub fn define_type(&mut self, name: Ident, r#type: ResolvedType) {
+        self.scopes
+            .last_mut()
+            .expect("context always has a root scope")
+            .defined_types
+            .insert(name, r#type);
+    }
+
+    pub fn extend_types(&mut self, types: impl IntoIterator<Item = (Ident, ResolvedType)>) {
+        self.scopes
+            .last_mut()
+            .expect("context always has a root scope")
+            .defined_types
+            .extend(types);
+    }
+
+    pub fn enter_scope(&mut self) {
+        self.scopes.push(LexicalScope::new());
+    }
+
+    pub fn leave_scope(&mut self) -> LexicalScope {
+        assert!(
+            self.scopes.len() > 1,
+            "attempted to leave the analyzer's root scope"
+        );
+        self.scopes.pop().expect("scope count checked above")
     }
 }

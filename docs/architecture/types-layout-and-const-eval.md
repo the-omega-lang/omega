@@ -38,6 +38,8 @@ The driver can create the cell before collection completes, allowing safe recurs
 
 Consumers should keep/reference the cell rather than copy a second aggregate definition into every expression.
 
+Aggregate members use a dedicated `ResolvedField { name, type, visibility }` representation. Function parameters use the function-signature parameter representation instead. This separation is deliberate: field visibility and aggregate-member identity are semantic facts and should not be encoded in parameter-shaped tuples.
+
 ## Function types
 
 `ResolvedFunctionType` contains resolved parameter types, return type, variadic flag, and self-mode information. It is the input to shared ABI construction.
@@ -134,6 +136,8 @@ Memory offsets for header/dynamic/body fields are provided by shared helpers suc
 
 The payload can be represented as opaque integer leaves for flattened transfer; those leaves are storage chunks, not semantic numeric values.
 
+Implicit enum tags are checked against the resolved tag type's integer domain before they become `NumberValue`s. This mirrors explicit-tag range checking and keeps the “every variant receives a representable, unique tag” invariant true even for extremely large enums. Pointer-sized integer domains use the active target's pointer width.
+
 ## Union layout
 
 A union's byte storage is the maximum of its fields. Flattened payload chunks cover that storage so unions can pass through the same leaf machinery while field access itself remains a reinterpretation of the shared memory region.
@@ -156,6 +160,7 @@ A successful `comp` expression can collapse into `CheckedExpr::Const(value)`. Ru
 ## Compile-time evaluator boundary
 
 `comp_eval.rs` evaluates an already semantically understood checked expression environment. It is not a second parser/type checker.
+The stateful interpreter remains cohesive in `comp_eval.rs`; its focused unit tests live in `comp_eval/tests.rs` so production control flow is not buried under test fixtures.
 
 When compile-time execution calls an Omega function, the evaluator obtains the checked function body through a resolver callback (`CompFunctionResolver`/driver implementation) rather than reaching into driver caches/filesystem directly.
 

@@ -20,35 +20,35 @@ use literals::parse_number_literal;
 use crate::{
     checked::{
         CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
-        CheckedBlock, CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer,
+        CheckedBlock, CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedField,
         CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
         CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
         CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
+        CheckedProjection, CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
         CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef,
         CheckedWhile, NumberValue, Storage,
     },
-    context::{Context, ScopeContext, VarBinding},
+    context::{Context, LexicalScope, VarBinding},
     error::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError,
     },
     generics::{resolve_inferred_type_args, unify_generic_type},
     resolved_type::{
         CastClass, ConformanceSource, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedBound,
-        ResolvedEnumType, ResolvedEnumVariant, ResolvedFunctionType, ResolvedMethod,
+        ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod,
         ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
         GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
-        ItemNamespace, ModuleResolver, OverloadCandidates, ResolveError, ResolvedItem,
+        ItemNamespace, ModuleResolver, OverloadCandidates, ResolveError, ResolveItemOptions, ResolvedItem,
     },
     similarity::best_match,
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef,
     HirExpr, HirExprNode, HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef,
-    HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot,
-    HirProjection, HirRange, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
+    HirField, HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot,
+    HirProjection, HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
@@ -72,7 +72,7 @@ pub struct Analyzer<'r> {
     loops_with_break: HashSet<HirId>,
     in_defer_body: bool,
     suppressed: Vec<Vec<Ident>>,
-    reveal_stack: Vec<bool>,
+    reveals: visibility::RevealState,
     current_owner: Option<HirId>,
     field_usage: crate::dead_code::FieldUsage,
     bounds: Vec<ResolvedBound>,
@@ -114,6 +114,29 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
             unreachable!("imports have no item-level visibility and are never looked up by name")
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnalysisSite {
+    pub id: HirId,
+    pub span: Span,
+}
+
+impl AnalysisSite {
+    pub const fn new(id: HirId, span: Span) -> Self {
+        Self { id, span }
+    }
+}
+
+impl From<(HirId, Span)> for AnalysisSite {
+    fn from((id, span): (HirId, Span)) -> Self {
+        Self::new(id, span)
+    }
+}
+
+pub fn item_site(item: &HirItem) -> AnalysisSite {
+    let (id, span) = item_id_span(item);
+    AnalysisSite::new(id, span)
 }
 
 pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
@@ -174,7 +197,7 @@ impl<'r> Analyzer<'r> {
         resolver: &'r mut dyn ModuleResolver,
         module_path: Vec<Ident>,
         generics: &[(Ident, ResolvedType)],
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         target: Target,
     ) -> Self {
         Self::new_in(resolver, module_path, generics, &[], owner, target)
@@ -185,7 +208,7 @@ impl<'r> Analyzer<'r> {
         module_path: Vec<Ident>,
         generics: &[(Ident, ResolvedType)],
         bounds: &[ResolvedBound],
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         target: Target,
     ) -> Self {
         let mut context = Context::new();
@@ -193,22 +216,19 @@ impl<'r> Analyzer<'r> {
 
         let mut seen_generics = HashSet::new();
         for (ident, resolved_type) in generics {
-            let dup = context.current_scope().defined_types.contains_key(ident)
+            let dup = context.current_scope_has_type(ident)
                 || !seen_generics.insert(ident);
             if dup {
                 errors.push(AnalysisError::new(
-                    owner.0,
-                    owner.1,
+                    owner.id,
+                    owner.span,
                     AnalysisErrorKind::Redeclaration {
                         name: ident.clone(),
                         previous: None,
                     },
                 ));
             } else {
-                context
-                    .current_scope()
-                    .defined_types
-                    .insert(ident.clone(), resolved_type.clone());
+                context.define_type(ident.clone(), resolved_type.clone());
             }
         }
 
@@ -224,7 +244,7 @@ impl<'r> Analyzer<'r> {
             loops_with_break: HashSet::new(),
             in_defer_body: false,
             suppressed: vec![],
-            reveal_stack: vec![],
+            reveals: visibility::RevealState::default(),
             current_owner: None,
             field_usage: crate::dead_code::FieldUsage::default(),
             bounds: bounds.to_vec(),
@@ -266,7 +286,7 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    pub fn probe<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+    pub fn without_diagnostics<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let errors = self.errors.len();
         let warnings = self.warnings.len();
         let result = f(self);
@@ -291,20 +311,68 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked)
     }
 
+    fn with_scope<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> (T, LexicalScope) {
+        self.context.enter_scope();
+        let result = f(self);
+        let scope = self.context.leave_scope();
+        (result, scope)
+    }
+
     fn with_substitution<T>(
         &mut self,
         substitution: &[(Ident, ResolvedType)],
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        self.context.enter_scope();
-        for (name, ty) in substitution {
-            self.context
-                .current_scope()
-                .defined_types
-                .insert(name.clone(), ty.clone());
-        }
+        self.with_scope(|this| {
+            for (name, ty) in substitution {
+                this.context.define_type(name.clone(), ty.clone());
+            }
+            f(this)
+        })
+        .0
+    }
+
+    fn with_bounds<T>(
+        &mut self,
+        added: impl IntoIterator<Item = ResolvedBound>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let original_len = self.bounds.len();
+        self.bounds.extend(added);
         let result = f(self);
-        self.context.leave_scope();
+        self.bounds.truncate(original_len);
+        result
+    }
+
+    fn with_loop<T>(&mut self, loop_id: HirId, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.loop_stack.push(loop_id);
+        let result = f(self);
+        let popped = self.loop_stack.pop();
+        assert_eq!(popped, Some(loop_id), "loop stack must unwind in LIFO order");
+        result
+    }
+
+    fn with_suppressed<T>(&mut self, names: &[Ident], f: impl FnOnce(&mut Self) -> T) -> T {
+        self.suppressed.push(names.to_vec());
+        let result = f(self);
+        self.suppressed.pop().expect("suppression frame just pushed");
+        result
+    }
+
+    fn with_owner<T>(&mut self, owner: HirId, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.current_owner.replace(owner);
+        let result = f(self);
+        self.current_owner = previous;
+        result
+    }
+
+    fn with_defer_body<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(&mut self.in_defer_body, true);
+        let result = f(self);
+        self.in_defer_body = previous;
         result
     }
 
@@ -341,12 +409,16 @@ impl<'r> Analyzer<'r> {
         else {
             return value;
         };
+        let id = value.id;
+        let span = value.span;
+        let mut base = value;
+        base.id = self.resolver.fresh_synthetic_id();
         CheckedExprNode {
-            id: value.id,
-            span: value.span,
+            id,
+            span,
             r#type: target.clone(),
             kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce {
-                base: Box::new(value),
+                base: Box::new(base),
                 slots,
             }),
         }
@@ -425,7 +497,7 @@ impl<'r> Analyzer<'r> {
         binding: VarBinding,
     ) -> Option<()> {
         let (id, span) = (binding.decl_id, binding.span);
-        match self.context.current_scope().declare(ident.clone(), origin, binding) {
+        match self.context.declare(ident.clone(), origin, binding) {
             Ok(()) => Some(()),
             Err((name, previous)) => {
                 self.error(
@@ -447,15 +519,17 @@ impl<'r> Analyzer<'r> {
         type_args: &[ResolvedType],
         indirect: bool,
     ) -> Result<ResolvedItem, ResolveError> {
-        let bypass = !self.reveal_stack.is_empty();
+        let bypass = self.reveals.active();
         let result =
             self.resolver
-                .resolve_item(&self.module_path, absolute, type_args, indirect, bypass);
+                .resolve_item(
+                    &self.module_path,
+                    absolute,
+                    type_args,
+                    ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass),
+                );
         if bypass && result.is_ok() && !self.resolver.is_item_visible(&self.module_path, absolute) {
-            *self
-                .reveal_stack
-                .last_mut()
-                .expect("bypass true implies a non-empty reveal_stack") = true;
+            self.reveals.mark_used();
         }
         result
     }
@@ -488,11 +562,11 @@ impl<'r> Analyzer<'r> {
         absolute: &[Ident],
         type_args: &[ResolvedType],
     ) -> Result<ResolvedItem, ResolveError> {
-        let result = self.resolver.resolve_item(accessor, absolute, type_args, true, false);
+        let result = self.resolver.resolve_item(accessor, absolute, type_args, ResolveItemOptions::INDIRECT);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
                 match self.resolver.ambient_core_candidates(accessor, single)? {
-                    Some(ambient) => self.resolver.resolve_item(accessor, &ambient, type_args, true, false),
+                    Some(ambient) => self.resolver.resolve_item(accessor, &ambient, type_args, ResolveItemOptions::INDIRECT),
                     None => result,
                 }
             }
@@ -609,13 +683,12 @@ impl<'r> Analyzer<'r> {
         indirect: bool,
         module: &[Ident],
     ) -> Option<ResolvedType> {
-        let bypass = !self.reveal_stack.is_empty();
+        let bypass = self.reveals.active();
         match self.context.resolve_type(
             typ.to_owned(),
             &mut *self.resolver,
             module,
-            indirect,
-            bypass,
+            ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass),
         ) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -632,13 +705,9 @@ impl<'r> Analyzer<'r> {
         typ: &Type,
         subst: &[(Ident, ResolvedType)],
     ) -> Option<ResolvedType> {
-        self.context
-            .enter_scope()
-            .defined_types
-            .extend(subst.iter().cloned());
-        let result = self.resolve_type_or_error(id, span, typ, false);
-        self.context.leave_scope();
-        result
+        self.with_substitution(subst, |this| {
+            this.resolve_type_or_error(id, span, typ, false)
+        })
     }
 
     pub(crate) fn infer_generic_args(

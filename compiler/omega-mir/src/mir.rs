@@ -1,7 +1,7 @@
 
 use crate::body::MirBody;
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
-use omega_analyzer::checked::{CheckedParam, ConformanceOwner};
+use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};
 use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::ModuleId;
 use omega_parser::prelude::{Ident, SelfMode, Span};
@@ -87,7 +87,7 @@ pub struct MirStructDef {
     pub span: Span,
     pub name: Ident,
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<CheckedParam>,
+    pub fields: Vec<CheckedField>,
     pub functions: Vec<MirFunctionDef>,
 }
 
@@ -97,7 +97,7 @@ pub struct MirUnionDef {
     pub span: Span,
     pub name: Ident,
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<CheckedParam>,
+    pub fields: Vec<CheckedField>,
     pub functions: Vec<MirFunctionDef>,
 }
 

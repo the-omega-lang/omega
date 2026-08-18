@@ -1099,7 +1099,7 @@ impl<'ctx> Codegen<'ctx> {
                     _ => unreachable!("a Struct constant's own type is always ResolvedType::Struct"),
                 };
                 let field_types: Vec<ResolvedType> =
-                    struct_type.borrow().fields.iter().map(|(_, t, _)| t.clone()).collect();
+                    struct_type.borrow().fields.iter().map(|field| field.r#type.clone()).collect();
                 fields
                     .iter()
                     .zip(&field_types)
@@ -1119,18 +1119,18 @@ impl<'ctx> Codegen<'ctx> {
                         .header
                         .iter()
                         .zip(&variant.header_values)
-                        .map(|((_, t, _), v)| (t.clone(), v.clone()))
+                        .map(|(field, value)| (field.r#type.clone(), value.clone()))
                         .collect();
                     let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
                         .map(|i| {
                             let offset = layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
-                            (offset, enum_type.dynamic_fields[i].1.clone())
+                            (offset, enum_type.dynamic_fields[i].r#type.clone())
                         })
                         .collect();
                     let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
                         .map(|i| {
                             let offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
-                            (offset, variant.fields[i].1.clone())
+                            (offset, variant.fields[i].r#type.clone())
                         })
                         .collect();
                     (enum_type.tag_type.clone(), header, dynamic, body)
@@ -1187,7 +1187,7 @@ impl<'ctx> Codegen<'ctx> {
                     ResolvedType::Union(union_type) => union_type,
                     _ => unreachable!("a Union constant's own type is always ResolvedType::Union"),
                 };
-                let field_type = union_type.borrow().fields[0].1.clone();
+                let field_type = union_type.borrow().fields[0].r#type.clone();
                 let values = self.emit_const_value(value, &field_type);
                 self.store_scalars(&slot, 0, &values, layout::type_alignment(&field_type));
 
@@ -1273,7 +1273,7 @@ impl<'ctx> Codegen<'ctx> {
                     _ => unreachable!("a Struct constant's own type is always ResolvedType::Struct"),
                 };
                 let field_types: Vec<ResolvedType> =
-                    struct_type.borrow().fields.iter().map(|(_, t, _)| t.clone()).collect();
+                    struct_type.borrow().fields.iter().map(|field| field.r#type.clone()).collect();
                 for (i, (value, field_type)) in fields.iter().zip(&field_types).enumerate() {
                     let field_offset = layout::field_byte_offset(&struct_type.borrow(), i, pointer_bytes);
                     self.write_const_element(blob, offset + field_offset, value, field_type);
@@ -1291,18 +1291,18 @@ impl<'ctx> Codegen<'ctx> {
                         .header
                         .iter()
                         .zip(&variant.header_values)
-                        .map(|((_, t, _), v)| (t.clone(), v.clone()))
+                        .map(|(field, value)| (field.r#type.clone(), value.clone()))
                         .collect();
                     let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
                         .map(|i| {
                             let field_offset = layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
-                            (field_offset, enum_type.dynamic_fields[i].1.clone())
+                            (field_offset, enum_type.dynamic_fields[i].r#type.clone())
                         })
                         .collect();
                     let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
                         .map(|i| {
                             let field_offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
-                            (field_offset, variant.fields[i].1.clone())
+                            (field_offset, variant.fields[i].r#type.clone())
                         })
                         .collect();
                     (enum_type.tag_type.clone(), header, dynamic, body)
@@ -1326,7 +1326,7 @@ impl<'ctx> Codegen<'ctx> {
                     ResolvedType::Union(union_type) => union_type,
                     _ => unreachable!("a Union constant's own type is always ResolvedType::Union"),
                 };
-                let field_type = union_type.borrow().fields[*field_index].1.clone();
+                let field_type = union_type.borrow().fields[*field_index].r#type.clone();
                 self.write_const_element(blob, offset, value, &field_type);
             }
             ConstValue::Ref(inner) => {
@@ -1386,7 +1386,7 @@ impl<'ctx> Codegen<'ctx> {
                     _ => unreachable!("a Struct constant's own type is always ResolvedType::Struct"),
                 };
                 let field_types: Vec<ResolvedType> =
-                    struct_type.borrow().fields.iter().map(|(_, t, _)| t.clone()).collect();
+                    struct_type.borrow().fields.iter().map(|field| field.r#type.clone()).collect();
                 for (value, field_type) in fields.iter().zip(&field_types) {
                     self.hash_const_element(out, value, field_type);
                 }
@@ -1406,9 +1406,9 @@ impl<'ctx> Codegen<'ctx> {
                 let (dynamic_types, field_types) = {
                     let enum_type = cell.borrow();
                     let dynamic_types: Vec<ResolvedType> =
-                        enum_type.dynamic_fields.iter().map(|(_, t, _)| t.clone()).collect();
+                        enum_type.dynamic_fields.iter().map(|field| field.r#type.clone()).collect();
                     let field_types: Vec<ResolvedType> =
-                        enum_type.variants[*variant_index].fields.iter().map(|(_, t, _)| t.clone()).collect();
+                        enum_type.variants[*variant_index].fields.iter().map(|field| field.r#type.clone()).collect();
                     (dynamic_types, field_types)
                 };
                 for (value, field_type) in dynamic_fields.iter().zip(&dynamic_types) {
@@ -1424,7 +1424,7 @@ impl<'ctx> Codegen<'ctx> {
                     _ => unreachable!("a Union constant's own type is always ResolvedType::Union"),
                 };
                 out.extend_from_slice(&(*field_index as u32).to_le_bytes());
-                let field_type = union_type.borrow().fields[*field_index].1.clone();
+                let field_type = union_type.borrow().fields[*field_index].r#type.clone();
                 self.hash_const_element(out, value, &field_type);
             }
             ConstValue::Ref(inner) => {

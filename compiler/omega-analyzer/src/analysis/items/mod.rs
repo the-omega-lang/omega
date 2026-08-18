@@ -3,12 +3,12 @@ use super::*;
 struct EnumHeader {
     tag_type: ResolvedType,
     has_tag: bool,
-    fields: Vec<(Ident, ResolvedType, Visibility)>,
+    fields: Vec<ResolvedField>,
 }
 
 impl EnumHeader {
     fn claims(&self, name: &Ident) -> bool {
-        name.as_ref() == "tag" || self.fields.iter().any(|(field, _, _)| field == name)
+        name.as_ref() == "tag" || self.fields.iter().any(|field| &field.name == name)
     }
 }
 
@@ -357,7 +357,7 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn analyze_struct_fields(&mut self, fields: &[HirParam]) -> Option<Vec<CheckedParam>> {
+    fn analyze_struct_fields(&mut self, fields: &[HirField]) -> Option<Vec<CheckedField>> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
         self.analyze_all(fields, |this, field| {
             if let Some(previous) = seen.insert(field.ident.clone(), field.name_span) {
@@ -375,7 +375,7 @@ impl<'r> Analyzer<'r> {
             // `RecursiveTypeWithoutIndirection` exists to catch.
             let resolved_type =
                 this.resolve_type_or_error(field.id, field.span, &field.r#type, false)?;
-            Some(CheckedParam {
+            Some(CheckedField {
                 id: field.id,
                 span: field.span,
                 ident: field.ident.clone(),
@@ -524,10 +524,9 @@ impl<'r> Analyzer<'r> {
         functions: &[omega_hir::HirFunctionDef],
         method_ids: &[HirId],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
-        self.context.enter_scope();
-        let signatures =
-            self.analyze_all(functions, |this, f| this.collect_function_signature(f));
-        self.context.leave_scope();
+        let (signatures, _) = self.with_scope(|this| {
+            this.analyze_all(functions, |this, f| this.collect_function_signature(f))
+        });
         let signatures = signatures?;
         self.check_overload_duplicates(functions, &signatures);
 
@@ -614,14 +613,16 @@ impl<'r> Analyzer<'r> {
 
     fn resolve_declared_fields(
         &mut self,
-        fields: &[HirParam],
-    ) -> Option<Vec<(Ident, ResolvedType, Visibility)>> {
+        fields: &[HirField],
+    ) -> Option<Vec<ResolvedField>> {
         let checked = self.analyze_struct_fields(fields)?;
         Some(
             fields
                 .iter()
                 .zip(checked)
-                .map(|(declared, checked)| (checked.ident, checked.r#type, declared.visibility))
+                .map(|(declared, checked)| {
+                    ResolvedField::new(checked.ident, checked.r#type, declared.visibility)
+                })
                 .collect(),
         )
     }
@@ -629,7 +630,7 @@ impl<'r> Analyzer<'r> {
     fn resolve_enum_header(&mut self, e: &HirEnumDef) -> Option<EnumHeader> {
         let mut ok = true;
         let mut explicit_tag: Option<ResolvedType> = None;
-        let mut fields: Vec<(Ident, ResolvedType, Visibility)> = Vec::new();
+        let mut fields: Vec<ResolvedField> = Vec::new();
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for (position, field) in e.header.iter().enumerate() {
@@ -670,7 +671,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             }
-            fields.push((field.ident.clone(), resolved, field.visibility));
+            fields.push(ResolvedField::new(field.ident.clone(), resolved, field.visibility));
         }
 
         ok.then(|| EnumHeader {
@@ -680,7 +681,7 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn resolve_tag_type(&mut self, field: &HirParam, position: usize) -> Option<ResolvedType> {
+    fn resolve_tag_type(&mut self, field: &HirField, position: usize) -> Option<ResolvedType> {
         if position != 0 {
             self.error(field.id, field.span, AnalysisErrorKind::EnumTagNotFirst);
             return None;
@@ -704,9 +705,9 @@ impl<'r> Analyzer<'r> {
         &mut self,
         e: &HirEnumDef,
         header: &EnumHeader,
-    ) -> Option<Vec<(Ident, ResolvedType, Visibility)>> {
+    ) -> Option<Vec<ResolvedField>> {
         let mut ok = true;
-        let mut fields: Vec<(Ident, ResolvedType, Visibility)> = Vec::new();
+        let mut fields: Vec<ResolvedField> = Vec::new();
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for field in &e.dynamic_fields {
@@ -729,7 +730,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            fields.push((field.ident.clone(), resolved, field.visibility));
+            fields.push(ResolvedField::new(field.ident.clone(), resolved, field.visibility));
         }
 
         ok.then_some(fields)
@@ -739,7 +740,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         e: &HirEnumDef,
         header: &EnumHeader,
-        dynamic_fields: &[(Ident, ResolvedType, Visibility)],
+        dynamic_fields: &[ResolvedField],
     ) -> Option<Vec<ResolvedEnumVariant>> {
         let mut ok = true;
         let mut variants: Vec<ResolvedEnumVariant> = Vec::new();
@@ -803,12 +804,12 @@ impl<'r> Analyzer<'r> {
 
             let mut header_values = Vec::with_capacity(header.fields.len());
             let mut variant_ok = true;
-            for ((_, field_type, _), arg) in header
+            for (field, arg) in header
                 .fields
                 .iter()
                 .zip(&variant.args[header.has_tag as usize..])
             {
-                match self.const_eval(arg, field_type) {
+                match self.const_eval(arg, &field.r#type) {
                     Some(value) => header_values.push(value),
                     None => variant_ok = false,
                 }
@@ -838,6 +839,22 @@ impl<'r> Analyzer<'r> {
         declared_index: usize,
     ) -> Option<NumberValue> {
         if !header.has_tag {
+            let (_, max) = header
+                .tag_type
+                .integer_domain(self.target.pointer_bits())
+                .expect("enum tag types are validated before variants are resolved");
+            if declared_index as u128 > max as u128 {
+                self.error(
+                    variant.id,
+                    variant.span,
+                    AnalysisErrorKind::EnumImplicitTagOutOfRange {
+                        variant: variant.name.clone(),
+                        value: declared_index,
+                        r#type: header.tag_type.clone(),
+                    },
+                );
+                return None;
+            }
             return Some(NumberValue::Unsigned(declared_index as u64));
         }
         match self.const_eval(&variant.args[0], &header.tag_type)? {
@@ -850,17 +867,17 @@ impl<'r> Analyzer<'r> {
         &mut self,
         variant: &omega_hir::HirEnumVariant,
         header: &EnumHeader,
-        dynamic_fields: &[(Ident, ResolvedType, Visibility)],
+        dynamic_fields: &[ResolvedField],
         ok: &mut bool,
-    ) -> Vec<(Ident, ResolvedType, Visibility)> {
-        let mut fields: Vec<(Ident, ResolvedType, Visibility)> = Vec::new();
+    ) -> Vec<ResolvedField> {
+        let mut fields: Vec<ResolvedField> = Vec::new();
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for field in &variant.fields {
             let shadows_shared = header.claims(&field.ident)
                 || dynamic_fields
                     .iter()
-                    .any(|(name, _, _)| *name == field.ident);
+                    .any(|shared| shared.name == field.ident);
             if shadows_shared {
                 self.error(
                     field.id,
@@ -893,7 +910,7 @@ impl<'r> Analyzer<'r> {
                 *ok = false;
                 continue;
             };
-            fields.push((field.ident.clone(), resolved, field.visibility));
+            fields.push(ResolvedField::new(field.ident.clone(), resolved, field.visibility));
         }
         fields
     }
@@ -949,188 +966,6 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().functions = functions;
         Some(())
     }
-
-    pub fn check_function_body(
-        &mut self,
-        f: &HirFunctionDef,
-        fn_type: &ResolvedFunctionType,
-        id: HirId,
-        annotations: &crate::annotations::ResolvedAnnotations,
-    ) -> Option<CheckedFunctionDef> {
-        self.suppressed.push(annotations.suppress.clone());
-        if annotations.inline.is_some() {
-            self.warn(f.id, f.span, AnalysisWarningKind::InlineNotEnforced);
-        }
-
-        self.context.enter_scope();
-        let params = self.analyze_all(&f.params, Self::analyze_param);
-
-        self.current_return_type = (*fn_type.return_type).clone();
-        self.loop_stack.clear();
-        self.in_defer_body = false;
-        let body = self.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
-
-        let scope = self.context.leave_scope();
-        self.warn_unused_bindings(scope, true);
-        self.suppressed.pop();
-
-        let params = params?;
-        let body = body?;
-        self.check_function_return(f.id, f.return_type_span, &fn_type.return_type, &body)?;
-
-        Some(CheckedFunctionDef {
-            id,
-            span: f.span,
-            name: f.name.clone(),
-            type_args: vec![],
-            self_mode: f.self_mode,
-            is_variadic: fn_type.is_variadic,
-            params,
-            return_type: (*fn_type.return_type).clone(),
-            body,
-            inline: annotations.inline,
-            mangling: annotations.mangling.clone(),
-            conformance_owner: None,
-            primitive_target: None,
-        })
-    }
-
-    pub fn check_pending_spec_method(
-        &mut self,
-        pending: &PendingSpecMethod,
-    ) -> Option<CheckedFunctionDef> {
-        let body = pending
-            .raw
-            .default_body
-            .clone()
-            .expect("only ever queued by conformance when a default body exists");
-        let synthetic = HirFunctionDef {
-            id: pending.raw.decl_id,
-            span: pending.raw.span,
-            name_span: pending.raw.name_span,
-            signature_span: pending.raw.signature_span,
-            return_type_span: pending.raw.return_type_span,
-            annotations: Vec::new(),
-            visibility: Visibility::default(),
-            name: pending.raw.name.clone(),
-            generics: vec![],
-            self_mode: pending.raw.self_mode,
-            params: pending.raw.params.clone(),
-            return_type: pending.raw.return_type.clone(),
-            body,
-        };
-        self.check_function_body(
-            &synthetic,
-            &pending.fn_type,
-            pending.id,
-            &crate::annotations::ResolvedAnnotations::default(),
-        )
-    }
-    fn check_method_bodies(
-        &mut self,
-        functions: &[omega_hir::HirFunctionDef],
-        methods: &[(Ident, ResolvedMethod)],
-        suppress: &[Ident],
-    ) -> Option<Vec<CheckedFunctionDef>> {
-        self.suppressed.push(suppress.to_vec());
-        self.context.enter_scope();
-        let mut checked = Vec::with_capacity(functions.len());
-        let mut ok = true;
-        for (f, (_, method)) in functions.iter().zip(methods) {
-            match self.check_function_body(f, &method.fn_type, method.decl_id, &method.annotations)
-            {
-                Some(body) => checked.push(body),
-                None => ok = false,
-            }
-        }
-        self.context.leave_scope();
-        self.suppressed.pop();
-        ok.then_some(checked)
-    }
-
-    fn checked_fields(
-        declared: &[HirParam],
-        resolved: &[(Ident, ResolvedType, Visibility)],
-    ) -> Vec<CheckedParam> {
-        declared
-            .iter()
-            .zip(resolved)
-            .map(|(field, (_, r#type, _))| CheckedParam {
-                id: field.id,
-                span: field.span,
-                ident: field.ident.clone(),
-                r#type: r#type.clone(),
-            })
-            .collect()
-    }
-
-    pub fn check_struct_body(
-        &mut self,
-        s: &HirStructDef,
-        cell: &Rc<RefCell<ResolvedStructType>>,
-    ) -> Option<CheckedStructDef> {
-        let (fields, methods, suppress) = {
-            let resolved = cell.borrow();
-            self.current_owner = Some(resolved.id);
-            (
-                Self::checked_fields(&s.fields, &resolved.fields),
-                resolved.functions.clone(),
-                resolved.suppress.clone(),
-            )
-        };
-        let functions = self.check_method_bodies(&s.functions, &methods, &suppress)?;
-        Some(CheckedStructDef {
-            id: s.id,
-            span: s.span,
-            name: s.name.clone(),
-            type_args: vec![],
-            fields,
-            functions,
-        })
-    }
-
-    pub fn check_union_body(
-        &mut self,
-        u: &HirUnionDef,
-        cell: &Rc<RefCell<ResolvedUnionType>>,
-    ) -> Option<CheckedUnionDef> {
-        let (fields, methods, suppress) = {
-            let resolved = cell.borrow();
-            self.current_owner = Some(resolved.id);
-            (
-                Self::checked_fields(&u.fields, &resolved.fields),
-                resolved.functions.clone(),
-                resolved.suppress.clone(),
-            )
-        };
-        let functions = self.check_method_bodies(&u.functions, &methods, &suppress)?;
-        Some(CheckedUnionDef {
-            id: u.id,
-            span: u.span,
-            name: u.name.clone(),
-            type_args: vec![],
-            fields,
-            functions,
-        })
-    }
-
-    pub fn check_enum_body(
-        &mut self,
-        e: &HirEnumDef,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
-    ) -> Option<CheckedEnumDef> {
-        let (methods, suppress) = {
-            let resolved = cell.borrow();
-            self.current_owner = Some(resolved.id);
-            (resolved.functions.clone(), resolved.suppress.clone())
-        };
-        let functions = self.check_method_bodies(&e.functions, &methods, &suppress)?;
-        Some(CheckedEnumDef {
-            id: e.id,
-            span: e.span,
-            name: e.name.clone(),
-            type_args: vec![],
-            functions,
-        })
-    }
 }
+
+mod bodies;

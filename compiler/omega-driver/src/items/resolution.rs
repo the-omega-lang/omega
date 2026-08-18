@@ -1,326 +1,4 @@
-
-use crate::{Driver, ModulePath};
-use indexmap::IndexMap;
-use omega_analyzer::analysis::{Analyzer, item_id_span, item_visibility};
-use omega_analyzer::annotations::ResolvedAnnotations;
-use omega_analyzer::checked::{CheckedItem, Storage};
-use omega_analyzer::error::AnalysisWarning;
-use omega_analyzer::resolved_type::{
-    ResolvedBound, ResolvedEnumType, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
-    ResolvedStructType, ResolvedType, ResolvedUnionType,
-};
-use omega_analyzer::resolver::{ResolveError, ResolvedItem};
-use omega_diagnostics::Span;
-use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
-use omega_parser::prelude::{Ident, Type, Visibility};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ItemKey {
-    pub module: ModulePath,
-    pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
-}
-
-impl ItemKey {
-    pub fn new(module: &[Ident], name: &Ident, type_args: &[ResolvedType]) -> Self {
-        Self {
-            module: module.to_vec(),
-            name: name.clone(),
-            type_args: type_args.to_vec(),
-        }
-    }
-
-    pub fn is_instantiation(&self) -> bool {
-        !self.type_args.is_empty()
-    }
-
-    fn failed(&self) -> ResolveError {
-        ResolveError::ItemFailed {
-            module: self.module.clone(),
-            item: self.name.clone(),
-        }
-    }
-}
-
-type SpecKey = (ModulePath, Ident);
-
-type OverloadKey = (ModulePath, usize);
-
-pub(crate) enum QueryState {
-    InProgress,
-    Done,
-}
-
-struct ResolvedEntry {
-    visibility: Visibility,
-    item: ResolvedItem,
-}
-
-pub(crate) struct CheckedBody {
-    pub item: CheckedItem,
-    pub warnings: Vec<AnalysisWarning>,
-}
-
-pub(crate) struct GlueSignature {
-    pub module: ModulePath,
-    pub id: HirId,
-    pub gap: Rc<omega_analyzer::resolved_type::ResolvedGap>,
-    pub functions: Vec<(HirFunctionDef, ResolvedFunctionType)>,
-}
-
-impl CheckedBody {
-    pub fn clone_of(&self) -> Self {
-        Self {
-            item: self.item.clone(),
-            warnings: self.warnings.clone(),
-        }
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct TypeCells {
-    structs: IndexMap<ItemKey, Rc<RefCell<ResolvedStructType>>>,
-    enums: IndexMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
-    unions: IndexMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
-}
-
-impl TypeCells {
-    pub fn struct_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedStructType>> {
-        self.structs
-            .entry(key.clone())
-            .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedStructType {
-                    id,
-                    name: key.name.clone(),
-                    module_path: key.module.clone(),
-                    type_args: key.type_args.clone(),
-                    fields: vec![],
-                    functions: vec![],
-                    layout: Default::default(),
-                    suppress: vec![],
-                    is_marker: false,
-                }))
-            })
-            .clone()
-    }
-
-    pub fn enum_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedEnumType>> {
-        self.enums
-            .entry(key.clone())
-            .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedEnumType {
-                    id,
-                    name: key.name.clone(),
-                    module_path: key.module.clone(),
-                    type_args: key.type_args.clone(),
-                    tag_type: ResolvedType::U16,
-                    header: vec![],
-                    dynamic_fields: vec![],
-                    variants: vec![],
-                    functions: vec![],
-                    layout: Default::default(),
-                    suppress: vec![],
-                }))
-            })
-            .clone()
-    }
-
-    pub fn union_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedUnionType>> {
-        self.unions
-            .entry(key.clone())
-            .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedUnionType {
-                    id,
-                    name: key.name.clone(),
-                    module_path: key.module.clone(),
-                    type_args: key.type_args.clone(),
-                    fields: vec![],
-                    functions: vec![],
-                    suppress: vec![],
-                }))
-            })
-            .clone()
-    }
-
-    pub fn expect_struct(&self, key: &ItemKey) -> Rc<RefCell<ResolvedStructType>> {
-        self.structs
-            .get(key)
-            .expect("cell was created when the signature resolved")
-            .clone()
-    }
-
-    pub fn expect_enum(&self, key: &ItemKey) -> Rc<RefCell<ResolvedEnumType>> {
-        self.enums
-            .get(key)
-            .expect("cell was created when the signature resolved")
-            .clone()
-    }
-
-    pub fn expect_union(&self, key: &ItemKey) -> Rc<RefCell<ResolvedUnionType>> {
-        self.unions
-            .get(key)
-            .expect("cell was created when the signature resolved")
-            .clone()
-    }
-
-    pub fn resolved_type(&self, key: &ItemKey) -> Option<ResolvedType> {
-        if let Some(cell) = self.structs.get(key) {
-            return Some(ResolvedType::Struct(cell.clone()));
-        }
-        if let Some(cell) = self.enums.get(key) {
-            return Some(ResolvedType::Enum {
-                cell: cell.clone(),
-                variant: None,
-            });
-        }
-        self.unions
-            .get(key)
-            .map(|cell| ResolvedType::Union(cell.clone()))
-    }
-
-    pub fn structs(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedStructType>>)> {
-        self.structs.iter()
-    }
-
-    pub fn enums(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedEnumType>>)> {
-        self.enums.iter()
-    }
-
-    pub fn unions(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedUnionType>>)> {
-        self.unions.iter()
-    }
-
-    pub fn all_methods(&self) -> impl Iterator<Item = (&ItemKey, Vec<(Ident, ResolvedMethod)>)> {
-        self.structs
-            .iter()
-            .map(|(key, cell)| (key, cell.borrow().functions.clone()))
-            .chain(
-                self.enums
-                    .iter()
-                    .map(|(key, cell)| (key, cell.borrow().functions.clone())),
-            )
-            .chain(
-                self.unions
-                    .iter()
-                    .map(|(key, cell)| (key, cell.borrow().functions.clone())),
-            )
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct ItemQueries {
-    state: HashMap<ItemKey, QueryState>,
-    resolved: IndexMap<ItemKey, ResolvedEntry>,
-    pub cells: TypeCells,
-    pub gaps: HashMap<ItemKey, Rc<omega_analyzer::resolved_type::ResolvedGap>>,
-    pub glues: Vec<GlueSignature>,
-    spec_cells: HashMap<SpecKey, Rc<RefCell<ResolvedSpecType>>>,
-    spec_state: HashMap<SpecKey, QueryState>,
-    pub function_annotations: HashMap<HirId, ResolvedAnnotations>,
-    pub overload_signatures: IndexMap<OverloadKey, ResolvedFunctionType>,
-    pub overload_bodies: HashMap<OverloadKey, CheckedBody>,
-    pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
-    pub declared_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
-    next_synthetic_id: u32,
-    pub checked_bodies: HashMap<ItemKey, CheckedBody>,
-    pub decl_id_owner: HashMap<HirId, ItemKey>,
-    pub comp_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
-    pub global_initial_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
-    pub body_in_progress: std::collections::HashSet<ItemKey>,
-}
-
-impl ItemQueries {
-    pub fn fresh_synthetic_id(&mut self) -> HirId {
-        let id = HirId {
-            module: SYNTHETIC_MODULE,
-            local: self.next_synthetic_id,
-        };
-        self.next_synthetic_id += 1;
-        id
-    }
-
-    pub fn identity_for(&mut self, key: &ItemKey, declared: HirId) -> HirId {
-        let id = if key.is_instantiation() {
-            self.fresh_synthetic_id()
-        } else {
-            declared
-        };
-        self.decl_id_owner.insert(id, key.clone());
-        id
-    }
-
-    pub fn method_identities(
-        &mut self,
-        key: &ItemKey,
-        declared: impl IntoIterator<Item = HirId>,
-    ) -> Vec<HirId> {
-        declared
-            .into_iter()
-            .map(|id| self.identity_for(key, id))
-            .collect()
-    }
-
-    pub fn state(&self, key: &ItemKey) -> Option<&QueryState> {
-        self.state.get(key)
-    }
-
-    pub fn begin(&mut self, key: &ItemKey) {
-        self.state.insert(key.clone(), QueryState::InProgress);
-    }
-
-    pub fn finish(&mut self, key: &ItemKey, visibility: Visibility, item: Option<&ResolvedItem>) {
-        self.state.insert(key.clone(), QueryState::Done);
-        if let Some(item) = item {
-            self.resolved.insert(
-                key.clone(),
-                ResolvedEntry {
-                    visibility,
-                    item: item.clone(),
-                },
-            );
-        }
-    }
-
-    pub fn finished(&self, key: &ItemKey) -> Option<(Visibility, ResolvedItem)> {
-        self.resolved
-            .get(key)
-            .map(|entry| (entry.visibility, entry.item.clone()))
-    }
-
-    pub fn spec_cell(&self, key: &SpecKey) -> Option<Rc<RefCell<ResolvedSpecType>>> {
-        self.spec_cells.get(key).cloned()
-    }
-
-    pub fn spec_state(&self, key: &SpecKey) -> Option<&QueryState> {
-        self.spec_state.get(key)
-    }
-
-    pub fn begin_spec(&mut self, key: &SpecKey) {
-        self.spec_state.insert(key.clone(), QueryState::InProgress);
-    }
-
-    pub fn finish_spec(&mut self, key: &SpecKey, cell: Option<&Rc<RefCell<ResolvedSpecType>>>) {
-        self.spec_state.insert(key.clone(), QueryState::Done);
-        if let Some(cell) = cell {
-            self.spec_cells.insert(key.clone(), cell.clone());
-        }
-    }
-
-    pub fn expect_resolved(&self, key: &ItemKey) -> &ResolvedItem {
-        &self
-            .resolved
-            .get(key)
-            .expect("every signature is resolved before its body is checked")
-            .item
-    }
-
-    pub fn resolved_items(&self) -> impl Iterator<Item = (&ItemKey, &ResolvedItem)> {
-        self.resolved.iter().map(|(key, entry)| (key, &entry.item))
-    }
-}
+use super::*;
 
 impl Driver {
     pub(crate) fn visibility_allows(
@@ -379,7 +57,7 @@ impl Driver {
         }
         match self.items.cells.resolved_type(key) {
             Some(r#type) => Ok(ResolvedItem::Type(r#type)),
-            None => Err(ResolveError::Cycle(vec![key.module.clone()])),
+            None => Err(ResolveError::Cycle(self.items.cycle_path(key))),
         }
     }
 
@@ -389,8 +67,7 @@ impl Driver {
         module_path: &[Ident],
         name: &Ident,
         type_args: &[ResolvedType],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
         // `type_args` must be padded with defaults before `ItemKey` is built:
         // its equality is structural, so two call sites meaning the same
@@ -403,13 +80,17 @@ impl Driver {
         let key = ItemKey::new(module_path, name, &type_args);
 
         match self.items.state(&key) {
-            Some(QueryState::Done) => {
-                let Some((visibility, item)) = self.items.finished(&key) else {
-                    return Err(key.failed());
-                };
-                return Self::gate_visibility(item, visibility, &key, accessor_module_path, bypass);
+            Some(ItemQueryState::Resolved(entry)) => {
+                return Self::gate_visibility(
+                    entry.item.clone(),
+                    entry.visibility,
+                    &key,
+                    accessor_module_path,
+                    options.bypasses_visibility(),
+                );
             }
-            Some(QueryState::InProgress) => return self.in_progress_result(&key, indirect),
+            Some(ItemQueryState::Failed) => return Err(key.failed()),
+            Some(ItemQueryState::InProgress) => return self.in_progress_result(&key, options.allows_indirection()),
             None => {}
         }
 
@@ -427,14 +108,20 @@ impl Driver {
         self.items.finish(&key, visibility, result.as_ref().ok());
 
         // An instantiation's body is checked right here, once its signature
-        // is `Done` -- preserves the invariant that a recursive call never
+        // is resolved -- preserves the invariant that a recursive call never
         // hits `InProgress`, for a generic call `compile`'s static sweep
         // could never enumerate.
         if result.is_ok() && key.is_instantiation() {
             self.check_generic_instantiation_body(&key, index);
         }
 
-        Self::gate_visibility(result?, visibility, &key, accessor_module_path, bypass)
+        Self::gate_visibility(
+            result?,
+            visibility,
+            &key,
+            accessor_module_path,
+            options.bypasses_visibility(),
+        )
     }
 
     fn pad_generic_defaults(
@@ -458,7 +145,7 @@ impl Driver {
         }
 
         let hir = self.modules.hir(module_path);
-        let owner = item_id_span(&hir.items[index]);
+        let owner = item_site(&hir.items[index]);
         let mut padded = type_args.to_vec();
         for param in &generic_params[type_args.len()..] {
             let Some(default) = &param.default else {
@@ -476,7 +163,7 @@ impl Driver {
                 .collect();
             let default = default.clone();
             let run = self.with_analyzer(module_path, &[], owner, |analyzer| {
-                analyzer.resolve_under_substitution(owner.0, owner.1, &default, &substitution)
+                analyzer.resolve_under_substitution(owner.id, owner.span, &default, &substitution)
             });
             match (run.failed, run.result) {
                 (false, Some(resolved)) => padded.push(resolved),
@@ -494,7 +181,7 @@ impl Driver {
     pub(crate) fn check_generic_bounds(
         &mut self,
         module: &[Ident],
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         generic_params: &[HirGenericParam],
         type_args: &[ResolvedType],
     ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
@@ -508,14 +195,14 @@ impl Driver {
         for (param, concrete) in generic_params.iter().zip(type_args) {
             for bound in &param.bounds {
                 let run = self.with_analyzer(module, &substitution, owner, |analyzer| {
-                    analyzer.check_generic_bound(owner.0, owner.1, bound, concrete)
+                    analyzer.check_generic_bound(owner.id, owner.span, bound, concrete)
                 });
                 if run.failed {
                     return None;
                 }
                 match run.result {
                     Some(Ok((spec, spec_args))) => {
-                        declared.push((concrete.clone(), spec, spec_args));
+                        declared.push(ResolvedBound::new(concrete.clone(), spec, spec_args));
                     }
                     Some(Err((spec, missing))) => {
                         return Some(Err(ResolveError::SpecNotImplemented {
@@ -539,7 +226,7 @@ impl Driver {
         type_args: &[ResolvedType],
     ) -> Result<(), ResolveError> {
         let hir = self.modules.hir(&key.module);
-        let owner = item_id_span(&hir.items[index]);
+        let owner = item_site(&hir.items[index]);
         let declared =
             match self.check_generic_bounds(&key.module, owner, generic_params, type_args) {
                 Some(Ok(declared)) => declared,
@@ -569,7 +256,7 @@ impl Driver {
 
         let resolved = match item {
             HirItem::Declaration { decl, .. } => self
-                .analyze(module, &substitution, (decl.id, decl.span), |a| {
+                .analyze(module, &substitution, AnalysisSite::new(decl.id, decl.span), |a| {
                     a.analyze_declaration(decl, Storage::Global)
                 })
                 .map(|c| ResolvedItem::Value {
@@ -580,7 +267,7 @@ impl Driver {
                 }),
 
             HirItem::DeclarationWithInit { decl, value, .. } => self
-                .analyze(module, &substitution, (decl.id, decl.span), |a| {
+                .analyze(module, &substitution, AnalysisSite::new(decl.id, decl.span), |a| {
                     a.analyze_global_declaration_with_init(decl, value)
                 })
                 .map(|c| {
@@ -607,7 +294,7 @@ impl Driver {
             // non-`comp` binding gets real `Storage::Global` storage,
             // like `HirItem::Declaration` above.
             HirItem::Walrus { walrus: w, .. } if w.comp => self
-                .analyze(module, &substitution, (w.id, w.span), |a| {
+                .analyze(module, &substitution, AnalysisSite::new(w.id, w.span), |a| {
                     a.analyze_comp_declaration(w)
                 })
                 .map(|(r#type, value)| {
@@ -620,7 +307,7 @@ impl Driver {
                     }
                 }),
             HirItem::Walrus { walrus: w, .. } => self
-                .analyze(module, &substitution, (w.id, w.span), |a| {
+                .analyze(module, &substitution, AnalysisSite::new(w.id, w.span), |a| {
                     a.analyze_global_walrus(w)
                 })
                 .map(|c| {
@@ -636,7 +323,7 @@ impl Driver {
                 }),
 
             HirItem::ExternDeclaration(decl) => self
-                .analyze(module, &substitution, (decl.id, decl.span), |a| {
+                .analyze(module, &substitution, AnalysisSite::new(decl.id, decl.span), |a| {
                     a.analyze_extern_decl(decl)
                 })
                 .map(|c| {
@@ -654,7 +341,7 @@ impl Driver {
 
             HirItem::FunctionDefinition(f) => {
                 let id = self.items.identity_for(key, f.id);
-                self.analyze(module, &substitution, (f.id, f.span), |a| {
+                self.analyze(module, &substitution, AnalysisSite::new(f.id, f.span), |a| {
                     a.collect_function_signature(f)
                 })
                 .map(|(fn_type, annotations)| {
@@ -677,7 +364,7 @@ impl Driver {
                 let self_type = ResolvedType::Struct(cell.clone());
                 self.compute_aggregate(
                     key,
-                    (s.id, s.span),
+                    AnalysisSite::new(s.id, s.span),
                     &substitution,
                     self_type,
                     method_ids,
@@ -697,7 +384,7 @@ impl Driver {
                 };
                 self.compute_aggregate(
                     key,
-                    (e.id, e.span),
+                    AnalysisSite::new(e.id, e.span),
                     &substitution,
                     self_type,
                     method_ids,
@@ -714,7 +401,7 @@ impl Driver {
                 let self_type = ResolvedType::Union(cell.clone());
                 self.compute_aggregate(
                     key,
-                    (u.id, u.span),
+                    AnalysisSite::new(u.id, u.span),
                     &substitution,
                     self_type,
                     method_ids,
@@ -724,7 +411,7 @@ impl Driver {
 
             HirItem::Gap(gap) => {
                 let id = self.items.identity_for(key, gap.id);
-                self.analyze(module, &substitution, (gap.id, gap.span), |a| {
+                self.analyze(module, &substitution, AnalysisSite::new(gap.id, gap.span), |a| {
                     a.signature_of_gap(gap)
                 })
                 .map(|mut gap| {
@@ -754,7 +441,7 @@ impl Driver {
     fn compute_aggregate(
         &mut self,
         key: &ItemKey,
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         substitution: &[(Ident, ResolvedType)],
         self_type: ResolvedType,
         method_ids: Vec<HirId>,
@@ -777,17 +464,15 @@ impl Driver {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
         let key: SpecKey = (module_path.to_vec(), name.clone());
-        match self.items.spec_state(&key) {
-            Some(QueryState::Done) => {
-                return match self.items.spec_cell(&key) {
-                    Some(cell) => Ok(Some(cell)),
-                    None => Err(ResolveError::ItemFailed {
-                        module: key.0,
-                        item: key.1,
-                    }),
-                };
+        match self.items.spec_states.get(&key) {
+            Some(SpecQueryState::Resolved(cell)) => return Ok(Some(cell.clone())),
+            Some(SpecQueryState::Failed) => {
+                return Err(ResolveError::ItemFailed {
+                    module: key.0,
+                    item: key.1,
+                });
             }
-            Some(QueryState::InProgress) => {
+            Some(SpecQueryState::InProgress) => {
                 return Err(ResolveError::SpecDependencyCycle {
                     module: key.0,
                     spec: key.1,
@@ -805,7 +490,7 @@ impl Driver {
         let sp = sp.clone();
 
         self.items.begin_spec(&key);
-        let run = self.with_analyzer(module_path, &[], (sp.id, sp.span), |analyzer| {
+        let run = self.with_analyzer(module_path, &[], AnalysisSite::new(sp.id, sp.span), |analyzer| {
             (
                 analyzer.resolve_spec_dependencies(&sp),
                 analyzer.resolve_spec_functions(&sp),
@@ -840,7 +525,7 @@ impl Driver {
             functions,
             suppress: annotations.suppress,
         }));
-        self.items.finish_spec(&key, Some(&cell));
+        self.items.finish_spec(&key, Some(cell.clone()));
         Ok(Some(cell))
     }
 

@@ -78,7 +78,11 @@ impl AnalysisWarning {
                 ))
                 .with_help("this only matters if something actually calls this gap -- an unglued, uncalled gap links fine"),
         };
-        d.with_note(format!("suppress this with '@suppress({})'", self.kind.name()))
+        if self.kind.is_suppressible() {
+            d.with_note(format!("suppress this with '@suppress({})'", self.kind.name()))
+        } else {
+            d
+        }
     }
 }
 
@@ -110,6 +114,10 @@ pub enum AnalysisWarningKind {
 }
 
 impl AnalysisWarningKind {
+    pub fn is_suppressible(&self) -> bool {
+        !matches!(self, Self::UnfilledGap { .. })
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Self::UnreachableCode => "unreachable_code",
@@ -158,5 +166,28 @@ impl fmt::Display for AnalysisWarningKind {
             Self::LargeStructByValue { r#type, .. } => write!(f, "large type '{type}' passed by value"),
             Self::UnfilledGap { gap, .. } => write!(f, "gap '{}' has no glue implementation", gap.as_ref()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omega_diagnostics::Footer;
+
+    #[test]
+    fn unfilled_gap_does_not_advertise_impossible_suppression() {
+        let warning = AnalysisWarning::new(
+            HirId { module: omega_hir::SYNTHETIC_MODULE, local: 0 },
+            Span::new(0, 0),
+            AnalysisWarningKind::UnfilledGap {
+                gap: Ident("Platform".into()),
+                functions: vec![Ident("write".into())],
+            },
+        );
+
+        let diagnostic = warning.to_diagnostic();
+        assert!(!diagnostic.footers.iter().any(|footer| {
+            matches!(footer, Footer::Note(note) if note.contains("@suppress"))
+        }));
     }
 }

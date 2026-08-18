@@ -104,7 +104,7 @@ impl<'r> Analyzer<'r> {
         {
             let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
                 .iter()
-                .map(|(id, fn_type, _)| (*id, fn_type.clone()))
+                .map(|candidate| (candidate.decl_id, candidate.fn_type.clone()))
                 .collect();
             if let Some(ResolvedType::Function(expected_fn)) = expected
                 && let Some((decl_id, fn_type)) =
@@ -112,8 +112,8 @@ impl<'r> Analyzer<'r> {
             {
                 let visibility = candidates
                     .iter()
-                    .find(|(id, ..)| *id == decl_id)
-                    .map(|(_, _, v)| *v)
+                    .find(|candidate| candidate.decl_id == decl_id)
+                    .map(|candidate| candidate.visibility)
                     .expect("decl_id came from this same candidates list");
                 if !self.check_visibility(visibility, module_path) {
                     self.error(
@@ -139,12 +139,12 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::AmbiguousOverload {
                     name: name.clone(),
-                    candidates: candidates.into_iter().map(|(_, t, _)| t).collect(),
+                    candidates: candidates.into_iter().map(|candidate| candidate.fn_type).collect(),
                 },
             );
             return None;
         }
-        match self.resolver.resolve_item(accessor, &absolute, &[], true, false) {
+        match self.resolver.resolve_item(accessor, &absolute, &[], ResolveItemOptions::INDIRECT) {
             Ok(ResolvedItem::Value {
                 r#type,
                 storage,
@@ -732,12 +732,12 @@ impl<'r> Analyzer<'r> {
             .borrow()
             .dynamic_fields
             .iter()
-            .map(|(n, _, _)| n.clone())
+            .map(|field| field.name.clone())
             .collect();
         if !dynamic_field_names.is_empty() || !variant.fields.is_empty() {
             let fields = dynamic_field_names
                 .into_iter()
-                .chain(variant.fields.iter().map(|(name, _, _)| name.clone()))
+                .chain(variant.fields.iter().map(|field| field.name.clone()))
                 .collect();
             self.error(
                 node_id,

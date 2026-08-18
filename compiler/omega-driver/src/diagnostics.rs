@@ -1,12 +1,10 @@
 
 use crate::error::CompileError;
 use crate::{Driver, ModulePath};
-use omega_analyzer::analysis::Analyzer;
+use omega_analyzer::analysis::{AnalysisSite, Analyzer};
 use omega_analyzer::dead_code::FieldUsage;
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolved_type::ResolvedType;
-use omega_diagnostics::Span;
-use omega_hir::HirId;
 use omega_parser::prelude::Ident;
 use std::collections::HashMap;
 
@@ -84,7 +82,7 @@ impl Driver {
         &mut self,
         module: &[Ident],
         generics: &[(Ident, ResolvedType)],
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> AnalyzerRun<R> {
         self.with_analyzer_in(module, generics, &[], owner, f)
@@ -95,7 +93,7 @@ impl Driver {
         module: &[Ident],
         generics: &[(Ident, ResolvedType)],
         bounds: &[omega_analyzer::resolved_type::ResolvedBound],
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> AnalyzerRun<R> {
         let target = self.target;
@@ -115,7 +113,7 @@ impl Driver {
         &mut self,
         module: &[Ident],
         generics: &[(Ident, ResolvedType)],
-        owner: (HirId, Span),
+        owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> R {
         let run = self.with_analyzer(module, generics, owner, f);

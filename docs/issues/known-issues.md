@@ -144,19 +144,6 @@ Remaining known conformance/spec issues:
   glue site in that glue's own module. Left alone because the choice
   between those is a diagnostics-subsystem design decision, not a local fix.
 
-- **`@suppress(unfilled_gap)` is unreachable.** Every warning's rendering
-  ends with the generic "suppress this with `@suppress(<slug>)`" note, so
-  `UnfilledGap` advertises it — but `gap` is a first-class declaration that
-  takes no annotations at all, so following the advice is now a hard parse
-  error. It never worked before either: `Driver::sweep_gaps` constructs the
-  warning directly rather than going through `Analyzer::warn`, which is the
-  only thing that consults `@suppress`. Fixing it means either giving
-  `HirGapDef` an annotation list (which the gap/glue plan deliberately
-  avoided, to keep anything downstream from branching on gap-level
-  metadata) or teaching the whole-program sweeps to honour suppression and
-  suppressing the note when a warning kind has no suppressible anchor.
-  [gaps-and-glue.md](../language/gaps-and-glue.md)
-
 ## Visibility
 
 - **No re-export / `pub use`-equivalent.** Matches the language having no
@@ -200,21 +187,6 @@ Remaining known conformance/spec issues:
 
 ## Compiler internals
 
-- **Analyzer-synthesized nodes reuse their parent's `HirId`, and that is
-  only safe because nothing reads it.** Every desugaring that mints
-  `CheckedExprNode`s — `analyze_incr_decr`, `analyze_compound_assign`, and
-  the newer `analyze_not`/`analyze_logical` — stamps the *parent* node's
-  `HirId` onto each synthesized child, so a single lowered expression can
-  yield several checked nodes sharing one id. Verified safe today: nothing
-  in `omega-mir` or `omega-codegen` reads `CheckedExprNode::id`, and every
-  `HirId`-keyed map in the compiler is keyed on a *declaration* id, never an
-  expression id. **This is a live constraint, not an observation** — the
-  moment anything keys a map on an expression's id, or a diagnostic dedupes
-  by it, these desugarings start colliding silently. Worth settling
-  deliberately during the `omega-analyzer` pass: either mint fresh ids in
-  the analyzer, or state the invariant where it can be seen.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
 - **Macro expansion still rebuilds the whole tree by value to recurse.**
   Expansion is now isolated in `macros/expander.rs`, and lookup clones only
   the requested macro definition instead of a whole environment, but the AST
@@ -248,63 +220,22 @@ Remaining known conformance/spec issues:
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 
-Shape problems in `omega-driver` and `omega-analyzer` that work today but each
-need a breaking change to fix — full writeups in
-[design-debt.md](design-debt.md#compiler-architecture).
+Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
 
-- **Overloading needs a whole parallel item pipeline** (two extra caches,
-  two extra sweeps, two extra resolver methods) purely because the item
-  query key can't name one candidate of an overload group — which also
-  makes generic overloads structurally impossible. Confirmed: a generic and
-  non-generic overload of the same name (`f(x: i32)` / `f<T>(x: T)`) doesn't
-  just get rejected, it fails with an opaque, rootless diagnostic
-  (`ResolveError::ItemFailed` firing with no primary error ever shown) —
-  likely `ensure_overload_signature` resolving a generic candidate's own
-  signature with an empty substitution list.
+- **Overloading needs a parallel item pipeline** because the ordinary item query key cannot identify one candidate inside an overload group. This also makes generic overloads structurally unsupported and can produce a rootless `ItemFailed` diagnostic for a generic/non-generic overload pair. Fixing it means changing resolver/query identity rather than adding another special case.
 
-- **A directory sharing its package root's name is skipped without saying
-  so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
-  `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
-  exists to de-duplicate. The *consequence* is now diagnosed —
-  a package that ends up with no modules is `CompileError::EmptyPackage`,
-  which names the expected root file and tells an old-layout package what to
-  move (it previously panicked on `compile`'s "always includes at least the
-  entry module" expectation). What remains is that nothing reports the skipped
-  directory itself, so a package with both a root file *and* a same-named
-  subdirectory still loses the subdirectory quietly. Full writeup in
-  [modules and linkage](../language/modules-and-imports.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
+- **Module paths and item paths are the same untyped `Vec<Ident>`**, so nothing in the type system prevents confusing a module identity with `module + item`. A distinct/interned path model would be cross-crate and is intentionally deferred.
 
-- **`ResolveError::Cycle` carries a chain it never populates** — it always
-  prints one module, so the rendered message implies a cycle it never
-  shows.
+- **`ModuleResolver` is still a broad semantic service facade.** The dependency direction is sound (analyzer asks, driver owns lifetime), but one trait currently spans imports, item lookup, generic signatures, overloads, specs, conformances, compile-time bodies/values, macro-origin metadata, and synthetic IDs. A narrower capability/query model is a deliberate future architecture change, not something to simulate with more ad-hoc helpers.
 
-- **Module paths and item paths are the same untyped `Vec<Ident>`**, so
-  nothing prevents confusing the two.
+- **`reveal` activation is centralized but not structurally enforced by place resolution.** `RevealState` and the shared operand helpers remove the old raw-frame duplication and nested-reveal warning bug, but a future syntactic position can still forget to enter the helper before resolving a revealed place.
 
-- **Diagnostic scoping for scanned (extern/`core`) modules is three ad-hoc
-  lists** with four different outcomes and no stated policy.
+- **`Driver::compile(&mut self)` looks reusable even though its semantic/query state is one-shot.** The CLI only compiles once per driver today, but a second call can retain failed queries, registrations, diagnostics, and materialized bodies. The future API should either consume the driver or split reusable workspace/module state from a fresh `CompilationSession`.
 
-- **A node's identity is threaded as a bare `(HirId, Span)` pair** through
-  ~60 analyzer signatures, with nothing tying the two together.
-
-- **`reveal`'s bypass must be re-activated by every operand position
-  individually**, with no backstop — three positions have now been fixed
-  one at a time.
+- **Nominal semantic types use shared `Rc<RefCell<Resolved*Type>>` cells.** They solve recursive declaration identity cleanly today, but make phase completion an interior-mutability convention. Stable interned type IDs backed by an arena/query store would be a better prerequisite for incremental or parallel semantic analysis.
 
 ## Design debt worth watching
 
-- **Parameters and aggregate fields are the same type at all three layers.**
-  `omega_hir::HirParam` carries a `visibility` that is meaningful only in
-  the field role and inert for a parameter; `omega_analyzer::CheckedParam`
-  serves both roles and carries no visibility at all; field visibility
-  travels separately as `Vec<(Ident, ResolvedType, Visibility)>` on
-  `ResolvedStructType`/`ResolvedUnionType`/`ResolvedEnumType`. Three
-  representations of one fact across two crates. Deliberately **not** split
-  during the parser/HIR refactor: introducing an `HirField` alone would
-  create a distinction that dies one layer later, when
-  `analyze_struct_fields` re-merges both roles into `CheckedParam`. Fix the
-  whole chain as one unit in the `omega-analyzer` pass.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 - **The contextual-keyword set grows with every feature, with no promotion
   policy.** Eighteen words are now position-dependent keywords
   (`parser::contextual`). Each one is a place where a lookahead can commit
@@ -313,17 +244,6 @@ need a breaking change to fix — full writeups in
   set visible and guarded, but there is no stated rule for when a word
   should graduate to a real reserved keyword instead.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-- **`CheckedSlice` still flattens a range end the way `HirRange` used to.**
-  `omega_hir::HirRange` now carries a three-way `HirRangeEnd`
-  (`Inclusive`/`Exclusive`/`Open`), so "an inclusive range with no end" is
-  unrepresentable in the HIR. `omega_analyzer::checked::CheckedSlice` still
-  carries `end: Option<CheckedExprNode>` plus `inclusive: bool` one layer
-  down, which has the same spare state — the analyzer just never builds it.
-  Not fixed with `HirRangeEnd` because the change reaches codegen's slice
-  emission in both backends, which is out of scope for a parser/HIR pass.
-  Fix with `omega-analyzer`'s own refactor.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
 - **Omega's calling convention is not the platform C ABI.** The largest
   piece of deliberate debt in the compiler, and it was *deliberately
   preserved unchanged* when the LLVM backend landed — mirrored rather than
@@ -439,14 +359,6 @@ need a breaking change to fix — full writeups in
   later, but every error site is a place that would need revisiting, so the
   shape is cheaper to decide early than late.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-- **One duplicate-function anchor is still wider than the thing it is about.**
-  `omega_driver::Driver::check_overload_duplicates` anchors a duplicate
-  **top-level** function at `item_id_span`, which is the whole definition
-  including its body rather than just the function name. The parser-side
-  gap/glue anchors were narrowed during the parser refactor; this remaining
-  site belongs to the driver and should be addressed in that crate's focused
-  refactor. [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
 
 - **Type-level capture remains possible in macro-generated declarations.**
   Generic parameters and `Self` intentionally ignore macro origin, because

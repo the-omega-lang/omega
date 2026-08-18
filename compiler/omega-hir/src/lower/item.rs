@@ -2,7 +2,7 @@ use super::Lowerer;
 use crate::hir::{
     HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef, HirDeclaration,
     HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef,
-    HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef, HirImport, HirItem, HirParam, HirPlace,
+    HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef, HirImport, HirItem, HirField, HirParam, HirPlace,
     HirPlaceRoot, HirPrimitiveDef, HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirUnionDef,
     HirWalrusDeclaration,
 };
@@ -268,7 +268,6 @@ impl Lowerer {
             ident: Ident("self".to_string()),
             origin: omega_parser::prelude::Origin::default(),
             r#type,
-            visibility: Visibility::default(),
         })
     }
 
@@ -396,12 +395,11 @@ impl Lowerer {
             ident: param.ident.clone(),
             origin: param.origin,
             r#type: param.r#type.clone(),
-            visibility: Visibility::default(),
         }
     }
 
-    fn lower_field(&mut self, field: &DeclarationStmt) -> HirParam {
-        HirParam {
+    fn lower_field(&mut self, field: &DeclarationStmt) -> HirField {
+        HirField {
             id: self.ids.next(),
             span: field.span,
             name_span: field.name_span,
@@ -460,7 +458,7 @@ impl Lowerer {
         let header = e
             .header
             .iter()
-            .map(|h| HirParam {
+            .map(|h| HirField {
                 id: self.ids.next(),
                 span: h.span,
                 name_span: h.name_span,

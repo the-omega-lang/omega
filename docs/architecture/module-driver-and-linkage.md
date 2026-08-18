@@ -35,10 +35,10 @@ Driver::compile(entry_module, target) -> CompiledProgram
 ModuleRoots     filesystem inventory + package identities
 ModuleStore     source / AST / HIR / module index caches
 Diagnostics     accumulated structured findings
-ItemQueries     memoized signatures, type cells, bodies, instantiations
-ImportState     lazy import-alias resolution + usage
-Primitives      primitive declaration/templates
-Conformances    concrete + generic conformance registrations
+ItemQueries     explicit item/spec query state + type cells + checked bodies
+ImportState     lazy import-alias resolution + ordered resolution stack + usage
+Primitives      primitive declarations/templates/instantiations
+Conformances    concrete + generic conformance registrations and solver goals
 prelude_macros  cached ambient exposed core macros
 Target          target used by semantic/layout questions
 ```
@@ -139,19 +139,24 @@ An ordinary item has empty `type_args`. A concrete generic instantiation is the 
 
 This means there is no second parallel “generic instantiation engine” for named items. It participates in the same caching/cycle machinery.
 
+Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
+
 ## Query states and cycles
 
-An item query has a white/gray/black-style state:
+An item query has one explicit state value:
 
 ```text
-absent      -> not started
-InProgress  -> signature currently being collected
-Done        -> memoized resolved signature available
+absent                  -> not started
+InProgress              -> signature currently being collected
+Resolved(ResolvedEntry) -> memoized result + visibility
+Failed                  -> this query already produced its primary failure
 ```
 
-If resolution requests an item already `InProgress`, the driver decides whether the reference is safely indirect or forms an illegal by-value recursive type cycle.
+The result is not stored in a second parallel map. This makes `InProgress`, successful completion, and failed completion mutually explicit and prevents an implicit “done but missing means failed” protocol. Spec declaration queries use the same `InProgress / Resolved / Failed` shape around their canonical declaration cell.
 
-`ModuleResolver::resolve_item` receives an `indirect` flag specifically for this reason: pointers/function type positions can refer through an in-progress type identity without embedding its unfinished layout, while by-value fields/array elements cannot.
+`ItemQueries` and `ImportState` also keep an ordered resolution stack beside their memoized states. Re-entering an active query therefore reconstructs the actual dependency suffix (`a::X -> b::Y -> a::X`) instead of merely knowing that *some* cycle exists.
+
+If item resolution requests an item already `InProgress`, the driver still decides whether the reference is safely indirect or forms an illegal by-value recursive type cycle. `ModuleResolver::resolve_item` receives a `ResolveItemOptions` policy. Its indirection bit records this exact recursive-type distinction, while the visibility-bypass bit makes deliberate `reveal` access explicit at the query boundary. Pointers/function type positions can refer through an in-progress type identity without embedding its unfinished layout, while by-value fields/array elements cannot.
 
 ## Shared type cells
 
@@ -162,6 +167,15 @@ A cell can be created before all fields/methods/layout facts are populated. This
 The cell is then filled by the owning signature analysis and reused everywhere. Downstream references do not copy/reconstruct an aggregate definition independently.
 
 The caches that have output-affecting iteration use deterministic insertion-order maps.
+
+## Compilation ownership and semantic scan surface
+
+`compile/` represents the module sets for one invocation with `CompilationModules`. `compile/mod.rs` owns phase orchestration, while `compile/signatures.rs`, `compile/bodies.rs`, and `compile/output.rs` keep signature discovery, body/materialization work, and final program sweeps separate. The structure stores two ownership classes:
+
+- `emitted` — modules owned by this compilation; their ordinary signatures/bodies, warnings, and dead-code results belong to this invocation;
+- `scanned` — extern modules whose declarations are inspected because they can participate in package-wide semantic relationships.
+
+The two combined surfaces are derived deliberately rather than treated as interchangeable. Primitive/conformance/glue registration preserves the historical **scanned-then-emitted** order, while diagnostic draining preserves **emitted-then-scanned** order. Warnings and body/dead-code work remain emitted-only. This keeps borrowed-module policy explicit without letting a refactor silently change precedence or diagnostic ordering.
 
 ## Two-phase local compilation
 
@@ -184,7 +198,7 @@ High-level order:
 12. return CompiledProgram
 ```
 
-The exact helper ordering in `compile.rs` is the executable source of truth, but the architectural split is stable: **resolve declarations before body checking consumes them**.
+The exact helper ordering in `compile/mod.rs` is the executable source of truth, but the architectural split is stable: **resolve declarations before body checking consumes them**.
 
 Generic templates themselves have no emitted generic body. Their concrete instantiations are discovered from use sites and checked on demand.
 
@@ -219,13 +233,13 @@ For argument/field-driven inference, the analyzer sometimes needs the **raw decl
 
 Once concrete arguments are known, the ordinary `ItemKey` path resolves/checks that instantiation.
 
-Concrete instantiations declared in extern packages may still be emitted by the local compilation that uses them. They are merged into an emitted local `CheckedModule` after semantic phases finish, because this compilation is responsible for producing that concrete body.
+Concrete instantiations declared in extern packages may still be emitted by the local compilation that uses them. The checked program creates/finds a `CheckedModule` using the **template's declaring module path** and places the instantiation there. This is an identity invariant, not presentation: MIR incorporates the containing module path into the symbol name, so assigning an extern-owned instantiation to an arbitrary local module would change its linker identity.
 
 ## Specs, conformances, and primitives
 
 Specs have a canonical args-independent declaration cell because their raw member/dependency declarations are substituted later against a concrete use.
 
-Conformance and primitive declarations sit beside the ordinary named-item query model because they are relationship/declaration blocks rather than ordinary top-level names.
+Conformance and primitive declarations sit beside the ordinary named-item query model because they are relationship/declaration blocks rather than ordinary top-level names. They are separate driver subsystems: `conformances/registration.rs` owns registration, precedence, and template instantiation; `conformances/solver.rs` owns lookup, proof context, materialization, and goal solving; `conformances/mod.rs` owns their shared state/model. `primitives.rs` owns primitive registration/template matching/materialization. Primitive entries record explicitly whether they are monomorphized rather than inferring that fact from substitution-vector shape.
 
 The driver owns:
 

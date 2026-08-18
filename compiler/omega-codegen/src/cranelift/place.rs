@@ -163,7 +163,7 @@ impl Codegen {
                             // Use shared enum-prefix layout offsets; leaf position alone cannot model alignment gaps.
                             let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
                                 [1 + *index];
-                            let len = enum_type.header[*index].1.cranelift_leaves(self).len();
+                            let len = enum_type.header[*index].r#type.cranelift_leaves(self).len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
@@ -189,7 +189,7 @@ impl Codegen {
                         PlaceStorage::Values(values) => {
                             let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
                                 [1 + enum_type.header.len() + *index];
-                            let len = enum_type.dynamic_fields[*index].1.cranelift_leaves(self).len();
+                            let len = enum_type.dynamic_fields[*index].r#type.cranelift_leaves(self).len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {

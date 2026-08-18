@@ -83,6 +83,14 @@ pub struct CheckedParam {
 }
 
 #[derive(Debug, Clone)]
+pub struct CheckedField {
+    pub id: HirId,
+    pub span: Span,
+    pub ident: Ident,
+    pub r#type: ResolvedType,
+}
+
+#[derive(Debug, Clone)]
 pub struct CheckedFunctionDef {
     pub id: HirId,
     pub span: Span,
@@ -129,7 +137,7 @@ pub struct CheckedStructDef {
     pub span: Span,
     pub name: Ident,
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<CheckedParam>,
+    pub fields: Vec<CheckedField>,
     pub functions: Vec<CheckedFunctionDef>,
 }
 
@@ -139,7 +147,7 @@ pub struct CheckedUnionDef {
     pub span: Span,
     pub name: Ident,
     pub type_args: Vec<ResolvedType>,
-    pub fields: Vec<CheckedParam>,
+    pub fields: Vec<CheckedField>,
     pub functions: Vec<CheckedFunctionDef>,
 }
 
@@ -338,8 +346,14 @@ pub struct CheckedSlice {
     pub base: CheckedPlace,
     pub item_type: ResolvedType,
     pub start: Option<Box<CheckedExprNode>>,
-    pub end: Option<Box<CheckedExprNode>>,
-    pub inclusive: bool,
+    pub end: CheckedRangeEnd,
+}
+
+#[derive(Debug, Clone)]
+pub enum CheckedRangeEnd {
+    Inclusive(Box<CheckedExprNode>),
+    Exclusive(Box<CheckedExprNode>),
+    Open,
 }
 
 #[derive(Debug, Clone)]

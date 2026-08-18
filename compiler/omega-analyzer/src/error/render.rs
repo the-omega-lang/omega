@@ -289,6 +289,9 @@ impl AnalysisErrorKind {
             Self::EnumTagNotInteger { found } => d
                 .with_label(span, format!("`{found}` cannot be a tag type"))
                 .with_note("enum tags are currently limited to integer types (i8..i64, u8..u64, isize, usize)"),
+            Self::EnumImplicitTagOutOfRange { value, r#type, .. } => d
+                .with_label(span, format!("implicit tag {value} does not fit in `{type}`"))
+                .with_help("use a wider enum tag type or provide explicit tag values"),
             Self::EnumHeaderFieldUnsupportedType { found, .. } => d
                 .with_label(span, format!("`{found}` has no literal constant form"))
                 .with_note(
@@ -780,8 +783,8 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
             .with_help(format!("pass --extern={}:<path> on the command line", name.as_ref())),
         ResolveError::UnknownItem { module, .. } => with_label(d, format!("not found in `{}`", join(module))),
         ResolveError::NotVisible { .. } => with_label(d, "not visible from this module".to_string()),
-        ResolveError::Cycle(_) => with_label(d, "this import completes the cycle".to_string())
-            .with_note("modules whose imports mutually depend on each other cannot be resolved"),
+        ResolveError::Cycle(_) => with_label(d, "this reference completes the cycle".to_string())
+            .with_note("these resolution dependencies eventually refer back to an item that is still being resolved"),
         ResolveError::AmbiguousModule(path) => {
             let name = path.last().map(|i| i.as_ref()).unwrap_or_default();
             with_label(d, "ambiguous module reference".to_string())

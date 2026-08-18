@@ -8,7 +8,7 @@ use crate::ids::{BlockId, LocalId};
 use super::place::place_align;
 use omega_analyzer::checked::{
     CheckedBlock, CheckedBreak, CheckedContinue, CheckedDefer, CheckedExpr, CheckedExprNode, CheckedFor, CheckedIf,
-    CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+    CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedRangeEnd, CheckedPlaceRoot, CheckedProjection,
     CheckedStmt, CheckedStructLiteralField, CheckedWhile,
 };
 use omega_analyzer::resolved_type::ResolvedType;
@@ -638,8 +638,12 @@ impl FunctionLowerer {
             CheckedExpr::Slice(s) => {
                 let base = self.lower_place(s.base);
                 let start = s.start.map(|e| Box::new(self.lower_expr(*e)));
-                let end = s.end.map(|e| Box::new(self.lower_expr(*e)));
-                let kind = MirExpr::Slice(MirSlice { base, item_type: s.item_type, start, end, inclusive: s.inclusive });
+                let (end, inclusive) = match s.end {
+                    CheckedRangeEnd::Inclusive(end) => (Some(Box::new(self.lower_expr(*end))), true),
+                    CheckedRangeEnd::Exclusive(end) => (Some(Box::new(self.lower_expr(*end))), false),
+                    CheckedRangeEnd::Open => (None, false),
+                };
+                let kind = MirExpr::Slice(MirSlice { base, item_type: s.item_type, start, end, inclusive });
                 MirExprNode { id, span, r#type, kind }
             }
             CheckedExpr::Cast(cast) => {

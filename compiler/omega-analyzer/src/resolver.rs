@@ -110,7 +110,7 @@ impl fmt::Display for ResolveError {
             }
             Self::Cycle(path) => write!(
                 f,
-                "cyclic module dependency: {}",
+                "cyclic resolution dependency: {}",
                 path.iter()
                     .map(|p| join(p))
                     .collect::<Vec<_>>()
@@ -187,6 +187,47 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolveItemOptions {
+    indirect: bool,
+    bypass_visibility: bool,
+}
+
+impl ResolveItemOptions {
+    pub const DIRECT: Self = Self {
+        indirect: false,
+        bypass_visibility: false,
+    };
+
+    pub const INDIRECT: Self = Self {
+        indirect: true,
+        bypass_visibility: false,
+    };
+
+    pub const fn with_indirection(indirect: bool) -> Self {
+        Self { indirect, ..Self::DIRECT }
+    }
+
+    pub const fn through_indirection(mut self) -> Self {
+        self.indirect = true;
+        self
+    }
+
+    pub const fn bypassing_visibility(mut self, bypass: bool) -> Self {
+        self.bypass_visibility = bypass;
+        self
+    }
+
+    pub const fn allows_indirection(self) -> bool {
+        self.indirect
+    }
+
+    pub const fn bypasses_visibility(self) -> bool {
+        self.bypass_visibility
+    }
+}
+
 pub trait ModuleResolver {
     fn macro_origin_module(&self, origin: Origin) -> Option<Vec<Ident>>;
 
@@ -219,8 +260,7 @@ pub trait ModuleResolver {
         accessor_module_path: &[Ident],
         absolute_path: &[Ident],
         type_args: &[ResolvedType],
-        indirect: bool,
-        bypass: bool,
+        options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError>;
 
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool;
@@ -299,7 +339,14 @@ pub enum ItemNamespace {
     Type,
 }
 
-pub type OverloadCandidates = Vec<(HirId, ResolvedFunctionType, Visibility)>;
+#[derive(Debug, Clone)]
+pub struct OverloadCandidate {
+    pub decl_id: HirId,
+    pub fn_type: ResolvedFunctionType,
+    pub visibility: Visibility,
+}
+
+pub type OverloadCandidates = Vec<OverloadCandidate>;
 
 #[derive(Debug, Clone)]
 pub struct GenericSignature {
