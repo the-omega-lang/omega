@@ -1,4 +1,3 @@
-
 use crate::ast::identifier::Ident;
 use omega_diagnostics::Diagnostic;
 pub use omega_diagnostics::Span;
@@ -81,9 +80,11 @@ impl ParseError {
                 .with_label(self.span, format!("nesting goes deeper than {limit} levels here"))
                 .with_note("the parser is recursive descent, so each level of nesting costs native stack -- this limit turns what would be a stack overflow into a diagnostic")
                 .with_help("this is far past anything hand-written; if the source is generated, emit intermediate bindings instead of one deeply nested expression"),
-            ParseErrorKind::AnnotationNotAllowedHere => Diagnostic::error("annotations are only allowed on structs, enums, unions, and functions")
-                .with_label(self.span, "this item can't carry annotations")
-                .with_help("annotations are only allowed on structs, enums, unions, and functions"),
+            ParseErrorKind::AnnotationNotAllowedHere => Diagnostic::error("annotations are not allowed on this item")
+                .with_label(self.span, "this item can't carry annotations"),
+            ParseErrorKind::AnnotationWithoutItem => Diagnostic::error("annotation is not attached to an item")
+                .with_label(self.span, "this annotation has no item")
+                .with_help("add an item after the annotation or remove it"),
             ParseErrorKind::VisibilityNotAllowedHere => Diagnostic::error("a visibility modifier is not allowed here")
                 .with_label(self.span, "this item can't carry a visibility modifier")
                 .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, macros, functions, globals, and externs"),
@@ -102,7 +103,6 @@ impl ParseError {
             ParseErrorKind::GapFunctionBody { name } => Diagnostic::error(format!("a gap declares, it does not define ('{}')",
                 name.as_ref()))
                 .with_label(self.span, format!("'{}' has a body", name.as_ref()))
-                .with_note("a default body would need a real, once-compiled MIR function of its own, reusing the synthetic-`HirFunctionDef` reconstruction an ordinary spec default method already needs -- deferred, not ruled out")
                 .with_help("declare it as a bare requirement (no body) instead -- the gap's one `glue` block must then provide it"),
             ParseErrorKind::GapFunctionSelf { name } => Diagnostic::error(format!("gap function '{}' cannot take 'self'", name.as_ref()))
                 .with_label(self.span, format!("'{}' takes 'self'", name.as_ref()))
@@ -122,6 +122,8 @@ impl ParseError {
                 .with_help("write `defer { name$(...); }`"),
             ParseErrorKind::VariadicMacroParamNotLast => Diagnostic::error("a variadic macro parameter must be the last one, and a macro can have at most one")
                 .with_label(self.span, "a variadic parameter ends the parameter list"),
+            ParseErrorKind::DuplicateMacroParam { name } => Diagnostic::error(format!("macro parameter '{name}' is declared more than once"))
+                .with_label(self.span, format!("duplicate parameter '{name}'")),
             ParseErrorKind::InvalidMacroSeparator => Diagnostic::error("a macro repetition separator must be a single non-bracket token, e.g. `$...(,){ ... }`")
                 .with_label(self.span, "a separator is exactly one non-bracket token"),
             ParseErrorKind::NestedMacroRepetition => Diagnostic::error("macro repetitions can't nest; a macro has at most one variadic parameter")
@@ -169,6 +171,7 @@ pub enum ParseErrorKind {
     ChainedComparison,
     NestingTooDeep { limit: usize },
     AnnotationNotAllowedHere,
+    AnnotationWithoutItem,
     VisibilityNotAllowedHere,
     GapOrGlueVisibility,
     ConformMethodVisibility,
@@ -187,6 +190,7 @@ pub enum ParseErrorKind {
     SpecDependenciesRemoved,
     MacroInvocationNotAllowedAfterDefer,
     VariadicMacroParamNotLast,
+    DuplicateMacroParam { name: Ident },
     InvalidMacroSeparator,
     NestedMacroRepetition,
     ImportInMacroBody,

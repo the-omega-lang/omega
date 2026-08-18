@@ -27,7 +27,7 @@ pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
 }
 
 fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
-    if let Some(prefix) = crate::parser::parse_binding_prefix(p) {
+    if let Some(prefix) = crate::parser::parse_binding_modifiers(p) {
         return parse_walrus_or_declaration(p, prefix.mutable, prefix.comp);
     }
     match p.peek() {
@@ -86,9 +86,6 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
             p.reset(mark);
             let expr = parse_statement_leading_expression(p)?;
             Some((Statement::Expression(expr), false))
-        }
-        TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon) => {
-            parse_walrus_or_declaration(p, false, false)
         }
         _ => {
             let expr = parse_statement_leading_expression(p)?;
@@ -249,7 +246,7 @@ fn parse_for(p: &mut Parser) -> Option<Statement> {
     })))
 }
 
-fn is_for_in_lookahead(p: &mut Parser) -> bool {
+fn is_for_in_lookahead(p: &Parser) -> bool {
     let offset = usize::from(p.at_contextual(contextual::MUT));
     matches!(p.peek_at(offset), TokenKind::Ident(_))
         && (p.at_contextual_at(offset + 1, contextual::IN)
@@ -286,7 +283,7 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     } else {
         None
     };
-    p.advance(); // 'in' (contextual; `is_for_in_lookahead` already confirmed this token)
+    p.expect_contextual(contextual::IN);
 
     // Same body-`{` ambiguity `while`/the classic `for`'s own condition
     // clause has -- restricted for the same reason. Ranges are ordinary
@@ -306,32 +303,9 @@ fn parse_for_init(p: &mut Parser) -> Option<Statement> {
     if p.check(&TokenKind::Semi) {
         return None;
     }
-    // `mut` is a contextual keyword here too (see `parse_statement_content`'s
-    // identical check) -- `for mut i := 0; ...` is by far the most common
-    // reason to want a mutable loop-local at all.
-    let mutable = if p.at_contextual(contextual::MUT)
-        && matches!(p.peek_at(1), TokenKind::Ident(_))
-        && matches!(p.peek_at(2), TokenKind::ColonEq | TokenKind::Colon)
-    {
-        p.advance(); // 'mut'
-        true
-    } else {
-        false
-    };
-    if matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::ColonEq) {
-        let mut w = parse_walrus(p)?;
-        w.mutable = mutable;
-        return Some(Statement::Walrus(w));
-    }
-    if matches!(p.peek(), TokenKind::Ident(_)) && matches!(p.peek_at(1), TokenKind::Colon) {
-        let mut decl = parse_declaration(p)?;
-        decl.mutable = mutable;
-        return if p.eat(&TokenKind::Eq) {
-            let value = parse_expression(p)?;
-            Some(Statement::DeclarationWithInit(decl, value))
-        } else {
-            Some(Statement::Declaration(decl))
-        };
+    if let Some(prefix) = crate::parser::parse_binding_modifiers(p) {
+        return parse_walrus_or_declaration(p, prefix.mutable, prefix.comp)
+            .map(|(statement, _)| statement);
     }
     parse_expression(p).map(Statement::Expression)
 }

@@ -1,4 +1,3 @@
-
 mod diagnostic;
 mod highlight;
 mod render;

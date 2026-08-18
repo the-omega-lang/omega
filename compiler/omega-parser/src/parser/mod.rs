@@ -5,46 +5,35 @@ pub mod macro_syntax;
 pub mod recovery;
 pub mod statement;
 pub mod r#type;
+mod cursor;
 
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 use crate::lexer::{Token, TokenKind};
 
+use cursor::{CursorMark, TokenCursor};
+
 pub struct Parser<'a> {
-    tokens: &'a [Token],
-    pos: usize,
+    cursor: TokenCursor<'a>,
     errors: Vec<ParseError>,
     struct_literals_restricted: bool,
-    pending_gt: Option<Span>,
-    last_span: Span,
     depth: usize,
     depth_exceeded: bool,
 }
 
 pub const MAX_NESTING_DEPTH: usize = 256;
 
-const CLOSE_ANGLE_KIND: TokenKind = TokenKind::Gt;
-
 #[derive(Clone, Copy)]
 pub struct Mark {
-    pos: usize,
+    cursor: CursorMark,
     error_count: usize,
-    pending_gt: Option<Span>,
-    last_span: Span,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
-        debug_assert!(matches!(
-            tokens.last().map(|t| &t.kind),
-            Some(TokenKind::Eof)
-        ));
         Self {
-            tokens,
-            pos: 0,
+            cursor: TokenCursor::new(tokens),
             errors: Vec::new(),
             struct_literals_restricted: false,
-            pending_gt: None,
-            last_span: Span::new(0, 0),
             depth: 0,
             depth_exceeded: false,
         }
@@ -69,18 +58,23 @@ impl<'a> Parser<'a> {
         !self.struct_literals_restricted
     }
 
-    pub fn restrict_struct_literals<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        let previous = std::mem::replace(&mut self.struct_literals_restricted, true);
+    fn with_struct_literals_restricted<T>(
+        &mut self,
+        restricted: bool,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = std::mem::replace(&mut self.struct_literals_restricted, restricted);
         let result = f(self);
         self.struct_literals_restricted = previous;
         result
     }
 
+    pub fn restrict_struct_literals<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.with_struct_literals_restricted(true, f)
+    }
+
     pub fn allow_struct_literals<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        let previous = std::mem::replace(&mut self.struct_literals_restricted, false);
-        let result = f(self);
-        self.struct_literals_restricted = previous;
-        result
+        self.with_struct_literals_restricted(false, f)
     }
 
     pub fn into_errors(self) -> Vec<ParseError> {
@@ -88,33 +82,19 @@ impl<'a> Parser<'a> {
     }
 
     pub fn peek(&self) -> &TokenKind {
-        if self.pending_gt.is_some() {
-            return &CLOSE_ANGLE_KIND;
-        }
-        &self.tokens[self.pos].kind
+        self.cursor.peek()
     }
 
-    pub fn peek_at(&self, n: usize) -> &TokenKind {
-        if self.pending_gt.is_some() {
-            if n == 0 {
-                return &CLOSE_ANGLE_KIND;
-            }
-            let idx = (self.pos + n - 1).min(self.tokens.len() - 1);
-            return &self.tokens[idx].kind;
-        }
-        let idx = (self.pos + n).min(self.tokens.len() - 1);
-        &self.tokens[idx].kind
+    pub fn peek_at(&self, offset: usize) -> &TokenKind {
+        self.cursor.peek_at(offset)
     }
 
     pub fn peek_span(&self) -> Span {
-        if let Some(span) = self.pending_gt {
-            return span;
-        }
-        self.tokens[self.pos].span
+        self.cursor.peek_span()
     }
 
     pub fn last_span(&self) -> Span {
-        self.last_span
+        self.cursor.last_span()
     }
 
     pub fn is_eof(&self) -> bool {
@@ -122,36 +102,19 @@ impl<'a> Parser<'a> {
     }
 
     pub fn advance(&mut self) -> Token {
-        if let Some(span) = self.pending_gt.take() {
-            self.last_span = span;
-            return Token {
-                kind: TokenKind::Gt,
-                span,
-                origin: crate::ast::identifier::Origin::default(),
-            };
-        }
-        let tok = self.tokens[self.pos].clone();
-        if !matches!(tok.kind, TokenKind::Eof) {
-            self.pos += 1;
-            self.last_span = tok.span;
-        }
-        tok
+        self.cursor.advance()
     }
 
     pub fn mark(&self) -> Mark {
         Mark {
-            pos: self.pos,
+            cursor: self.cursor.mark(),
             error_count: self.errors.len(),
-            pending_gt: self.pending_gt,
-            last_span: self.last_span,
         }
     }
 
     pub fn reset(&mut self, mark: Mark) {
-        self.pos = mark.pos;
+        self.cursor.reset(mark.cursor);
         self.errors.truncate(mark.error_count);
-        self.pending_gt = mark.pending_gt;
-        self.last_span = mark.last_span;
     }
 
     pub fn check(&self, kind: &TokenKind) -> bool {
@@ -224,18 +187,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn eat_close_angle(&mut self) -> bool {
-        if self.eat(&TokenKind::Gt) {
-            return true;
-        }
-        if matches!(self.peek(), TokenKind::Shr) {
-            let whole = self.peek_span();
-            let mid = whole.start + 1;
-            self.pending_gt = Some(Span::new(mid, whole.end));
-            self.pos += 1;
-            self.last_span = Span::new(whole.start, mid);
-            return true;
-        }
-        false
+        self.cursor.eat_close_angle()
     }
 
     pub fn expect_close_angle(&mut self, expected: &'static str) -> bool {
@@ -282,34 +234,43 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct BindingPrefix {
     pub mutable: bool,
     pub comp: bool,
 }
 
-pub fn parse_binding_prefix(p: &mut Parser) -> Option<BindingPrefix> {
-    let mut_offset = usize::from(p.at_contextual(contextual::MUT));
-    let comp_offset = usize::from(p.at_contextual_at(mut_offset, contextual::COMP));
-    if mut_offset + comp_offset == 0 {
-        return None;
+pub type BindingModifiers = BindingPrefix;
+
+pub fn parse_binding_modifiers(p: &mut Parser) -> Option<BindingModifiers> {
+    if matches!(p.peek(), TokenKind::Ident(_))
+        && matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon)
+    {
+        return Some(BindingPrefix::default());
     }
-    let ident_offset = mut_offset + comp_offset;
-    if !matches!(p.peek_at(ident_offset), TokenKind::Ident(_))
+
+    let mutable = p.at_contextual(contextual::MUT);
+    let comp_offset = usize::from(mutable);
+    let comp = p.at_contextual_at(comp_offset, contextual::COMP);
+    let modifier_count = usize::from(mutable) + usize::from(comp);
+
+    if !matches!(p.peek_at(modifier_count), TokenKind::Ident(_))
         || !matches!(
-            p.peek_at(ident_offset + 1),
+            p.peek_at(modifier_count + 1),
             TokenKind::ColonEq | TokenKind::Colon
         )
     {
         return None;
     }
-    for _ in 0..ident_offset {
+
+    for _ in 0..modifier_count {
         p.advance();
     }
-    Some(BindingPrefix {
-        mutable: mut_offset > 0,
-        comp: comp_offset > 0,
-    })
+    Some(BindingPrefix { mutable, comp })
+}
+
+pub fn parse_binding_prefix(p: &mut Parser) -> Option<BindingPrefix> {
+    parse_binding_modifiers(p)
 }
 
 pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {

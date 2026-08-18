@@ -109,13 +109,13 @@ Owns source text through macro-expanded AST:
 text -> lexer -> tokens -> recursive parser -> AST -> macro expansion/reparse -> AST
 ```
 
-Important areas: `lexer.rs`, `ast/`, `parser/`, `macros.rs`, `diagnostics.rs`, `prelude.rs`.
+Important areas: `lexer.rs`, `ast/`, `parser/cursor.rs`, `parser/item/`, `parser/expression.rs`, `parser/statement.rs`, `macros.rs`, `macros/expander.rs`, `diagnostics.rs`, `prelude.rs`.
 
 **Boundary:** syntax only. Semantic validity requiring names/types belongs downstream.
 
 ### `compiler/omega-hir`
 
-Owns the first stable post-macro-expansion representation and `HirId` identity. `lower.rs` performs infallible syntax-only normalization/desugaring.
+Owns the first stable post-macro-expansion representation and `HirId` identity. `lower.rs` is the lowering entry point; `lower/item.rs`, `lower/statement.rs`, and `lower/expression.rs` perform infallible syntax-only normalization/desugaring.
 
 **Boundary:** no name resolution, type checking, or backend behavior.
 

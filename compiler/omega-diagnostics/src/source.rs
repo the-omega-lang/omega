@@ -1,3 +1,16 @@
+pub(crate) const TAB_WIDTH: usize = 4;
+
+pub(crate) fn display_column(text: &str, byte_offset: usize) -> usize {
+    let mut end = byte_offset.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end]
+        .chars()
+        .map(|ch| if ch == '\t' { TAB_WIDTH } else { 1 })
+        .sum()
+}
+
 pub struct SourceFile {
     name: String,
     source: String,
@@ -13,7 +26,11 @@ impl SourceFile {
                 line_starts.push(i + 1);
             }
         }
-        Self { name: name.into(), source, line_starts }
+        Self {
+            name: name.into(),
+            source,
+            line_starts,
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -25,13 +42,16 @@ impl SourceFile {
     }
 
     pub fn line_col(&self, offset: usize) -> (usize, usize) {
-        let offset = offset.min(self.source.len());
+        let mut offset = offset.min(self.source.len());
+        while !self.source.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let line_idx = match self.line_starts.binary_search(&offset) {
             Ok(exact) => exact,
             Err(insert_at) => insert_at - 1,
         };
         let line_start = self.line_starts[line_idx];
-        let column = self.source[line_start..offset].chars().count() + 1;
+        let column = display_column(&self.source[line_start..offset], offset - line_start) + 1;
         (line_idx + 1, column)
     }
 
@@ -40,7 +60,9 @@ impl SourceFile {
     }
 
     pub fn line_text(&self, line: usize) -> &str {
-        let Some(&start) = self.line_starts.get(line.wrapping_sub(1)) else { return "" };
+        let Some(&start) = self.line_starts.get(line.wrapping_sub(1)) else {
+            return "";
+        };
         let end = self
             .line_starts
             .get(line)
@@ -50,7 +72,10 @@ impl SourceFile {
     }
 
     pub(crate) fn line_start(&self, line: usize) -> usize {
-        self.line_starts.get(line.wrapping_sub(1)).copied().unwrap_or(self.source.len())
+        self.line_starts
+            .get(line.wrapping_sub(1))
+            .copied()
+            .unwrap_or(self.source.len())
     }
 }
 
@@ -76,8 +101,20 @@ mod tests {
     }
 
     #[test]
+    fn tab_columns_match_rendered_width() {
+        let f = SourceFile::new("t", "\tvalue");
+        assert_eq!(f.line_col(1), (1, TAB_WIDTH + 1));
+    }
+
+    #[test]
     fn multibyte_columns_count_chars() {
         let f = SourceFile::new("t", "é = 1;");
         assert_eq!(f.line_col(3), (1, 3));
+    }
+
+    #[test]
+    fn line_col_tolerates_offsets_inside_multibyte_characters() {
+        let f = SourceFile::new("t", "éx");
+        assert_eq!(f.line_col(1), (1, 1));
     }
 }

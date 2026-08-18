@@ -164,31 +164,8 @@ Remaining known conformance/spec issues:
 
 ## Macros
 
-- **A node built from a macro expansion gets a composite span running from
-  the call site to the definition site, and statement position makes it
-  visible in ordinary diagnostics.** Every token keeps its own real
-  originating span (deliberately — there is no render-to-text-and-relex
-  round trip), so a node built from a mix of call-site argument tokens and
-  definition-site body tokens spans both. `expand_expr` hides this for
-  expression position by pinning the invocation's own call-site span back
-  onto the outer node, but a statement-position expansion has no equivalent:
-  the spliced statements and their expressions keep the composite spans the
-  re-parse produced. `just build-exe` on `examples/dev/main.omg`
-  demonstrates it — the `unused return value` warning for
-  `call_each$(puts, ...)` at line 769 renders a label stretching to the
-  macro's own definition at line 1495, ~700 lines of elided snippet for a
-  one-line statement. Not fixed here because the honest fix is a single
-  span policy shared by all three positions (item position has the same
-  latent problem), which is a design decision rather than a local patch:
-  either remap every span in an expansion to the call site (losing the
-  ability to point inside a macro body at all) or give `Span` a notion of
-  expansion provenance so the renderer can show both. Pinning only the
-  top-level statement node would fix the demonstrated case while leaving
-  every nested expression inside an expansion still wrong.
-  [macros.md](../language/macros.md)
-
 - **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
-  documents.** `macros.rs`'s budget is spent one unit per invocation and
+  documents.** `macros/expander.rs`'s budget is spent one unit per invocation and
   reports `ExpansionLimitExceeded` at 256, but each expansion costs roughly
   twenty stack frames (the recursive-descent re-parse plus `expand_expr`'s
   own very large frame), so `macro a() => { a$() }` aborts on a stack
@@ -198,15 +175,6 @@ Remaining known conformance/spec issues:
   position adds a second recursion path (`expand_statements_invocation`)
   with the same shape. The fix is a *depth* limit rather than (or as well
   as) a total-expansion budget. [macros.md](../language/macros.md)
-
-- **Duplicate macro parameter names are silently accepted**, e.g.
-  `macro m($a: expr, $a: expr)`; bindings are a `HashMap`, so the later
-  parameter wins and the earlier one becomes unreferenceable. The same
-  applies when a fixed parameter and the variadic share a name, where the
-  variadic's `Many` binding shadows the fixed `One`. Pre-existing (the flat
-  `Vec<MacroParam>` model had it too); the fix is one duplicate check in
-  `parse_macro_signature` plus a `ParseErrorKind` variant.
-  [macros.md](../language/macros.md)
 
 - **A repetition separator is not restricted to tokens that can survive
   substitution.** `parse_repetition` only rejects brackets and multi-token
@@ -248,35 +216,24 @@ Remaining known conformance/spec issues:
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **Macro expansion still rebuilds the whole tree by value to recurse.**
-  `omega_parser::macros::Expander::expand_expr` was given a context struct
-  (so the `(defs, budget, state)` triple stopped being threaded by hand) and
-  had its per-arm unbox dance collapsed, but the traversal itself is
-  unchanged: every arm still reconstructs its node field-by-field purely to
-  descend into children, and `expand_struct_def`/`expand_union_def` remain
-  two character-identical functions. The intended shape was an in-place
-  `&mut` walk over a `children_mut` iterator, leaving explicit arms only for
-  the block-bearing variants (`Codeblock`, `If`, `Match`, `Slice`'s range).
-  Not done here because it is a genuine design change to the compiler's
-  single highest-risk file, and because `children_mut` would have exactly
-  one consumer — worth deciding on its own rather than as the tail of a
-  refactor. The cost of leaving it is ~70 lines of reconstruction that a new
-  `Expression` variant must be added to in two places instead of one.
+  Expansion is now isolated in `macros/expander.rs`, and lookup clones only
+  the requested macro definition instead of a whole environment, but the AST
+  traversal itself still reconstructs nodes field-by-field purely to descend
+  into children. `expand_struct_def`/`expand_union_def` also remain nearly
+  identical. A shared AST fold/walk abstraction could make new expression or
+  item variants harder to forget, but that would be a frontend-wide traversal
+  design rather than a safe local cleanup. Decide it deliberately instead of
+  growing a one-off visitor solely for macro expansion.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
-- **Three of the spans added by the span-ownership pass have no reader.**
-  `FunctionDefinitionStmt`/`SpecFunctionStmt`/`HirFunctionDef`/
-  `RawSpecFunctionSig::signature_span` is set by the parser and copied
-  through four structs across three crates, and nothing ever reads it; the
-  same is true of `CodeblockExpr::span` and the `HirBlock::span` it feeds.
-  They were added because the span-ownership rule (*a construct that can be
-  the subject of a diagnostic owns its span*) says they should exist, not
-  because a diagnostic needed them — the two that fixed real defects
-  (`name_span`, `return_type_span`) do have readers. Left in place rather
-  than deleted because the anchors that would use them are already written
-  down (see the three widened anchors under **Diagnostics**), so removing
-  them now would only mean re-adding them. **Decision needed:** either
-  narrow those anchors and consume these spans, or drop them and stop
-  carrying a field the pipeline does not use.
+- **`HirBlock::span` is still carried without a downstream reader.**
+  The frontend refactor now consumes `FunctionDefinitionStmt::signature_span`
+  together with `CodeblockExpr::span` to give each lowered function its own
+  precise span, so those parser fields are no longer dead metadata. The
+  resulting `HirBlock::span`, however, is still copied through HIR and ignored
+  by semantic analysis. Keep it only if blocks are expected to become direct
+  diagnostic subjects; otherwise remove that field in a future HIR-shape
+  cleanup instead of carrying location data with no consumer.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **`Display for ParseErrorKind` builds and discards a whole `Diagnostic`.**
@@ -293,7 +250,7 @@ Remaining known conformance/spec issues:
 
 Shape problems in `omega-driver` and `omega-analyzer` that work today but each
 need a breaking change to fix — full writeups in
-[design-review.md](design-debt.md#compiler-architecture).
+[design-debt.md](design-debt.md#compiler-architecture).
 
 - **Overloading needs a whole parallel item pipeline** (two extra caches,
   two extra sweeps, two extra resolver methods) purely because the item
@@ -482,23 +439,13 @@ need a breaking change to fix — full writeups in
   later, but every error site is a place that would need revisiting, so the
   shape is cheaper to decide early than late.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-- **A dangling annotation at end of file is silently dropped.** `@inline`
-  with no item after it reports only `expected a top-level item, found end
-  of input`; the annotation itself vanishes with no mention.
-  [annotations.md](../language/annotations-and-sizeof.md)
-- **Three anchors still point at more than the thing they are about.** The
-  span-ownership pass fixed every *member*-level diagnostic (a duplicate
-  field, method or spec function, and a return-type mismatch, all now
-  underline the name or the declared type). Three sites elsewhere still
-  widen: `omega_driver::Driver::check_overload_duplicates` anchors a
-  duplicate **top-level** function at `item_id_span`, which is the whole
-  definition including its body; and `parse_gap_def`/`parse_glue_def` anchor
-  `GapFunctionSelf`/`GapFunctionBody`/`GlueFunctionShape` at
-  `Parser::last_span()`, the member's closing brace, rather than at the
-  offending name. All three now have a real span available
-  (`HirFunctionDef::name_span`, `SpecFunctionStmt::name_span`); none was
-  changed here because none was part of the reproduced defect.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
+- **One duplicate-function anchor is still wider than the thing it is about.**
+  `omega_driver::Driver::check_overload_duplicates` anchors a duplicate
+  **top-level** function at `item_id_span`, which is the whole definition
+  including its body rather than just the function name. The parser-side
+  gap/glue anchors were narrowed during the parser refactor; this remaining
+  site belongs to the driver and should be addressed in that crate's focused
+  refactor. [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 
 - **Type-level capture remains possible in macro-generated declarations.**

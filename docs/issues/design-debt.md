@@ -231,3 +231,54 @@ silently drop the bypass again, with no diagnostic pointing at the cause
 (since no frame is pushed, `UnnecessaryReveal` cannot fire either). Making
 the *place resolver itself* own the bypass, rather than every syntactic
 operand position, is the structural fix.
+
+### `Span` cannot identify its source file, which leaks into macros and cross-file diagnostics
+
+`omega-diagnostics::Span` is only `{ start, end }`. The driver separately knows which
+`SourceFile` a finding belongs to, so the representation works well as long as every
+span in a diagnostic came from one file. The boundary becomes awkward in two places:
+
+- macro-authored tokens may originate in a different module, but definition-site byte
+  offsets cannot be carried into the caller's expanded AST because rendering would
+  interpret those offsets against the caller's source; generated tokens therefore use
+  call-site spans and keep definition-site *resolution* provenance in `Origin` instead;
+- a `Diagnostic` cannot safely contain labels from two files, because each label is an
+  unqualified byte range and `Renderer` receives exactly one `SourceFile`.
+
+This is internally consistent today, but it makes file identity an ambient convention
+instead of part of the type system. A future source-aware location model — for example
+`SourceId` plus `Span`, or a compact `SourceSpan`/`Site` wrapper — would make cross-file
+locations representable and would let macro diagnostics distinguish call-site and
+definition-site locations without overloading one byte-offset space. This is breaking
+across the frontend, HIR, driver, analyzer, and diagnostic APIs, so it should be a
+deliberate architecture change rather than part of a local refactor.
+
+### Nested statement fields lose their own source site
+
+A few AST nodes discard a more specific source site that later phases could use. Nested
+statements in `ForStmt::init` (`Option<Statement>`) and `DeferStmt::body` (`Box<Statement>`) lose
+the `StatementNode` wrapper that normally carries the statement span; `ForInStmt` stores its
+binding without a dedicated name span; and `SelfMode` stores the parsed self mode without the span
+of the `self` token. HIR lowering therefore has to reuse an enclosing `for`/`defer`/function span
+for those synthetic inner nodes instead of preserving the exact source site.
+
+This is harmless for execution today, but it weakens diagnostic precision and makes the AST/HIR
+boundary less regular. The clean fix is a deliberate AST shape change: nested syntactic statements
+should retain `StatementNode` (and bindings should retain their identifier span/site) rather than
+having lowering reconstruct location information from the parent. That change propagates through
+parser consumers and HIR lowering, so it belongs in a focused frontend API change rather than this
+refactor pass.
+
+
+### `HirFor::init` is plural even though source grammar permits one initializer
+
+The classic `for` AST stores at most one initializer statement, but `HirFor::init` is a
+`Vec<HirStmt>`. HIR lowering therefore has to wrap the single lowered statement in a one-element
+vector. The shape appears to be historical rather than a current lowering requirement: macro
+expansion is complete before HIR, and the classic `for` initializer grammar itself does not lower
+one source initializer into multiple HIR statements.
+
+Changing the field to `Option<Box<HirStmt>>` (or another explicit zero-or-one representation) would
+make the invariant visible in the type system and remove downstream "could there be many?" mental
+overhead. It changes the public HIR shape and every analyzer/MIR consumer, so it should be handled
+as a focused cross-crate representation change rather than folded into a local frontend refactor.

@@ -95,7 +95,7 @@ If future diagnostics need explicit expansion traces, that should be layered on 
 
 ## Rendering
 
-`omega_diagnostics::Renderer` accepts a `Diagnostic` plus optional `SourceFile` and handles:
+`omega_diagnostics::Renderer` accepts a `Diagnostic` plus optional `SourceFile`. `render.rs` owns rendering orchestration/header/footer policy, while `render/snippet.rs` owns source-layout, underline, multi-line-label, and highlighting mechanics. It handles:
 
 - source snippet/line numbering;
 - primary/secondary labels;
@@ -124,7 +124,7 @@ The following details used to be repeated in Rust API doc comments and are centr
 
 - A `Diagnostic` is presentation-independent structured data: severity, headline, ordered labels, and ordered note/help footers. The first primary label determines the `--> file:line:column` header; if there is no primary label, the first label is used.
 - Every label in one rendered diagnostic indexes the same `SourceFile`. Cross-file relationships must therefore be represented as separate findings or higher-level context rather than mixing unrelated byte-offset spaces in one label list.
-- `SourceFile` precomputes line-start byte offsets. Public positions are 1-based. Display columns count Unicode scalar values with tabs expanded for terminal alignment; they are not grapheme-cluster coordinates. Offsets at or just past EOF clamp rather than panic so end-of-input diagnostics remain renderable.
+- `SourceFile` precomputes line-start byte offsets. Public positions are 1-based. Display columns count Unicode scalar values with tabs expanded using the same width as snippet rendering; they are not grapheme-cluster coordinates. Offsets at or just past EOF clamp, and offsets inside a multi-byte scalar back up to a valid character boundary, so malformed/recovery spans do not panic diagnostic rendering.
 - `Span` is only a byte range and intentionally carries no file identity. File/module ownership remains with the driver.
 - Syntax highlighting is injected through the language-agnostic highlighter interface. Highlight spans must be sorted and non-overlapping, and highlighting must tolerate lexically broken source; an unclassifiable region is simply rendered without a syntax class.
 - Multi-line labels reserve a fixed continuation-bar area so source columns do not shift between ordinary and continued lines. Very large labeled ranges elide their middle rather than printing arbitrarily large snippets.

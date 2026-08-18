@@ -36,6 +36,8 @@ statement; wrap it in a block: `defer { name$(...); }`.
 Parameters are `expr`, `type`, or `ident` fragments. `ident` accepts one
 bare identifier; it is useful for a called function or generated name.
 
+Macro parameter names are unique within a signature. A fixed parameter and the trailing variadic parameter may not use the same name.
+
 One trailing parameter may be variadic. It captures zero or more arguments:
 
 ```

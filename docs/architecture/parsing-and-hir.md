@@ -24,7 +24,7 @@ The normative lexical and grammatical rules live in [`../language/lexical-struct
 - parser AST shapes (`ast/`);
 - recursive-descent grammar (`parser/`);
 - parser recovery and parse diagnostics;
-- source macro definitions/invocations and expansion (`macros.rs`);
+- source macro definitions/invocations (`macros.rs`) and recursive expansion (`macros/expander.rs`);
 - Omega syntax highlighting (`highlight.rs`);
 - the public parser-facing re-export surface (`prelude.rs`).
 
@@ -37,7 +37,7 @@ It does **not** own:
 
 ## Lexing
 
-The lexer produces tokens with source spans and, after macro expansion begins, token-origin information. Token spelling belongs to `TokenKind`; parser code should not maintain parallel spelling tables.
+The lexer produces tokens with source spans and, after macro expansion begins, token-origin information. Fixed keywords and punctuation are declared once in the lexer's `FIXED_TOKENS` registry; token spelling, keyword recognition, punctuation recognition, and spelling tests all derive from that same table. Contextual words remain parser-owned rather than entering that registry as hard keywords.
 
 Contextual words are intentionally not all hard lexer keywords. The parser's `parser::contextual` registry owns words whose keyword meaning depends on grammar position.
 
@@ -49,15 +49,21 @@ This rule matters because committing on the word alone silently shrinks the iden
 
 ## Parser organization
 
-The recursive-descent parser is split by syntactic concern:
+The recursive-descent parser is split by syntactic concern. `parser/mod.rs` owns the shared parser facade and a private token cursor; grammar modules do not manipulate token positions directly:
 
+- `parser/cursor.rs` — private token traversal/backtracking, including logical splitting of `>>` when nested generic arguments need two closing angles;
 - `parser/expression.rs` — expressions and precedence;
-- `parser/item.rs` — top-level/member declarations;
+- `parser/item.rs` — top-level routing, imports, and visibility;
+- `parser/item/annotations.rs` — annotation syntax;
+- `parser/item/functions.rs` — declarations, functions, parameters, and generics;
+- `parser/item/definitions.rs` — aggregate/spec/gap/glue/conform/primitive bodies;
 - `parser/statement.rs` — statement grammar;
 - `parser/type.rs` — type grammar;
 - `parser/macro_syntax.rs` — macro definition/invocation syntax;
 - `parser/recovery.rs` — synchronization after parse errors;
 - `parser/contextual.rs` — contextual keyword facts.
+
+Grammar code should use the `Parser` facade rather than manipulating token positions. Marks capture cursor state and the parser error count together, so speculative parses can be rolled back as one unit.
 
 The AST under `ast/` is source-oriented. It intentionally represents syntax before semantic interpretation. For example, nested field/index/deref forms are still syntactic expression shapes rather than a semantic “place”.
 
@@ -93,11 +99,13 @@ The driver constructs the module-visible macro environment. `omega_parser::macro
 
 This provenance later lets semantic path resolution honor definition-site lookup and ensure a macro does not expose a dependency narrower than the macro itself.
 
+Nested macro lookup resolves only the requested definition from the origin module's registered environment. The expander deliberately does not clone an entire macro environment per invocation; definitions are cloned only when expansion needs to release the environment borrow before mutating expansion state.
+
 Tokens substituted from macro arguments retain caller-side origin; tokens emitted by the macro body receive the expansion's definition-site origin. That distinction is what prevents the whole expanded subtree from being incorrectly treated as either caller-authored or definition-authored.
 
 ### Expansion limits
 
-Expansion is budgeted so runaway recursive expansion becomes a structured macro error rather than unbounded recursion. The exact budget is an implementation safety limit, not language semantics.
+Expansion has a total-invocation budget so runaway expansion can become a structured macro error. The exact budget is an implementation safety limit, not language semantics. It is not currently a substitute for a dedicated recursion-depth guard; the remaining stack-safety limitation is tracked in [`../issues/known-issues.md`](../issues/known-issues.md).
 
 ## Why HIR exists
 
@@ -116,7 +124,7 @@ Real-source `HirId`s are minted by a per-module `HirIdGen` during lowering. Ther
 
 ## HIR lowering contract
 
-`omega_hir::lower_module(ModuleId, &SourceModule) -> HirModule` is **infallible**.
+`omega_hir::lower_module(ModuleId, &SourceModule) -> HirModule` is **infallible**. `lower.rs` is intentionally only the entry point and shared lowering context; lowering is partitioned into `lower/item.rs`, `lower/statement.rs`, and `lower/expression.rs` by source responsibility.
 
 HIR lowering may perform structural transforms that require no semantic facts, but it may not reject a program for a name/type rule. Rejectable questions belong to semantic analysis.
 
@@ -184,7 +192,7 @@ Prefer desugaring at HIR when the transformation is syntax-only and lets later p
 
 ### Macro behavior
 
-Start in `macros.rs` plus the parser entry point for the expansion position. Cross into the driver only if macro visibility/environment construction changes.
+Start in `macros.rs` for definitions/substitution/provenance or `macros/expander.rs` for recursive AST traversal/reparse, plus the parser entry point for the expansion position. Cross into the driver only if macro visibility/environment construction changes.
 
 ### New identity-bearing construct
 
@@ -198,7 +206,7 @@ The source previously carried these facts as scattered Rust doc comments. They a
 
 - The token stream always ends in an `Eof` sentinel. Parser lookahead clamps to that sentinel and `advance` does not consume it, so recovery and speculative parsing can safely observe EOF repeatedly.
 - `Parser::mark` / `Parser::reset` is the limited backtracking mechanism. Resetting also discards diagnostics emitted after the mark, so an abandoned speculative parse cannot leak errors. The main use is code-block tail-expression versus statement disambiguation; ordinary grammar choices should prefer bounded lookahead.
-- Nested generic closers reuse the lexer's maximal-munch `>>` token. The parser may split it into two synthetic `>` observations via `pending_gt`; `last_span` therefore tracks the last consumed token explicitly rather than deriving it from the immutable token slice.
+- Nested generic closers reuse the lexer's maximal-munch `>>` token. The private `TokenCursor` may split it into two synthetic `>` observations while keeping token position, pending `>`, and last-consumed span together. Grammar code should use the `Parser` facade rather than reproduce cursor bookkeeping.
 - Recursive expression/type descent shares `MAX_NESTING_DEPTH`. The limit protects the native stack and indirectly bounds later AST/HIR traversal depth. It is an implementation safety limit, not a language-semantic maximum.
 
 ### Ambiguous braces and contextual syntax
@@ -211,7 +219,7 @@ Contextual words must likewise be committed only after the surrounding token sha
 
 The AST is deliberately syntax-shaped. Semantic facts such as addressability, resolved declarations, types, and conformance do not belong in parser nodes. Paths additionally carry macro-resolution provenance, but structural path/type comparisons remain based on source structure rather than provenance; provenance affects later lookup, not syntactic identity.
 
-Specific child spans are intentional. Fields, parameters, names, signatures, and return types retain their own spans so later diagnostics can underline the smallest honest region instead of an enclosing declaration.
+Specific child spans are intentional. Fields, parameters, names, signatures, and return types retain their own spans so later diagnostics can underline the smallest honest region instead of an enclosing declaration. HIR lowering should prefer those source-owned spans over threading an enclosing item/statement span into a child. Function HIR spans are derived from the function signature and body; gap-function HIR spans use the source signature.
 
 ### Macro spans and provenance
 
@@ -223,7 +231,7 @@ The macro body is not independently type-checked or semantically validated. Expa
 
 Real-source `HirId`s are minted only during post-expansion HIR lowering from a per-module counter. Downstream phases must not invent ordinary source IDs. Semantic artifacts without source HIR nodes use the driver's reserved synthetic module identity, keeping synthetic IDs disjoint from real module IDs.
 
-Synthetic nodes may have no token of their own. For example, the implicit `self` parameter uses the enclosing function's span because there is no source token to point at. This is preferable to manufacturing a meaningless byte offset.
+Synthetic nodes may have no independently retained source site. For example, the parser records `SelfMode` but not the span of the `self` token, so the implicit HIR `self` parameter currently falls back to the enclosing function span. The loss of that precise site is tracked as frontend design debt rather than hidden behind a manufactured byte offset.
 
 ### HIR structural lowering
 

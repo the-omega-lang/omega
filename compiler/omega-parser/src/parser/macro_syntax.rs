@@ -90,12 +90,13 @@ pub fn parse_macro_definition(
 }
 
 fn parse_macro_signature(p: &mut Parser) -> Option<MacroSignature> {
-    let mut fixed = Vec::new();
+    let mut fixed: Vec<MacroParam> = Vec::new();
     let mut variadic = None;
     if !matches!(p.peek(), TokenKind::Metavar(_)) {
         return Some(MacroSignature { fixed, variadic });
     }
     loop {
+        let param_span = p.peek_span();
         let TokenKind::Metavar(name) = p.peek().clone() else {
             p.error(ParseErrorKind::Expected {
                 expected: "a macro parameter ('$name')",
@@ -103,13 +104,18 @@ fn parse_macro_signature(p: &mut Parser) -> Option<MacroSignature> {
             });
             return None;
         };
+        let name = Ident(name);
+        if fixed.iter().any(|param| param.name == name) {
+            p.error_at(
+                param_span,
+                ParseErrorKind::DuplicateMacroParam { name },
+            );
+            return None;
+        }
         p.advance();
         p.expect(&TokenKind::Colon, "':'");
         let kind = parse_fragment_kind(p)?;
-        let param = MacroParam {
-            name: Ident(name),
-            kind,
-        };
+        let param = MacroParam { name, kind };
         if p.eat(&TokenKind::DotDotDot) {
             variadic = Some(param);
             if p.check(&TokenKind::Comma) {

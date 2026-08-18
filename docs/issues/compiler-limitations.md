@@ -11,19 +11,28 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
   error. This is sufficient (one mistake yields one error) but it is not
   precise, and a badly-malformed member can still swallow its enclosing
   block's closing brace.
-- **`macros.rs` traverses the AST by hand.** `expand_expr` is ~180 lines of
-  which the substantive part is the first eight — find a
-  `MacroInvocation`, replace it; the rest reconstructs every node
-  field-by-field purely to recurse. It is correct, and exhaustive matching
-  keeps it correct, but it is boilerplate that grows with the AST.
-- **The `(defs, budget, state)` triple is threaded by hand** through fifteen
-  expansion functions; several signatures are longer than their bodies.
+- **Macro expansion traverses the AST by hand.** `macros/expander.rs` reconstructs
+  expression/statement/item nodes field-by-field in order to recurse. Exhaustive
+  matching keeps the traversal honest, but the boilerplate grows with the AST; a
+  future visitor/fold abstraction could centralize that traversal if it can do so
+  without hiding the expansion rules.
 - **HIR still mirrors the AST closely.** That is the cost of the identity
   boundary described above, not an accident, but it does mean two node sets
   to keep in step.
 - See [known-issues.md](known-issues.md) for the language-level
   questions this area raises that are *not* bugs and were deliberately not
   decided during refactoring.
+
+
+## Diagnostics display width
+
+- **Terminal-width handling is scalar-based, not grapheme-aware.** `omega-diagnostics`
+  now uses one shared display-column calculation for headers and underlines and expands tabs
+  consistently, but non-tab Unicode scalar values still count as one terminal column. Combining
+  marks, full-width CJK characters, emoji sequences, and similar text can therefore make a
+  diagnostic underline visually drift in terminals. Correct handling should eventually use a
+  dedicated Unicode terminal-width/grapheme policy rather than growing ad-hoc cases in the
+  renderer.
 
 
 ## The MIR, and how it reaches Cranelift
