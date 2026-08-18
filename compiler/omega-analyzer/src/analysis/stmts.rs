@@ -416,16 +416,15 @@ impl<'r> Analyzer<'r> {
     fn analyze_for_in(&mut self, f: &HirForIn) -> Option<Vec<CheckedStmt>> {
         let (result, scope) = self.with_scope(|this| {
             let iter_init = match this.classify_for_in_source(f) {
-                Some(ForInSource::ToIterator(selected)) => this.with_bounds(
-                    std::iter::once(selected),
-                    |this| {
+                Some(ForInSource::ToIterator(selected)) => {
+                    this.with_bounds(std::iter::once(selected), |this| {
                         this.synthesize_method_call(
                             HirPlaceRoot::Expr(Box::new(f.iterator.clone())),
                             "to_iterator",
                             f.span,
                         )
-                    },
-                ),
+                    })
+                }
                 Some(ForInSource::DirectIterator(checked)) => Some(checked),
                 None => None,
             }?;
@@ -441,13 +440,8 @@ impl<'r> Analyzer<'r> {
                 Storage::Local,
                 true,
             );
-            let (iter_decl, iter_assign) = this.synthetic_declaration(
-                iter_id,
-                f.span,
-                "$iter",
-                iter_type.clone(),
-                iter_init,
-            );
+            let (iter_decl, iter_assign) =
+                this.synthetic_declaration(iter_id, f.span, "$iter", iter_type.clone(), iter_init);
 
             let bounds = this
                 .resolver
@@ -471,9 +465,10 @@ impl<'r> Analyzer<'r> {
 
         let to_iterator = self.for_in_conformances(&checked.r#type, "ToIterator");
         if !to_iterator.is_empty() {
-            let expected_element = f.binding_type.as_ref().and_then(|raw| {
-                self.resolve_type_or_error(f.id, f.span, raw, true)
-            });
+            let expected_element = f
+                .binding_type
+                .as_ref()
+                .and_then(|raw| self.resolve_type_or_error(f.id, f.span, raw, true));
             let available: Vec<ResolvedType> = to_iterator
                 .iter()
                 .filter_map(|conform| conform.spec_args.first().cloned())
@@ -481,9 +476,9 @@ impl<'r> Analyzer<'r> {
             let candidates: Vec<_> = to_iterator
                 .into_iter()
                 .filter(|conform| {
-                    expected_element.as_ref().is_none_or(|expected| {
-                        conform.spec_args.first() == Some(expected)
-                    })
+                    expected_element
+                        .as_ref()
+                        .is_none_or(|expected| conform.spec_args.first() == Some(expected))
                 })
                 .collect();
             if candidates.len() == 1 {
@@ -494,11 +489,11 @@ impl<'r> Analyzer<'r> {
                 // its diagnostics twice.
                 self.errors.truncate(errors_before);
                 self.warnings.truncate(warnings_before);
-                return Some(ForInSource::ToIterator((
-                    conform.target,
-                    conform.spec,
-                    conform.spec_args,
-                )));
+                return Some(ForInSource::ToIterator(ResolvedBound {
+                    target: conform.target,
+                    spec: conform.spec,
+                    spec_args: conform.spec_args,
+                }));
             }
             let kind = match expected_element {
                 Some(expected) if candidates.is_empty() => {
@@ -540,7 +535,9 @@ impl<'r> Analyzer<'r> {
                     cell: option_cell, ..
                 } = next_type.clone()
                 else {
-                    unreachable!("Iterator::next's declared return type is always an Option<T> enum");
+                    unreachable!(
+                        "Iterator::next's declared return type is always an Option<T> enum"
+                    );
                 };
                 this.declare_binding(
                     next_id,
@@ -551,13 +548,8 @@ impl<'r> Analyzer<'r> {
                     Storage::Local,
                     false,
                 );
-                let (next_decl, next_assign) = this.synthetic_declaration(
-                    next_id,
-                    f.span,
-                    "$next",
-                    next_type.clone(),
-                    next,
-                );
+                let (next_decl, next_assign) =
+                    this.synthetic_declaration(next_id, f.span, "$next", next_type.clone(), next);
 
                 let mut tag_projections = Vec::new();
                 let tag_type = this.resolve_field_projection(
@@ -578,8 +570,14 @@ impl<'r> Analyzer<'r> {
                     r#type: tag_type.clone(),
                 };
 
-                let none_arm =
-                    this.for_in_none_arm(f, while_id, next_id, &option_cell, &tag_type, &tag_place)?;
+                let none_arm = this.for_in_none_arm(
+                    f,
+                    while_id,
+                    next_id,
+                    &option_cell,
+                    &tag_type,
+                    &tag_place,
+                )?;
                 let some_arm =
                     this.for_in_some_arm(f, next_id, &option_cell, &tag_type, &tag_place)?;
 

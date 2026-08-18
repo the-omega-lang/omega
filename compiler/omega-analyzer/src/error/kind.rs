@@ -1,4 +1,3 @@
-
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -95,7 +94,9 @@ pub enum AnalysisErrorKind {
     MissingSliceEnd,
     CompPointerSliceNotSupported,
     RangeNotAllowedHere,
-    RangeNeedsBounded { r#type: ResolvedType },
+    RangeNeedsBounded {
+        r#type: ResolvedType,
+    },
     EmptyArrayLiteral,
     ArrayElementTypeMismatch {
         expected: ResolvedType,
@@ -576,11 +577,9 @@ impl fmt::Display for AnalysisErrorKind {
             Self::CharArithmeticNotAllowed { op } => {
                 write!(f, "cannot apply '{op}' to a value of type 'char'")
             }
-            Self::PointerPairArithmetic { op } => write!(
-                f,
-                "cannot apply '{}' to two pointer values",
-                op.symbol()
-            ),
+            Self::PointerPairArithmetic { op } => {
+                write!(f, "cannot apply '{}' to two pointer values", op.symbol())
+            }
             Self::InvalidNegateOperand { r#type } => {
                 write!(f, "cannot negate a value of type '{}'", r#type)
             }
@@ -620,12 +619,11 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "slicing a 'comp'-bound unsized array is not supported")
             }
             Self::RangeNotAllowedHere => {
-                write!(
-                    f,
-                    "bare '..' has no context here"
-                )
+                write!(f, "bare '..' has no context here")
             }
-            Self::RangeNeedsBounded { r#type } => write!(f, "open range needs Bounded for '{type}'"),
+            Self::RangeNeedsBounded { r#type } => {
+                write!(f, "open range needs Bounded for '{type}'")
+            }
             Self::EmptyArrayLiteral => {
                 write!(f, "cannot infer the element type of an empty array literal")
             }
@@ -674,10 +672,16 @@ impl fmt::Display for AnalysisErrorKind {
             Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
             Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
             Self::ModuleResolution(e) => write!(f, "{e}"),
-            Self::MacroDependencyTooPrivate { item, macro_visibility, item_visibility } => write!(
+            Self::MacroDependencyTooPrivate {
+                item,
+                macro_visibility,
+                item_visibility,
+            } => write!(
                 f,
                 "macro-visible item '{}' is {} but its macro is {}",
-                item.as_ref(), item_visibility, macro_visibility
+                item.as_ref(),
+                item_visibility,
+                macro_visibility
             ),
             Self::NotAValue(path) => write!(f, "'{}' is a type, not a value", join(path)),
             Self::UnresolvedGenericParam(ident) => write!(
@@ -767,7 +771,11 @@ impl fmt::Display for AnalysisErrorKind {
                     "enum tags must be integers, but this tag is declared as '{found}'"
                 )
             }
-            Self::EnumImplicitTagOutOfRange { variant, value, r#type } => write!(
+            Self::EnumImplicitTagOutOfRange {
+                variant,
+                value,
+                r#type,
+            } => write!(
                 f,
                 "implicit tag {value} for variant '{}' does not fit in '{type}'",
                 variant.as_ref(),
@@ -1024,12 +1032,23 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AmbiguousForLoopElementType { candidates } => write!(
                 f,
                 "for-loop source has ambiguous element type: {}",
-                candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                candidates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
-            Self::ForLoopElementTypeMismatch { expected, available } => write!(
+            Self::ForLoopElementTypeMismatch {
+                expected,
+                available,
+            } => write!(
                 f,
                 "for-loop source produces no '{expected}' elements (it produces: {})",
-                available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                available
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::NoSuchSpecFunction { spec, function } => {
                 write!(
@@ -1086,7 +1105,11 @@ impl fmt::Display for AnalysisErrorKind {
                     function = function.as_ref(),
                 )
             }
-            Self::SpecStaticReturnNotSelf { spec, function, return_type } => {
+            Self::SpecStaticReturnNotSelf {
+                spec,
+                function,
+                return_type,
+            } => {
                 write!(
                     f,
                     "cannot determine which type implements '{spec}' for '{function}' -- its \
@@ -1180,10 +1203,18 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "ambiguous conform for '{target}: {}'", spec.as_ref())
             }
             Self::ConformanceCycle { target, spec, .. } => {
-                write!(f, "cyclic conformance while proving '{target}: {}'", spec.as_ref())
+                write!(
+                    f,
+                    "cyclic conformance while proving '{target}: {}'",
+                    spec.as_ref()
+                )
             }
             Self::BlanketConformanceForeignSpec { spec_package } => {
-                write!(f, "a blanket conform cannot implement a foreign spec from '{}'", spec_package.as_ref())
+                write!(
+                    f,
+                    "a blanket conform cannot implement a foreign spec from '{}'",
+                    spec_package.as_ref()
+                )
             }
             Self::PrimitiveOutsideCore => {
                 write!(f, "primitive blocks may only be declared in core")

@@ -1,8 +1,8 @@
 use crate::ids::HirId;
 pub use omega_parser::prelude::{BinaryOp, ImportRoot, LogicalOp};
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, Ident, Param, NumberExpr, Path, SelfMode, Span, StringExpr,
-    Origin, Type, Visibility,
+    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Origin, Param, Path, SelfMode, Span,
+    StringExpr, Type, Visibility,
 };
 
 #[derive(Debug, Clone)]

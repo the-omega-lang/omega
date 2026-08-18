@@ -1,7 +1,6 @@
-
 use crate::checked::{
     CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem, CheckedModule, CheckedPlace,
-    CheckedPlaceRoot, CheckedProjection, CheckedStmt,
+    CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedStmt,
 };
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -65,7 +64,9 @@ fn collect_block(block: &CheckedBlock, usage: &mut FieldUsage) {
 
 fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
     match stmt {
-        CheckedStmt::Declaration(_) | CheckedStmt::ExternDeclaration(_) | CheckedStmt::Break(_)
+        CheckedStmt::Declaration(_)
+        | CheckedStmt::ExternDeclaration(_)
+        | CheckedStmt::Break(_)
         | CheckedStmt::Continue(_) => {}
         CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_expr(e, usage),
         CheckedStmt::While(w) => {
@@ -136,7 +137,9 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
         }
         CheckedExpr::EnumConstruct(construct) => {
             if let ResolvedType::Enum { cell, .. } = &expr.r#type {
-                usage.enum_variants.insert((cell.borrow().id, construct.variant_index));
+                usage
+                    .enum_variants
+                    .insert((cell.borrow().id, construct.variant_index));
             }
             for f in &construct.fields {
                 collect_expr(&f.value, usage);
@@ -147,8 +150,10 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
             if let Some(start) = &s.start {
                 collect_expr(start, usage);
             }
-            if let Some(end) = &s.end {
-                collect_expr(end, usage);
+            match &s.end {
+                CheckedRangeEnd::Inclusive(end) => collect_expr(end, usage),
+                CheckedRangeEnd::Exclusive(end) => collect_expr(end, usage),
+                _ => {}
             }
         }
         CheckedExpr::Match(m) => {
@@ -205,24 +210,39 @@ pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
                 }
                 current_type = Some(r#type.clone());
             }
-            CheckedProjection::EnumBody { variant_index, field_index, r#type, .. } => {
+            CheckedProjection::EnumBody {
+                variant_index,
+                field_index,
+                r#type,
+                ..
+            } => {
                 if let Some(ResolvedType::Enum { cell, .. }) = &current_type {
-                    usage.enum_body_fields.insert((cell.borrow().id, *variant_index, *field_index));
+                    usage
+                        .enum_body_fields
+                        .insert((cell.borrow().id, *variant_index, *field_index));
                 }
                 current_type = Some(r#type.clone());
             }
-            CheckedProjection::Index { index_expr, item_type } => {
+            CheckedProjection::Index {
+                index_expr,
+                item_type,
+            } => {
                 collect_expr(index_expr, usage);
                 current_type = Some(item_type.clone());
             }
             CheckedProjection::Deref { r#type } => current_type = Some(r#type.clone()),
             CheckedProjection::SliceLength => current_type = Some(ResolvedType::USize),
             CheckedProjection::SpecObjectPtr { mutable } => {
-                current_type = Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: *mutable })
+                current_type = Some(ResolvedType::Pointer {
+                    pointee: Box::new(ResolvedType::U8),
+                    mutable: *mutable,
+                })
             }
             CheckedProjection::SpecObjectVtable => {
-                current_type =
-                    Some(ResolvedType::Pointer { pointee: Box::new(ResolvedType::U8), mutable: false })
+                current_type = Some(ResolvedType::Pointer {
+                    pointee: Box::new(ResolvedType::U8),
+                    mutable: false,
+                })
             }
             CheckedProjection::EnumTag { r#type } => current_type = Some(r#type.clone()),
             CheckedProjection::EnumHeader { r#type, .. } => current_type = Some(r#type.clone()),

@@ -1,9 +1,9 @@
-
+use crate::conformances::ConformanceOrigin;
 use crate::error::{CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
-use crate::conformances::ConformanceOrigin;
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
+use omega_analyzer::Target;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{
@@ -16,8 +16,9 @@ use omega_analyzer::error::{
 };
 use omega_analyzer::resolved_type::{ResolvedBound, ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
-use omega_hir::{HirEnumDef, HirGenericParam, HirGlueDef, HirId, HirItem, HirField, HirStructDef, HirUnionDef};
-use omega_analyzer::Target;
+use omega_hir::{
+    HirEnumDef, HirField, HirGenericParam, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef,
+};
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -194,9 +195,6 @@ mod tests {
             modules.relationship_surface(),
             vec![external.clone(), shared.clone(), local.clone()]
         );
-        assert_eq!(
-            modules.diagnostic_surface(),
-            vec![local, shared, external]
-        );
+        assert_eq!(modules.diagnostic_surface(), vec![local, shared, external]);
     }
 }

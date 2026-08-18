@@ -158,9 +158,7 @@ fn conform_to_and_primitive_stay_contextual_identifiers() {
 #[test]
 fn rejects_removed_conformance_syntax() {
     assert!(SourceModule::parse("spec Ops for i32 { value(*self) => i32; }").is_err());
-    assert!(
-        SourceModule::parse("spec Ops { value(*self) => i32; } struct S : Ops {}").is_err()
-    );
+    assert!(SourceModule::parse("spec Ops { value(*self) => i32; } struct S : Ops {}").is_err());
     assert!(matches!(
         errors("spec Show { show(*self) => i32; } struct S {} conform S : Show { show(*self) => i32 { 1 } }")
             .as_slice(),

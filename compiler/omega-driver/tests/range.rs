@@ -1,4 +1,3 @@
-
 use omega_analyzer::Target;
 use omega_analyzer::error::AnalysisErrorKind;
 use omega_driver::{CompileError, Driver, ExternRoot};
@@ -32,7 +31,9 @@ impl TestPackage {
             vec![ExternRoot {
                 name: Ident("core".to_string()),
                 dir: core_root(),
-            }], Target::DEFAULT)
+            }],
+            Target::DEFAULT,
+        )
         .expect("construct driver with the real core extern")
         .compile(&[Ident("main".to_string())], Target::DEFAULT)
     }
@@ -186,9 +187,8 @@ fn a_dotdot_range_with_an_end_is_rejected_in_expression_position() {
 
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_slice_position() {
-    let package = TestPackage::new(
-        "main() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[1..3]; 0 }",
-    );
+    let package =
+        TestPackage::new("main() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[1..3]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -197,9 +197,8 @@ fn a_dotdot_range_with_an_end_is_rejected_in_slice_position() {
 
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_pattern_position() {
-    let package = TestPackage::new(
-        "main() => i32 { x := 5; match x { 1..3 => { 1 } } else { 0 } }",
-    );
+    let package =
+        TestPackage::new("main() => i32 { x := 5; match x { 1..3 => { 1 } } else { 0 } }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -257,19 +256,19 @@ fn an_open_slice_end_needs_a_base_that_has_a_length() {
         main() => i32 { 0 }
         "#,
     );
-    assert!(has_analysis_error(&package.expect_errors(), |kind| matches!(
-        kind,
-        AnalysisErrorKind::MissingSliceEnd
-    )));
+    assert!(has_analysis_error(
+        &package.expect_errors(),
+        |kind| matches!(kind, AnalysisErrorKind::MissingSliceEnd)
+    ));
 }
 
 #[test]
 fn a_bare_dotdot_is_rejected_with_no_context() {
     let package = TestPackage::new("main() => i32 { r := ..; 0 }");
-    assert!(has_analysis_error(&package.expect_errors(), |kind| matches!(
-        kind,
-        AnalysisErrorKind::RangeNotAllowedHere
-    )));
+    assert!(has_analysis_error(
+        &package.expect_errors(),
+        |kind| matches!(kind, AnalysisErrorKind::RangeNotAllowedHere)
+    ));
 }
 
 #[test]
@@ -349,10 +348,10 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
         main() => i32 { a := P { v = 1; }; r := a..; 0 }
         "#,
     );
-    assert!(has_analysis_error(&package.expect_errors(), |kind| matches!(
-        kind,
-        AnalysisErrorKind::RangeNeedsBounded { .. }
-    )));
+    assert!(has_analysis_error(
+        &package.expect_errors(),
+        |kind| matches!(kind, AnalysisErrorKind::RangeNeedsBounded { .. })
+    ));
 }
 
 #[test]
@@ -441,8 +440,7 @@ fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
 
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
-    let package =
-        TestPackage::new("main() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
+    let package = TestPackage::new("main() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -468,4 +466,3 @@ fn char_ranges_compile_through_the_ordinary_successor_protocol() {
     )
     .expect_ok();
 }
-

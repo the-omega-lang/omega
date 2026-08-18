@@ -1,4 +1,3 @@
-
 use super::Codegen;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use omega_analyzer::resolved_type::{ResolvedSpecType, ResolvedType};

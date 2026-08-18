@@ -43,13 +43,7 @@ impl Driver {
                 .conformances
                 .goals
                 .iter()
-                .map(|goal| {
-                    (
-                        goal.target.to_string(),
-                        goal.spec_name.clone(),
-                        goal.span,
-                    )
-                })
+                .map(|goal| (goal.target.to_string(), goal.spec_name.clone(), goal.span))
                 .collect();
             chain.push((target.to_string(), spec.borrow().name.clone(), active.span));
             self.diagnostics.error(
@@ -164,11 +158,7 @@ impl Driver {
         result
     }
 
-    pub(crate) fn solve(
-        &mut self,
-        target: &ResolvedType,
-        spec: Option<&HirId>,
-    ) -> SweepOutcome {
+    pub(crate) fn solve(&mut self, target: &ResolvedType, spec: Option<&HirId>) -> SweepOutcome {
         let templates = self.conformances.templates.clone();
         let mut skipped_goal = false;
         for template in templates {
@@ -290,7 +280,10 @@ impl Driver {
     ) -> Option<Vec<(Ident, ResolvedType)>> {
         if let Type::Named(path) = &conform.target
             && path.is_unqualified()
-            && conform.generics.iter().any(|generic| generic.ident == path.head)
+            && conform
+                .generics
+                .iter()
+                .any(|generic| generic.ident == path.head)
         {
             return Analyzer::is_conformable_target(actual)
                 .then(|| vec![(path.head.clone(), actual.clone())]);
@@ -348,5 +341,4 @@ impl Driver {
         }
         Some(substitution)
     }
-
 }

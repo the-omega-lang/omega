@@ -1,7 +1,7 @@
-use omega_analyzer::checked::{CheckedItem, ExternFunctionKind, NumberValue};
-use omega_analyzer::resolved_type::ConstValue;
 use omega_analyzer::Target;
+use omega_analyzer::checked::{CheckedItem, ExternFunctionKind, NumberValue};
 use omega_analyzer::error::{AnalysisErrorKind, TypeResolutionError};
+use omega_analyzer::resolved_type::ConstValue;
 use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver, ExternRoot};
 use omega_parser::{macros::MacroError, prelude::Ident};
@@ -28,8 +28,7 @@ impl TestPackage {
     }
 
     fn write_child(&self, name: &str, source: &str) {
-        fs::write(self.0.join(format!("{name}.omg")), source)
-            .expect("write test child module");
+        fs::write(self.0.join(format!("{name}.omg")), source).expect("write test child module");
     }
 
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
@@ -103,10 +102,7 @@ fn a_conjunction_bound_requires_every_member() {
         }
         "#,
     );
-    let errors = compile_errors(
-        &package,
-        "a conjunction bound must require both specs",
-    );
+    let errors = compile_errors(&package, "a conjunction bound must require both specs");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
@@ -298,7 +294,10 @@ fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
         }
         "#,
     );
-    let errors = compile_errors(&package, "a colliding method through a conjunction object must not silently pick");
+    let errors = compile_errors(
+        &package,
+        "a colliding method through a conjunction object must not silently pick",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::AmbiguousSpecObjectMethod { function, specs }
@@ -417,7 +416,10 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
         main() => i32 { (<S : NotASpec>::make()).v }
         "#,
     );
-    let errors = compile_errors(&not_a_spec, "a non-spec in the qualified pair must be named");
+    let errors = compile_errors(
+        &not_a_spec,
+        "a non-spec in the qualified pair must be named",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotASpec(name))
@@ -681,7 +683,9 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct driver with core extern");
     let program = driver
         .compile(&[Ident("main".to_string())], Target::DEFAULT)
@@ -768,7 +772,9 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
         vec![ExternRoot {
             name: Ident("lib".to_string()),
             dir: library.0.clone(),
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct driver with library extern")
     .compile(&[Ident("main".to_string())], Target::DEFAULT)
     .expect("calling an extern-owned concrete conformance should compile");
@@ -804,7 +810,9 @@ fn blanket_conforms_require_a_package_local_spec() {
         vec![ExternRoot {
             name: Ident("lib".to_string()),
             dir: library.0.clone(),
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct consumer")
     .compile(&[Ident("main".to_string())], Target::DEFAULT);
     let errors = match result {
@@ -856,7 +864,9 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
                 name: Ident("lib".to_string()),
                 dir: library.0.clone(),
             },
-        ], Target::DEFAULT)
+        ],
+        Target::DEFAULT,
+    )
     .expect("construct driver with I/O library extern");
     let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
         Ok(_) => panic!("a consumer must not conform two foreign I/O items"),
@@ -889,7 +899,9 @@ fn old_boolean_console_glue_signature_is_rejected() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct driver with Option core extern");
     let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
         Ok(_) => panic!("an old console glue signature must fail"),
@@ -927,7 +939,9 @@ fn formatting_is_not_available_from_core() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct driver with core extern");
     let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
         Ok(_) => panic!("core must not provide a formatting module"),
@@ -981,7 +995,9 @@ fn local_and_extern_root_identities_cannot_collide() {
         vec![ExternRoot {
             name: Ident("main".to_string()),
             dir: dependency.0.clone(),
-        }], Target::DEFAULT) {
+        }],
+        Target::DEFAULT,
+    ) {
         Ok(_) => panic!("local and extern package identities must not collide"),
         Err(errors) => errors,
     };
@@ -1222,7 +1238,10 @@ fn unrelated_matching_blankets_are_ambiguous() {
         main() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
-    let errors = compile_errors(&package, "unrelated blanket bounds must not pick arbitrarily");
+    let errors = compile_errors(
+        &package,
+        "unrelated blanket bounds must not pick arbitrarily",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::AmbiguousConformance { .. }
@@ -1429,7 +1448,10 @@ fn an_inherent_method_body_cannot_reach_a_conformance_method() {
         main() => i32 { dog := Dog { value = 1; }; dog.leak() }
         "#,
     );
-    let errors = compile_errors(&package, "an inherent body must not see a conforming method");
+    let errors = compile_errors(
+        &package,
+        "an inherent body must not see a conforming method",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::MethodNotInScope { .. }
@@ -1621,7 +1643,10 @@ fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
         main() => i32 { Animal::speak(&make()) }
         "#,
     );
-    let errors = compile_errors(&package, "a `spec T`-returning free function must be rejected");
+    let errors = compile_errors(
+        &package,
+        "a `spec T`-returning free function must be rejected",
+    );
     assert!(
         has_analysis_error(&errors, |kind| matches!(
             kind,
@@ -1649,7 +1674,9 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core,
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct driver with core extern")
     .compile(&[Ident("main".to_string())], Target::DEFAULT)
     {
@@ -1664,15 +1691,21 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
 
 #[test]
 fn primitive_method_symbols_stay_within_the_mangling_charset() {
-    let package = TestPackage::new(r#"
+    let package = TestPackage::new(
+        r#"
         primitive str { exposed width(*self) => i32 { self.size } }
         main() => i32 { 0 }
         "#,
     );
     let root = package.0.clone();
-    let program = Driver::new(root, Some(Ident("core".to_string())), Vec::new(), Target::DEFAULT)
-        .expect("construct driver")
-        .compile(&[Ident("core".to_string())], Target::DEFAULT);
+    let program = Driver::new(
+        root,
+        Some(Ident("core".to_string())),
+        Vec::new(),
+        Target::DEFAULT,
+    )
+    .expect("construct driver")
+    .compile(&[Ident("core".to_string())], Target::DEFAULT);
     let program = match program {
         Ok(program) => program,
         Err(errors) => panic!("core-shaped primitive package must compile: {errors:?}"),
@@ -1707,7 +1740,9 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
         .compile(&[Ident("main".to_string())], Target::DEFAULT);
     let _ = fs::remove_dir_all(&root);
 
-    let errors = result.err().expect("an empty package root must not compile");
+    let errors = result
+        .err()
+        .expect("an empty package root must not compile");
     assert!(
         errors
             .iter()
@@ -1725,7 +1760,9 @@ fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, V
         vec![ExternRoot {
             name: Ident("core".to_string()),
             dir: core.0.clone(),
-        }], Target::DEFAULT)
+        }],
+        Target::DEFAULT,
+    )
     .expect("construct driver with core extern")
     .compile(&[Ident("main".to_string())], Target::DEFAULT);
     drop(core);
@@ -2108,7 +2145,10 @@ fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
         }
         "#,
     );
-    let errors = compile_errors(&package, "the fat-pointer inference failure must be reported");
+    let errors = compile_errors(
+        &package,
+        "the fat-pointer inference failure must be reported",
+    );
     assert!(
         has_analysis_error(&errors, |kind| matches!(
             kind,
@@ -2139,7 +2179,10 @@ fn a_by_value_generic_still_binds_a_slice() {
 
 #[test]
 fn a_32_bit_target_sizes_usize_at_four_bytes() {
-    let target = Target { arch: omega_analyzer::Arch::Riscv32, os: omega_analyzer::Os::None };
+    let target = Target {
+        arch: omega_analyzer::Arch::Riscv32,
+        os: omega_analyzer::Os::None,
+    };
     let package = TestPackage::new(
         r#"
         width := comp sizeof<usize>;
@@ -2153,16 +2196,22 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
         .compile(&[Ident("main".to_string())], target)
         .expect("compiles for riscv32-none");
     let width_of = |name: &str| -> Option<ConstValue> {
-        program.modules.iter().flat_map(|(_, module)| module.items.iter()).find_map(|item| {
-            match item {
+        program
+            .modules
+            .iter()
+            .flat_map(|(_, module)| module.items.iter())
+            .find_map(|item| match item {
                 omega_analyzer::checked::CheckedItem::Declaration(decl)
                     if decl.ident.as_ref() == name =>
                 {
-                    Some(decl.initial_value.clone().expect("a `comp` global carries its value"))
+                    Some(
+                        decl.initial_value
+                            .clone()
+                            .expect("a `comp` global carries its value"),
+                    )
                 }
                 _ => None,
-            }
-        })
+            })
     };
     for name in ["width", "width_isize", "ptr_width"] {
         assert_eq!(
@@ -2179,7 +2228,10 @@ fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
         n : usize = 5000000000;
         main() => i32 { 0 }
         "#;
-    let target32 = Target { arch: omega_analyzer::Arch::Riscv32, os: omega_analyzer::Os::None };
+    let target32 = Target {
+        arch: omega_analyzer::Arch::Riscv32,
+        os: omega_analyzer::Os::None,
+    };
     let package32 = TestPackage::new(source);
     let errors32 = match Driver::new(package32.0.clone(), None, Vec::new(), target32)
         .expect("construct driver")

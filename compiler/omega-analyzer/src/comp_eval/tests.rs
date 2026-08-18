@@ -1,7 +1,7 @@
 use super::*;
 use crate::checked::{
-    CheckedAssignment, CheckedIf, CheckedParam, CheckedStructLiteral,
-    CheckedStructLiteralField, CheckedWhile,
+    CheckedAssignment, CheckedIf, CheckedParam, CheckedStructLiteral, CheckedStructLiteralField,
+    CheckedWhile,
 };
 use omega_hir::ModuleId;
 
@@ -155,10 +155,7 @@ fn while_loop_accumulates_via_locals() {
                         CheckedExpr::Place(sum_place.clone()),
                         ResolvedType::I32,
                     )),
-                    right: Box::new(node(
-                        CheckedExpr::Place(i_place.clone()),
-                        ResolvedType::I32,
-                    )),
+                    right: Box::new(node(CheckedExpr::Place(i_place.clone()), ResolvedType::I32)),
                 }),
                 ResolvedType::I32,
             )),
@@ -171,10 +168,7 @@ fn while_loop_accumulates_via_locals() {
             value: Box::new(node(
                 CheckedExpr::BinaryOp(CheckedBinaryOp {
                     op: BinaryOp::Add,
-                    left: Box::new(node(
-                        CheckedExpr::Place(i_place.clone()),
-                        ResolvedType::I32,
-                    )),
+                    left: Box::new(node(CheckedExpr::Place(i_place.clone()), ResolvedType::I32)),
                     right: Box::new(num(1)),
                 }),
                 ResolvedType::I32,

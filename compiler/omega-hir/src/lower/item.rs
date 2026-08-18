@@ -1,15 +1,15 @@
 use super::Lowerer;
 use crate::hir::{
     HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef, HirDeclaration,
-    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirFunctionDef,
-    HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef, HirImport, HirItem, HirField, HirParam, HirPlace,
-    HirPlaceRoot, HirPrimitiveDef, HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirUnionDef,
-    HirWalrusDeclaration,
+    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirField,
+    HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef, HirImport, HirItem,
+    HirParam, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirSpecDef, HirSpecFunction, HirStmt,
+    HirStructDef, HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
     AnnotationArg, AnnotationNode, AnnotationValue, DeclarationStmt, EnumStmt,
-    ExternDeclarationStmt, FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Param, Path,
-    SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt, Type, UnionStmt, Visibility,
+    ExternDeclarationStmt, FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Param,
+    Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt, Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,11 +70,7 @@ impl Lowerer {
                         span: f.signature_span,
                         name_span: f.name_span,
                         name: f.ident.clone(),
-                        params: f
-                            .params
-                            .iter()
-                            .map(|p| self.lower_param(p))
-                            .collect(),
+                        params: f.params.iter().map(|p| self.lower_param(p)).collect(),
                         return_type: f.return_type.clone(),
                     })
                     .collect(),
@@ -233,7 +229,9 @@ impl Lowerer {
     ) -> Vec<HirParam> {
         let self_capacity = usize::from(kind.has_implicit_self() && self_mode.is_some());
         let mut lowered = Vec::with_capacity(params.len() + self_capacity);
-        if kind.has_implicit_self() && let Some(self_param) = self.self_param(self_mode, span) {
+        if kind.has_implicit_self()
+            && let Some(self_param) = self.self_param(self_mode, span)
+        {
             lowered.push(self_param);
         }
         lowered.extend(params.iter().map(|param| self.lower_param(param)));
@@ -481,11 +479,7 @@ impl Lowerer {
                 span: v.span,
                 name: v.ident.clone(),
                 args: v.args.iter().map(|a| self.lower_expr(a)).collect(),
-                fields: v
-                    .fields
-                    .iter()
-                    .map(|f| self.lower_field(f))
-                    .collect(),
+                fields: v.fields.iter().map(|f| self.lower_field(f)).collect(),
             })
             .collect();
         let functions = e
@@ -507,5 +501,4 @@ impl Lowerer {
             functions,
         }
     }
-
 }

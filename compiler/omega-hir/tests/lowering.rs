@@ -1,4 +1,3 @@
-
 use omega_hir::{
     HirExpr, HirItem, HirPlaceRoot, HirProjection, HirRangeEnd, HirStmt, ModuleId, lower_module,
 };
@@ -148,7 +147,11 @@ fn every_range_spelling_survives_lowering_distinctly() {
             expect_open,
             "openness of `{source}`"
         );
-        assert_eq!(range.inclusive(), expect_inclusive, "inclusivity of `{source}`");
+        assert_eq!(
+            range.inclusive(),
+            expect_inclusive,
+            "inclusivity of `{source}`"
+        );
     }
 }
 

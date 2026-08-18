@@ -1,56 +1,82 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    pub(super) fn analyze_match(&mut self, node_id: HirId, span: Span, m: &HirMatch) -> Option<CheckedExprNode> {
+    pub(super) fn analyze_match(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        m: &HirMatch,
+    ) -> Option<CheckedExprNode> {
         let narrow_target = self.narrowable_scrutinee(&m.scrutinee);
         let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
 
-        let (scrutinee_place, prelude_stmts, narrow_binding) = if let Some((ident, origin, decl_id, storage, mutable)) = narrow_target {
-            let CheckedExpr::Place(place) = checked_scrutinee.kind else {
-                unreachable!("a narrowable scrutinee is always analyzed as a place")
-            };
-            (place, Vec::new(), Some((ident, origin, decl_id, storage, mutable)))
-        } else {
-            let temporary_id = self.resolver.fresh_synthetic_id();
-            let target = CheckedPlace {
-                root: CheckedPlaceRoot::Variable {
-                    decl_id: temporary_id,
-                    storage: Storage::Local,
+        let (scrutinee_place, prelude_stmts, narrow_binding) =
+            if let Some((ident, origin, decl_id, storage, mutable)) = narrow_target {
+                let CheckedExpr::Place(place) = checked_scrutinee.kind else {
+                    unreachable!("a narrowable scrutinee is always analyzed as a place")
+                };
+                (
+                    place,
+                    Vec::new(),
+                    Some((ident, origin, decl_id, storage, mutable)),
+                )
+            } else {
+                let temporary_id = self.resolver.fresh_synthetic_id();
+                let target = CheckedPlace {
+                    root: CheckedPlaceRoot::Variable {
+                        decl_id: temporary_id,
+                        storage: Storage::Local,
+                        r#type: scrutinee_type.clone(),
+                    },
+                    projections: vec![],
                     r#type: scrutinee_type.clone(),
-                },
-                projections: vec![],
-                r#type: scrutinee_type.clone(),
+                };
+                let decl = CheckedStmt::Declaration(CheckedDeclaration {
+                    id: temporary_id,
+                    span,
+                    ident: Ident("$scrutinee".to_string()),
+                    r#type: scrutinee_type.clone(),
+                    mutable: true,
+                    initial_value: None,
+                });
+                let assign = CheckedStmt::Expression(CheckedExprNode {
+                    id: self.resolver.fresh_synthetic_id(),
+                    span,
+                    r#type: scrutinee_type.clone(),
+                    kind: CheckedExpr::Assignment(CheckedAssignment {
+                        target: target.clone(),
+                        value: Box::new(checked_scrutinee),
+                    }),
+                });
+                (target, vec![decl, assign], None)
             };
-            let decl = CheckedStmt::Declaration(CheckedDeclaration {
-                id: temporary_id,
-                span,
-                ident: Ident("$scrutinee".to_string()),
-                r#type: scrutinee_type.clone(),
-                mutable: true,
-                initial_value: None,
-            });
-            let assign = CheckedStmt::Expression(CheckedExprNode {
-                id: self.resolver.fresh_synthetic_id(),
-                span,
-                r#type: scrutinee_type.clone(),
-                kind: CheckedExpr::Assignment(CheckedAssignment {
-                    target: target.clone(),
-                    value: Box::new(checked_scrutinee),
-                }),
-            });
-            (target, vec![decl, assign], None)
-        };
 
         let is_enum_scrutinee = matches!(&scrutinee_type, ResolvedType::Enum { .. })
             || matches!(&scrutinee_type, ResolvedType::Pointer { pointee, .. } if matches!(**pointee, ResolvedType::Enum { .. }));
 
         let (arms, else_branch, result_type) = if is_enum_scrutinee {
-            self.analyze_enum_match(node_id, span, m, &scrutinee_type, &scrutinee_place, narrow_binding)?
-        } else if scrutinee_type.integer_domain(self.target.pointer_bits()).is_some() {
+            self.analyze_enum_match(
+                node_id,
+                span,
+                m,
+                &scrutinee_type,
+                &scrutinee_place,
+                narrow_binding,
+            )?
+        } else if scrutinee_type
+            .integer_domain(self.target.pointer_bits())
+            .is_some()
+        {
             self.analyze_value_match(node_id, span, m, &scrutinee_type, &scrutinee_place)?
         } else {
-            self.error(node_id, span, AnalysisErrorKind::UnsupportedMatchScrutinee { r#type: scrutinee_type });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::UnsupportedMatchScrutinee {
+                    r#type: scrutinee_type,
+                },
+            );
             return None;
         };
 
@@ -87,7 +113,9 @@ impl<'r> Analyzer<'r> {
         if !place.projections.is_empty() {
             return None;
         }
-        let HirPlaceRoot::Path(expr_path) = &place.root else { return None };
+        let HirPlaceRoot::Path(expr_path) = &place.root else {
+            return None;
+        };
         if !expr_path.generic_args.is_empty() || !expr_path.path.is_unqualified() {
             return None;
         }
@@ -106,7 +134,9 @@ impl<'r> Analyzer<'r> {
         &self,
         scrutinee: &HirExprNode,
     ) -> Option<(Ident, Origin, HirId, Storage, bool)> {
-        let HirExpr::Place(place) = &Self::strip_reveal(scrutinee).1.expr else { return None };
+        let HirExpr::Place(place) = &Self::strip_reveal(scrutinee).1.expr else {
+            return None;
+        };
         self.narrowable_place(place)
     }
 
@@ -115,7 +145,10 @@ impl<'r> Analyzer<'r> {
             self.analyze_block(block, None)
         } else {
             let checked = self.analyze_expr(body, None)?;
-            Some(CheckedBlock { stmts: vec![], tail: Some(Box::new(checked)) })
+            Some(CheckedBlock {
+                stmts: vec![],
+                tail: Some(Box::new(checked)),
+            })
         }
     }
 
@@ -161,7 +194,9 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         node_id,
                         arm.pattern.span(),
-                        AnalysisErrorKind::MultipleCatchAllPatterns { previous: previous.pattern.span() },
+                        AnalysisErrorKind::MultipleCatchAllPatterns {
+                            previous: previous.pattern.span(),
+                        },
                     );
                     return None;
                 }
@@ -172,18 +207,30 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     node_id,
                     arm.pattern.span(),
-                    AnalysisErrorKind::PatternNotEnumVariant { r#enum: cell.borrow().name.clone() },
+                    AnalysisErrorKind::PatternNotEnumVariant {
+                        r#enum: cell.borrow().name.clone(),
+                    },
                 );
                 return None;
             };
             let variant_index = self.resolve_variant_pattern(&cell, pattern_expr)?;
 
             if let Some(previous) = covered.insert(variant_index, arm.pattern.span()) {
-                self.error(node_id, arm.pattern.span(), AnalysisErrorKind::OverlappingMatchArm { previous });
+                self.error(
+                    node_id,
+                    arm.pattern.span(),
+                    AnalysisErrorKind::OverlappingMatchArm { previous },
+                );
                 return None;
             }
 
-            let condition = self.tag_variant_condition(&tag_place, &tag_type, &cell, variant_index, arm.pattern.span());
+            let condition = self.tag_variant_condition(
+                &tag_place,
+                &tag_type,
+                &cell,
+                variant_index,
+                arm.pattern.span(),
+            );
 
             let (body, _) = self.with_scope(|this| {
                 if let Some((ident, origin, decl_id, storage, mutable)) = &narrow_binding {
@@ -199,33 +246,43 @@ impl<'r> Analyzer<'r> {
                         None => refined,
                     };
                     this.declare_narrowed_binding(
-                        *decl_id,
-                        arm.span,
-                        ident,
-                        *origin,
-                        narrowed,
-                        *storage,
-                        *mutable,
+                        *decl_id, arm.span, ident, *origin, narrowed, *storage, *mutable,
                     );
                 }
                 this.analyze_match_arm_body(&arm.body)
             });
 
-            checked_arms.push(CheckedMatchArm { conditions: vec![vec![condition]], body: body? });
+            checked_arms.push(CheckedMatchArm {
+                conditions: vec![vec![condition]],
+                body: body?,
+            });
         }
 
         let variant_count = cell.borrow().variants.len();
-        let missing: Vec<usize> =
-            (0..variant_count).filter(|idx| !covered.contains_key(idx)).collect();
+        let missing: Vec<usize> = (0..variant_count)
+            .filter(|idx| !covered.contains_key(idx))
+            .collect();
 
         if let Some(arm) = catch_all {
             if missing.is_empty() {
-                self.error(node_id, arm.pattern.span(), AnalysisErrorKind::CatchAllPatternRedundant);
+                self.error(
+                    node_id,
+                    arm.pattern.span(),
+                    AnalysisErrorKind::CatchAllPatternRedundant,
+                );
                 return None;
             }
             let conditions = missing
                 .iter()
-                .map(|&idx| vec![self.tag_variant_condition(&tag_place, &tag_type, &cell, idx, arm.pattern.span())])
+                .map(|&idx| {
+                    vec![self.tag_variant_condition(
+                        &tag_place,
+                        &tag_type,
+                        &cell,
+                        idx,
+                        arm.pattern.span(),
+                    )]
+                })
                 .collect();
             let body = self.analyze_match_arm_body(&arm.body)?;
             checked_arms.push(CheckedMatchArm { conditions, body });
@@ -234,11 +291,17 @@ impl<'r> Analyzer<'r> {
         let else_branch = match &m.else_branch {
             Some(b) => Some(self.analyze_block(b, None)?),
             None if catch_all.is_none() && !missing.is_empty() => {
-                let missing_names = missing.iter().map(|&idx| cell.borrow().variants[idx].name.clone()).collect();
+                let missing_names = missing
+                    .iter()
+                    .map(|&idx| cell.borrow().variants[idx].name.clone())
+                    .collect();
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::NonExhaustiveMatchEnum { r#enum: cell.borrow().name.clone(), missing: missing_names },
+                    AnalysisErrorKind::NonExhaustiveMatchEnum {
+                        r#enum: cell.borrow().name.clone(),
+                        missing: missing_names,
+                    },
                 );
                 return None;
             }
@@ -281,7 +344,11 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    fn resolve_variant_pattern(&mut self, cell: &Rc<RefCell<ResolvedEnumType>>, expr: &HirExprNode) -> Option<usize> {
+    fn resolve_variant_pattern(
+        &mut self,
+        cell: &Rc<RefCell<ResolvedEnumType>>,
+        expr: &HirExprNode,
+    ) -> Option<usize> {
         let expr = Self::strip_reveal(expr).1;
         let shaped_as_variant_path = matches!(
             &expr.expr,
@@ -292,14 +359,24 @@ impl<'r> Analyzer<'r> {
             self.error(
                 expr.id,
                 expr.span,
-                AnalysisErrorKind::PatternNotEnumVariant { r#enum: cell.borrow().name.clone() },
+                AnalysisErrorKind::PatternNotEnumVariant {
+                    r#enum: cell.borrow().name.clone(),
+                },
             );
             return None;
         }
-        let HirExpr::Place(HirPlace { root: HirPlaceRoot::Path(expr_path), .. }) = &expr.expr else {
+        let HirExpr::Place(HirPlace {
+            root: HirPlaceRoot::Path(expr_path),
+            ..
+        }) = &expr.expr
+        else {
             unreachable!("just confirmed above")
         };
-        let variant_name = expr_path.path.tail.last().expect("just confirmed non-empty above");
+        let variant_name = expr_path
+            .path
+            .tail
+            .last()
+            .expect("just confirmed non-empty above");
         let enum_name_segment = if expr_path.path.tail.len() == 1 {
             &expr_path.path.head
         } else {
@@ -312,7 +389,10 @@ impl<'r> Analyzer<'r> {
                 AnalysisErrorKind::PatternIsEnumVariant {
                     r#enum: enum_name_segment.clone(),
                     variant: variant_name.clone(),
-                    scrutinee: ResolvedType::Enum { cell: cell.clone(), variant: None },
+                    scrutinee: ResolvedType::Enum {
+                        cell: cell.clone(),
+                        variant: None,
+                    },
                 },
             );
             return None;
@@ -321,7 +401,8 @@ impl<'r> Analyzer<'r> {
         match found {
             Some(idx) => Some(idx),
             None => {
-                let similar = best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
+                let similar =
+                    best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
                 self.error(
                     expr.id,
                     expr.span,
@@ -355,7 +436,9 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         node_id,
                         arm.pattern.span(),
-                        AnalysisErrorKind::MultipleCatchAllPatterns { previous: previous.pattern.span() },
+                        AnalysisErrorKind::MultipleCatchAllPatterns {
+                            previous: previous.pattern.span(),
+                        },
                     );
                     return None;
                 }
@@ -369,17 +452,29 @@ impl<'r> Analyzer<'r> {
             if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
                 continue; // resolved separately below, once every other arm's interval is known
             }
-            let (lo, hi, conditions) = self.analyze_value_pattern(&arm.pattern, scrutinee_type, scrutinee_place)?;
-            intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
+            let (lo, hi, conditions) =
+                self.analyze_value_pattern(&arm.pattern, scrutinee_type, scrutinee_place)?;
+            intervals.push(crate::exhaustiveness::Interval {
+                lo,
+                hi,
+                span: arm.pattern.span(),
+            });
             let body = self.analyze_match_arm_body(&arm.body)?;
-            checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
+            checked_arms.push(CheckedMatchArm {
+                conditions: vec![conditions],
+                body,
+            });
         }
 
         if let Some(arm) = catch_all {
             let gaps = crate::exhaustiveness::check(domain, intervals.clone()).gaps;
             let (lo, hi) = match gaps[..] {
                 [] => {
-                    self.error(node_id, arm.pattern.span(), AnalysisErrorKind::CatchAllPatternRedundant);
+                    self.error(
+                        node_id,
+                        arm.pattern.span(),
+                        AnalysisErrorKind::CatchAllPatternRedundant,
+                    );
                     return None;
                 }
                 [one] => one,
@@ -401,17 +496,31 @@ impl<'r> Analyzer<'r> {
                 arm.pattern.span(),
                 self.target.pointer_bits(),
             );
-            intervals.push(crate::exhaustiveness::Interval { lo, hi, span: arm.pattern.span() });
+            intervals.push(crate::exhaustiveness::Interval {
+                lo,
+                hi,
+                span: arm.pattern.span(),
+            });
             let body = self.analyze_match_arm_body(&arm.body)?;
-            checked_arms.push(CheckedMatchArm { conditions: vec![conditions], body });
+            checked_arms.push(CheckedMatchArm {
+                conditions: vec![conditions],
+                body,
+            });
         }
 
         let coverage = crate::exhaustiveness::check(domain, intervals);
         if !coverage.overlaps.is_empty() {
             for (a, b) in &coverage.overlaps {
-                let (earlier, later) =
-                    if a.span.start <= b.span.start { (a.span, b.span) } else { (b.span, a.span) };
-                self.error(node_id, later, AnalysisErrorKind::OverlappingMatchArm { previous: earlier });
+                let (earlier, later) = if a.span.start <= b.span.start {
+                    (a.span, b.span)
+                } else {
+                    (b.span, a.span)
+                };
+                self.error(
+                    node_id,
+                    later,
+                    AnalysisErrorKind::OverlappingMatchArm { previous: earlier },
+                );
             }
             return None;
         }
@@ -419,11 +528,18 @@ impl<'r> Analyzer<'r> {
         let else_branch = match &m.else_branch {
             Some(b) => Some(self.analyze_block(b, None)?),
             None if !coverage.gaps.is_empty() => {
-                let gaps = coverage.gaps.iter().map(|(lo, hi)| Self::describe_gap(scrutinee_type, *lo, *hi)).collect();
+                let gaps = coverage
+                    .gaps
+                    .iter()
+                    .map(|(lo, hi)| Self::describe_gap(scrutinee_type, *lo, *hi))
+                    .collect();
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::NonExhaustiveMatchValue { r#type: scrutinee_type.clone(), gaps },
+                    AnalysisErrorKind::NonExhaustiveMatchValue {
+                        r#type: scrutinee_type.clone(),
+                        gaps,
+                    },
                 );
                 return None;
             }
@@ -444,17 +560,31 @@ impl<'r> Analyzer<'r> {
             HirPattern::Value(expr) => {
                 let value = self.const_eval_pattern(expr, scrutinee_type)?;
                 let n = Self::const_value_as_i128(&value);
-                let condition = self.value_cmp_condition(scrutinee_place, expr.span, scrutinee_type, BinaryOp::Eq, value);
+                let condition = self.value_cmp_condition(
+                    scrutinee_place,
+                    expr.span,
+                    scrutinee_type,
+                    BinaryOp::Eq,
+                    value,
+                );
                 Some((n, n, vec![condition]))
             }
             HirPattern::Range(range) => {
-                let domain = scrutinee_type.integer_domain(self.target.pointer_bits()).expect("caller already confirmed an integer domain");
+                let domain = scrutinee_type
+                    .integer_domain(self.target.pointer_bits())
+                    .expect("caller already confirmed an integer domain");
                 let mut conditions = Vec::new();
                 let lo = match &range.start {
                     Some(e) => {
                         let value = self.const_eval_pattern(e, scrutinee_type)?;
                         let n = Self::const_value_as_i128(&value);
-                        conditions.push(self.value_cmp_condition(scrutinee_place, e.span, scrutinee_type, BinaryOp::Ge, value));
+                        conditions.push(self.value_cmp_condition(
+                            scrutinee_place,
+                            e.span,
+                            scrutinee_type,
+                            BinaryOp::Ge,
+                            value,
+                        ));
                         n
                     }
                     None => domain.0,
@@ -464,8 +594,18 @@ impl<'r> Analyzer<'r> {
                         let value = self.const_eval_pattern(e, scrutinee_type)?;
                         let n = Self::const_value_as_i128(&value);
                         let inclusive = range.inclusive();
-                        let op = if inclusive { BinaryOp::Le } else { BinaryOp::Lt };
-                        conditions.push(self.value_cmp_condition(scrutinee_place, e.span, scrutinee_type, op, value));
+                        let op = if inclusive {
+                            BinaryOp::Le
+                        } else {
+                            BinaryOp::Lt
+                        };
+                        conditions.push(self.value_cmp_condition(
+                            scrutinee_place,
+                            e.span,
+                            scrutinee_type,
+                            op,
+                            value,
+                        ));
                         if inclusive { n } else { n - 1 }
                     }
                     None => domain.1,
@@ -488,36 +628,69 @@ impl<'r> Analyzer<'r> {
         let mut conditions = Vec::new();
         if lo != domain.0 {
             let value = Self::i128_to_const_value(scrutinee_type, lo, pointer_bits);
-            conditions.push(self.value_cmp_condition(scrutinee_place, span, scrutinee_type, BinaryOp::Ge, value));
+            conditions.push(self.value_cmp_condition(
+                scrutinee_place,
+                span,
+                scrutinee_type,
+                BinaryOp::Ge,
+                value,
+            ));
         }
         if hi != domain.1 {
             let value = Self::i128_to_const_value(scrutinee_type, hi, pointer_bits);
-            conditions.push(self.value_cmp_condition(scrutinee_place, span, scrutinee_type, BinaryOp::Le, value));
+            conditions.push(self.value_cmp_condition(
+                scrutinee_place,
+                span,
+                scrutinee_type,
+                BinaryOp::Le,
+                value,
+            ));
         }
         conditions
     }
 
-    pub(super) fn i128_to_const_value(scrutinee_type: &ResolvedType, n: i128, pointer_bits: u32) -> ConstValue {
+    pub(super) fn i128_to_const_value(
+        scrutinee_type: &ResolvedType,
+        n: i128,
+        pointer_bits: u32,
+    ) -> ConstValue {
         match scrutinee_type {
             ResolvedType::Bool => ConstValue::Bool(n != 0),
-            ResolvedType::Char => {
-                ConstValue::Char(char::from_u32(n as u32).expect("catch-all inference stays within char's own domain"))
-            }
+            ResolvedType::Char => ConstValue::Char(
+                char::from_u32(n as u32)
+                    .expect("catch-all inference stays within char's own domain"),
+            ),
             _ => match scrutinee_type.numeric_kind(pointer_bits) {
                 Some(NumericKind::Signed(_)) => ConstValue::Number(NumberValue::Signed(n as i64)),
-                Some(NumericKind::Unsigned(_)) => ConstValue::Number(NumberValue::Unsigned(n as u64)),
-                _ => unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type"),
+                Some(NumericKind::Unsigned(_)) => {
+                    ConstValue::Number(NumberValue::Unsigned(n as u64))
+                }
+                _ => unreachable!(
+                    "analyze_value_match only ever runs for an integer/bool/char scrutinee type"
+                ),
             },
         }
     }
 
-    fn const_eval_pattern(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+    fn const_eval_pattern(
+        &mut self,
+        expr: &HirExprNode,
+        expected: &ResolvedType,
+    ) -> Option<ConstValue> {
         match &expr.expr {
-            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Number(n) => self
+                .const_number(expr.id, expr.span, n, expected, false)
+                .map(ConstValue::Number),
             HirExpr::Negate(inner) => match &inner.expr {
-                HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number),
+                HirExpr::Number(n) => self
+                    .const_number(expr.id, expr.span, n, expected, true)
+                    .map(ConstValue::Number),
                 _ => {
-                    self.error(expr.id, expr.span, AnalysisErrorKind::PatternValueNotConstant);
+                    self.error(
+                        expr.id,
+                        expr.span,
+                        AnalysisErrorKind::PatternValueNotConstant,
+                    );
                     None
                 }
             },
@@ -527,7 +700,10 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         expr.id,
                         expr.span,
-                        AnalysisErrorKind::PatternTypeMismatch { expected: expected.clone(), found: ResolvedType::Char },
+                        AnalysisErrorKind::PatternTypeMismatch {
+                            expected: expected.clone(),
+                            found: ResolvedType::Char,
+                        },
                     );
                     None
                 }
@@ -538,13 +714,20 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         expr.id,
                         expr.span,
-                        AnalysisErrorKind::PatternTypeMismatch { expected: expected.clone(), found: ResolvedType::Bool },
+                        AnalysisErrorKind::PatternTypeMismatch {
+                            expected: expected.clone(),
+                            found: ResolvedType::Bool,
+                        },
                     );
                     None
                 }
             },
             _ => {
-                self.error(expr.id, expr.span, AnalysisErrorKind::PatternValueNotConstant);
+                self.error(
+                    expr.id,
+                    expr.span,
+                    AnalysisErrorKind::PatternValueNotConstant,
+                );
                 None
             }
         }
@@ -555,7 +738,9 @@ impl<'r> Analyzer<'r> {
             ConstValue::Number(NumberValue::Signed(n)) => *n as i128,
             ConstValue::Number(NumberValue::Unsigned(n)) => *n as i128,
             ConstValue::Number(NumberValue::Float(_)) => {
-                unreachable!("match patterns are never float-typed -- integer_domain excludes floats")
+                unreachable!(
+                    "match patterns are never float-typed -- integer_domain excludes floats"
+                )
             }
             ConstValue::Bool(b) => *b as i128,
             ConstValue::Char(c) => *c as i128,
@@ -566,7 +751,9 @@ impl<'r> Analyzer<'r> {
             | ConstValue::Enum { .. }
             | ConstValue::Union { .. }
             | ConstValue::Ref(_) => {
-                unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
+                unreachable!(
+                    "analyze_value_match only ever runs for an integer/bool/char scrutinee type"
+                )
             }
         }
     }
@@ -590,7 +777,9 @@ impl<'r> Analyzer<'r> {
             | ConstValue::Enum { .. }
             | ConstValue::Union { .. }
             | ConstValue::Ref(_) => {
-                unreachable!("analyze_value_match only ever runs for an integer/bool/char scrutinee type")
+                unreachable!(
+                    "analyze_value_match only ever runs for an integer/bool/char scrutinee type"
+                )
             }
         };
         let scrutinee_read = CheckedExprNode {
@@ -609,20 +798,34 @@ impl<'r> Analyzer<'r> {
             id: self.resolver.fresh_synthetic_id(),
             span,
             r#type: ResolvedType::Bool,
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp { op, left: Box::new(scrutinee_read), right: Box::new(constant) }),
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op,
+                left: Box::new(scrutinee_read),
+                right: Box::new(constant),
+            }),
         }
     }
 
     fn describe_gap(scrutinee_type: &ResolvedType, lo: i128, hi: i128) -> String {
         let render = |n: i128| match scrutinee_type {
-            ResolvedType::Bool => if n == 0 { "false".to_string() } else { "true".to_string() },
+            ResolvedType::Bool => {
+                if n == 0 {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                }
+            }
             ResolvedType::Char => match char::from_u32(n as u32) {
                 Some(c) if c.is_ascii_graphic() || c == ' ' => format!("'{c}'"),
                 _ => format!("U+{n:04X}"),
             },
             _ => n.to_string(),
         };
-        if lo == hi { render(lo) } else { format!("{}..={}", render(lo), render(hi)) }
+        if lo == hi {
+            render(lo)
+        } else {
+            format!("{}..={}", render(lo), render(hi))
+        }
     }
 
     fn unify_match_arm_types(
@@ -632,7 +835,8 @@ impl<'r> Analyzer<'r> {
         arms: &[CheckedMatchArm],
         else_branch: &Option<CheckedBlock>,
     ) -> Option<ResolvedType> {
-        let arm_kinds: Vec<Option<ResolvedType>> = arms.iter().map(|a| Self::block_type(&a.body)).collect();
+        let arm_kinds: Vec<Option<ResolvedType>> =
+            arms.iter().map(|a| Self::block_type(&a.body)).collect();
         let else_kind: Option<Option<ResolvedType>> = else_branch.as_ref().map(Self::block_type);
 
         let result_type = arm_kinds
@@ -644,9 +848,20 @@ impl<'r> Analyzer<'r> {
             .map(|t| t.widened())
             .unwrap_or(ResolvedType::Void);
 
-        let mismatch = arm_kinds.into_iter().chain(else_kind).flatten().find(|t| !result_type.accepts(t));
+        let mismatch = arm_kinds
+            .into_iter()
+            .chain(else_kind)
+            .flatten()
+            .find(|t| !result_type.accepts(t));
         if let Some(found) = mismatch {
-            self.error(node_id, span, AnalysisErrorKind::MatchArmTypeMismatch { expected: result_type, found });
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::MatchArmTypeMismatch {
+                    expected: result_type,
+                    found,
+                },
+            );
             return None;
         }
         Some(result_type)

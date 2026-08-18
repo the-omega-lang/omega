@@ -3,13 +3,14 @@ use crate::ast::expression::{
     ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr, CompoundAssignExpr, DecrementExpr,
     DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
     IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr,
-    Pattern, RevealExpr, SizeofExpr,
-    SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField,
+    Pattern, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField,
 };
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
-use crate::parser::{Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement};
+use crate::parser::{
+    Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement,
+};
 
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
     p.descend(parse_range_or_expression)
@@ -52,8 +53,14 @@ const BINARY_TIERS: &[&[(TokenKind, BinaryOp)]] = &[
     &[(TokenKind::Pipe, BinaryOp::BitOr)],
     &[(TokenKind::Caret, BinaryOp::BitXor)],
     &[(TokenKind::Amp, BinaryOp::BitAnd)],
-    &[(TokenKind::Shl, BinaryOp::Shl), (TokenKind::Shr, BinaryOp::Shr)],
-    &[(TokenKind::Plus, BinaryOp::Add), (TokenKind::Minus, BinaryOp::Sub)],
+    &[
+        (TokenKind::Shl, BinaryOp::Shl),
+        (TokenKind::Shr, BinaryOp::Shr),
+    ],
+    &[
+        (TokenKind::Plus, BinaryOp::Add),
+        (TokenKind::Minus, BinaryOp::Sub),
+    ],
     &[
         (TokenKind::Star, BinaryOp::Mul),
         (TokenKind::Slash, BinaryOp::Div),
@@ -124,7 +131,10 @@ fn parse_comparison(p: &mut Parser) -> Option<ExpressionNode> {
         parse_binary_tier(p, 0)?;
     }
     let span = left.span.to(right.span);
-    Some(ExpressionNode { expression: binary_op_expr(left, op, right), span })
+    Some(ExpressionNode {
+        expression: binary_op_expr(left, op, right),
+        span,
+    })
 }
 
 fn parse_binary_tier(p: &mut Parser, tier: usize) -> Option<ExpressionNode> {
@@ -140,7 +150,10 @@ fn parse_binary_tier(p: &mut Parser, tier: usize) -> Option<ExpressionNode> {
         p.advance();
         let right = parse_binary_tier(p, tier + 1)?;
         let span = left.span.to(right.span);
-        left = ExpressionNode { expression: binary_op_expr(left, *op, right), span };
+        left = ExpressionNode {
+            expression: binary_op_expr(left, *op, right),
+            span,
+        };
     }
     Some(left)
 }
@@ -551,7 +564,9 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             })
         }
         // Commit contextual `sizeof` only when `<Type>` follows.
-        TokenKind::Ident(name) if name == contextual::SIZEOF && matches!(p.peek_at(1), TokenKind::Lt) => {
+        TokenKind::Ident(name)
+            if name == contextual::SIZEOF && matches!(p.peek_at(1), TokenKind::Lt) =>
+        {
             p.advance(); // 'sizeof'
             p.advance(); // '<'
             let r#type = crate::parser::r#type::parse_type(p)?;

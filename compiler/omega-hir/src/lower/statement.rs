@@ -12,13 +12,10 @@ impl Lowerer {
 
     fn lower_statement(&mut self, statement: &Statement, span: Span) -> HirStmt {
         match statement {
-            Statement::Declaration(decl) => {
-                HirStmt::Declaration(self.lower_declaration(decl))
+            Statement::Declaration(decl) => HirStmt::Declaration(self.lower_declaration(decl)),
+            Statement::DeclarationWithInit(decl, value) => {
+                HirStmt::DeclarationWithInit(self.lower_declaration(decl), self.lower_expr(value))
             }
-            Statement::DeclarationWithInit(decl, value) => HirStmt::DeclarationWithInit(
-                self.lower_declaration(decl),
-                self.lower_expr(value),
-            ),
             Statement::ExternDeclaration(decl) => {
                 HirStmt::ExternDeclaration(self.lower_extern_declaration(decl, span))
             }

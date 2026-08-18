@@ -1,4 +1,3 @@
-
 use crate::error::{CompileError, ImportSite};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
@@ -9,9 +8,9 @@ use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
-use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ImportRoot, Item, ParseError, Path, SourceModule};
+use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -85,7 +84,9 @@ impl ModuleStore {
     }
 
     pub fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<ModulePath> {
-        self.macro_expansions.defining_module(origin).map(ToOwned::to_owned)
+        self.macro_expansions
+            .defining_module(origin)
+            .map(ToOwned::to_owned)
     }
 
     pub fn macro_origin_visibility(
@@ -487,17 +488,22 @@ impl Driver {
                 }
             };
             let annotations = import.annotations.clone();
-            let suppress = self.analyze(path, &[], AnalysisSite::new(import.id, import.span), |analyzer| {
-                annotations::resolve(
-                    analyzer,
-                    import.id,
-                    &annotations,
-                    ItemKind::Import,
-                    false,
-                    false,
-                )
-                .suppress
-            });
+            let suppress = self.analyze(
+                path,
+                &[],
+                AnalysisSite::new(import.id, import.span),
+                |analyzer| {
+                    annotations::resolve(
+                        analyzer,
+                        import.id,
+                        &annotations,
+                        ItemKind::Import,
+                        false,
+                        false,
+                    )
+                    .suppress
+                },
+            );
 
             match imports.entry(alias) {
                 Entry::Occupied(existing) => {

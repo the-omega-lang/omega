@@ -1,5 +1,5 @@
-use omega_parser::prelude::{Expression, Item, Statement, StatementNode, Type};
 use omega_parser::SourceModule;
+use omega_parser::prelude::{Expression, Item, Statement, StatementNode, Type};
 
 fn expression_statement(source: &str) -> Expression {
     let module = SourceModule::parse(source).unwrap();
@@ -9,8 +9,7 @@ fn expression_statement(source: &str) -> Expression {
     if let Some(tail) = function.codeblock.tail {
         return tail.expression;
     }
-    let StatementNode { statement, .. } =
-        function.codeblock.statements.into_iter().last().unwrap();
+    let StatementNode { statement, .. } = function.codeblock.statements.into_iter().last().unwrap();
     let Statement::Expression(expression) = statement else {
         panic!("expected an expression statement");
     };

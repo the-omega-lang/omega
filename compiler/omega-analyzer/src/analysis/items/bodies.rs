@@ -16,8 +16,14 @@ impl<'r> Analyzer<'r> {
             let ((params, body), scope) = this.with_scope(|this| {
                 let params = this.analyze_all(&f.params, Self::analyze_param);
                 this.current_return_type = (*fn_type.return_type).clone();
-                debug_assert!(this.loop_stack.is_empty(), "loop state must not leak between function bodies");
-                debug_assert!(!this.in_defer_body, "defer state must not leak between function bodies");
+                debug_assert!(
+                    this.loop_stack.is_empty(),
+                    "loop state must not leak between function bodies"
+                );
+                debug_assert!(
+                    !this.in_defer_body,
+                    "defer state must not leak between function bodies"
+                );
                 let body = this.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
                 (params, body)
             });
@@ -101,10 +107,7 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn checked_fields(
-        declared: &[HirField],
-        resolved: &[ResolvedField],
-    ) -> Vec<CheckedField> {
+    fn checked_fields(declared: &[HirField], resolved: &[ResolvedField]) -> Vec<CheckedField> {
         declared
             .iter()
             .zip(resolved)

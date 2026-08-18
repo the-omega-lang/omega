@@ -1,5 +1,3 @@
-
-use crate::target::Target;
 use crate::checked::{
     CastKind, CheckedBinaryOp, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFor,
     CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace,
@@ -7,6 +5,7 @@ use crate::checked::{
 };
 use crate::resolved_type::{ConstValue, ResolvedType};
 use crate::resolver::ResolveError;
+use crate::target::Target;
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Span};
 use std::collections::HashMap;

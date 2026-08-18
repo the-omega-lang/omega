@@ -147,11 +147,8 @@ impl<'r> Analyzer<'r> {
         let mut methods = Vec::with_capacity(requirements.len());
         let mut pending = Vec::new();
         for requirement in requirements {
-            let matching = functions
-                .iter()
-                .zip(&signatures)
-                .zip(method_ids)
-                .find(|((function, (signature, _)), _)| {
+            let matching = functions.iter().zip(&signatures).zip(method_ids).find(
+                |((function, (signature, _)), _)| {
                     function.name == requirement.name
                         && self.fn_satisfies_requirement(
                             id,
@@ -160,7 +157,8 @@ impl<'r> Analyzer<'r> {
                             &requirement.fn_type,
                             &requirement.return_type_bound,
                         )
-                });
+                },
+            );
             if let Some(((_function, (signature, annotations)), method_id)) = matching {
                 methods.push((
                     requirement.name.clone(),
@@ -344,7 +342,9 @@ impl<'r> Analyzer<'r> {
         let module = self.module_path.clone();
         sp.dependencies
             .iter()
-            .filter_map(|dep| self.resolve_spec_dependency_cell(sp.id, sp.span, dep, false, &module))
+            .filter_map(|dep| {
+                self.resolve_spec_dependency_cell(sp.id, sp.span, dep, false, &module)
+            })
             .collect()
     }
 
@@ -370,17 +370,17 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let absolute = match self.context.resolve_absolute_item_path(
-            &mut *self.resolver,
-            path,
-            module,
-        ) {
-            Ok(a) => a,
-            Err(e) => {
-                self.error(id, span, AnalysisErrorKind::UnresolvedType(e));
-                return None;
-            }
-        };
+        let absolute =
+            match self
+                .context
+                .resolve_absolute_item_path(&mut *self.resolver, path, module)
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    self.error(id, span, AnalysisErrorKind::UnresolvedType(e));
+                    return None;
+                }
+            };
         let primary = match self.resolver.spec_declaration(&absolute) {
             Ok(found) => found,
             Err(e) => {
@@ -392,10 +392,7 @@ impl<'r> Analyzer<'r> {
         let cell = if let Some(cell) = primary {
             cell
         } else if ambient_fallback && path.is_unqualified() {
-            let ambient_path = match self
-                .resolver
-                .ambient_core_candidates(module, &path.head)
-            {
+            let ambient_path = match self.resolver.ambient_core_candidates(module, &path.head) {
                 Ok(Some(ambient_path)) => ambient_path,
                 Ok(None) => {
                     self.error(id, span, AnalysisErrorKind::UnresolvedType(not_a_spec()));
@@ -739,43 +736,46 @@ impl<'r> Analyzer<'r> {
                         return Err(vec![]);
                     }
                 };
-                let available: Vec<(HirId, Vec<ResolvedType>, Ident, ResolvedMethod)> =
-                    candidates
-                        .into_iter()
-                        .filter(|entry| permitted.contains(&entry.spec.borrow().id))
-                        .flat_map(|entry| {
-                            let spec_id = entry.spec.borrow().id;
-                            let spec_args = entry.spec_args.clone();
-                            entry
-                                .methods
-                                .into_iter()
-                                .map(move |(name, method)| {
-                                    (spec_id, spec_args.clone(), name, method)
-                                })
-                        })
-                        .collect();
+                let available: Vec<(HirId, Vec<ResolvedType>, Ident, ResolvedMethod)> = candidates
+                    .into_iter()
+                    .filter(|entry| permitted.contains(&entry.spec.borrow().id))
+                    .flat_map(|entry| {
+                        let spec_id = entry.spec.borrow().id;
+                        let spec_args = entry.spec_args.clone();
+                        entry
+                            .methods
+                            .into_iter()
+                            .map(move |(name, method)| (spec_id, spec_args.clone(), name, method))
+                    })
+                    .collect();
 
                 let mut slots = Vec::with_capacity(requirements.len());
                 let mut missing = Vec::new();
                 for requirement in &requirements {
-                    let found = available.iter().position(|(spec_id, spec_args, name, method)| {
-                        *spec_id == requirement.spec_id
-                            && *spec_args == requirement.type_args()
-                            && *name == requirement.name
-                            && self.fn_satisfies_requirement(
-                                id,
-                                span,
-                                &method.fn_type,
-                                &requirement.fn_type,
-                                &requirement.return_type_bound,
-                            )
-                    });
+                    let found = available
+                        .iter()
+                        .position(|(spec_id, spec_args, name, method)| {
+                            *spec_id == requirement.spec_id
+                                && *spec_args == requirement.type_args()
+                                && *name == requirement.name
+                                && self.fn_satisfies_requirement(
+                                    id,
+                                    span,
+                                    &method.fn_type,
+                                    &requirement.fn_type,
+                                    &requirement.return_type_bound,
+                                )
+                        });
                     match found {
                         Some(index) => slots.push(available[index].3.decl_id),
                         None => missing.push(requirement.name.clone()),
                     }
                 }
-                if missing.is_empty() { Ok(slots) } else { Err(missing) }
+                if missing.is_empty() {
+                    Ok(slots)
+                } else {
+                    Err(missing)
+                }
             }
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::ModuleResolution(error));

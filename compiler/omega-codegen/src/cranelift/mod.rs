@@ -1,4 +1,3 @@
-
 mod expr;
 mod function;
 mod item;
@@ -7,12 +6,12 @@ mod place;
 mod vtable;
 
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
-use omega_analyzer::{Arch, Os, Target};
 use cranelift::codegen;
 use cranelift::codegen::ir::StackSlot;
 use cranelift::prelude::{Configurable, Type as IRType, Value, isa, settings};
 use cranelift_module::{DataId, FuncId, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use omega_analyzer::{Arch, Os, Target};
 use omega_hir::HirId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,26 +49,41 @@ fn cranelift_opt_setting(level: OptLevel) -> &'static str {
 
 impl Codegen {
     fn generate(request: CodegenRequest) -> Result<Self, String> {
-        let CodegenRequest { module_name, target, opt_level, emit, modules, entry: _, extern_functions } = request;
+        let CodegenRequest {
+            module_name,
+            target,
+            opt_level,
+            emit,
+            modules,
+            entry: _,
+            extern_functions,
+        } = request;
 
         let isa = {
             let mut builder = settings::builder();
 
-            builder.set("opt_level", cranelift_opt_setting(opt_level)).unwrap();
+            builder
+                .set("opt_level", cranelift_opt_setting(opt_level))
+                .unwrap();
             builder.enable("is_pic").unwrap();
 
             let flags = settings::Flags::new(builder);
 
             isa::lookup(triple_for(target))
-                .map_err(|e| format!("target '{target}' is not supported by this build of the compiler: {e}"))?
+                .map_err(|e| {
+                    format!("target '{target}' is not supported by this build of the compiler: {e}")
+                })?
                 .finish(flags)
-                .map_err(|e| format!("failed to build a code generator for target '{target}': {e}"))?
+                .map_err(|e| {
+                    format!("failed to build a code generator for target '{target}': {e}")
+                })?
         };
 
         let module = {
             let translation_unit_name = module_name.bytes().collect::<Vec<_>>();
             let libcall_names = cranelift_module::default_libcall_names();
-            let mut builder = ObjectBuilder::new(isa.clone(), translation_unit_name, libcall_names).unwrap();
+            let mut builder =
+                ObjectBuilder::new(isa.clone(), translation_unit_name, libcall_names).unwrap();
             builder.per_function_section(true);
             ObjectModule::new(builder)
         };
@@ -143,9 +157,7 @@ fn triple_for(target: Target) -> target_lexicon::Triple {
         Arch::X86_64 => Architecture::X86_64,
         Arch::X86 => Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
         Arch::Armv7 => Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
-        Arch::Thumbv7em => {
-            Architecture::Arm(target_lexicon::ArmArchitecture::Thumbv7em)
-        }
+        Arch::Thumbv7em => Architecture::Arm(target_lexicon::ArmArchitecture::Thumbv7em),
         Arch::Aarch64 => Architecture::Aarch64(target_lexicon::Aarch64Architecture::Aarch64),
         Arch::Riscv32 => Architecture::Riscv32(target_lexicon::Riscv32Architecture::Riscv32),
         Arch::Riscv64 => Architecture::Riscv64(target_lexicon::Riscv64Architecture::Riscv64),
@@ -157,18 +169,30 @@ fn triple_for(target: Target) -> target_lexicon::Triple {
             Environment::Unknown,
             target_lexicon::BinaryFormat::Elf,
         ),
-        Os::Linux => {
-            (Vendor::Unknown, OperatingSystem::Linux, Environment::Gnu, target_lexicon::BinaryFormat::Elf)
-        }
+        Os::Linux => (
+            Vendor::Unknown,
+            OperatingSystem::Linux,
+            Environment::Gnu,
+            target_lexicon::BinaryFormat::Elf,
+        ),
         Os::MacOs => (
             Vendor::Apple,
             OperatingSystem::MacOSX(None),
             Environment::Unknown,
             target_lexicon::BinaryFormat::Macho,
         ),
-        Os::Windows => {
-            (Vendor::Pc, OperatingSystem::Windows, Environment::Msvc, target_lexicon::BinaryFormat::Coff)
-        }
+        Os::Windows => (
+            Vendor::Pc,
+            OperatingSystem::Windows,
+            Environment::Msvc,
+            target_lexicon::BinaryFormat::Coff,
+        ),
     };
-    Triple { architecture, vendor, operating_system, environment, binary_format }
+    Triple {
+        architecture,
+        vendor,
+        operating_system,
+        environment,
+        binary_format,
+    }
 }

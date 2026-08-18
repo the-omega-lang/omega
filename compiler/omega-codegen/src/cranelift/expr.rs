@@ -1,19 +1,20 @@
-
 use super::Codegen;
 use super::leaf::IntoCraneliftLeaves;
 use super::place::PlaceStorage;
-use omega_analyzer::layout;
 use cranelift::codegen::ir::{FuncRef, Inst, StackSlot};
 use cranelift::prelude::{
-    AbiParam, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind, Value, types,
+    AbiParam, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind,
+    Value, types,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Module};
 use omega_analyzer::checked::{CastKind, NumberValue};
+use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ConstValue, NumericKind, ResolvedFunctionType, ResolvedType};
 use omega_hir::BinaryOp;
 use omega_mir::{
-    MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall, MirEnumConstruct, MirExpr,
-    MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce, MirStructLiteral, MirUnionConstruct,
+    MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall,
+    MirEnumConstruct, MirExpr, MirExprNode, MirFunctionCall, MirSlice, MirSpecCoerce,
+    MirStructLiteral, MirUnionConstruct,
 };
 
 fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedType {
@@ -30,7 +31,11 @@ impl Codegen {
         let len = builder.ins().iconst(types::I32, s.len() as i64);
 
         let ptr_type = self.pointer_type();
-        let data_id = if let Some(id) = self.bytes.get(&s) { *id } else { self.get_or_declare_global_bytes(s.clone()) };
+        let data_id = if let Some(id) = self.bytes.get(&s) {
+            *id
+        } else {
+            self.get_or_declare_global_bytes(s.clone())
+        };
 
         let global_value = self.module.declare_data_in_func(data_id, builder.func);
         let ptr = builder.ins().global_value(ptr_type, global_value);
@@ -45,7 +50,10 @@ impl Codegen {
     fn get_or_declare_global_bytes(&mut self, s: String) -> DataId {
         let bytes = s.clone().into_bytes();
         let sym = Self::data_symbol(&bytes);
-        let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
+        let id = self
+            .module
+            .declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false)
+            .unwrap();
 
         let mut desc = DataDescription::new();
         desc.define(bytes.into_boxed_slice());
@@ -56,18 +64,29 @@ impl Codegen {
         id
     }
 
-    pub(super) fn get_func_ref_from_id(&mut self, builder: &mut FunctionBuilder, func_id: FuncId) -> FuncRef {
+    pub(super) fn get_func_ref_from_id(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        func_id: FuncId,
+    ) -> FuncRef {
         self.module.declare_func_in_func(func_id, builder.func)
     }
 
-    fn emit_const_value(&mut self, builder: &mut FunctionBuilder, value: &ConstValue, r#type: &ResolvedType) -> Vec<Value> {
+    fn emit_const_value(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        value: &ConstValue,
+        r#type: &ResolvedType,
+    ) -> Vec<Value> {
         match value {
             ConstValue::Number(number) => {
                 let leaf = r#type.cranelift_leaves(self)[0];
                 vec![match number {
                     NumberValue::Signed(v) => builder.ins().iconst(leaf, *v),
                     NumberValue::Unsigned(v) => builder.ins().iconst(leaf, *v as i64),
-                    NumberValue::Float(v) if leaf == types::F32 => builder.ins().f32const(*v as f32),
+                    NumberValue::Float(v) if leaf == types::F32 => {
+                        builder.ins().f32const(*v as f32)
+                    }
                     NumberValue::Float(v) => builder.ins().f64const(*v),
                 }]
             }
@@ -95,16 +114,28 @@ impl Codegen {
                 let ResolvedType::Struct(struct_type) = r#type else {
                     unreachable!("a Struct constant's own type is always ResolvedType::Struct");
                 };
-                let field_types: Vec<ResolvedType> =
-                    struct_type.borrow().fields.iter().map(|field| field.r#type.clone()).collect();
+                let field_types: Vec<ResolvedType> = struct_type
+                    .borrow()
+                    .fields
+                    .iter()
+                    .map(|field| field.r#type.clone())
+                    .collect();
                 fields
                     .iter()
                     .zip(&field_types)
-                    .flat_map(|(value, field_type)| self.emit_const_value(builder, value, field_type))
+                    .flat_map(|(value, field_type)| {
+                        self.emit_const_value(builder, value, field_type)
+                    })
                     .collect()
             }
             // Materialize enum tag/prefix/payload according to shared enum layout.
-            ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
+            ConstValue::Enum {
+                variant_index,
+                tag,
+                dynamic_fields,
+                fields,
+                ..
+            } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
                 };
@@ -120,13 +151,19 @@ impl Codegen {
                         .collect();
                     let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
                         .map(|i| {
-                            let offset = layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
+                            let offset =
+                                layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
                             (offset, enum_type.dynamic_fields[i].r#type.clone())
                         })
                         .collect();
                     let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
                         .map(|i| {
-                            let offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
+                            let offset = layout::enum_body_field_offset(
+                                &enum_type,
+                                *variant_index,
+                                i,
+                                pointer_bytes,
+                            );
                             (offset, variant.fields[i].r#type.clone())
                         })
                         .collect();
@@ -135,10 +172,19 @@ impl Codegen {
 
                 let shift = layout::stack_align_shift(layout::type_alignment(r#type));
                 let total = layout::total_bytes(r#type, pointer_bytes);
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, shift));
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    total,
+                    shift,
+                ));
 
-                let tag_values = self.emit_const_value(builder, &ConstValue::Number(*tag), &tag_type);
-                self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &tag_values);
+                let tag_values =
+                    self.emit_const_value(builder, &ConstValue::Number(*tag), &tag_type);
+                self.store_scalars(
+                    builder,
+                    &PlaceStorage::Slot { slot, offset: 0 },
+                    &tag_values,
+                );
 
                 let mut offset = layout::total_bytes(&tag_type, pointer_bytes);
                 for (field_type, value) in &header {
@@ -149,12 +195,26 @@ impl Codegen {
 
                 for (value, (field_offset, field_type)) in dynamic_fields.iter().zip(&dynamic) {
                     let values = self.emit_const_value(builder, value, field_type);
-                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: *field_offset }, &values);
+                    self.store_scalars(
+                        builder,
+                        &PlaceStorage::Slot {
+                            slot,
+                            offset: *field_offset,
+                        },
+                        &values,
+                    );
                 }
 
                 for (value, (field_offset, field_type)) in fields.iter().zip(&body) {
                     let values = self.emit_const_value(builder, value, field_type);
-                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: *field_offset }, &values);
+                    self.store_scalars(
+                        builder,
+                        &PlaceStorage::Slot {
+                            slot,
+                            offset: *field_offset,
+                        },
+                        &values,
+                    );
                 }
 
                 self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, r#type)
@@ -162,7 +222,11 @@ impl Codegen {
             // Materialize the active union field at offset zero in shared union storage.
             ConstValue::Union { value, .. } => {
                 let total = layout::total_bytes(r#type, self.pointer_bytes());
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    total,
+                    4,
+                ));
 
                 let mut chunk_offset = 0u32;
                 for chunk in r#type.cranelift_leaves(self) {
@@ -188,12 +252,21 @@ impl Codegen {
                 let inner_type = ref_pointee_type(inner, pointee);
                 let data_id = self.build_const_data(inner, &inner_type);
                 let global_value = self.module.declare_data_in_func(data_id, builder.func);
-                vec![builder.ins().global_value(self.pointer_type(), global_value)]
+                vec![
+                    builder
+                        .ins()
+                        .global_value(self.pointer_type(), global_value),
+                ]
             }
         }
     }
 
-    fn emit_const_slice(&mut self, builder: &mut FunctionBuilder, elements: &[ConstValue], item_type: &ResolvedType) -> Vec<Value> {
+    fn emit_const_slice(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        elements: &[ConstValue],
+        item_type: &ResolvedType,
+    ) -> Vec<Value> {
         let ptr_type = self.pointer_type();
         let len = builder.ins().iconst(types::I32, elements.len() as i64);
         let data_id = self.build_const_slice_data(elements, item_type);
@@ -202,7 +275,11 @@ impl Codegen {
         vec![ptr, len]
     }
 
-    fn build_const_slice_data(&mut self, elements: &[ConstValue], item_type: &ResolvedType) -> DataId {
+    fn build_const_slice_data(
+        &mut self,
+        elements: &[ConstValue],
+        item_type: &ResolvedType,
+    ) -> DataId {
         let mut hash_input = Vec::new();
         for element in elements {
             self.hash_const_element(&mut hash_input, element, item_type);
@@ -220,7 +297,10 @@ impl Codegen {
         }
         desc.define(bytes.into_boxed_slice());
 
-        let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
+        let id = self
+            .module
+            .declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false)
+            .unwrap();
         self.module.define_data(id, &desc).unwrap();
         self.const_blobs.insert(sym, id);
         id
@@ -240,7 +320,10 @@ impl Codegen {
         self.write_const_element(&mut desc, &mut bytes, 0, value, r#type);
         desc.define(bytes.into_boxed_slice());
 
-        let id = self.module.declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false).unwrap();
+        let id = self
+            .module
+            .declare_data(&sym, cranelift_module::Linkage::Preemptible, false, false)
+            .unwrap();
         self.module.define_data(id, &desc).unwrap();
         self.const_blobs.insert(sym, id);
         id
@@ -275,7 +358,9 @@ impl Codegen {
             }
             ConstValue::Array(elements) => {
                 let ResolvedType::SizedArray(item, _) = r#type else {
-                    unreachable!("mir body guarantees a nested Array constant's own type is SizedArray");
+                    unreachable!(
+                        "mir body guarantees a nested Array constant's own type is SizedArray"
+                    );
                 };
                 for element in elements {
                     self.hash_const_element(out, element, item);
@@ -285,13 +370,23 @@ impl Codegen {
                 let ResolvedType::Struct(struct_type) = r#type else {
                     unreachable!("a Struct constant's own type is always ResolvedType::Struct");
                 };
-                let field_types: Vec<ResolvedType> =
-                    struct_type.borrow().fields.iter().map(|field| field.r#type.clone()).collect();
+                let field_types: Vec<ResolvedType> = struct_type
+                    .borrow()
+                    .fields
+                    .iter()
+                    .map(|field| field.r#type.clone())
+                    .collect();
                 for (value, field_type) in fields.iter().zip(&field_types) {
                     self.hash_const_element(out, value, field_type);
                 }
             }
-            ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
+            ConstValue::Enum {
+                variant_index,
+                tag,
+                dynamic_fields,
+                fields,
+                ..
+            } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
                 };
@@ -304,10 +399,16 @@ impl Codegen {
                 out.extend_from_slice(&tag_bits.to_le_bytes());
                 let (dynamic_types, field_types) = {
                     let enum_type = cell.borrow();
-                    let dynamic_types: Vec<ResolvedType> =
-                        enum_type.dynamic_fields.iter().map(|field| field.r#type.clone()).collect();
-                    let field_types: Vec<ResolvedType> =
-                        enum_type.variants[*variant_index].fields.iter().map(|field| field.r#type.clone()).collect();
+                    let dynamic_types: Vec<ResolvedType> = enum_type
+                        .dynamic_fields
+                        .iter()
+                        .map(|field| field.r#type.clone())
+                        .collect();
+                    let field_types: Vec<ResolvedType> = enum_type.variants[*variant_index]
+                        .fields
+                        .iter()
+                        .map(|field| field.r#type.clone())
+                        .collect();
                     (dynamic_types, field_types)
                 };
                 for (value, field_type) in dynamic_fields.iter().zip(&dynamic_types) {
@@ -352,7 +453,8 @@ impl Codegen {
                     NumberValue::Float(v) => v.to_bits(),
                 };
                 let start = offset as usize;
-                bytes[start..start + leaf_bytes as usize].copy_from_slice(&raw.to_le_bytes()[..leaf_bytes as usize]);
+                bytes[start..start + leaf_bytes as usize]
+                    .copy_from_slice(&raw.to_le_bytes()[..leaf_bytes as usize]);
             }
             ConstValue::Bool(b) => bytes[offset as usize] = *b as u8,
             ConstValue::Char(c) => {
@@ -360,8 +462,11 @@ impl Codegen {
                 bytes[start..start + 4].copy_from_slice(&(*c as u32).to_le_bytes());
             }
             ConstValue::Str(s) => {
-                let str_id =
-                    if let Some(id) = self.bytes.get(s) { *id } else { self.get_or_declare_global_bytes(s.clone()) };
+                let str_id = if let Some(id) = self.bytes.get(s) {
+                    *id
+                } else {
+                    self.get_or_declare_global_bytes(s.clone())
+                };
                 let global_value = self.module.declare_data_in_data(str_id, desc);
                 desc.write_data_addr(offset, global_value, 0);
 
@@ -380,16 +485,25 @@ impl Codegen {
 
                 let ptr_bytes = self.pointer_type().bytes();
                 let len_start = (offset + ptr_bytes) as usize;
-                bytes[len_start..len_start + 4].copy_from_slice(&(nested.len() as i32).to_le_bytes());
+                bytes[len_start..len_start + 4]
+                    .copy_from_slice(&(nested.len() as i32).to_le_bytes());
             }
             // Sized arrays are inline aggregates, unlike slice/string pointer-based storage.
             ConstValue::Array(elements) => {
                 let ResolvedType::SizedArray(item, _) = r#type else {
-                    unreachable!("mir body guarantees a nested Array constant's own type is SizedArray");
+                    unreachable!(
+                        "mir body guarantees a nested Array constant's own type is SizedArray"
+                    );
                 };
                 let stride = layout::total_bytes(item, self.pointer_bytes());
                 for (i, element) in elements.iter().enumerate() {
-                    self.write_const_element(desc, bytes, offset + i as u32 * stride, element, item);
+                    self.write_const_element(
+                        desc,
+                        bytes,
+                        offset + i as u32 * stride,
+                        element,
+                        item,
+                    );
                 }
             }
             // Use shared byte offsets for memory-backed aggregate construction, not leaf indices.
@@ -398,15 +512,26 @@ impl Codegen {
                     unreachable!("a Struct constant's own type is always ResolvedType::Struct");
                 };
                 let pointer_bytes = self.pointer_bytes();
-                let field_types: Vec<ResolvedType> =
-                    struct_type.borrow().fields.iter().map(|field| field.r#type.clone()).collect();
+                let field_types: Vec<ResolvedType> = struct_type
+                    .borrow()
+                    .fields
+                    .iter()
+                    .map(|field| field.r#type.clone())
+                    .collect();
                 for (i, (value, field_type)) in fields.iter().zip(&field_types).enumerate() {
-                    let field_offset = layout::field_byte_offset(&struct_type.borrow(), i, pointer_bytes);
+                    let field_offset =
+                        layout::field_byte_offset(&struct_type.borrow(), i, pointer_bytes);
                     self.write_const_element(desc, bytes, offset + field_offset, value, field_type);
                 }
             }
             // Emit enum prefix first, then dynamic fields and payload at shared offsets.
-            ConstValue::Enum { variant_index, tag, dynamic_fields, fields, .. } => {
+            ConstValue::Enum {
+                variant_index,
+                tag,
+                dynamic_fields,
+                fields,
+                ..
+            } => {
                 let ResolvedType::Enum { cell, .. } = r#type else {
                     unreachable!("an Enum constant's own type is always ResolvedType::Enum");
                 };
@@ -422,13 +547,19 @@ impl Codegen {
                         .collect();
                     let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
                         .map(|i| {
-                            let field_offset = layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
+                            let field_offset =
+                                layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
                             (field_offset, enum_type.dynamic_fields[i].r#type.clone())
                         })
                         .collect();
                     let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
                         .map(|i| {
-                            let field_offset = layout::enum_body_field_offset(&enum_type, *variant_index, i, pointer_bytes);
+                            let field_offset = layout::enum_body_field_offset(
+                                &enum_type,
+                                *variant_index,
+                                i,
+                                pointer_bytes,
+                            );
                             (field_offset, variant.fields[i].r#type.clone())
                         })
                         .collect();
@@ -469,7 +600,12 @@ impl Codegen {
         }
     }
 
-    fn promote_variadic_arg(&mut self, builder: &mut FunctionBuilder, value: Value, arg_type: &ResolvedType) -> Value {
+    fn promote_variadic_arg(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        value: Value,
+        arg_type: &ResolvedType,
+    ) -> Value {
         // C variadic promotion is shared; this backend only translates the promoted type.
         match crate::abi::variadic_promotion(arg_type, self.target) {
             Some(NumericKind::Float(_)) => builder.ins().fpromote(types::F64, value),
@@ -488,7 +624,11 @@ impl Codegen {
         self.needs_sret(&fn_type.return_type).then(|| {
             let shift = layout::stack_align_shift(layout::type_alignment(&fn_type.return_type));
             let size = layout::total_bytes(&fn_type.return_type, self.pointer_bytes());
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, shift));
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                shift,
+            ));
             let pointer = builder.ins().stack_addr(self.pointer_type(), slot, 0);
             ir_args.insert(0, pointer);
             slot
@@ -506,7 +646,8 @@ impl Codegen {
         let mut sig = self.make_function_sig(fn_type.clone());
         if fn_type.is_variadic && ir_args.len() > sig.params.len() {
             for arg in &ir_args[sig.params.len()..] {
-                sig.params.push(AbiParam::new(builder.func.dfg.value_type(*arg)));
+                sig.params
+                    .push(AbiParam::new(builder.func.dfg.value_type(*arg)));
             }
         }
         let sigref = builder.import_signature(sig);
@@ -532,13 +673,21 @@ impl Codegen {
         }
     }
 
-    pub(super) fn process_expr(&mut self, builder: &mut FunctionBuilder, node: MirExprNode) -> Vec<Value> {
+    pub(super) fn process_expr(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        node: MirExprNode,
+    ) -> Vec<Value> {
         match node.kind {
             MirExpr::String(s) => self.emit_bytes(builder, s),
             MirExpr::ByteString(s) => self.emit_bytes(builder, s),
             MirExpr::Const(value) => self.emit_const_value(builder, &value, &node.r#type),
 
-            MirExpr::FunctionCall(MirFunctionCall { callee, fn_type, args }) => {
+            MirExpr::FunctionCall(MirFunctionCall {
+                callee,
+                fn_type,
+                args,
+            }) => {
                 // MIR guarantees a single resolved callee; codegen performs no overload selection.
                 let fnaddr = self.process_expr(builder, *callee)[0];
 
@@ -547,7 +696,10 @@ impl Codegen {
                 for (i, arg) in args.into_iter().enumerate() {
                     let arg_type = arg.r#type.clone();
                     let mut value = self.process_expr(builder, arg);
-                    if fn_type.is_variadic && i >= fixed_count && let [v] = value.as_mut_slice() {
+                    if fn_type.is_variadic
+                        && i >= fixed_count
+                        && let [v] = value.as_mut_slice()
+                    {
                         *v = self.promote_variadic_arg(builder, *v, &arg_type);
                     }
                     ir_args.push(value);
@@ -561,7 +713,10 @@ impl Codegen {
 
             // Dynamic-spec coercion builds the data-pointer/vtable-pointer pair.
             MirExpr::SpecCoerce(MirSpecCoerce { base, slots }) => {
-                let ResolvedType::SpecObject { spec, type_args, .. } = &node.r#type else {
+                let ResolvedType::SpecObject {
+                    spec, type_args, ..
+                } = &node.r#type
+                else {
                     unreachable!("mir body guarantees a SpecCoerce's own type is SpecObject");
                 };
                 let spec = spec.clone();
@@ -573,12 +728,19 @@ impl Codegen {
                 let data_ptr = self.process_expr(builder, *base)[0];
                 let vtable_id = self.vtable_for(&concrete, &spec, &type_args, &slots);
                 let global_value = self.module.declare_data_in_func(vtable_id, builder.func);
-                let vtable_ptr = builder.ins().global_value(self.pointer_type(), global_value);
+                let vtable_ptr = builder
+                    .ins()
+                    .global_value(self.pointer_type(), global_value);
                 vec![data_ptr, vtable_ptr]
             }
 
             // Dynamic-spec calls load the resolved slot from the vtable and call it indirectly.
-            MirExpr::DynamicCall(MirDynamicCall { base, slot_index, fn_type, args }) => {
+            MirExpr::DynamicCall(MirDynamicCall {
+                base,
+                slot_index,
+                fn_type,
+                args,
+            }) => {
                 let base_leaves = self.get_place_value(&base, builder);
                 let [data_ptr, vtable_ptr] = base_leaves.as_slice() else {
                     panic!("mir body guarantees a SpecObject place has exactly 2 leaves");
@@ -587,7 +749,12 @@ impl Codegen {
 
                 let ptr_bytes = self.pointer_type().bytes();
                 let slot_offset = slot_index as i32 * ptr_bytes as i32;
-                let fnaddr = builder.ins().load(self.pointer_type(), MemFlags::new(), vtable_ptr, slot_offset);
+                let fnaddr = builder.ins().load(
+                    self.pointer_type(),
+                    MemFlags::new(),
+                    vtable_ptr,
+                    slot_offset,
+                );
 
                 let mut ir_args = vec![data_ptr];
                 for arg in args {
@@ -605,7 +772,9 @@ impl Codegen {
                 let result = match value {
                     NumberValue::Signed(v) => builder.ins().iconst(ir_type, v),
                     NumberValue::Unsigned(v) => builder.ins().iconst(ir_type, v as i64),
-                    NumberValue::Float(v) if ir_type == types::F32 => builder.ins().f32const(v as f32),
+                    NumberValue::Float(v) if ir_type == types::F32 => {
+                        builder.ins().f32const(v as f32)
+                    }
                     NumberValue::Float(v) => builder.ins().f64const(v),
                 };
                 vec![result]
@@ -638,9 +807,16 @@ impl Codegen {
             }
 
             MirExpr::Negate(base) => {
-                let is_float = matches!(base.r#type.numeric_kind(self.pointer_bytes() * 8), Some(NumericKind::Float(_)));
+                let is_float = matches!(
+                    base.r#type.numeric_kind(self.pointer_bytes() * 8),
+                    Some(NumericKind::Float(_))
+                );
                 let value = self.process_expr(builder, *base)[0];
-                let result = if is_float { builder.ins().fneg(value) } else { builder.ins().ineg(value) };
+                let result = if is_float {
+                    builder.ins().fneg(value)
+                } else {
+                    builder.ins().ineg(value)
+                };
                 vec![result]
             }
 
@@ -726,10 +902,16 @@ impl Codegen {
 
             MirExpr::ArrayLiteral(MirArrayLiteral { elements, .. }) => {
                 // Flatten array elements in source order into the aggregate leaf sequence.
-                elements.into_iter().flat_map(|e| self.process_expr(builder, e)).collect()
+                elements
+                    .into_iter()
+                    .flat_map(|e| self.process_expr(builder, e))
+                    .collect()
             }
 
-            MirExpr::EnumConstruct(MirEnumConstruct { variant_index, fields }) => {
+            MirExpr::EnumConstruct(MirEnumConstruct {
+                variant_index,
+                fields,
+            }) => {
                 // Build enums in scratch storage because payload layout is byte-addressed, not purely leaf-addressed.
                 let ResolvedType::Enum { cell, .. } = &node.r#type else {
                     unreachable!("mir body guarantees a construction's own type is its enum");
@@ -744,14 +926,20 @@ impl Codegen {
                         .header
                         .iter()
                         .zip(&variant.header_values)
-                        .map(|((_, r#type, _), value)| (r#type.clone(), value.clone()))
+                        .map(|(resolved_field, value)| {
+                            (resolved_field.r#type.clone(), value.clone())
+                        })
                         .collect();
                     let field_offsets: Vec<u32> = (0..enum_type.dynamic_fields.len())
                         .map(|i| layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes))
-                        .chain(
-                            (0..variant.fields.len())
-                                .map(|i| layout::enum_body_field_offset(&enum_type, variant_index, i, pointer_bytes)),
-                        )
+                        .chain((0..variant.fields.len()).map(|i| {
+                            layout::enum_body_field_offset(
+                                &enum_type,
+                                variant_index,
+                                i,
+                                pointer_bytes,
+                            )
+                        }))
                         .collect();
                     let payload_offset = layout::enum_payload_offset(&enum_type, pointer_bytes);
                     let chunk_leaves = layout::payload_chunks(layout::enum_payload_bytes(
@@ -759,20 +947,40 @@ impl Codegen {
                         enum_type.layout.pack,
                         pointer_bytes,
                     ));
-                    (variant.tag, enum_type.tag_type.clone(), header, payload_offset, chunk_leaves, field_offsets)
+                    (
+                        variant.tag,
+                        enum_type.tag_type.clone(),
+                        header,
+                        payload_offset,
+                        chunk_leaves,
+                        field_offsets,
+                    )
                 };
 
                 let shift = layout::stack_align_shift(layout::type_alignment(&node.r#type));
                 let total = layout::total_bytes(&node.r#type, pointer_bytes);
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, shift));
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    total,
+                    shift,
+                ));
 
-                let tag_values = self.emit_const_value(builder, &ConstValue::Number(tag), &tag_type);
-                self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &tag_values);
+                let tag_values =
+                    self.emit_const_value(builder, &ConstValue::Number(tag), &tag_type);
+                self.store_scalars(
+                    builder,
+                    &PlaceStorage::Slot { slot, offset: 0 },
+                    &tag_values,
+                );
 
                 let mut offset = layout::total_bytes(&tag_type, pointer_bytes);
                 for (r#type, value) in &header {
                     let const_values = self.emit_const_value(builder, value, r#type);
-                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset }, &const_values);
+                    self.store_scalars(
+                        builder,
+                        &PlaceStorage::Slot { slot, offset },
+                        &const_values,
+                    );
                     offset += layout::total_bytes(r#type, pointer_bytes);
                 }
 
@@ -788,10 +996,21 @@ impl Codegen {
                 for field in fields {
                     let field_offset = field_offsets[field.field_index];
                     let values = self.process_expr(builder, field.value);
-                    self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: field_offset }, &values);
+                    self.store_scalars(
+                        builder,
+                        &PlaceStorage::Slot {
+                            slot,
+                            offset: field_offset,
+                        },
+                        &values,
+                    );
                 }
 
-                self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &node.r#type)
+                self.load_scalars(
+                    builder,
+                    &PlaceStorage::Slot { slot, offset: 0 },
+                    &node.r#type,
+                )
             }
 
             MirExpr::StructLiteral(MirStructLiteral { fields }) => {
@@ -811,7 +1030,13 @@ impl Codegen {
                     .collect()
             }
 
-            MirExpr::Slice(MirSlice { base, item_type, start, end, inclusive }) => {
+            MirExpr::Slice(MirSlice {
+                base,
+                item_type,
+                start,
+                end,
+                inclusive,
+            }) => {
                 let (storage, base_type) = self.resolve_place_storage(&base, builder);
                 let ptr_type = self.pointer_type();
 
@@ -830,7 +1055,9 @@ impl Codegen {
                         let leaves = self.load_scalars(builder, &storage, &base_type);
                         (leaves[0], builder.ins().iconst(types::I32, 0))
                     }
-                    _ => unreachable!("mir body guarantees a slice's base is SizedArray/Slice/Str/Array"),
+                    _ => unreachable!(
+                        "mir body guarantees a slice's base is SizedArray/Slice/Str/Array"
+                    ),
                 };
 
                 let elem_size = layout::total_bytes(&item_type, self.pointer_bytes()) as i64;
@@ -843,7 +1070,11 @@ impl Codegen {
                 let end_val = match end {
                     Some(e) => {
                         let v = self.process_expr(builder, *e)[0];
-                        if inclusive { builder.ins().iadd_imm(v, 1) } else { v }
+                        if inclusive {
+                            builder.ins().iadd_imm(v, 1)
+                        } else {
+                            v
+                        }
                     }
                     None => full_len,
                 };
@@ -860,7 +1091,11 @@ impl Codegen {
                 vec![new_ptr, new_len]
             }
 
-            MirExpr::Cast(MirCast { kind, target_type, base }) => {
+            MirExpr::Cast(MirCast {
+                kind,
+                target_type,
+                base,
+            }) => {
                 // Unsizing uses the source aggregate length, not a reconstructed backend guess.
                 let unsize_len = match &base.r#type {
                     ResolvedType::Pointer { pointee, .. } => match pointee.as_ref() {
@@ -876,19 +1111,36 @@ impl Codegen {
                     CastKind::Reinterpret => base_leaves,
                     CastKind::DropLength => vec![base_leaves[0]],
                     CastKind::Unsize => {
-                        let len = unsize_len.expect("mir body guarantees Unsize's base is Pointer{SizedArray}");
+                        let len = unsize_len
+                            .expect("mir body guarantees Unsize's base is Pointer{SizedArray}");
                         let len_val = builder.ins().iconst(types::I32, len as i64);
                         vec![base_leaves[0], len_val]
                     }
-                    CastKind::IntExtend { signed: true } => vec![builder.ins().sextend(target_ir, base_leaves[0])],
-                    CastKind::IntExtend { signed: false } => vec![builder.ins().uextend(target_ir, base_leaves[0])],
+                    CastKind::IntExtend { signed: true } => {
+                        vec![builder.ins().sextend(target_ir, base_leaves[0])]
+                    }
+                    CastKind::IntExtend { signed: false } => {
+                        vec![builder.ins().uextend(target_ir, base_leaves[0])]
+                    }
                     CastKind::IntTruncate => vec![builder.ins().ireduce(target_ir, base_leaves[0])],
-                    CastKind::IntToFloat { signed: true } => vec![builder.ins().fcvt_from_sint(target_ir, base_leaves[0])],
-                    CastKind::IntToFloat { signed: false } => vec![builder.ins().fcvt_from_uint(target_ir, base_leaves[0])],
-                    CastKind::FloatToInt { signed: true } => vec![builder.ins().fcvt_to_sint_sat(target_ir, base_leaves[0])],
-                    CastKind::FloatToInt { signed: false } => vec![builder.ins().fcvt_to_uint_sat(target_ir, base_leaves[0])],
-                    CastKind::FloatExtend => vec![builder.ins().fpromote(target_ir, base_leaves[0])],
-                    CastKind::FloatTruncate => vec![builder.ins().fdemote(target_ir, base_leaves[0])],
+                    CastKind::IntToFloat { signed: true } => {
+                        vec![builder.ins().fcvt_from_sint(target_ir, base_leaves[0])]
+                    }
+                    CastKind::IntToFloat { signed: false } => {
+                        vec![builder.ins().fcvt_from_uint(target_ir, base_leaves[0])]
+                    }
+                    CastKind::FloatToInt { signed: true } => {
+                        vec![builder.ins().fcvt_to_sint_sat(target_ir, base_leaves[0])]
+                    }
+                    CastKind::FloatToInt { signed: false } => {
+                        vec![builder.ins().fcvt_to_uint_sat(target_ir, base_leaves[0])]
+                    }
+                    CastKind::FloatExtend => {
+                        vec![builder.ins().fpromote(target_ir, base_leaves[0])]
+                    }
+                    CastKind::FloatTruncate => {
+                        vec![builder.ins().fdemote(target_ir, base_leaves[0])]
+                    }
                     // Spec narrowing preserves the data pointer and swaps in the resolved narrower vtable.
                     CastKind::SpecNarrow { slot_offset } => {
                         let byte_offset = slot_offset as i64 * self.pointer_bytes() as i64;
@@ -898,10 +1150,17 @@ impl Codegen {
                 }
             }
 
-            MirExpr::UnionConstruct(MirUnionConstruct { field_index: _, value }) => {
+            MirExpr::UnionConstruct(MirUnionConstruct {
+                field_index: _,
+                value,
+            }) => {
                 // Enum constants use the same scratch-storage layout path as runtime enum construction.
                 let total = layout::total_bytes(&node.r#type, self.pointer_bytes());
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total, 4));
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    total,
+                    4,
+                ));
 
                 let mut chunk_offset = 0u32;
                 for chunk in node.r#type.cranelift_leaves(self) {
@@ -913,7 +1172,11 @@ impl Codegen {
                 let values = self.process_expr(builder, *value);
                 self.store_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &values);
 
-                self.load_scalars(builder, &PlaceStorage::Slot { slot, offset: 0 }, &node.r#type)
+                self.load_scalars(
+                    builder,
+                    &PlaceStorage::Slot { slot, offset: 0 },
+                    &node.r#type,
+                )
             }
         }
     }

@@ -1,4 +1,3 @@
-
 use crate::lower::function::FunctionLowerer;
 use crate::mangle;
 use crate::mir::{
@@ -16,7 +15,11 @@ use omega_parser::prelude::Ident;
 pub(crate) fn lower_module(module: CheckedModule, path: &[Ident], entry: &[Ident]) -> MirModule {
     MirModule {
         id: module.id,
-        items: module.items.into_iter().map(|item| lower_item(item, path, entry)).collect(),
+        items: module
+            .items
+            .into_iter()
+            .map(|item| lower_item(item, path, entry))
+            .collect(),
     }
 }
 
@@ -104,11 +107,19 @@ fn lower_method_def(
             &f.fn_type(),
         )),
     };
-    let linkage = if owner_type_args.is_empty() { MirLinkage::Export } else { MirLinkage::Weak };
+    let linkage = if owner_type_args.is_empty() {
+        MirLinkage::Export
+    } else {
+        MirLinkage::Weak
+    };
     lower_function_def_inner(f, symbol, linkage)
 }
 
-fn lower_function_def_inner(f: CheckedFunctionDef, symbol: String, linkage: MirLinkage) -> MirFunctionDef {
+fn lower_function_def_inner(
+    f: CheckedFunctionDef,
+    symbol: String,
+    linkage: MirLinkage,
+) -> MirFunctionDef {
     let CheckedFunctionDef {
         id,
         span,
@@ -166,16 +177,18 @@ fn free_function_symbol_and_linkage(
         (ManglingMode::Enabled, _, _) if path == entry && f.name.as_ref() == "main" => {
             "main".to_string()
         }
-        (ManglingMode::Enabled, Some(owner), _) => mangle::encode(&mangle::conformance_method_symbol(
-            &owner.target,
-            &owner.spec_name,
-            &owner.spec_args,
-            &f.name,
-            &f.fn_type(),
-        )),
-        (ManglingMode::Enabled, None, Some(target)) => {
-            mangle::encode(&mangle::primitive_method_symbol(target, &f.name, &f.fn_type()))
+        (ManglingMode::Enabled, Some(owner), _) => {
+            mangle::encode(&mangle::conformance_method_symbol(
+                &owner.target,
+                &owner.spec_name,
+                &owner.spec_args,
+                &f.name,
+                &f.fn_type(),
+            ))
         }
+        (ManglingMode::Enabled, None, Some(target)) => mangle::encode(
+            &mangle::primitive_method_symbol(target, &f.name, &f.fn_type()),
+        ),
         (ManglingMode::Enabled, None, None) => mangle::encode(&mangle::free_function_symbol(
             path,
             &f.name,
@@ -187,7 +200,11 @@ fn free_function_symbol_and_linkage(
     let linkage = match &f.conformance_owner {
         Some(owner) if owner.monomorphized => MirLinkage::Weak,
         _ => {
-            if f.type_args.is_empty() { MirLinkage::Export } else { MirLinkage::Weak }
+            if f.type_args.is_empty() {
+                MirLinkage::Export
+            } else {
+                MirLinkage::Weak
+            }
         }
     };
     (symbol, linkage)

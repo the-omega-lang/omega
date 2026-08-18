@@ -13,15 +13,14 @@ impl<'r> Analyzer<'r> {
                 let (root, r#type) = self.resolve_generic_args_place(node_id, span, expr_path)?;
                 Some((root, r#type, false))
             }
-            HirPlaceRoot::Path(expr_path) if expr_path.path.is_unqualified() => {
-                self.resolve_unqualified_root(
+            HirPlaceRoot::Path(expr_path) if expr_path.path.is_unqualified() => self
+                .resolve_unqualified_root(
                     node_id,
                     span,
                     &expr_path.path.head,
                     expr_path.path.origin,
                     expected,
-                )
-            }
+                ),
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
                 let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
@@ -98,7 +97,10 @@ impl<'r> Analyzer<'r> {
             .resolver
             .macro_origin_module(origin)
             .unwrap_or_else(|| self.module_path.clone());
-        let alias = match self.resolver.resolve_import_alias(&resolution_module, ident) {
+        let alias = match self
+            .resolver
+            .resolve_import_alias(&resolution_module, ident)
+        {
             Ok(alias) => alias,
             Err(error) => {
                 self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
@@ -136,7 +138,11 @@ impl<'r> Analyzer<'r> {
         self.resolve_qualified_value(
             node_id,
             span,
-            &Path { head: ident.clone(), tail: vec![], origin },
+            &Path {
+                head: ident.clone(),
+                tail: vec![],
+                origin,
+            },
             &resolution_module,
             absolute,
             unqualified,
@@ -171,7 +177,10 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::AmbiguousOverload {
                     name: name.clone(),
-                    candidates: candidates.into_iter().map(|candidate| candidate.fn_type).collect(),
+                    candidates: candidates
+                        .into_iter()
+                        .map(|candidate| candidate.fn_type)
+                        .collect(),
                 },
             );
             return None;
@@ -184,5 +193,4 @@ impl<'r> Analyzer<'r> {
         };
         Some((root, r#type))
     }
-
 }

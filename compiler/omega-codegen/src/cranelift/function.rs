@@ -1,4 +1,3 @@
-
 use super::Codegen;
 use super::leaf::{IntoCraneliftLeaves, cranelift_type};
 use crate::abi::{AbiReturn, AbiSignature};
@@ -15,7 +14,10 @@ use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
 
 impl Codegen {
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
-        matches!(AbiReturn::for_type(self.target, return_type), AbiReturn::Indirect)
+        matches!(
+            AbiReturn::for_type(self.target, return_type),
+            AbiReturn::Indirect
+        )
     }
 
     pub(super) fn make_function_sig(&self, resolved_fntype: ResolvedFunctionType) -> Signature {
@@ -34,13 +36,15 @@ impl Codegen {
             }
             AbiReturn::Direct(leaves) => {
                 for leaf in leaves {
-                    sig.returns.push(AbiParam::new(cranelift_type(leaf, self.pointer_type())));
+                    sig.returns
+                        .push(AbiParam::new(cranelift_type(leaf, self.pointer_type())));
                 }
             }
         }
 
         for leaf in abi.params {
-            sig.params.push(AbiParam::new(cranelift_type(leaf, self.pointer_type())));
+            sig.params
+                .push(AbiParam::new(cranelift_type(leaf, self.pointer_type())));
         }
 
         if resolved_fntype.is_variadic {

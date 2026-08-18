@@ -1,4 +1,3 @@
-
 mod calls;
 mod consts;
 mod exprs;
@@ -11,22 +10,24 @@ mod specs;
 mod stmts;
 mod visibility;
 
-pub use specs::PendingSpecMethod;
 use specs::FlattenedSpecFn;
+pub use specs::PendingSpecMethod;
 
 use calls::{CalleeResolution, Intercepted, Interceptor, ResolvedCallee};
 use literals::parse_number_literal;
 
+use crate::target::Target;
 use crate::{
     checked::{
         CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
-        CheckedBlock, CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer, CheckedField,
+        CheckedBlock, CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer,
         CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
-        CheckedExternDeclaration, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf,
-        CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
-        CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef,
-        CheckedWhile, NumberValue, Storage,
+        CheckedExternDeclaration, CheckedField, CheckedFor, CheckedFunctionCall,
+        CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam,
+        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedSlice,
+        CheckedSpecCoerce, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
+        CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile,
+        NumberValue, Storage,
     },
     context::{Context, LexicalScope, VarBinding},
     error::{
@@ -40,22 +41,23 @@ use crate::{
     },
     resolver::{
         GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
-        ItemNamespace, ModuleResolver, OverloadCandidates, ResolveError, ResolveItemOptions, ResolvedItem,
+        ItemNamespace, ModuleResolver, OverloadCandidates, ResolveError, ResolveItemOptions,
+        ResolvedItem,
     },
     similarity::best_match,
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef,
-    HirExpr, HirExprNode, HirExternDeclaration, HirFor, HirForIn, HirFunctionCall, HirFunctionDef,
-    HirField, HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot,
-    HirProjection, HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
+    HirExpr, HirExprNode, HirExternDeclaration, HirField, HirFor, HirForIn, HirFunctionCall,
+    HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace,
+    HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt,
+    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
+    LogicalOp,
 };
 use omega_parser::prelude::{
-    ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span,
-    Type, Visibility,
+    ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span, Type,
+    Visibility,
 };
-use crate::target::Target;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -185,7 +187,10 @@ impl<'r> Analyzer<'r> {
             id,
             span,
             AnalysisErrorKind::MacroDependencyTooPrivate {
-                item: absolute.last().expect("absolute item path has a name").clone(),
+                item: absolute
+                    .last()
+                    .expect("absolute item path has a name")
+                    .clone(),
                 macro_visibility,
                 item_visibility,
             },
@@ -216,8 +221,7 @@ impl<'r> Analyzer<'r> {
 
         let mut seen_generics = HashSet::new();
         for (ident, resolved_type) in generics {
-            let dup = context.current_scope_has_type(ident)
-                || !seen_generics.insert(ident);
+            let dup = context.current_scope_has_type(ident) || !seen_generics.insert(ident);
             if dup {
                 errors.push(AnalysisError::new(
                     owner.id,
@@ -311,10 +315,7 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked)
     }
 
-    fn with_scope<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> T,
-    ) -> (T, LexicalScope) {
+    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, LexicalScope) {
         self.context.enter_scope();
         let result = f(self);
         let scope = self.context.leave_scope();
@@ -351,14 +352,20 @@ impl<'r> Analyzer<'r> {
         self.loop_stack.push(loop_id);
         let result = f(self);
         let popped = self.loop_stack.pop();
-        assert_eq!(popped, Some(loop_id), "loop stack must unwind in LIFO order");
+        assert_eq!(
+            popped,
+            Some(loop_id),
+            "loop stack must unwind in LIFO order"
+        );
         result
     }
 
     fn with_suppressed<T>(&mut self, names: &[Ident], f: impl FnOnce(&mut Self) -> T) -> T {
         self.suppressed.push(names.to_vec());
         let result = f(self);
-        self.suppressed.pop().expect("suppression frame just pushed");
+        self.suppressed
+            .pop()
+            .expect("suppression frame just pushed");
         result
     }
 
@@ -520,14 +527,12 @@ impl<'r> Analyzer<'r> {
         indirect: bool,
     ) -> Result<ResolvedItem, ResolveError> {
         let bypass = self.reveals.active();
-        let result =
-            self.resolver
-                .resolve_item(
-                    &self.module_path,
-                    absolute,
-                    type_args,
-                    ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass),
-                );
+        let result = self.resolver.resolve_item(
+            &self.module_path,
+            absolute,
+            type_args,
+            ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass),
+        );
         if bypass && result.is_ok() && !self.resolver.is_item_visible(&self.module_path, absolute) {
             self.reveals.mark_used();
         }
@@ -562,11 +567,18 @@ impl<'r> Analyzer<'r> {
         absolute: &[Ident],
         type_args: &[ResolvedType],
     ) -> Result<ResolvedItem, ResolveError> {
-        let result = self.resolver.resolve_item(accessor, absolute, type_args, ResolveItemOptions::INDIRECT);
+        let result =
+            self.resolver
+                .resolve_item(accessor, absolute, type_args, ResolveItemOptions::INDIRECT);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
                 match self.resolver.ambient_core_candidates(accessor, single)? {
-                    Some(ambient) => self.resolver.resolve_item(accessor, &ambient, type_args, ResolveItemOptions::INDIRECT),
+                    Some(ambient) => self.resolver.resolve_item(
+                        accessor,
+                        &ambient,
+                        type_args,
+                        ResolveItemOptions::INDIRECT,
+                    ),
                     None => result,
                 }
             }

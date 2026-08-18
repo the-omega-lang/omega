@@ -3,7 +3,7 @@ use crate::ast::expression::{CodeblockExpr, ExpressionNode, MacroInvocationExpr}
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::{Ident, Origin};
 use crate::ast::self_mode::SelfMode;
-use crate::ast::r#type::{FunctionType, Type, Param};
+use crate::ast::r#type::{FunctionType, Param, Type};
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::Span;
 

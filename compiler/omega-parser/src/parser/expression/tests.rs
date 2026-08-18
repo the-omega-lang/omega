@@ -103,8 +103,7 @@ fn enum_function_without_variant_terminator_reports_dedicated_error() {
 
 #[test]
 fn enum_in_statement_position_reports_dedicated_error() {
-    let errors =
-        SourceModule::parse("f() => void { enum E { A } }").expect_err("must not parse");
+    let errors = SourceModule::parse("f() => void { enum E { A } }").expect_err("must not parse");
     assert!(
         errors
             .iter()

@@ -4,18 +4,13 @@ mod generic;
 mod overload;
 mod spec;
 
-pub(super) enum Intercepted {
+pub(crate) enum Intercepted {
     Declined,
     Claimed(Option<CheckedExprNode>),
 }
 
-pub(super) type Interceptor<'r> = fn(
-    &mut Analyzer<'r>,
-    HirId,
-    Span,
-    &HirFunctionCall,
-    Option<&ResolvedType>,
-) -> Intercepted;
+pub(super) type Interceptor<'r> =
+    fn(&mut Analyzer<'r>, HirId, Span, &HirFunctionCall, Option<&ResolvedType>) -> Intercepted;
 
 #[derive(Clone)]
 struct Receiver {
@@ -576,7 +571,11 @@ impl<'r> Analyzer<'r> {
             id: callee.id,
             span: callee.span,
             r#type: field_type.clone(),
-            kind: CheckedExpr::Place(CheckedPlace { root, projections, r#type: field_type.clone() }),
+            kind: CheckedExpr::Place(CheckedPlace {
+                root,
+                projections,
+                r#type: field_type.clone(),
+            }),
         };
         let fn_type = self.require_callable(callee.id, callee.span, field_type)?;
         Some(CalleeResolution::Ordinary(ResolvedCallee {
@@ -706,5 +705,4 @@ impl<'r> Analyzer<'r> {
             }),
         })
     }
-
 }

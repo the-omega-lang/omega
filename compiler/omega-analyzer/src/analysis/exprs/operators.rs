@@ -13,7 +13,9 @@ impl<'r> Analyzer<'r> {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::CharArithmeticNotAllowed { op: "-".to_string() },
+                AnalysisErrorKind::CharArithmeticNotAllowed {
+                    op: "-".to_string(),
+                },
             );
             return None;
         }
@@ -148,7 +150,9 @@ impl<'r> Analyzer<'r> {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::CharArithmeticNotAllowed { op: "~".to_string() },
+                AnalysisErrorKind::CharArithmeticNotAllowed {
+                    op: "~".to_string(),
+                },
             );
             return None;
         }
@@ -268,27 +272,25 @@ impl<'r> Analyzer<'r> {
                 // Same spec, same instantiation: identity cast, offset zero.
                 // Checked first because an alias's own id never appears
                 // among its flattened members' entries.
-                let slot_offset = if target_spec_id == base_spec.borrow().id
-                    && *type_args == *base_type_args
-                {
-                    0
-                } else {
-                    let Some(slot_offset) = flattened
-                        .iter()
-                        .position(|f| f.spec_id == target_spec_id && f.type_args() == *type_args)
-                    else {
-                        self.error(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::SpecObjectCastImpossible {
-                                from: base_spec.borrow().name.clone(),
-                                to: spec.borrow().name.clone(),
-                            },
-                        );
-                        return None;
+                let slot_offset =
+                    if target_spec_id == base_spec.borrow().id && *type_args == *base_type_args {
+                        0
+                    } else {
+                        let Some(slot_offset) = flattened.iter().position(|f| {
+                            f.spec_id == target_spec_id && f.type_args() == *type_args
+                        }) else {
+                            self.error(
+                                node_id,
+                                span,
+                                AnalysisErrorKind::SpecObjectCastImpossible {
+                                    from: base_spec.borrow().name.clone(),
+                                    to: spec.borrow().name.clone(),
+                                },
+                            );
+                            return None;
+                        };
+                        slot_offset
                     };
-                    slot_offset
-                };
                 return Some(CheckedExprNode {
                     id: node_id,
                     span,
@@ -363,9 +365,10 @@ impl<'r> Analyzer<'r> {
         {
             kind
         } else {
-            let (Some(source_class), Some(target_class)) =
-                (checked_base.r#type.cast_class(self.target.pointer_bits()), target_type.cast_class(self.target.pointer_bits()))
-            else {
+            let (Some(source_class), Some(target_class)) = (
+                checked_base.r#type.cast_class(self.target.pointer_bits()),
+                target_type.cast_class(self.target.pointer_bits()),
+            ) else {
                 self.error(
                     node_id,
                     span,
@@ -513,7 +516,10 @@ impl<'r> Analyzer<'r> {
         let checked_right = self.coerce_for_binary_op(op, checked_right);
 
         for operand in [&checked_left, &checked_right] {
-            let is_valid = operand.r#type.numeric_kind(self.target.pointer_bits()).is_some()
+            let is_valid = operand
+                .r#type
+                .numeric_kind(self.target.pointer_bits())
+                .is_some()
                 || (op.is_comparison() && operand.r#type == ResolvedType::Char)
                 || (operand.r#type == ResolvedType::Bool
                     && matches!(
@@ -833,5 +839,4 @@ impl<'r> Analyzer<'r> {
             _ => None,
         }
     }
-
 }

@@ -1,15 +1,16 @@
-
+use super::place::place_align;
 use crate::body::{
-    MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirBlockData, MirBody, MirCast, MirDynamicCall,
-    MirEnumConstruct, MirExpr, MirExprNode, MirFieldInit, MirFunctionCall, MirLocalDecl, MirPlace, MirPlaceRoot,
-    MirSlice, MirSpecCoerce, MirStructLiteral, MirTerminator, MirUnionConstruct,
+    MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirBlockData, MirBody, MirCast,
+    MirDynamicCall, MirEnumConstruct, MirExpr, MirExprNode, MirFieldInit, MirFunctionCall,
+    MirLocalDecl, MirPlace, MirPlaceRoot, MirSlice, MirSpecCoerce, MirStructLiteral, MirTerminator,
+    MirUnionConstruct,
 };
 use crate::ids::{BlockId, LocalId};
-use super::place::place_align;
 use omega_analyzer::checked::{
-    CheckedBlock, CheckedBreak, CheckedContinue, CheckedDefer, CheckedExpr, CheckedExprNode, CheckedFor, CheckedIf,
-    CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedRangeEnd, CheckedPlaceRoot, CheckedProjection,
-    CheckedStmt, CheckedStructLiteralField, CheckedWhile,
+    CheckedBlock, CheckedBreak, CheckedContinue, CheckedDefer, CheckedExpr, CheckedExprNode,
+    CheckedFor, CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace,
+    CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedStmt, CheckedStructLiteralField,
+    CheckedWhile,
 };
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -72,14 +73,16 @@ impl FunctionLowerer {
         // Collect all defers before lowering because nested returns need the complete exit chain up front.
         let mut defers = Vec::new();
         collect_defer_ids(&body, &mut defers);
-        let defer_flags: Vec<LocalId> =
-            defers.iter().map(|_| lowerer.declare_local(None, ResolvedType::Bool)).collect();
+        let defer_flags: Vec<LocalId> = defers
+            .iter()
+            .map(|_| lowerer.declare_local(None, ResolvedType::Bool))
+            .collect();
         for (&flag, (id, _)) in defer_flags.iter().zip(&defers) {
             lowerer.defer_flag_of.insert(*id, flag);
         }
 
-        lowerer.return_slot =
-            (!matches!(return_type, ResolvedType::Void)).then(|| lowerer.declare_local(None, return_type.clone()));
+        lowerer.return_slot = (!matches!(return_type, ResolvedType::Void))
+            .then(|| lowerer.declare_local(None, return_type.clone()));
 
         // Reserve defer check/run blocks before body lowering so return targets are stable.
         let check_blocks: Vec<BlockId> = defers.iter().map(|_| lowerer.new_block()).collect();
@@ -92,7 +95,13 @@ impl FunctionLowerer {
 
         // Each defer gets a flag that records whether control reached its declaration.
         for (&flag, (id, span)) in defer_flags.iter().zip(&defers) {
-            lowerer.assign_local(*id, *span, flag, ResolvedType::Bool, bool_literal(*id, *span, false));
+            lowerer.assign_local(
+                *id,
+                *span,
+                flag,
+                ResolvedType::Bool,
+                bool_literal(*id, *span, false),
+            );
         }
 
         // Lower the body through the value-producing path because analysis already proved its tail/return shape.
@@ -106,7 +115,11 @@ impl FunctionLowerer {
             let check = check_blocks[i];
             let run = run_blocks[i];
             // Run active defers in reverse declaration order.
-            let next = if i == 0 { final_block } else { check_blocks[i - 1] };
+            let next = if i == 0 {
+                final_block
+            } else {
+                check_blocks[i - 1]
+            };
             let flag = defer_flags[i];
 
             lowerer.current = check;
@@ -115,13 +128,20 @@ impl FunctionLowerer {
                 span: *span,
                 r#type: ResolvedType::Bool,
                 kind: MirExpr::Place(MirPlace {
-                    root: MirPlaceRoot::Local { id: flag, r#type: ResolvedType::Bool },
+                    root: MirPlaceRoot::Local {
+                        id: flag,
+                        r#type: ResolvedType::Bool,
+                    },
                     projections: vec![],
                     r#type: ResolvedType::Bool,
                     align: place_align(&ResolvedType::Bool),
                 }),
             };
-            lowerer.set_terminator(MirTerminator::Branch { condition: flag_read, then_block: run, else_block: next });
+            lowerer.set_terminator(MirTerminator::Branch {
+                condition: flag_read,
+                then_block: run,
+                else_block: next,
+            });
 
             lowerer.current = run;
             let defer_body = lowerer
@@ -129,7 +149,10 @@ impl FunctionLowerer {
                 .remove(id)
                 .expect("every collected defer is visited unconditionally during the walk above");
             let fell_through = lowerer.lower_block_as_stmt(defer_body);
-            assert!(fell_through, "a defer body can never diverge -- analysis rejects return/break/continue inside one");
+            assert!(
+                fell_through,
+                "a defer body can never diverge -- analysis rejects return/break/continue inside one"
+            );
             lowerer.set_terminator(MirTerminator::Goto(next));
         }
 
@@ -139,7 +162,10 @@ impl FunctionLowerer {
             span: fn_span,
             r#type: return_type.clone(),
             kind: MirExpr::Place(MirPlace {
-                root: MirPlaceRoot::Local { id: slot, r#type: return_type.clone() },
+                root: MirPlaceRoot::Local {
+                    id: slot,
+                    r#type: return_type.clone(),
+                },
                 projections: vec![],
                 r#type: return_type.clone(),
                 align: place_align(&return_type),
@@ -161,7 +187,10 @@ impl FunctionLowerer {
 
     fn new_block(&mut self) -> BlockId {
         let id = BlockId(self.blocks.len() as u32);
-        self.blocks.push(BuilderBlock { statements: Vec::new(), terminator: None });
+        self.blocks.push(BuilderBlock {
+            statements: Vec::new(),
+            terminator: None,
+        });
         id
     }
 
@@ -170,18 +199,34 @@ impl FunctionLowerer {
     }
 
     fn push_stmt(&mut self, expr: MirExprNode) {
-        debug_assert!(!self.is_current_terminated(), "cannot append a statement to an already-terminated block");
+        debug_assert!(
+            !self.is_current_terminated(),
+            "cannot append a statement to an already-terminated block"
+        );
         self.blocks[self.current.0 as usize].statements.push(expr);
     }
 
     fn set_terminator(&mut self, terminator: MirTerminator) {
-        debug_assert!(!self.is_current_terminated(), "a block can only be terminated once");
+        debug_assert!(
+            !self.is_current_terminated(),
+            "a block can only be terminated once"
+        );
         self.blocks[self.current.0 as usize].terminator = Some(terminator);
     }
 
-    fn assign_local(&mut self, id: HirId, span: Span, local: LocalId, r#type: ResolvedType, value: MirExprNode) {
+    fn assign_local(
+        &mut self,
+        id: HirId,
+        span: Span,
+        local: LocalId,
+        r#type: ResolvedType,
+        value: MirExprNode,
+    ) {
         let target = MirPlace {
-            root: MirPlaceRoot::Local { id: local, r#type: r#type.clone() },
+            root: MirPlaceRoot::Local {
+                id: local,
+                r#type: r#type.clone(),
+            },
             projections: vec![],
             r#type: r#type.clone(),
             align: place_align(&r#type),
@@ -190,7 +235,10 @@ impl FunctionLowerer {
             id,
             span,
             r#type: ResolvedType::Void,
-            kind: MirExpr::Assignment(MirAssignment { target, value: Box::new(value) }),
+            kind: MirExpr::Assignment(MirAssignment {
+                target,
+                value: Box::new(value),
+            }),
         });
     }
 
@@ -210,12 +258,16 @@ impl FunctionLowerer {
             .enumerate()
             .map(|(i, b)| MirBlockData {
                 statements: b.statements,
-                terminator: b
-                    .terminator
-                    .unwrap_or_else(|| panic!("omega-mir lowering bug: block {i} was never terminated")),
+                terminator: b.terminator.unwrap_or_else(|| {
+                    panic!("omega-mir lowering bug: block {i} was never terminated")
+                }),
             })
             .collect();
-        MirBody { locals: self.locals, arg_count, blocks }
+        MirBody {
+            locals: self.locals,
+            arg_count,
+            blocks,
+        }
     }
 
     fn lower_stmts(&mut self, stmts: Vec<CheckedStmt>) {
@@ -256,16 +308,32 @@ impl FunctionLowerer {
                     self.assign_local(id, span, slot, r#type, value);
                 }
                 // A never-returning expression terminates control flow and must not synthesize a return value.
-                self.set_terminator(if diverges { MirTerminator::Unreachable } else { MirTerminator::Goto(self.exit_chain_start) });
+                self.set_terminator(if diverges {
+                    MirTerminator::Unreachable
+                } else {
+                    MirTerminator::Goto(self.exit_chain_start)
+                });
             }
-            CheckedStmt::While(CheckedWhile { id, condition, body, .. }) => {
+            CheckedStmt::While(CheckedWhile {
+                id,
+                condition,
+                body,
+                ..
+            }) => {
                 self.lower_while(id, condition, body);
             }
             CheckedStmt::Loop(CheckedLoop { id, body, .. }) => {
                 self.lower_loop(id, body);
             }
             CheckedStmt::For(for_loop) => {
-                let CheckedFor { id, init, condition, post, body, .. } = *for_loop;
+                let CheckedFor {
+                    id,
+                    init,
+                    condition,
+                    post,
+                    body,
+                    ..
+                } = *for_loop;
                 self.lower_for(id, init, condition, post, body);
             }
             CheckedStmt::Break(CheckedBreak { loop_id, .. }) => {
@@ -281,20 +349,34 @@ impl FunctionLowerer {
                     .defer_flag_of
                     .get(&id)
                     .expect("every defer's flag local is pre-allocated by the pre-pass in `lower`");
-                self.assign_local(id, span, flag, ResolvedType::Bool, bool_literal(id, span, true));
+                self.assign_local(
+                    id,
+                    span,
+                    flag,
+                    ResolvedType::Bool,
+                    bool_literal(id, span, true),
+                );
                 self.defer_bodies.insert(id, body);
             }
         }
     }
 
     fn lower_expr_stmt(&mut self, expr: CheckedExprNode) {
-        let CheckedExprNode { id, span, r#type, kind } = expr;
+        let CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        } = expr;
 
         if let CheckedExpr::Assignment(assignment) = kind {
             if is_control_flow_expr(&assignment.value.kind) {
                 let target = self.lower_place(assignment.target);
                 if target.projections.is_empty()
-                    && let MirPlaceRoot::Local { id: local_id, r#type: local_type } = target.root
+                    && let MirPlaceRoot::Local {
+                        id: local_id,
+                        r#type: local_type,
+                    } = target.root
                 {
                     self.lower_control_flow_stmt(*assignment.value, Some((local_id, local_type)));
                     return;
@@ -321,8 +403,12 @@ impl FunctionLowerer {
             let target = self.lower_place(assignment.target);
             let diverges = assignment.value.r#type == ResolvedType::Never;
             let value = Box::new(self.lower_expr(*assignment.value));
-            let node =
-                MirExprNode { id, span, r#type, kind: MirExpr::Assignment(MirAssignment { target, value }) };
+            let node = MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::Assignment(MirAssignment { target, value }),
+            };
             if self.is_current_terminated() {
                 return;
             }
@@ -334,12 +420,25 @@ impl FunctionLowerer {
         }
 
         if is_control_flow_expr(&kind) {
-            self.lower_control_flow_stmt(CheckedExprNode { id, span, r#type, kind }, None);
+            self.lower_control_flow_stmt(
+                CheckedExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                },
+                None,
+            );
             return;
         }
 
         let diverges = r#type == ResolvedType::Never;
-        let node = self.lower_expr(CheckedExprNode { id, span, r#type, kind });
+        let node = self.lower_expr(CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        });
         if self.is_current_terminated() {
             return;
         }
@@ -411,18 +510,33 @@ impl FunctionLowerer {
         result_type: ResolvedType,
     ) -> bool {
         match expr.kind {
-            CheckedExpr::If(CheckedIf { branches, else_branch }) => {
-                self.lower_if_chain(branches.into_iter(), else_branch, merge, result, result_type)
-            }
+            CheckedExpr::If(CheckedIf {
+                branches,
+                else_branch,
+            }) => self.lower_if_chain(
+                branches.into_iter(),
+                else_branch,
+                merge,
+                result,
+                result_type,
+            ),
             CheckedExpr::Match(CheckedMatch { arms, else_branch }) => {
                 self.lower_match_chain(arms.into_iter(), else_branch, merge, result, result_type)
             }
-            CheckedExpr::Codeblock(block) => self.lower_block_into(block, merge, result, result_type),
-            _ => unreachable!("lower_control_flow_into is only ever called after is_control_flow_expr matched"),
+            CheckedExpr::Codeblock(block) => {
+                self.lower_block_into(block, merge, result, result_type)
+            }
+            _ => unreachable!(
+                "lower_control_flow_into is only ever called after is_control_flow_expr matched"
+            ),
         }
     }
 
-    fn lower_control_flow_stmt(&mut self, expr: CheckedExprNode, result: Option<(LocalId, ResolvedType)>) {
+    fn lower_control_flow_stmt(
+        &mut self,
+        expr: CheckedExprNode,
+        result: Option<(LocalId, ResolvedType)>,
+    ) {
         let merge = self.new_block();
         let (result_id, result_type) = match result {
             Some((id, r#type)) => (Some(id), r#type),
@@ -482,10 +596,20 @@ impl FunctionLowerer {
         if self.is_current_terminated() {
             return;
         }
-        self.set_terminator(MirTerminator::Branch { condition: cond, then_block: body_blk, else_block: exit });
+        self.set_terminator(MirTerminator::Branch {
+            condition: cond,
+            then_block: body_blk,
+            else_block: exit,
+        });
 
         self.current = body_blk;
-        self.loop_stack.push((loop_id, LoopTargets { break_block: exit, continue_block: header }));
+        self.loop_stack.push((
+            loop_id,
+            LoopTargets {
+                break_block: exit,
+                continue_block: header,
+            },
+        ));
         let fell_through = self.lower_block_as_stmt(body);
         self.loop_stack.pop();
         if fell_through {
@@ -502,7 +626,13 @@ impl FunctionLowerer {
         self.set_terminator(MirTerminator::Goto(body_blk));
 
         self.current = body_blk;
-        self.loop_stack.push((loop_id, LoopTargets { break_block: exit, continue_block: body_blk }));
+        self.loop_stack.push((
+            loop_id,
+            LoopTargets {
+                break_block: exit,
+                continue_block: body_blk,
+            },
+        ));
         let fell_through = self.lower_block_as_stmt(body);
         self.loop_stack.pop();
         if fell_through {
@@ -537,10 +667,20 @@ impl FunctionLowerer {
         if self.is_current_terminated() {
             return;
         }
-        self.set_terminator(MirTerminator::Branch { condition: cond, then_block: body_blk, else_block: exit });
+        self.set_terminator(MirTerminator::Branch {
+            condition: cond,
+            then_block: body_blk,
+            else_block: exit,
+        });
 
         self.current = body_blk;
-        self.loop_stack.push((loop_id, LoopTargets { break_block: exit, continue_block: continue_blk }));
+        self.loop_stack.push((
+            loop_id,
+            LoopTargets {
+                break_block: exit,
+                continue_block: continue_blk,
+            },
+        ));
         let fell_through = self.lower_block_as_stmt(body);
         self.loop_stack.pop();
         if fell_through {
@@ -566,11 +706,17 @@ impl FunctionLowerer {
     }
 
     pub(super) fn lower_expr(&mut self, node: CheckedExprNode) -> MirExprNode {
-        let CheckedExprNode { id, span, r#type, kind } = node;
+        let CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        } = node;
         match kind {
-            CheckedExpr::If(CheckedIf { branches, else_branch }) => {
-                self.lower_if_expr(id, span, r#type, branches, else_branch)
-            }
+            CheckedExpr::If(CheckedIf {
+                branches,
+                else_branch,
+            }) => self.lower_if_expr(id, span, r#type, branches, else_branch),
             CheckedExpr::Match(CheckedMatch { arms, else_branch }) => {
                 self.lower_match_expr(id, span, r#type, arms, else_branch)
             }
@@ -578,83 +724,234 @@ impl FunctionLowerer {
 
             CheckedExpr::Place(place) => {
                 let place = self.lower_place(place);
-                MirExprNode { id, span, r#type, kind: MirExpr::Place(place) }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::Place(place),
+                }
             }
-            CheckedExpr::Number(n) => MirExprNode { id, span, r#type, kind: MirExpr::Number(n) },
-            CheckedExpr::Bool(b) => MirExprNode { id, span, r#type, kind: MirExpr::Bool(b) },
-            CheckedExpr::Char(c) => MirExprNode { id, span, r#type, kind: MirExpr::Char(c) },
-            CheckedExpr::String(s) => MirExprNode { id, span, r#type, kind: MirExpr::String(s) },
-            CheckedExpr::ByteString(s) => MirExprNode { id, span, r#type, kind: MirExpr::ByteString(s) },
-            CheckedExpr::Const(v) => MirExprNode { id, span, r#type, kind: MirExpr::Const(v) },
-            CheckedExpr::Sizeof(t) => MirExprNode { id, span, r#type, kind: MirExpr::Sizeof(t) },
+            CheckedExpr::Number(n) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::Number(n),
+            },
+            CheckedExpr::Bool(b) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::Bool(b),
+            },
+            CheckedExpr::Char(c) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::Char(c),
+            },
+            CheckedExpr::String(s) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::String(s),
+            },
+            CheckedExpr::ByteString(s) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::ByteString(s),
+            },
+            CheckedExpr::Const(v) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::Const(v),
+            },
+            CheckedExpr::Sizeof(t) => MirExprNode {
+                id,
+                span,
+                r#type,
+                kind: MirExpr::Sizeof(t),
+            },
 
             CheckedExpr::FunctionCall(call) => {
                 let callee = Box::new(self.lower_expr(*call.callee));
                 let args = call.args.into_iter().map(|a| self.lower_expr(a)).collect();
-                let kind = MirExpr::FunctionCall(MirFunctionCall { callee, fn_type: call.fn_type, args });
-                MirExprNode { id, span, r#type, kind }
+                let kind = MirExpr::FunctionCall(MirFunctionCall {
+                    callee,
+                    fn_type: call.fn_type,
+                    args,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::Assignment(a) => {
                 let target = self.lower_place(a.target);
                 let value = Box::new(self.lower_expr(*a.value));
-                MirExprNode { id, span, r#type, kind: MirExpr::Assignment(MirAssignment { target, value }) }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::Assignment(MirAssignment { target, value }),
+                }
             }
             CheckedExpr::AddressOf(a) => {
                 let place = self.lower_place(a.place);
-                MirExprNode { id, span, r#type, kind: MirExpr::AddressOf(MirAddressOf { place }) }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::AddressOf(MirAddressOf { place }),
+                }
             }
             CheckedExpr::Negate(e) => {
                 let e = Box::new(self.lower_expr(*e));
-                MirExprNode { id, span, r#type, kind: MirExpr::Negate(e) }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::Negate(e),
+                }
             }
             CheckedExpr::BitNot(e) => {
                 let e = Box::new(self.lower_expr(*e));
-                MirExprNode { id, span, r#type, kind: MirExpr::BitNot(e) }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::BitNot(e),
+                }
             }
             CheckedExpr::BinaryOp(b) => {
                 let left = Box::new(self.lower_expr(*b.left));
                 let right = Box::new(self.lower_expr(*b.right));
-                MirExprNode { id, span, r#type, kind: MirExpr::BinaryOp(MirBinaryOp { op: b.op, left, right }) }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::BinaryOp(MirBinaryOp {
+                        op: b.op,
+                        left,
+                        right,
+                    }),
+                }
             }
             CheckedExpr::ArrayLiteral(lit) => {
-                let elements = lit.elements.into_iter().map(|e| self.lower_expr(e)).collect();
-                let kind = MirExpr::ArrayLiteral(MirArrayLiteral { item_type: lit.item_type, elements });
-                MirExprNode { id, span, r#type, kind }
+                let elements = lit
+                    .elements
+                    .into_iter()
+                    .map(|e| self.lower_expr(e))
+                    .collect();
+                let kind = MirExpr::ArrayLiteral(MirArrayLiteral {
+                    item_type: lit.item_type,
+                    elements,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::StructLiteral(lit) => {
-                let fields = lit.fields.into_iter().map(|f| self.lower_field_init(f)).collect();
-                MirExprNode { id, span, r#type, kind: MirExpr::StructLiteral(MirStructLiteral { fields }) }
+                let fields = lit
+                    .fields
+                    .into_iter()
+                    .map(|f| self.lower_field_init(f))
+                    .collect();
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind: MirExpr::StructLiteral(MirStructLiteral { fields }),
+                }
             }
             CheckedExpr::EnumConstruct(construct) => {
-                let fields = construct.fields.into_iter().map(|f| self.lower_field_init(f)).collect();
-                let kind = MirExpr::EnumConstruct(MirEnumConstruct { variant_index: construct.variant_index, fields });
-                MirExprNode { id, span, r#type, kind }
+                let fields = construct
+                    .fields
+                    .into_iter()
+                    .map(|f| self.lower_field_init(f))
+                    .collect();
+                let kind = MirExpr::EnumConstruct(MirEnumConstruct {
+                    variant_index: construct.variant_index,
+                    fields,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::UnionConstruct(construct) => {
                 let value = Box::new(self.lower_expr(*construct.value));
-                let kind = MirExpr::UnionConstruct(MirUnionConstruct { field_index: construct.field_index, value });
-                MirExprNode { id, span, r#type, kind }
+                let kind = MirExpr::UnionConstruct(MirUnionConstruct {
+                    field_index: construct.field_index,
+                    value,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::Slice(s) => {
                 let base = self.lower_place(s.base);
                 let start = s.start.map(|e| Box::new(self.lower_expr(*e)));
                 let (end, inclusive) = match s.end {
-                    CheckedRangeEnd::Inclusive(end) => (Some(Box::new(self.lower_expr(*end))), true),
-                    CheckedRangeEnd::Exclusive(end) => (Some(Box::new(self.lower_expr(*end))), false),
+                    CheckedRangeEnd::Inclusive(end) => {
+                        (Some(Box::new(self.lower_expr(*end))), true)
+                    }
+                    CheckedRangeEnd::Exclusive(end) => {
+                        (Some(Box::new(self.lower_expr(*end))), false)
+                    }
                     CheckedRangeEnd::Open => (None, false),
                 };
-                let kind = MirExpr::Slice(MirSlice { base, item_type: s.item_type, start, end, inclusive });
-                MirExprNode { id, span, r#type, kind }
+                let kind = MirExpr::Slice(MirSlice {
+                    base,
+                    item_type: s.item_type,
+                    start,
+                    end,
+                    inclusive,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::Cast(cast) => {
                 let base = Box::new(self.lower_expr(*cast.base));
-                let kind = MirExpr::Cast(MirCast { kind: cast.kind, target_type: cast.target_type, base });
-                MirExprNode { id, span, r#type, kind }
+                let kind = MirExpr::Cast(MirCast {
+                    kind: cast.kind,
+                    target_type: cast.target_type,
+                    base,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::SpecCoerce(coerce) => {
                 let base = Box::new(self.lower_expr(*coerce.base));
-                let kind = MirExpr::SpecCoerce(MirSpecCoerce { base, slots: coerce.slots });
-                MirExprNode { id, span, r#type, kind }
+                let kind = MirExpr::SpecCoerce(MirSpecCoerce {
+                    base,
+                    slots: coerce.slots,
+                });
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
             CheckedExpr::DynamicCall(call) => {
                 let base = self.lower_place(call.base);
@@ -665,31 +962,61 @@ impl FunctionLowerer {
                     fn_type: call.fn_type,
                     args,
                 });
-                MirExprNode { id, span, r#type, kind }
+                MirExprNode {
+                    id,
+                    span,
+                    r#type,
+                    kind,
+                }
             }
         }
     }
 
     fn lower_field_init(&mut self, field: CheckedStructLiteralField) -> MirFieldInit {
-        MirFieldInit { field_index: field.field_index, value: self.lower_expr(field.value) }
+        MirFieldInit {
+            field_index: field.field_index,
+            value: self.lower_expr(field.value),
+        }
     }
 
-    fn finish_merge(&mut self, merge: BlockId, reached: bool, result: LocalId, id: HirId, span: Span, r#type: ResolvedType) -> MirExprNode {
+    fn finish_merge(
+        &mut self,
+        merge: BlockId,
+        reached: bool,
+        result: LocalId,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+    ) -> MirExprNode {
         self.current = merge;
         if !reached {
             self.set_terminator(MirTerminator::Unreachable);
         }
-        let root = MirPlaceRoot::Local { id: result, r#type: r#type.clone() };
+        let root = MirPlaceRoot::Local {
+            id: result,
+            r#type: r#type.clone(),
+        };
         let kind = MirExpr::Place(MirPlace {
             root,
             projections: vec![],
             r#type: r#type.clone(),
             align: place_align(&r#type),
         });
-        MirExprNode { id, span, r#type, kind }
+        MirExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        }
     }
 
-    fn lower_codeblock_expr(&mut self, id: HirId, span: Span, r#type: ResolvedType, block: CheckedBlock) -> MirExprNode {
+    fn lower_codeblock_expr(
+        &mut self,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+        block: CheckedBlock,
+    ) -> MirExprNode {
         let merge = self.new_block();
         let result = self.declare_local(None, r#type.clone());
         let reached = self.lower_block_into(block, merge, Some(result), r#type.clone());
@@ -706,7 +1033,13 @@ impl FunctionLowerer {
     ) -> MirExprNode {
         let merge = self.new_block();
         let result = self.declare_local(None, r#type.clone());
-        let reached = self.lower_if_chain(branches.into_iter(), else_branch, merge, Some(result), r#type.clone());
+        let reached = self.lower_if_chain(
+            branches.into_iter(),
+            else_branch,
+            merge,
+            Some(result),
+            r#type.clone(),
+        );
         self.finish_merge(merge, reached, result, id, span, r#type)
     }
 
@@ -734,7 +1067,11 @@ impl FunctionLowerer {
         }
         let then_blk = self.new_block();
         let else_blk = self.new_block();
-        self.set_terminator(MirTerminator::Branch { condition: cond, then_block: then_blk, else_block: else_blk });
+        self.set_terminator(MirTerminator::Branch {
+            condition: cond,
+            then_block: then_blk,
+            else_block: else_blk,
+        });
 
         self.current = then_blk;
         let then_reached = self.lower_block_into(then_body, merge, result, result_type.clone());
@@ -753,7 +1090,13 @@ impl FunctionLowerer {
     ) -> MirExprNode {
         let merge = self.new_block();
         let result = self.declare_local(None, r#type.clone());
-        let reached = self.lower_match_chain(arms.into_iter(), else_branch, merge, Some(result), r#type.clone());
+        let reached = self.lower_match_chain(
+            arms.into_iter(),
+            else_branch,
+            merge,
+            Some(result),
+            r#type.clone(),
+        );
         self.finish_merge(merge, reached, result, id, span, r#type)
     }
 
@@ -787,15 +1130,27 @@ impl FunctionLowerer {
         for (g, group) in arm.conditions.into_iter().enumerate() {
             self.current = group_entry;
             // Successful conditions jump to the arm body; failed conditions advance to the next group.
-            let group_fail = if g + 1 == group_count { fail_blk } else { self.new_block() };
+            let group_fail = if g + 1 == group_count {
+                fail_blk
+            } else {
+                self.new_block()
+            };
             let condition_count = group.len();
             for (i, cond) in group.into_iter().enumerate() {
                 let cond = self.lower_expr(cond);
                 if self.is_current_terminated() {
                     return false;
                 }
-                let true_target = if i + 1 == condition_count { body_blk } else { self.new_block() };
-                self.set_terminator(MirTerminator::Branch { condition: cond, then_block: true_target, else_block: group_fail });
+                let true_target = if i + 1 == condition_count {
+                    body_blk
+                } else {
+                    self.new_block()
+                };
+                self.set_terminator(MirTerminator::Branch {
+                    condition: cond,
+                    then_block: true_target,
+                    else_block: group_fail,
+                });
                 self.current = true_target;
             }
             group_entry = group_fail;
@@ -815,11 +1170,19 @@ impl FunctionLowerer {
 }
 
 fn bool_literal(id: HirId, span: Span, value: bool) -> MirExprNode {
-    MirExprNode { id, span, r#type: ResolvedType::Bool, kind: MirExpr::Bool(value) }
+    MirExprNode {
+        id,
+        span,
+        r#type: ResolvedType::Bool,
+        kind: MirExpr::Bool(value),
+    }
 }
 
 fn is_control_flow_expr(kind: &CheckedExpr) -> bool {
-    matches!(kind, CheckedExpr::If(_) | CheckedExpr::Match(_) | CheckedExpr::Codeblock(_))
+    matches!(
+        kind,
+        CheckedExpr::If(_) | CheckedExpr::Match(_) | CheckedExpr::Codeblock(_)
+    )
 }
 
 fn collect_defer_ids(block: &CheckedBlock, out: &mut Vec<(HirId, Span)>) {
@@ -833,7 +1196,9 @@ fn collect_defer_ids(block: &CheckedBlock, out: &mut Vec<(HirId, Span)>) {
 
 fn collect_defer_ids_stmt(stmt: &CheckedStmt, out: &mut Vec<(HirId, Span)>) {
     match stmt {
-        CheckedStmt::Declaration(_) | CheckedStmt::ExternDeclaration(_) | CheckedStmt::Break(_)
+        CheckedStmt::Declaration(_)
+        | CheckedStmt::ExternDeclaration(_)
+        | CheckedStmt::Break(_)
         | CheckedStmt::Continue(_) => {}
         CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_defer_ids_expr(e, out),
         CheckedStmt::While(w) => {
@@ -916,8 +1281,10 @@ fn collect_defer_ids_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) 
             if let Some(start) = &s.start {
                 collect_defer_ids_expr(start, out);
             }
-            if let Some(end) = &s.end {
-                collect_defer_ids_expr(end, out);
+            match &s.end {
+                CheckedRangeEnd::Inclusive(end) => collect_defer_ids_expr(end, out),
+                CheckedRangeEnd::Exclusive(end) => collect_defer_ids_expr(end, out),
+                _ => {}
             }
         }
         CheckedExpr::Match(m) => {

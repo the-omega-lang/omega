@@ -1,4 +1,3 @@
-
 use crate::base62;
 use crate::grammar::*;
 use crate::symbol::{ManglePath, MangleType, Namespace, Symbol};
@@ -33,7 +32,11 @@ pub fn decode(mangled: &str) -> Option<Symbol> {
         return None;
     };
 
-    Some(Symbol { path, signature, vendor_suffix })
+    Some(Symbol {
+        path,
+        signature,
+        vendor_suffix,
+    })
 }
 
 pub fn demangle(mangled: &str) -> Option<String> {
@@ -126,7 +129,10 @@ fn parse_type(bytes: &[u8], pos: &mut usize) -> Option<MangleType> {
         }
         TAG_POINTER => {
             *pos += 1;
-            Some(MangleType::Pointer(Box::new(parse_type(bytes, pos)?), false))
+            Some(MangleType::Pointer(
+                Box::new(parse_type(bytes, pos)?),
+                false,
+            ))
         }
         TAG_POINTER_MUT => {
             *pos += 1;
@@ -164,11 +170,17 @@ fn parse_type(bytes: &[u8], pos: &mut usize) -> Option<MangleType> {
         }
         TAG_SPEC_OBJECT => {
             *pos += 1;
-            Some(MangleType::SpecObject(Box::new(parse_type(bytes, pos)?), false))
+            Some(MangleType::SpecObject(
+                Box::new(parse_type(bytes, pos)?),
+                false,
+            ))
         }
         TAG_SPEC_OBJECT_MUT => {
             *pos += 1;
-            Some(MangleType::SpecObject(Box::new(parse_type(bytes, pos)?), true))
+            Some(MangleType::SpecObject(
+                Box::new(parse_type(bytes, pos)?),
+                true,
+            ))
         }
         TAG_FUNCTION => {
             *pos += 1;
@@ -192,7 +204,9 @@ fn parse_type(bytes: &[u8], pos: &mut usize) -> Option<MangleType> {
             let variant = base62::decode(bytes, pos)? as u32;
             Some(MangleType::Named(path, Some(variant)))
         }
-        TAG_ROOT | TAG_NESTED | TAG_GENERIC => Some(MangleType::Named(parse_path(bytes, pos)?, None)),
+        TAG_ROOT | TAG_NESTED | TAG_GENERIC => {
+            Some(MangleType::Named(parse_path(bytes, pos)?, None))
+        }
         _ => None,
     }
 }

@@ -154,7 +154,11 @@ impl Driver {
             .unwrap_or_default()
     }
 
-    pub(super) fn sweep_dead_code(&self, local: &[ModulePath], usage: &FieldUsage) -> TaggedWarnings {
+    pub(super) fn sweep_dead_code(
+        &self,
+        local: &[ModulePath],
+        usage: &FieldUsage,
+    ) -> TaggedWarnings {
         let mut warnings = TaggedWarnings::new();
 
         let unused_field = |owner: &Ident, field: &HirField| {

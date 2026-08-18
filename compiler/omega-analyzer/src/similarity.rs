@@ -1,7 +1,9 @@
-
 use omega_parser::prelude::Ident;
 
-pub fn best_match<'a>(target: &Ident, candidates: impl Iterator<Item = &'a Ident>) -> Option<Ident> {
+pub fn best_match<'a>(
+    target: &Ident,
+    candidates: impl Iterator<Item = &'a Ident>,
+) -> Option<Ident> {
     let target = target.as_ref();
     let max_distance = (target.chars().count() / 3).max(1);
     candidates

@@ -1,4 +1,3 @@
-
 use crate::Driver;
 use crate::items::{CheckedBody, ItemKey};
 use omega_analyzer::analysis::{AnalysisSite, Analyzer};
@@ -9,8 +8,7 @@ use omega_analyzer::checked::{
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
-use omega_diagnostics::Span;
-use omega_hir::{HirGenericParam, HirId, HirItem};
+use omega_hir::{HirGenericParam, HirItem};
 use omega_parser::prelude::Ident;
 
 trait CheckedAggregate: Sized {
@@ -147,10 +145,14 @@ impl Driver {
                     .get(key)
                     .cloned()
                     .unwrap_or_default();
-                let keys_run = self.with_analyzer(&key.module, &substitution, AnalysisSite::new(f.id, f.span), |a| {
-                    a.expand_bound_set(f.id, f.span, &declared)
-                });
-                self.diagnostics.record_warnings(&key.module, keys_run.warnings);
+                let keys_run = self.with_analyzer(
+                    &key.module,
+                    &substitution,
+                    AnalysisSite::new(f.id, f.span),
+                    |a| a.expand_bound_set(f.id, f.span, &declared),
+                );
+                self.diagnostics
+                    .record_warnings(&key.module, keys_run.warnings);
                 let keys = keys_run.result;
                 let bounds = self.bound_context_over(&declared, &keys);
                 let annotations = self
@@ -178,9 +180,13 @@ impl Driver {
             HirItem::Struct(s) => {
                 let cell = self.items.cells.expect_struct(key);
                 let self_type = ResolvedType::Struct(cell.clone());
-                self.check_aggregate_body(key, AnalysisSite::new(s.id, s.span), &s.generics, self_type, |a| {
-                    a.check_struct_body(s, &cell)
-                })
+                self.check_aggregate_body(
+                    key,
+                    AnalysisSite::new(s.id, s.span),
+                    &s.generics,
+                    self_type,
+                    |a| a.check_struct_body(s, &cell),
+                )
             }
 
             HirItem::Enum(e) => {
@@ -189,17 +195,25 @@ impl Driver {
                     cell: cell.clone(),
                     variant: None,
                 };
-                self.check_aggregate_body(key, AnalysisSite::new(e.id, e.span), &e.generics, self_type, |a| {
-                    a.check_enum_body(e, &cell)
-                })
+                self.check_aggregate_body(
+                    key,
+                    AnalysisSite::new(e.id, e.span),
+                    &e.generics,
+                    self_type,
+                    |a| a.check_enum_body(e, &cell),
+                )
             }
 
             HirItem::Union(u) => {
                 let cell = self.items.cells.expect_union(key);
                 let self_type = ResolvedType::Union(cell.clone());
-                self.check_aggregate_body(key, AnalysisSite::new(u.id, u.span), &u.generics, self_type, |a| {
-                    a.check_union_body(u, &cell)
-                })
+                self.check_aggregate_body(
+                    key,
+                    AnalysisSite::new(u.id, u.span),
+                    &u.generics,
+                    self_type,
+                    |a| a.check_union_body(u, &cell),
+                )
             }
 
             HirItem::Spec(_) => None,
@@ -230,7 +244,8 @@ impl Driver {
         let keys_run = self.with_analyzer(&key.module, &substitution, owner, |a| {
             a.expand_bound_set(owner.id, owner.span, &declared)
         });
-        self.diagnostics.record_warnings(&key.module, keys_run.warnings);
+        self.diagnostics
+            .record_warnings(&key.module, keys_run.warnings);
         let keys = keys_run.result;
         let bounds = self.bound_context_over(&declared, &keys);
         let run = self.with_analyzer_in(&key.module, &substitution, &bounds, owner, check);
@@ -317,9 +332,12 @@ impl Driver {
             .cloned()
             .unwrap_or_default();
 
-        let run = self.with_analyzer(module_path, &[], AnalysisSite::new(f.id, f.span), |analyzer| {
-            analyzer.check_function_body(f, &fn_type, f.id, &annotations)
-        });
+        let run = self.with_analyzer(
+            module_path,
+            &[],
+            AnalysisSite::new(f.id, f.span),
+            |analyzer| analyzer.check_function_body(f, &fn_type, f.id, &annotations),
+        );
         let body = CheckedBody {
             item: CheckedItem::FunctionDefinition(run.result?),
             warnings: run.warnings,

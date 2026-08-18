@@ -1,7 +1,9 @@
 use super::*;
 
 impl Driver {
-    pub(super) fn collect_extern_signatures(&mut self) -> Result<Vec<ModulePath>, Vec<CompileError>> {
+    pub(super) fn collect_extern_signatures(
+        &mut self,
+    ) -> Result<Vec<ModulePath>, Vec<CompileError>> {
         let paths = self.roots.extern_modules();
         for path in &paths {
             if let Err(error) = self.parse_module(path) {
@@ -38,75 +40,82 @@ impl Driver {
                 })
                 .collect();
             for glue in glues {
-                let run = self.with_analyzer(path, &[], AnalysisSite::new(glue.id, glue.span), |analyzer| {
-                    let gap = analyzer.resolve_gap_path(glue.id, glue.span, &glue.gap)?;
-                    let functions = glue
-                        .functions
-                        .iter()
-                        .map(|function| {
-                            analyzer
-                                .collect_function_signature(function)
-                                .map(|(signature, _)| (function.clone(), signature))
-                        })
-                        .collect::<Option<Vec<_>>>()?;
-                    let mut errors = Vec::new();
-                    let mut seen = std::collections::HashMap::new();
-                    for (function, _) in &functions {
-                        if let Some(previous) = seen.insert(function.name.clone(), function.span) {
-                            errors.push(AnalysisError::new(
-                                function.id,
-                                function.span,
-                                AnalysisErrorKind::Redeclaration {
-                                    name: function.name.clone(),
-                                    previous: Some(previous),
-                                },
-                            ));
-                        }
-                    }
-                    for (name, requirement) in &gap.functions {
-                        match functions
+                let run = self.with_analyzer(
+                    path,
+                    &[],
+                    AnalysisSite::new(glue.id, glue.span),
+                    |analyzer| {
+                        let gap = analyzer.resolve_gap_path(glue.id, glue.span, &glue.gap)?;
+                        let functions = glue
+                            .functions
                             .iter()
-                            .find(|(function, _)| function.name == *name)
-                        {
-                            None => {
-                                errors.push(AnalysisError::new(
-                                    glue.id,
-                                    glue.span,
-                                    AnalysisErrorKind::GlueMissingFunction {
-                                        gap: gap.name.clone(),
-                                        function: name.clone(),
-                                    },
-                                ));
-                            }
-                            Some((function, actual))
-                                if !Self::same_glue_signature(&requirement.fn_type, actual) =>
+                            .map(|function| {
+                                analyzer
+                                    .collect_function_signature(function)
+                                    .map(|(signature, _)| (function.clone(), signature))
+                            })
+                            .collect::<Option<Vec<_>>>()?;
+                        let mut errors = Vec::new();
+                        let mut seen = std::collections::HashMap::new();
+                        for (function, _) in &functions {
+                            if let Some(previous) =
+                                seen.insert(function.name.clone(), function.span)
                             {
                                 errors.push(AnalysisError::new(
                                     function.id,
-                                    function.signature_span,
-                                    AnalysisErrorKind::GlueFunctionSignatureMismatch {
-                                        gap: gap.name.clone(),
-                                        function: name.clone(),
+                                    function.span,
+                                    AnalysisErrorKind::Redeclaration {
+                                        name: function.name.clone(),
+                                        previous: Some(previous),
                                     },
                                 ));
                             }
-                            Some(_) => {}
                         }
-                    }
-                    for (function, _) in &functions {
-                        if !gap.functions.iter().any(|(name, _)| *name == function.name) {
-                            errors.push(AnalysisError::new(
-                                function.id,
-                                function.name_span,
-                                AnalysisErrorKind::GlueExtraFunction {
-                                    gap: gap.name.clone(),
-                                    function: function.name.clone(),
-                                },
-                            ));
+                        for (name, requirement) in &gap.functions {
+                            match functions
+                                .iter()
+                                .find(|(function, _)| function.name == *name)
+                            {
+                                None => {
+                                    errors.push(AnalysisError::new(
+                                        glue.id,
+                                        glue.span,
+                                        AnalysisErrorKind::GlueMissingFunction {
+                                            gap: gap.name.clone(),
+                                            function: name.clone(),
+                                        },
+                                    ));
+                                }
+                                Some((function, actual))
+                                    if !Self::same_glue_signature(&requirement.fn_type, actual) =>
+                                {
+                                    errors.push(AnalysisError::new(
+                                        function.id,
+                                        function.signature_span,
+                                        AnalysisErrorKind::GlueFunctionSignatureMismatch {
+                                            gap: gap.name.clone(),
+                                            function: name.clone(),
+                                        },
+                                    ));
+                                }
+                                Some(_) => {}
+                            }
                         }
-                    }
-                    Some((gap, functions, errors))
-                });
+                        for (function, _) in &functions {
+                            if !gap.functions.iter().any(|(name, _)| *name == function.name) {
+                                errors.push(AnalysisError::new(
+                                    function.id,
+                                    function.name_span,
+                                    AnalysisErrorKind::GlueExtraFunction {
+                                        gap: gap.name.clone(),
+                                        function: function.name.clone(),
+                                    },
+                                ));
+                            }
+                        }
+                        Some((gap, functions, errors))
+                    },
+                );
                 self.diagnostics.record_warnings(path, run.warnings);
                 if run.failed {
                     continue;
@@ -127,7 +136,10 @@ impl Driver {
         }
     }
 
-    pub(super) fn same_glue_signature(expected: &ResolvedFunctionType, actual: &ResolvedFunctionType) -> bool {
+    pub(super) fn same_glue_signature(
+        expected: &ResolvedFunctionType,
+        actual: &ResolvedFunctionType,
+    ) -> bool {
         expected.is_variadic == actual.is_variadic
             && expected.self_mode == actual.self_mode
             && expected.return_type == actual.return_type
@@ -189,7 +201,10 @@ impl Driver {
         (warnings, errors)
     }
 
-    pub(super) fn collect_signatures(&mut self, local: &[ModulePath]) -> Result<(), Vec<CompileError>> {
+    pub(super) fn collect_signatures(
+        &mut self,
+        local: &[ModulePath],
+    ) -> Result<(), Vec<CompileError>> {
         for path in local {
             self.ensure_module_indexed(path).map_err(fatal)?;
 
@@ -240,5 +255,4 @@ impl Driver {
             Err(errors)
         }
     }
-
 }

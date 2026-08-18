@@ -12,7 +12,11 @@ pub fn relabel_root(
     tree: HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     declared: &Ident,
 ) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
-    let Some(physical) = tree.keys().find(|path| path.len() == 1).map(|path| path[0].clone()) else {
+    let Some(physical) = tree
+        .keys()
+        .find(|path| path.len() == 1)
+        .map(|path| path[0].clone())
+    else {
         return tree;
     };
     if &physical == declared {
@@ -54,11 +58,17 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
 
     match (is_file, is_dir) {
         (true, true) => Err(SegmentError::Ambiguous),
-        (true, false) => Ok(ModuleLocation { own_file: Some(file_path), children_dir: None }),
+        (true, false) => Ok(ModuleLocation {
+            own_file: Some(file_path),
+            children_dir: None,
+        }),
         (false, true) => {
             let own = dir_path.join(format!("{}.omg", name.as_ref()));
             let own_file = own.is_file().then_some(own);
-            Ok(ModuleLocation { own_file, children_dir: Some(dir_path) })
+            Ok(ModuleLocation {
+                own_file,
+                children_dir: Some(dir_path),
+            })
         }
         (false, false) => Err(SegmentError::NotFound),
     }
@@ -85,10 +95,7 @@ pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, 
     let same_named_child = root.join(name.as_ref());
     let root_path = vec![name.clone()];
     if own_file.is_file() && same_named_child.is_dir() {
-        out.insert(
-            root_path,
-            Err(ResolveError::AmbiguousModule(vec![name])),
-        );
+        out.insert(root_path, Err(ResolveError::AmbiguousModule(vec![name])));
         return out;
     }
 
@@ -109,11 +116,15 @@ fn discover_into(
     out: &mut HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     skip: Option<&Ident>,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut names: HashSet<Ident> = HashSet::new();
     for entry in entries.flatten() {
         let file_name = entry.file_name();
-        let Some(raw) = file_name.to_str() else { continue };
+        let Some(raw) = file_name.to_str() else {
+            continue;
+        };
         let candidate = raw.strip_suffix(".omg").unwrap_or(raw);
         if is_module_segment_name(candidate) {
             names.insert(Ident(candidate.to_string()));
@@ -134,7 +145,10 @@ fn discover_into(
                 }
             }
             Err(SegmentError::Ambiguous) => {
-                out.insert(prefix.clone(), Err(ResolveError::AmbiguousModule(prefix.clone())));
+                out.insert(
+                    prefix.clone(),
+                    Err(ResolveError::AmbiguousModule(prefix.clone())),
+                );
             }
             // Only a filesystem race (entry vanished after read_dir) could hit this.
             Err(SegmentError::NotFound) => {}

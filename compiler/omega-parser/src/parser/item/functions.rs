@@ -6,9 +6,9 @@ use crate::ast::statement::{FunctionDefinitionStmt, WalrusStmt};
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
+use crate::parser::Parser;
 use crate::parser::expression::{parse_codeblock, parse_expression};
 use crate::parser::statement::parse_declaration;
-use crate::parser::Parser;
 
 pub(super) fn parse_declaration_or_function_definition(
     p: &mut Parser,

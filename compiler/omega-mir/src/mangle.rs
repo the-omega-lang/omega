@@ -1,4 +1,3 @@
-
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
@@ -313,9 +312,12 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             | ExternFunctionKind::Conform { .. },
         ) => unreachable!("'@mangling(disabled)' is rejected on methods at analysis time"),
         // Extern generic instantiations are emitted locally and therefore use ordinary concrete mangling.
-        (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => {
-            encode(&free_function_symbol(&extern_fn.module_path, name, &[], &extern_fn.fn_type))
-        }
+        (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => encode(&free_function_symbol(
+            &extern_fn.module_path,
+            name,
+            &[],
+            &extern_fn.fn_type,
+        )),
         (
             ManglingMode::Enabled,
             ExternFunctionKind::Method {
@@ -335,7 +337,11 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
                 target,
                 method_name,
             },
-        ) => encode(&primitive_method_symbol(target, method_name, &extern_fn.fn_type)),
+        ) => encode(&primitive_method_symbol(
+            target,
+            method_name,
+            &extern_fn.fn_type,
+        )),
         (
             ManglingMode::Enabled,
             ExternFunctionKind::Conform {

@@ -1,4 +1,3 @@
-
 use crate::error::CompileError;
 pub(crate) const CORE_MODULE: &str = "core";
 

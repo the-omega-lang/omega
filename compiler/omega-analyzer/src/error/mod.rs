@@ -1,4 +1,3 @@
-
 mod kind;
 mod render;
 mod warning;
@@ -30,7 +29,11 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
             format!("{}<{}>", join(&path.segments()), args.join(", "))
         }
         Type::Pointer(inner, mutable) => {
-            format!("*{}{}", if *mutable { "mut " } else { "" }, raw_type_display(inner))
+            format!(
+                "*{}{}",
+                if *mutable { "mut " } else { "" },
+                raw_type_display(inner)
+            )
         }
         Type::UnknownSizeArray(inner) => format!("*[?]{}", raw_type_display(inner)),
         Type::InferredArray(inner) => format!("[]{}", raw_type_display(inner)),
@@ -41,10 +44,18 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
                 .iter()
                 .map(|p| format!("{}: {}", p.ident.as_ref(), raw_type_display(&p.r#type)))
                 .collect();
-            format!("({}) => {}", params.join(", "), raw_type_display(&f.return_type))
+            format!(
+                "({}) => {}",
+                params.join(", "),
+                raw_type_display(&f.return_type)
+            )
         }
         Type::SpecObject(inner, mutable) => {
-            format!("spec *{}{}", if *mutable { "mut " } else { "" }, raw_type_display(inner))
+            format!(
+                "spec *{}{}",
+                if *mutable { "mut " } else { "" },
+                raw_type_display(inner)
+            )
         }
         Type::SpecStatic(inner) => format!("spec {}", raw_type_display(inner)),
     }
@@ -64,8 +75,14 @@ fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
 
 #[derive(Debug, Clone)]
 pub enum TypeResolutionError {
-    UnrecognizedNamedType { name: Ident, similar: Option<Ident> },
-    ModuleNotImported { name: Ident, similar: Option<Ident> },
+    UnrecognizedNamedType {
+        name: Ident,
+        similar: Option<Ident>,
+    },
+    ModuleNotImported {
+        name: Ident,
+        similar: Option<Ident>,
+    },
     InvalidArraySize(String),
     ModuleResolution(ResolveError),
     NotAType(Vec<Ident>),

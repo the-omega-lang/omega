@@ -1,10 +1,8 @@
-
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
 use omega_analyzer::resolved_type::{
-    ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
-    ResolvedType,
+    ConstValue, ResolvedConformance, ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
@@ -39,11 +37,7 @@ impl ImportState {
         self.resolution_stack.push(key.clone());
     }
 
-    fn finish_resolution(
-        &mut self,
-        key: &AliasKey,
-        result: Result<ImportTarget, ResolveError>,
-    ) {
+    fn finish_resolution(&mut self, key: &AliasKey, result: Result<ImportTarget, ResolveError>) {
         let active = self
             .resolution_stack
             .pop()
@@ -158,10 +152,7 @@ impl ModuleResolver for Driver {
         self.modules.macro_origin_module(origin)
     }
 
-    fn macro_origin_visibility(
-        &self,
-        origin: omega_parser::prelude::Origin,
-    ) -> Option<Visibility> {
+    fn macro_origin_visibility(&self, origin: omega_parser::prelude::Origin) -> Option<Visibility> {
         self.modules.macro_origin_visibility(origin)
     }
 
@@ -401,7 +392,10 @@ impl ModuleResolver for Driver {
             return_type: rewrite_self_return(
                 &f.return_type,
                 name,
-                &owner_generics.iter().map(|g| g.ident.clone()).collect::<Vec<_>>(),
+                &owner_generics
+                    .iter()
+                    .map(|g| g.ident.clone())
+                    .collect::<Vec<_>>(),
             ),
         }))
     }
@@ -486,11 +480,13 @@ impl ModuleResolver for Driver {
         spec_args: &[ResolvedType],
     ) -> Result<Option<ResolvedConformance>, ResolveError> {
         Ok(
-            Driver::conformance_for(self, target, spec, spec_args).map(|entry| ResolvedConformance {
-                target: entry.target,
-                spec: entry.spec,
-                spec_args: entry.spec_args,
-                methods: entry.methods,
+            Driver::conformance_for(self, target, spec, spec_args).map(|entry| {
+                ResolvedConformance {
+                    target: entry.target,
+                    spec: entry.spec,
+                    spec_args: entry.spec_args,
+                    methods: entry.methods,
+                }
             }),
         )
     }
@@ -523,8 +519,7 @@ impl ModuleResolver for Driver {
             .entries
             .iter()
             .filter(|entry| {
-                entry.target == target.lookup_key()
-                    && spec_ids.contains(&entry.spec.borrow().id)
+                entry.target == target.lookup_key() && spec_ids.contains(&entry.spec.borrow().id)
             })
             .map(|entry| ResolvedConformance {
                 target: entry.target.clone(),
@@ -565,9 +560,7 @@ impl ModuleResolver for Driver {
 
 fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
     match ty {
-        Type::Named(path)
-            if path.is_unqualified() && &path.head == &Ident("Self".to_string()) =>
-        {
+        Type::Named(path) if path.is_unqualified() && &path.head == &Ident("Self".to_string()) => {
             Type::Generic(
                 Path::from(owner.clone()),
                 owner_generics
@@ -576,21 +569,24 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
                     .collect(),
             )
         }
-        Type::Pointer(inner, mutable) => {
-            Type::Pointer(Box::new(rewrite_self_return(inner, owner, owner_generics)), *mutable)
-        }
+        Type::Pointer(inner, mutable) => Type::Pointer(
+            Box::new(rewrite_self_return(inner, owner, owner_generics)),
+            *mutable,
+        ),
         Type::InferredArray(inner) => {
             Type::InferredArray(Box::new(rewrite_self_return(inner, owner, owner_generics)))
         }
         Type::UnknownSizeArray(inner) => {
             Type::UnknownSizeArray(Box::new(rewrite_self_return(inner, owner, owner_generics)))
         }
-        Type::SizedArray(inner, n) => {
-            Type::SizedArray(Box::new(rewrite_self_return(inner, owner, owner_generics)), n.clone())
-        }
-        Type::SpecObject(inner, mutable) => {
-            Type::SpecObject(Box::new(rewrite_self_return(inner, owner, owner_generics)), *mutable)
-        }
+        Type::SizedArray(inner, n) => Type::SizedArray(
+            Box::new(rewrite_self_return(inner, owner, owner_generics)),
+            n.clone(),
+        ),
+        Type::SpecObject(inner, mutable) => Type::SpecObject(
+            Box::new(rewrite_self_return(inner, owner, owner_generics)),
+            *mutable,
+        ),
         Type::SpecStatic(inner) => {
             Type::SpecStatic(Box::new(rewrite_self_return(inner, owner, owner_generics)))
         }

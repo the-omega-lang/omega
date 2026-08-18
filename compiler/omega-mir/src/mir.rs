@@ -1,4 +1,3 @@
-
 use crate::body::MirBody;
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
 use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};

@@ -1,4 +1,3 @@
-
 use super::Codegen;
 use inkwell::module::Linkage;
 use omega_analyzer::resolved_type::{ResolvedSpecType, ResolvedType};

@@ -1,6 +1,5 @@
 mod expander;
 
-
 use crate::ast::identifier::{ExpansionId, Ident, Origin};
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::ast::statement::WalrusStmt;

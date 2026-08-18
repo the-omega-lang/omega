@@ -299,7 +299,14 @@ impl<'r> Analyzer<'r> {
                 .iter()
                 .map(|(_, ty)| ty)
                 .chain(std::iter::once(&*fn_type.return_type))
-                .find(|ty| matches!(ty, ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }));
+                .find(|ty| {
+                    matches!(
+                        ty,
+                        ResolvedType::Struct(_)
+                            | ResolvedType::Union(_)
+                            | ResolvedType::Enum { .. }
+                    )
+                });
             if let Some(aggregate) = aggregate {
                 self.error(
                     extern_decl.id,
@@ -425,7 +432,8 @@ impl<'r> Analyzer<'r> {
                 r#type,
                 ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }
             ) {
-                let size = crate::annotations::estimate_type_size(r#type, self.target.pointer_bytes());
+                let size =
+                    crate::annotations::estimate_type_size(r#type, self.target.pointer_bytes());
                 if size > crate::annotations::LARGE_STRUCT_BY_VALUE_THRESHOLD {
                     self.warn(
                         p.id,
@@ -611,10 +619,7 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    fn resolve_declared_fields(
-        &mut self,
-        fields: &[HirField],
-    ) -> Option<Vec<ResolvedField>> {
+    fn resolve_declared_fields(&mut self, fields: &[HirField]) -> Option<Vec<ResolvedField>> {
         let checked = self.analyze_struct_fields(fields)?;
         Some(
             fields
@@ -671,7 +676,11 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             }
-            fields.push(ResolvedField::new(field.ident.clone(), resolved, field.visibility));
+            fields.push(ResolvedField::new(
+                field.ident.clone(),
+                resolved,
+                field.visibility,
+            ));
         }
 
         ok.then(|| EnumHeader {
@@ -730,7 +739,11 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            fields.push(ResolvedField::new(field.ident.clone(), resolved, field.visibility));
+            fields.push(ResolvedField::new(
+                field.ident.clone(),
+                resolved,
+                field.visibility,
+            ));
         }
 
         ok.then_some(fields)
@@ -910,7 +923,11 @@ impl<'r> Analyzer<'r> {
                 *ok = false;
                 continue;
             };
-            fields.push(ResolvedField::new(field.ident.clone(), resolved, field.visibility));
+            fields.push(ResolvedField::new(
+                field.ident.clone(),
+                resolved,
+                field.visibility,
+            ));
         }
         fields
     }

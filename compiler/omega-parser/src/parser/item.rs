@@ -34,15 +34,12 @@ mod definitions;
 mod functions;
 
 use annotations::{parse_annotations, reject_annotations};
-use functions::{
-    parse_declaration_or_function_definition, parse_item_declaration_or_walrus,
-    parse_item_walrus,
-};
 use definitions::{parse_conform_def, parse_gap_def, parse_glue_def, parse_primitive_def};
 pub use definitions::{
     parse_enum_def, parse_marker_def, parse_spec_def, parse_struct_def, parse_union_def,
 };
 pub use functions::parse_function_definition;
+use functions::{parse_declaration_or_function_definition, parse_item_declaration_or_walrus};
 pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
     let mut nodes = Vec::new();
     while !p.is_eof() {
@@ -67,8 +64,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
 
     if let Some(prefix) = crate::parser::parse_binding_modifiers(p) {
         reject_annotations(p, &annotations);
-        let item =
-            parse_item_declaration_or_walrus(p, prefix.mutable, prefix.comp, visibility)?;
+        let item = parse_item_declaration_or_walrus(p, prefix.mutable, prefix.comp, visibility)?;
         let span = start.to(p.last_span());
         return Some(ItemNode { item, span });
     }
@@ -95,12 +91,16 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             Item::Struct(parse_marker_def(p, annotations, visibility)?)
         }
         TokenKind::Spec => Item::Spec(parse_spec_def(p, annotations, visibility)?),
-        TokenKind::Ident(name) if name == contextual::GAP && matches!(p.peek_at(1), TokenKind::Ident(_)) => {
+        TokenKind::Ident(name)
+            if name == contextual::GAP && matches!(p.peek_at(1), TokenKind::Ident(_)) =>
+        {
             reject_annotations(p, &annotations);
             reject_gap_glue_visibility(p, parsed_visibility);
             Item::Gap(parse_gap_def(p)?)
         }
-        TokenKind::Ident(name) if name == contextual::GLUE && matches!(p.peek_at(1), TokenKind::Ident(_)) => {
+        TokenKind::Ident(name)
+            if name == contextual::GLUE && matches!(p.peek_at(1), TokenKind::Ident(_)) =>
+        {
             reject_annotations(p, &annotations);
             reject_gap_glue_visibility(p, parsed_visibility);
             Item::Glue(parse_glue_def(p)?)
@@ -171,9 +171,7 @@ fn parse_import(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<Impo
         p.advance(); // 'extern'
         p.advance(); // '::'
         ImportRoot::Extern
-    } else if p.at_contextual(contextual::ROOT)
-        && matches!(p.peek_at(1), TokenKind::ColonColon)
-    {
+    } else if p.at_contextual(contextual::ROOT) && matches!(p.peek_at(1), TokenKind::ColonColon) {
         p.advance(); // 'root'
         p.advance(); // '::'
         ImportRoot::ProjectRoot

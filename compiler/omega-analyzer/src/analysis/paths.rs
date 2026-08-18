@@ -139,12 +139,18 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::AmbiguousOverload {
                     name: name.clone(),
-                    candidates: candidates.into_iter().map(|candidate| candidate.fn_type).collect(),
+                    candidates: candidates
+                        .into_iter()
+                        .map(|candidate| candidate.fn_type)
+                        .collect(),
                 },
             );
             return None;
         }
-        match self.resolver.resolve_item(accessor, &absolute, &[], ResolveItemOptions::INDIRECT) {
+        match self
+            .resolver
+            .resolve_item(accessor, &absolute, &[], ResolveItemOptions::INDIRECT)
+        {
             Ok(ResolvedItem::Value {
                 r#type,
                 storage,
@@ -436,7 +442,8 @@ impl<'r> Analyzer<'r> {
                     .collect(),
             ),
             Ok(_) => {
-                let similar_module = best_match(head, self.resolver.import_alias_names(&module).iter());
+                let similar_module =
+                    best_match(head, self.resolver.import_alias_names(&module).iter());
                 self.error(
                     node_id,
                     span,

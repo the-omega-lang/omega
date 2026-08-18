@@ -1,4 +1,3 @@
-
 use crate::ids::{BlockId, LocalId};
 use omega_analyzer::checked::{CastKind, NumberValue};
 use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
@@ -27,7 +26,11 @@ pub struct MirBlockData {
 #[derive(Debug, Clone)]
 pub enum MirTerminator {
     Goto(BlockId),
-    Branch { condition: MirExprNode, then_block: BlockId, else_block: BlockId },
+    Branch {
+        condition: MirExprNode,
+        then_block: BlockId,
+        else_block: BlockId,
+    },
     Return(Option<MirExprNode>),
     Unreachable,
 }
@@ -168,15 +171,44 @@ pub enum MirPlaceRoot {
 
 #[derive(Debug, Clone)]
 pub enum MirProjection {
-    FieldAccess { field: Ident, index: usize, r#type: ResolvedType },
-    Index { index_expr: Box<MirExprNode>, item_type: ResolvedType },
-    Deref { r#type: ResolvedType },
+    FieldAccess {
+        field: Ident,
+        index: usize,
+        r#type: ResolvedType,
+    },
+    Index {
+        index_expr: Box<MirExprNode>,
+        item_type: ResolvedType,
+    },
+    Deref {
+        r#type: ResolvedType,
+    },
     SliceLength,
-    SpecObjectPtr { mutable: bool },
+    SpecObjectPtr {
+        mutable: bool,
+    },
     SpecObjectVtable,
-    EnumTag { r#type: ResolvedType },
-    EnumHeader { field: Ident, index: usize, r#type: ResolvedType },
-    EnumDynamicField { field: Ident, index: usize, r#type: ResolvedType },
-    EnumBody { variant_index: usize, field_index: usize, r#type: ResolvedType },
-    UnionField { field: Ident, index: usize, r#type: ResolvedType },
+    EnumTag {
+        r#type: ResolvedType,
+    },
+    EnumHeader {
+        field: Ident,
+        index: usize,
+        r#type: ResolvedType,
+    },
+    EnumDynamicField {
+        field: Ident,
+        index: usize,
+        r#type: ResolvedType,
+    },
+    EnumBody {
+        variant_index: usize,
+        field_index: usize,
+        r#type: ResolvedType,
+    },
+    UnionField {
+        field: Ident,
+        index: usize,
+        r#type: ResolvedType,
+    },
 }

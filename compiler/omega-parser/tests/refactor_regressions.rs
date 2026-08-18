@@ -27,9 +27,11 @@ fn dangling_annotation_reports_the_annotation_itself() {
     let errors = SourceModule::parse("@inline")
         .expect_err("a dangling annotation must be diagnosed explicitly");
 
-    assert!(errors
-        .iter()
-        .any(|error| matches!(error.kind, ParseErrorKind::AnnotationWithoutItem)));
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, ParseErrorKind::AnnotationWithoutItem))
+    );
 }
 
 #[test]
@@ -59,9 +61,11 @@ fn dangling_member_annotation_reports_the_annotation_itself() {
     let errors = SourceModule::parse("struct S { @inline }")
         .expect_err("a dangling member annotation must be diagnosed explicitly");
 
-    assert!(errors
-        .iter()
-        .any(|error| matches!(error.kind, ParseErrorKind::AnnotationWithoutItem)));
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, ParseErrorKind::AnnotationWithoutItem))
+    );
 }
 
 #[test]
@@ -73,10 +77,7 @@ fn gap_and_glue_shape_errors_point_at_the_offending_member() {
         .iter()
         .find(|error| matches!(error.kind, ParseErrorKind::GapFunctionSelf { .. }))
         .expect("expected gap self error");
-    assert_eq!(
-        &gap_source[self_error.span.start..self_error.span.end],
-        "f"
-    );
+    assert_eq!(&gap_source[self_error.span.start..self_error.span.end], "f");
 
     let body_error = gap_errors
         .iter()

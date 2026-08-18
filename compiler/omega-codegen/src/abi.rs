@@ -1,7 +1,6 @@
-
+use omega_analyzer::Target;
 use omega_analyzer::layout::{self, Leaf};
 use omega_analyzer::resolved_type::{NumericKind, ResolvedFunctionType, ResolvedType};
-use omega_analyzer::Target;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbiReturn {
@@ -89,7 +88,13 @@ mod tests {
             AbiReturn::Direct(vec![Leaf::I32])
         );
         assert_eq!(
-            AbiReturn::for_type(Target::DEFAULT, &ResolvedType::Slice { item: Box::new(ResolvedType::U8), mutable: false }),
+            AbiReturn::for_type(
+                Target::DEFAULT,
+                &ResolvedType::Slice {
+                    item: Box::new(ResolvedType::U8),
+                    mutable: false
+                }
+            ),
             AbiReturn::Direct(vec![Leaf::Ptr, Leaf::I32])
         );
     }
@@ -97,7 +102,10 @@ mod tests {
     #[test]
     fn three_leaves_return_indirectly() {
         let ret = ResolvedType::SizedArray(Box::new(ResolvedType::I64), 3);
-        assert_eq!(AbiReturn::for_type(Target::DEFAULT, &ret), AbiReturn::Indirect);
+        assert_eq!(
+            AbiReturn::for_type(Target::DEFAULT, &ret),
+            AbiReturn::Indirect
+        );
         assert_eq!(
             AbiSignature::build(Target::DEFAULT, &fn_type(&[], ret)).ret,
             AbiReturn::Indirect
@@ -108,7 +116,10 @@ mod tests {
     fn parameters_flatten_to_leaves() {
         let params = vec![
             ResolvedType::I8,
-            ResolvedType::Slice { item: Box::new(ResolvedType::U8), mutable: false },
+            ResolvedType::Slice {
+                item: Box::new(ResolvedType::U8),
+                mutable: false,
+            },
             ResolvedType::I64,
         ];
         assert_eq!(
@@ -120,10 +131,22 @@ mod tests {
     #[test]
     fn variadic_promotion_is_a_c_abi_rule() {
         let t = Target::DEFAULT;
-        assert_eq!(variadic_promotion(&ResolvedType::U8, t), Some(NumericKind::Unsigned(32)));
-        assert_eq!(variadic_promotion(&ResolvedType::I16, t), Some(NumericKind::Signed(32)));
-        assert_eq!(variadic_promotion(&ResolvedType::F32, t), Some(NumericKind::Float(64)));
-        assert_eq!(variadic_promotion(&ResolvedType::Bool, t), Some(NumericKind::Unsigned(32)));
+        assert_eq!(
+            variadic_promotion(&ResolvedType::U8, t),
+            Some(NumericKind::Unsigned(32))
+        );
+        assert_eq!(
+            variadic_promotion(&ResolvedType::I16, t),
+            Some(NumericKind::Signed(32))
+        );
+        assert_eq!(
+            variadic_promotion(&ResolvedType::F32, t),
+            Some(NumericKind::Float(64))
+        );
+        assert_eq!(
+            variadic_promotion(&ResolvedType::Bool, t),
+            Some(NumericKind::Unsigned(32))
+        );
         assert_eq!(variadic_promotion(&ResolvedType::I32, t), None);
         assert_eq!(variadic_promotion(&ResolvedType::F64, t), None);
         assert_eq!(variadic_promotion(&ResolvedType::I64, t), None);

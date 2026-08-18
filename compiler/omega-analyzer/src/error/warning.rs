@@ -1,4 +1,3 @@
-
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -10,7 +9,11 @@ pub struct AnalysisWarning {
 
 impl AnalysisWarning {
     pub fn new(node_id: HirId, span: Span, kind: AnalysisWarningKind) -> Self {
-        Self { node_id, span, kind }
+        Self {
+            node_id,
+            span,
+            kind,
+        }
     }
 
     pub fn to_diagnostic(&self) -> Diagnostic {
@@ -79,7 +82,10 @@ impl AnalysisWarning {
                 .with_help("this only matters if something actually calls this gap -- an unglued, uncalled gap links fine"),
         };
         if self.kind.is_suppressible() {
-            d.with_note(format!("suppress this with '@suppress({})'", self.kind.name()))
+            d.with_note(format!(
+                "suppress this with '@suppress({})'",
+                self.kind.name()
+            ))
         } else {
             d
         }
@@ -153,18 +159,34 @@ impl fmt::Display for AnalysisWarningKind {
             Self::UnnecessaryReveal => write!(f, "unnecessary 'reveal'"),
             Self::UnusedImport { alias } => write!(f, "unused import '{}'", alias.as_ref()),
             Self::UnusedField { owner, field } => {
-                write!(f, "field '{}' of '{}' is never read", field.as_ref(), owner.as_ref())
+                write!(
+                    f,
+                    "field '{}' of '{}' is never read",
+                    field.as_ref(),
+                    owner.as_ref()
+                )
             }
             Self::NeverConstructedVariant { r#enum, variant } => {
-                write!(f, "variant '{}' of '{}' is never constructed", variant.as_ref(), r#enum.as_ref())
+                write!(
+                    f,
+                    "variant '{}' of '{}' is never constructed",
+                    variant.as_ref(),
+                    r#enum.as_ref()
+                )
             }
             Self::UnusedReturnValue => write!(f, "unused return value"),
             Self::NoOpCast { r#type } => write!(f, "this cast to '{type}' has no effect"),
             Self::SelfAssignment => write!(f, "self-assignment"),
-            Self::AlwaysTrueFalseComparison { result } => write!(f, "comparison is always {result}"),
+            Self::AlwaysTrueFalseComparison { result } => {
+                write!(f, "comparison is always {result}")
+            }
             Self::RedundantLayoutAnnotation => write!(f, "redundant '@layout' arguments"),
-            Self::LargeStructByValue { r#type, .. } => write!(f, "large type '{type}' passed by value"),
-            Self::UnfilledGap { gap, .. } => write!(f, "gap '{}' has no glue implementation", gap.as_ref()),
+            Self::LargeStructByValue { r#type, .. } => {
+                write!(f, "large type '{type}' passed by value")
+            }
+            Self::UnfilledGap { gap, .. } => {
+                write!(f, "gap '{}' has no glue implementation", gap.as_ref())
+            }
         }
     }
 }
@@ -177,7 +199,10 @@ mod tests {
     #[test]
     fn unfilled_gap_does_not_advertise_impossible_suppression() {
         let warning = AnalysisWarning::new(
-            HirId { module: omega_hir::SYNTHETIC_MODULE, local: 0 },
+            HirId {
+                module: omega_hir::SYNTHETIC_MODULE,
+                local: 0,
+            },
             Span::new(0, 0),
             AnalysisWarningKind::UnfilledGap {
                 gap: Ident("Platform".into()),
@@ -186,8 +211,10 @@ mod tests {
         );
 
         let diagnostic = warning.to_diagnostic();
-        assert!(!diagnostic.footers.iter().any(|footer| {
-            matches!(footer, Footer::Note(note) if note.contains("@suppress"))
-        }));
+        assert!(
+            !diagnostic.footers.iter().any(|footer| {
+                matches!(footer, Footer::Note(note) if note.contains("@suppress"))
+            })
+        );
     }
 }

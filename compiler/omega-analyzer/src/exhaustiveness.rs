@@ -1,4 +1,3 @@
-
 use omega_parser::prelude::Span;
 
 #[derive(Debug, Clone, Copy)]
@@ -23,7 +22,8 @@ pub fn check(domain: (i128, i128), mut intervals: Vec<Interval>) -> CoverageRepo
 
     for interval in intervals {
         if interval.lo < cursor {
-            let prev = covering.expect("cursor only advances past domain.0 once an interval has set `covering`");
+            let prev = covering
+                .expect("cursor only advances past domain.0 once an interval has set `covering`");
             overlaps.push((prev, interval));
         } else if interval.lo > cursor {
             gaps.push((cursor, interval.lo - 1));

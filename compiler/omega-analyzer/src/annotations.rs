@@ -1,4 +1,3 @@
-
 use crate::analysis::Analyzer;
 use crate::error::AnalysisErrorKind;
 use crate::error::AnalysisWarningKind;
@@ -81,7 +80,11 @@ pub enum ManglingMode {
     Enabled,
     Disabled,
     Forced(String),
-    Glued { spec_module_path: Vec<Ident>, spec_name: Ident, function_name: Ident },
+    Glued {
+        spec_module_path: Vec<Ident>,
+        spec_name: Ident,
+        function_name: Ident,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -106,7 +109,13 @@ pub fn resolve(
     for annotation in annotations {
         let name = annotation.name.as_ref();
         if seen.contains(&name) {
-            analyzer.error(node_id, annotation.span, AnalysisErrorKind::DuplicateAnnotation { name: annotation.name.clone() });
+            analyzer.error(
+                node_id,
+                annotation.span,
+                AnalysisErrorKind::DuplicateAnnotation {
+                    name: annotation.name.clone(),
+                },
+            );
         } else {
             seen.push(name);
         }
@@ -145,7 +154,10 @@ pub fn resolve(
                     Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
-                        AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
+                        AnalysisErrorKind::InvalidAnnotationArgs {
+                            name: annotation.name.clone(),
+                            reason,
+                        },
                     ),
                 }
             }
@@ -163,20 +175,29 @@ pub fn resolve(
                     continue;
                 }
                 match resolve_mangling(annotation) {
-                    Ok(ManglingMode::Disabled) if is_member_function => {
-                        analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnMethod)
-                    }
-                    Ok(ManglingMode::Disabled) if is_generic => {
-                        analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingDisabledOnGeneric)
-                    }
-                    Ok(ManglingMode::Forced(_)) if is_generic => {
-                        analyzer.error(node_id, annotation.span, AnalysisErrorKind::ManglingForcedOnGeneric)
-                    }
+                    Ok(ManglingMode::Disabled) if is_member_function => analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::ManglingDisabledOnMethod,
+                    ),
+                    Ok(ManglingMode::Disabled) if is_generic => analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::ManglingDisabledOnGeneric,
+                    ),
+                    Ok(ManglingMode::Forced(_)) if is_generic => analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::ManglingForcedOnGeneric,
+                    ),
                     Ok(mode) => result.mangling = mode,
                     Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
-                        AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
+                        AnalysisErrorKind::InvalidAnnotationArgs {
+                            name: annotation.name.clone(),
+                            reason,
+                        },
                     ),
                 }
             }
@@ -203,7 +224,13 @@ pub fn resolve(
                     })
                     .collect();
             }
-            _ => analyzer.error(node_id, annotation.span, AnalysisErrorKind::UnknownAnnotation { name: annotation.name.clone() }),
+            _ => analyzer.error(
+                node_id,
+                annotation.span,
+                AnalysisErrorKind::UnknownAnnotation {
+                    name: annotation.name.clone(),
+                },
+            ),
         }
     }
 
@@ -232,7 +259,10 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
                 annotation.span,
                 AnalysisErrorKind::InvalidAnnotationArgs {
                     name: annotation.name.clone(),
-                    reason: format!("unknown @layout argument '{}' -- expected 'pack' or 'align'", key.as_ref()),
+                    reason: format!(
+                        "unknown @layout argument '{}' -- expected 'pack' or 'align'",
+                        key.as_ref()
+                    ),
                 },
             );
             continue;
@@ -250,7 +280,9 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
         }
         seen_keys.push(key.as_ref());
 
-        let Some(resolved) = resolve_size_value(analyzer, node_id, annotation.span, value) else { continue };
+        let Some(resolved) = resolve_size_value(analyzer, node_id, annotation.span, value) else {
+            continue;
+        };
         let value = match resolved {
             Ok(n) if n == 0 || !n.is_power_of_two() => {
                 analyzer.error(
@@ -268,7 +300,10 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
                 analyzer.error(
                     node_id,
                     annotation.span,
-                    AnalysisErrorKind::InvalidAnnotationArgs { name: annotation.name.clone(), reason },
+                    AnalysisErrorKind::InvalidAnnotationArgs {
+                        name: annotation.name.clone(),
+                        reason,
+                    },
                 );
                 continue;
             }
@@ -281,7 +316,11 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
     }
 
     if !seen_keys.is_empty() && layout == Layout::default() {
-        analyzer.warn(node_id, annotation.span, AnalysisWarningKind::RedundantLayoutAnnotation);
+        analyzer.warn(
+            node_id,
+            annotation.span,
+            AnalysisWarningKind::RedundantLayoutAnnotation,
+        );
     }
 
     layout
@@ -294,17 +333,24 @@ fn resolve_size_value(
     value: &HirAnnotationValue,
 ) -> Option<Result<u32, String>> {
     match value {
-        HirAnnotationValue::IntLiteral(s) => Some(s.parse::<u32>().map_err(|_| format!("'{s}' does not fit a u32"))),
+        HirAnnotationValue::IntLiteral(s) => Some(
+            s.parse::<u32>()
+                .map_err(|_| format!("'{s}' does not fit a u32")),
+        ),
         HirAnnotationValue::Sizeof(ty) => {
             let resolved = analyzer.resolve_type_or_error(node_id, span, ty, false)?;
-            Some(match resolved.primitive_byte_size(analyzer.pointer_bytes()) {
-                Some(n) => Ok(n),
-                None => Err(format!(
-                    "'sizeof<{resolved}>' is not supported here -- @layout only supports sizeof of a primitive type"
-                )),
-            })
+            Some(
+                match resolved.primitive_byte_size(analyzer.pointer_bytes()) {
+                    Some(n) => Ok(n),
+                    None => Err(format!(
+                        "'sizeof<{resolved}>' is not supported here -- @layout only supports sizeof of a primitive type"
+                    )),
+                },
+            )
         }
-        HirAnnotationValue::StrLiteral(_) => Some(Err("expected a plain integer or 'sizeof<Type>', found a string literal".to_string())),
+        HirAnnotationValue::StrLiteral(_) => Some(Err(
+            "expected a plain integer or 'sizeof<Type>', found a string literal".to_string(),
+        )),
     }
 }
 
@@ -320,8 +366,12 @@ fn resolve_inline(annotation: &HirAnnotation) -> Result<InlineMode, String> {
 fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> {
     match annotation.args.as_slice() {
         [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
-        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "disabled" => Ok(ManglingMode::Disabled),
-        [HirAnnotationArg::KeyValue(key, HirAnnotationValue::StrLiteral(name))] if key.as_ref() == "force" => {
+        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "disabled" => {
+            Ok(ManglingMode::Disabled)
+        }
+        [HirAnnotationArg::KeyValue(key, HirAnnotationValue::StrLiteral(name))]
+            if key.as_ref() == "force" =>
+        {
             if name.is_empty() {
                 return Err("'force' needs a non-empty symbol name".to_string());
             }
@@ -338,19 +388,41 @@ pub fn estimate_type_size(r#type: &ResolvedType, pointer_bytes: u32) -> u32 {
         return n;
     }
     match r#type {
-        ResolvedType::Struct(cell) => cell.borrow().fields.iter().map(|field| estimate_type_size(&field.r#type, pointer_bytes)).sum(),
-        ResolvedType::Union(cell) => {
-            cell.borrow().fields.iter().map(|field| estimate_type_size(&field.r#type, pointer_bytes)).max().unwrap_or(0)
-        }
+        ResolvedType::Struct(cell) => cell
+            .borrow()
+            .fields
+            .iter()
+            .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+            .sum(),
+        ResolvedType::Union(cell) => cell
+            .borrow()
+            .fields
+            .iter()
+            .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+            .max()
+            .unwrap_or(0),
         ResolvedType::Enum { cell, .. } => {
             let cell = cell.borrow();
             let tag = estimate_type_size(&cell.tag_type, pointer_bytes);
-            let header: u32 = cell.header.iter().map(|field| estimate_type_size(&field.r#type, pointer_bytes)).sum();
-            let dynamic: u32 = cell.dynamic_fields.iter().map(|field| estimate_type_size(&field.r#type, pointer_bytes)).sum();
+            let header: u32 = cell
+                .header
+                .iter()
+                .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+                .sum();
+            let dynamic: u32 = cell
+                .dynamic_fields
+                .iter()
+                .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+                .sum();
             let body = cell
                 .variants
                 .iter()
-                .map(|v| v.fields.iter().map(|field| estimate_type_size(&field.r#type, pointer_bytes)).sum::<u32>())
+                .map(|v| {
+                    v.fields
+                        .iter()
+                        .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+                        .sum::<u32>()
+                })
                 .max()
                 .unwrap_or(0);
             tag + header + dynamic + body

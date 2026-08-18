@@ -1,7 +1,9 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
-use crate::resolver::{ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
+use crate::resolver::{
+    ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem,
+};
 use crate::similarity::best_match;
 use indexmap::IndexMap;
 use omega_hir::HirId;
@@ -78,7 +80,10 @@ impl Context {
             (Ident("f32".into()), ResolvedType::F32),
             (Ident("f64".into()), ResolvedType::F64),
         ]);
-        Self { scopes: vec![global_scope], comp_values: std::collections::HashMap::new() }
+        Self {
+            scopes: vec![global_scope],
+            comp_values: std::collections::HashMap::new(),
+        }
     }
 
     pub fn set_comp_value(&mut self, decl_id: HirId, value: crate::resolved_type::ConstValue) {
@@ -141,15 +146,12 @@ impl Context {
     }
 
     fn binding_mut(&mut self, decl_id: HirId) -> Option<&mut VarBinding> {
-        self.scopes
-            .iter_mut()
-            .rev()
-            .find_map(|scope| {
-                scope
-                    .declared_variables
-                    .values_mut()
-                    .find(|binding| binding.decl_id == decl_id)
-            })
+        self.scopes.iter_mut().rev().find_map(|scope| {
+            scope
+                .declared_variables
+                .values_mut()
+                .find(|binding| binding.decl_id == decl_id)
+        })
     }
 
     pub fn find_defined_type(&self, name: &Ident) -> Option<&ResolvedType> {
@@ -169,7 +171,12 @@ impl Context {
     }
 
     pub fn similar_type_name(&self, target: &Ident) -> Option<Ident> {
-        best_match(target, self.scopes.iter().flat_map(|scope| scope.defined_types.keys()))
+        best_match(
+            target,
+            self.scopes
+                .iter()
+                .flat_map(|scope| scope.defined_types.keys()),
+        )
     }
 
     pub fn resolve_function_type(
@@ -183,13 +190,23 @@ impl Context {
             .params
             .into_iter()
             .map(|param| {
-                self.resolve_type(param.r#type, resolver, module_path, options.through_indirection())
-                    .map(|resolved| (param.ident, resolved))
+                self.resolve_type(
+                    param.r#type,
+                    resolver,
+                    module_path,
+                    options.through_indirection(),
+                )
+                .map(|resolved| (param.ident, resolved))
             })
             .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
         Ok(ResolvedFunctionType {
             params,
-            return_type: Box::new(self.resolve_type(*fntype.return_type, resolver, module_path, options.through_indirection())?),
+            return_type: Box::new(self.resolve_type(
+                *fntype.return_type,
+                resolver,
+                module_path,
+                options.through_indirection(),
+            )?),
             is_variadic: fntype.is_variadic,
             self_mode: fntype.self_mode,
         })
@@ -227,7 +244,10 @@ impl Context {
                 .resolve_import_alias(&resolution_module, &path.head)
                 .map_err(TypeResolutionError::ModuleResolution)?
             {
-                Some(ImportTarget::Module(target)) => Ok(target.into_iter().chain(path.tail.iter().cloned()).collect()),
+                Some(ImportTarget::Module(target)) => Ok(target
+                    .into_iter()
+                    .chain(path.tail.iter().cloned())
+                    .collect()),
                 _ => Err(TypeResolutionError::ModuleNotImported {
                     name: path.head.clone(),
                     similar: best_match(
@@ -248,7 +268,9 @@ impl Context {
     ) -> Result<ResolvedType, TypeResolutionError> {
         match typ {
             Type::Named(path) => self.resolve_named_type(path, resolver, module_path, options),
-            Type::Generic(path, args) => self.resolve_generic_type(path, args, resolver, module_path, options),
+            Type::Generic(path, args) => {
+                self.resolve_generic_type(path, args, resolver, module_path, options)
+            }
             Type::Pointer(pointee, mutable) => {
                 self.resolve_pointer_type(*pointee, mutable, resolver, module_path, options)
             }
@@ -262,13 +284,18 @@ impl Context {
                 };
                 Err(TypeResolutionError::SpecStaticNotAllowedHere(name))
             }
-            Type::Function(fntyp) => {
-                Ok(ResolvedType::Function(self.resolve_function_type(fntyp, resolver, module_path, options)?))
-            }
+            Type::Function(fntyp) => Ok(ResolvedType::Function(self.resolve_function_type(
+                fntyp,
+                resolver,
+                module_path,
+                options,
+            )?)),
             Type::InferredArray(_) => Err(TypeResolutionError::BareUnsizedArray),
             Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
             Type::SizedArray(item, size) => {
-                let size = size.parse::<u32>().map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
+                let size = size
+                    .parse::<u32>()
+                    .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
                 let item = self.resolve_type(*item, resolver, module_path, options)?;
                 Ok(ResolvedType::SizedArray(Box::new(item), size))
             }
@@ -286,7 +313,9 @@ impl Context {
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
         let resolved = {
-            if let Some(resolved) = self.try_resolve_enum_variant_type(&path, resolver, module_path, options)? {
+            if let Some(resolved) =
+                self.try_resolve_enum_variant_type(&path, resolver, module_path, options)?
+            {
                 resolved
             } else if path.is_unqualified() {
                 if let Some(local) = self.find_defined_type(&path.head) {
@@ -317,14 +346,11 @@ impl Context {
                             .chain(std::iter::once(path.head.clone()))
                             .collect(),
                     };
-                    match resolver.resolve_item(
-                        &resolution_module,
-                        &absolute,
-                        &[],
-                        options,
-                    ) {
+                    match resolver.resolve_item(&resolution_module, &absolute, &[], options) {
                         Ok(ResolvedItem::Type(t)) => t,
-                        Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => return Err(TypeResolutionError::NotAType(absolute)),
+                        Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
+                            return Err(TypeResolutionError::NotAType(absolute));
+                        }
                         // A bare type name that doesn't exist gets one
                         // more try against every exposed name in `core`'s
                         // ambient tree before giving up with a typo
@@ -341,17 +367,35 @@ impl Context {
                                         options,
                                     ) {
                                         Ok(ResolvedItem::Type(t)) => t,
-                                        Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
-                                            return Err(TypeResolutionError::NotAType(ambient_absolute));
+                                        Ok(ResolvedItem::Value { .. })
+                                        | Ok(ResolvedItem::Gap(_)) => {
+                                            return Err(TypeResolutionError::NotAType(
+                                                ambient_absolute,
+                                            ));
                                         }
-                                        Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
+                                        Err(e) => {
+                                            return Err(TypeResolutionError::ModuleResolution(e));
+                                        }
                                     }
                                 }
                                 Ok(None) => {
                                     let similar = self
                                         .similar_type_name(&path.head)
-                                        .or_else(|| best_match(&path.head, resolver.import_alias_names(&resolution_module).iter()))
-                                        .or_else(|| resolver.similar_item_name(&resolution_module, &path.head, ItemNamespace::Type));
+                                        .or_else(|| {
+                                            best_match(
+                                                &path.head,
+                                                resolver
+                                                    .import_alias_names(&resolution_module)
+                                                    .iter(),
+                                            )
+                                        })
+                                        .or_else(|| {
+                                            resolver.similar_item_name(
+                                                &resolution_module,
+                                                &path.head,
+                                                ItemNamespace::Type,
+                                            )
+                                        });
                                     return Err(TypeResolutionError::UnrecognizedNamedType {
                                         name: path.head.clone(),
                                         similar,
@@ -366,19 +410,15 @@ impl Context {
             } else {
                 let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
-                    .resolve_item(
-                        &resolution_module,
-                        &absolute,
-                        &[],
-                        options,
-                    )
+                    .resolve_item(&resolution_module, &absolute, &[], options)
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
-                    ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => return Err(TypeResolutionError::NotAType(absolute)),
+                    ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
+                        return Err(TypeResolutionError::NotAType(absolute));
+                    }
                 }
             }
-
         };
         Ok(resolved)
     }
@@ -397,26 +437,22 @@ impl Context {
         let resolved = {
             let resolved_args = args
                 .into_iter()
-                .map(|arg| self.resolve_type(arg, resolver, module_path, options.through_indirection()))
+                .map(|arg| {
+                    self.resolve_type(arg, resolver, module_path, options.through_indirection())
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
-            let result = resolver.resolve_item(
-                &resolution_module,
-                &absolute,
-                &resolved_args,
-                options,
-            );
+            let result =
+                resolver.resolve_item(&resolution_module, &absolute, &resolved_args, options);
             let result = match (&result, path.is_unqualified()) {
                 (Err(ResolveError::UnknownItem { .. }), true) => {
                     match resolver.ambient_core_candidates(&resolution_module, &path.head) {
-                        Ok(Some(ambient_absolute)) => {
-                            resolver.resolve_item(
-                                &resolution_module,
-                                &ambient_absolute,
-                                &resolved_args,
-                                options,
-                            )
-                        }
+                        Ok(Some(ambient_absolute)) => resolver.resolve_item(
+                            &resolution_module,
+                            &ambient_absolute,
+                            &resolved_args,
+                            options,
+                        ),
                         Ok(None) => result,
                         Err(e) => Err(e),
                     }
@@ -425,9 +461,10 @@ impl Context {
             };
             match result.map_err(TypeResolutionError::ModuleResolution)? {
                 ResolvedItem::Type(t) => t,
-                ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => return Err(TypeResolutionError::NotAType(absolute)),
+                ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
+                    return Err(TypeResolutionError::NotAType(absolute));
+                }
             }
-
         };
         Ok(resolved)
     }
@@ -442,27 +479,44 @@ impl Context {
     ) -> Result<ResolvedType, TypeResolutionError> {
         match pointee_type {
             Type::InferredArray(item) => {
-                let item = self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
-                Ok(ResolvedType::Slice { item: Box::new(item), mutable })
+                let item =
+                    self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
+                Ok(ResolvedType::Slice {
+                    item: Box::new(item),
+                    mutable,
+                })
             }
             Type::UnknownSizeArray(item) => {
-                let item = self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
+                let item =
+                    self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
                 Ok(ResolvedType::Array(Box::new(item), mutable))
             }
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self" => {
-                match self.resolve_named_type(path, resolver, module_path, options.through_indirection())? {
+                match self.resolve_named_type(
+                    path,
+                    resolver,
+                    module_path,
+                    options.through_indirection(),
+                )? {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
                     ResolvedType::Slice { item, .. } => Ok(ResolvedType::Slice { item, mutable }),
-                    resolved => Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable }),
+                    resolved => Ok(ResolvedType::Pointer {
+                        pointee: Box::new(resolved),
+                        mutable,
+                    }),
                 }
             }
             other => {
-                let resolved = self.resolve_type(other, resolver, module_path, options.through_indirection())?;
-                Ok(ResolvedType::Pointer { pointee: Box::new(resolved), mutable })
+                let resolved =
+                    self.resolve_type(other, resolver, module_path, options.through_indirection())?;
+                Ok(ResolvedType::Pointer {
+                    pointee: Box::new(resolved),
+                    mutable,
+                })
             }
         }
     }
@@ -489,16 +543,24 @@ impl Context {
                 Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
                 _ => Ident("<spec>".to_string()),
             };
-            match self.resolve_type(*pointee, resolver, module_path, options.through_indirection())? {
+            match self.resolve_type(
+                *pointee,
+                resolver,
+                module_path,
+                options.through_indirection(),
+            )? {
                 ResolvedType::Spec(spec) => {
                     if !spec.borrow().is_object_safe {
                         return Err(TypeResolutionError::SpecNotObjectSafe(pointee_name));
                     }
-                    ResolvedType::SpecObject { spec, type_args: resolved_args, mutable }
+                    ResolvedType::SpecObject {
+                        spec,
+                        type_args: resolved_args,
+                        mutable,
+                    }
                 }
                 _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
             }
-
         };
         Ok(resolved)
     }
@@ -510,20 +572,30 @@ impl Context {
         module_path: &[Ident],
         options: ResolveItemOptions,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {
-        let Some((variant_name, prefix_tail)) = path.tail.split_last() else { return Ok(None) };
+        let Some((variant_name, prefix_tail)) = path.tail.split_last() else {
+            return Ok(None);
+        };
         let prefix = Type::Named(Path {
             head: path.head.clone(),
             tail: prefix_tail.to_vec(),
             origin: path.origin,
         });
-        let Ok(ResolvedType::Enum { cell, variant: None }) = self.resolve_type(prefix, resolver, module_path, options) else {
+        let Ok(ResolvedType::Enum {
+            cell,
+            variant: None,
+        }) = self.resolve_type(prefix, resolver, module_path, options)
+        else {
             return Ok(None);
         };
         let found = cell.borrow().variant(variant_name).map(|(idx, _)| idx);
         match found {
-            Some(idx) => Ok(Some(ResolvedType::Enum { cell: cell.clone(), variant: Some(idx) })),
+            Some(idx) => Ok(Some(ResolvedType::Enum {
+                cell: cell.clone(),
+                variant: Some(idx),
+            })),
             None => {
-                let similar = best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
+                let similar =
+                    best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
                 Err(TypeResolutionError::NoSuchVariantForType {
                     r#enum: cell.borrow().name.clone(),
                     name: variant_name.clone(),
@@ -559,14 +631,6 @@ impl Context {
             .expect("context always has a root scope")
             .defined_types
             .insert(name, r#type);
-    }
-
-    pub fn extend_types(&mut self, types: impl IntoIterator<Item = (Ident, ResolvedType)>) {
-        self.scopes
-            .last_mut()
-            .expect("context always has a root scope")
-            .defined_types
-            .extend(types);
     }
 
     pub fn enter_scope(&mut self) {

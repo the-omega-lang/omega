@@ -1,4 +1,3 @@
-
 use crate::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +45,23 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // positions must agree.
         ResolvedType::Struct(struct_type) => {
             let struct_type = struct_type.borrow();
-            let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|field| field.r#type.clone()).collect();
+            let field_types: Vec<ResolvedType> = struct_type
+                .fields
+                .iter()
+                .map(|field| field.r#type.clone())
+                .collect();
             let layout = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes);
             let mut leaves = layout.leaves;
             let final_size = round_up(layout.packed_end, struct_type.layout.align);
-            leaves.extend(std::iter::repeat_n(Leaf::I8, (final_size - layout.packed_end) as usize));
+            leaves.extend(std::iter::repeat_n(
+                Leaf::I8,
+                (final_size - layout.packed_end) as usize,
+            ));
             leaves
         }
-        ResolvedType::Union(union_type) => payload_chunks(union_bytes(&union_type.borrow(), pointer_bytes)),
+        ResolvedType::Union(union_type) => {
+            payload_chunks(union_bytes(&union_type.borrow(), pointer_bytes))
+        }
         // An enum value is `[tag][header fields][shared dynamic fields]
         // [payload]` -- tag/header/dynamic fields flatten like ordinary
         // struct fields, while the payload (a union of every variant's
@@ -73,20 +81,35 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
 
             let payload_align = enum_payload_alignment(&enum_type);
             let payload_size = enum_payload_bytes(&enum_type, enum_type.layout.pack, pointer_bytes);
-            let payload_offset = place_field(prefix.packed_end, payload_align, payload_size, enum_type.layout.pack);
-            leaves.extend(std::iter::repeat_n(Leaf::I8, (payload_offset - prefix.packed_end) as usize));
+            let payload_offset = place_field(
+                prefix.packed_end,
+                payload_align,
+                payload_size,
+                enum_type.layout.pack,
+            );
+            leaves.extend(std::iter::repeat_n(
+                Leaf::I8,
+                (payload_offset - prefix.packed_end) as usize,
+            ));
             leaves.extend(payload_chunks(payload_size));
 
             let final_size = round_up(payload_offset + payload_size, enum_type.layout.align);
-            leaves.extend(std::iter::repeat_n(Leaf::I8, (final_size - (payload_offset + payload_size)) as usize));
+            leaves.extend(std::iter::repeat_n(
+                Leaf::I8,
+                (final_size - (payload_offset + payload_size)) as usize,
+            ));
             leaves
         }
         ResolvedType::SizedArray(item_type, size) => {
             let item_leaves = leaves_of(item_type, pointer_bytes);
-            std::iter::repeat_n(item_leaves, *size as usize).flatten().collect()
+            std::iter::repeat_n(item_leaves, *size as usize)
+                .flatten()
+                .collect()
         }
         ResolvedType::Slice { .. } | ResolvedType::Str { .. } => vec![Leaf::Ptr, Leaf::I32],
-        ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_, _) => vec![Leaf::Ptr],
+        ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_, _) => {
+            vec![Leaf::Ptr]
+        }
         ResolvedType::Spec(_) => unreachable!("a spec definition is never itself a value type"),
         ResolvedType::SpecObject { .. } => vec![Leaf::Ptr, Leaf::Ptr],
     }
@@ -98,15 +121,23 @@ pub fn project_field_access<T: Clone>(
     field_index: usize,
     pointer_bytes: u32,
 ) -> Vec<T> {
-    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|field| field.r#type.clone()).collect();
-    let start = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).leaf_starts[field_index];
+    let field_types: Vec<ResolvedType> = struct_type
+        .fields
+        .iter()
+        .map(|field| field.r#type.clone())
+        .collect();
+    let start = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).leaf_starts
+        [field_index];
     let len = leaves_of(&struct_type.fields[field_index].r#type, pointer_bytes).len();
 
     values[start..start + len].to_vec()
 }
 
 pub fn total_bytes(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
-    leaves_of(ty, pointer_bytes).iter().map(|leaf| leaf.bytes(pointer_bytes)).sum()
+    leaves_of(ty, pointer_bytes)
+        .iter()
+        .map(|leaf| leaf.bytes(pointer_bytes))
+        .sum()
 }
 
 pub fn is_zero_sized(ty: &ResolvedType) -> bool {
@@ -122,7 +153,11 @@ pub fn type_alignment(ty: &ResolvedType) -> u32 {
 }
 
 pub fn round_up(offset: u32, align: u32) -> u32 {
-    if align <= 1 { offset } else { offset.div_ceil(align) * align }
+    if align <= 1 {
+        offset
+    } else {
+        offset.div_ceil(align) * align
+    }
 }
 
 pub fn place_field(offset: u32, field_align: u32, field_size: u32, pack: u32) -> u32 {
@@ -150,7 +185,10 @@ pub fn layout_fields(types: &[ResolvedType], pack: u32, pointer_bytes: u32) -> F
     let mut offset = 0u32;
     for ty in types {
         let field_leaves = leaves_of(ty, pointer_bytes);
-        let field_size = field_leaves.iter().map(|leaf| leaf.bytes(pointer_bytes)).sum::<u32>();
+        let field_size = field_leaves
+            .iter()
+            .map(|leaf| leaf.bytes(pointer_bytes))
+            .sum::<u32>();
         let placed = place_field(offset, type_alignment(ty), field_size, pack);
         leaves.extend(std::iter::repeat_n(Leaf::I8, (placed - offset) as usize));
         byte_offsets.push(placed);
@@ -158,11 +196,24 @@ pub fn layout_fields(types: &[ResolvedType], pack: u32, pointer_bytes: u32) -> F
         offset = placed + field_size;
         leaves.extend(field_leaves);
     }
-    FieldLayout { byte_offsets, leaf_starts, leaves, packed_end: offset }
+    FieldLayout {
+        byte_offsets,
+        leaf_starts,
+        leaves,
+        packed_end: offset,
+    }
 }
 
-pub fn field_byte_offset(struct_type: &ResolvedStructType, field_index: usize, pointer_bytes: u32) -> u32 {
-    let field_types: Vec<ResolvedType> = struct_type.fields.iter().map(|field| field.r#type.clone()).collect();
+pub fn field_byte_offset(
+    struct_type: &ResolvedStructType,
+    field_index: usize,
+    pointer_bytes: u32,
+) -> u32 {
+    let field_types: Vec<ResolvedType> = struct_type
+        .fields
+        .iter()
+        .map(|field| field.r#type.clone())
+        .collect();
     layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).byte_offsets[field_index]
 }
 
@@ -175,7 +226,8 @@ pub fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, pointer_bytes
         .variants
         .iter()
         .map(|v| {
-            let field_types: Vec<ResolvedType> = v.fields.iter().map(|field| field.r#type.clone()).collect();
+            let field_types: Vec<ResolvedType> =
+                v.fields.iter().map(|field| field.r#type.clone()).collect();
             layout_fields(&field_types, pack, pointer_bytes).packed_end
         })
         .max()
@@ -183,18 +235,33 @@ pub fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, pointer_bytes
 }
 
 pub fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
-    enum_type.variants.iter().flat_map(|v| v.fields.iter().map(|field| type_alignment(&field.r#type))).max().unwrap_or(1)
+    enum_type
+        .variants
+        .iter()
+        .flat_map(|v| v.fields.iter().map(|field| type_alignment(&field.r#type)))
+        .max()
+        .unwrap_or(1)
 }
 
 pub fn enum_prefix_layout(enum_type: &ResolvedEnumType, pointer_bytes: u32) -> FieldLayout {
     let mut types = vec![enum_type.tag_type.clone()];
     types.extend(enum_type.header.iter().map(|field| field.r#type.clone()));
-    types.extend(enum_type.dynamic_fields.iter().map(|field| field.r#type.clone()));
+    types.extend(
+        enum_type
+            .dynamic_fields
+            .iter()
+            .map(|field| field.r#type.clone()),
+    );
     layout_fields(&types, enum_type.layout.pack, pointer_bytes)
 }
 
 pub fn union_bytes(union_type: &ResolvedUnionType, pointer_bytes: u32) -> u32 {
-    union_type.fields.iter().map(|field| total_bytes(&field.r#type, pointer_bytes)).max().unwrap_or(0)
+    union_type
+        .fields
+        .iter()
+        .map(|field| total_bytes(&field.r#type, pointer_bytes))
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn payload_chunks(mut bytes: u32) -> Vec<Leaf> {
@@ -221,14 +288,23 @@ pub fn enum_header_offset(enum_type: &ResolvedEnumType, index: usize, pointer_by
     enum_prefix_layout(enum_type, pointer_bytes).byte_offsets[1 + index]
 }
 
-pub fn enum_dynamic_field_offset(enum_type: &ResolvedEnumType, index: usize, pointer_bytes: u32) -> u32 {
+pub fn enum_dynamic_field_offset(
+    enum_type: &ResolvedEnumType,
+    index: usize,
+    pointer_bytes: u32,
+) -> u32 {
     enum_prefix_layout(enum_type, pointer_bytes).byte_offsets[1 + enum_type.header.len() + index]
 }
 
 pub fn enum_payload_offset(enum_type: &ResolvedEnumType, pointer_bytes: u32) -> u32 {
     let prefix = enum_prefix_layout(enum_type, pointer_bytes);
     let payload_size = enum_payload_bytes(enum_type, enum_type.layout.pack, pointer_bytes);
-    place_field(prefix.packed_end, enum_payload_alignment(enum_type), payload_size, enum_type.layout.pack)
+    place_field(
+        prefix.packed_end,
+        enum_payload_alignment(enum_type),
+        payload_size,
+        enum_type.layout.pack,
+    )
 }
 
 pub fn enum_body_field_offset(
@@ -237,10 +313,14 @@ pub fn enum_body_field_offset(
     field_index: usize,
     pointer_bytes: u32,
 ) -> u32 {
-    let field_types: Vec<ResolvedType> =
-        enum_type.variants[variant_index].fields.iter().map(|field| field.r#type.clone()).collect();
+    let field_types: Vec<ResolvedType> = enum_type.variants[variant_index]
+        .fields
+        .iter()
+        .map(|field| field.r#type.clone())
+        .collect();
     enum_payload_offset(enum_type, pointer_bytes)
-        + layout_fields(&field_types, enum_type.layout.pack, pointer_bytes).byte_offsets[field_index]
+        + layout_fields(&field_types, enum_type.layout.pack, pointer_bytes).byte_offsets
+            [field_index]
 }
 
 pub fn stack_align_shift(align: u32) -> u8 {

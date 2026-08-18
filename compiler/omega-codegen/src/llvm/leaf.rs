@@ -1,4 +1,3 @@
-
 use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, PointerType};
 use omega_analyzer::layout::{self, Leaf};

@@ -61,12 +61,18 @@ impl Lowerer {
             Expression::FunctionCall(call) => {
                 let callee = Box::new(self.lower_expr(&call.callee));
                 let args = call.args.iter().map(|a| self.lower_expr(a)).collect();
-                self.node(node.span, HirExpr::FunctionCall(HirFunctionCall { callee, args }))
+                self.node(
+                    node.span,
+                    HirExpr::FunctionCall(HirFunctionCall { callee, args }),
+                )
             }
             Expression::Assignment(assign) => {
                 let target = Box::new(self.lower_expr(&assign.target));
                 let value = Box::new(self.lower_expr(&assign.value));
-                self.node(node.span, HirExpr::Assignment(HirAssignment { target, value }))
+                self.node(
+                    node.span,
+                    HirExpr::Assignment(HirAssignment { target, value }),
+                )
             }
             Expression::CompoundAssign(assign) => {
                 let target = Box::new(self.lower_expr(&assign.target));
@@ -93,9 +99,7 @@ impl Lowerer {
             Expression::Reveal(reveal) => {
                 self.lower_unary(node.span, &reveal.base, HirExpr::Reveal)
             }
-            Expression::Comp(comp) => {
-                self.lower_unary(node.span, &comp.base, HirExpr::Comp)
-            }
+            Expression::Comp(comp) => self.lower_unary(node.span, &comp.base, HirExpr::Comp),
             Expression::Negate(negate) => {
                 self.lower_unary(node.span, &negate.base, HirExpr::Negate)
             }
@@ -125,7 +129,9 @@ impl Lowerer {
                     }),
                 )
             }
-            Expression::Sizeof(sizeof) => self.node(node.span, HirExpr::Sizeof(sizeof.r#type.clone())),
+            Expression::Sizeof(sizeof) => {
+                self.node(node.span, HirExpr::Sizeof(sizeof.r#type.clone()))
+            }
             Expression::Increment(increment) => {
                 self.lower_unary(node.span, &increment.base, HirExpr::Increment)
             }

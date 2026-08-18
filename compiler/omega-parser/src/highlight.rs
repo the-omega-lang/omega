@@ -1,4 +1,3 @@
-
 use crate::lexer::{self, TokenKind};
 use omega_diagnostics::{Highlighter, Span, TokenClass};
 

@@ -1,4 +1,3 @@
-
 use std::io::{self, BufRead, Write};
 
 fn print_demangled(line: &str, out: &mut impl Write) {

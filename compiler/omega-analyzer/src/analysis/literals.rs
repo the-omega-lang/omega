@@ -17,7 +17,11 @@ enum LiteralTarget {
 pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue, ()> {
     match kind {
         NumericKind::Float(width) => {
-            let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
+            let text = format!(
+                "{}.{}",
+                n.integer_part,
+                n.fractional_part.as_deref().unwrap_or("0")
+            );
             let parsed = text.parse::<f64>().map_err(|_| ())?;
             if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
                 return Err(());
@@ -26,7 +30,11 @@ pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<
         }
         NumericKind::Signed(width) => {
             let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
-            let max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
+            let max = if width == 64 {
+                i64::MAX as u64
+            } else {
+                (1u64 << (width - 1)) - 1
+            };
             if parsed > max {
                 return Err(());
             }
@@ -34,7 +42,11 @@ pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<
         }
         NumericKind::Unsigned(width) => {
             let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
-            let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+            let max = if width == 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            };
             if parsed > max {
                 return Err(());
             }
@@ -71,9 +83,13 @@ impl<'r> Analyzer<'r> {
                     base: base.clone(),
                     declared,
                 };
-                let fields = self.check_field_initializers(node_id, span, &target, &lit.fields, |field| {
-                    AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: base.clone() }
-                })?;
+                let fields =
+                    self.check_field_initializers(node_id, span, &target, &lit.fields, |field| {
+                        AnalysisErrorKind::NoSuchField {
+                            field: field.name.clone(),
+                            base: base.clone(),
+                        }
+                    })?;
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
@@ -85,22 +101,41 @@ impl<'r> Analyzer<'r> {
                 let (enum_name, variant_name, declared, header_names, declaring_module, owner_id) = {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
-                    let header_names: Vec<Ident> = e.header.iter().map(|field| field.name.clone()).collect();
-                    let declared: Vec<ResolvedField> =
-                        e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
-                    (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone(), e.id)
+                    let header_names: Vec<Ident> =
+                        e.header.iter().map(|field| field.name.clone()).collect();
+                    let declared: Vec<ResolvedField> = e
+                        .dynamic_fields
+                        .iter()
+                        .chain(v.fields.iter())
+                        .cloned()
+                        .collect();
+                    (
+                        e.name.clone(),
+                        v.name.clone(),
+                        declared,
+                        header_names,
+                        e.module_path.clone(),
+                        e.id,
+                    )
                 };
                 if declared.is_empty() {
                     self.error(
                         node_id,
                         span,
-                        AnalysisErrorKind::EnumVariantHasNoBody { r#enum: enum_name, variant: variant_name },
+                        AnalysisErrorKind::EnumVariantHasNoBody {
+                            r#enum: enum_name,
+                            variant: variant_name,
+                        },
                     );
                     return None;
                 }
-                let declared_names: Vec<Ident> = declared.iter().map(|field| field.name.clone()).collect();
+                let declared_names: Vec<Ident> =
+                    declared.iter().map(|field| field.name.clone()).collect();
                 let unknown_enum = enum_name.clone();
-                let base = ResolvedType::Enum { cell: cell.clone(), variant: Some(variant_index) };
+                let base = ResolvedType::Enum {
+                    cell: cell.clone(),
+                    variant: Some(variant_index),
+                };
                 let target = LiteralTargetFields {
                     owner: variant_name,
                     declaring_module,
@@ -115,7 +150,9 @@ impl<'r> Analyzer<'r> {
                     &lit.fields,
                     move |field| {
                         if field.name.as_ref() == "tag" || header_names.contains(&field.name) {
-                            AnalysisErrorKind::EnumHeaderFieldInLiteral { field: field.name.clone() }
+                            AnalysisErrorKind::EnumHeaderFieldInLiteral {
+                                field: field.name.clone(),
+                            }
                         } else {
                             AnalysisErrorKind::NoSuchEnumField {
                                 field: field.name.clone(),
@@ -128,8 +165,14 @@ impl<'r> Analyzer<'r> {
                 Some(CheckedExprNode {
                     id: node_id,
                     span,
-                    r#type: ResolvedType::Enum { cell, variant: Some(variant_index) },
-                    kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct { variant_index, fields }),
+                    r#type: ResolvedType::Enum {
+                        cell,
+                        variant: Some(variant_index),
+                    },
+                    kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct {
+                        variant_index,
+                        fields,
+                    }),
                 })
             }
             LiteralTarget::Union(resolved) => {
@@ -142,7 +185,13 @@ impl<'r> Analyzer<'r> {
                 let owner_id = cell.borrow().id;
 
                 if lit.fields.is_empty() {
-                    self.error(node_id, span, AnalysisErrorKind::UnionLiteralMissingField { r#union: union_name });
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnionLiteralMissingField {
+                            r#union: union_name,
+                        },
+                    );
                     return None;
                 }
                 if lit.fields.len() > 1 {
@@ -167,7 +216,10 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         node_id,
                         field.name_span,
-                        AnalysisErrorKind::NoSuchField { field: field.name.clone(), base: resolved.clone() },
+                        AnalysisErrorKind::NoSuchField {
+                            field: field.name.clone(),
+                            base: resolved.clone(),
+                        },
                     );
                     return None;
                 };
@@ -175,7 +227,10 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         node_id,
                         field.name_span,
-                        AnalysisErrorKind::FieldNotVisible { field: field.name.clone(), base: resolved.clone() },
+                        AnalysisErrorKind::FieldNotVisible {
+                            field: field.name.clone(),
+                            base: resolved.clone(),
+                        },
                     );
                     return None;
                 }
@@ -197,7 +252,10 @@ impl<'r> Analyzer<'r> {
                     id: node_id,
                     span,
                     r#type: resolved,
-                    kind: CheckedExpr::UnionConstruct(CheckedUnionConstruct { field_index, value: Box::new(value) }),
+                    kind: CheckedExpr::UnionConstruct(CheckedUnionConstruct {
+                        field_index,
+                        value: Box::new(value),
+                    }),
                 })
             }
         }
@@ -211,7 +269,13 @@ impl<'r> Analyzer<'r> {
         fields: &[omega_hir::HirStructLiteralField],
         unknown_field: impl Fn(&omega_hir::HirStructLiteralField) -> AnalysisErrorKind,
     ) -> Option<Vec<CheckedStructLiteralField>> {
-        let LiteralTargetFields { owner, declaring_module, owner_id, base, declared } = target;
+        let LiteralTargetFields {
+            owner,
+            declaring_module,
+            owner_id,
+            base,
+            declared,
+        } = target;
         let owner_id = *owner_id;
         let mut seen: HashMap<Ident, Span> = HashMap::new();
         let mut checked_fields = Vec::with_capacity(fields.len());
@@ -221,7 +285,10 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     node_id,
                     field.name_span,
-                    AnalysisErrorKind::DuplicateFieldInitializer { field: field.name.clone(), previous },
+                    AnalysisErrorKind::DuplicateFieldInitializer {
+                        field: field.name.clone(),
+                        previous,
+                    },
                 );
                 ok = false;
                 continue;
@@ -240,7 +307,10 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     node_id,
                     field.name_span,
-                    AnalysisErrorKind::FieldNotVisible { field: field.name.clone(), base: base.clone() },
+                    AnalysisErrorKind::FieldNotVisible {
+                        field: field.name.clone(),
+                        base: base.clone(),
+                    },
                 );
                 ok = false;
                 continue;
@@ -268,13 +338,20 @@ impl<'r> Analyzer<'r> {
             checked_fields.push(CheckedStructLiteralField { field_index, value });
         }
 
-        let missing: Vec<Ident> =
-            declared.iter().map(|field| &field.name).filter(|name| !seen.contains_key(*name)).cloned().collect();
+        let missing: Vec<Ident> = declared
+            .iter()
+            .map(|field| &field.name)
+            .filter(|name| !seen.contains_key(*name))
+            .cloned()
+            .collect();
         if !missing.is_empty() {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::MissingFieldInitializers { r#struct: owner.clone(), missing },
+                AnalysisErrorKind::MissingFieldInitializers {
+                    r#struct: owner.clone(),
+                    missing,
+                },
             );
             ok = false;
         }
@@ -297,7 +374,9 @@ impl<'r> Analyzer<'r> {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::GenericPathTooDeep { r#type: segments[path.args_at].clone() },
+                    AnalysisErrorKind::GenericPathTooDeep {
+                        r#type: segments[path.args_at].clone(),
+                    },
                 );
                 return None;
             }
@@ -305,13 +384,17 @@ impl<'r> Analyzer<'r> {
             let prefix = &segments[..=path.args_at];
             let absolute = self.generic_prefix_absolute(node_id, span, &path.path, prefix)?;
             let accessor = self.path_module(&path.path);
-            let resolved = match self.resolve_item_with_ambient_from(&accessor, prefix, &absolute, &type_args) {
+            let resolved = match self
+                .resolve_item_with_ambient_from(&accessor, prefix, &absolute, &type_args)
+            {
                 Ok(ResolvedItem::Type(t)) => t,
                 Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(
                         node_id,
                         span,
-                        AnalysisErrorKind::UnresolvedType(crate::error::TypeResolutionError::NotAType(absolute)),
+                        AnalysisErrorKind::UnresolvedType(
+                            crate::error::TypeResolutionError::NotAType(absolute),
+                        ),
                     );
                     return None;
                 }
@@ -334,11 +417,18 @@ impl<'r> Analyzer<'r> {
                 Some(ImportTarget::Item(absolute, _))
                 | Some(ImportTarget::GenericItem(absolute))
                 | Some(ImportTarget::Module(absolute)) => absolute.clone(),
-                None => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
+                None => self
+                    .module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(plain.head.clone()))
+                    .collect(),
             };
-            if let Some((real_absolute, sig)) =
-                self.generic_literal_signature_with_ambient(std::slice::from_ref(&plain.head), &absolute, None)
-            {
+            if let Some((real_absolute, sig)) = self.generic_literal_signature_with_ambient(
+                std::slice::from_ref(&plain.head),
+                &absolute,
+                None,
+            ) {
                 let result = self.resolve_generic_literal(
                     node_id,
                     span,
@@ -351,36 +441,63 @@ impl<'r> Analyzer<'r> {
                 let resolved = match result {
                     Ok(ResolvedItem::Type(t)) => t,
                     Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
-                        self.error(node_id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotAType(real_absolute)));
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::UnresolvedType(TypeResolutionError::NotAType(
+                                real_absolute,
+                            )),
+                        );
                         return None;
                     }
                     Err(e) => {
-                        self.error(node_id, span, AnalysisErrorKind::UnresolvedType(TypeResolutionError::ModuleResolution(e)));
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::UnresolvedType(
+                                TypeResolutionError::ModuleResolution(e),
+                            ),
+                        );
                         return None;
                     }
                 };
                 return self.literal_target_from_type(node_id, span, resolved, &[]);
             }
-            let resolved = self.resolve_type_or_error(node_id, span, &Type::Named(plain.clone()), true)?;
+            let resolved =
+                self.resolve_type_or_error(node_id, span, &Type::Named(plain.clone()), true)?;
             return self.literal_target_from_type(node_id, span, resolved, &[]);
         }
 
         let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
         if let Some(ImportTarget::Module(target)) = &alias {
-            let absolute: Vec<Ident> = target.iter().cloned().chain(plain.tail.iter().cloned()).collect();
+            let absolute: Vec<Ident> = target
+                .iter()
+                .cloned()
+                .chain(plain.tail.iter().cloned())
+                .collect();
             let whole_result = match self.resolver.generic_literal_signature(&absolute, None) {
-                Ok(Some(sig)) => {
-                    self.resolve_generic_literal(node_id, span, &absolute, &absolute, &sig, &lit.fields, expected)?
-                }
+                Ok(Some(sig)) => self.resolve_generic_literal(
+                    node_id,
+                    span,
+                    &absolute,
+                    &absolute,
+                    &sig,
+                    &lit.fields,
+                    expected,
+                )?,
                 _ => self.resolve_item_checked(&absolute, &[], true),
             };
             let first_error = match whole_result {
-                Ok(ResolvedItem::Type(t)) => return self.literal_target_from_type(node_id, span, t, &[]),
+                Ok(ResolvedItem::Type(t)) => {
+                    return self.literal_target_from_type(node_id, span, t, &[]);
+                }
                 Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(
                         node_id,
                         span,
-                        AnalysisErrorKind::UnresolvedType(crate::error::TypeResolutionError::NotAType(absolute)),
+                        AnalysisErrorKind::UnresolvedType(
+                            crate::error::TypeResolutionError::NotAType(absolute),
+                        ),
                     );
                     return None;
                 }
@@ -388,17 +505,35 @@ impl<'r> Analyzer<'r> {
             };
             if absolute.len() >= 3 {
                 let (variant, prefix) = absolute.split_last().expect("length checked above");
-                let variant_result = match self.resolver.generic_literal_signature(prefix, Some(variant)) {
-                    Ok(Some(sig)) => {
-                        self.resolve_generic_literal(node_id, span, prefix, prefix, &sig, &lit.fields, expected)?
-                    }
+                let variant_result = match self
+                    .resolver
+                    .generic_literal_signature(prefix, Some(variant))
+                {
+                    Ok(Some(sig)) => self.resolve_generic_literal(
+                        node_id,
+                        span,
+                        prefix,
+                        prefix,
+                        &sig,
+                        &lit.fields,
+                        expected,
+                    )?,
                     _ => self.resolve_item_checked(prefix, &[], true),
                 };
                 if let Ok(ResolvedItem::Type(t)) = variant_result {
-                    return self.literal_target_from_type(node_id, span, t, std::slice::from_ref(variant));
+                    return self.literal_target_from_type(
+                        node_id,
+                        span,
+                        t,
+                        std::slice::from_ref(variant),
+                    );
                 }
             }
-            self.error(node_id, span, AnalysisErrorKind::ModuleResolution(first_error));
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::ModuleResolution(first_error),
+            );
             return None;
         }
 
@@ -410,10 +545,19 @@ impl<'r> Analyzer<'r> {
         }
         let absolute: Vec<Ident> = match alias {
             Some(ImportTarget::GenericItem(absolute)) => absolute,
-            _ => self.module_path.iter().cloned().chain(std::iter::once(plain.head.clone())).collect(),
+            _ => self
+                .module_path
+                .iter()
+                .cloned()
+                .chain(std::iter::once(plain.head.clone()))
+                .collect(),
         };
         let variant = (plain.tail.len() == 1).then(|| &plain.tail[0]);
-        let result = match self.generic_literal_signature_with_ambient(std::slice::from_ref(&plain.head), &absolute, variant) {
+        let result = match self.generic_literal_signature_with_ambient(
+            std::slice::from_ref(&plain.head),
+            &absolute,
+            variant,
+        ) {
             Some((real_absolute, sig)) => self.resolve_generic_literal(
                 node_id,
                 span,
@@ -423,18 +567,30 @@ impl<'r> Analyzer<'r> {
                 &lit.fields,
                 expected,
             )?,
-            None => self.resolve_item_checked_with_ambient_fallback(std::slice::from_ref(&plain.head), &absolute, &[]),
+            None => self.resolve_item_checked_with_ambient_fallback(
+                std::slice::from_ref(&plain.head),
+                &absolute,
+                &[],
+            ),
         };
         let kind = match result {
             Ok(ResolvedItem::Type(t)) => {
                 return self.literal_target_from_type(node_id, span, t, &plain.tail);
             }
-            Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => AnalysisErrorKind::NotAModule { name: plain.head.clone() },
+            Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
+                AnalysisErrorKind::NotAModule {
+                    name: plain.head.clone(),
+                }
+            }
             Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
                 name: plain.head.clone(),
                 similar_module: self.similar_import_alias(&plain.head),
                 similar_type: self.context.similar_type_name(&plain.head).or_else(|| {
-                    self.resolver.similar_item_name(&self.module_path, &plain.head, ItemNamespace::Type)
+                    self.resolver.similar_item_name(
+                        &self.module_path,
+                        &plain.head,
+                        ItemNamespace::Type,
+                    )
                 }),
             },
             Err(e) => AnalysisErrorKind::ModuleResolution(e),
@@ -453,8 +609,16 @@ impl<'r> Analyzer<'r> {
             return Some((absolute.to_vec(), sig));
         }
         let [single] = prefix else { return None };
-        let ambient = self.resolver.ambient_core_candidates(&self.module_path, single).ok().flatten()?;
-        let sig = self.resolver.generic_literal_signature(&ambient, variant).ok().flatten()?;
+        let ambient = self
+            .resolver
+            .ambient_core_candidates(&self.module_path, single)
+            .ok()
+            .flatten()?;
+        let sig = self
+            .resolver
+            .generic_literal_signature(&ambient, variant)
+            .ok()
+            .flatten()?;
         Some((ambient, sig))
     }
 
@@ -468,7 +632,8 @@ impl<'r> Analyzer<'r> {
         lit_fields: &[HirStructLiteralField],
         expected: Option<&ResolvedType>,
     ) -> Option<Result<ResolvedItem, ResolveError>> {
-        let type_args = self.infer_literal_type_args(node_id, span, absolute, sig, lit_fields, expected)?;
+        let type_args =
+            self.infer_literal_type_args(node_id, span, absolute, sig, lit_fields, expected)?;
         Some(self.resolve_item_checked_with_ambient_fallback(prefix, absolute, &type_args))
     }
 
@@ -499,7 +664,10 @@ impl<'r> Analyzer<'r> {
                     node_id,
                     span,
                     AnalysisErrorKind::UnresolvedLiteralGeneric {
-                        r#type: absolute.last().cloned().expect("an absolute path always has a last segment"),
+                        r#type: absolute
+                            .last()
+                            .cloned()
+                            .expect("an absolute path always has a last segment"),
                         generics: missing,
                     },
                 );
@@ -508,7 +676,10 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    fn expected_matches_generic_item(expected: Option<&ResolvedType>, absolute: &[Ident]) -> Option<Vec<ResolvedType>> {
+    fn expected_matches_generic_item(
+        expected: Option<&ResolvedType>,
+        absolute: &[Ident],
+    ) -> Option<Vec<ResolvedType>> {
         let expected = expected?;
         let (name, module) = absolute.split_last()?;
         let (cell_module, cell_name, type_args) = match expected {
@@ -539,11 +710,22 @@ impl<'r> Analyzer<'r> {
         let mut subst = HashMap::new();
         let mut ok = true;
         for field in lit_fields {
-            let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name) else { continue };
-            let expected =
-                self.expected_for_generic_param(field.value.id, field.value.span, raw_type, &sig.generics, &sig.defaults, &subst);
+            let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name)
+            else {
+                continue;
+            };
+            let expected = self.expected_for_generic_param(
+                field.value.id,
+                field.value.span,
+                raw_type,
+                &sig.generics,
+                &sig.defaults,
+                &subst,
+            );
             match self.analyze_expr(&field.value, expected.as_ref()) {
-                Some(checked) => unify_generic_type(&sig.generics, raw_type, &checked.r#type, &mut subst),
+                Some(checked) => {
+                    unify_generic_type(&sig.generics, raw_type, &checked.r#type, &mut subst)
+                }
                 None => ok = false,
             }
         }
@@ -592,22 +774,36 @@ impl<'r> Analyzer<'r> {
                 [variant_name] => {
                     let found = cell.borrow().variant(variant_name).map(|(index, _)| index);
                     match found {
-                        Some(index) => return Some(LiteralTarget::EnumVariant(cell.clone(), index)),
+                        Some(index) => {
+                            return Some(LiteralTarget::EnumVariant(cell.clone(), index));
+                        }
                         None => {
                             let e = cell.borrow();
                             AnalysisErrorKind::NoSuchEnumMember {
                                 r#enum: e.name.clone(),
                                 name: variant_name.clone(),
-                                similar_variant: best_match(variant_name, e.variants.iter().map(|v| &v.name)),
-                                similar_function: best_match(variant_name, e.functions.iter().map(|(name, _)| name)),
+                                similar_variant: best_match(
+                                    variant_name,
+                                    e.variants.iter().map(|v| &v.name),
+                                ),
+                                similar_function: best_match(
+                                    variant_name,
+                                    e.functions.iter().map(|(name, _)| name),
+                                ),
                             }
                         }
                     }
                 }
-                _ => AnalysisErrorKind::GenericPathTooDeep { r#type: cell.borrow().name.clone() },
+                _ => AnalysisErrorKind::GenericPathTooDeep {
+                    r#type: cell.borrow().name.clone(),
+                },
             },
-            _ if rest.is_empty() => AnalysisErrorKind::StructLiteralNotAStruct { found: r#type.clone() },
-            _ => AnalysisErrorKind::StaticAccessOnNonStruct { found: r#type.clone() },
+            _ if rest.is_empty() => AnalysisErrorKind::StructLiteralNotAStruct {
+                found: r#type.clone(),
+            },
+            _ => AnalysisErrorKind::StaticAccessOnNonStruct {
+                found: r#type.clone(),
+            },
         };
         self.error(node_id, span, kind);
         None
@@ -621,7 +817,11 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         let invalid_suffix = |this: &mut Self, ident: &Ident| {
-            this.error(node_id, span, AnalysisErrorKind::InvalidNumberType(ident.clone()));
+            this.error(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidNumberType(ident.clone()),
+            );
         };
 
         let resolved_type = match &n.explicit_type {
@@ -653,7 +853,9 @@ impl<'r> Analyzer<'r> {
         }
         if is_float && n.base != NumberBase::Decimal {
             let Some(explicit_type) = &n.explicit_type else {
-                unreachable!("the default type is only Float when a fraction was written, which implies Decimal");
+                unreachable!(
+                    "the default type is only Float when a fraction was written, which implies Decimal"
+                );
             };
             invalid_suffix(self, explicit_type);
             return None;
@@ -667,18 +869,38 @@ impl<'r> Analyzer<'r> {
             self.error(
                 node_id,
                 span,
-                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text, r#type: resolved_type },
+                AnalysisErrorKind::NumberLiteralOutOfRange {
+                    literal: literal_text,
+                    r#type: resolved_type,
+                },
             );
             return None;
         };
 
-        Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
+        Some(CheckedExprNode {
+            id: node_id,
+            span,
+            r#type: resolved_type,
+            kind: CheckedExpr::Number(value),
+        })
     }
 
-    fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>, pointer_bits: u32) -> ResolvedType {
-        let default = if n.fractional_part.is_some() { ResolvedType::F32 } else { ResolvedType::I32 };
-        let Some(expected) = expected else { return default };
-        let Some(kind) = expected.numeric_kind(pointer_bits) else { return default };
+    fn default_or_expected_number_type(
+        n: &NumberExpr,
+        expected: Option<&ResolvedType>,
+        pointer_bits: u32,
+    ) -> ResolvedType {
+        let default = if n.fractional_part.is_some() {
+            ResolvedType::F32
+        } else {
+            ResolvedType::I32
+        };
+        let Some(expected) = expected else {
+            return default;
+        };
+        let Some(kind) = expected.numeric_kind(pointer_bits) else {
+            return default;
+        };
         if matches!(kind, NumericKind::Float(_)) == n.fractional_part.is_some() {
             expected.clone()
         } else {
@@ -689,7 +911,9 @@ impl<'r> Analyzer<'r> {
     pub(super) fn adaptable_literal(expr: &HirExprNode) -> bool {
         match &expr.expr {
             HirExpr::Number(n) => n.explicit_type.is_none(),
-            HirExpr::Negate(inner) => matches!(&inner.expr, HirExpr::Number(n) if n.explicit_type.is_none()),
+            HirExpr::Negate(inner) => {
+                matches!(&inner.expr, HirExpr::Number(n) if n.explicit_type.is_none())
+            }
             _ => false,
         }
     }
@@ -718,30 +942,38 @@ impl<'r> Analyzer<'r> {
         let checked_first = self
             .analyze_expr(first, declared_item_type)
             .map(|value| self.coerce_to_expected(declared_item_type, value))?;
-        let item_type = declared_item_type.cloned().unwrap_or_else(|| checked_first.r#type.widened());
+        let item_type = declared_item_type
+            .cloned()
+            .unwrap_or_else(|| checked_first.r#type.widened());
 
         let mut checked_elements = Vec::with_capacity(elements.len());
-        let check_element = |this: &mut Self, id: HirId, elem_span: Span, checked: CheckedExprNode| {
-            if !item_type.accepts(&checked.r#type) {
-                this.error(
-                    id,
-                    elem_span,
-                    AnalysisErrorKind::ArrayElementTypeMismatch {
-                        expected: item_type.clone(),
-                        found: checked.r#type.clone(),
-                    },
-                );
-                return None;
-            }
-            Some(checked)
-        };
+        let check_element =
+            |this: &mut Self, id: HirId, elem_span: Span, checked: CheckedExprNode| {
+                if !item_type.accepts(&checked.r#type) {
+                    this.error(
+                        id,
+                        elem_span,
+                        AnalysisErrorKind::ArrayElementTypeMismatch {
+                            expected: item_type.clone(),
+                            found: checked.r#type.clone(),
+                        },
+                    );
+                    return None;
+                }
+                Some(checked)
+            };
         checked_elements.push(check_element(self, first.id, first.span, checked_first)?);
 
         for element in rest {
             let checked_element = self
                 .analyze_expr(element, Some(&item_type))
                 .map(|value| self.coerce_to_expected(Some(&item_type), value))?;
-            checked_elements.push(check_element(self, element.id, element.span, checked_element)?);
+            checked_elements.push(check_element(
+                self,
+                element.id,
+                element.span,
+                checked_element,
+            )?);
         }
 
         let size = checked_elements.len() as u32;
@@ -749,7 +981,10 @@ impl<'r> Analyzer<'r> {
             id: node_id,
             span,
             r#type: ResolvedType::SizedArray(Box::new(item_type.clone()), size),
-            kind: CheckedExpr::ArrayLiteral(CheckedArrayLiteral { item_type, elements: checked_elements }),
+            kind: CheckedExpr::ArrayLiteral(CheckedArrayLiteral {
+                item_type,
+                elements: checked_elements,
+            }),
         })
     }
 }

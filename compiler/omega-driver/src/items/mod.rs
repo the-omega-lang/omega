@@ -1,4 +1,3 @@
-
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::analysis::{AnalysisSite, Analyzer, item_site, item_visibility};
@@ -10,7 +9,6 @@ use omega_analyzer::resolved_type::{
     ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
-use omega_diagnostics::Span;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
@@ -356,13 +354,14 @@ impl ItemQueries {
     }
 
     pub fn resolved_items(&self) -> impl Iterator<Item = (&ItemKey, &ResolvedItem)> {
-        self.item_states.iter().filter_map(|(key, state)| match state {
-            ItemQueryState::Resolved(entry) => Some((key, &entry.item)),
-            ItemQueryState::InProgress | ItemQueryState::Failed => None,
-        })
+        self.item_states
+            .iter()
+            .filter_map(|(key, state)| match state {
+                ItemQueryState::Resolved(entry) => Some((key, &entry.item)),
+                ItemQueryState::InProgress | ItemQueryState::Failed => None,
+            })
     }
 }
-
 
 mod resolution;
 

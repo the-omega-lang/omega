@@ -28,7 +28,11 @@ impl RevealState {
 }
 
 impl<'r> Analyzer<'r> {
-    pub(crate) fn check_visibility(&mut self, visibility: Visibility, declaring_module: &[Ident]) -> bool {
+    pub(crate) fn check_visibility(
+        &mut self,
+        visibility: Visibility,
+        declaring_module: &[Ident],
+    ) -> bool {
         if Self::visibility_allows(visibility, declaring_module, &self.module_path) {
             return true;
         }
@@ -39,7 +43,11 @@ impl<'r> Analyzer<'r> {
         false
     }
 
-    pub(super) fn visibility_allows(visibility: Visibility, declaring_module: &[Ident], accessor_module: &[Ident]) -> bool {
+    pub(super) fn visibility_allows(
+        visibility: Visibility,
+        declaring_module: &[Ident],
+        accessor_module: &[Ident],
+    ) -> bool {
         match visibility {
             Visibility::Exposed => true,
             Visibility::Internal => declaring_module.first() == accessor_module.first(),

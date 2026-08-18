@@ -1,4 +1,3 @@
-
 use crate::symbol::MangleType;
 
 pub const PREFIX: &str = "_omg_";

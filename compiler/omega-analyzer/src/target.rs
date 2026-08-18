@@ -1,4 +1,3 @@
-
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +26,10 @@ pub enum Os {
 }
 
 impl Target {
-    pub const DEFAULT: Target = Target { arch: Arch::X86_64, os: Os::Linux };
+    pub const DEFAULT: Target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+    };
 
     pub fn pointer_bytes(self) -> u32 {
         match self.arch {
@@ -101,7 +103,10 @@ impl fmt::Display for TargetParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TargetParseError::Malformed(s) => {
-                write!(f, "'{s}' is not a valid target triplet (expected `<arch>-<os>`, e.g. `x86_64-linux`)")
+                write!(
+                    f,
+                    "'{s}' is not a valid target triplet (expected `<arch>-<os>`, e.g. `x86_64-linux`)"
+                )
             }
             TargetParseError::UnknownArch(a) => write!(
                 f,
@@ -127,7 +132,10 @@ mod tests {
         let parsed = Target::parse(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"));
         assert_eq!(parsed.arch, arch);
         assert_eq!(parsed.os, os);
-        assert_eq!(parsed.to_string().replace("-unknown-", "-"), canonical(arch, os));
+        assert_eq!(
+            parsed.to_string().replace("-unknown-", "-"),
+            canonical(arch, os)
+        );
     }
 
     #[test]
@@ -161,20 +169,41 @@ mod tests {
             (Arch::Thumbv7em, 4),
             (Arch::Riscv32, 4),
         ] {
-            assert_eq!(Target { arch, os: Os::Linux }.pointer_bytes(), bytes, "{arch:?}");
-            assert_eq!(Target { arch, os: Os::Linux }.pointer_bits(), bytes * 8, "{arch:?}");
+            assert_eq!(
+                Target {
+                    arch,
+                    os: Os::Linux
+                }
+                .pointer_bytes(),
+                bytes,
+                "{arch:?}"
+            );
+            assert_eq!(
+                Target {
+                    arch,
+                    os: Os::Linux
+                }
+                .pointer_bits(),
+                bytes * 8,
+                "{arch:?}"
+            );
         }
     }
 
     #[test]
     fn unknown_names_list_the_supported_set() {
         let arch = Target::parse("sparc-linux").unwrap_err().to_string();
-        assert!(arch.contains("x86_64") && arch.contains("riscv32"), "{arch}");
+        assert!(
+            arch.contains("x86_64") && arch.contains("riscv32"),
+            "{arch}"
+        );
         let os = Target::parse("x86_64-vxworks").unwrap_err().to_string();
         assert!(os.contains("none") && os.contains("windows"), "{os}");
-        assert!(Target::parse("just")
-            .unwrap_err()
-            .to_string()
-            .contains("not a valid target triplet"));
+        assert!(
+            Target::parse("just")
+                .unwrap_err()
+                .to_string()
+                .contains("not a valid target triplet")
+        );
     }
 }

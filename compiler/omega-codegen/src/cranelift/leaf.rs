@@ -1,7 +1,6 @@
-
 use super::Codegen;
-use omega_analyzer::layout::{self, Leaf};
 use cranelift::prelude::{Type, types};
+use omega_analyzer::layout::{self, Leaf};
 use omega_analyzer::resolved_type::ResolvedType;
 
 pub(super) fn cranelift_type(leaf: Leaf, pointer_type: Type) -> Type {

@@ -1,7 +1,7 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    pub(super) fn analyze_slice(
+    pub(crate) fn analyze_slice(
         &mut self,
         node_id: HirId,
         span: Span,
@@ -135,12 +135,12 @@ impl<'r> Analyzer<'r> {
 
         let checked_start = analyze_bound(self, range.start.as_deref())?;
         let checked_end = match &range.end {
-            HirRangeEnd::Inclusive(end) => {
-                CheckedRangeEnd::Inclusive(analyze_bound(self, Some(end))?.expect("range has an end"))
-            }
-            HirRangeEnd::Exclusive(end) => {
-                CheckedRangeEnd::Exclusive(analyze_bound(self, Some(end))?.expect("range has an end"))
-            }
+            HirRangeEnd::Inclusive(end) => CheckedRangeEnd::Inclusive(
+                analyze_bound(self, Some(end))?.expect("range has an end"),
+            ),
+            HirRangeEnd::Exclusive(end) => CheckedRangeEnd::Exclusive(
+                analyze_bound(self, Some(end))?.expect("range has an end"),
+            ),
             HirRangeEnd::Open => CheckedRangeEnd::Open,
         };
         // A missing `start` always defaults to `0`, fine for every base
@@ -177,7 +177,7 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    pub(super) fn analyze_const_slice(
+    pub(crate) fn analyze_const_slice(
         &mut self,
         node_id: HirId,
         span: Span,
@@ -217,5 +217,4 @@ impl<'r> Analyzer<'r> {
             kind: CheckedExpr::Const(ConstValue::Slice(values)),
         })
     }
-
 }

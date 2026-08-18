@@ -1,4 +1,3 @@
-
 use super::Codegen;
 use cranelift_module::{DataDescription, Linkage, Module};
 use omega_analyzer::checked::ExternFunctionRef;

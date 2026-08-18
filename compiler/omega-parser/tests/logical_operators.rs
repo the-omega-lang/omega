@@ -1,4 +1,3 @@
-
 use omega_parser::SourceModule;
 use omega_parser::prelude::{Expression, Item, LogicalOp, Statement};
 
@@ -28,10 +27,7 @@ fn bang_does_not_disturb_the_not_equal_token() {
     let Expression::BinaryOp(op) = bound_expression("a != b") else {
         panic!("expected `!=` to stay a comparison");
     };
-    assert!(matches!(
-        op.op,
-        omega_parser::prelude::BinaryOp::Ne
-    ));
+    assert!(matches!(op.op, omega_parser::prelude::BinaryOp::Ne));
 }
 
 #[test]

@@ -1,8 +1,9 @@
-
 use crate::CodegenRequest;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_diagnostics::Span;
-use omega_mir::{MirBody, MirExpr, MirExprNode, MirItem, MirPlace, MirPlaceRoot, MirProjection, MirTerminator};
+use omega_mir::{
+    MirBody, MirExpr, MirExprNode, MirItem, MirPlace, MirPlaceRoot, MirProjection, MirTerminator,
+};
 
 pub(crate) fn preflight(request: &CodegenRequest) -> Result<(), String> {
     for (_, module) in &request.modules {
@@ -75,9 +76,7 @@ fn terminator_parameter_assignment(terminator: &MirTerminator, arg_count: usize)
     match terminator {
         MirTerminator::Branch { condition, .. } => expr_parameter_assignment(condition, arg_count),
         MirTerminator::Return(Some(expr)) => expr_parameter_assignment(expr, arg_count),
-        MirTerminator::Return(None)
-        | MirTerminator::Goto(_)
-        | MirTerminator::Unreachable => None,
+        MirTerminator::Return(None) | MirTerminator::Goto(_) | MirTerminator::Unreachable => None,
     }
 }
 
@@ -91,12 +90,13 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
             expr_parameter_assignment(&assignment.value, arg_count)
         }
         MirExpr::Place(place) => place_nested_assignment(place, arg_count),
-        MirExpr::FunctionCall(call) => expr_parameter_assignment(&call.callee, arg_count)
-            .or_else(|| {
+        MirExpr::FunctionCall(call) => {
+            expr_parameter_assignment(&call.callee, arg_count).or_else(|| {
                 call.args
                     .iter()
                     .find_map(|arg| expr_parameter_assignment(arg, arg_count))
-            }),
+            })
+        }
         MirExpr::AddressOf(address_of) => place_nested_assignment(&address_of.place, arg_count),
         MirExpr::Negate(inner) | MirExpr::BitNot(inner) => {
             expr_parameter_assignment(inner, arg_count)
@@ -115,7 +115,9 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
             .fields
             .iter()
             .find_map(|field| expr_parameter_assignment(&field.value, arg_count)),
-        MirExpr::UnionConstruct(construct) => expr_parameter_assignment(&construct.value, arg_count),
+        MirExpr::UnionConstruct(construct) => {
+            expr_parameter_assignment(&construct.value, arg_count)
+        }
         MirExpr::Slice(slice) => place_nested_assignment(&slice.base, arg_count)
             .or_else(|| {
                 slice
@@ -131,12 +133,13 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
             }),
         MirExpr::Cast(cast) => expr_parameter_assignment(&cast.base, arg_count),
         MirExpr::SpecCoerce(coerce) => expr_parameter_assignment(&coerce.base, arg_count),
-        MirExpr::DynamicCall(call) => place_nested_assignment(&call.base, arg_count)
-            .or_else(|| {
+        MirExpr::DynamicCall(call) => {
+            place_nested_assignment(&call.base, arg_count).or_else(|| {
                 call.args
                     .iter()
                     .find_map(|arg| expr_parameter_assignment(arg, arg_count))
-            }),
+            })
+        }
         MirExpr::Number(_)
         | MirExpr::Bool(_)
         | MirExpr::Char(_)
@@ -149,9 +152,10 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
 
 fn place_targets_parameter(place: &MirPlace, arg_count: usize) -> bool {
     matches!(&place.root, MirPlaceRoot::Local { id, .. } if (id.0 as usize) < arg_count)
-        && !place.projections.iter().any(|p| {
-            matches!(p, MirProjection::Deref { .. } | MirProjection::Index { .. })
-        })
+        && !place
+            .projections
+            .iter()
+            .any(|p| matches!(p, MirProjection::Deref { .. } | MirProjection::Index { .. }))
 }
 
 fn place_nested_assignment(place: &MirPlace, arg_count: usize) -> Option<Span> {

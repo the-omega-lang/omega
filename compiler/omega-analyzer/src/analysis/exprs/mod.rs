@@ -623,11 +623,13 @@ impl<'r> Analyzer<'r> {
             }
             place_type.widened()
         } else {
-            let narrowed_shadow = self.narrowable_place(place).is_some_and(|(ident, origin, ..)| {
-                self.context
-                    .find_variable(&ident, origin)
-                    .is_some_and(|binding| binding.narrowed)
-            });
+            let narrowed_shadow =
+                self.narrowable_place(place)
+                    .is_some_and(|(ident, origin, ..)| {
+                        self.context
+                            .find_variable(&ident, origin)
+                            .is_some_and(|binding| binding.narrowed)
+                    });
             if narrowed_shadow {
                 place_type.widened()
             } else {
@@ -657,5 +659,4 @@ impl<'r> Analyzer<'r> {
             },
         }
     }
-
 }

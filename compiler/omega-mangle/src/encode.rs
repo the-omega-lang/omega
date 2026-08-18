@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -13,7 +12,11 @@ struct Encoder {
 }
 
 pub fn encode(symbol: &Symbol) -> String {
-    let mut enc = Encoder { out: PREFIX.to_string(), path_subs: HashMap::new(), type_subs: HashMap::new() };
+    let mut enc = Encoder {
+        out: PREFIX.to_string(),
+        path_subs: HashMap::new(),
+        type_subs: HashMap::new(),
+    };
     enc.encode_path(&symbol.path);
     if let Some((params, ret)) = &symbol.signature {
         for p in params {
@@ -83,7 +86,8 @@ impl Encoder {
         }
         // Do not register `Str` as a substitution candidate; a backreference cannot beat its one-byte tag.
         if let MangleType::Str(mutable) = ty {
-            self.out.push(if *mutable { TAG_STR_MUT } else { TAG_STR } as char);
+            self.out
+                .push(if *mutable { TAG_STR_MUT } else { TAG_STR } as char);
             return;
         }
         if let Some(&pos) = self.type_subs.get(ty) {
@@ -170,7 +174,11 @@ mod tests {
     #[test]
     fn free_function_path() {
         let path = nested(root("mymod"), Namespace::Value, "foo");
-        let sym = Symbol { path, signature: Some((vec![], MangleType::Void)), vendor_suffix: None };
+        let sym = Symbol {
+            path,
+            signature: Some((vec![], MangleType::Void)),
+            vendor_suffix: None,
+        };
         let out = encode(&sym);
         assert!(out.starts_with("_omg_"));
         assert!(out.contains("5mymod"));
@@ -180,7 +188,11 @@ mod tests {
     #[test]
     fn identifier_starting_with_digit_gets_separator() {
         let path = nested(root("mymod"), Namespace::Value, "0foo");
-        let sym = Symbol { path, signature: None, vendor_suffix: None };
+        let sym = Symbol {
+            path,
+            signature: None,
+            vendor_suffix: None,
+        };
         let out = encode(&sym);
         assert!(out.contains("4_0foo"));
     }

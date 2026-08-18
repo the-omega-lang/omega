@@ -1,6 +1,5 @@
-
-use super::leaf;
 use super::Codegen;
+use super::leaf;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, PointerValue};
 use omega_analyzer::layout;
@@ -10,8 +9,14 @@ use omega_mir::{MirPlace, MirPlaceRoot, MirProjection};
 #[derive(Clone)]
 pub(super) enum PlaceStorage<'ctx> {
     Values(Vec<BasicValueEnum<'ctx>>),
-    Slot { slot: PointerValue<'ctx>, offset: u32 },
-    Address { base: PointerValue<'ctx>, offset: u32 },
+    Slot {
+        slot: PointerValue<'ctx>,
+        offset: u32,
+    },
+    Address {
+        base: PointerValue<'ctx>,
+        offset: u32,
+    },
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -28,7 +33,10 @@ impl<'ctx> Codegen<'ctx> {
                         "define_function_def always sets this before any block runs (a zero-size \
                          frame still means a local's address is the frame's own base)",
                     );
-                    PlaceStorage::Slot { slot, offset: self.local_offsets[id.0 as usize] }
+                    PlaceStorage::Slot {
+                        slot,
+                        offset: self.local_offsets[id.0 as usize],
+                    }
                 };
                 (current, r#type.clone())
             }
@@ -61,24 +69,38 @@ impl<'ctx> Codegen<'ctx> {
             match projection {
                 MirProjection::FieldAccess { index, r#type, .. } => {
                     let ResolvedType::Struct(struct_type) = &current_type else {
-                        unreachable!("mir body guarantees field projections are only built against a struct type");
+                        unreachable!(
+                            "mir body guarantees field projections are only built against a struct type"
+                        );
                     };
                     let struct_type = struct_type.clone();
                     let struct_type = struct_type.borrow();
                     current = match current {
-                        PlaceStorage::Values(values) => PlaceStorage::Values(layout::project_field_access(
-                            &values,
-                            &struct_type,
-                            *index,
-                            self.pointer_bytes(),
-                        )),
+                        PlaceStorage::Values(values) => {
+                            PlaceStorage::Values(layout::project_field_access(
+                                &values,
+                                &struct_type,
+                                *index,
+                                self.pointer_bytes(),
+                            ))
+                        }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
-                            offset: offset + layout::field_byte_offset(&struct_type, *index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::field_byte_offset(
+                                    &struct_type,
+                                    *index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
-                            offset: offset + layout::field_byte_offset(&struct_type, *index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::field_byte_offset(
+                                    &struct_type,
+                                    *index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                     };
                     current_type = r#type.clone();
@@ -86,7 +108,8 @@ impl<'ctx> Codegen<'ctx> {
 
                 MirProjection::UnionField { r#type, .. } => {
                     if let PlaceStorage::Values(values) = &current {
-                        let shift = layout::stack_align_shift(layout::type_alignment(&current_type));
+                        let shift =
+                            layout::stack_align_shift(layout::type_alignment(&current_type));
                         let size = layout::total_bytes(&current_type, self.pointer_bytes());
                         let slot = self.entry_alloca(size, 1u32 << shift, "union_spill");
                         self.store_scalars(&slot, 0, values, layout::type_alignment(&current_type));
@@ -98,40 +121,69 @@ impl<'ctx> Codegen<'ctx> {
                 MirProjection::Deref { r#type } => {
                     let ptr_value = self.load_scalars(
                         &match &current {
-                            PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot { slot: *slot, offset: *offset },
-                            PlaceStorage::Address { base, offset } => PlaceStorage::Address { base: *base, offset: *offset },
+                            PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                                slot: *slot,
+                                offset: *offset,
+                            },
+                            PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                                base: *base,
+                                offset: *offset,
+                            },
                             PlaceStorage::Values(values) => PlaceStorage::Values(values.clone()),
                         },
                         &current_type,
                         layout::type_alignment(&current_type),
                     )[0]
-                        .into_pointer_value();
-                    current = PlaceStorage::Address { base: ptr_value, offset: 0 };
+                    .into_pointer_value();
+                    current = PlaceStorage::Address {
+                        base: ptr_value,
+                        offset: 0,
+                    };
                     current_type = r#type.clone();
                 }
 
-                MirProjection::Index { index_expr, item_type } => {
+                MirProjection::Index {
+                    index_expr,
+                    item_type,
+                } => {
                     let element_size = layout::total_bytes(item_type, self.pointer_bytes());
 
                     let mut base = match &current_type {
-                        ResolvedType::SizedArray(_, _) => self.place_storage_address(
-                            &match &current {
-                                PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot { slot: *slot, offset: *offset },
-                                PlaceStorage::Address { base, offset } => PlaceStorage::Address { base: *base, offset: *offset },
-                                PlaceStorage::Values(values) => PlaceStorage::Values(values.clone()),
-                            },
-                        ),
-                        ResolvedType::Array(_, _) | ResolvedType::Slice { .. } | ResolvedType::Str { .. } => self
-                            .load_scalars(
-                                &match &current {
-                                    PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot { slot: *slot, offset: *offset },
-                                    PlaceStorage::Address { base, offset } => PlaceStorage::Address { base: *base, offset: *offset },
-                                    PlaceStorage::Values(values) => PlaceStorage::Values(values.clone()),
+                        ResolvedType::SizedArray(_, _) => {
+                            self.place_storage_address(&match &current {
+                                PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                                    slot: *slot,
+                                    offset: *offset,
                                 },
-                                &current_type,
-                                layout::type_alignment(&current_type),
-                            )[0]
-                            .into_pointer_value(),
+                                PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                                    base: *base,
+                                    offset: *offset,
+                                },
+                                PlaceStorage::Values(values) => {
+                                    PlaceStorage::Values(values.clone())
+                                }
+                            })
+                        }
+                        ResolvedType::Array(_, _)
+                        | ResolvedType::Slice { .. }
+                        | ResolvedType::Str { .. } => self.load_scalars(
+                            &match &current {
+                                PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                                    slot: *slot,
+                                    offset: *offset,
+                                },
+                                PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                                    base: *base,
+                                    offset: *offset,
+                                },
+                                PlaceStorage::Values(values) => {
+                                    PlaceStorage::Values(values.clone())
+                                }
+                            },
+                            &current_type,
+                            layout::type_alignment(&current_type),
+                        )[0]
+                        .into_pointer_value(),
                         _ => unreachable!(
                             "mir body guarantees Index projections only apply to Array/SizedArray/Slice/Str"
                         ),
@@ -167,11 +219,20 @@ impl<'ctx> Codegen<'ctx> {
 
                 MirProjection::EnumTag { r#type } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("mir body guarantees EnumTag projections are only built against an enum type");
+                        unreachable!(
+                            "mir body guarantees EnumTag projections are only built against an enum type"
+                        );
                     };
-                    let tag_leaves = leaf::llvm_leaves(self.context, &cell.borrow().tag_type, self.pointer_bytes()).len();
+                    let tag_leaves = leaf::llvm_leaves(
+                        self.context,
+                        &cell.borrow().tag_type,
+                        self.pointer_bytes(),
+                    )
+                    .len();
                     current = match current {
-                        PlaceStorage::Values(values) => PlaceStorage::Values(values[..tag_leaves].to_vec()),
+                        PlaceStorage::Values(values) => {
+                            PlaceStorage::Values(values[..tag_leaves].to_vec())
+                        }
                         memory_backed => memory_backed,
                     };
                     current_type = r#type.clone();
@@ -179,24 +240,42 @@ impl<'ctx> Codegen<'ctx> {
 
                 MirProjection::EnumHeader { index, r#type, .. } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("mir body guarantees EnumHeader projections are only built against an enum type");
+                        unreachable!(
+                            "mir body guarantees EnumHeader projections are only built against an enum type"
+                        );
                     };
                     let cell = cell.clone();
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
-                                [1 + *index];
-                            let len = leaf::llvm_leaves(self.context, &enum_type.header[*index].r#type, self.pointer_bytes()).len();
+                            let start =
+                                layout::enum_prefix_layout(&enum_type, self.pointer_bytes())
+                                    .leaf_starts[1 + *index];
+                            let len = leaf::llvm_leaves(
+                                self.context,
+                                &enum_type.header[*index].r#type,
+                                self.pointer_bytes(),
+                            )
+                            .len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
-                            offset: offset + layout::enum_header_offset(&enum_type, *index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::enum_header_offset(
+                                    &enum_type,
+                                    *index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
-                            offset: offset + layout::enum_header_offset(&enum_type, *index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::enum_header_offset(
+                                    &enum_type,
+                                    *index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                     };
                     current_type = r#type.clone();
@@ -204,39 +283,68 @@ impl<'ctx> Codegen<'ctx> {
 
                 MirProjection::EnumDynamicField { index, r#type, .. } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("mir body guarantees EnumDynamicField projections are only built against an enum type");
+                        unreachable!(
+                            "mir body guarantees EnumDynamicField projections are only built against an enum type"
+                        );
                     };
                     let cell = cell.clone();
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
-                                [1 + enum_type.header.len() + *index];
-                            let len = leaf::llvm_leaves(self.context, &enum_type.dynamic_fields[*index].r#type, self.pointer_bytes()).len();
+                            let start =
+                                layout::enum_prefix_layout(&enum_type, self.pointer_bytes())
+                                    .leaf_starts[1 + enum_type.header.len() + *index];
+                            let len = leaf::llvm_leaves(
+                                self.context,
+                                &enum_type.dynamic_fields[*index].r#type,
+                                self.pointer_bytes(),
+                            )
+                            .len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
-                            offset: offset + layout::enum_dynamic_field_offset(&enum_type, *index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::enum_dynamic_field_offset(
+                                    &enum_type,
+                                    *index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
-                            offset: offset + layout::enum_dynamic_field_offset(&enum_type, *index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::enum_dynamic_field_offset(
+                                    &enum_type,
+                                    *index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                     };
                     current_type = r#type.clone();
                 }
 
-                MirProjection::EnumBody { variant_index, field_index, r#type, .. } => {
+                MirProjection::EnumBody {
+                    variant_index,
+                    field_index,
+                    r#type,
+                    ..
+                } => {
                     let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!("mir body guarantees EnumBody projections are only built against an enum type");
+                        unreachable!(
+                            "mir body guarantees EnumBody projections are only built against an enum type"
+                        );
                     };
                     let cell = cell.clone();
                     let enum_type = cell.borrow();
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            let start = layout::enum_prefix_layout(&enum_type, self.pointer_bytes()).leaf_starts
-                                [1 + enum_type.header.len() + enum_type.dynamic_fields.len() + *field_index];
+                            let start =
+                                layout::enum_prefix_layout(&enum_type, self.pointer_bytes())
+                                    .leaf_starts[1
+                                    + enum_type.header.len()
+                                    + enum_type.dynamic_fields.len()
+                                    + *field_index];
                             let len = leaf::llvm_leaves(
                                 self.context,
                                 &enum_type.variants[*variant_index].fields[*field_index].r#type,
@@ -247,11 +355,23 @@ impl<'ctx> Codegen<'ctx> {
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
-                            offset: offset + layout::enum_body_field_offset(&enum_type, *variant_index, *field_index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::enum_body_field_offset(
+                                    &enum_type,
+                                    *variant_index,
+                                    *field_index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
-                            offset: offset + layout::enum_body_field_offset(&enum_type, *variant_index, *field_index, self.pointer_bytes()),
+                            offset: offset
+                                + layout::enum_body_field_offset(
+                                    &enum_type,
+                                    *variant_index,
+                                    *field_index,
+                                    self.pointer_bytes(),
+                                ),
                         },
                     };
                     current_type = r#type.clone();
@@ -262,12 +382,14 @@ impl<'ctx> Codegen<'ctx> {
                     let ptr_size = self.pointer_bytes();
                     current = match current {
                         PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[1]]),
-                        PlaceStorage::Slot { slot, offset } => {
-                            PlaceStorage::Slot { slot, offset: offset + ptr_size }
-                        }
-                        PlaceStorage::Address { base, offset } => {
-                            PlaceStorage::Address { base, offset: offset + ptr_size }
-                        }
+                        PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                            slot,
+                            offset: offset + ptr_size,
+                        },
+                        PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                            base,
+                            offset: offset + ptr_size,
+                        },
                     };
                     current_type = ResolvedType::I32;
                 }
@@ -288,12 +410,14 @@ impl<'ctx> Codegen<'ctx> {
                     let ptr_size = self.pointer_bytes();
                     current = match current {
                         PlaceStorage::Values(values) => PlaceStorage::Values(vec![values[1]]),
-                        PlaceStorage::Slot { slot, offset } => {
-                            PlaceStorage::Slot { slot, offset: offset + ptr_size }
-                        }
-                        PlaceStorage::Address { base, offset } => {
-                            PlaceStorage::Address { base, offset: offset + ptr_size }
-                        }
+                        PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
+                            slot,
+                            offset: offset + ptr_size,
+                        },
+                        PlaceStorage::Address { base, offset } => PlaceStorage::Address {
+                            base,
+                            offset: offset + ptr_size,
+                        },
                     };
                     current_type = ResolvedType::Pointer {
                         pointee: Box::new(ResolvedType::U8),
@@ -385,10 +509,16 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    pub(super) fn place_storage_address(&mut self, storage: &PlaceStorage<'ctx>) -> PointerValue<'ctx> {
+    pub(super) fn place_storage_address(
+        &mut self,
+        storage: &PlaceStorage<'ctx>,
+    ) -> PointerValue<'ctx> {
         match storage {
             PlaceStorage::Values(values) => {
-                let size: u32 = values.iter().map(|v| leaf::value_byte_width(v.get_type(), self.pointer_bytes())).sum();
+                let size: u32 = values
+                    .iter()
+                    .map(|v| leaf::value_byte_width(v.get_type(), self.pointer_bytes()))
+                    .sum();
                 let slot = self.entry_alloca(size, 16, "param_addr");
                 self.store_scalars(&slot, 0, values, 1);
                 slot

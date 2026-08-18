@@ -1,4 +1,3 @@
-
 use omega_parser::SourceModule;
 use omega_parser::parser::contextual;
 use omega_parser::prelude::Item;
@@ -33,9 +32,8 @@ fn every_contextual_keyword_works_as_a_parameter_and_field_name() {
             "struct Holder {{ {word}: i32; }}\n\
              takes({params}) => i32 {{ return 0; }}"
         );
-        SourceModule::parse(&source).unwrap_or_else(|e| {
-            panic!("`{word}` must work as a parameter and field name: {e:?}")
-        });
+        SourceModule::parse(&source)
+            .unwrap_or_else(|e| panic!("`{word}` must work as a parameter and field name: {e:?}"));
     }
 }
 

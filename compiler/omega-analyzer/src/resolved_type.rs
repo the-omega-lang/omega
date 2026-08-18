@@ -48,7 +48,11 @@ impl ResolvedBound {
         spec: Rc<RefCell<ResolvedSpecType>>,
         spec_args: Vec<ResolvedType>,
     ) -> Self {
-        Self { target, spec, spec_args }
+        Self {
+            target,
+            spec,
+            spec_args,
+        }
     }
 }
 
@@ -61,7 +65,11 @@ pub struct ResolvedField {
 
 impl ResolvedField {
     pub fn new(name: Ident, r#type: ResolvedType, visibility: Visibility) -> Self {
-        Self { name, r#type, visibility }
+        Self {
+            name,
+            r#type,
+            visibility,
+        }
     }
 }
 

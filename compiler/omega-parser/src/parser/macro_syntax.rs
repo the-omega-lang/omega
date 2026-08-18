@@ -106,10 +106,7 @@ fn parse_macro_signature(p: &mut Parser) -> Option<MacroSignature> {
         };
         let name = Ident(name);
         if fixed.iter().any(|param| param.name == name) {
-            p.error_at(
-                param_span,
-                ParseErrorKind::DuplicateMacroParam { name },
-            );
+            p.error_at(param_span, ParseErrorKind::DuplicateMacroParam { name });
             return None;
         }
         p.advance();

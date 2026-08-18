@@ -1,7 +1,11 @@
 use super::*;
 
 impl Driver {
-    pub(crate) fn mark_bound_type_imports(&mut self, module: &[Ident], generics: &[HirGenericParam]) {
+    pub(crate) fn mark_bound_type_imports(
+        &mut self,
+        module: &[Ident],
+        generics: &[HirGenericParam],
+    ) {
         fn walk(this: &mut Driver, module: &[Ident], ty: &Type) {
             match ty {
                 Type::Named(path) => {
@@ -54,7 +58,8 @@ impl Driver {
                 .collect();
             for conform in declarations {
                 self.mark_bound_type_imports(module, &conform.generics);
-                let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics) else {
+                let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics)
+                else {
                     self.diagnostics.error(
                         module,
                         AnalysisError::new(
@@ -81,7 +86,9 @@ impl Driver {
                         module,
                         &[],
                         AnalysisSite::new(conform.id, conform.span),
-                        |analyzer| analyzer.resolve_spec_reference(conform.id, conform.span, &conform.spec),
+                        |analyzer| {
+                            analyzer.resolve_spec_reference(conform.id, conform.span, &conform.spec)
+                        },
                     );
                     self.diagnostics.record_warnings(module, spec_run.warnings);
                     let Some((spec, _)) = spec_run.result else {
@@ -108,11 +115,11 @@ impl Driver {
                 match origin {
                     ConformanceOrigin::Concrete => concrete.push((module.clone(), conform)),
                     ConformanceOrigin::Generic | ConformanceOrigin::Blanket => {
-                    self.conformances.templates.push(ConformanceTemplate {
-                        module: module.clone(),
-                        conform,
-                        origin,
-                    });
+                        self.conformances.templates.push(ConformanceTemplate {
+                            module: module.clone(),
+                            conform,
+                            origin,
+                        });
                     }
                 }
             }
@@ -201,7 +208,9 @@ impl Driver {
                 // unwind, and the same template may be re-asked later from a
                 // clean stack.
                 if self.conformances.goals.len() == 1 {
-                    self.conformances.failed.push((conform.id, target.lookup_key()));
+                    self.conformances
+                        .failed
+                        .push((conform.id, target.lookup_key()));
                 }
                 // A blanket's bound is its applicability predicate: a
                 // non-`Animal` type simply does not receive
@@ -222,7 +231,9 @@ impl Driver {
             }
             None => {
                 if self.conformances.goals.len() == 1 {
-                    self.conformances.failed.push((conform.id, target.lookup_key()));
+                    self.conformances
+                        .failed
+                        .push((conform.id, target.lookup_key()));
                 }
                 return None;
             }
@@ -231,11 +242,10 @@ impl Driver {
         // duplicate conform -- `conformances_for_type` re-walks every
         // matching template on each call, so without this the second lookup
         // would report `DuplicateConformance` against its own first entry.
-        if let Some(existing) = self
-            .conformances
-            .entries
-            .iter()
-            .find(|existing| existing.id == conform.id && existing.target == target.lookup_key())
+        if let Some(existing) =
+            self.conformances.entries.iter().find(|existing| {
+                existing.id == conform.id && existing.target == target.lookup_key()
+            })
         {
             return Some(existing.clone());
         }
@@ -244,9 +254,12 @@ impl Driver {
         // The declared set's alias-expanded identity -- both blanket
         // precedence and derived-conformance admission compare on this, so
         // an alias bound and its inline spelling are interchangeable.
-        let keys_run = self.with_analyzer(module, &substitution, AnalysisSite::new(conform.id, conform.span), |a| {
-            a.expand_bound_set(conform.id, conform.span, &declared_bounds)
-        });
+        let keys_run = self.with_analyzer(
+            module,
+            &substitution,
+            AnalysisSite::new(conform.id, conform.span),
+            |a| a.expand_bound_set(conform.id, conform.span, &declared_bounds),
+        );
         self.diagnostics.record_warnings(module, keys_run.warnings);
         let declared_bound_keys = keys_run.result;
         // Resolve precedence before checking the potentially expensive body.
@@ -277,7 +290,8 @@ impl Driver {
         if self.registration_decision(&header) == RegistrationDecision::Ignore {
             return None;
         }
-        let method_ids = self.conformance_method_ids(module, conform.id, &target, &conform.functions);
+        let method_ids =
+            self.conformance_method_ids(module, conform.id, &target, &conform.functions);
         let run = self.with_analyzer(
             module,
             &method_substitution,
@@ -439,5 +453,4 @@ impl Driver {
         }
         Some(candidate.precedence().cmp(&incumbent.precedence()))
     }
-
 }

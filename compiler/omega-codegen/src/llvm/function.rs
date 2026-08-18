@@ -1,6 +1,5 @@
-
-use super::leaf;
 use super::Codegen;
+use super::leaf;
 use crate::abi::{AbiReturn, AbiSignature};
 
 use inkwell::module::Linkage;
@@ -13,17 +12,27 @@ use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
 
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
-        matches!(AbiReturn::for_type(self.target, return_type), AbiReturn::Indirect)
+        matches!(
+            AbiReturn::for_type(self.target, return_type),
+            AbiReturn::Indirect
+        )
     }
 
-    pub(super) fn llvm_function_type(&self, fn_type: &ResolvedFunctionType) -> inkwell::types::FunctionType<'ctx> {
+    pub(super) fn llvm_function_type(
+        &self,
+        fn_type: &ResolvedFunctionType,
+    ) -> inkwell::types::FunctionType<'ctx> {
         let abi = AbiSignature::build(self.target, fn_type);
         let mut param_types: Vec<BasicTypeEnum> = Vec::new();
         if matches!(abi.ret, AbiReturn::Indirect) {
             param_types.push(self.ptr_type().as_basic_type_enum());
         }
         let pb = self.pointer_bytes();
-        param_types.extend(abi.params.iter().map(|raw_leaf| leaf::llvm_type(self.context, *raw_leaf, pb)));
+        param_types.extend(
+            abi.params
+                .iter()
+                .map(|raw_leaf| leaf::llvm_type(self.context, *raw_leaf, pb)),
+        );
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> =
             param_types.into_iter().map(Into::into).collect();
         match &abi.ret {
@@ -32,7 +41,8 @@ impl<'ctx> Codegen<'ctx> {
                 .void_type()
                 .fn_type(&param_types, fn_type.is_variadic),
             AbiReturn::Direct(leaves) => match leaves.as_slice() {
-                [single] => leaf::llvm_type(self.context, *single, pb).fn_type(&param_types, fn_type.is_variadic),
+                [single] => leaf::llvm_type(self.context, *single, pb)
+                    .fn_type(&param_types, fn_type.is_variadic),
                 multiple => self
                     .context
                     .struct_type(
@@ -62,7 +72,8 @@ impl<'ctx> Codegen<'ctx> {
             });
             return;
         }
-        self.declared_symbols.insert(symbol.clone(), function_def.id);
+        self.declared_symbols
+            .insert(symbol.clone(), function_def.id);
 
         let fn_type = self.llvm_function_type(&function_def.fn_type());
         let function = self.module.add_function(&symbol, fn_type, None);
@@ -106,7 +117,9 @@ impl<'ctx> Codegen<'ctx> {
             .functions
             .get(&function_def.id)
             .expect("declared for every item, across every module, before any body is defined");
-        let MirFunctionDef { return_type, body, .. } = function_def;
+        let MirFunctionDef {
+            return_type, body, ..
+        } = function_def;
 
         self.arg_count = body.arg_count;
         self.local_args = vec![Vec::new(); body.locals.len()];
@@ -160,7 +173,8 @@ impl<'ctx> Codegen<'ctx> {
             .iter()
             .enumerate()
             .flat_map(|(i, local)| {
-                let value_count = leaf::llvm_leaves(self.context, &local.r#type, self.pointer_bytes()).len();
+                let value_count =
+                    leaf::llvm_leaves(self.context, &local.r#type, self.pointer_bytes()).len();
                 vec![i; value_count]
             })
             .collect();
@@ -169,16 +183,21 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         // Keep the hidden sret destination available for the final return terminator.
-        let sret_ptr: Option<PointerValue> = self.needs_sret(&return_type).then(|| {
-            params[0].into_pointer_value()
-        });
+        let sret_ptr: Option<PointerValue> = self
+            .needs_sret(&return_type)
+            .then(|| params[0].into_pointer_value());
 
         for (mir_block, &llvm_block) in body.blocks.iter().zip(&blocks) {
             self.builder.position_at_end(llvm_block);
             for stmt in &mir_block.statements {
                 self.process_expr(&stmt.clone());
             }
-            self.emit_terminator(mir_block.terminator.clone(), &blocks, sret_ptr, &return_type);
+            self.emit_terminator(
+                mir_block.terminator.clone(),
+                &blocks,
+                sret_ptr,
+                &return_type,
+            );
         }
 
         self.clear_local();
@@ -197,12 +216,20 @@ impl<'ctx> Codegen<'ctx> {
                     .build_unconditional_branch(blocks[target.0 as usize])
                     .expect("builder positioned");
             }
-            MirTerminator::Branch { condition, then_block, else_block } => {
+            MirTerminator::Branch {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 // Convert Omega `i8` booleans to LLVM `i1` branch conditions.
                 let cond = self.process_expr(&condition)[0].into_int_value();
                 let cond = self.to_i1(cond);
                 self.builder
-                    .build_conditional_branch(cond, blocks[then_block.0 as usize], blocks[else_block.0 as usize])
+                    .build_conditional_branch(
+                        cond,
+                        blocks[then_block.0 as usize],
+                        blocks[else_block.0 as usize],
+                    )
                     .expect("builder positioned");
             }
             MirTerminator::Return(value) => {
@@ -210,7 +237,12 @@ impl<'ctx> Codegen<'ctx> {
                     value.map(|v| self.process_expr(&v)).unwrap_or_default();
                 match sret {
                     Some(pointer) => {
-                        self.store_scalars(&pointer, 0, &leaves, layout::type_alignment(return_type));
+                        self.store_scalars(
+                            &pointer,
+                            0,
+                            &leaves,
+                            layout::type_alignment(return_type),
+                        );
                         self.builder.build_return(None).expect("builder positioned");
                     }
                     None => match leaves.as_slice() {
@@ -224,12 +256,10 @@ impl<'ctx> Codegen<'ctx> {
                         }
                         multiple => {
                             // Repack direct multi-leaf returns into LLVM's aggregate return value.
-                            let struct_type = self
-                                .context
-                                .struct_type(
-                                    &multiple.iter().map(|v| v.get_type()).collect::<Vec<_>>(),
-                                    false,
-                                );
+                            let struct_type = self.context.struct_type(
+                                &multiple.iter().map(|v| v.get_type()).collect::<Vec<_>>(),
+                                false,
+                            );
                             let mut agg = struct_type.const_zero().into();
                             for (i, leaf_value) in multiple.iter().enumerate() {
                                 agg = self
@@ -237,13 +267,17 @@ impl<'ctx> Codegen<'ctx> {
                                     .build_insert_value(agg, *leaf_value, i as u32, "")
                                     .expect("insertvalue on the return aggregate");
                             }
-                            self.builder.build_return(Some(&agg)).expect("builder positioned");
+                            self.builder
+                                .build_return(Some(&agg))
+                                .expect("builder positioned");
                         }
                     },
                 }
             }
             MirTerminator::Unreachable => {
-                self.builder.build_unreachable().expect("builder positioned");
+                self.builder
+                    .build_unreachable()
+                    .expect("builder positioned");
             }
         }
     }

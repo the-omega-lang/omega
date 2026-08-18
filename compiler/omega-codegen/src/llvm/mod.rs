@@ -1,4 +1,3 @@
-
 mod expr;
 mod function;
 mod item;
@@ -7,11 +6,13 @@ mod place;
 mod vtable;
 
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
+use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::targets::{FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple};
-use inkwell::OptimizationLevel;
+use inkwell::targets::{
+    FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
+};
 use omega_analyzer::{Arch, Os, Target as OmegaTarget};
 use omega_hir::HirId;
 use std::collections::HashMap;
@@ -72,19 +73,24 @@ pub(crate) struct Codegen<'ctx> {
 }
 
 impl<'ctx> Codegen<'ctx> {
-    fn generate(
-        context: &'ctx Context,
-        request: CodegenRequest,
-    ) -> Result<Self, String> {
-        let CodegenRequest { module_name, target, opt_level, emit, modules, entry: _, extern_functions } =
-            request;
+    fn generate(context: &'ctx Context, request: CodegenRequest) -> Result<Self, String> {
+        let CodegenRequest {
+            module_name,
+            target,
+            opt_level,
+            emit,
+            modules,
+            entry: _,
+            extern_functions,
+        } = request;
 
         // Initialize all LLVM targets before creating the requested target machine.
         Target::initialize_all(&InitializationConfig::default());
 
         let triple = TargetTriple::create(&triple_for(target));
-        let llvm_target = Target::from_triple(&triple)
-            .map_err(|e| format!("target '{target}' is not supported by this build of the compiler: {e}"))?;
+        let llvm_target = Target::from_triple(&triple).map_err(|e| {
+            format!("target '{target}' is not supported by this build of the compiler: {e}")
+        })?;
         let target_machine = llvm_target
             .create_target_machine(
                 &triple,
@@ -164,7 +170,10 @@ impl<'ctx> Codegen<'ctx> {
             None => self.builder.position_at_end(entry),
         }
         let byte_array = self.context.i8_type().array_type(bytes.max(1));
-        let slot = self.builder.build_alloca(byte_array, name).expect("alloca always succeeds");
+        let slot = self
+            .builder
+            .build_alloca(byte_array, name)
+            .expect("alloca always succeeds");
         if let Some(inst) = slot.as_instruction() {
             let _ = inst.set_alignment(align);
         }

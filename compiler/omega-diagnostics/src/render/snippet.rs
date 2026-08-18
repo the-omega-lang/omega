@@ -11,7 +11,12 @@ const SYNTAX_NUMBER: &str = "\x1b[36m";
 const SYNTAX_COMMENT: &str = "\x1b[90m";
 
 impl Renderer {
-    pub(super) fn render_snippet(&self, out: &mut String, d: &Diagnostic, file: &SourceFile) -> usize {
+    pub(super) fn render_snippet(
+        &self,
+        out: &mut String,
+        d: &Diagnostic,
+        file: &SourceFile,
+    ) -> usize {
         let mut labels: Vec<&Label> = d.labels.iter().collect();
         labels.sort_by_key(|l| (l.span.start, l.span.end));
 

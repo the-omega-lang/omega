@@ -139,12 +139,8 @@ impl Driver {
         };
         method_substitution.push((Ident("Self".to_string()), self_type));
 
-        let method_ids = self.conformance_method_ids(
-            module,
-            primitive.id,
-            &target,
-            &primitive.functions,
-        );
+        let method_ids =
+            self.conformance_method_ids(module, primitive.id, &target, &primitive.functions);
         let signatures = self.analyze(
             module,
             &method_substitution,
@@ -152,8 +148,7 @@ impl Driver {
             |analyzer| {
                 let mut resolved = Vec::with_capacity(primitive.functions.len());
                 for function in &primitive.functions {
-                    let (fn_type, annotations) =
-                        analyzer.collect_function_signature(function)?;
+                    let (fn_type, annotations) = analyzer.collect_function_signature(function)?;
                     resolved.push((fn_type, annotations));
                 }
                 analyzer.check_overload_duplicates(&primitive.functions, &resolved);

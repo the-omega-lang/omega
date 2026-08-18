@@ -59,9 +59,10 @@ impl Path {
     }
 
     pub fn segments(&self) -> Vec<Ident> {
-        std::iter::once(self.head.clone()).chain(self.tail.iter().cloned()).collect()
+        std::iter::once(self.head.clone())
+            .chain(self.tail.iter().cloned())
+            .collect()
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,12 @@ pub struct QualifiedSpecPath {
 
 impl From<Path> for ExprPath {
     fn from(path: Path) -> Self {
-        Self { path, generic_args: vec![], args_at: 0, qualified_spec: None }
+        Self {
+            path,
+            generic_args: vec![],
+            args_at: 0,
+            qualified_spec: None,
+        }
     }
 }
 

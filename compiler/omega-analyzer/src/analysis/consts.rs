@@ -9,21 +9,30 @@ impl<'r> Analyzer<'r> {
             || matches!(r#type, ResolvedType::SizedArray(item, _) if self.const_representable(item))
     }
 
-    pub(super) fn const_eval(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+    pub(super) fn const_eval(
+        &mut self,
+        expr: &HirExprNode,
+        expected: &ResolvedType,
+    ) -> Option<ConstValue> {
         let mismatch = |this: &mut Self, found: &str| {
             this.error(
                 expr.id,
                 expr.span,
-                AnalysisErrorKind::EnumValueTypeMismatch { expected: expected.clone(), found: found.into() },
+                AnalysisErrorKind::EnumValueTypeMismatch {
+                    expected: expected.clone(),
+                    found: found.into(),
+                },
             );
             None
         };
         match &expr.expr {
-            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Number(n) => self
+                .const_number(expr.id, expr.span, n, expected, false)
+                .map(ConstValue::Number),
             HirExpr::Negate(inner) => match &inner.expr {
-                HirExpr::Number(n) => {
-                    self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number)
-                }
+                HirExpr::Number(n) => self
+                    .const_number(expr.id, expr.span, n, expected, true)
+                    .map(ConstValue::Number),
                 _ => {
                     self.error(expr.id, expr.span, AnalysisErrorKind::EnumValueNotConstant);
                     None
@@ -44,7 +53,10 @@ impl<'r> Analyzer<'r> {
             HirExpr::ArrayLiteral(elements) => match expected {
                 ResolvedType::SizedArray(item, size) => {
                     if elements.len() != *size as usize {
-                        return mismatch(self, &format!("an array literal with {} elements", elements.len()));
+                        return mismatch(
+                            self,
+                            &format!("an array literal with {} elements", elements.len()),
+                        );
                     }
                     let mut values = Vec::with_capacity(elements.len());
                     for element in elements {
@@ -60,12 +72,19 @@ impl<'r> Analyzer<'r> {
             // `const_eval` itself, so nesting falls out for free.
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 if *mutable {
-                    self.error(expr.id, expr.span, AnalysisErrorKind::ConstSliceCannotBeMutable);
+                    self.error(
+                        expr.id,
+                        expr.span,
+                        AnalysisErrorKind::ConstSliceCannotBeMutable,
+                    );
                     return None;
                 }
                 match &base.expr {
                     HirExpr::ArrayLiteral(elements) => match expected {
-                        ResolvedType::Slice { item, mutable: false } => {
+                        ResolvedType::Slice {
+                            item,
+                            mutable: false,
+                        } => {
                             let mut values = Vec::with_capacity(elements.len());
                             for element in elements {
                                 values.push(self.const_eval(element, item)?);
@@ -97,7 +116,14 @@ impl<'r> Analyzer<'r> {
         negated: bool,
     ) -> Option<NumberValue> {
         let mismatch = |this: &mut Self, found: String| {
-            this.error(node_id, span, AnalysisErrorKind::EnumValueTypeMismatch { expected: expected.clone(), found });
+            this.error(
+                node_id,
+                span,
+                AnalysisErrorKind::EnumValueTypeMismatch {
+                    expected: expected.clone(),
+                    found,
+                },
+            );
             None
         };
         let Some(kind) = expected.numeric_kind(self.target.pointer_bits()) else {
@@ -115,7 +141,11 @@ impl<'r> Analyzer<'r> {
                 Ok(t) if t == *expected => {}
                 Ok(t) => return mismatch(self, format!("a `{t}` literal")),
                 Err(_) => {
-                    self.error(node_id, span, AnalysisErrorKind::InvalidNumberType(suffix.clone()));
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::InvalidNumberType(suffix.clone()),
+                    );
                     return None;
                 }
             }
@@ -134,20 +164,31 @@ impl<'r> Analyzer<'r> {
                 Some(frac) => format!("{}.{}", n.integer_part, frac),
                 None => n.integer_part.clone(),
             };
-            if negated { format!("-{digits}") } else { digits }
+            if negated {
+                format!("-{digits}")
+            } else {
+                digits
+            }
         };
         let out_of_range = |this: &mut Self| {
             this.error(
                 node_id,
                 span,
-                AnalysisErrorKind::NumberLiteralOutOfRange { literal: literal_text(), r#type: expected.clone() },
+                AnalysisErrorKind::NumberLiteralOutOfRange {
+                    literal: literal_text(),
+                    r#type: expected.clone(),
+                },
             );
             None
         };
 
         match kind {
             NumericKind::Float(width) => {
-                let text = format!("{}.{}", n.integer_part, n.fractional_part.as_deref().unwrap_or("0"));
+                let text = format!(
+                    "{}.{}",
+                    n.integer_part,
+                    n.fractional_part.as_deref().unwrap_or("0")
+                );
                 let Ok(parsed) = text.parse::<f64>() else {
                     return out_of_range(self);
                 };
@@ -160,19 +201,35 @@ impl<'r> Analyzer<'r> {
                 let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
                     return out_of_range(self);
                 };
-                let positive_max = if width == 64 { i64::MAX as u64 } else { (1u64 << (width - 1)) - 1 };
-                let max = if negated { positive_max + 1 } else { positive_max };
+                let positive_max = if width == 64 {
+                    i64::MAX as u64
+                } else {
+                    (1u64 << (width - 1)) - 1
+                };
+                let max = if negated {
+                    positive_max + 1
+                } else {
+                    positive_max
+                };
                 if parsed > max {
                     return out_of_range(self);
                 }
-                let value = if negated { (-(parsed as i128)) as i64 } else { parsed as i64 };
+                let value = if negated {
+                    (-(parsed as i128)) as i64
+                } else {
+                    parsed as i64
+                };
                 Some(NumberValue::Signed(value))
             }
             NumericKind::Unsigned(width) => {
                 let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
                     return out_of_range(self);
                 };
-                let max = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+                let max = if width == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << width) - 1
+                };
                 if parsed > max {
                     return out_of_range(self);
                 }
@@ -181,23 +238,36 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    pub(super) fn const_eval_slice(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
+    pub(super) fn const_eval_slice(
+        &mut self,
+        expr: &HirExprNode,
+        expected: &ResolvedType,
+    ) -> Option<ConstValue> {
         let mismatch = |this: &mut Self, found: &str| {
             this.error(
                 expr.id,
                 expr.span,
-                AnalysisErrorKind::ConstSliceElementTypeMismatch { expected: expected.clone(), found: found.into() },
+                AnalysisErrorKind::ConstSliceElementTypeMismatch {
+                    expected: expected.clone(),
+                    found: found.into(),
+                },
             );
             None
         };
         match &expr.expr {
-            HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
+            HirExpr::Number(n) => self
+                .const_number(expr.id, expr.span, n, expected, false)
+                .map(ConstValue::Number),
             HirExpr::Negate(inner) => match &inner.expr {
-                HirExpr::Number(n) => {
-                    self.const_number(expr.id, expr.span, n, expected, true).map(ConstValue::Number)
-                }
+                HirExpr::Number(n) => self
+                    .const_number(expr.id, expr.span, n, expected, true)
+                    .map(ConstValue::Number),
                 _ => {
-                    self.error(expr.id, expr.span, AnalysisErrorKind::ConstSliceElementNotConstant);
+                    self.error(
+                        expr.id,
+                        expr.span,
+                        AnalysisErrorKind::ConstSliceElementNotConstant,
+                    );
                     None
                 }
             },
@@ -216,7 +286,10 @@ impl<'r> Analyzer<'r> {
             HirExpr::ArrayLiteral(elements) => match expected {
                 ResolvedType::SizedArray(item, size) => {
                     if elements.len() != *size as usize {
-                        return mismatch(self, &format!("an array literal with {} elements", elements.len()));
+                        return mismatch(
+                            self,
+                            &format!("an array literal with {} elements", elements.len()),
+                        );
                     }
                     let mut values = Vec::with_capacity(elements.len());
                     for element in elements {
@@ -228,12 +301,19 @@ impl<'r> Analyzer<'r> {
             },
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 if *mutable {
-                    self.error(expr.id, expr.span, AnalysisErrorKind::ConstSliceCannotBeMutable);
+                    self.error(
+                        expr.id,
+                        expr.span,
+                        AnalysisErrorKind::ConstSliceCannotBeMutable,
+                    );
                     return None;
                 }
                 match &base.expr {
                     HirExpr::ArrayLiteral(nested) => match expected {
-                        ResolvedType::Slice { item, mutable: false } => {
+                        ResolvedType::Slice {
+                            item,
+                            mutable: false,
+                        } => {
                             let mut values = Vec::with_capacity(nested.len());
                             for element in nested {
                                 values.push(self.const_eval_slice(element, item)?);
@@ -243,7 +323,11 @@ impl<'r> Analyzer<'r> {
                         _ => mismatch(self, "an array literal"),
                     },
                     _ => {
-                        self.error(expr.id, expr.span, AnalysisErrorKind::ConstSliceElementNotConstant);
+                        self.error(
+                            expr.id,
+                            expr.span,
+                            AnalysisErrorKind::ConstSliceElementNotConstant,
+                        );
                         None
                     }
                 }

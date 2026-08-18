@@ -169,7 +169,9 @@ pub enum ParseErrorKind {
     RangeMissingEnd,
     OpenRangeHasEnd,
     ChainedComparison,
-    NestingTooDeep { limit: usize },
+    NestingTooDeep {
+        limit: usize,
+    },
     AnnotationNotAllowedHere,
     AnnotationWithoutItem,
     VisibilityNotAllowedHere,
@@ -183,14 +185,18 @@ pub enum ParseErrorKind {
     GapFunctionSelf {
         name: Ident,
     },
-    GlueFunctionShape { name: Ident },
+    GlueFunctionShape {
+        name: Ident,
+    },
     DefaultGenericParamNotTrailing {
         name: Ident,
     },
     SpecDependenciesRemoved,
     MacroInvocationNotAllowedAfterDefer,
     VariadicMacroParamNotLast,
-    DuplicateMacroParam { name: Ident },
+    DuplicateMacroParam {
+        name: Ident,
+    },
     InvalidMacroSeparator,
     NestedMacroRepetition,
     ImportInMacroBody,

@@ -172,7 +172,6 @@ const FIXED_TOKENS: &[FixedToken] = &[
     keyword("continue", TokenKind::Continue),
     keyword("defer", TokenKind::Defer),
     keyword("macro", TokenKind::Macro),
-
     punctuation("...", TokenKind::DotDotDot),
     punctuation("..=", TokenKind::DotDotEq),
     punctuation("..<", TokenKind::DotDotLt),
@@ -723,6 +722,6 @@ impl<'a> Lexer<'a> {
 }
 
 #[cfg(test)]
-mod spelling_tests;
-#[cfg(test)]
 mod multiline_string_tests;
+#[cfg(test)]
+mod spelling_tests;

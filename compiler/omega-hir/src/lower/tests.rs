@@ -43,5 +43,8 @@ fn gap_function_hir_span_is_its_signature() {
     };
     let function = &def.functions[0];
 
-    assert_eq!(&source[function.span.start..function.span.end], "f() => void");
+    assert_eq!(
+        &source[function.span.start..function.span.end],
+        "f() => void"
+    );
 }

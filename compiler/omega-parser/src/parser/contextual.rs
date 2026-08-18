@@ -1,4 +1,3 @@
-
 pub const MUT: &str = "mut";
 pub const COMP: &str = "comp";
 pub const SELF: &str = "self";

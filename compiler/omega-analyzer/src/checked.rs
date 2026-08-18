@@ -301,16 +301,10 @@ pub struct CheckedCast {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
     Reinterpret,
-    IntExtend {
-        signed: bool,
-    },
+    IntExtend { signed: bool },
     IntTruncate,
-    IntToFloat {
-        signed: bool,
-    },
-    FloatToInt {
-        signed: bool,
-    },
+    IntToFloat { signed: bool },
+    FloatToInt { signed: bool },
     FloatExtend,
     FloatTruncate,
     SpecNarrow { slot_offset: usize },
@@ -384,11 +378,17 @@ pub enum CheckedProjection {
         index_expr: Box<CheckedExprNode>,
         item_type: ResolvedType,
     },
-    Deref { r#type: ResolvedType },
+    Deref {
+        r#type: ResolvedType,
+    },
     SliceLength,
-    SpecObjectPtr { mutable: bool },
+    SpecObjectPtr {
+        mutable: bool,
+    },
     SpecObjectVtable,
-    EnumTag { r#type: ResolvedType },
+    EnumTag {
+        r#type: ResolvedType,
+    },
     EnumHeader {
         field: Ident,
         index: usize,

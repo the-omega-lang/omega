@@ -187,7 +187,6 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolveItemOptions {
     indirect: bool,
@@ -206,7 +205,10 @@ impl ResolveItemOptions {
     };
 
     pub const fn with_indirection(indirect: bool) -> Self {
-        Self { indirect, ..Self::DIRECT }
+        Self {
+            indirect,
+            ..Self::DIRECT
+        }
     }
 
     pub const fn through_indirection(mut self) -> Self {

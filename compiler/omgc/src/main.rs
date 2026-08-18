@@ -96,14 +96,21 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                     dir.display()
                 ));
             };
-            externs.push(ExternRoot { name: explicit_name.unwrap_or(physical_name), dir });
+            externs.push(ExternRoot {
+                name: explicit_name.unwrap_or(physical_name),
+                dir,
+            });
         } else if let Some(rest) = arg.strip_prefix("--name=") {
             if rest.is_empty() {
-                return Err(format!("invalid --name flag '{arg}': the name cannot be empty"));
+                return Err(format!(
+                    "invalid --name flag '{arg}': the name cannot be empty"
+                ));
             }
             name = Some(Ident(rest.to_string()));
         } else if arg == "-o" {
-            let file = iter.next().ok_or_else(|| "expected a file path after '-o'".to_string())?;
+            let file = iter
+                .next()
+                .ok_or_else(|| "expected a file path after '-o'".to_string())?;
             output_file = Some(PathBuf::from(file));
         } else if let Some(rest) = arg.strip_prefix("-O") {
             opt_level = match rest {
@@ -124,7 +131,11 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 "obj" => EmitKind::Obj,
                 "ir" => EmitKind::Ir,
                 "asm" => EmitKind::Asm,
-                other => return Err(format!("invalid --emit value '{other}': expected obj, ir, or asm")),
+                other => {
+                    return Err(format!(
+                        "invalid --emit value '{other}': expected obj, ir, or asm"
+                    ));
+                }
             };
         } else if let Some(rest) = arg.strip_prefix("--backend=") {
             backend = BackendKind::parse(rest)?;
@@ -141,10 +152,21 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         }
     }
 
-    let entry_dir = entry_dir
-        .ok_or_else(|| "usage: omgc <entry-dir> -o <output-file> [OPTIONS] (see --help)".to_string())?;
+    let entry_dir = entry_dir.ok_or_else(|| {
+        "usage: omgc <entry-dir> -o <output-file> [OPTIONS] (see --help)".to_string()
+    })?;
     let output_file = output_file.ok_or_else(|| "the -o <file> flag is required".to_string())?;
-    Ok(Args { entry_dir, output_file, externs, name, opt_level, target, emit, backend, verbose })
+    Ok(Args {
+        entry_dir,
+        output_file,
+        externs,
+        name,
+        opt_level,
+        target,
+        emit,
+        backend,
+        verbose,
+    })
 }
 
 /// One `-h`/`--help` line: `flag` padded to a fixed column *before* being
@@ -172,16 +194,27 @@ fn print_help() {
     help_option(
         colors,
         "--target=<triplet>",
-        &format!("Target triplet, e.g. x86_64-unknown-linux (default: {})", Target::DEFAULT),
+        &format!(
+            "Target triplet, e.g. x86_64-unknown-linux (default: {})",
+            Target::DEFAULT
+        ),
     );
-    help_option(colors, "--emit=<obj|ir|asm>", "What to emit: object file (default), backend IR, or assembly");
+    help_option(
+        colors,
+        "--emit=<obj|ir|asm>",
+        "What to emit: object file (default), backend IR, or assembly",
+    );
     help_option(
         colors,
         "--backend=<name>",
         &format!(
             "Codegen backend to use (default: {}; available: {})",
             BackendKind::default(),
-            BackendKind::ALL.iter().map(BackendKind::to_string).collect::<Vec<_>>().join(", "),
+            BackendKind::ALL
+                .iter()
+                .map(BackendKind::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
         ),
     );
     help_option(
@@ -213,7 +246,17 @@ fn run() {
     }
 
     let start = Instant::now();
-    let Args { entry_dir, output_file, externs, name, opt_level, target, emit, backend, verbose } = match parse_args(&args) {
+    let Args {
+        entry_dir,
+        output_file,
+        externs,
+        name,
+        opt_level,
+        target,
+        emit,
+        backend,
+        verbose,
+    } = match parse_args(&args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("error: {message}");
@@ -245,7 +288,11 @@ fn run() {
     let declared_name = name.clone().unwrap_or(physical_name);
 
     if verbose {
-        verbose_step(colors, "Compiling", &format!("{} ({target})", entry_dir.display()));
+        verbose_step(
+            colors,
+            "Compiling",
+            &format!("{} ({target})", entry_dir.display()),
+        );
     }
 
     let mut driver = match Driver::new(entry_dir.clone(), name.clone(), externs, target) {
@@ -298,7 +345,12 @@ fn run() {
         verbose_step(
             colors,
             "Compiled",
-            &format!("{} module(s), {} warning(s) in {:.2?}", program.modules.len(), program.warnings.len(), start.elapsed()),
+            &format!(
+                "{} module(s), {} warning(s) in {:.2?}",
+                program.modules.len(),
+                program.warnings.len(),
+                start.elapsed()
+            ),
         );
         verbose_step(colors, "Lowering", "checked tree to mir");
     }
@@ -331,7 +383,19 @@ fn run() {
     };
 
     if verbose {
-        verbose_step(colors, "Emitting", &format!("{} to {}", if emit == EmitKind::Obj { "object" } else { "text" }, output_file.display()));
+        verbose_step(
+            colors,
+            "Emitting",
+            &format!(
+                "{} to {}",
+                if emit == EmitKind::Obj {
+                    "object"
+                } else {
+                    "text"
+                },
+                output_file.display()
+            ),
+        );
     }
 
     let write_result = match output {

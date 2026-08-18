@@ -90,7 +90,9 @@ impl Driver {
                 );
             }
             Some(ItemQueryState::Failed) => return Err(key.failed()),
-            Some(ItemQueryState::InProgress) => return self.in_progress_result(&key, options.allows_indirection()),
+            Some(ItemQueryState::InProgress) => {
+                return self.in_progress_result(&key, options.allows_indirection());
+            }
             None => {}
         }
 
@@ -233,9 +235,7 @@ impl Driver {
                 Some(Err(error)) => return Err(error),
                 None => return Err(key.failed()),
             };
-        self.items
-            .declared_bounds
-            .insert(key.clone(), declared);
+        self.items.declared_bounds.insert(key.clone(), declared);
         Ok(())
     }
 
@@ -256,9 +256,12 @@ impl Driver {
 
         let resolved = match item {
             HirItem::Declaration { decl, .. } => self
-                .analyze(module, &substitution, AnalysisSite::new(decl.id, decl.span), |a| {
-                    a.analyze_declaration(decl, Storage::Global)
-                })
+                .analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(decl.id, decl.span),
+                    |a| a.analyze_declaration(decl, Storage::Global),
+                )
                 .map(|c| ResolvedItem::Value {
                     r#type: c.r#type,
                     storage: Storage::Global,
@@ -267,9 +270,12 @@ impl Driver {
                 }),
 
             HirItem::DeclarationWithInit { decl, value, .. } => self
-                .analyze(module, &substitution, AnalysisSite::new(decl.id, decl.span), |a| {
-                    a.analyze_global_declaration_with_init(decl, value)
-                })
+                .analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(decl.id, decl.span),
+                    |a| a.analyze_global_declaration_with_init(decl, value),
+                )
                 .map(|c| {
                     if let Some(v) = c.initial_value {
                         self.items.global_initial_values.insert(c.id, v);
@@ -294,9 +300,12 @@ impl Driver {
             // non-`comp` binding gets real `Storage::Global` storage,
             // like `HirItem::Declaration` above.
             HirItem::Walrus { walrus: w, .. } if w.comp => self
-                .analyze(module, &substitution, AnalysisSite::new(w.id, w.span), |a| {
-                    a.analyze_comp_declaration(w)
-                })
+                .analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(w.id, w.span),
+                    |a| a.analyze_comp_declaration(w),
+                )
                 .map(|(r#type, value)| {
                     self.items.comp_values.insert(w.id, value);
                     ResolvedItem::Value {
@@ -307,9 +316,12 @@ impl Driver {
                     }
                 }),
             HirItem::Walrus { walrus: w, .. } => self
-                .analyze(module, &substitution, AnalysisSite::new(w.id, w.span), |a| {
-                    a.analyze_global_walrus(w)
-                })
+                .analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(w.id, w.span),
+                    |a| a.analyze_global_walrus(w),
+                )
                 .map(|c| {
                     if let Some(value) = c.initial_value {
                         self.items.global_initial_values.insert(c.id, value);
@@ -323,9 +335,12 @@ impl Driver {
                 }),
 
             HirItem::ExternDeclaration(decl) => self
-                .analyze(module, &substitution, AnalysisSite::new(decl.id, decl.span), |a| {
-                    a.analyze_extern_decl(decl)
-                })
+                .analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(decl.id, decl.span),
+                    |a| a.analyze_extern_decl(decl),
+                )
                 .map(|c| {
                     let storage = match c.r#type {
                         ResolvedType::Function(_) => Storage::Function,
@@ -341,9 +356,12 @@ impl Driver {
 
             HirItem::FunctionDefinition(f) => {
                 let id = self.items.identity_for(key, f.id);
-                self.analyze(module, &substitution, AnalysisSite::new(f.id, f.span), |a| {
-                    a.collect_function_signature(f)
-                })
+                self.analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(f.id, f.span),
+                    |a| a.collect_function_signature(f),
+                )
                 .map(|(fn_type, annotations)| {
                     self.items.function_annotations.insert(id, annotations);
                     ResolvedItem::Value {
@@ -411,9 +429,12 @@ impl Driver {
 
             HirItem::Gap(gap) => {
                 let id = self.items.identity_for(key, gap.id);
-                self.analyze(module, &substitution, AnalysisSite::new(gap.id, gap.span), |a| {
-                    a.signature_of_gap(gap)
-                })
+                self.analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(gap.id, gap.span),
+                    |a| a.signature_of_gap(gap),
+                )
                 .map(|mut gap| {
                     gap.id = id;
                     let gap = Rc::new(gap);
@@ -490,12 +511,17 @@ impl Driver {
         let sp = sp.clone();
 
         self.items.begin_spec(&key);
-        let run = self.with_analyzer(module_path, &[], AnalysisSite::new(sp.id, sp.span), |analyzer| {
-            (
-                analyzer.resolve_spec_dependencies(&sp),
-                analyzer.resolve_spec_functions(&sp),
-            )
-        });
+        let run = self.with_analyzer(
+            module_path,
+            &[],
+            AnalysisSite::new(sp.id, sp.span),
+            |analyzer| {
+                (
+                    analyzer.resolve_spec_dependencies(&sp),
+                    analyzer.resolve_spec_functions(&sp),
+                )
+            },
+        );
         self.diagnostics.record_warnings(module_path, run.warnings);
 
         if run.failed {
@@ -528,5 +554,4 @@ impl Driver {
         self.items.finish_spec(&key, Some(cell.clone()));
         Ok(Some(cell))
     }
-
 }

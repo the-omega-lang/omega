@@ -1,4 +1,3 @@
-
 const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 pub fn encode(n: u64) -> String {

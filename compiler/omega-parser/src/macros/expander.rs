@@ -29,7 +29,10 @@ impl<'a> Expander<'a> {
             })
     }
 
-    pub(super) fn expand_item_list(&mut self, nodes: Vec<ItemNode>) -> Result<Vec<ItemNode>, MacroError> {
+    pub(super) fn expand_item_list(
+        &mut self,
+        nodes: Vec<ItemNode>,
+    ) -> Result<Vec<ItemNode>, MacroError> {
         let mut result = Vec::with_capacity(nodes.len());
         for node in nodes {
             match node.item {
@@ -120,7 +123,11 @@ impl<'a> Expander<'a> {
         Ok(result)
     }
 
-    fn expand_items_invocation(&mut self, inv: &MacroInvocationExpr, call_span: Span) -> Result<Vec<ItemNode>, MacroError> {
+    fn expand_items_invocation(
+        &mut self,
+        inv: &MacroInvocationExpr,
+        call_span: Span,
+    ) -> Result<Vec<ItemNode>, MacroError> {
         let def = self.macro_definition(inv)?;
         let tokens = self.substitute_invocation(&def, &inv.args, call_span)?;
         let padded = with_eof(&tokens);
@@ -137,7 +144,11 @@ impl<'a> Expander<'a> {
         self.expand_item_list(nodes)
     }
 
-    fn expand_expr_invocation(&mut self, inv: &MacroInvocationExpr, call_span: Span) -> Result<ExpressionNode, MacroError> {
+    fn expand_expr_invocation(
+        &mut self,
+        inv: &MacroInvocationExpr,
+        call_span: Span,
+    ) -> Result<ExpressionNode, MacroError> {
         let def = self.macro_definition(inv)?;
         let tokens = self.substitute_invocation(&def, &inv.args, call_span)?;
         let padded = with_eof(&tokens);
@@ -163,7 +174,11 @@ impl<'a> Expander<'a> {
         self.expand_expr(node)
     }
 
-    fn expand_statements_invocation(&mut self, inv: &MacroInvocationExpr, call_span: Span) -> Result<Vec<StatementNode>, MacroError> {
+    fn expand_statements_invocation(
+        &mut self,
+        inv: &MacroInvocationExpr,
+        call_span: Span,
+    ) -> Result<Vec<StatementNode>, MacroError> {
         let def = self.macro_definition(inv)?;
         let tokens = self.substitute_invocation(&def, &inv.args, call_span)?;
         let padded = with_eof(&tokens);
@@ -195,7 +210,12 @@ impl<'a> Expander<'a> {
         self.expand_statement_list(cb.statements)
     }
 
-    fn substitute_invocation(&mut self, def: &MacroDefinitionStmt, args: &[Vec<Token>], call_span: Span) -> Result<Vec<Token>, MacroError> {
+    fn substitute_invocation(
+        &mut self,
+        def: &MacroDefinitionStmt,
+        args: &[Vec<Token>],
+        call_span: Span,
+    ) -> Result<Vec<Token>, MacroError> {
         let fixed_len = def.signature.fixed.len();
         let expected = if def.signature.variadic.is_some() {
             Arity::AtLeast(fixed_len)
@@ -251,7 +271,10 @@ impl<'a> Expander<'a> {
             .collect())
     }
 
-    fn expand_function_def(&mut self, f: FunctionDefinitionStmt) -> Result<FunctionDefinitionStmt, MacroError> {
+    fn expand_function_def(
+        &mut self,
+        f: FunctionDefinitionStmt,
+    ) -> Result<FunctionDefinitionStmt, MacroError> {
         Ok(FunctionDefinitionStmt {
             codeblock: self.expand_codeblock(f.codeblock)?,
             ..f
@@ -304,10 +327,7 @@ impl<'a> Expander<'a> {
             .functions
             .into_iter()
             .map(|f| {
-                let body = f
-                    .body
-                    .map(|b| self.expand_codeblock(b))
-                    .transpose()?;
+                let body = f.body.map(|b| self.expand_codeblock(b)).transpose()?;
                 Ok(SpecFunctionStmt { body, ..f })
             })
             .collect::<Result<Vec<_>, MacroError>>()?;
@@ -327,11 +347,16 @@ impl<'a> Expander<'a> {
         })
     }
 
-    fn expand_statement_list(&mut self, statements: Vec<StatementNode>) -> Result<Vec<StatementNode>, MacroError> {
+    fn expand_statement_list(
+        &mut self,
+        statements: Vec<StatementNode>,
+    ) -> Result<Vec<StatementNode>, MacroError> {
         let mut result = Vec::with_capacity(statements.len());
         for node in statements {
             match node.statement {
-                Statement::MacroInvocation(inv) => result.extend(self.expand_statements_invocation(&inv, node.span)?),
+                Statement::MacroInvocation(inv) => {
+                    result.extend(self.expand_statements_invocation(&inv, node.span)?)
+                }
                 statement => result.push(self.expand_stmt_node(StatementNode {
                     statement,
                     span: node.span,
@@ -345,12 +370,7 @@ impl<'a> Expander<'a> {
         let branches = if_expr
             .branches
             .into_iter()
-            .map(|(cond, block)| {
-                Ok((
-                    self.expand_expr(cond)?,
-                    self.expand_codeblock(block)?,
-                ))
-            })
+            .map(|(cond, block)| Ok((self.expand_expr(cond)?, self.expand_codeblock(block)?)))
             .collect::<Result<Vec<_>, MacroError>>()?;
         let else_branch = if_expr
             .else_branch
@@ -378,9 +398,7 @@ impl<'a> Expander<'a> {
                 Statement::DeclarationWithInit(decl, self.expand_expr(value)?)
             }
             Statement::ExternDeclaration(decl) => Statement::ExternDeclaration(decl),
-            Statement::Expression(expr) => {
-                Statement::Expression(self.expand_expr(expr)?)
-            }
+            Statement::Expression(expr) => Statement::Expression(self.expand_expr(expr)?),
             Statement::Return(ret) => Statement::Return(ReturnStmt {
                 return_value: self.expand_expr(ret.return_value)?,
             }),
@@ -400,18 +418,9 @@ impl<'a> Expander<'a> {
             Statement::For(f) => {
                 let f = *f;
                 Statement::For(Box::new(ForStmt {
-                    init: f
-                        .init
-                        .map(|s| self.expand_statement(s))
-                        .transpose()?,
-                    condition: f
-                        .condition
-                        .map(|c| self.expand_expr(c))
-                        .transpose()?,
-                    post: f
-                        .post
-                        .map(|p| self.expand_expr(p))
-                        .transpose()?,
+                    init: f.init.map(|s| self.expand_statement(s)).transpose()?,
+                    condition: f.condition.map(|c| self.expand_expr(c)).transpose()?,
+                    post: f.post.map(|p| self.expand_expr(p)).transpose()?,
                     body: self.expand_codeblock(f.body)?,
                 }))
             }
@@ -499,12 +508,8 @@ impl<'a> Expander<'a> {
             Expression::ByteString(s) => Expression::ByteString(s),
             Expression::Bool(b) => Expression::Bool(b),
             Expression::Char(c) => Expression::Char(c),
-            Expression::Codeblock(cb) => {
-                Expression::Codeblock(self.expand_codeblock(cb)?)
-            }
-            Expression::If(if_expr) => {
-                Expression::If(Box::new(self.expand_if(*if_expr)?))
-            }
+            Expression::Codeblock(cb) => Expression::Codeblock(self.expand_codeblock(cb)?),
+            Expression::If(if_expr) => Expression::If(Box::new(self.expand_if(*if_expr)?)),
             Expression::FunctionCall(call) => Expression::FunctionCall(FunctionCallExpr {
                 callee: Box::new(self.expand_expr(*call.callee)?),
                 args: call
@@ -517,11 +522,13 @@ impl<'a> Expander<'a> {
                 target: self.expand_expr(assign.target)?,
                 value: Box::new(self.expand_expr(*assign.value)?),
             })),
-            Expression::CompoundAssign(assign) => Expression::CompoundAssign(Box::new(CompoundAssignExpr {
-                target: self.expand_expr(assign.target)?,
-                op: assign.op,
-                value: Box::new(self.expand_expr(*assign.value)?),
-            })),
+            Expression::CompoundAssign(assign) => {
+                Expression::CompoundAssign(Box::new(CompoundAssignExpr {
+                    target: self.expand_expr(assign.target)?,
+                    op: assign.op,
+                    value: Box::new(self.expand_expr(*assign.value)?),
+                }))
+            }
             Expression::ArrayLiteral(lit) => Expression::ArrayLiteral(ArrayLiteralExpr {
                 elements: lit
                     .elements
@@ -560,10 +567,7 @@ impl<'a> Expander<'a> {
             RangeEnd::Open => RangeEnd::Open,
         };
         Ok(RangeExpr {
-            start: range
-                .start
-                .map(|e| self.expand_expr(e))
-                .transpose()?,
+            start: range.start.map(|e| self.expand_expr(e)).transpose()?,
             end,
             span: range.span,
         })

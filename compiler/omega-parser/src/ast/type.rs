@@ -1,6 +1,6 @@
 use crate::ast::identifier::{Ident, Origin, Path};
-use crate::diagnostics::Span;
 use crate::ast::self_mode::SelfMode;
+use crate::diagnostics::Span;
 
 #[derive(Debug, Clone)]
 pub struct Param {

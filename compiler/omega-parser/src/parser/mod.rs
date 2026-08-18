@@ -1,11 +1,11 @@
 pub mod contextual;
+mod cursor;
 pub mod expression;
 pub mod item;
 pub mod macro_syntax;
 pub mod recovery;
 pub mod statement;
 pub mod r#type;
-mod cursor;
 
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 use crate::lexer::{Token, TokenKind};
@@ -316,10 +316,19 @@ fn parse_param_decl(p: &mut Parser) -> Option<crate::ast::r#type::Param> {
     })
 }
 
-pub fn parse_param_list(p: &mut Parser) -> (Option<crate::ast::self_mode::SelfMode>, Vec<crate::ast::r#type::Param>) {
+pub fn parse_param_list(
+    p: &mut Parser,
+) -> (
+    Option<crate::ast::self_mode::SelfMode>,
+    Vec<crate::ast::r#type::Param>,
+) {
     match parse_self_mode(p) {
         Some(mode) => {
-            let rest = if p.eat(&TokenKind::Comma) { parse_param_decls(p) } else { Vec::new() };
+            let rest = if p.eat(&TokenKind::Comma) {
+                parse_param_decls(p)
+            } else {
+                Vec::new()
+            };
             (Some(mode), rest)
         }
         None => (None, parse_param_decls(p)),

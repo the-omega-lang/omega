@@ -1,4 +1,3 @@
-
 use crate::ModulePath;
 use omega_analyzer::checked::{CheckedModule, ExternFunctionRef};
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
@@ -12,22 +11,47 @@ pub type ImportSite = (ModulePath, Span);
 
 #[derive(Debug)]
 pub enum CompileError {
-    Resolve { error: ResolveError, importer: Option<ImportSite> },
-    Parse { module: ModulePath, errors: Vec<ParseError> },
-    MacroExpansion { module: ModulePath, error: MacroError },
-    Analysis { module: ModulePath, errors: Vec<AnalysisError> },
-    DuplicateModuleIdentity { name: Ident, first: PathBuf, second: PathBuf },
-    AmbiguousPreludeMacro { name: Ident, first: ModulePath, second: ModulePath },
-    EmptyPackage { root: PathBuf, expected: PathBuf },
+    Resolve {
+        error: ResolveError,
+        importer: Option<ImportSite>,
+    },
+    Parse {
+        module: ModulePath,
+        errors: Vec<ParseError>,
+    },
+    MacroExpansion {
+        module: ModulePath,
+        error: MacroError,
+    },
+    Analysis {
+        module: ModulePath,
+        errors: Vec<AnalysisError>,
+    },
+    DuplicateModuleIdentity {
+        name: Ident,
+        first: PathBuf,
+        second: PathBuf,
+    },
+    AmbiguousPreludeMacro {
+        name: Ident,
+        first: ModulePath,
+        second: ModulePath,
+    },
+    EmptyPackage {
+        root: PathBuf,
+        expected: PathBuf,
+    },
 }
 
 impl CompileError {
     pub fn module(&self) -> Option<&[Ident]> {
         match self {
-            Self::Resolve { importer, .. } => importer.as_ref().map(|(module, _)| module.as_slice()),
-            Self::Parse { module, .. } | Self::MacroExpansion { module, .. } | Self::Analysis { module, .. } => {
-                Some(module)
+            Self::Resolve { importer, .. } => {
+                importer.as_ref().map(|(module, _)| module.as_slice())
             }
+            Self::Parse { module, .. }
+            | Self::MacroExpansion { module, .. }
+            | Self::Analysis { module, .. } => Some(module),
             Self::DuplicateModuleIdentity { .. }
             | Self::AmbiguousPreludeMacro { .. }
             | Self::EmptyPackage { .. } => None,
@@ -37,12 +61,21 @@ impl CompileError {
     pub fn to_diagnostics(&self) -> Vec<Diagnostic> {
         match self {
             Self::Resolve { error, importer } => {
-                vec![omega_analyzer::error::resolve_error_diagnostic(error, importer.as_ref().map(|&(_, span)| span))]
+                vec![omega_analyzer::error::resolve_error_diagnostic(
+                    error,
+                    importer.as_ref().map(|&(_, span)| span),
+                )]
             }
             Self::Parse { errors, .. } => errors.iter().map(ParseError::to_diagnostic).collect(),
             Self::MacroExpansion { error, .. } => vec![Diagnostic::error(error.to_string())],
-            Self::Analysis { errors, .. } => errors.iter().map(AnalysisError::to_diagnostic).collect(),
-            Self::DuplicateModuleIdentity { name, first, second } => vec![Diagnostic::error(format!(
+            Self::Analysis { errors, .. } => {
+                errors.iter().map(AnalysisError::to_diagnostic).collect()
+            }
+            Self::DuplicateModuleIdentity {
+                name,
+                first,
+                second,
+            } => vec![Diagnostic::error(format!(
                 "module identity '{}' is claimed by two different package roots: '{}' and '{}' -- \
                  give one an explicit name to disambiguate",
                 name.as_ref(),
@@ -61,11 +94,23 @@ impl CompileError {
                      nested layout, move '<root>/<name>/*.omg' up into '<root>/'",
                 ),
             ],
-            Self::AmbiguousPreludeMacro { name, first, second } => vec![Diagnostic::error(format!(
+            Self::AmbiguousPreludeMacro {
+                name,
+                first,
+                second,
+            } => vec![Diagnostic::error(format!(
                 "exposed macro '{}' is provided by both core modules '{}' and '{}'",
                 name.as_ref(),
-                first.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
-                second.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::"),
+                first
+                    .iter()
+                    .map(Ident::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("::"),
+                second
+                    .iter()
+                    .map(Ident::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("::"),
             ))],
         }
     }

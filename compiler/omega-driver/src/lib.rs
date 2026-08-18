@@ -1,4 +1,3 @@
-
 mod bodies;
 pub(crate) mod compile;
 mod conformances;
@@ -16,13 +15,13 @@ pub use fs_resolve::basename;
 pub use roots::ExternRoot;
 
 use conformances::Conformances;
-use primitives::Primitives;
 use diagnostics::Diagnostics;
 use items::ItemQueries;
 use modules::ModuleStore;
-use omega_parser::prelude::MacroDefinitionStmt;
 use omega_analyzer::Target;
 use omega_parser::prelude::Ident;
+use omega_parser::prelude::MacroDefinitionStmt;
+use primitives::Primitives;
 use resolver::ImportState;
 use roots::ModuleRoots;
 use std::collections::HashMap;

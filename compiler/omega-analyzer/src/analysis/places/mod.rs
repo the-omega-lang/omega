@@ -16,7 +16,11 @@ impl<'r> Analyzer<'r> {
         let mut methods = match current_type {
             ResolvedType::Struct(struct_type) => {
                 let struct_type = struct_type.borrow();
-                if struct_type.fields.iter().any(|candidate| &candidate.name == field) {
+                if struct_type
+                    .fields
+                    .iter()
+                    .any(|candidate| &candidate.name == field)
+                {
                     return Vec::new();
                 }
                 struct_type
@@ -47,7 +51,11 @@ impl<'r> Analyzer<'r> {
             }
             ResolvedType::Union(union_type) => {
                 let union_type = union_type.borrow();
-                if union_type.fields.iter().any(|candidate| &candidate.name == field) {
+                if union_type
+                    .fields
+                    .iter()
+                    .any(|candidate| &candidate.name == field)
+                {
                     return Vec::new();
                 }
                 union_type
@@ -282,10 +290,13 @@ impl<'r> Analyzer<'r> {
         }
 
         Some((
-            CheckedPlace { root, projections, r#type: current_type.clone() },
+            CheckedPlace {
+                root,
+                projections,
+                r#type: current_type.clone(),
+            },
             current_type,
             mutable,
         ))
     }
-
 }

@@ -91,9 +91,14 @@ impl Driver {
                     },
                     ..Default::default()
                 };
-                let run = self.with_analyzer(path, &[], AnalysisSite::new(function.id, function.span), |analyzer| {
-                    analyzer.check_function_body(&function, &fn_type, function.id, &annotations)
-                });
+                let run = self.with_analyzer(
+                    path,
+                    &[],
+                    AnalysisSite::new(function.id, function.span),
+                    |analyzer| {
+                        analyzer.check_function_body(&function, &fn_type, function.id, &annotations)
+                    },
+                );
                 if let Some(checked) = run.result {
                     items.push(CheckedItem::FunctionDefinition(checked));
                 }
@@ -118,7 +123,8 @@ impl Driver {
             .iter()
             .filter(|entry| {
                 entry.module == path
-                    && (!self.roots.is_extern(&entry.module) || entry.origin != ConformanceOrigin::Concrete)
+                    && (!self.roots.is_extern(&entry.module)
+                        || entry.origin != ConformanceOrigin::Concrete)
                     && !self.conformances.emitted.contains(&(
                         entry.target.clone(),
                         entry.spec.borrow().id,
@@ -145,7 +151,8 @@ impl Driver {
                 AnalysisSite::new(entry.id, entry.span),
                 |a| a.expand_bound_set(entry.id, entry.span, &entry.declared_bounds),
             );
-            self.diagnostics.record_warnings(&entry.module, keys_run.warnings);
+            self.diagnostics
+                .record_warnings(&entry.module, keys_run.warnings);
             let keys = keys_run.result;
             bounds.extend(self.bound_context_over(&entry.declared_bounds, &keys));
             let owner = Self::conformance_owner(&entry);
@@ -265,7 +272,13 @@ impl Driver {
         }
 
         let id = self.modules.parsed(path).id;
-        modules.push((path.to_vec(), CheckedModule { id, items: Vec::new() }));
+        modules.push((
+            path.to_vec(),
+            CheckedModule {
+                id,
+                items: Vec::new(),
+            },
+        ));
         &mut modules
             .last_mut()
             .expect("an emitted module was just appended")
@@ -284,8 +297,7 @@ impl Driver {
                 .iter()
                 .find(|entry| {
                     !self.primitives.emitted.contains(&entry.target)
-                        && (!self.roots.is_extern(&entry.module)
-                            || entry.monomorphized)
+                        && (!self.roots.is_extern(&entry.module) || entry.monomorphized)
                 })
                 .map(|entry| entry.module.clone());
             let conformance_module = self
@@ -294,11 +306,11 @@ impl Driver {
                 .iter()
                 .find(|entry| {
                     !self.conformances.emitted.contains(&(
-                            entry.target.clone(),
-                            entry.spec.borrow().id,
-                            entry.spec_args.clone(),
-                        ))
-                        && (!self.roots.is_extern(&entry.module) || entry.origin != ConformanceOrigin::Concrete)
+                        entry.target.clone(),
+                        entry.spec.borrow().id,
+                        entry.spec_args.clone(),
+                    )) && (!self.roots.is_extern(&entry.module)
+                        || entry.origin != ConformanceOrigin::Concrete)
                 })
                 .map(|entry| entry.module.clone());
             let Some((module, primitive)) = primitive_module
@@ -345,5 +357,4 @@ impl Driver {
         }
         items
     }
-
 }

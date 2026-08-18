@@ -1,8 +1,8 @@
 use crate::items::ItemKey;
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::AnalysisSite;
-use omega_analyzer::analysis::PendingSpecMethod;
 use omega_analyzer::analysis::Analyzer;
+use omega_analyzer::analysis::PendingSpecMethod;
 use omega_analyzer::checked::ConformanceOwner;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::{
@@ -106,7 +106,6 @@ pub(crate) struct Conformances {
     reported_cycles: Vec<(ResolvedType, HirId)>,
     pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedType>)>,
 }
-
 
 mod registration;
 mod solver;

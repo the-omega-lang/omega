@@ -1,4 +1,3 @@
-
 mod abi;
 #[cfg(feature = "cranelift")]
 mod cranelift;
@@ -64,10 +63,17 @@ impl BackendKind {
     ];
 
     pub fn parse(name: &str) -> Result<Self, String> {
-        Self::ALL.iter().copied().find(|backend| backend.name() == name).ok_or_else(|| {
-            let available: Vec<&str> = Self::ALL.iter().map(|b| b.name()).collect();
-            format!("unknown backend '{name}' (available: {})", available.join(", "))
-        })
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|backend| backend.name() == name)
+            .ok_or_else(|| {
+                let available: Vec<&str> = Self::ALL.iter().map(|b| b.name()).collect();
+                format!(
+                    "unknown backend '{name}' (available: {})",
+                    available.join(", ")
+                )
+            })
     }
 
     fn name(self) -> &'static str {
@@ -93,9 +99,7 @@ impl BackendKind {
             #[cfg(feature = "cranelift")]
             BackendKind::Cranelift => "x86_64, aarch64",
             #[cfg(feature = "llvm")]
-            BackendKind::Llvm => {
-                "x86_64, x86, armv7, thumbv7em, aarch64, riscv32, riscv64"
-            }
+            BackendKind::Llvm => "x86_64, x86, armv7, thumbv7em, aarch64, riscv32, riscv64",
         }
     }
 }

@@ -1,4 +1,3 @@
-
 #![allow(clippy::too_many_arguments, clippy::large_enum_variant)]
 
 pub mod analysis;
