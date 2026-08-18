@@ -1,17 +1,10 @@
 use super::*;
 
-/// One call-shape interceptor's answer. `Declined` means "not my shape, try
-/// the next one" -- distinct from claiming the call and failing, which must
-/// *not* fall through to another interpretation (its own error was already
-/// reported).
 pub(super) enum Intercepted {
     Declined,
     Claimed(Option<CheckedExprNode>),
 }
 
-/// One call-shape interceptor: peeks at a call and either claims it or
-/// declines. A function pointer so interceptors can be listed in priority
-/// order at the call site.
 pub(super) type Interceptor<'r> = fn(
     &mut Analyzer<'r>,
     HirId,
@@ -20,10 +13,6 @@ pub(super) type Interceptor<'r> = fn(
     Option<&ResolvedType>,
 ) -> Intercepted;
 
-/// A member call's receiver (`base` in `base.method(args)`), resolved once:
-/// the place it came from (needed to check writability and to de-assume a
-/// narrowing for a `mut self` call), the checked place itself, what it
-/// resolves to, and whether it is writable.
 struct Receiver {
     place: HirPlace,
     checked: CheckedPlace,
@@ -31,47 +20,25 @@ struct Receiver {
     mutable: bool,
 }
 
-/// A function-call's callee, resolved to either an ordinary value or a bound
-/// method reference (a "thiscall"): `base.method(args)` becomes an ordinary
-/// call to the method with `&base` (or `base` itself, if already a pointer)
-/// prepended as the first (`self`) argument. `HirFunctionDef`'s synthetic
-/// `self` parameter already accounts for this in `fn_type`.
 pub(super) struct ResolvedCallee {
     pub(super) callee: CheckedExprNode,
     pub(super) fn_type: ResolvedFunctionType,
     pub(super) implicit_self: Option<CheckedExprNode>,
-    /// `Some` only when `method` named 2+ overloaded candidates -- overload
-    /// resolution already analyzed every argument to score candidates, so
-    /// they're handed back here instead of making the ordinary argument
-    /// loop redo (and potentially re-error on) the same work.
     pub(super) checked_args: Option<Vec<CheckedExprNode>>,
 }
 
-/// `resolve_callee`'s real result: either an ordinary callee or a
-/// fully-resolved dynamic-dispatch call (`base.method(...)` where `base` is
-/// a `spec *Spec` value), built inline since a dynamic call has no ordinary
-/// "callee expression" to hand back. Not a separate interceptor because
-/// telling the two apart needs the base place's resolved type, which needs
-/// an `analyze_place` call -- a second one on the same base would risk
-/// double-reporting a broken base's own errors.
 pub(super) enum CalleeResolution {
     Ordinary(ResolvedCallee),
     Dynamic(Option<CheckedExprNode>),
 }
 
 impl<'r> Analyzer<'r> {
-    /// An absolute item path split into the item's own name and its owning
-    /// module -- `None` only for an empty path, which no caller can produce.
     fn split_item_path(absolute: &[Ident]) -> Option<(Ident, Vec<Ident>)> {
         absolute
             .split_last()
             .map(|(name, module)| (name.clone(), module.to_vec()))
     }
 
-    /// The plain path a call's callee names, or `None` when this call isn't
-    /// a shape the interceptors below can claim: a method call, a call
-    /// through a computed expression, or a callee with explicit generic
-    /// arguments (already pinned, nothing left to deduce).
     fn callee_path(call: &HirFunctionCall) -> Option<&Path> {
         let HirExpr::Place(place) = &Self::strip_reveal(&call.callee).1.expr else {
             return None;
@@ -85,9 +52,6 @@ impl<'r> Analyzer<'r> {
         expr_path.plain()
     }
 
-    /// The checked node for a call to an already-decided function. Shared by
-    /// every path that resolves a callee by name rather than by expression
-    /// (overloads, static overloads, generic instantiation).
     fn checked_call(
         &self,
         node_id: HirId,
@@ -125,10 +89,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `Spec::method(receiver, ...)` is the explicit escape hatch for a
-    /// conforming instance method outside a bound context. The first argument
-    /// selects the target conformance; the resulting call is an ordinary
-    /// direct call to that conformance's symbol.
     pub(super) fn resolve_spec_qualified_call(
         &mut self,
         node_id: HirId,
@@ -199,10 +159,6 @@ impl<'r> Analyzer<'r> {
             };
             args
         };
-        // Looked up before any receiver is demanded, since a receiverless
-        // spec function (`Bounded::min()`) has no first argument to look at.
-        // Resolved with a placeholder `Self` purely to read `self_mode`; the
-        // conformance's own method below is resolved with the real target.
         let Some(flattened) =
             self.flatten_spec(node_id, span, &spec, &spec_args, &ResolvedType::Void)
         else {
@@ -220,8 +176,6 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Claimed(None);
         };
         if declared.fn_type.self_mode.is_none() {
-            // `Self` can only come from the expected type (`x : char =
-            // Bounded::min();`).
             return self.resolve_static_spec_call(
                 node_id,
                 span,
@@ -244,11 +198,6 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
-        // Resolved as a place, once, before any conformance is selected --
-        // `conformance_for` needs its type, `adapt_self_argument` needs the
-        // place itself. A non-place argument is wrapped in
-        // `HirPlaceRoot::Expr` (same shape `synthesize_method_call` uses),
-        // so `Display::fmt(42, w)` auto-refs like `(42).fmt(w)`.
         let receiver_place = match &Self::strip_reveal(first).1.expr {
             HirExpr::Place(place) => place.clone(),
             _ => HirPlace {
@@ -401,14 +350,6 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
-    /// `<Type : Spec>::function(...)` -- the third rung of the `S::fn()` /
-    /// `P::fn()` / `<S : P>::fn()` ladder. Both halves of the function's
-    /// identity are written in the path, so nothing is inferred. Works for
-    /// both static and instance spec functions -- whether the first
-    /// argument is a receiver is decided by the resolved function's own
-    /// `self` mode, not by the call's shape, which is what lets `<S :
-    /// P>::make()` resolve a case `S::make()` diagnoses as ambiguous and
-    /// `P::make()` misparses as a receiver-taking call.
     fn resolve_fully_qualified_spec_call(
         &mut self,
         node_id: HirId,
@@ -417,15 +358,12 @@ impl<'r> Analyzer<'r> {
         expr_path: &ExprPath,
         qualified: &QualifiedSpecPath,
     ) -> Intercepted {
-        // The parser guarantees exactly one segment, no expression-level
-        // generic args (the spec's own type arguments live in `qualified.spec`).
         debug_assert!(expr_path.path.tail.is_empty() && expr_path.generic_args.is_empty());
         let method_name = expr_path.path.head.clone();
 
         let Some((spec, spec_args)) =
             self.resolve_spec_reference(node_id, span, &qualified.spec)
         else {
-            // Failure already reported (NotASpec / unresolved type).
             return Intercepted::Claimed(None);
         };
         let Some(target) = self.resolve_type_or_error(node_id, span, &qualified.target, true)
@@ -471,11 +409,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// The conformance methods for one `(target, spec, spec_args)` -- shared
-    /// by every spec-qualified call shape: a direct entry, or (for a spec
-    /// alias, never itself conformed to) the members' own entries, with
-    /// `SpecNotImplemented` when neither exists. `None` means the failure
-    /// was already reported.
     fn spec_call_conformance_methods(
         &mut self,
         node_id: HirId,
@@ -529,12 +462,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The receiverless half of a spec-qualified call -- `Spec::static_fn()`
-    /// or `<S : Spec>::static_fn(...)`. On the bare spelling the target can
-    /// only come from the expected type, and only when the declared return
-    /// type is exactly `Self` (anything else never names the implementing
-    /// type). Both failures get a dedicated diagnostic, never a bogus
-    /// argument count.
     fn resolve_static_spec_call(
         &mut self,
         node_id: HirId,
@@ -656,11 +583,6 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
-    /// The receiver-taking half of a spec-qualified call, shared by
-    /// `Spec::method(recv, ...)` (target read off the receiver) and `<S :
-    /// Spec>::method(recv, ...)` (target written explicitly). The receiver
-    /// is resolved as a place, once (see `resolve_spec_qualified_call`'s
-    /// identical handling for why).
     fn resolve_instance_spec_call(
         &mut self,
         node_id: HirId,
@@ -801,11 +723,6 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
-    /// What a call's callee expression resolves to. `base.field(args)` is
-    /// the interesting shape: `field` may name a method (implicit-`self`
-    /// call), a callable field, or -- when `base` is a `spec *Spec` value --
-    /// a dynamically dispatched spec function. Everything else is an
-    /// ordinary expression whose type must be a function.
     pub(super) fn resolve_callee(
         &mut self,
         callee: &HirExprNode,
@@ -854,9 +771,6 @@ impl<'r> Analyzer<'r> {
             mutable,
         };
 
-        // Dynamic dispatch: the receiver is a `spec *Spec` value, so `field`
-        // is looked up in the spec's own flattened function list -- the
-        // implementor is erased, so there's no concrete `functions` list.
         if let ResolvedType::SpecObject {
             spec, type_args, ..
         } = &receiver.r#type
@@ -937,9 +851,6 @@ impl<'r> Analyzer<'r> {
         self.resolve_method_callee(callee, was_reveal, field, receiver, methods, args)
     }
 
-    /// A member call, `base.method(args)`: pick the method, check it is
-    /// visible here, and adapt `base` into whatever its `self` parameter
-    /// wants.
     fn resolve_method_callee(
         &mut self,
         callee: &HirExprNode,
@@ -953,8 +864,6 @@ impl<'r> Analyzer<'r> {
             self.pick_method(callee, field, &receiver.r#type, methods, args)?;
         self.require_method_visible(callee, was_reveal, field, &receiver.r#type, &method)?;
 
-        // Read straight off the resolved signature, never reverse-engineered
-        // from `params[0]`'s type shape.
         let self_mode = method
             .fn_type
             .self_mode
@@ -984,13 +893,6 @@ impl<'r> Analyzer<'r> {
         }))
     }
 
-    /// Which of `methods` this call means. A function declared without
-    /// `self` is static -- reached only through the type's own name, never
-    /// an instance -- so only member candidates are callable here.
-    ///
-    /// The extra `Vec<CheckedExprNode>` is the already-analyzed arguments
-    /// overload scoring had to produce; `None` when there was only one
-    /// candidate and no scoring happened.
     fn pick_method(
         &mut self,
         callee: &HirExprNode,
@@ -1005,9 +907,6 @@ impl<'r> Analyzer<'r> {
             .collect();
 
         if members.len() > 1 {
-            // Scored without each candidate's synthesized `self` param --
-            // `self` is never itself overload-distinguishing. The winner's
-            // real (with-`self`) signature is read back by index below.
             let candidates: Vec<(HirId, ResolvedFunctionType)> = members
                 .iter()
                 .map(|m| {
@@ -1024,9 +923,6 @@ impl<'r> Analyzer<'r> {
             return Some((only, None));
         }
 
-        // A primitive target has no declared name (reachable here only when
-        // a self-less `primitive`/`conform` function shares a name with an
-        // instance call), so its own `Display` stands in.
         let r#struct = match receiver_type.autoderef() {
             ResolvedType::Struct(cell) => cell.borrow().name.clone(),
             ResolvedType::Union(cell) => cell.borrow().name.clone(),
@@ -1044,7 +940,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// Rejects a call to a method the calling code isn't allowed to see.
     fn require_method_visible(
         &mut self,
         callee: &HirExprNode,
@@ -1053,9 +948,6 @@ impl<'r> Analyzer<'r> {
         receiver_type: &ResolvedType,
         method: &ResolvedMethod,
     ) -> Option<()> {
-        // A primitive receiver's methods come from a `primitive` block or a
-        // `conform`, neither with a declaring owner, so the check below is
-        // trivially true whatever owner is passed.
         let (module_path, owner_id) = receiver_type
             .autoderef()
             .declaring_owner()
@@ -1079,10 +971,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// Adapts the receiver to whatever `self_mode` declared: a 2x2 matrix of
-    /// (self wants a pointer / a value) x (receiver is a pointer / a value),
-    /// plus `Str`/`Slice` receivers, already fat pointers, needing no
-    /// wrapper of their own.
     fn adapt_self_argument(
         &mut self,
         callee: &HirExprNode,
@@ -1098,9 +986,6 @@ impl<'r> Analyzer<'r> {
             mutable,
         } = receiver;
 
-        // `comp_binding.method(...)` -- resolved separately, since the
-        // ordinary arms below all build a `CheckedExpr::Place`/`AddressOf`
-        // node, which a `Storage::Comp` place has no codegen meaning for.
         if let CheckedPlaceRoot::Variable {
             storage: Storage::Comp,
             ..
@@ -1116,9 +1001,6 @@ impl<'r> Analyzer<'r> {
             kind,
         };
         match (&r#type, self_mode.is_pointer()) {
-            // self wants a pointer, the receiver already is one -- reuse it,
-            // coerced to the pointer shape self expects, rather than a
-            // deref-then-address-of round trip to the same value.
             (
                 ResolvedType::Pointer {
                     pointee,
@@ -1133,10 +1015,6 @@ impl<'r> Analyzer<'r> {
                 };
                 Some(node(pointer, CheckedExpr::Place(checked)))
             }
-            // self wants a pointer, the receiver is a `Str`/`Slice` value --
-            // already its own fat-pointer representation, so `AddressOf`
-            // would add a genuine extra indirection layer; re-stamped with
-            // self_mode's own mutability instead.
             (
                 ResolvedType::Str {
                     mutable: base_mutable,
@@ -1165,8 +1043,6 @@ impl<'r> Analyzer<'r> {
                 };
                 Some(node(slice, CheckedExpr::Place(checked)))
             }
-            // self wants a pointer, the receiver is a plain value -- auto-ref
-            // (`&base`/`&mut base`).
             (_, true) => {
                 if wants_mutable {
                     self.require_mutable_place(id, span, &place.root, &checked, mutable)?;
@@ -1175,8 +1051,6 @@ impl<'r> Analyzer<'r> {
                         self.context.widen_variable(&ident, origin);
                     }
                 }
-                // Widened like an explicit `&`/`&mut`: self is
-                // `*Self`/`*mut Self`, never `*Self::Variant`.
                 let pointer = ResolvedType::Pointer {
                     pointee: Box::new(r#type.widened()),
                     mutable: wants_mutable,
@@ -1186,9 +1060,6 @@ impl<'r> Analyzer<'r> {
                     CheckedExpr::AddressOf(CheckedAddressOf { place: checked }),
                 ))
             }
-            // self wants a value, the receiver is a pointer -- auto-deref and
-            // copy. No mutability check: reading through any pointer is
-            // always legal, unlike writing through one.
             (ResolvedType::Pointer { pointee, .. }, false) => {
                 let pointee = pointee.widened();
                 let mut place = checked;
@@ -1197,21 +1068,10 @@ impl<'r> Analyzer<'r> {
                 });
                 Some(node(pointee, CheckedExpr::Place(place)))
             }
-            // self wants a value, the receiver already is one -- passed
-            // through unchanged; mutating a `mut self` copy inside the
-            // method never touches the caller's original.
             (_, false) => Some(node(r#type.widened(), CheckedExpr::Place(checked))),
         }
     }
 
-    /// `adapt_self_argument`'s `Storage::Comp` counterpart -- the same
-    /// pointer/value matrix, built from an already-known `ConstValue` (via
-    /// `resolve_comp_place`) instead of a real place, since a `comp` binding
-    /// has no address of its own. A pointer-wanting `self` needs const
-    /// promotion like a bare `&comp_binding` (see `analyze_address_of` and
-    /// docs/language/compile-time-evaluation.md); a value-wanting `self` needs
-    /// none. `*mut self`/`&mut` is never legal here: the promoted data is
-    /// read-only rodata, so no writable pointer can ever come from it.
     fn adapt_comp_self_argument(
         &mut self,
         id: HirId,
@@ -1232,9 +1092,6 @@ impl<'r> Analyzer<'r> {
             kind,
         };
         match (&r#type, self_mode.is_pointer()) {
-            // self wants a pointer, the receiver is already one -- only
-            // reachable via `&<place>` inside an earlier `comp` evaluation
-            // (see `ConstValue::Ref`) -- reused as-is, widened.
             (ResolvedType::Pointer { pointee, .. }, true) => {
                 let pointer = ResolvedType::Pointer {
                     pointee: Box::new(pointee.widened()),
@@ -1242,8 +1099,6 @@ impl<'r> Analyzer<'r> {
                 };
                 Some(node(pointer, CheckedExpr::Const(value)))
             }
-            // self wants a pointer, receiver is `Str`/`Slice` -- already its
-            // own fat-pointer representation, used as-is.
             (ResolvedType::Str { .. }, true) => Some(node(
                 ResolvedType::Str { mutable: false },
                 CheckedExpr::Const(value),
@@ -1255,8 +1110,6 @@ impl<'r> Analyzer<'r> {
                 };
                 Some(node(slice, CheckedExpr::Const(value)))
             }
-            // self wants a pointer, receiver is a plain value -- const
-            // promotion (see `analyze_address_of`).
             (_, true) => {
                 let pointer = ResolvedType::Pointer {
                     pointee: Box::new(r#type.widened()),
@@ -1267,8 +1120,6 @@ impl<'r> Analyzer<'r> {
                     CheckedExpr::Const(ConstValue::Ref(Box::new(value))),
                 ))
             }
-            // self wants a value, receiver is a pointer -- auto-deref:
-            // unwrap the `ConstValue::Ref` layer `&<place>` produced.
             (ResolvedType::Pointer { pointee, .. }, false) => {
                 let ConstValue::Ref(inner) = value else {
                     unreachable!(
@@ -1277,13 +1128,10 @@ impl<'r> Analyzer<'r> {
                 };
                 Some(node(pointee.widened(), CheckedExpr::Const(*inner)))
             }
-            // self wants a value, receiver already is one -- unchanged.
             (_, false) => Some(node(r#type.widened(), CheckedExpr::Const(value))),
         }
     }
 
-    /// A `mut self` call needs a receiver that is writable *through the
-    /// pointer it already is* -- an immutable pointer can never supply one.
     fn require_mutable_pointer(
         &mut self,
         id: HirId,
@@ -1298,10 +1146,6 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    /// `base.field(args)` where `field` is an ordinary (callable) field
-    /// rather than a method. The already-resolved base place is finished in
-    /// place instead of re-resolving from scratch, to avoid double-reporting
-    /// the base's own errors.
     fn resolve_field_callee(
         &mut self,
         callee: &HirExprNode,
@@ -1309,9 +1153,6 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         receiver: Receiver,
     ) -> Option<CalleeResolution> {
-        // Indirect calls through a `comp` binding's field are unsupported
-        // (see finding); caught here, not in `resolve_callee`, so a
-        // comp-binding *method* call isn't dragged down by the restriction.
         if let CheckedPlaceRoot::Variable {
             storage: Storage::Comp,
             ..
@@ -1360,7 +1201,6 @@ impl<'r> Analyzer<'r> {
         }))
     }
 
-    /// Only a function can be called.
     fn require_callable(
         &mut self,
         id: HirId,
@@ -1376,16 +1216,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Finishes resolving `base.field(args)` once `resolve_callee` has
-    /// determined `base`'s type is `spec<type_args> *_` -- `field` is looked
-    /// up by *position* in the spec's flattened function list
-    /// (`flatten_spec`), the same order `Codegen`'s vtable builder uses, so
-    /// the two always agree. `Self` is bound to a placeholder (`Void`)
-    /// purely to give the resolved signature the right leaf shape for
-    /// codegen -- a pointer's leaf count never depends on what it points to.
-    /// Argument checking mirrors the ordinary call loop but is kept
-    /// separate since there's no ordinary `callee`/`fn_type` pairing here to
-    /// reuse it through.
     fn finish_dynamic_dispatch_call(
         &mut self,
         id: HirId,
@@ -1438,8 +1268,6 @@ impl<'r> Analyzer<'r> {
             }
         };
         let fn_type = flattened[slot_index].fn_type.clone();
-        // params[0] is the synthesized self, never counted against the
-        // user's own arguments -- like an ordinary method call.
         let param_types = fn_type.params[1..].to_vec();
 
         if args.len() != param_types.len() {
@@ -1493,14 +1321,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// If `call`'s callee is `Type::function(args)` where `function` names
-    /// 2+ overloaded (non-member, static) candidates, resolves the whole
-    /// call here via `resolve_overload`. Returns `Declined` for anything
-    /// that isn't this exact shape -- most importantly a name with 0 or 1
-    /// static candidates, which falls through to `resolve_type_member`'s
-    /// unchanged single-candidate path. Deliberately scoped to a *locally
-    /// visible* type name (this module's own, or an imported alias); see
-    /// finding on the module-qualified gap this leaves.
     pub(super) fn resolve_overloaded_static_call(
         &mut self,
         node_id: HirId,
@@ -1569,9 +1389,6 @@ impl<'r> Analyzer<'r> {
         };
         let (decl_id, fn_type) = candidates[winner].clone();
 
-        // Checked after argument-driven resolution picks a winner --
-        // `resolve_overload` itself has no notion of visibility, only
-        // signature fit.
         let (owner_module_path, owner_id) = r#type
             .declaring_owner()
             .unwrap_or_else(|| (Vec::new(), node_id));
@@ -1598,18 +1415,6 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
-    /// If `call`'s callee is `Owner::function(args)` where `Owner` is a
-    /// generic struct/union/enum with no explicit `<...>` and `function`
-    /// names exactly one non-overloaded, `self`-less (static) function,
-    /// infers `Owner`'s omitted type arguments from the call's argument
-    /// types -- the same duck-typed unification `resolve_generic_call` gives
-    /// a bare generic function, extended across the owner/function boundary.
-    /// Declines for an already-concrete `Owner`, a module-qualified callee,
-    /// 2+ overloaded static candidates (composing overload scoring with
-    /// owner-generic inference is a separable follow-up, not attempted
-    /// here), or a static function with independent generics of its own
-    /// ("struct generics are always explicit, so by the time a value of
-    /// that type exists its methods are already fully monomorphized").
     pub(super) fn resolve_generic_static_call(
         &mut self,
         node_id: HirId,
@@ -1627,8 +1432,6 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         }
 
-        // Silent probe, like `resolve_overloaded_static_call`'s identical
-        // alias check.
         let accessor = self.path_module(path);
         let alias = self.resolver.resolve_import_alias(&accessor, &path.head).ok().flatten();
         let absolute: Vec<Ident> = match &alias {
@@ -1668,13 +1471,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// `resolver.generic_static_function_signature`, retried against the
-    /// `core` ambient fallback when `prefix` is a genuinely unqualified
-    /// single segment and the direct lookup finds nothing -- the same retry
-    /// `generic_literal_signature_with_ambient` (literals.rs) gives the
-    /// literal-construction path. Hands back whichever absolute path
-    /// actually matched, since instantiation needs the real declaration's
-    /// path, not the own-module guess that found nothing.
     fn generic_static_function_signature_with_ambient(
         &mut self,
         accessor: &[Ident],
@@ -1702,14 +1498,6 @@ impl<'r> Analyzer<'r> {
         Some((ambient, sig))
     }
 
-    /// Builds the inference seed from the call's expected type: unify the
-    /// signature's declared return type against `expected` into a fresh map,
-    /// widening every seeded entry. Precedence is deliberately **expected
-    /// type > argument-driven inference > declared default**, matching
-    /// `infer_literal_type_args`'s order. Widening follows
-    /// `resolve_inferred_type_args`'s rule: a caller's enum-variant
-    /// refinement (`T = MyEnum::Second`) must never mint a spurious
-    /// instantiation.
     fn seed_from_expected(
         expected: Option<&ResolvedType>,
         generics: &[Ident],
@@ -1725,11 +1513,6 @@ impl<'r> Analyzer<'r> {
         seed
     }
 
-    /// Scans raw parameter types against checked argument types for a
-    /// `Type::Pointer(Type::Named(g))` with `g` an unbound generic matched
-    /// against a `Slice`/`Str` argument -- the thin-pointer-against-
-    /// fat-pointer inference failure, which gets its own teaching
-    /// diagnostic rather than the bare "cannot infer" one.
     fn fat_pointer_generic_mismatch(
         generics: &[Ident],
         params: &[Type],
@@ -1755,10 +1538,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// The actual work behind `resolve_generic_static_call`, once confirmed
-    /// `call`'s callee names a single-candidate static function on a generic
-    /// type at `owner_absolute` -- split out so the caller stays a single
-    /// check, mirroring `finish_generic_call`'s identical split.
     fn finish_generic_static_call(
         &mut self,
         node_id: HirId,
@@ -1903,16 +1682,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// If `ident` -- unqualified, whether declared in this module or reached
-    /// through a named import alias -- names an *overloaded* free function
-    /// (2+ candidates), returns its real absolute path and candidate list.
-    /// For an aliased name, filtered to overloads this module can see,
-    /// unless the import itself was written `reveal` (see finding on why a
-    /// use-site `reveal` alone no longer suffices here). Own-module names
-    /// are never filtered.
-    ///
-    /// `None` means "not an overloaded name at all" (0 or 1 candidates) --
-    /// the caller falls through to the ordinary single-item path.
     pub(super) fn resolve_bare_overload_candidates(
         &mut self,
         ident: &Ident,
@@ -1954,14 +1723,6 @@ impl<'r> Analyzer<'r> {
         Some((absolute, candidates))
     }
 
-    /// If `call`'s callee is a bare (optionally module-qualified) reference
-    /// to an *overloaded* name (2+ non-generic top-level functions sharing
-    /// it), resolves the whole call here via argument-driven overload
-    /// resolution (`resolve_overload`) instead of the ordinary
-    /// `resolve_callee`-then-args pipeline. Declines for anything that
-    /// isn't this exact shape -- most importantly a name with 0 or 1
-    /// candidates, the overwhelming majority of calls, which stays on the
-    /// unchanged ordinary path.
     pub(super) fn resolve_overloaded_call(
         &mut self,
         node_id: HirId,
@@ -2034,11 +1795,6 @@ impl<'r> Analyzer<'r> {
         };
         let (decl_id, fn_type, visibility) = candidates[winner].clone();
 
-        // Only the module-qualified branch needs this: the aliased branch
-        // already committed to its final (filtered or `import reveal`
-        // -admitted) candidate set up front, so a second check here could
-        // wrongly deny an `import reveal`-admitted winner when the call
-        // site itself doesn't also write `reveal`.
         if needs_visibility_check && !self.check_visibility(visibility, &module_path) {
             self.error(
                 node_id,
@@ -2062,24 +1818,6 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
-    /// Resolves a call against 2+ same-named candidates by argument type.
-    /// `candidates` pairs each overload's identity (a `HirId`) with its
-    /// resolved signature; `args` are the call's raw, not-yet-analyzed
-    /// argument expressions.
-    ///
-    /// Every argument that isn't an `adaptable_literal` is analyzed once, up
-    /// front, since its resolved type can't depend on which candidate wins
-    /// -- this avoids double-analyzing (and double-erroring on) a
-    /// fixed-type argument across every candidate. An adaptable-literal
-    /// argument is instead scored per candidate via `literal_overload_fit`,
-    /// silently: a candidate is viable iff every argument fits its
-    /// parameter, and its score is how many adaptable-literal arguments
-    /// needed a type other than their natural default (`i32`/`f32`) to fit
-    /// (0 means every literal stayed at its default). The unique
-    /// minimum-score viable candidate wins; zero viable is
-    /// `NoMatchingOverload`, a tie at the minimum is `AmbiguousOverload`.
-    /// The winner's own adaptable-literal arguments are then analyzed for
-    /// real -- the only point they're committed to a concrete type.
     fn resolve_overload(
         &mut self,
         node_id: HirId,
@@ -2176,12 +1914,6 @@ impl<'r> Analyzer<'r> {
         Some((winner, final_args))
     }
 
-    /// Whether an `adaptable_literal` argument fits `target` for overload
-    /// viability, and -- if so -- whether `target` is exactly the literal's
-    /// natural default type (`i32`/`f32`); see `resolve_overload` for how
-    /// the result is used. `None` if it doesn't fit at all. Deliberately
-    /// silent -- a rejected candidate might not be the one the call
-    /// ultimately resolves to.
     fn literal_overload_fit(arg: &HirExprNode, target: &ResolvedType, pointer_bits: u32) -> Option<bool> {
         let n = match &arg.expr {
             HirExpr::Number(n) => n,
@@ -2204,18 +1936,6 @@ impl<'r> Analyzer<'r> {
         Some(*target == default)
     }
 
-    /// If `call`'s callee is a bare (optionally module-qualified) reference
-    /// to a *generic* function, resolves the whole call here via duck-typed,
-    /// argument-driven type inference instead of the ordinary
-    /// `resolve_callee`-then-args pipeline. `Claimed` either way (even on a
-    /// reported error) since the caller must not fall through and
-    /// double-report. Declines, untouched, for anything that isn't this
-    /// shape: a method-call callee (struct generics are always explicit, so
-    /// by the time a value exists its methods are already monomorphized), a
-    /// callee that isn't a zero-projection path, a path shadowed by a local
-    /// binding (never generic), a qualified path whose head isn't a
-    /// recognized import alias, or a name that isn't a generic function at
-    /// all.
     pub(super) fn resolve_generic_call(
         &mut self,
         node_id: HirId,
@@ -2264,9 +1984,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// The actual work behind `resolve_generic_call`, once confirmed
-    /// `call`'s callee names a generic function at `absolute` -- split out
-    /// so the caller can stay a single "does this even apply" check.
     fn finish_generic_call(
         &mut self,
         node_id: HirId,

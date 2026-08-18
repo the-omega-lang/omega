@@ -1,36 +1,19 @@
 use super::*;
 
-/// The declaration a `Name { ... }` literal initializes, reduced to what
-/// checking its field initializers needs -- identical whether it came from a
-/// struct, a union, or one enum variant.
 struct LiteralTargetFields {
-    /// The name a "missing field" error shows: a struct's or union's own
-    /// name, or the variant's.
     owner: Ident,
     declaring_module: Vec<Ident>,
     owner_id: HirId,
-    /// The literal's own resolved type, for a field-visibility error.
     base: ResolvedType,
     declared: Vec<(Ident, ResolvedType, Visibility)>,
 }
 
-/// What a `Name { ... }` literal's path resolved to -- see
-/// `Analyzer::resolve_literal_target`.
 enum LiteralTarget {
-    /// Always wraps `ResolvedType::Struct`.
     Struct(ResolvedType),
     EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
-    /// Always wraps `ResolvedType::Union`.
     Union(ResolvedType),
 }
 
-/// The pure parse-and-range-check core behind a number literal's concrete
-/// value -- no `Span`/error-pushing, just `Err(())` on failure, so this is
-/// usable both from `Analyzer::analyze_number`'s error-reporting path and
-/// from overload-viability scoring's silent "would this literal fit this
-/// candidate" check. `kind` is whatever concrete numeric type the caller
-/// already decided on; this never picks the type itself, only validates the
-/// literal's digits against it.
 pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue, ()> {
     match kind {
         NumericKind::Float(width) => {
@@ -61,11 +44,6 @@ pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<
 }
 
 impl<'r> Analyzer<'r> {
-    /// `Name { field = value; ... }` -- builds a whole struct value, or --
-    /// when the path names an enum variant -- a whole enum value. Every
-    /// declared field must be set exactly once with a value of its exact
-    /// type. All field problems in one literal are reported in one pass,
-    /// not just the first.
     pub(super) fn analyze_struct_literal(
         &mut self,
         node_id: HirId,
@@ -108,9 +86,6 @@ impl<'r> Analyzer<'r> {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
                     let header_names: Vec<Ident> = e.header.iter().map(|(name, _, _)| name.clone()).collect();
-                    // Shared dynamic fields first (declaration order), then
-                    // this variant's own body fields -- every construction
-                    // site must supply both, in one combined literal.
                     let declared: Vec<(Ident, ResolvedType, Visibility)> =
                         e.dynamic_fields.iter().chain(v.fields.iter()).cloned().collect();
                     (e.name.clone(), v.name.clone(), declared, header_names, e.module_path.clone(), e.id)
@@ -228,11 +203,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The shared per-field discipline behind both literal forms: each
-    /// initializer must name a declared field, exactly once, with a value
-    /// of its field's type; every declared field must be covered (there is
-    /// no implicit zeroing). `unknown_field` supplies the form-specific "no
-    /// such field" diagnostic.
     fn check_field_initializers(
         &mut self,
         node_id: HirId,
@@ -312,13 +282,6 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked_fields)
     }
 
-    /// What a `Name { ... }` literal's path actually names -- a struct, or
-    /// one specific variant of an enum. Resolution order mirrors place-root
-    /// resolution: explicit generic arguments pin the type prefix exactly;
-    /// otherwise an imported-module alias reading of the head wins (whole
-    /// path as the type first, then all-but-last as an enum with the last
-    /// segment its variant), and a non-alias multi-segment head must itself
-    /// be a type in scope or this module's own.
     fn resolve_literal_target(
         &mut self,
         node_id: HirId,
@@ -362,9 +325,6 @@ impl<'r> Analyzer<'r> {
 
         let plain = &path.path;
 
-        // A bare name: a written type annotation, unless it names a
-        // *generic* struct/union, in which case its omitted type arguments
-        // are inferred first (see `infer_literal_type_args`).
         if plain.is_unqualified() {
             if let Some(local) = self.context.find_defined_type(&plain.head).cloned() {
                 return self.literal_target_from_type(node_id, span, local, &[]);
@@ -405,11 +365,6 @@ impl<'r> Analyzer<'r> {
             return self.literal_target_from_type(node_id, span, resolved, &[]);
         }
 
-        // Module-qualified head: the whole path as the type first
-        // (`mymodule::Vec2 { ... }`), then all-but-last as an enum whose
-        // last segment names the variant (`mymodule::Shape::Circle`) --
-        // each attempt tries generic inference first (a no-op for the
-        // common non-generic case).
         let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
         if let Some(ImportTarget::Module(target)) = &alias {
             let absolute: Vec<Ident> = target.iter().cloned().chain(plain.tail.iter().cloned()).collect();
@@ -447,9 +402,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // Head isn't a module alias -- it must be a type (`Enum::Variant`):
-        // local/imported first, then this module's own item, mirroring
-        // `resolve_type_qualified_value`'s priority.
         if let Some(head_type) = self.context.find_defined_type(&plain.head).cloned() {
             return self.literal_target_from_type(node_id, span, head_type, &plain.tail);
         }
@@ -491,14 +443,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// `resolver.generic_literal_signature(absolute, variant)`, retried
-    /// against the `core` ambient fallback (see `ModuleResolver::
-    /// ambient_core_candidates`) when `prefix` is a genuinely unqualified
-    /// single segment and the direct lookup finds nothing generic there --
-    /// so a bare, unimported `Option::Some { ... }`'s own generic-ness is
-    /// discovered before inference runs, not just its final type. Hands
-    /// back whichever absolute path actually matched, since
-    /// `expected_matches_generic_item` needs the real declaration's path.
     pub(super) fn generic_literal_signature_with_ambient(
         &mut self,
         prefix: &[Ident],
@@ -514,11 +458,6 @@ impl<'r> Analyzer<'r> {
         Some((ambient, sig))
     }
 
-    /// Once `absolute` is confirmed generic, infers its omitted type
-    /// arguments (see `infer_literal_type_args`) and resolves it with them
-    /// -- the shared tail of every "plain path, no explicit generics"
-    /// branch in `resolve_literal_target`. `None` means inference itself
-    /// already reported a diagnostic; the caller must give up (`?`).
     fn resolve_generic_literal(
         &mut self,
         node_id: HirId,
@@ -533,15 +472,6 @@ impl<'r> Analyzer<'r> {
         Some(self.resolve_item_checked_with_ambient_fallback(prefix, absolute, &type_args))
     }
 
-    /// Infers the concrete type arguments for a generic literal-
-    /// construction target (or a bare unit-variant reference, which passes
-    /// an empty `lit_fields`): an `expected` type naming the exact same
-    /// declaration wins outright when available (covers the zero-field
-    /// case, e.g. `Option::None` assigned into an `Option<i32>`-typed
-    /// binding); otherwise, duck-typed unification against `lit_fields`'
-    /// own bottom-up-analyzed values, mirroring
-    /// `Analyzer::finish_generic_call`. `None` means a dedicated diagnostic
-    /// was already reported.
     pub(super) fn infer_literal_type_args(
         &mut self,
         node_id: HirId,
@@ -578,10 +508,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `expected`'s own type arguments, when it resolves to the exact same
-    /// struct/union/enum declaration `absolute` names -- compared by
-    /// declaration identity, not by any already-bound type arguments (there
-    /// are none yet, that's what this is deducing).
     fn expected_matches_generic_item(expected: Option<&ResolvedType>, absolute: &[Ident]) -> Option<Vec<ResolvedType>> {
         let expected = expected?;
         let (name, module) = absolute.split_last()?;
@@ -603,19 +529,6 @@ impl<'r> Analyzer<'r> {
         (cell_module == module && &cell_name == name).then_some(type_args)
     }
 
-    /// Duck-typed unification of `sig`'s raw declared field types against
-    /// `lit_fields`' own values -- unmatched/unknown field names simply
-    /// contribute nothing (the real `check_field_initializers` pass reports
-    /// those precisely). Fields are analyzed in written order, each against
-    /// whatever `expected_for_generic_param` can derive from the ones
-    /// already checked -- the same eager precedence
-    /// `Analyzer::infer_generic_args` gives ordinary call arguments.
-    /// Diagnostics from a *successful* probe are discarded (same
-    /// truncate-on-success pattern as `classify_for_in_source` in
-    /// `stmts.rs`) since the real pass re-derives them; a field whose value
-    /// fails to analyze for an unrelated reason keeps its diagnostics and
-    /// this returns `None`, so that real error surfaces directly instead of
-    /// a confusing "cannot infer" message.
     fn probe_literal_type_args(
         &mut self,
         sig: &GenericLiteralSignature,
@@ -642,8 +555,6 @@ impl<'r> Analyzer<'r> {
         Some(subst)
     }
 
-    /// Interprets an already-resolved type (plus at most one trailing path
-    /// segment) as a literal's target.
     fn literal_target_from_type(
         &mut self,
         node_id: HirId,
@@ -702,11 +613,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// Resolves a number literal's target type (see
-    /// `default_or_expected_number_type`) and parses/range-checks its text
-    /// against that type (see `parse_number_literal`). `NumberExpr` keeps
-    /// its digits as plain text precisely so this is the only place that
-    /// ever has to interpret them.
     pub(super) fn analyze_number(
         &mut self,
         node_id: HirId,
@@ -738,9 +644,6 @@ impl<'r> Analyzer<'r> {
             .numeric_kind(self.target.pointer_bits())
             .expect("just resolved above, or a hardcoded numeric default");
 
-        // A literal written with a decimal point must resolve to a float
-        // type; a based (hex/octal/binary) literal never carries one, so a
-        // float suffix on one (e.g. `0xFFf32`) is rejected here too.
         let is_float = matches!(kind, NumericKind::Float(_));
         if n.fractional_part.is_some() && !is_float {
             let Some(explicit_type) = &n.explicit_type else {
@@ -773,12 +676,6 @@ impl<'r> Analyzer<'r> {
         Some(CheckedExprNode { id: node_id, span, r#type: resolved_type, kind: CheckedExpr::Number(value) })
     }
 
-    /// Picks the concrete type an *unsuffixed* literal resolves to: `expected`
-    /// if given and its numeric family agrees with the literal's own (`Float`
-    /// iff a fractional part was written, never the other way), else the
-    /// plain `i32`/`f32` default -- see `docs/language/types-and-primitives.md` for why the
-    /// float default is `f32`, not `f64`. An explicit suffix always wins
-    /// and never reaches this (see `analyze_number`).
     fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>, pointer_bits: u32) -> ResolvedType {
         let default = if n.fractional_part.is_some() { ResolvedType::F32 } else { ResolvedType::I32 };
         let Some(expected) = expected else { return default };
@@ -790,14 +687,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Whether `expr` is a bare (or singly-negated) *unsuffixed* number
-    /// literal -- the one expression shape whose concrete type isn't
-    /// already pinned, so it's worth peeking at before fully analyzing it:
-    /// overload resolution's viability scoring needs to know "is this
-    /// argument still open to adapt" without the side effects a real
-    /// `analyze_expr` call would commit to. `Negate` is peeked through
-    /// because it's transparent to a literal's own type (`-100` is exactly
-    /// as adaptable as `100`).
     pub(super) fn adaptable_literal(expr: &HirExprNode) -> bool {
         match &expr.expr {
             HirExpr::Number(n) => n.explicit_type.is_none(),
@@ -806,7 +695,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `[a, b, c]` -- a fixed-size array value.
     pub(super) fn analyze_array_literal(
         &mut self,
         node_id: HirId,
@@ -831,9 +719,6 @@ impl<'r> Analyzer<'r> {
         let checked_first = self
             .analyze_expr(first, declared_item_type)
             .map(|value| self.coerce_to_expected(declared_item_type, value))?;
-        // Widened for the same reason an `if`'s branches are -- an
-        // array of mixed variants of one enum is an array of that
-        // enum.
         let item_type = declared_item_type.cloned().unwrap_or_else(|| checked_first.r#type.widened());
 
         let mut checked_elements = Vec::with_capacity(elements.len());

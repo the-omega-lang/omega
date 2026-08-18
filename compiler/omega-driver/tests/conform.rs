@@ -14,13 +14,6 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 struct TestPackage(PathBuf);
 
 impl TestPackage {
-    /// A package shaped exactly like a real one: a root *directory* whose
-    /// own module file is named after it (`main/main.omg`), so `source`
-    /// becomes the root module `main` and `write_child` adds `main::<name>`
-    /// beside it. The filename is deliberately not a parameter -- under the
-    /// root-module rule it is not free, it must match the directory, and a
-    /// harness that could vary it independently would be compiling a shape
-    /// no user package can have.
     fn new(source: &str) -> Self {
         let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
         let parent = std::env::temp_dir().join(format!(
@@ -94,8 +87,6 @@ fn bound_and_spec_qualified_dispatch_compile() {
         .expect("both conformance call forms should compile");
 }
 
-/// `<T: A + B>` genuinely requires both specs: a type conforming to only
-/// one is rejected, naming the *missing* member specifically.
 #[test]
 fn a_conjunction_bound_requires_every_member() {
     let package = TestPackage::new(
@@ -124,7 +115,6 @@ fn a_conjunction_bound_requires_every_member() {
     )));
 }
 
-/// A three-way conjunction is checked the same way: every member must hold.
 #[test]
 fn a_three_way_conjunction_bound_requires_all_members() {
     let package = TestPackage::new(
@@ -149,9 +139,6 @@ fn a_three_way_conjunction_bound_requires_all_members() {
         .expect("a type conforming to all three members must satisfy the conjunction");
 }
 
-/// An inline conjunction and an alias naming the same members are the same
-/// bound: both admit a type conforming to each member, and neither admits
-/// one conforming to a subset.
 #[test]
 fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
     let source = r#"
@@ -203,8 +190,6 @@ fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
     )));
 }
 
-/// A blanket bounded on a conjunction applies only to types satisfying every
-/// member.
 #[test]
 fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
     let package = TestPackage::new(
@@ -231,9 +216,6 @@ fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
         .expect("a blanket bounded on a conjunction must apply to a type with both");
 }
 
-/// A spec alias names a conjunction, never a contract of its own --
-/// `conform T to <alias>` is rejected, directing the author to conform each
-/// member separately.
 #[test]
 fn a_spec_alias_is_not_conformable() {
     let package = TestPackage::new(
@@ -255,7 +237,6 @@ fn a_spec_alias_is_not_conformable() {
         AnalysisErrorKind::ConformToAliasSpec { alias } if alias.as_ref() == "AB"
     )));
 
-    // Satisfying the same combination through separate conforms stays legal.
     let split = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
@@ -276,10 +257,6 @@ fn a_spec_alias_is_not_conformable() {
         .expect("an alias is satisfied by conforming each member separately");
 }
 
-/// Two specs may declare the same name and signature, and those are
-/// different functions. Each bound admits exactly its own spec's methods --
-/// neither a bound context nor conformance checking may let one spec's
-/// declaration satisfy the other's requirement.
 #[test]
 fn same_named_spec_functions_keep_their_own_spec_identity() {
     let package = TestPackage::new(
@@ -303,10 +280,6 @@ fn same_named_spec_functions_keep_their_own_spec_identity() {
         .expect("each spec's same-named function must resolve to its own conform");
 }
 
-/// A `spec *AB` object over a conjunction, where both members declare the
-/// same function name, must *reject* the colliding call -- matching what
-/// static dispatch through a conjunction bound already does -- rather than
-/// silently picking the first section's slot.
 #[test]
 fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
     let package = TestPackage::new(
@@ -333,10 +306,6 @@ fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
     )));
 }
 
-/// The disambiguation: a narrowing cast onto one member's section selects
-/// that member's body. The offset is structural (A is the first member --
-/// offset 0 -- while B sits after A's own slots), and both directions must
-/// compile.
 #[test]
 fn a_narrowing_cast_disambiguates_a_conjunction_object() {
     let package = TestPackage::new(
@@ -361,8 +330,6 @@ fn a_narrowing_cast_disambiguates_a_conjunction_object() {
         .expect("a narrowing cast onto either member's section must compile");
 }
 
-/// Widening (`<spec *AB>` from a `spec *A`) and cross-spec casts between
-/// unrelated objects are rejected: there is no vtable section to invent.
 #[test]
 fn widening_and_unrelated_spec_object_casts_are_rejected() {
     let package = TestPackage::new(
@@ -390,8 +357,6 @@ fn widening_and_unrelated_spec_object_casts_are_rejected() {
     )));
 }
 
-/// The fully-qualified spelling resolves the case rung 1 diagnoses: a type
-/// conforming to two specs that each declare the same static function.
 #[test]
 fn a_fully_qualified_spec_call_resolves_an_ambiguous_static() {
     let package = TestPackage::new(
@@ -421,8 +386,6 @@ fn a_fully_qualified_spec_call_resolves_an_ambiguous_static() {
         .expect("the fully-qualified spelling works for statics and instance methods");
 }
 
-/// The ambiguity diagnostic names the candidate specs and prints the
-/// qualified spelling for each.
 #[test]
 fn an_ambiguous_conforming_static_names_the_candidates_and_their_spelling() {
     let package = TestPackage::new(
@@ -443,9 +406,6 @@ fn an_ambiguous_conforming_static_names_the_candidates_and_their_spelling() {
     )));
 }
 
-/// The negative shapes of the qualified form: a written spec that isn't a
-/// spec, a target that doesn't conform, and a function the spec doesn't
-/// declare -- each named specifically, never a parse error.
 #[test]
 fn fully_qualified_spec_call_negatives_name_their_cause() {
     let not_a_spec = TestPackage::new(
@@ -503,8 +463,6 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
     )));
 }
 
-/// `Spec::static_fn()` without any expected type names the two spellings
-/// that do work instead of reporting a bogus argument count.
 #[test]
 fn a_receiverless_spec_call_without_an_expected_type_says_self_is_undetermined() {
     let package = TestPackage::new(
@@ -533,9 +491,6 @@ fn a_receiverless_spec_call_without_an_expected_type_says_self_is_undetermined()
     )));
 }
 
-/// A receiverless spec function whose declared return type is not exactly
-/// `Self` cannot take `Self` from the expected type -- rejected, not
-/// guessed.
 #[test]
 fn a_receiverless_spec_call_with_a_non_self_return_is_uninferable() {
     let package = TestPackage::new(
@@ -557,9 +512,6 @@ fn a_receiverless_spec_call_with_a_non_self_return_is_uninferable() {
     )));
 }
 
-/// A receiverless spec call with an expected type works when the return
-/// type is exactly `Self` -- the `x : char = Bounded::min();` shape -- and
-/// in argument position.
 #[test]
 fn a_receiverless_spec_call_takes_self_from_the_expected_type() {
     let package = TestPackage::new(
@@ -750,10 +702,6 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
     );
 }
 
-/// A concrete conformance declared in an extern package is linked from that
-/// package's object.  Resolving it to build a vtable in the consumer must not
-/// also re-check and emit its body locally, or two strong definitions of the
-/// same conforming method reach the linker.
 #[test]
 fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     let library = TestPackage::new(
@@ -829,9 +777,6 @@ fn blanket_conforms_require_a_package_local_spec() {
     )));
 }
 
-/// The relocated standard I/O boundary still follows the ordinary conform
-/// orphan rule: an application cannot attach the externally-owned `Write`
-/// contract to the externally-owned `Stdout` marker.
 #[test]
 fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
     let core = option_core();
@@ -886,8 +831,6 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
     );
 }
 
-/// Gap glue is an exact ABI contract. This is the former boolean success
-/// shape, rejected against the current `Option<usize>` console convention.
 #[test]
 fn old_boolean_console_glue_signature_is_rejected() {
     let core = option_core();
@@ -1008,12 +951,6 @@ fn local_and_extern_root_identities_cannot_collide() {
     ));
 }
 
-/// `Spec::method(receiver, ...)` must adapt `receiver` to the declared self
-/// mode whatever *shape* the argument has -- a literal and a struct
-/// expression are not places, and before this was fixed they reached a
-/// `*self` parameter unadapted and failed to type-check. The print macros
-/// expand to exactly this form (`Display::fmt($args, ...)`) over arbitrary
-/// argument expressions, so every one of these shapes is load-bearing.
 #[test]
 fn spec_qualified_calls_adapt_a_non_place_receiver() {
     let package = TestPackage::new(
@@ -1036,8 +973,6 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         .expect("a non-place spec-qualified receiver should be adapted, not rejected");
 }
 
-/// A generic parameter absent from the target cannot be inferred when the
-/// template is materialized, even though a bare-parameter blanket now can.
 #[test]
 fn unconstrained_conformance_parameters_are_rejected() {
     let unfixed_parameter = TestPackage::new(
@@ -1058,7 +993,6 @@ fn unconstrained_conformance_parameters_are_rejected() {
         AnalysisErrorKind::UnconstrainedConformanceParameter { .. }
     )));
 
-    // ...while a target that does fix its parameter stays fully supported.
     let generic_target = TestPackage::new(
         r#"
         exposed spec Sum { sum(*self) => i32; }
@@ -1141,10 +1075,6 @@ fn a_more_specific_blanket_bound_wins() {
     assert_eq!(bodies, 1, "only the winning blanket may emit a body");
 }
 
-/// An *unbounded* blanket accepts every type, so a bounded one is strictly
-/// more specific. Both are `ConformanceOrigin::Blanket` with `Declared` role,
-/// so a bare `precedence()` comparison calls them equal -- which reported a
-/// bogus `DuplicateConformance` and refused to compile the program at all.
 #[test]
 fn a_bounded_blanket_wins_over_an_unbounded_one() {
     let package = TestPackage::new(
@@ -1171,8 +1101,6 @@ fn a_bounded_blanket_wins_over_an_unbounded_one() {
     assert_eq!(bodies, 1, "only the bounded blanket may emit a body");
 }
 
-/// Incomparable bound sets (`{A, B}` vs `{A, C}`) are genuinely ambiguous --
-/// reported as `AmbiguousConformance`, never an arbitrary pick.
 #[test]
 fn incomparable_blanket_bound_sets_are_ambiguous() {
     let package = TestPackage::new(
@@ -1201,13 +1129,6 @@ fn incomparable_blanket_bound_sets_are_ambiguous() {
     )));
 }
 
-/// A blanket that only matches `Foo` incidentally must never displace the
-/// author's explicit `conform Foo to Base` -- *even when the blanket
-/// registered first*. `conform Gen to Producer` below exists purely to force
-/// `Foo: Base` to be proven (and so the blanket to materialize at `Foo`)
-/// before the explicit block is reached. Registration used to keep whichever
-/// entry arrived first, so `Base::b` silently ran the blanket's body while
-/// the hand-written one was discarded -- no diagnostic, wrong code.
 #[test]
 fn an_explicit_conform_displaces_a_blanket_registered_before_it() {
     let package = TestPackage::new(
@@ -1288,10 +1209,6 @@ fn cyclic_blanket_bounds_report_an_error_without_recursing() {
     )));
 }
 
-/// A generic conform has its own bound context, just like a generic named
-/// item. In particular, `inner.w(...)` is resolved through `T: W`; it must
-/// not depend on a spec-qualified spelling or on every conform registered
-/// for the concrete type leaking into scope.
 #[test]
 fn generic_conform_bounds_seed_the_body_context() {
     let package = TestPackage::new(
@@ -1329,15 +1246,6 @@ fn generic_conform_bounds_seed_the_body_context() {
         .expect("a conform generic bound must both validate and seed its body context");
 }
 
-/// An unsatisfied generic-conform bound must not produce a conformance or
-/// vtable. Proving is goal-directed now (`Driver::solve`): a template is
-/// only instantiated when its own produced spec is demanded -- or when a
-/// full sweep of the type runs -- so the bound failure is reported at the
-/// declaration when that happens. Here, `Show::show(&buf)` demands `Show`
-/// for `Buf<NotW>`, and the declaration is the anchor. (A query for some
-/// *other* spec -- e.g. a `spec *W` cast -- no longer sweeps the unrelated
-/// `Show` template; that shape is rejected at its own site instead, see
-/// `an_unrelated_spec_query_does_not_report_a_foreign_blanket_bound`.)
 #[test]
 fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
     let source = r#"
@@ -1379,13 +1287,6 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
     assert_eq!(error.span.start, expected_start);
 }
 
-/// Goal-direction's deliberate diagnostic consequence: asking for a spec a
-/// template does *not* produce no longer instantiates it, so a foreign
-/// template's own bound failure is not reported by a query that has nothing
-/// to do with it. The program is still rejected -- the cast's own site
-/// reports that the value does not coerce -- but the declaration-level
-/// `SpecNotImplemented` belongs to the demand path for `Show` itself (see
-/// `generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration`).
 #[test]
 fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
     let package = TestPackage::new(
@@ -1415,9 +1316,6 @@ fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
     );
 }
 
-/// A conform bound may name an aggregate spec alias. The shared bound checker
-/// must seed the alias and the already-conformed member specs, exactly as it
-/// does for ordinary generic items.
 #[test]
 fn generic_conform_bounds_expand_spec_aliases() {
     let package = TestPackage::new(
@@ -1447,9 +1345,6 @@ fn generic_conform_bounds_expand_spec_aliases() {
         .expect("a conform generic alias bound must reach its member conformances");
 }
 
-/// An unbounded conform remains an ordinary duck-typed template. It must not
-/// inherit every conform on its concrete argument merely because another
-/// instantiation happened to register one there.
 #[test]
 fn an_unbounded_generic_conform_gains_no_bound_context() {
     let package = TestPackage::new(
@@ -1481,11 +1376,6 @@ fn an_unbounded_generic_conform_gains_no_bound_context() {
     )));
 }
 
-/// A type's *inherent* method body is not a conform body, so a spec
-/// conformed onto that type is not in its scope. Without this, every method
-/// a type declares could reach every method any package ever conformed onto
-/// it -- exactly the incoherence resolving conformance methods through their
-/// spec exists to prevent.
 #[test]
 fn an_inherent_method_body_cannot_reach_a_conformance_method() {
     let package = TestPackage::new(
@@ -1539,19 +1429,6 @@ fn distinct_generic_spec_conformances_emit_distinct_bodies() {
     );
 }
 
-// -- regressions found reviewing plan 0005's own execution ------------------
-//
-// Each of these reproduced a real defect in the delivered tree: three were
-// silent (wrong body called, feature silently dropped, unusable capability),
-// one was a hard compile failure of `examples/dev`, and one shipped symbols
-// containing characters the mangling scheme excludes.
-
-/// A bound on a spec *alias* must reach the conformances satisfying its members.
-/// An alias is never itself conformed to (it is rejected outright), so no
-/// entry is ever registered under `AB` itself -- a bound on `AB` must resolve
-/// through the entries registered for its *members*. This is `examples/dev`'s
-/// `accepts_myspec<T: MySpec>`, which stopped compiling entirely under a
-/// narrower seeding rule.
 #[test]
 fn a_bound_on_a_spec_alias_reaches_its_members_conformances() {
     let package = TestPackage::new(
@@ -1572,8 +1449,6 @@ fn a_bound_on_a_spec_alias_reaches_its_members_conformances() {
         .expect("an alias bound must resolve through its members' conformances");
 }
 
-/// The coherence guarantee, stated negatively: widening the bound context to
-/// every conform on the concrete type is what the alias fix must *not* do.
 #[test]
 fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
     let package = TestPackage::new(
@@ -1595,13 +1470,6 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
     )));
 }
 
-/// A directly-written conform must win over the derived stand-in a *different*
-/// conform's transitive dependencies registered for the same `(target, spec)`.
-/// A slice target can be conformed, and reached. Declaring one used to compile
-/// while every call failed with `expected '**[]u8'`: `Self` bound to the
-/// `Slice` had no re-stamping arm, so `*self` wrapped instead of re-stamping
-/// and the conform's signature disagreed with the requirement built from the
-/// same `Self`.
 #[test]
 fn slice_conformances_are_callable_not_merely_declarable() {
     for target in ["[]u8", "<T> []T"] {
@@ -1646,10 +1514,6 @@ fn inferred_arrays_slices_and_unsized_array_pointers_have_distinct_spellings() {
         .expect("the new array and slice spellings should resolve to their distinct shapes");
 }
 
-/// A *generic* conform never reaches `resolve_conform_target`, so a target
-/// `match_conform_target` cannot bind used to register a template nothing
-/// could ever match and vanish silently, surfacing only as an unrelated
-/// `SpecNotImplemented` at some use site.
 #[test]
 fn an_unmatchable_generic_conform_target_is_rejected_at_its_declaration() {
     let package = TestPackage::new(
@@ -1666,10 +1530,6 @@ fn an_unmatchable_generic_conform_target_is_rejected_at_its_declaration() {
     )));
 }
 
-/// Omega has no variadic function *definitions* -- only `extern` declarations
-/// may be variadic -- so a variadic spec requirement is unsatisfiable by
-/// construction. It used to parse and compile, leaving every implementor with
-/// a bare `MissingSpecFunction` naming a function it had no syntax to write.
 #[test]
 fn a_variadic_spec_function_is_rejected_at_its_declaration() {
     let package = TestPackage::new(
@@ -1685,11 +1545,6 @@ fn a_variadic_spec_function_is_rejected_at_its_declaration() {
     )));
 }
 
-/// A `spec T` return type on a *method* is rejected, not inferred. Inferring
-/// it is reachable but wrong: it would run during the signature phase, while
-/// the owning type's method table is still empty, so the body sees `Self`'s
-/// fields but none of its sibling methods. The honest rejection is the
-/// pre-existing `SpecStaticNotAllowedHere`.
 #[test]
 fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
     let package = TestPackage::new(
@@ -1706,7 +1561,6 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
         "#,
     );
     let errors = compile_errors(&package, "a `spec T`-returning method must be rejected");
-    // Specifically NOT `NoSuchField` -- that was the symptom of forcing it.
     assert!(
         !has_analysis_error(&errors, |kind| matches!(
             kind,
@@ -1716,12 +1570,6 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
     );
 }
 
-/// The free-function sibling: definition-site `spec T` returns were removed
-/// outright, so `make() => spec Animal` is the same `SpecStaticNotAllowedHere`
-/// a method gets -- the syntax promises "some unknown type implementing XYZ",
-/// which is true of a spec *declaration* (each implementor answers
-/// differently) and false at a definition site (one body, one type, known to
-/// its author).
 #[test]
 fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
     let package = TestPackage::new(
@@ -1743,13 +1591,8 @@ fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
     );
 }
 
-/// An annotation naming an element type the source does not produce is a
-/// mismatch, not an ambiguity -- it used to render as an ambiguity over an
-/// empty candidate list, naming neither the requested nor the available type.
 #[test]
 fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
-    // Needs the real `core` for `Iterator`/`ToIterator`/`Option`: the loop
-    // protocol is nominal, so a stub would not exercise the same lookup.
     let package = TestPackage::new(
         r#"
         exposed struct BagIter { exposed i: i32; }
@@ -1779,10 +1622,6 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
     }));
 }
 
-/// Primitive-method symbols must encode a structural target through the
-/// `MangleType` grammar rather than `ResolvedType`'s `Display`, which put
-/// `*str`, `*[]u8` and (with a space) `*mut []u8` straight into symbol
-/// names -- outside the `[A-Za-z0-9_]` set the scheme deliberately keeps to.
 #[test]
 fn primitive_method_symbols_stay_within_the_mangling_charset() {
     let package = TestPackage::new(r#"
@@ -1790,7 +1629,6 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
         main() => i32 { 0 }
         "#,
     );
-    // `primitive` is core-only, so compile it *as* core.
     let root = package.0.clone();
     let program = Driver::new(root, Some(Ident("core".to_string())), Vec::new(), Target::DEFAULT)
         .expect("construct driver")
@@ -1811,14 +1649,6 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
     assert!(names.iter().any(|name| name == "width"));
 }
 
-/// A package whose root directory contains no module at all is a reportable
-/// error, not a panic. The reachable cause is the pre-root-module layout
-/// (`<root>/<basename>/<basename>.omg`): `discover_tree`'s `skip` matches by
-/// name rather than kind, so the same-named *directory* is swallowed too and
-/// the root ends up with neither an own file nor children. That used to reach
-/// `compile`'s generic-instantiation merge and fail its "always includes at
-/// least the entry module" expectation as a compiler panic — exactly the
-/// shape anyone migrating an old package is in.
 #[test]
 fn a_package_root_with_no_modules_is_a_reportable_error() {
     let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
@@ -1846,9 +1676,6 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
     );
 }
 
-/// Compiles `core_source` *as* the `core` package, which is where every
-/// `primitive` block has to live. Returns the result so a test can assert
-/// either acceptance or a specific diagnostic.
 fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
     let core = TestPackage::new(core_source);
     let local = TestPackage::new("main() => i32 { 0 }");
@@ -1865,31 +1692,18 @@ fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, V
     result
 }
 
-/// A `primitive` block is a declaration site, not merely a place to hang
-/// methods: an empty body is a complete declaration, and every built-in has
-/// one in `core` (see `runtime/core/primitives.omg`).
 #[test]
 fn an_empty_primitive_block_is_a_valid_declaration() {
     compile_as_core("primitive char { }\nprimitive bool { }")
         .expect("an empty primitive block must be accepted");
 }
 
-/// `void` and `never` have no values, so neither can ever carry a callable
-/// method -- but both are real built-in types, so both get a declaration
-/// site. `never` is otherwise barred from every type position; this is the
-/// single exception.
 #[test]
 fn void_and_never_have_declaration_sites() {
     compile_as_core("primitive void { }\nprimitive never { }")
         .expect("`void`/`never` must be declarable");
 }
 
-/// The primitive-target set is deliberately *not* the conform-target set: a
-/// struct can own a conformance but is not a built-in, so it has no
-/// declaration site to claim. Before the two were separated, `primitive`
-/// reused `resolve_conform_target` and the stricter rule silently won --
-/// which is what made `void` report "conform target is not a concrete type"
-/// for a `conform` the author never wrote.
 #[test]
 fn a_struct_is_not_a_primitive_target() {
     let Err(errors) = compile_as_core("struct S { x: i32; }\nprimitive S { }") else {
@@ -1901,8 +1715,6 @@ fn a_struct_is_not_a_primitive_target() {
     )));
 }
 
-/// ... and the other end of that split: `void` is declarable but nothing can
-/// conform it, because there is no value to implement a method on.
 #[test]
 fn void_is_declarable_but_not_conformable() {
     let Err(errors) = compile_as_core(
@@ -1916,9 +1728,6 @@ fn void_is_declarable_but_not_conformable() {
     )));
 }
 
-/// A genuine conformance cycle must stay rejected. This is the behaviour the
-/// `Conformances::in_progress` guard exists for, and it is the control for the
-/// test below.
 #[test]
 fn a_genuine_conformance_cycle_is_rejected() {
     let package = TestPackage::new(
@@ -1939,15 +1748,6 @@ fn a_genuine_conformance_cycle_is_rejected() {
     )));
 }
 
-/// A chain of two blanket derivations (`S: A` -> `S: B` -> `S: C`)
-/// terminates; there is no cycle. Previously misreported as
-/// `ConformanceCycle` in one declaration order only: proving one blanket's
-/// bound re-entered the *other* blanket's in-flight sweep, and the old
-/// guard could not tell re-entry from circularity -- order-dependent, which
-/// is strictly worse than conservative. Goal-directed solving
-/// (`Driver::solve`) instantiates only the templates a goal can actually
-/// use, so proving `S: C` pulls in `S: B` pulls in `S: A`, and no
-/// declaration order changes that.
 #[test]
 fn a_blanket_chain_compiles_in_either_declaration_order() {
     for swap in [false, true] {
@@ -1980,10 +1780,6 @@ fn a_blanket_chain_compiles_in_either_declaration_order() {
     }
 }
 
-/// The same chain with a *concrete* middle link (`S: A` and `S: B` written
-/// out, only `B -> C` derived) -- this always worked, and must keep
-/// working: goal-direction must not have broken the ordinary derivation
-/// step.
 #[test]
 fn a_blanket_chain_with_a_concrete_middle_link_still_works() {
     let package = TestPackage::new(
@@ -2004,14 +1800,6 @@ fn a_blanket_chain_with_a_concrete_middle_link_still_works() {
         .expect("a blanket chain with a concrete middle link compiles");
 }
 
-/// A fourth blanket, bounded on the chain's *middle* spec, coexists with
-/// the chain. This is the case that fails if the bound context is still
-/// computed mid-proof: proving `S: B`'s bound used to sweep *every*
-/// template on `S` -- including this unrelated blanket -- and instantiate
-/// it mid-sweep, reproducing the false cycle through a different door. The
-/// context is now body-checking information (`check_generic_bounds` stores
-/// only the declared set; `bound_context_for` runs at body-check time), so
-/// a proof never sweeps.
 #[test]
 fn a_fourth_blanket_bounded_on_the_middle_spec_compiles() {
     let package = TestPackage::new(
@@ -2035,11 +1823,6 @@ fn a_fourth_blanket_bounded_on_the_middle_spec_compiles() {
         .expect("an unrelated fourth blanket does not disturb the chain");
 }
 
-/// A generic template whose spec name does not resolve is skipped silently
-/// by the *demand* path (it cannot match a spec it cannot resolve), so the
-/// diagnostic must survive through the full sweep -- here, a method lookup
-/// on the instantiated type. If this ever stops compiling, a realistic
-/// program has lost the diagnostic: stop and report.
 #[test]
 fn a_template_whose_spec_does_not_resolve_still_reports_not_a_spec() {
     let package = TestPackage::new(
@@ -2061,11 +1844,6 @@ fn a_template_whose_spec_does_not_resolve_still_reports_not_a_spec() {
     );
 }
 
-/// An alias bound and its inline spelling describe the same set, so two
-/// blankets over the same spec with those spellings compare as *equal* and
-/// collide as `DuplicateConformance` -- never as ambiguous. Previously the
-/// sets did not compare equal (alias members were not expanded before the
-/// subset comparison), which produced a bogus `AmbiguousConformance`.
 #[test]
 fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
     let package = TestPackage::new(
@@ -2090,9 +1868,6 @@ fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
     )));
 }
 
-/// The bound-context half of alias transparency: a blanket declared with an
-/// *alias* bound must be reached from an inline bound context, and the
-/// reverse -- both `use_x` bodies call a method the blanket provides.
 #[test]
 fn an_alias_bound_and_its_inline_spelling_are_interchangeable_in_bound_contexts() {
     let package = TestPackage::new(
@@ -2115,8 +1890,6 @@ fn an_alias_bound_and_its_inline_spelling_are_interchangeable_in_bound_contexts(
         .expect("alias-declared blanket must be reachable under an inline bound and back");
 }
 
-/// The same transparency through a blanket declared with the *inline*
-/// spelling, reached from an alias bound context.
 #[test]
 fn an_inline_blanket_is_reachable_under_an_alias_bound() {
     let package = TestPackage::new(
@@ -2138,10 +1911,6 @@ fn an_inline_blanket_is_reachable_under_an_alias_bound() {
         .expect("inline-declared blanket must be reachable under an alias bound");
 }
 
-/// A *generic* alias expands with its arguments substituted: `Both<T>`'s
-/// member `Eq<T>` must expand to `Eq<i32>` for the bound `Both<i32>`, so a
-/// blanket declared over the inline spelling with `i32` compares equal and
-/// both bodies resolve through the expansion.
 #[test]
 fn a_generic_alias_bound_expands_with_its_arguments_substituted() {
     let package = TestPackage::new(
@@ -2166,12 +1935,6 @@ fn a_generic_alias_bound_expands_with_its_arguments_substituted() {
     )));
 }
 
-/// A generic function whose only type parameter appears in its return type
-/// is callable from every expected-type position: the declared return type
-/// is unified against `expected` to seed the substitution, then ordinary
-/// argument-driven inference runs unchanged. Declaration annotation, tail
-/// return, explicit `return`, argument position, and `if` branch are all
-/// the same single mechanism.
 #[test]
 fn a_return_type_only_generic_is_inferred_from_the_expected_type() {
     let package = TestPackage::new(
@@ -2205,9 +1968,6 @@ fn a_return_type_only_generic_is_inferred_from_the_expected_type() {
         .expect("return-type-only generic infers from expected");
 }
 
-/// A generic type's static function infers its owner generics from the
-/// expected type, whether the return type is written `Self` (rewritten to
-/// the owner's own generic spelling) or written out (`Box<T>`).
 #[test]
 fn a_generic_static_infers_owner_generics_from_the_expected_type() {
     let package = TestPackage::new(
@@ -2226,9 +1986,6 @@ fn a_generic_static_infers_owner_generics_from_the_expected_type() {
         .expect("generic static infers owner generics from expected");
 }
 
-/// The seeded substitution flows into per-argument inference, so an untyped
-/// literal argument adapts to the expected type (`y : i64 = identity(5)`),
-/// the same precedence order `infer_literal_type_args` already uses.
 #[test]
 fn the_expected_type_seed_adapts_untyped_literal_arguments() {
     let package = TestPackage::new(
@@ -2242,9 +1999,6 @@ fn the_expected_type_seed_adapts_untyped_literal_arguments() {
         .expect("expected type adapts the literal argument");
 }
 
-/// The seed wins over argument-driven inference by design, but a genuine
-/// conflict is still rejected by the unchanged final argument check --
-/// never silently accepted, only ever a differently-worded error.
 #[test]
 fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
     let package = TestPackage::new(
@@ -2261,8 +2015,6 @@ fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
     )));
 }
 
-/// A `*mut self` call on an rvalue receiver is rejected as `MutateTemporary`,
-/// not `NotMutablePointer` (see docs/issues/known-issues.md).
 #[test]
 fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
     let package = TestPackage::new(
@@ -2284,9 +2036,6 @@ fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
     );
 }
 
-/// The other `MutateTemporary` shape: a projected write through an rvalue
-/// (`make().n = 5`), with no receiver or `*mut self` involved -- the shared
-/// diagnostic's wording must stay true of both.
 #[test]
 fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
     let package = TestPackage::new(
@@ -2306,9 +2055,6 @@ fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
     );
 }
 
-/// `f<T>(x: *T)` against a fat pointer reports `GenericParamFromFatPointer`
-/// (see docs/issues/known-issues.md). Both slice- and `*str`-shaped fat pointers
-/// reach it.
 #[test]
 fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
     let package = TestPackage::new(
@@ -2332,8 +2078,6 @@ fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
     );
 }
 
-/// The by-value form binds `T = *[]T` and compiles -- the slice rule is
-/// unchanged; only the *inference* diagnostic is new.
 #[test]
 fn a_by_value_generic_still_binds_a_slice() {
     let package = TestPackage::new(
@@ -2353,11 +2097,6 @@ fn a_by_value_generic_still_binds_a_slice() {
         .expect("the by-value form binds the slice type parameter");
 }
 
-/// The whole point of Phase A's target threading: on a 32-bit target,
-/// `comp sizeof<usize>` must evaluate to 4 -- before the threading it
-/// silently evaluated to 8 regardless of `--target`. Observed through the
-/// compiled program's own checked tree (a `comp` global's initial value),
-/// since a 32-bit object can't be executed on this host.
 #[test]
 fn a_32_bit_target_sizes_usize_at_four_bytes() {
     let target = Target { arch: omega_analyzer::Arch::Riscv32, os: omega_analyzer::Os::None };
@@ -2394,10 +2133,6 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
     }
 }
 
-/// The range-check half of the same threading: a `usize` literal above
-/// `u32::MAX` is rejected on a 32-bit target (where `usize` is 32 bits)
-/// and accepted on the default 64-bit one -- before the threading, the
-/// 32-bit target silently accepted it against the hardcoded 64-bit domain.
 #[test]
 fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
     let source = r#"
@@ -2427,11 +2162,6 @@ fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
         .expect("the same literal fits a 64-bit usize");
 }
 
-/// The MIR carries the decided facts: every function's final linker symbol
-/// and linkage, including the entry `main`'s bare unmangled symbol -- so a
-/// backend reads them instead of re-deriving them. Asserted by lowering a
-/// real compiled program (a generic instantiation must be `Weak`, the
-/// entry `main` exactly `"main"` and `Export`).
 #[test]
 fn lowered_mir_carries_symbols_and_linkage() {
     let package = TestPackage::new(
@@ -2473,9 +2203,6 @@ fn lowered_mir_carries_symbols_and_linkage() {
     );
 }
 
-/// Every span in `errors` whose kind matches, as the source text it covers.
-/// A diagnostic that underlines the right thing is the whole point of the
-/// span work; asserting the *text* is the only way to see that it does.
 fn error_texts(
     source: &str,
     errors: &[CompileError],
@@ -2492,13 +2219,8 @@ fn error_texts(
         .collect()
 }
 
-/// D1: a diagnostic about a *member* used to underline the whole enclosing
-/// type, because a method/field carried no span of its own. Both the
-/// duplicate and the original must now point at just the name.
 #[test]
 fn a_duplicate_member_underlines_only_its_name() {
-    // Separate packages: a duplicate field stops the struct's analysis
-    // before its methods are ever compared.
     for (source, name) in [
         (
             "struct Holder {\n    field: i32;\n    field: i32;\n}\nmain() => i32 { 0 }\n",
@@ -2519,8 +2241,6 @@ fn a_duplicate_member_underlines_only_its_name() {
             [name],
             "a duplicate member's label must cover the name only"
         );
-        // The secondary `first declared here` label too -- D1's complaint
-        // was that *both* labels covered the same enclosing declaration.
         for error in errors.iter() {
             let CompileError::Analysis { errors, .. } = error else {
                 continue;
@@ -2540,8 +2260,6 @@ fn a_duplicate_member_underlines_only_its_name() {
     }
 }
 
-/// D2: a return-type mismatch used to underline the entire function body.
-/// It must cover the declared return type, at top level and in a method.
 #[test]
 fn a_return_type_mismatch_underlines_the_declared_type() {
     let source = "\
@@ -2570,7 +2288,6 @@ main() => i32 { 0 }
     );
 }
 
-/// A duplicate *spec* function is the same defect one item kind over.
 #[test]
 fn a_duplicate_spec_function_underlines_only_its_name() {
     let source = "\

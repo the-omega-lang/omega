@@ -1,22 +1,11 @@
 use super::*;
 
-/// What `Analyzer::classify_for_in_source` found `f.iterator`'s type
-/// nominally declares -- `ToIterator<T>` (the common case, needing an
-/// actual `.to_iterator()` call to produce `$iter`) or `Iterator<T>`
-/// directly (the source *is* already an iterator; `f.iterator`'s own
-/// already-checked value becomes `$iter` verbatim, no method call at all).
 enum ForInSource {
     ToIterator(CheckedExprNode, ResolvedBound),
     DirectIterator(CheckedExprNode),
 }
 
 impl<'r> Analyzer<'r> {
-    /// Whether an expression unconditionally diverges: a call whose resolved
-    /// type is `Never`, or an `if`/`else if`/`else` (with a genuine `else`)
-    /// where every branch diverges -- re-derived structurally rather than
-    /// read off `expr.r#type`, since `analyze_if` still gives such an `if` a
-    /// concrete `Void` type rather than `Never`. Everything else either
-    /// can't diverge, or (a bare `return`) isn't an expression to begin with.
     pub(super) fn expr_diverges(expr: &CheckedExprNode) -> bool {
         if expr.r#type == ResolvedType::Never {
             return true;
@@ -36,31 +25,16 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Whether a statement unconditionally diverges (its block never
-    /// actually reaches whatever position it's in). A purely syntactic
-    /// check, not real reachability analysis (e.g. `while true { return 1;
-    /// }` isn't recognized), but common enough dispatch-and-diverge shapes
-    /// are worth recognizing -- must stay in sync with `Codegen::emit_if`'s
-    /// matching `BlockOutcome::Diverged` propagation.
     pub(super) fn stmt_diverges(stmt: &CheckedStmt) -> bool {
         match stmt {
             CheckedStmt::Return(_) | CheckedStmt::Break(_) | CheckedStmt::Continue(_) => true,
             CheckedStmt::Expression(expr) => Self::expr_diverges(expr),
-            // A `loop { }` with no `break` targeting it always repeats.
-            // Purely syntactic: `loop { if cond { break; } }` isn't
-            // recognized as diverging even when `cond` is always false.
             CheckedStmt::Loop(l) => !l.has_break,
-            // `defer` never diverges at its own position; the deferred body
-            // only runs later, in the function's epilogue.
             CheckedStmt::Defer(_) => false,
             _ => false,
         }
     }
 
-    /// Every `CheckedStmt` variant's id/span, for anchoring an
-    /// `AnalysisWarningKind::UnreachableCode` at whichever statement turns
-    /// out to be first made unreachable by a diverging predecessor (see
-    /// `truncate_unreachable`).
     fn checked_stmt_id_span(stmt: &CheckedStmt) -> (HirId, Span) {
         match stmt {
             CheckedStmt::Declaration(d) => (d.id, d.span),
@@ -76,11 +50,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Drops every statement after the first one that unconditionally
-    /// diverges -- they can never run, and keeping them would make codegen
-    /// try to emit into an already-terminated cranelift block (a compiler
-    /// panic, not a user-facing error). A warning, not an error: dead code
-    /// doesn't make the program incorrect, just wasteful.
     fn truncate_unreachable(&mut self, mut stmts: Vec<CheckedStmt>) -> Vec<CheckedStmt> {
         let Some(cutoff) = stmts.iter().position(Self::stmt_diverges) else {
             return stmts;
@@ -93,14 +62,7 @@ impl<'r> Analyzer<'r> {
         stmts
     }
 
-    /// Walks a just-left scope's own declared bindings, warning about any
-    /// that were never read (`UnusedVariable`/`UnusedParameter`) or declared
-    /// `mut` but never reassigned (`UnnecessaryMut`, gated on having been
-    /// read at all -- a write-only binding reports as unused instead).
-    /// Skips `narrowed` shadows and, in a parameter scope, `self`.
     pub(super) fn warn_unused_bindings(&mut self, scope: ScopeContext, is_params: bool) {
-        // `declared_variables` is an `IndexMap`, so this visits bindings in
-        // declaration order for free.
         for ((name, origin), binding) in &scope.declared_variables {
             if origin.0.is_some() {
                 continue;
@@ -125,14 +87,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Analyzes a `{ stmts... tail }` block in its own nested scope --
-    /// shared by bare codeblock expressions, `if`/`while`/`for` bodies, and
-    /// function bodies. Scope is always entered/left even on failure (before
-    /// the `?` that can early-return), so an error partway through a block
-    /// never leaves the scope stack unbalanced.
-    /// `expected` is threaded *only* into the block's own tail expression
-    /// (see `analyze_expr`'s doc comment) -- ordinary statements never have
-    /// an outer expected type of their own.
     pub(super) fn analyze_block(
         &mut self,
         block: &HirBlock,
@@ -168,12 +122,6 @@ impl<'r> Analyzer<'r> {
         Some(CheckedBlock { stmts, tail })
     }
 
-    /// `ident : Type = value;` -- builds the declaration and its
-    /// initializing write by hand, exactly like `analyze_walrus` does,
-    /// specifically so this write never goes through the ordinary
-    /// `HirExpr::Assignment` arm's mutability check: it's the declaration's
-    /// own initializer, never a `mut`-requiring reassignment, regardless of
-    /// whether `ident` was declared `mut`.
     fn analyze_declaration_with_init(
         &mut self,
         decl: &HirDeclaration,
@@ -221,19 +169,6 @@ impl<'r> Analyzer<'r> {
         Some([declaration, assignment])
     }
 
-    /// Desugars `ident := value;` into the same two `CheckedStmt`s writing
-    /// `ident : <inferred type>; ident = value;` by hand would produce --
-    /// analysis is the only place that can do this desugaring, since only it
-    /// knows `value`'s resolved type (there's nothing written down to carry
-    /// a type otherwise). `value` is analyzed exactly once and reused as the
-    /// assignment's value, rather than re-analyzed, to avoid double-reporting
-    /// any error inside it.
-    ///
-    /// `comp ident := value;` desugars into *nothing* instead (an empty
-    /// `Vec`): a `comp` binding carries no storage at all, so there is no
-    /// declaration and no assignment to emit -- `value` is evaluated once,
-    /// right here, and every later reference substitutes the result
-    /// directly (see `Analyzer::declare_comp_binding`/`analyze_place_read`).
     fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<Vec<CheckedStmt>> {
         let checked_value = self.analyze_expr(&w.value, None)?;
         let r#type = checked_value.r#type.clone();
@@ -264,10 +199,6 @@ impl<'r> Analyzer<'r> {
             ident: w.ident.clone(),
             r#type: r#type.clone(),
             mutable: w.mutable,
-            // A local's value comes from the `Assignment` statement right
-            // below, never baked into the declaration itself -- unlike a
-            // global, whose `initial_value` this pattern's own doc comment
-            // covers.
             initial_value: None,
         });
         let assignment = CheckedStmt::Expression(CheckedExprNode {
@@ -291,10 +222,6 @@ impl<'r> Analyzer<'r> {
         Some(vec![declaration, assignment])
     }
 
-    /// Most statements analyze into exactly one `CheckedStmt`; a walrus
-    /// declaration desugars into two (see `analyze_walrus`), which is why
-    /// this returns a `Vec` rather than routing through the 1-to-1
-    /// `analyze_all` fold.
     fn analyze_stmt(&mut self, stmt: &HirStmt) -> Option<Vec<CheckedStmt>> {
         match stmt {
             HirStmt::Declaration(decl) => self
@@ -307,9 +234,6 @@ impl<'r> Analyzer<'r> {
                 .analyze_extern_decl(decl)
                 .map(|d| vec![CheckedStmt::ExternDeclaration(d)]),
             HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| {
-                // A `never`-typed call has no return value to discard in
-                // the first place -- it never returns at all, so there's
-                // nothing "unused" about leaving it as a bare statement.
                 if matches!(e.kind, CheckedExpr::FunctionCall(_))
                     && e.r#type != ResolvedType::Void
                     && e.r#type != ResolvedType::Never
@@ -433,14 +357,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `for`'s init/condition/post/body all share one scope of their own
-    /// (so an `i := 0` init clause is visible to the condition/post/body
-    /// but doesn't leak past the loop) -- entered once here, around all
-    /// four, rather than the body getting its own additional nested scope
-    /// from `analyze_block` alone. Every sub-part is still analyzed even
-    /// after an earlier one fails (same "keep going, report everything"
-    /// discipline as `analyze_all`), and the scope is always left before
-    /// any early return.
     fn analyze_for(&mut self, f: &HirFor) -> Option<Vec<CheckedStmt>> {
         self.context.enter_scope();
 
@@ -504,15 +420,6 @@ impl<'r> Analyzer<'r> {
         }))])
     }
 
-    /// `for <mut>? binding in iterator { body }` -- desugars entirely at
-    /// analysis time into a `while true { }` + `match` shape (see
-    /// docs/language/iteration-and-ranges.md for the full desugaring, the nominal-
-    /// conformance rule, and the `ToIterator`-vs-`Iterator` source
-    /// disambiguation). The `to_iterator`/`next` calls are resolved through
-    /// ordinary `analyze_expr` on synthesized HIR (`synthesize_method_call`);
-    /// the `match` is hand-built directly, since this language's `match` has
-    /// no destructuring pattern syntax to synthesize into. `Option`'s
-    /// variant order is load-bearing here -- `None` is 0, `Some` is 1.
     fn analyze_for_in(&mut self, f: &HirForIn) -> Option<Vec<CheckedStmt>> {
         self.context.enter_scope();
 
@@ -537,8 +444,6 @@ impl<'r> Analyzer<'r> {
             let iter_init = iter_init.expect("checked by `ok` above");
             let iter_id = self.resolver.fresh_synthetic_id();
             let iter_type = iter_init.r#type.clone();
-            // `mut`: `$iter.next()` takes `*mut self`, and a mutable
-            // pointer can only be taken to a binding declared `mut`.
             self.declare_binding(
                 iter_id,
                 f.span,
@@ -570,20 +475,10 @@ impl<'r> Analyzer<'r> {
         result.flatten()
     }
 
-
-    /// Probes `f.iterator`'s own type once. Reused directly as `$iter`'s
-    /// initializer in the `DirectIterator` case; the `ToIterator` case still
-    /// has `synthesize_method_call` analyze the identical expression a
-    /// second time (embedded as `to_iterator`'s receiver), since there's no
-    /// lower-level "resolve a call against an already-checked receiver"
-    /// primitive. This probe's diagnostics are discarded unless it fails
-    /// outright, so nothing gets double-warned across the two passes.
     fn classify_for_in_source(&mut self, f: &HirForIn) -> Option<ForInSource> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
         let Some(checked) = self.analyze_expr(&f.iterator, None) else {
-            // A genuine type error -- keep it; re-analyzing would only
-            // reproduce it.
             return None;
         };
         self.errors.truncate(errors_before);
@@ -594,8 +489,6 @@ impl<'r> Analyzer<'r> {
             let expected_element = f.binding_type.as_ref().and_then(|raw| {
                 self.resolve_type_or_error(f.id, f.span, raw, true)
             });
-            // Kept before filtering -- both failure paths below report what
-            // the source does offer.
             let available: Vec<ResolvedType> = to_iterator
                 .iter()
                 .filter_map(|conform| conform.spec_args.first().cloned())
@@ -615,9 +508,6 @@ impl<'r> Analyzer<'r> {
                     (conform.target, conform.spec, conform.spec_args),
                 ));
             }
-            // Zero candidates only happens with an annotation, and it's a
-            // mismatch, not an ambiguity -- reporting it as "ambiguous"
-            // would print an empty candidate list.
             let kind = match expected_element {
                 Some(expected) if candidates.is_empty() => {
                     AnalysisErrorKind::ForLoopElementTypeMismatch {
@@ -645,9 +535,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// The `while true { $next := $iter.next(); match $next { ... } }`
-    /// portion of `analyze_for_in` -- split out so its own scope can be
-    /// entered/left independently of the outer `$iter` scope.
     fn analyze_for_in_loop(&mut self, f: &HirForIn) -> Option<CheckedStmt> {
         let while_id = self.resolver.fresh_synthetic_id();
         self.loop_stack.push(while_id);
@@ -663,9 +550,6 @@ impl<'r> Analyzer<'r> {
                 cell: option_cell, ..
             } = next_type.clone()
             else {
-                // `Iterator::next` is declared to always return `Option<T>`;
-                // if this doesn't hold, `core::iterator` was edited
-                // inconsistently with this function.
                 unreachable!("Iterator::next's declared return type is always an Option<T> enum");
             };
             self.declare_binding(
@@ -711,10 +595,6 @@ impl<'r> Analyzer<'r> {
             let match_expr = CheckedStmt::Expression(CheckedExprNode {
                 id: f.id,
                 span: f.span,
-                // Never read -- this `match` is only ever used as a bare
-                // statement (both arms fall through or `break`), so its
-                // own result type is a don't-care placeholder, the same
-                // way a `while`/`for` body's own tail value already is.
                 r#type: ResolvedType::Void,
                 kind: CheckedExpr::Match(CheckedMatch {
                     arms: vec![none_arm?, some_arm?],
@@ -744,7 +624,6 @@ impl<'r> Analyzer<'r> {
         }))
     }
 
-    /// `Option::None => { break; }`.
     fn for_in_none_arm(
         &mut self,
         f: &HirForIn,
@@ -787,7 +666,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `Option::Some => { <mut>? binding := $next.value; ...body... }`.
     fn for_in_some_arm(
         &mut self,
         f: &HirForIn,
@@ -878,8 +756,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `tag_read == <variant's own constant tag>` -- shared by both of
-    /// `analyze_for_in`'s hand-built match arms.
     fn tag_equals(
         f: &HirForIn,
         tag_type: &ResolvedType,
@@ -904,12 +780,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Builds `root.method()` as ordinary, source-shaped HIR and analyzes it
-    /// exactly like a hand-written call -- auto-ref, overload resolution,
-    /// and static-vs-dynamic-dispatch selection all Just Work,
-    /// unreimplemented. `root` is `HirPlaceRoot::Expr` for a receiver that's
-    /// an arbitrary expression, or `HirPlaceRoot::Path` for a synthetic
-    /// local already declared by name (`$iter`).
     fn synthesize_method_call(
         &mut self,
         root: HirPlaceRoot,
@@ -935,9 +805,6 @@ impl<'r> Analyzer<'r> {
         self.analyze_expr(&call, None)
     }
 
-    /// The declaration + assignment pair every synthetic `name := value;` in
-    /// `analyze_for_in` needs -- `analyze_walrus`'s own shape, built from an
-    /// already-`CheckedExprNode` value instead of lowering one from HIR.
     fn synthetic_declaration(
         id: HirId,
         span: Span,

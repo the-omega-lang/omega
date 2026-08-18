@@ -1,29 +1,3 @@
-//! Semantic analysis: everything between HIR and the checked tree.
-//!
-//! One [`Analyzer`] checks exactly one top-level item -- a signature or a
-//! body -- and is thrown away afterwards. Module-shaped questions (what a
-//! path names, what an import means, another module's items) go through the
-//! [`ModuleResolver`]; nothing here touches a filesystem or cross-module
-//! cache directly.
-//!
-//! Split by *what is being analyzed*, one submodule per concern, each
-//! contributing its own `impl Analyzer` block:
-//!
-//! - [`visibility`] -- `exposed`/`internal`/hidden and the `reveal` bypass.
-//! - [`specs`] -- spec declarations, flattening, conformance.
-//! - [`items`] -- top-level item signatures and bodies (the driver's entry
-//!   points).
-//! - [`stmts`] -- blocks, statements, control flow, divergence.
-//! - [`exprs`] -- expression analysis and operators.
-//! - [`literals`] -- number/struct/enum/union literals.
-//! - [`places`] -- place expressions, field projection, slices, mutability.
-//! - [`paths`] -- what a qualified or unqualified path names.
-//! - [`calls`] -- callee resolution, overloads, generic calls, dispatch.
-//! - [`patterns`] -- `match` and its exhaustiveness/narrowing.
-//! - [`consts`] -- compile-time evaluation.
-//!
-//! Submodules import this module's own prelude with `use super::*` instead
-//! of each repeating the same import block.
 
 mod calls;
 mod consts;
@@ -40,7 +14,6 @@ mod visibility;
 pub use specs::PendingSpecMethod;
 use specs::FlattenedSpecFn;
 
-// Shared across submodules' own `use super::*`.
 use calls::{CalleeResolution, Intercepted, Interceptor, ResolvedCallee};
 use literals::parse_number_literal;
 
@@ -88,71 +61,23 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub struct Analyzer<'r> {
-    /// Every error goes through [`Analyzer::error`].
     errors: Vec<AnalysisError>,
-    /// Non-fatal findings (currently just unreachable code), returned
-    /// alongside a successful `CheckedModule` rather than folded into
-    /// `errors`, since none reject the program.
     warnings: Vec<AnalysisWarning>,
     context: Context,
-    /// The compilation target this analysis runs for -- its pointer width
-    /// is what every width-sensitive question resolves against.
     target: Target,
-    /// Module-tree-shaped state (filesystem lookups, cross-module caching,
-    /// cycle detection) lives behind this trait object; the driver's
-    /// long-lived resolver is borrowed across many short-lived per-item
-    /// `Analyzer`s rather than owned by any one of them.
     resolver: &'r mut dyn ModuleResolver,
-    /// This item's owning module's absolute path -- the implicit prefix an
-    /// unqualified top-level reference needs to become an absolute query.
     module_path: Vec<Ident>,
-    /// The enclosing function's declared return type, checked against every
-    /// `return <expr>;` and the body's own effective type. Reset at the
-    /// start of each `check_function_body` call.
     current_return_type: ResolvedType,
-    /// Enclosing loops' `HirId`s (innermost last), pushed/popped around a
-    /// `while`/`for`'s body. `break`/`continue` resolve against `.last()`.
-    /// Cleared at the start of each `check_function_body` call.
     loop_stack: Vec<HirId>,
-    /// Every loop `HirId` that a `break` targeting it has been seen for,
-    /// consulted once a `loop { }`'s body finishes analyzing to decide
-    /// `CheckedLoop::has_break`. IDs are never reused, so this only grows;
-    /// never cleared.
     loops_with_break: HashSet<HirId>,
-    /// `true` while analyzing a `defer`'s own body -- rejects `return` and
-    /// nested `defer` inside it. Reset at the start of each
-    /// `check_function_body` call.
     in_defer_body: bool,
-    /// A stack of `@suppress(...)` name lists, one frame per item/method
-    /// currently being checked (innermost last) -- a method's own frame and
-    /// its owning type's frame are both active while the method body is
-    /// checked, matching Rust's `#[allow]` nesting.
     suppressed: Vec<Vec<Ident>>,
-    /// One frame per active `reveal` expression (innermost last), tracking
-    /// whether its bypass has proven load-bearing (see
-    /// `AnalysisWarningKind::UnnecessaryReveal`). `check_visibility` marks
-    /// only the innermost frame.
     reveal_stack: Vec<bool>,
-    /// The struct/union/enum whose method bodies this `Analyzer` is
-    /// currently checking, `None` for a top-level function/global. Scopes a
-    /// **hidden** field/method's visibility: accessible only while
-    /// `current_owner` is that exact type (see `check_member_visibility`).
     current_owner: Option<HirId>,
-    /// Field/variant usage recorded from `comp`-evaluated subtrees (see
-    /// `eval_comp`) -- these collapse into `CheckedExpr::Const` and never
-    /// reach the final `CheckedModule`, so dead-code analysis would
-    /// otherwise miss the field accesses/enum constructions they contained.
     field_usage: crate::dead_code::FieldUsage,
     bounds: Vec<ResolvedBound>,
 }
 
-/// A top-level item's own name, or `None` for an `import` (which binds no
-/// name of its own -- see `Context::import_module`/`bind_imported_item`
-/// instead). Exposed for `omega_driver::Driver`, which now owns the
-/// per-module "every named top-level item" index (`local_items`) that used
-/// to live on `Analyzer` -- one item is resolved (and one `Analyzer`
-/// constructed) at a time now, so there's no module-wide sweep left inside
-/// this crate to share this with locally.
 pub fn item_name(item: &HirItem) -> Option<Ident> {
     match item {
         HirItem::Declaration { decl, .. } => Some(decl.ident.clone()),
@@ -170,13 +95,6 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
     }
 }
 
-/// A top-level item's own declared `exposed`/`internal`/(default `Hidden`)
-/// -- what `omega_driver::Driver::ensure_item` reads instead of hardcoding
-/// `Visibility::Public`. `Import` has no visibility of its own (only
-/// `reveal`, a different, use-site concept -- see `HirImport::reveal`) and
-/// is never looked up through this path anyway (`item_name` already returns
-/// `None` for it), so it's `unreachable!()` here rather than an arbitrary
-/// default.
 pub fn item_visibility(item: &HirItem) -> Visibility {
     match item {
         HirItem::Declaration { visibility, .. } => *visibility,
@@ -198,8 +116,6 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
     }
 }
 
-/// A top-level item's own `HirId`/`Span`, for anchoring a
-/// `Redeclaration` error against a duplicate name -- see `item_name`.
 pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
     match item {
         HirItem::Declaration { decl, .. } => (decl.id, decl.span),
@@ -220,18 +136,12 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
 }
 
 impl<'r> Analyzer<'r> {
-    /// The lexical module for a written path. Macro-body paths are authored
-    /// by their definition module; ordinary and substituted paths remain in
-    /// the module currently being analyzed.
     pub(super) fn path_module(&self, path: &Path) -> Vec<Ident> {
         self.resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| self.module_path.clone())
     }
 
-    /// Checks a resolved macro-body dependency against the macro's own
-    /// declared visibility. Resolution still uses the definition module;
-    /// this prevents a wider macro interface from exposing a narrower item.
     pub(super) fn check_macro_dependency_visibility(
         &mut self,
         id: HirId,
@@ -260,15 +170,6 @@ impl<'r> Analyzer<'r> {
         false
     }
 
-    /// An `import` alias resolves lazily, the first time a name lookup not
-    /// satisfied locally needs it (see `Analyzer::resolve_alias`), rather
-    /// than being pre-resolved here.
-    ///
-    /// `generics` is the concrete substitution for the item's own declared
-    /// generic parameters (empty for a non-generic item), seeded into
-    /// `defined_types`; a duplicate entry is a `Redeclaration` anchored at
-    /// `owner` (the item's own id/span). Genericity is purely a
-    /// resolution-time concern here -- no bounds are declared or checked.
     pub fn new(
         resolver: &'r mut dyn ModuleResolver,
         module_path: Vec<Ident>,
@@ -330,23 +231,14 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The target's pointer width in bytes -- the one number every
-    /// width-sensitive question outside this module (`annotations`,
-    /// `comp_eval`) needs to ask.
     pub fn pointer_bytes(&self) -> u32 {
         self.target.pointer_bytes()
     }
 
-    /// The target's pointer width in bits.
     pub fn pointer_bits(&self) -> u32 {
         self.target.pointer_bits()
     }
 
-    /// Consumes this throwaway, per-item `Analyzer`, handing back whatever
-    /// it accumulated -- `omega_driver::Driver` folds these into its own
-    /// per-module `module_errors`/warnings after every signature/body call,
-    /// and `field_usage` into its own whole-program `FieldUsage` accumulator
-    /// (see `field_usage`'s own doc comment).
     pub fn finish(
         self,
     ) -> (
@@ -357,26 +249,16 @@ impl<'r> Analyzer<'r> {
         (self.errors, self.warnings, self.field_usage)
     }
 
-    /// Whether any currently active `@suppress(...)` frame (see
-    /// `suppressed`'s doc comment) names this warning's stable slug (see
-    /// `AnalysisWarningKind::name`).
     fn is_suppressed(&self, kind: &AnalysisWarningKind) -> bool {
         self.suppressed
             .iter()
             .any(|frame| frame.iter().any(|name| name.as_ref() == kind.name()))
     }
 
-    /// The single choke point every error is pushed through -- the
-    /// counterpart of `warn` below (which additionally honors `@suppress`;
-    /// an error can never be suppressed).
     pub(crate) fn error(&mut self, node_id: HirId, span: Span, kind: AnalysisErrorKind) {
         self.errors.push(AnalysisError::new(node_id, span, kind));
     }
 
-    /// The single choke point every warning is pushed through -- replaces
-    /// a raw `self.warnings.push(AnalysisWarning::new(...))`, silently
-    /// dropping the warning when `@suppress` has named it in an active
-    /// frame instead.
     pub(crate) fn warn(&mut self, node_id: HirId, span: Span, kind: AnalysisWarningKind) {
         if !self.is_suppressed(&kind) {
             self.warnings
@@ -384,11 +266,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Runs `f` and discards every diagnostic it produced -- a speculative
-    /// question whose failure is not this query's to report; the real path
-    /// re-derives and reports it later if needed. `classify_for_in_source`
-    /// and `probe_literal_type_args` intentionally don't use this: they keep
-    /// diagnostics on outright failure, a different contract.
     pub fn probe<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let errors = self.errors.len();
         let warnings = self.warnings.len();
@@ -398,11 +275,6 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    // Small generic fold used everywhere a list of HIR nodes is analyzed
-    // into a list of checked ones: unlike a short-circuiting `?`/`collect`,
-    // this keeps analyzing every item (so independent errors in the same
-    // function/struct/module are all reported in one pass), and only
-    // succeeds if every item did.
     fn analyze_all<T, U>(
         &mut self,
         items: &[T],
@@ -419,15 +291,6 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked)
     }
 
-    /// Runs `f` with `substitution` (`Self`, a spec's own generics, ... ->
-    /// concrete types) pushed as a temporary scope, popped again afterward
-    /// regardless of how `f` returns -- the shared "resolve a raw,
-    /// unelaborated shape against a concrete substitution, without
-    /// disturbing whatever's already bound in the calling implementor's own
-    /// ambient `Context` (its own generics, already seeded when this
-    /// `Analyzer` was constructed)" pattern every spec-flattening step
-    /// needs: a function's own raw signature (`resolve_raw_spec_fn_type`)
-    /// and a dependency's own raw type-argument list (`flatten_spec_into`).
     fn with_substitution<T>(
         &mut self,
         substitution: &[(Ident, ResolvedType)],
@@ -445,20 +308,6 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    /// Wraps `value` in `CheckedExpr::SpecCoerce` when `expected` is a
-    /// `SpecObject` and `value` points to a type conforming to the target
-    /// spec -- see
-    /// `CheckedExpr::SpecCoerce`'s doc comment for why this needs an
-    /// explicit node rather than being folded into `ResolvedType::accepts`
-    /// itself. A no-op (returns `value` unchanged) whenever no such
-    /// coercion applies -- including when `expected` already structurally
-    /// `accepts` `value`, or when the spec isn't actually implemented (in
-    /// which case the caller's own ordinary `accepts` check reports the
-    /// mismatch exactly as before, just without this specific "why" -- an
-    /// accepted simplification, not every coercion site needs its own
-    /// bespoke diagnostic) -- the latter also covers a satisfying method
-    /// that exists but isn't visible enough from here, see
-    /// `type_implements_spec`'s `check_method_visibility` doc.
     fn coerce_to_expected(
         &mut self,
         expected: Option<&ResolvedType>,
@@ -503,9 +352,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Binds `ident` in the current scope, or records `Redeclaration` if
-    /// it's already bound there. Centralizes what used to be, incorrectly, a
-    /// codegen-side check on a name-keyed stack-slot map.
     fn declare_binding(
         &mut self,
         id: HirId,
@@ -532,11 +378,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// `comp ident := comp expr;` -- binds `ident` with `Storage::Comp`
-    /// (never `mutable`: see `AnalysisErrorKind::MutCompBinding`, checked
-    /// by the caller before this runs) and records its already-evaluated
-    /// `value` in `Context::comp_values`, so `analyze_place_read` can
-    /// substitute every later reference with it directly.
     fn declare_comp_binding(
         &mut self,
         id: HirId,
@@ -551,11 +392,6 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    /// See `VarBinding::narrowed`'s doc comment -- used only by
-    /// `analyze_enum_match` to shadow-declare a matched arm's narrowed
-    /// scrutinee. `mutable` is inherited from the binding being narrowed
-    /// (reassigning the narrowed view is exactly as valid as reassigning
-    /// the original would have been).
     fn declare_narrowed_binding(
         &mut self,
         id: HirId,
@@ -582,8 +418,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// Adds one binding to the current scope, rejecting a name that scope
-    /// already binds.
     fn declare_binding_impl(
         &mut self,
         ident: &Ident,
@@ -607,16 +441,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The one choke point every ordinary `ModuleResolver::resolve_item`
-    /// call goes through -- computes `bypass` from `reveal_stack`, calls
-    /// through with `self.module_path` as the accessor, and on a bypassed
-    /// success, consults `is_item_visible` to mark the innermost `reveal`
-    /// frame load-bearing (the same "was this bypass actually necessary"
-    /// tracking `check_visibility` does for in-analyzer checks, just across
-    /// the `ModuleResolver` trait boundary -- see `AnalysisWarningKind::
-    /// UnnecessaryReveal`). Every other argument passes straight through
-    /// unchanged; this exists purely to avoid repeating the bypass/mark
-    /// dance at each of this crate's ~10 call sites.
     fn resolve_item_checked(
         &mut self,
         absolute: &[Ident],
@@ -636,18 +460,6 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    /// `resolve_item_checked`, plus one extra retry against every exposed
-    /// name in `core`'s own tree (see `ModuleResolver::
-    /// ambient_core_candidates`'s doc comment -- `core` is a full ambient
-    /// prelude, not the short, hardcoded table this used to be) when
-    /// `absolute` names an unqualified single segment that didn't resolve
-    /// locally. `prefix` is the original, pre-absolute-path segment list a
-    /// caller built `absolute` from (`generic_prefix_absolute`'s own
-    /// input) -- needed because `absolute` alone can't tell "this was
-    /// genuinely unqualified" apart from "this happens to produce a
-    /// same-shaped absolute path", so the fallback can only be judged safe
-    /// by whoever still has `prefix` around, not by `resolve_item_checked`
-    /// after the fact.
     fn resolve_item_checked_with_ambient_fallback(
         &mut self,
         prefix: &[Ident],
@@ -669,10 +481,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The definition-site equivalent of
-    /// `resolve_item_checked_with_ambient_fallback`.  Macro-authored paths
-    /// must use the macro's module as both their lookup root and visibility
-    /// accessor; a caller's `reveal` must not leak into a macro body.
     fn resolve_item_with_ambient_from(
         &mut self,
         accessor: &[Ident],
@@ -692,17 +500,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `indirect` is true whenever `typ` sits somewhere that never embeds
-    /// its referent inline into another type's layout -- a function's own
-    /// param/return types, or anything already behind a `Pointer`/`Array`/
-    /// `Slice` -- as opposed to a struct field or `SizedArray` element,
-    /// which do. See `ModuleResolver::resolve_item`'s doc comment for why
-    /// this distinction is what separates a legitimate self-reference
-    /// (`next: *Node`) from a genuine infinite-size cycle (`value: Node`).
-    /// The on-demand triggering that used to happen in a separate pre-pass
-    /// here now happens inline, inside `Context::resolve_type` itself (it
-    /// calls the resolver directly on an unqualified miss), so this is just
-    /// a thin error-reporting wrapper around it.
     pub(crate) fn resolve_type_or_error(
         &mut self,
         id: HirId,
@@ -713,15 +510,6 @@ impl<'r> Analyzer<'r> {
         self.resolve_type_or_error_checked(id, span, typ, indirect, false)
     }
 
-    /// The one place a function/method/extern/gap's own declared return
-    /// type is resolved -- identical to `resolve_type_or_error`, except a
-    /// bare `never` is the expected, successful result here instead of a
-    /// mistake (see `TypeResolutionError::NeverNotAllowedHere`'s doc
-    /// comment). Every *other* type position -- a local, a field, a
-    /// parameter, a `(...) => T` function type's own inner return-type
-    /// slot (resolved directly by `Context::resolve_type`, never through
-    /// this wrapper at all) -- goes through the ordinary
-    /// `resolve_type_or_error` instead, which continues to reject it.
     pub(crate) fn resolve_return_type_or_error(
         &mut self,
         id: HirId,
@@ -732,9 +520,6 @@ impl<'r> Analyzer<'r> {
         self.resolve_type_or_error_checked(id, span, typ, indirect, true)
     }
 
-    /// `resolve_return_type_or_error`, resolved against an explicit module
-    /// -- see `resolve_type_or_error_in`'s doc comment (definition-site
-    /// resolution for a spec's own raw signatures).
     pub(crate) fn resolve_return_type_or_error_in(
         &mut self,
         id: HirId,
@@ -756,14 +541,6 @@ impl<'r> Analyzer<'r> {
         module: &[Ident],
     ) -> Option<ResolvedType> {
         let resolved = self.resolve_type_or_error_in(id, span, typ, indirect, module)?;
-        // A bare spec name (`ResolvedType::Spec`) is never a valid value
-        // type -- see `TypeResolutionError::SpecUsedAsValueType`'s doc
-        // comment. Every position that legitimately wants one (a conform
-        // declaration, a generic bound, `spec *Foo`'s own pointee) goes through
-        // `resolve_spec_reference`, which calls `resolve_type_or_error_raw`
-        // directly instead of this wrapper -- so every other caller (which
-        // is every caller reached through here) is asking for an actual
-        // value type, and a bare spec is always a mistake.
         if let ResolvedType::Spec(spec) = &resolved {
             let name = spec.borrow().name.clone();
             self.error(
@@ -793,14 +570,6 @@ impl<'r> Analyzer<'r> {
         allow_never: bool,
     ) -> Option<ResolvedType> {
         let resolved = self.resolve_type_or_error_raw(id, span, typ, indirect)?;
-        // A bare spec name (`ResolvedType::Spec`) is never a valid value
-        // type -- see `TypeResolutionError::SpecUsedAsValueType`'s doc
-        // comment. Every position that legitimately wants one (a conform
-        // declaration, a generic bound, `spec *Foo`'s own pointee) goes through
-        // `resolve_spec_reference`, which calls `resolve_type_or_error_raw`
-        // directly instead of this wrapper -- so every other caller (which
-        // is every caller reached through here) is asking for an actual
-        // value type, and a bare spec is always a mistake.
         if let ResolvedType::Spec(spec) = &resolved {
             let name = spec.borrow().name.clone();
             self.error(
@@ -821,11 +590,6 @@ impl<'r> Analyzer<'r> {
         Some(resolved)
     }
 
-    /// The same resolution `resolve_type_or_error` does, minus its
-    /// bare-`ResolvedType::Spec`-is-never-a-value-type check -- for the one
-    /// legitimate exception, `resolve_spec_reference` (a conform declaration
-    /// entry, a spec dependency, a generic bound), where a bare spec is
-    /// exactly the expected, successful result.
     pub(crate) fn resolve_type_or_error_raw(
         &mut self,
         id: HirId,
@@ -837,12 +601,6 @@ impl<'r> Analyzer<'r> {
         self.resolve_type_or_error_in(id, span, typ, indirect, &module)
     }
 
-    /// `resolve_type_or_error_raw`, resolved against an explicit module --
-    /// the definition-site resolution a spec's own raw function signature
-    /// needs when the flatten runs from a caller's module (`Analyzer::
-    /// flatten_spec_into`): a spec's types are written in the spec's own
-    /// module and resolve there, wherever the spec happens to be *used*
-    /// from.
     pub(crate) fn resolve_type_or_error_in(
         &mut self,
         id: HirId,
@@ -867,19 +625,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Resolves `typ` with `subst`'s bindings visible as if they were
-    /// already-bound generic parameters, on top of whatever this analyzer's
-    /// own scope already has -- one shared primitive behind two different
-    /// default-generic resolution sites: `ensure_item`'s padding gate (a
-    /// throwaway `Analyzer` already seeded with everything resolved so far
-    /// via `Analyzer::new`, called with `subst` empty), and this analyzer's
-    /// own eager, per-argument precedence resolution in
-    /// `Analyzer::infer_generic_args` (a live analyzer mid-call, where
-    /// `subst` is the partial substitution built up so far and nothing is
-    /// pre-seeded). `pub`, not `pub(crate)`, specifically so
-    /// `omega_driver::items::ensure_item` can call it through
-    /// `Driver::with_analyzer` -- every other type-resolution entry point
-    /// here stays crate-private.
     pub fn resolve_under_substitution(
         &mut self,
         id: HirId,
@@ -896,41 +641,6 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    /// Infers `generics` from `params`/`args`, analyzed strictly left to
-    /// right -- the machinery behind "expected type > explicit type >
-    /// declared default > inference," the precedence rule a generic
-    /// function/static-call argument follows (the expected type seeds the
-    /// substitution *before* any argument is analyzed, the same order
-    /// `infer_literal_type_args` already uses for struct literals). Shared
-    /// by `Analyzer::finish_generic_call` and `finish_generic_static_call`;
-    /// `probe_literal_type_args` keeps the identical per-slot shape (matched
-    /// by field name there instead of position) with its own empty seed.
-    ///
-    /// `seed` is the substitution this inference starts from -- every entry
-    /// behaves exactly like a generic already pinned by an earlier
-    /// argument. Before each argument is analyzed,
-    /// `expected_for_generic_param` substitutes its raw declared type
-    /// against whatever's already bound (the seed, then earlier arguments in
-    /// this same call) or, for a still-unbound generic with its own declared
-    /// default, that default -- giving `analyze_expr` a real `expected` a
-    /// bare literal can adapt to, the same "earliest position is the
-    /// anchor" precedent `if`-branches and binary operands already use (see
-    /// `docs/language/control-flow-and-operators.md`). The argument's own *actual* resolved type
-    /// -- not the tentative `expected` -- is what `unify_generic_type` then
-    /// permanently pins the generic to: an explicit suffix/type on the
-    /// argument always wins over `expected` regardless (see
-    /// `analyze_number`), so this never needs to track "was this pinned by
-    /// a default" separately from an ordinary argument-driven pin. A later
-    /// argument whose own explicit type conflicts with an already-pinned
-    /// generic is left to the caller's own, unchanged final `accepts` loop
-    /// to reject.
-    ///
-    /// Returns every argument, checked, plus the resulting (possibly
-    /// partial) substitution -- a generic that never appears in any
-    /// parameter type at all (return-type-only, or every generic on a
-    /// zero-arg call) is left unbound here for the caller's own
-    /// `resolve_inferred_type_args` call to either default (if it has one)
-    /// or error on.
     pub(crate) fn infer_generic_args(
         &mut self,
         generics: &[Ident],
@@ -951,17 +661,6 @@ impl<'r> Analyzer<'r> {
         Some((checked_args, subst))
     }
 
-    /// `raw_type` resolved under `subst`, treating any generic in
-    /// `generics` that's unbound in `subst` but has its own declared
-    /// default as if it were already bound to that default (resolved
-    /// recursively under the same growing substitution, so `B = A` can see
-    /// whatever `A` is already bound or defaulted to). `None` -- meaning
-    /// "no hint, fall back to ordinary inference," entirely unchanged --
-    /// whenever `raw_type` references a generic with neither a binding nor
-    /// a default; deliberately checked structurally *before* attempting any
-    /// resolution, so this never mistakes an as-yet-truly-unconstrained
-    /// generic name for an ordinary unresolved type and reports a spurious
-    /// error for it.
     pub(crate) fn expected_for_generic_param(
         &mut self,
         id: HirId,
@@ -987,11 +686,6 @@ impl<'r> Analyzer<'r> {
         self.resolve_under_substitution(id, span, raw_type, &local)
     }
 
-    /// Whether every generic `raw_type` references (anywhere in its shape)
-    /// is either already bound in `subst` or has its own declared default
-    /// -- the purely structural check `expected_for_generic_param` runs
-    /// before ever attempting real resolution. Mirrors
-    /// `type_references_generics`'s own recursive walk.
     fn generic_refs_resolvable(
         raw_type: &Type,
         generics: &[Ident],

@@ -15,8 +15,6 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// The source form that produced a concrete conformance entry. Ordering is
-/// specificity: a more concrete declaration supersedes a less concrete one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ConformanceOrigin {
     Blanket,
@@ -24,8 +22,6 @@ pub(crate) enum ConformanceOrigin {
     Concrete,
 }
 
-/// What registration should do after it has compared a candidate with the
-/// entry already owning the same `(target, spec, arguments)` key.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RegistrationDecision {
     Insert,
@@ -46,20 +42,7 @@ pub(crate) struct ConformanceEntry {
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
     pub substitution: Vec<(Ident, ResolvedType)>,
-    /// The conform's own declared bounds, exactly as written -- one
-    /// `(concrete, spec, spec_args)` per member, before any bound-context
-    /// seeding. The fully seeded analyzer context is deliberately *not*
-    /// stored: it is body-checking information, computed at body-check time
-    /// (see `check_generic_bounds`'s doc comment for why computing it during
-    /// signature resolution made conformance queries re-entrant).
     pub declared_bounds: Vec<ResolvedBound>,
-    /// `declared_bounds`' alias-expanded identity -- every `(spec id,
-    /// resolved args)` in the declared set, transitively expanded through
-    /// every alias, computed once where an analyzer is already in hand (see
-    /// `Analyzer::expand_bound_set`). This is what blanket precedence
-    /// compares and what `bound_context_for` uses to admit derived
-    /// conformances: an alias bound and its inline spelling must be
-    /// interchangeable everywhere.
     pub declared_bound_keys: Vec<(HirId, Vec<ResolvedType>)>,
     pub origin: ConformanceOrigin,
 }
@@ -75,9 +58,6 @@ impl ConformanceEntry {
 }
 
 impl ConformanceOrigin {
-    /// Classifies the raw target shapes that `match_conform_target` can bind.
-    /// Keep this beside that matcher: accepting a template here that the
-    /// matcher cannot bind would silently drop a conform declaration.
     fn classify(target: &Type, generics: &[omega_hir::HirGenericParam]) -> Option<Self> {
         if generics.is_empty() {
             return Some(Self::Concrete);
@@ -102,20 +82,10 @@ struct ConformanceTemplate {
     origin: ConformanceOrigin,
 }
 
-/// What one sweep through a target's matching templates accomplished.
 pub(crate) struct SweepOutcome {
-    /// At least one template was skipped because its goal was already on
-    /// the goal stack -- see `conformances_for_type` for what that means
-    /// for the `materialized` memo.
     skipped_goal: bool,
 }
 
-/// One conformance proof currently in flight: "this template, instantiated
-/// at `target`, is being asked to produce `spec`". The stack of these is the
-/// recursion guard -- a goal re-entered while its own instantiation is still
-/// running is a genuine cycle, and only that (see `Driver::solve`).
-/// `spec_name` is `spec`'s display name, carried so the cycle chain can be
-/// rendered without re-resolving anything mid-error.
 #[derive(Clone)]
 struct ConformanceGoal {
     id: HirId,
@@ -129,26 +99,9 @@ struct ConformanceGoal {
 pub(crate) struct Conformances {
     pub entries: Vec<ConformanceEntry>,
     templates: Vec<ConformanceTemplate>,
-    /// Template instantiations whose own generic bounds were not satisfied,
-    /// keyed the same way the success guard is. `conformances_for_type` and
-    /// `conformance_for` re-walk every matching template on each call, and a
-    /// failed instantiation registers no entry to be found the second time --
-    /// so without this the same `SpecNotImplemented` was reported once per
-    /// conformance lookup (twice for a target that is also coerced to
-    /// `spec *T`). Correct anchor and wording; only the count was wrong.
     failed: Vec<(HirId, ResolvedType)>,
-    /// Targets whose template set has already been considered. All templates
-    /// are parked before any materialization, so this is a sound memo rather
-    /// than an order-dependent cache.
     materialized: Vec<ResolvedType>,
-    /// Active conformance goals, used to turn recursive blanket bounds into
-    /// a diagnostic instead of unbounded query recursion.
     goals: Vec<ConformanceGoal>,
-    /// `(target, spec)` pairs already reported as cyclic. The same closure
-    /// can be re-proved through a different door -- a bound check's alias
-    /// fallback re-asking a member spec while its own proof is still in
-    /// flight rediscovers the identical cycle -- and one diagnostic is
-    /// enough: the pair *is* the cycle.
     reported_cycles: Vec<(ResolvedType, HirId)>,
     pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedType>)>,
 }
@@ -165,10 +118,6 @@ pub(crate) struct PrimitiveEntry {
 }
 
 impl PrimitiveEntry {
-    /// Primitive templates have exactly one type substitution before their
-    /// synthetic `Self` binding is added. Keep this legacy representation
-    /// detail named at its boundary rather than leaking length tests into the
-    /// compiler pipeline.
     pub fn monomorphized(&self) -> bool {
         self.substitution.len() > 1
     }
@@ -188,16 +137,6 @@ pub(crate) struct Primitives {
 }
 
 impl Driver {
-    /// Marks every import alias a raw bound `Type` references -- a bound's
-    /// spec names only ever resolve at *instantiation* time, which the
-    /// declaring package's own standalone build may never do (a blanket
-    /// template nobody in that package materializes). Without this, that
-    /// package's own build reports `UnusedImport` on the very import that
-    /// binds the bound's name -- a false positive by construction, now that
-    /// a bound is the primary spelling for a spec reference (`T: Successor +
-    /// Ord`). Purely a lint bookkeeping fix: nothing resolves, nothing
-    /// errors; an alias that isn't actually an import (a local type, a
-    /// module) is simply not marked.
     pub(crate) fn mark_bound_type_imports(&mut self, module: &[Ident], generics: &[HirGenericParam]) {
         fn walk(this: &mut Driver, module: &[Ident], ty: &Type) {
             match ty {
@@ -385,18 +324,6 @@ impl Driver {
         Some(entry)
     }
 
-    /// Every built-in type gets a `primitive` block as its *declaration
-    /// site* in `core`, whether or not it has any methods to attach. That is
-    /// what the one-block-per-target rule is for: reading `core` should
-    /// answer "which types does this language have" without consulting the
-    /// compiler's own source.
-    ///
-    /// `Void` and `Never` are included even though neither can have a
-    /// callable `*self` method -- neither has a value to call one on. Their
-    /// blocks exist to be declarations, and to give their semantics somewhere
-    /// to be documented in Omega rather than only in `docs/`. Type
-    /// *constructors* (`*T`, `[N]T`, `[?]T`) are still excluded: they are not
-    /// single types, and `[]T` is already covered by the generic slice form.
     fn primitive_target_allowed(target: &ResolvedType) -> bool {
         matches!(
             target,
@@ -489,10 +416,6 @@ impl Driver {
                 })
                 .collect();
             for conform in declarations {
-                // Bound-position spec references only resolve when the
-                // template is instantiated, which a standalone build may
-                // never do -- mark their import aliases used right here or
-                // the build reports a spurious `UnusedImport`.
                 self.mark_bound_type_imports(module, &conform.generics);
                 let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics) else {
                     self.diagnostics.error(
@@ -588,9 +511,6 @@ impl Driver {
         );
         self.diagnostics.record_warnings(module, spec_run.warnings);
         let spec_reference = spec_run.result?;
-        // A spec alias is a name for a conjunction, never a contract of its
-        // own: `conform T to Alias` is rejected outright rather than
-        // flattening its members into one block.
         if spec_reference.0.borrow().is_alias {
             self.diagnostics.error(
                 module,
@@ -795,9 +715,6 @@ impl Driver {
         false
     }
 
-    /// Registers exactly one winner for a `(target, spec, args)` key. A
-    /// loser is deliberately not retained: every later resolver can query
-    /// entries directly without re-implementing precedence.
     fn register_conformance(&mut self, entry: ConformanceEntry) -> bool {
         match self.registration_decision(&entry) {
             RegistrationDecision::Insert => {
@@ -813,11 +730,6 @@ impl Driver {
         }
     }
 
-    /// Compare a declaration header with the current owner of its key. This
-    /// is deliberately side-effect free except for duplicate/ambiguity
-    /// diagnostics, so `instantiate_conformance` can make the selection
-    /// before it type-checks a body and `register_conformance` can apply the
-    /// same decision afterwards.
     fn registration_decision(&mut self, entry: &ConformanceEntry) -> RegistrationDecision {
         let incumbent = self.conformances.entries.iter().position(|existing| {
             existing.target == entry.target
@@ -864,23 +776,6 @@ impl Driver {
         }
     }
 
-    /// Compares two declarations competing for the same `(target, spec,
-    /// args)` key. Outside the blanket-vs-blanket arm this is the plain
-    /// origin ordering (a concrete conform beats a generic template
-    /// instantiation, which beats a blanket) -- the author's explicit
-    /// declaration is always more specific than a derivation.
-    ///
-    /// Two *blankets* are ordered by their declared bound sets instead: a
-    /// strict superset of bounds is more specific (its applicability
-    /// predicate is narrower), a strict subset less so, and incomparable
-    /// sets (`{A, B}` vs `{A, C}`) are genuinely ambiguous -- reported by the
-    /// caller as `AmbiguousConformance`, never silently picked. Equal sets
-    /// fall through to the ordinary `DuplicateConformance` handling. An
-    /// *unbounded* blanket (`conform<T> T to Spec`) accepts every type, so
-    /// it is strictly less specific than one that filters by any bound -- the
-    /// empty bound set is a subset of every other, the degenerate case of
-    /// the same rule. Without this the two collided as
-    /// `DuplicateConformance`.
     fn compare_conformance_precedence(
         candidate: &ConformanceEntry,
         incumbent: &ConformanceEntry,
@@ -981,29 +876,6 @@ impl Driver {
         None
     }
 
-    /// What a `T: Spec` bound puts into the analyzer's bound context: the
-    /// declared bound itself, plus -- for an alias bound -- every conform
-    /// already registered on `concrete` whose spec is one of the alias's
-    /// members, plus every *template-derived* conform on `concrete` whose
-    /// own declared bound set is a subset of the item's declared bounds.
-    ///
-    /// The alias part is what makes an aggregate bound work at all: a pure
-    /// alias (`spec AB = A + B`) is never itself conformed to, so
-    /// `(concrete, AB)` has no entry and a receiver call under `T: AB`
-    /// would find nothing -- even though `conform T to A` and `conform T to
-    /// B` already registered every method the alias names.
-    ///
-    /// The derived part is what makes a blanket's methods reachable under a
-    /// bound: `conform<T: Ord> T to Eq` means every `T: Ord` type is also
-    /// `Eq`, so a body bounded on `Ord` alone may call `equals` -- the
-    /// conform is *entailed* by the bound set, exactly like the alias
-    /// members are. Restricted to template-derived entries (a blanket or
-    /// generic-template instantiation, never a hand-written concrete
-    /// `conform`), and to those whose declared bounds the current item's
-    /// own bounds already guarantee: seeding anything wider is what
-    /// previously let `x.secret()` resolve under `T: Speak` merely because
-    /// someone wrote `conform Dog to Secret`, which voids the guarantee
-    /// `conform` exists to provide.
     pub(crate) fn bound_context_for(
         &mut self,
         concrete: &ResolvedType,
@@ -1036,9 +908,6 @@ impl Driver {
         seeds
     }
 
-    /// `bound_context_for` over a whole declared set -- the body-checking
-    /// sites' shared fold (a generic function's own body, an aggregate
-    /// instantiation's inherent methods, a conform body).
     pub(crate) fn bound_context_over(
         &mut self,
         declared: &[ResolvedBound],
@@ -1075,19 +944,6 @@ impl Driver {
             .collect()
     }
 
-    /// The single place a template is ever instantiated for a target.
-    /// `Some(spec)` restricts the sweep to templates that can produce that
-    /// spec -- the demand path, which makes proving goal-directed: each
-    /// goal pulls in precisely the templates it needs, instead of
-    /// instantiating every template on the type (which used to let one
-    /// blanket's bound check fire mid-sweep and start a second template
-    /// while the first was still in flight -- the false-cycle bug).
-    /// `None` sweeps every matching template, for callers that want all
-    /// conformances of a type.
-    ///
-    /// A template whose `(target, spec)` goal is already on the stack is
-    /// skipped **silently** -- only `conformance_for` reports, and only
-    /// when the goal it asked for is still in flight once `solve` returns.
     pub(crate) fn solve(
         &mut self,
         target: &ResolvedType,
@@ -1099,9 +955,6 @@ impl Driver {
             let Some(substitution) = Self::match_conform_target(&template.conform, target) else {
                 continue;
             };
-            // A template whose own bound check already failed at this
-            // target is permanently non-applicable here; skip it without
-            // re-running any analysis.
             if self
                 .conformances
                 .failed
@@ -1158,22 +1011,6 @@ impl Driver {
         SweepOutcome { skipped_goal }
     }
 
-    /// Resolves a matched template's spec reference with its generics
-    /// already bound. The substitution is required because a generic
-    /// template's spec arguments may reference its own generics
-    /// (`conform<K, V> HashMap<K, V> to ToIterator<KeyValue<K, V>>`): at
-    /// park time there is nothing to bind them to, so the spec cannot be
-    /// resolved then -- once the target has *matched*, the substitution
-    /// pins every generic and the spec resolves exactly.
-    ///
-    /// Failures are silent here on purpose: `solve`'s demand path uses this
-    /// as a pure filter, and the real path (`instantiate_conformance`)
-    /// re-resolves the same reference and reports whatever went wrong. A
-    /// template whose spec name does not resolve is consequently skipped
-    /// without a diagnostic by the demand path alone; any full sweep for
-    /// the type still instantiates it and reports (see
-    /// `a_template_whose_spec_does_not_resolve_reports` in
-    /// `tests/conform.rs`).
     fn template_spec(
         &mut self,
         template: &ConformanceTemplate,
@@ -1196,14 +1033,6 @@ impl Driver {
         .result
     }
 
-    /// The first of `conform`'s own generic parameters that appears nowhere in
-    /// its target, so nothing can ever bind it -- `conform<T, U: Foo> List<T>
-    /// to Bar`, whose `U` no concrete `List<...>` determines. Materializing
-    /// such a template is impossible, so it is rejected at its declaration.
-    ///
-    /// A *blanket* (`conform<T: Numeric> T to Sum`) is deliberately not this:
-    /// its target **is** the parameter, so matching binds `T` to whatever type
-    /// is being checked. `ConformanceOrigin::classify` sorts the two apart.
     fn unconstrained_parameter(conform: &HirConformDef) -> Option<Ident> {
         let mut mentioned = Vec::new();
         Self::collect_type_idents(&conform.target, &mut mentioned);
@@ -1214,10 +1043,6 @@ impl Driver {
             .map(|generic| generic.ident.clone())
     }
 
-    /// Every unqualified identifier a raw `Type` mentions, in source order.
-    /// Only used to ask whether a generic parameter occurs in a conform
-    /// target, so a qualified path (which can never *be* a parameter) is
-    /// deliberately not contributed.
     fn collect_type_idents(r#type: &Type, out: &mut Vec<Ident>) {
         match r#type {
             Type::Named(path) => {
@@ -1303,10 +1128,6 @@ impl Driver {
         Some(substitution)
     }
 
-    /// Conform and primitive blocks have no named `ItemKey` of their own,
-    /// but every concrete target instantiation still needs a distinct method
-    /// identity. Reuse the normal item identity allocator with an internal
-    /// key made from the declaration and canonical target.
     fn conformance_method_ids(
         &mut self,
         module: &[Ident],

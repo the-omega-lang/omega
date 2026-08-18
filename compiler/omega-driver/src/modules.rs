@@ -1,9 +1,3 @@
-//! The module tree: parsing a module's file at most once, and indexing its
-//! top-level names and import aliases. What a compilation actually looks at
-//! is decided elsewhere now -- the local package's own set comes straight
-//! from the filesystem (`Driver::local_module_paths`), and `core`'s own
-//! tree, wherever it's registered, does too (`ModuleRoots::core_modules`) --
-//! this module no longer walks an import graph to find anything.
 
 use crate::error::{CompileError, ImportSite};
 use crate::{Driver, ModulePath};
@@ -21,45 +15,20 @@ use omega_parser::prelude::{Ident, ImportRoot, Item, ParseError, Path, SourceMod
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// One module's parsed content, plus the lazily-built index over its own
-/// top-level names.
 pub(crate) struct ParsedModule {
     pub id: ModuleId,
     pub hir: Rc<HirModule>,
-    /// Whether this module is *directory-shaped* (has children of its own --
-    /// see `fs_resolve::ModuleLocation`). This is exactly what
-    /// `Driver::relative_base` needs: a directory-shaped module's children
-    /// live directly under it (its own path *is* its relative base), while a
-    /// leaf file's siblings live in its parent directory.
     pub directory_shaped: bool,
-    /// Built once, the first time anything looks a name up in this module.
     pub index: Option<ModuleIndex>,
 }
 
-/// A module's own top-level names, indexed. Purely structural: building this
-/// resolves nothing and touches no other module.
 pub(crate) struct ModuleIndex {
-    /// Item name -> its position in `HirModule::items`. For an overloaded
-    /// name this points at the first declaration only; the overload path uses
-    /// `overloads` instead.
     pub items: IndexMap<Ident, usize>,
-    /// Every name that declares *more than one* function, with all of their
-    /// positions. A name absent here is never overloaded -- it's either not a
-    /// function or an ordinary one-item name, both served by `items`.
     pub overloads: IndexMap<Ident, Vec<usize>>,
-    /// Every `import` statement, keyed by the alias it binds.
     pub imports: IndexMap<Ident, ImportEntry>,
 }
 
 impl ModuleIndex {
-    /// Every top-level item a single item query can address, with its
-    /// position -- i.e. every one that isn't an overload group, which needs
-    /// the per-candidate path instead (an `ItemKey` can only ever address one
-    /// item per name, so it would silently only ever reach the first-declared
-    /// candidate).
-    ///
-    /// In declaration order, which is what makes both whole-program sweeps
-    /// deterministic build-to-build.
     pub fn plain_items(&self) -> Vec<(Ident, usize)> {
         self.items
             .iter()
@@ -69,54 +38,26 @@ impl ModuleIndex {
     }
 }
 
-/// One `import` statement, reduced to what resolution later needs.
-///
-/// Computing `target` (the absolute path the statement names) needs no
-/// signature lookup, no recursion, and no filesystem access -- only deciding
-/// what that path *is* (a module vs. an item) is deferred, lazily, to
-/// `Driver::resolve_alias`.
 pub(crate) struct ImportEntry {
     pub id: HirId,
     pub span: Span,
-    /// The absolute module path this import names.
     pub target: ModulePath,
-    /// This import's own `@suppress(...)` list, resolved here because an
-    /// import has no per-item analysis pass of its own for `UnusedImport` to
-    /// hook into otherwise.
     pub suppress: Vec<Ident>,
-    /// The `reveal` modifier, needed when the target is finally resolved.
     pub reveal: bool,
 }
 
-/// Why a module's own file never produced usable HIR. Stashed structurally
-/// (rather than flattened into a `ResolveError` message) because
-/// `parse_module`'s callers only speak `ResolveError`; `Driver::load_failure`
-/// turns these back into first-class `CompileError`s.
 pub(crate) enum LoadFailure {
     Parse(Vec<ParseError>),
     MacroExpansion(MacroError),
     Compile(CompileError),
 }
 
-/// Every module this compilation has touched: its HIR (parsed at most once),
-/// its source text (kept for diagnostic rendering long after parsing), and
-/// why it failed to load if it did.
 #[derive(Default)]
 pub(crate) struct ModuleStore {
     modules: HashMap<ModulePath, ParsedModule>,
-    /// The unexpanded AST for each source module, retained so macro discovery
-    /// and normal compilation parse a file exactly once.
     asts: HashMap<ModulePath, Rc<SourceModule>>,
-    /// Each module's own raw macro definitions, derived from `asts`.
     macro_defs: HashMap<ModulePath, Rc<HashMap<Ident, MacroDefinitionStmt>>>,
-    /// Definition-site provenance for all macro invocations expanded in this
-    /// compilation. Kept beside the parsed modules because ids are assigned
-    /// while a source module is turned into HIR.
     macro_expansions: omega_parser::macros::ExpansionState,
-    /// Recorded the moment a file is read -- before parsing is even
-    /// attempted, so a module that fails to parse can still render its own
-    /// error snippets. Deliberately not part of `ParsedModule`, which only
-    /// exists for modules that parsed successfully.
     sources: HashMap<ModulePath, Rc<SourceFile>>,
     failures: HashMap<ModulePath, LoadFailure>,
     next_id: u32,
@@ -133,9 +74,6 @@ impl ModuleStore {
         self.modules.get(path)
     }
 
-    /// A module known to be parsed already. Every caller reaches this through
-    /// a path that parsed it first (an item index, a reachability walk), so a
-    /// miss is a driver bug, not a user error.
     pub fn parsed(&self, path: &[Ident]) -> &ParsedModule {
         self.modules
             .get(path)
@@ -157,8 +95,6 @@ impl ModuleStore {
         self.macro_expansions.macro_visibility(origin)
     }
 
-    /// A module's index, which is present for every module anything has
-    /// looked a name up in (see `Driver::ensure_module_indexed`).
     pub fn index(&self, path: &[Ident]) -> &ModuleIndex {
         self.parsed(path)
             .index
@@ -187,8 +123,6 @@ impl ModuleStore {
         self.modules.get(path).is_some_and(|m| m.index.is_some())
     }
 
-    /// One top-level item's raw HIR, by name -- `None` when the module isn't
-    /// indexed or has no such name.
     pub fn item(&self, path: &[Ident], name: &Ident) -> Option<&HirItem> {
         let module = self.modules.get(path)?;
         let index = *module.index.as_ref()?.items.get(name)?;
@@ -205,9 +139,6 @@ impl ModuleStore {
 }
 
 impl Driver {
-    /// Reads and parses one source module at most once. The retained AST is
-    /// intentionally pre-expansion because macro discovery must see its raw
-    /// imports and definitions.
     fn ensure_ast(
         &mut self,
         path: &[Ident],
@@ -239,8 +170,6 @@ impl Driver {
         Ok(ast)
     }
 
-    /// The definitions physically declared by one module, read from its raw
-    /// AST without expanding it or traversing its imports.
     fn module_macros(
         &mut self,
         path: &[Ident],
@@ -275,7 +204,6 @@ impl Driver {
         Ok(definitions)
     }
 
-    /// Every exposed macro in `core`, collected once for the ambient prelude.
     fn prelude_macros(&mut self) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, CompileError> {
         if let Some(definitions) = &self.prelude_macros {
             return Ok(definitions.clone());
@@ -309,10 +237,6 @@ impl Driver {
         Ok(definitions)
     }
 
-    /// The macros visible to one module before its own expansion: ambient
-    /// exposed `core` macros, then permitted item imports. Its local
-    /// definitions are deliberately merged only by `macros::expand`, where
-    /// they shadow this environment.
     fn macro_env(
         &mut self,
         path: &[Ident],
@@ -361,7 +285,6 @@ impl Driver {
         for import in imports {
             let absolute = match self.import_absolute_path(path, &base, import.root, &import.path) {
                 Ok(path) => path,
-                // Ordinary import indexing reports this at the original span.
                 Err(_) => continue,
             };
             if self.roots.module_exists(&absolute) || absolute.len() < 2 {
@@ -391,12 +314,6 @@ impl Driver {
         Ok(environment)
     }
 
-    /// Parses (and lowers) `path`'s own file, memoized -- the mechanism behind
-    /// "only resolve things that are imported" (a module is parsed on demand,
-    /// the first time something needs it) and "never reanalyze a file twice".
-    /// A directory-shaped module with no own file (a pure namespace, e.g.
-    /// `mymodule/` with no `mymodule/mymodule.omg`) is a valid, empty module,
-    /// not an error.
     pub(crate) fn parse_module(&mut self, path: &[Ident]) -> Result<Rc<HirModule>, ResolveError> {
         if let Some(module) = self.modules.get(path) {
             return Ok(module.hir.clone());
@@ -451,9 +368,6 @@ impl Driver {
         Ok(hir)
     }
 
-    /// Turns a module-load failure into its first-class `CompileError`: the
-    /// stashed parse/macro-expansion errors when that's what actually went
-    /// wrong, or the resolve error itself, tagged with the importing site.
     pub(crate) fn load_failure(
         &mut self,
         module: &[Ident],
@@ -474,15 +388,10 @@ impl Driver {
         }
     }
 
-    /// The parsed source of `module`, for rendering its diagnostics --
-    /// present for every module that got as far as being read off disk.
     pub fn source_file(&self, module: &[Ident]) -> Option<Rc<SourceFile>> {
         self.modules.source(module)
     }
 
-    /// Builds (once) module `path`'s index of top-level names and import
-    /// aliases, recording a `Redeclaration` error for each duplicate of
-    /// either.
     pub(crate) fn ensure_module_indexed(&mut self, path: &[Ident]) -> Result<(), ResolveError> {
         if self.modules.is_indexed(path) {
             return Ok(());
@@ -506,8 +415,6 @@ impl Driver {
         Ok(())
     }
 
-    /// The name -> position index over a module's own top-level items, and
-    /// the subset of those names that are overload groups.
     fn index_items(
         &mut self,
         path: &[Ident],
@@ -529,9 +436,6 @@ impl Driver {
                 Entry::Occupied(first) => *first.get(),
             };
             if is_function(i) && is_function(first_index) {
-                // A valid overload candidate, not a redeclaration -- whether
-                // it's genuinely distinct is checked once every candidate's
-                // signature is resolved (`Driver::check_overload_duplicates`).
                 overloads
                     .entry(name)
                     .or_insert_with(|| vec![first_index])
@@ -555,7 +459,6 @@ impl Driver {
         (items, overloads)
     }
 
-    /// The alias -> import index over a module's own `import` statements.
     fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
         let base = self.relative_base(path);
@@ -583,9 +486,6 @@ impl Driver {
                     continue;
                 }
             };
-            // `@suppress` is the only annotation an import can carry
-            // (`ItemKind::Import`); anything else records its own
-            // `AnnotationNotApplicable`.
             let annotations = import.annotations.clone();
             let suppress = self.analyze(path, &[], (import.id, import.span), |analyzer| {
                 annotations::resolve(
@@ -629,8 +529,6 @@ impl Driver {
         imports
     }
 
-    /// Module `path`'s item `name`'s position in its own `HirModule::items`
-    /// -- indexes the module first if needed.
     pub(crate) fn local_item_index(
         &mut self,
         module_path: &[Ident],
@@ -648,12 +546,6 @@ impl Driver {
             })
     }
 
-    /// An item's own declared generic parameters (empty = non-generic), with
-    /// no analysis or instantiation triggered -- just a HIR field read behind
-    /// the module index. The single source of truth for every "is this
-    /// generic" check: an item import (which supplies no type arguments, so
-    /// must not eagerly instantiate), `compile`'s sweeps (which must skip an
-    /// uninstantiated template), and `ensure_item`'s arg-count validation.
     pub(crate) fn item_generics(
         &mut self,
         module_path: &[Ident],
@@ -677,8 +569,6 @@ impl Driver {
         })
     }
 
-    /// Whether an item is a *generic template* -- one that has no concrete
-    /// signature or body of its own until some use site instantiates it.
     pub(crate) fn is_generic_template(
         &mut self,
         module_path: &[Ident],
@@ -687,10 +577,6 @@ impl Driver {
         Ok(!self.item_generics(module_path, name)?.is_empty())
     }
 
-    /// Where `module_path`'s own *unrooted* (`ImportRoot::Local`) imports
-    /// start looking -- see `ParsedModule::directory_shaped`. Always called
-    /// for an already-parsed module (an import can only be resolved for a
-    /// module whose own statements are in hand).
     fn relative_base(&self, module_path: &[Ident]) -> ModulePath {
         self.relative_base_for(
             module_path,
@@ -698,8 +584,6 @@ impl Driver {
         )
     }
 
-    /// The pre-parse form of [`Self::relative_base`], taking the location
-    /// metadata directly because the importing module is not in the store yet.
     fn relative_base_for(&self, module_path: &[Ident], directory_shaped: bool) -> ModulePath {
         if directory_shaped {
             module_path.to_vec()
@@ -708,9 +592,6 @@ impl Driver {
         }
     }
 
-    /// The absolute module path one `import` statement names, given the
-    /// importing module and its already-computed local import base -- pure path
-    /// arithmetic, no recursive item resolution and no filesystem access.
     fn import_absolute_path(
         &self,
         importer: &[Ident],
@@ -724,10 +605,6 @@ impl Driver {
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            // "Root of *my* current project". Every discovered module path,
-            // local or extern, now begins with its project's declared root
-            // name, so re-prepend the importer's first segment to keep this
-            // path anchored to that project.
             ImportRoot::ProjectRoot => {
                 let mut absolute = Vec::new();
                 if let Some(project_root) = importer.first() {
@@ -736,11 +613,6 @@ impl Driver {
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            // `path.head` is the extern module's own declared name (the same
-            // `Ident` `--extern` registered it under -- no separate local
-            // alias to translate). Checked eagerly here, rather than left to
-            // an ordinary not-found, so a typo'd or forgotten `--extern` flag
-            // gets its own precise diagnostic.
             ImportRoot::Extern => {
                 if !self.roots.has_extern(&path.head) {
                     return Err(ResolveError::UnknownExtern(path.head.clone()));

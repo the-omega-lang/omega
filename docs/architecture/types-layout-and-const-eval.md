@@ -198,3 +198,14 @@ Changing a type's runtime representation is cross-cutting. Audit, in order:
 9. mixed-backend/separate-compilation tests.
 
 Do not patch one backend's offset arithmetic as the primary implementation of a new layout rule.
+
+## Representation couplings worth preserving
+
+A few analyzer-side representation details are intentionally shared by layout, constant evaluation, and later lowering:
+
+- Aggregate flattening includes real padding/filler leaves where required; byte offsets and flattened positional representation must stay consistent.
+- Enum values retain full enum layout even when semantic analysis knows a specific variant. The representation is tag + header/shared fields + payload storage large/aligned enough for every variant body, which is what makes refinement-to-plain widening representation-preserving.
+- Compile-time projected assignment has no backing memory. It rebuilds the containing `ConstValue` tree and writes the rebuilt root back to its binding.
+- Dynamic-dispatch/vtable values are runtime constructs and have no compile-time `ConstValue` representation. If analysis proves a checked tree exhaustive but the interpreter later reaches "no matching arm," treat that as an analyzer/interpreter invariant violation rather than ordinary user input.
+
+When these representations change, audit MIR/codegen and ABI documentation together instead of compensating with local comments.

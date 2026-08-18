@@ -1,12 +1,3 @@
-//! The two-phase whole-program sweep: every reachable item's signature
-//! first, then every reachable item's body.
-//!
-//! The split is what makes declaration order irrelevant -- same- and
-//! cross-module forward references and self-references all resolve regardless
-//! of which module they cross -- and mirrors the identical split
-//! `omega_codegen::Codegen` does one layer down, for the same underlying
-//! reason: a cross-module reference in either direction must never need
-//! something that isn't ready yet.
 
 use crate::error::{CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
@@ -30,15 +21,10 @@ use omega_parser::prelude::Ident;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Every warning found in a module, tagged with it so the CLI can render it
-/// against the right source file.
 type TaggedWarnings = Vec<(ModulePath, AnalysisWarning)>;
 
-/// Every compiled module, tagged with its absolute path -- what codegen
-/// consumes, and what the post-phase merges append to.
 pub(crate) type CheckedModules = Vec<(ModulePath, CheckedModule)>;
 
-/// A resolution failure with no importing site of its own to blame.
 fn fatal(error: ResolveError) -> Vec<CompileError> {
     vec![CompileError::Resolve {
         error,
@@ -47,21 +33,6 @@ fn fatal(error: ResolveError) -> Vec<CompileError> {
 }
 
 impl Driver {
-    /// Compiles every module the local package contains (see
-    /// `local_module_paths`) -- `entry` names which one has `main`, nothing
-    /// more; it plays no role in *discovering* what gets compiled.
-    ///
-    /// A *generic template* is skipped by both phases -- it has no concrete
-    /// signature or body of its own, only a specific instantiation does,
-    /// triggered lazily by whatever use site first needs it. Every
-    /// instantiation discovered along the way is merged into its originating
-    /// module during final assembly, once both phases have fully finished (so
-    /// however late one was discovered, it is guaranteed present by then).
-    ///
-    /// `target` re-sets the compilation target for this run (see
-    /// `Driver::new`'s doc comment) -- everything this compilation does,
-    /// from `comp` evaluation to codegen, answers width questions against
-    /// it.
     pub fn compile(
         &mut self,
         entry: &[Ident],
@@ -114,13 +85,8 @@ impl Driver {
             checked_module.items.push(body.item.clone());
             warnings.extend(body.warnings.iter().map(|w| (path.clone(), w.clone())));
         }
-        // Every generic primitive/conform body any of the above actually
-        // triggered, directly or transitively through another one's body.
         self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
 
-        // A genuine error inside an extern tree must still surface even when
-        // nothing local imports that submodule. Warnings stay scoped to
-        // local modules only, deliberately.
         let mut error_scope = local.clone();
         error_scope.extend(extern_surface);
         let errors = self.diagnostics.drain_errors(&error_scope);
@@ -150,23 +116,11 @@ impl Driver {
         })
     }
 
-    /// `CompileError::EmptyPackage` for the package currently being compiled.
     fn empty_package_error(&self) -> CompileError {
         let (root, expected) = self.roots.local_root();
         CompileError::EmptyPackage { root, expected }
     }
 
-    /// Every module the local package contains, unconditionally -- the
-    /// filesystem is the source of truth, so nothing needs to *import* a
-    /// sibling module for it to be part of the build, only to *reference*
-    /// it. An `--extern` dependency is the opposite: resolved lazily, one
-    /// path at a time, on demand.
-    ///
-    /// A namespace-only directory contributes no module of its own. Each
-    /// real module is parsed here, not merely inventoried, so a genuine
-    /// parse/macro-expansion failure anywhere in the package is caught with
-    /// full diagnostic detail rather than falling through to a generic
-    /// `ResolveError` the first time something references it.
     fn local_module_paths(&mut self) -> Result<Vec<ModulePath>, CompileError> {
         // Collected into an owned `Vec` first, not iterated in place --
         // `load_failure` below needs `&mut self`, which can't coexist with
@@ -188,10 +142,6 @@ impl Driver {
                 Err(error) => return Err(self.load_failure(&path, error, None)),
             }
         }
-        // Deterministic order: `local_modules()`'s backing map guarantees
-        // none, and `collect_signatures` mints globally-sequential synthetic
-        // ids as it visits modules -- a random order would bake a different
-        // id onto each instantiation build-to-build.
         paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
 
         for path in &paths {
@@ -202,18 +152,6 @@ impl Driver {
         Ok(paths)
     }
 
-    /// Every registered `--extern`'s own struct/spec surface -- signatures
-    /// only, never a body -- eagerly resolved regardless of whether
-    /// anything actually imports or path-references them, so `sweep_gaps`
-    /// sees the whole picture instead of missing an unimported `glue`.
-    /// Returns every module path visited, for `compile`'s `error_scope`.
-    /// Restricted to `HirItem::Struct`/`HirItem::Spec`/`HirItem::Gap`, the
-    /// only signatures gap resolution needs.
-    ///
-    /// A parse or signature failure here is a real, fatal `CompileError`,
-    /// not swallowed -- so a broken, wholly unrelated struct/spec anywhere
-    /// in any registered extern can fail a build that never references it.
-    /// See docs/architecture/module-driver-and-linkage.md for the full rationale and cost.
     fn collect_extern_signatures(&mut self) -> Result<Vec<ModulePath>, Vec<CompileError>> {
         let paths = self.roots.extern_modules();
         for path in &paths {
@@ -294,10 +232,6 @@ impl Driver {
                             Some((function, actual))
                                 if !Self::same_glue_signature(&requirement.fn_type, actual) =>
                             {
-                                // The signature, not the whole `glue`
-                                // block: a glue member is never wrapped in
-                                // an `ItemNode`, so `function.span` is the
-                                // enclosing block's.
                                 errors.push(AnalysisError::new(
                                     function.id,
                                     function.signature_span,
@@ -312,8 +246,6 @@ impl Driver {
                     }
                     for (function, _) in &functions {
                         if !gap.functions.iter().any(|(name, _)| *name == function.name) {
-                            // The name -- an unexpected member is an
-                            // identity problem, not a whole-block one.
                             errors.push(AnalysisError::new(
                                 function.id,
                                 function.name_span,
@@ -358,12 +290,6 @@ impl Driver {
                 .all(|((_, expected), (_, actual))| expected == actual)
     }
 
-    /// Every `gap` this compilation actually resolved (local or
-    /// `--extern`), checked against every `glue` resolved alongside it:
-    /// zero matches is `UnfilledGap` (a warning), two or more is
-    /// `MultipleGluesForGap` (an error). Returns `CompileError`s directly,
-    /// bypassing `Diagnostics`' per-module scope filtering -- a gap/glue
-    /// conflict is a whole-program fact belonging to neither side's module.
     fn sweep_gaps(&self) -> (TaggedWarnings, Vec<CompileError>) {
         let mut warnings = TaggedWarnings::new();
         let mut errors = Vec::new();
@@ -414,19 +340,10 @@ impl Driver {
         (warnings, errors)
     }
 
-    /// Phase 1: every local module's every non-generic item's signature.
-    ///
-    /// A same- or cross-module by-value cycle is rejected right at the item
-    /// that closes it, without affecting any other item.
     fn collect_signatures(&mut self, local: &[ModulePath]) -> Result<(), Vec<CompileError>> {
         for path in local {
             self.ensure_module_indexed(path).map_err(fatal)?;
 
-            // Bound-position spec references only resolve at instantiation
-            // time, which this package's own build may never do for a given
-            // template -- mark their import aliases as used at declaration
-            // time so `UnusedImport` doesn't report the import that binds a
-            // bound's name.
             let generic_bounds: Vec<(Vec<Ident>, Vec<HirGenericParam>)> = self
                 .modules
                 .parsed(path)
@@ -450,22 +367,13 @@ impl Driver {
                 self.mark_bound_type_imports(module, generics);
             }
 
-            // Items are visited in declaration order because this sweep
-            // mints globally-sequential synthetic ids as a side effect -- a
-            // random order would bake a different id onto each instantiation
-            // build-to-build.
             for (name, _) in self.modules.index(path).plain_items() {
                 if self.is_generic_template(path, &name).map_err(fatal)? {
                     continue;
                 }
-                // Nothing is in progress at this point in the sweep, so
-                // `indirect`'s distinction cannot matter here.
                 let _ = self.ensure_item(path, path, &name, &[], true, false);
             }
 
-            // Unlike a generic instantiation, an overload set is fully
-            // enumerable up front, so every candidate's signature is resolved
-            // eagerly here rather than on demand.
             for (name, indices) in self.modules.index(path).overloads.clone() {
                 let signatures: Vec<ResolvedFunctionType> = indices
                     .iter()
@@ -484,14 +392,6 @@ impl Driver {
         }
     }
 
-    /// Phase 2: every local module's every non-generic item's body, now that
-    /// every local signature is guaranteed to exist. `local` never contains
-    /// an `--extern` path (see `local_module_paths`) -- an extern module's
-    /// *ordinary* items are never body-checked or defined by this
-    /// compilation at all; only a generic instantiation of one of its
-    /// templates is (merged during final assembly), since nothing else will
-    /// ever compile that exact instantiation, and that must happen in
-    /// whichever project actually asked for it.
     fn check_bodies(
         &mut self,
         local: &[ModulePath],
@@ -508,8 +408,6 @@ impl Driver {
         Ok((modules, warnings))
     }
 
-    /// One local module's checked items, in declaration order -- which is the
-    /// order codegen then declares and defines them in.
     fn check_module_bodies(
         &mut self,
         path: &[Ident],
@@ -611,10 +509,6 @@ impl Driver {
             .iter()
             .filter(|entry| {
                 entry.module == path
-                    // A concrete conformance owned by an extern package is
-                    // defined by that package's object, never by whichever
-                    // consumer needed it. Generic conformances are the
-                    // exception: their instantiation is monomorphized here.
                     && (!self.roots.is_extern(&entry.module) || entry.origin != ConformanceOrigin::Concrete)
                     && !self.conformances.emitted.contains(&(
                         entry.target.clone(),
@@ -803,12 +697,6 @@ impl Driver {
         }
     }
 
-    /// Every `gap` declared directly in `path`, synthesized as one
-    /// `CheckedItem::ExternDeclaration` per required function -- at codegen
-    /// time a gap's required function is indistinguishable from a
-    /// hand-written top-level `extern`, just with its symbol forced to
-    /// match its `glue` implementation (`ManglingMode::Glued`). This is the
-    /// one place a gap's own functions turn into anything codegen can see.
     fn synthesize_gap_items(&mut self, path: &[Ident]) -> Vec<CheckedItem> {
         let mut items = Vec::new();
         for (name, index) in self.modules.index(path).plain_items() {
@@ -836,9 +724,6 @@ impl Driver {
         items
     }
 
-    /// Every alias this module declared that no reference ever looked up, now
-    /// that its whole body is checked -- an alias used only inside a method
-    /// body is exactly why this cannot run any earlier.
     fn report_unused_imports(&mut self, path: &[Ident], warnings: &mut TaggedWarnings) {
         for (alias, import) in &self.modules.index(path).imports {
             if self.imports.was_used(path, alias) {
@@ -857,15 +742,6 @@ impl Driver {
         }
     }
 
-    /// Every extern-owned, *non-generic* function/method this compilation
-    /// referenced -- everything codegen must declare (never define) a link
-    /// against. Swept once, at the end, directly over the already-populated
-    /// per-item caches: anything actually referenced is sitting in them by
-    /// construction, so nothing dedicated is tracked in the hot path.
-    ///
-    /// A *generic* instantiation of an extern template is deliberately
-    /// excluded: it's fully compiled locally instead, since no other
-    /// compilation will ever produce it.
     fn collect_extern_functions(&self) -> Vec<ExternFunctionRef> {
         let mut functions = Vec::new();
 
@@ -993,8 +869,6 @@ impl Driver {
         functions
     }
 
-    /// A free function's own resolved `@mangling(...)`, which a consuming
-    /// compilation must agree with or the two mangled symbols diverge.
     fn mangling_of(&self, decl_id: &HirId) -> ManglingMode {
         self.items
             .function_annotations
@@ -1003,23 +877,6 @@ impl Driver {
             .unwrap_or_default()
     }
 
-    /// `UnusedField`/`NeverConstructedVariant`'s whole-program sweep, run once
-    /// every reachable module's items are checked and diffed against every
-    /// *local* type's own declared fields/variants.
-    ///
-    /// A generic template's instantiations are one *declaration* between
-    /// them, so they're judged together: a field is only unused if no
-    /// instantiation ever touched it, and it is reported once, not once per
-    /// instantiation.
-    ///
-    /// Scoped to local modules: an extern-owned type's "unused" status only
-    /// reflects what this compilation happens to touch, not what a
-    /// downstream consumer might, so warning on it would be a false positive.
-    ///
-    /// Enum *header* fields are deliberately never checked at all (there is
-    /// no `usage.enum_header_fields` to check against) -- they are per-variant
-    /// compile-time constants, not storage, so "never read" is a far weaker
-    /// signal for them than for an ordinary field.
     fn sweep_dead_code(&self, local: &[ModulePath], usage: &FieldUsage) -> TaggedWarnings {
         let mut warnings = TaggedWarnings::new();
 
@@ -1129,10 +986,6 @@ impl Driver {
         warnings
     }
 
-    /// The raw HIR a type cell's declaration came from, for the real
-    /// per-field/per-variant *spans* dead-code reporting needs: the resolved
-    /// field lists drop spans the moment a field is resolved (nothing
-    /// downstream has ever needed them back), while the HIR nodes keep them.
     fn hir_struct(&self, module: &[Ident], name: &Ident) -> Option<&HirStructDef> {
         match self.modules.item(module, name)? {
             HirItem::Struct(s) => Some(s),
@@ -1155,15 +1008,10 @@ impl Driver {
     }
 }
 
-/// One type *declaration* as dead-code analysis sees it: every cell that
-/// instantiated it (exactly one for an ordinary, non-generic type), reduced
-/// to the two facts the sweep needs.
 struct Declaration<'a> {
     module: &'a ModulePath,
     name: &'a Ident,
     ids: Vec<HirId>,
-    /// The declaration's own `@suppress(...)` list -- identical across every
-    /// instantiation, since it's a property of the declaration.
     suppress: Vec<Ident>,
 }
 
@@ -1172,17 +1020,11 @@ impl Declaration<'_> {
         self.suppress.iter().any(|s| s.as_ref() == warning)
     }
 
-    /// Whether *any* instantiation of this declaration satisfies `used` --
-    /// a field touched through one instantiation is not dead code just
-    /// because another instantiation never touched it.
     fn any(&self, used: impl Fn(HirId) -> bool) -> bool {
         self.ids.iter().copied().any(used)
     }
 }
 
-/// Groups type cells by the declaration they came from, in first-creation
-/// order. `facts` pulls the per-cell identity and suppress list out of
-/// whichever of the three cell types this is.
 fn group_by_declaration<'a, T>(
     cells: impl Iterator<Item = (&'a ItemKey, &'a Rc<RefCell<T>>)>,
     facts: impl Fn(&T) -> (HirId, Vec<Ident>),

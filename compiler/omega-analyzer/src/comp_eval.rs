@@ -1,20 +1,3 @@
-//! Compile-time expression evaluation (`comp`) -- a tree-walking
-//! interpreter over an already fully-typed `CheckedExprNode`/`CheckedBlock`,
-//! producing a `ConstValue`. See `docs/language/compile-time-evaluation.md`.
-//!
-//! Deliberately not MIR-based: MIR is a strictly later, per-function
-//! lowering pass that doesn't exist yet at analysis time, and a `comp`
-//! binding's value must be available *during* analysis for downstream
-//! consumers (another `comp` expression referencing it, a later type
-//! position). Deliberately not a second type-checker either: `comp <expr>`'s
-//! inner expression is analyzed completely normally first (ordinary
-//! `Analyzer::analyze_expr`, ordinary generic/overload/cross-module
-//! resolution) -- this module only ever walks an already-resolved
-//! `CheckedExprNode` tree, never a raw `HirExprNode`.
-//!
-//! Deliberately not a second, colored declaration space either: any
-//! function's already-checked body can be handed to [`eval`], whether or
-//! not it was ever written with `comp` in mind -- see [`CompFunctionResolver`].
 
 use crate::target::Target;
 use crate::checked::{
@@ -28,39 +11,15 @@ use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Span};
 use std::collections::HashMap;
 
-/// How far a single `comp` evaluation is allowed to run before it's assumed
-/// to be a runaway compile-time loop/recursion. One shared budget for both
-/// loop iterations and call depth (matches Rust's `const_eval_limit`
-/// precedent) -- this alone bounds both cases uniformly, so no separate
-/// call-graph cycle detector is needed on top of it.
 const FUEL_LIMIT: u32 = 1_000_000;
 
-/// What a `comp` evaluation needs from the driver: a callee's own checked
-/// body, found by its already-unique `decl_id`. A generic instantiation
-/// mints its own fresh synthetic id at resolution time (see
-/// `ItemQueries::identity_for`/`fresh_synthetic_id` in `omega_driver`), so
-/// `decl_id` alone -- with no separate module path or type-args -- is
-/// already exact identity for the *specific* instantiation a call site
-/// resolved to; there is nothing else to disambiguate.
 pub trait CompFunctionResolver {
-    /// `Ok(None)` means `decl_id` doesn't name an ordinary checked function
-    /// at all (an `extern` declaration, most likely) -- distinguished from
-    /// `Err` (a real resolution failure) so the interpreter can report the
-    /// precise [`CompErrorKind::ExternCall`] instead of a generic failure.
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError>;
 }
 
-/// `Analyzer::analyze_comp` only ever has a `&mut dyn ModuleResolver` in
-/// hand (the same handle used for every other cross-item query) -- rather
-/// than making it construct some bridging adapter itself, `dyn
-/// ModuleResolver` satisfies this narrower trait directly, by forwarding to
-/// its own identically-shaped method. Kept as its own trait (not just a use
-/// of `ModuleResolver` throughout this module) purely for testability: a
-/// unit test here only ever needs to fake one method, not `ModuleResolver`'s
-/// entire cross-module surface (import aliases, spec declarations, ...).
 impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
     fn resolve_function_body(
         &mut self,
@@ -70,51 +29,18 @@ impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
     }
 }
 
-/// Why a `comp` evaluation failed. Always paired with the [`Span`] of the
-/// expression that actually blocked it, in [`CompError::span`] -- not just
-/// the outermost `comp <expr>` -- so the diagnostic points at the real
-/// cause even several calls deep; [`CompError::trace`] carries the call
-/// chain from there back up to the outermost `comp`.
 #[derive(Debug, Clone)]
 pub enum CompErrorKind {
-    /// Calling an `extern`-declared function -- no compile-time meaning to
-    /// execute a foreign/OS call inside this interpreter.
     ExternCall,
-    /// `base.method(args)` through a `spec *Spec` vtable, or an implicit
-    /// concrete-to-`spec *Spec` coercion -- no compile-time meaning without
-    /// real vtable data (a real gap, not silently reinterpreted).
     DynamicDispatch,
-    /// Dereferencing, or projecting through, a pointer the interpreter
-    /// didn't itself produce (see `ConstValue::Ref`'s doc comment) -- the
-    /// interpreter never touches real memory.
     UnresolvableMemory,
-    /// Reading a real runtime global (`Storage::Global`) from inside a
-    /// `comp` evaluation -- only `comp`-bound identifiers (no storage, pure
-    /// substitution) are readable; those never reach the interpreter as a
-    /// `Storage::Global` place at all, since analysis substitutes them away
-    /// before a `comp` evaluation ever sees them (see `Analyzer::
-    /// analyze_comp`), so reaching this case here means the identifier is a
-    /// genuine runtime place.
     NonCompGlobalRead,
-    /// A local was read before it was ever assigned -- can only happen for
-    /// a declared-but-uninitialized local (`a: i32;` with no initializer),
-    /// since every other binding form assigns before any possible read.
     ReadBeforeInit,
-    /// This call's own resolver lookup failed (the callee named a real
-    /// item, but something further down the driver's own resolution
-    /// failed) -- carries the resolver's own error.
     ResolutionFailed(ResolveError),
-    /// Ran out of the shared fuel/depth budget -- see `FUEL_LIMIT`.
     FuelExhausted,
-    /// Anything not yet supported by the interpreter -- named, not a bare
-    /// "unsupported", so a diagnostic can say exactly what construct was
-    /// hit (e.g. `"sizeof"`, `"a struct's dynamic enum header field"`).
     Unsupported(&'static str),
 }
 
-/// `Analyzer::analyze_comp`'s own `AnalysisErrorKind::CompEvalFailed.reason`
-/// is built straight from this, matching how every other findable-facts
-/// enum in this crate (`ResolveError`, ...) renders itself.
 impl std::fmt::Display for CompErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -141,33 +67,15 @@ impl std::fmt::Display for CompErrorKind {
 pub struct CompError {
     pub kind: CompErrorKind,
     pub span: Span,
-    /// The call-site spans between the outermost `comp <expr>` and `span`'s
-    /// own call frame, outermost first -- empty when the failure happened
-    /// directly inside the outermost evaluation, with no intervening call.
     pub trace: Vec<Span>,
 }
 
-/// A control-flow signal a statement/block can produce, unwound through the
-/// interpreter's own recursion via `?` (see `Outcome`) exactly like
-/// `return`/`break`/`continue` unwind through an ordinary tree-walking
-/// interpreter -- the direct analogue of the real reason MIR lowering
-/// flattens these into an explicit block graph instead (see `omega_mir::
-/// body`'s module doc comment): this interpreter has no block graph to jump
-/// around in, so the same control transfer is modeled as an explicit signal
-/// instead.
 enum Signal {
     Return(ConstValue),
     Break,
     Continue,
 }
 
-/// Either a real evaluation failure or an in-flight control-flow signal --
-/// unified so ordinary `?` propagates both uniformly through expression
-/// evaluation (a `{ return x; }` block used as an operand has to unwind
-/// through arithmetic, field access, anything, exactly like it does in a
-/// real function body). Only a loop's own body evaluation (`Break`/
-/// `Continue`) and a call's own body evaluation (`Return`) ever catch an
-/// `Outcome::Signal` instead of propagating it further.
 enum Outcome {
     Error(CompError),
     Signal(Signal),
@@ -181,52 +89,20 @@ impl From<CompError> for Outcome {
 
 type CompResult<T> = Result<T, Outcome>;
 
-/// One call frame's locals -- parameters and declared locals share one
-/// space, keyed by `HirId`, exactly like `MirBody::locals`' unified index
-/// space does for the identical reason (codegen/interpretation both treat a
-/// parameter and a declared local identically once bound).
 #[derive(Default)]
 struct Frame {
     locals: HashMap<HirId, ConstValue>,
-    /// Every `defer`'s own body, in the order each was *reached* (not
-    /// lexical/declaration order -- a `defer` inside a conditional branch
-    /// only queues if that branch actually runs) -- run in reverse (FILO)
-    /// when this frame's own function exits, whether via `return` or
-    /// falling off the end, matching this language's real `defer`
-    /// semantics (see `docs/language/functions.md`'s `defer` section): scoped to
-    /// the whole *function*, not the block a `defer` statement happens to
-    /// sit in, so this lives on the frame, not on any block-local state.
-    /// Cloned out of the checked tree at the point each `defer` runs (see
-    /// `Interpreter::eval_stmt`'s own `Defer` arm) since nothing here
-    /// borrows the callee's `CheckedFunctionDef` past its own call.
     defers: Vec<CheckedBlock>,
 }
 
 struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
     resolver: &'r mut R,
-    /// The compilation target -- `sizeof` inside a `comp` evaluation
-    /// answers the *real* target's pointer width rather than a hardcoded
-    /// one (see the `CheckedExpr::Sizeof` arm).
     target: Target,
     fuel: u32,
     frames: Vec<Frame>,
-    /// Call-site spans, outermost first -- pushed on entry to
-    /// `eval_function_call`, popped on return, and copied into a
-    /// [`CompError::trace`] at the point an error is first raised (see
-    /// `Self::err`).
     call_trace: Vec<Span>,
 }
 
-/// Evaluates `expr` at compile time -- the whole crate's one public entry
-/// point, called from `Analyzer::analyze_comp` once `expr`'s inner
-/// expression has already been fully, ordinarily type-checked. Generic
-/// (rather than `&mut dyn CompFunctionResolver` directly) so the ordinary
-/// `&mut dyn ModuleResolver` handle `Analyzer` already carries -- which
-/// satisfies `CompFunctionResolver` via the blanket impl above -- can be
-/// passed straight through: `&mut dyn ModuleResolver` coercing to `&mut dyn
-/// CompFunctionResolver` directly isn't something Rust does between two
-/// unrelated trait objects, but instantiating `R = dyn ModuleResolver` here
-/// needs no coercion at all, just the ordinary blanket impl.
 pub fn eval<R: CompFunctionResolver + ?Sized>(
     resolver: &mut R,
     expr: &CheckedExprNode,
@@ -240,10 +116,6 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
         call_trace: vec![],
     };
     let result = interp.eval_expr(expr);
-    // The outermost frame has no function-call boundary of its own to run
-    // its defers at (unlike `call_function`'s frames, drained on the way
-    // out) -- drain it here instead, under the same "only once the value
-    // evaluated cleanly" rule.
     let result = match result {
         Ok(value) => {
             let defers = std::mem::take(&mut interp.frame().defers);
@@ -261,10 +133,6 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
     match result {
         Ok(value) => Ok(value),
         Err(Outcome::Error(e)) => Err(e),
-        // A signal escaping the outermost `comp` with no enclosing call/loop
-        // to catch it is impossible in a validly checked tree (analysis
-        // already rejects `return`/`break`/`continue` outside their
-        // contexts) -- an analyzer/interpreter bug, not a user-facing error.
         Err(Outcome::Signal(_)) => {
             unreachable!("control-flow signal escaped the outermost comp evaluation")
         }
@@ -294,8 +162,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         Ok(())
     }
 
-    // ---- expressions ----------------------------------------------------
-
     fn eval_expr(&mut self, node: &CheckedExprNode) -> CompResult<ConstValue> {
         self.tick(node.span)?;
         match &node.kind {
@@ -304,16 +170,11 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::Bool(b) => Ok(ConstValue::Bool(*b)),
             CheckedExpr::Char(c) => Ok(ConstValue::Char(*c)),
             CheckedExpr::String(s) => Ok(ConstValue::Str(s.clone())),
-            // No dedicated byte-string `ConstValue` shape -- an ordinary
-            // `Slice` of `U8` `Number`s instead.
             CheckedExpr::ByteString(s) => Ok(ConstValue::Slice(
                 s.bytes()
                     .map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64)))
                     .collect(),
             )),
-            // Already a fully evaluated constant -- an enum tag/header
-            // value, a `&[...]` literal, or a previously-evaluated `comp`
-            // binding substituted in at its use site.
             CheckedExpr::Const(value) => Ok(value.clone()),
             CheckedExpr::FunctionCall(call) => self.eval_call(call, node.span),
             CheckedExpr::Assignment(assign) => {
@@ -342,8 +203,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 Ok(ConstValue::Array(values))
             }
             CheckedExpr::StructLiteral(lit) => {
-                // Evaluated in source order (for side effects), stored
-                // positionally by `field_index`.
                 let mut values: Vec<Option<ConstValue>> =
                     (0..lit.fields.len()).map(|_| None).collect();
                 for field in &lit.fields {
@@ -366,10 +225,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::EnumConstruct(construct) => {
                 let (tag, header, dynamic_count) =
                     self.enum_variant_facts(node, construct.variant_index)?;
-                // Same source-order-eval, positional-store rule as
-                // `StructLiteral` above; `field_index` here positions into
-                // the combined "dynamic fields, then this variant's body
-                // fields" list.
                 let mut values: Vec<Option<ConstValue>> =
                     (0..construct.fields.len()).map(|_| None).collect();
                 for field in &construct.fields {
@@ -405,8 +260,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::Slice(slice) => self.eval_slice(slice, node.span),
             CheckedExpr::Cast(cast) => self.eval_cast(cast, node.span),
-            // `sizeof` answers the *real* target width, e.g. `sizeof<usize>`
-            // is 4 on 32-bit, 8 on 64-bit.
             CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
                 crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
             ))),
@@ -415,17 +268,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         }
     }
 
-    /// The facts a fresh `EnumConstruct` needs -- read directly off the
-    /// enum's shared resolved cell (`node.r#type` is always `ResolvedType::
-    /// Enum { cell, variant: Some(variant_index) }` for an `EnumConstruct`
-    /// node, per `CheckedExpr::EnumConstruct`'s own doc comment), the one
-    /// point where the interpreter needs a `ResolvedType`, not just a
-    /// `ConstValue`, in scope: the tag, a clone of the variant's own
-    /// per-variant header constants (see `ConstValue::Enum`'s doc comment
-    /// on why this is duplicated here rather than re-read from the cell at
-    /// every later access), and how many of `CheckedEnumConstruct::fields`'
-    /// combined list are shared dynamic fields (the rest are this
-    /// variant's own body fields) -- see that type's doc comment.
     fn enum_variant_facts(
         &self,
         node: &CheckedExprNode,
@@ -479,9 +321,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     fn eval_binary_op(&mut self, bin: &CheckedBinaryOp, span: Span) -> CompResult<ConstValue> {
         let left = self.eval_expr(&bin.left)?;
         let right = self.eval_expr(&bin.right)?;
-        // Analysis already guarantees both operands share one numeric type,
-        // so the interpreter only picks signed/unsigned/float from shape,
-        // never re-checks agreement.
         match (left, right) {
             (ConstValue::Number(l), ConstValue::Number(r)) => {
                 self.eval_numeric_binary_op(bin.op, l, r, span)
@@ -544,8 +383,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 (Unsigned(l), Unsigned(r)) => l.cmp(&r),
                 (Float(l), Float(r)) => match l.partial_cmp(&r) {
                     Some(ord) => ord,
-                    // NaN: only `<`/`<=`/`>`/`>=` reach here (`Eq`/`Ne` are
-                    // handled separately below), and all are false.
                     None => return Ok(ConstValue::Bool(false)),
                 },
                 _ => {
@@ -670,13 +507,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     ) -> CompResult<ConstValue> {
         let base = self.eval_expr(&cast.base)?;
         match cast.kind {
-            // Same representation on both sides, including the str/slice
-            // "both leaves unchanged" case -- carried through as-is.
             CastKind::Reinterpret => Ok(base),
-            // `*str`/`*[?]T` (fat) -> `*u8`/`*T` (thin): keeps the pointer
-            // leaf, discards the length, represented as `&<Array>` (a fresh
-            // data object, not an alias of the fat-pointer form -- harmless,
-            // nothing needs reference-equality here, only validity).
             CastKind::DropLength => match base {
                 ConstValue::Str(s) => {
                     let bytes = s
@@ -695,7 +526,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     ),
                 )),
             },
-            // Not implemented in this pass -- see docs/language/compile-time-evaluation.md.
             CastKind::Unsize => Err(self.err(
                 span,
                 CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"),
@@ -793,9 +623,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
     fn eval_match(&mut self, match_expr: &CheckedMatch, span: Span) -> CompResult<ConstValue> {
         for arm in &match_expr.arms {
-            // An OR of AND-groups (see `CheckedMatchArm`) -- this arm runs
-            // once any one group's conditions all hold; a group failing
-            // partway moves to the next group, never the next arm.
             'groups: for group in &arm.conditions {
                 for condition in group {
                     match self.eval_expr(condition)? {
@@ -830,8 +657,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             )),
         }
     }
-
-    // ---- calls ------------------------------------------------------------
 
     fn eval_call(&mut self, call: &CheckedFunctionCall, span: Span) -> CompResult<ConstValue> {
         let CheckedExpr::Place(CheckedPlace {
@@ -868,8 +693,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         let result = self.call_function(&body, args);
         self.call_trace.pop();
         result.map_err(|outcome| match outcome {
-            // A `return` at the callee's own top level is caught right
-            // here, never left to unwind into the caller's frame.
             Outcome::Signal(Signal::Return(_)) => {
                 unreachable!("call_function always converts its own Return signal into a value")
             }
@@ -889,16 +712,10 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         self.frames.push(frame);
         let value = match self.eval_block(&body.body) {
             Ok(BlockResult::Value(v)) => Ok(v),
-            // `Void`-returning function falling off the end with no tail --
-            // nothing meaningful to hand back.
             Ok(BlockResult::Diverged) => Ok(ConstValue::Bool(false)),
             Err(Outcome::Signal(Signal::Return(v))) => Ok(v),
             Err(other) => Err(other),
         };
-        // Defers run in FILO order, only once the body finished cleanly
-        // (fell through or hit `return`) -- if the body failed, the whole
-        // comp evaluation already failed, so they're skipped rather than
-        // run against a value that was never produced.
         let result = match value {
             Ok(v) => {
                 let defers = std::mem::take(&mut self.frame().defers);
@@ -917,8 +734,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         result
     }
 
-    // ---- statements/blocks --------------------------------------------
-
     fn eval_block(&mut self, block: &CheckedBlock) -> CompResult<BlockResult> {
         for stmt in &block.stmts {
             self.eval_stmt(stmt)?;
@@ -931,9 +746,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
     fn eval_stmt(&mut self, stmt: &CheckedStmt) -> CompResult<()> {
         match stmt {
-            // No initializer to run -- either a genuinely uninitialized
-            // local (a later read is `ReadBeforeInit`) or immediately
-            // followed by its own desugared `Assignment` statement.
             CheckedStmt::Declaration(_) => Ok(()),
             CheckedStmt::ExternDeclaration(_) => Ok(()),
             CheckedStmt::Expression(expr) => {
@@ -949,9 +761,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedStmt::For(f) => self.eval_for(f),
             CheckedStmt::Break(_) => Err(Outcome::Signal(Signal::Break)),
             CheckedStmt::Continue(_) => Err(Outcome::Signal(Signal::Continue)),
-            // Queued on the frame (function-scoped, not block-scoped), not
-            // run here -- `call_function` drains it in FILO order once the
-            // body finishes.
             CheckedStmt::Defer(d) => {
                 self.frame().defers.push(d.body.clone());
                 Ok(())
@@ -981,11 +790,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         }
     }
 
-    /// `loop { body }` -- see `eval_while`; identical except there's no
-    /// condition to evaluate each iteration, so the only way out is a
-    /// `break` (or exhausting `self.tick`'s own budget, same backstop
-    /// `eval_while`/`eval_for` already rely on for a genuinely unbounded
-    /// `comp`-time loop).
     fn eval_loop(&mut self, l: &CheckedLoop) -> CompResult<()> {
         loop {
             self.tick(l.span)?;
@@ -1025,8 +829,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
         }
     }
-
-    // ---- places -----------------------------------------------------------
 
     fn read_place(&mut self, place: &CheckedPlace, span: Span) -> CompResult<ConstValue> {
         let mut value = self.read_root(&place.root, span)?;
@@ -1155,8 +957,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     CompErrorKind::Unsupported("field access on a non-union comp value"),
                 )),
             },
-            // A `spec *Self` value has no `ConstValue` shape and can never
-            // actually appear here; reject uniformly rather than panic.
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
                 Err(self.err(
                     span,
@@ -1282,10 +1082,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
 enum BlockResult {
     Value(ConstValue),
-    /// The block ended with no tail expression -- either an ordinary
-    /// `Void` block, or one that would only ever be reached with a value
-    /// through a path analysis already proved unreachable. Callers treat
-    /// this as `Void`, matching `CheckedBlock::tail`'s own convention.
     Diverged,
 }
 
@@ -1302,13 +1098,6 @@ fn compare(op: BinaryOp, ord: std::cmp::Ordering) -> bool {
     }
 }
 
-/// A cast's numeric conversion, applied directly to `NumberValue`'s own
-/// wide (`i64`/`u64`/`f64`) representation -- truncates/masks to the
-/// target's declared width exactly like Cranelift's `ireduce`/`sextend`/
-/// `uextend` do, matching ordinary (non-`comp`) cast codegen's own
-/// wraparound semantics rather than erroring out of range (unlike a
-/// literal's range check in `Analyzer::const_number`, a cast is defined to
-/// wrap, not to reject).
 fn cast_number(n: NumberValue, target: crate::resolved_type::NumericKind) -> NumberValue {
     use crate::resolved_type::NumericKind;
     let mask = |width: u32, bits: u64| {
@@ -1491,7 +1280,6 @@ mod tests {
 
     #[test]
     fn while_loop_accumulates_via_locals() {
-        // comp-equivalent of: mut i := 0; mut sum := 0; while i < 5 { sum = sum + i; i = i + 1; } sum
         let i_id = id(1);
         let sum_id = id(2);
         let i_place = local_place(i_id, ResolvedType::I32);
@@ -1665,7 +1453,6 @@ mod tests {
 
     #[test]
     fn calling_another_function_interprets_its_own_body() {
-        // add(a: i32, b: i32) => i32 { a + b } ; comp add(10, 20)
         let a_id = id(1);
         let b_id = id(2);
         let add_body = CheckedBlock {

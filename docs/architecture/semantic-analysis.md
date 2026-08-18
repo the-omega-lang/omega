@@ -263,3 +263,17 @@ The driver merges both sources before whole-program/local-package dead-code warn
 - New semantic type -> `ResolvedType`, analyzer rules, layout/ABI only if representation changes.
 - New source control-flow construct -> analyzer checked shape, then MIR lowering.
 - New global/package semantic relationship -> usually analyzer rule + driver-owned registry/query lifetime.
+
+## Maintainer invariants that are easy to break
+
+Several analyzer behaviors depend on local implementation structure rather than a single language rule:
+
+- Expected-type propagation is deliberately directional in several constructs. Where one operand/branch becomes the inference anchor, later operands are checked against that anchor rather than participating in a global "best type" search. Keep the corresponding language rules in `docs/language/` aligned with any change to this mechanism.
+- A writable alias invalidates flow-sensitive narrowing for the aliased place. Mutable borrow/call paths therefore de-assume refinements before later reads can reuse them.
+- Visibility `reveal` is implemented as a scoped bypass. Syntax paths that peel or special-case an operand before ordinary expression/place analysis must preserve that bypass explicitly; missing one path can silently reintroduce visibility failures. The known structural weakness of this design is tracked in `docs/issues/`.
+- Overload scoring may fully analyze user-written arguments before a winner is chosen. The winning path must reuse that checked work rather than analyze the same expression again and risk duplicate diagnostics or side effects in analyzer bookkeeping.
+- Import aliases are re-resolved through the resolver with the actual lookup context when indirection/generic arguments matter. Eager alias snapshots are navigation aids, not a substitute for a context-sensitive item query.
+- Reads/writes of projected compile-time values operate on immutable `ConstValue` trees: a projected write rebuilds the root value with the changed leaf rather than mutating real storage.
+- For projected runtime places, reaching a field/index/deref generally reads the root even if the final operation is a write; only a projection-less assignment can be treated as a pure write for unused-variable analysis.
+
+These rules belong here rather than in per-function prose. Keep source comments only where the nearby control flow still needs a short explanation of *why that implementation choice exists*.

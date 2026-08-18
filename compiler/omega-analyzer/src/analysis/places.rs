@@ -1,17 +1,11 @@
 use super::*;
 
-/// Where a resolved member was declared, kept alongside its own visibility
-/// so the access check can run after the declaring cell's borrow is
-/// released.
 struct MemberOwner {
     visibility: Visibility,
     module_path: Vec<Ident>,
     id: HirId,
 }
 
-/// One member reachable as `value.name` on an enum value: what it resolves
-/// to, how to project it, and who declared it (`None` for the tag, which
-/// has no declared visibility of its own).
 struct EnumMember {
     r#type: ResolvedType,
     projection: CheckedProjection,
@@ -19,12 +13,6 @@ struct EnumMember {
 }
 
 impl<'r> Analyzer<'r> {
-    /// Resolves a single `.field` step against `current_type`, inserting a
-    /// seamless one-level pointer deref first if needed (`ptr.field` sugar
-    /// for `(*ptr).field`). Shared by `analyze_place`'s projection loop and
-    /// by member-call resolution. `mutable` is overwritten with the
-    /// pointer's own flag when a seamless deref is inserted; callers that
-    /// don't care pass a throwaway `&mut bool`.
     pub(super) fn resolve_field_projection(
         &mut self,
         node_id: HirId,
@@ -49,8 +37,6 @@ impl<'r> Analyzer<'r> {
         };
 
         match &base {
-            // `slice.length` / `str.size` aren't real fields; answered here
-            // before the aggregate paths below would reject them.
             ResolvedType::Slice { .. } | ResolvedType::Str { .. } => {
                 self.project_slice_field(node_id, span, projections, &base, field)
             }
@@ -75,9 +61,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `.length` on a `*[?]T`, or `.size` on a `*str` -- both project to the
-    /// same `CheckedProjection::SliceLength` marker, but the field name is
-    /// type-specific; using the other type's name is `NoSuchField`.
     fn project_slice_field(
         &mut self,
         node_id: HirId,
@@ -99,9 +82,6 @@ impl<'r> Analyzer<'r> {
         Some(ResolvedType::I32)
     }
 
-    /// `.ptr`/`.vtable` on a `spec *Spec` value -- the two leaves of the fat
-    /// pointer (see `ResolvedType::SpecObject`'s doc comment), not real
-    /// declared fields.
     fn project_spec_object_field(
         &mut self,
         node_id: HirId,
@@ -133,9 +113,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Enum member access: `tag`, header fields, and shared dynamic fields
-    /// exist on every value; a body field additionally requires the value's
-    /// variant to be statically known and to be the one declaring it.
     fn project_enum_field(
         &mut self,
         node_id: HirId,
@@ -160,9 +137,6 @@ impl<'r> Analyzer<'r> {
         Some(member.r#type)
     }
 
-    /// Everything reachable as `value.name` on an enum value, in lookup
-    /// order: tag, header, shared dynamic fields, then the known variant's
-    /// own body fields.
     fn find_enum_member(
         e: &ResolvedEnumType,
         variant: Option<usize>,
@@ -224,9 +198,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Why `field` isn't reachable on this enum value: it belongs to another
-    /// variant, it belongs to a variant this value's isn't known to be, or
-    /// no variant declares it at all.
     fn no_such_enum_field(
         e: &ResolvedEnumType,
         variant: Option<usize>,
@@ -248,9 +219,6 @@ impl<'r> Analyzer<'r> {
                 owner: declaring.name.clone(),
             },
             (None, _) => {
-                // Suggest across everything reachable as `value.name`: tag,
-                // header, shared dynamic fields, and the known variant's
-                // own body fields.
                 let tag = Ident("tag".into());
                 let candidates = std::iter::once(&tag)
                     .chain(e.header.iter().map(|(name, _, _)| name))
@@ -339,10 +307,6 @@ impl<'r> Analyzer<'r> {
         Some(r#type)
     }
 
-    /// A named field's position, type and declared visibility in one
-    /// aggregate's own field list -- the shape struct/union fields, enum
-    /// header fields, shared dynamic fields, and variant body fields all
-    /// share.
     fn find_field(
         fields: &[(Ident, ResolvedType, Visibility)],
         name: &Ident,
@@ -354,7 +318,6 @@ impl<'r> Analyzer<'r> {
             .map(|(index, (_, r#type, visibility))| (index, r#type.clone(), *visibility))
     }
 
-    /// Rejects an access to a member the accessing code isn't allowed to see.
     fn require_visible_member(
         &mut self,
         node_id: HirId,
@@ -388,10 +351,6 @@ impl<'r> Analyzer<'r> {
         );
     }
 
-    /// Every method named `field` on `current_type` (after at most one
-    /// pointer deref) -- usually zero or one, but two or more is a valid
-    /// overload set (see `Analyzer::resolve_overload`). A field with this
-    /// name shadows every same-named method.
     pub(super) fn find_methods(
         &mut self,
         id: HirId,
@@ -414,7 +373,6 @@ impl<'r> Analyzer<'r> {
                     .collect()
             }
             ResolvedType::Enum { cell, variant } => {
-                // Same shadowing rule as the struct case above.
                 let e = cell.borrow();
                 let shadowed = field.as_ref() == "tag"
                     || e.header.iter().any(|(name, _, _)| name == field)
@@ -445,8 +403,6 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, method)| method.clone())
                     .collect()
             }
-            // Built-in types store methods in core's `primitive` registry
-            // rather than in a declared type cell.
             other => match self.resolver.primitive_methods(other) {
                 Ok(methods) => methods
                     .into_iter()
@@ -460,8 +416,6 @@ impl<'r> Analyzer<'r> {
             },
         };
 
-        // Conformance methods are only admitted while checking a body whose
-        // generic/conform context established the matching bound.
         for (target, spec, spec_args) in self.bounds.clone() {
             if target != *current_type {
                 continue;
@@ -488,10 +442,6 @@ impl<'r> Analyzer<'r> {
         methods
     }
 
-    /// The name of an enum member that an assignment must not target --
-    /// `Some` when `target`'s final projection reads the tag or a header
-    /// field (both per-variant constants); see the `Assignment` arm of
-    /// `analyze_expr`.
     pub(super) fn immutable_enum_member(target: &CheckedPlace) -> Option<Ident> {
         match target.projections.last()? {
             CheckedProjection::EnumTag { .. } => Some(Ident("tag".into())),
@@ -500,12 +450,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Structural equality between two checked places, used only to detect
-    /// self-assignment (`x = x;`). Bails out to "not provably equal" on any
-    /// `Expr` root or `Index`/`Deref` projection, rather than recursing into
-    /// sub-expressions that could have side effects or differ at runtime.
-    /// False negatives (missed self-assignment) are fine; false positives
-    /// are not.
     pub(super) fn places_provably_equal(a: &CheckedPlace, b: &CheckedPlace) -> bool {
         let roots_equal = match (&a.root, &b.root) {
             (
@@ -561,15 +505,6 @@ impl<'r> Analyzer<'r> {
             })
     }
 
-    /// Errors (returning `None`) unless a place `analyze_place` already
-    /// resolved may be written to. Shared by every requirement that reduces
-    /// to "this place must be mutable" -- assignment, `++`/`--`, `&mut`,
-    /// and a `mut self` call's implicit auto-ref. `hir_root` is the
-    /// original place's root, used only to name the binding in
-    /// `NotMutableBinding`; it's `None` when the place has no path root at
-    /// all (e.g. a spec-qualified call's non-place receiver, wrapped in
-    /// `HirPlaceRoot::Expr`), in which case the diagnostic is
-    /// `NotMutablePointer`/`MutateTemporary` instead.
     pub(super) fn require_mutable_place(
         &mut self,
         node_id: HirId,
@@ -593,13 +528,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         if mutable {
-            // This place is genuinely about to be written through -- the
-            // one choke point every real reassignment (`=`, a compound
-            // assignment, `++`/`--`, `&mut`) funnels through, so it's also
-            // the one place `Context::mark_written` needs calling from.
-            // Only a bare local variable root has a `decl_id` worth
-            // tracking this way; a projection through a pointer/field/temp
-            // isn't itself a *binding* `UnnecessaryMut` could ever fire on.
             if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
                 self.context.mark_written(decl_id);
             }
@@ -612,11 +540,6 @@ impl<'r> Analyzer<'r> {
         let kind = if through_pointer {
             AnalysisErrorKind::NotMutablePointer
         } else if matches!(checked_place.root, CheckedPlaceRoot::Expr(_)) {
-            // A receiver that is not a place at all: `Bump::bump(make())`.
-            // The mutation would land in a freshly-produced value that is
-            // immediately discarded -- no pointer is involved, and no added
-            // `mut` can fix it, so `NotMutablePointer` (which names a
-            // pointer that does not appear in the source) would be a lie.
             AnalysisErrorKind::MutateTemporary
         } else {
             match hir_root {
@@ -632,13 +555,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// `&base[range]` (`requested_mutable: false`) / `&mut base[range]`
-    /// (`requested_mutable: true`) -- the only way to produce a
-    /// `ResolvedType::Slice` value; a bare `base[range]` with no `&`/`&mut`
-    /// is rejected before this is ever called (see `HirExpr::Slice`'s arm
-    /// in `analyze_expr`). Mirrors `HirExpr::AddressOf`'s own `&`/`&mut`
-    /// treatment of an ordinary place, just producing a fat pointer instead
-    /// of a thin one.
     pub(super) fn analyze_slice(
         &mut self,
         node_id: HirId,
@@ -649,20 +565,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         let (mut checked_base, base_type, place_mutable) =
             self.analyze_place(node_id, span, base, None)?;
-        // Snapshotted before the match below moves `base_type` -- only
-        // needed by the `comp`-binding const-promotion path further down,
-        // as the `Deref` projection's target type (see there for why).
         let base_type_snapshot = base_type.clone();
-        // `*[?]T` (`Array`) -- itself just a pointer value with array-like
-        // properties, see `ResolvedType::Array`'s own doc comment -- has no
-        // length anywhere, at compile time or runtime, to default a
-        // missing `end` to -- unlike `SizedArray` (its own compile-time
-        // `N`) or `Slice`/`Str` (their own runtime length leaf). A plain
-        // `Pointer` never reaches this match at all (see the base-type
-        // match below), so it's not part of this check. Computed as a
-        // plain `bool`, not re-derived from `base_type_snapshot` later,
-        // since that gets moved out in one of the `comp`-binding branches
-        // below.
         let base_lacks_length = matches!(base_type_snapshot, ResolvedType::Array(_, _));
 
         // The slice's *source* mutability: for inline storage
@@ -682,16 +585,6 @@ impl<'r> Analyzer<'r> {
             ResolvedType::SizedArray(item_type, _) => (*item_type, place_mutable, false, false),
             ResolvedType::Slice { item, mutable } => (*item, mutable, true, false),
             ResolvedType::Str { mutable } => (ResolvedType::U8, mutable, true, true),
-            // `*[?]T` -- the mutability genuinely lives on the pointer
-            // *value* (matching `Slice`/`Str`'s `true`, not `SizedArray`'s
-            // binding-borne `false`), so `&mut an_immutable_arr[a..b]`
-            // correctly blames the pointer itself (`ImmutableSliceSource`
-            // below) rather than the binding holding it. A plain `*T`
-            // pointer is *not* matched here -- `*T` is strictly a
-            // single-value pointer, with no indexing or slicing of its
-            // own; the only way to slice through one is to cast it to
-            // `*[?]T` first (see `Context::resolve_pointer_type` and
-            // `Analyzer::array_pointer_cast_kind`).
             ResolvedType::Array(item, mutable) => (*item, mutable, true, false),
             found => {
                 self.error(node_id, span, AnalysisErrorKind::NotSliceable { found });
@@ -699,12 +592,6 @@ impl<'r> Analyzer<'r> {
             }
         };
         if requested_mutable && !source_mutable {
-            // Re-slicing an already-immutable `Slice`/`Str` value: `require_
-            // mutable_place` below would blame the *binding* (`&base.root`),
-            // which is misleading here -- the binding may well be `mut`,
-            // it's the fat-pointer *value* it holds that's immutable (see
-            // the comment above). Only the plain-array case is a genuine
-            // binding-mutability question.
             if from_fat_pointer {
                 self.error(node_id, span, AnalysisErrorKind::ImmutableSliceSource);
                 return None;
@@ -736,13 +623,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // `comp_binding[range]` -- const promotion, same as
-        // `analyze_address_of`'s identical guard (see there, and
-        // docs/language/compile-time-evaluation.md's "calling a method on a
-        // `comp` binding" section). `requested_mutable` is already ruled
-        // out by this point: a comp binding's own `source_mutable` is
-        // always `false` (never `mut`), so the check just above already
-        // rejected `&mut comp_binding[range]`.
         if let CheckedPlaceRoot::Variable {
             storage: Storage::Comp,
             ..
@@ -750,12 +630,6 @@ impl<'r> Analyzer<'r> {
         {
             let value = self.resolve_comp_place(node_id, span, &checked_base)?;
             checked_base = if from_fat_pointer {
-                // Already its own fat pointer (`Slice`/`Str`) -- no address
-                // needed at all, just materialize its two leaves (data
-                // pointer + length) directly; whatever rodata blob its own
-                // data pointer already targets (from whenever this comp
-                // value was originally built) is reused as-is, no new
-                // indirection layered on top.
                 let r#type = if is_str {
                     ResolvedType::Str { mutable: false }
                 } else {
@@ -775,15 +649,6 @@ impl<'r> Analyzer<'r> {
                     r#type,
                 }
             } else {
-                // Inline (`SizedArray`) storage -- needs a real address to
-                // slice into, which a `comp` binding doesn't have; promote
-                // it into one via the same `ConstValue::Ref` "address of a
-                // separately-built piece of `comp` data" codegen already
-                // knows how to emit into an anonymous rodata blob, then
-                // dereference it like any other pointer -- identical
-                // machinery to `analyze_address_of`'s own promotion, just
-                // immediately deref'd back down since a slice needs the
-                // *pointee*'s storage, not the pointer value itself.
                 CheckedPlace {
                     root: CheckedPlaceRoot::Expr(Box::new(CheckedExprNode {
                         id: node_id,
@@ -859,19 +724,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `&[...]` (compile-time slice literals are always immutable --
-    /// `&mut [...]` is rejected here, unlike `analyze_slice`, which has a
-    /// real mutable form). The element type comes from a declared/expected
-    /// `Slice` type if one is in context (e.g. `x: *[i32] = &[1, 2, 3];`),
-    /// otherwise from the first element's own ordinary-expression type
-    /// (reusing `analyze_expr`'s existing literal-default inference, e.g.
-    /// an unsuffixed number defaults to `i32`, rather than reinventing it)
-    /// -- exactly the same two-source shape the ordinary `HirExpr::
-    /// ArrayLiteral` arm above already uses. Every element is then
-    /// re-evaluated as a compile-time constant via `const_eval_slice`, and
-    /// the whole literal collapses to one `ConstValue::Slice`, baked into
-    /// the binary's data segment at codegen (`Codegen::emit_const_slice`)
-    /// rather than built on the stack.
     pub(super) fn analyze_const_slice(
         &mut self,
         node_id: HirId,
@@ -913,32 +765,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Resolves a place's root, then folds over its projections in source
-    /// order, resolving field/index/deref projections against the running
-    /// type and recording the exact resolved shape (field index, item/
-    /// pointee type) so codegen never has to re-search or re-derive them.
-    ///
-    /// Also computes whether the *whole place* may be written to, in the
-    /// same walk: it starts as the root's own mutability (a local/global
-    /// binding's `VarBinding::mutable`; always `false` for anything reached
-    /// through cross-module/qualified resolution, conservatively -- nothing
-    /// in this language yet threads a real flag through `ResolvedItem`, and
-    /// `false` is the safe default for "immutable unless proven otherwise"),
-    /// and is *overwritten* (never combined) every time a `Deref` --
-    /// explicit or the seamless one `resolve_field_projection` inserts for
-    /// `ptr.field` -- or a `Slice` index is processed, by that pointer's/
-    /// slice's own `mutable` flag: going through a pointer resets the
-    /// mutability basis to that specific pointer's, regardless of what came
-    /// before. A field access or an index into inline storage (`Array`/
-    /// `SizedArray`, which aren't fat pointers) never changes it -- it
-    /// simply inherits whatever the base's mutability already was.
-    /// A place expression: a root (a local binding, an item, a
-    /// type-qualified member, or a parenthesized expression) followed by
-    /// zero or more `.field`/`[index]`/`*` projections.
-    ///
-    /// Hands back the checked place, what it resolves to, and whether it is
-    /// writable -- mutability is a running property, reset by every pointer
-    /// or slice hop along the way rather than decided once at the root.
     pub(super) fn analyze_place(
         &mut self,
         node_id: HirId,
@@ -1015,8 +841,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// What a place starts from. Only a local binding can be writable at the
-    /// root -- everything else needs a pointer or slice hop to become one.
     fn resolve_place_root(
         &mut self,
         node_id: HirId,
@@ -1025,9 +849,6 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
         match &place.root {
-            // A path with explicit generic arguments (`Optional<u32>::Some`,
-            // `sum_generic<f64>`) -- resolved through the instantiating
-            // machinery; see `resolve_generic_args_place`.
             HirPlaceRoot::Path(expr_path) if expr_path.plain().is_none() => {
                 let (root, r#type) = self.resolve_generic_args_place(node_id, span, expr_path)?;
                 Some((root, r#type, false))
@@ -1041,13 +862,6 @@ impl<'r> Analyzer<'r> {
                     expected,
                 )
             }
-            // A qualified root -- either module-qualified (`mymodule::thing::
-            // foo`, head an imported module alias) or type-qualified
-            // (`MyStruct::do_thing`/`MyEnum::Variant`, head a type, the tail
-            // one of its members). A module alias wins when both could apply,
-            // preserving the module interpretation unchanged; a head that is
-            // neither is reported by `resolve_type_qualified_value` with the
-            // most precise error it can determine.
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
                 let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
@@ -1067,10 +881,6 @@ impl<'r> Analyzer<'r> {
                             expected,
                         )?
                     }
-                    // A type-qualified member (`MyEnum::Variant`, a static
-                    // function, ...) is never itself an assignable place --
-                    // `mutable` is unconditionally `false` here, not just
-                    // defaulted.
                     _ => {
                         let (root, r#type) =
                             self.resolve_type_qualified_value(node_id, span, path, expected)?;
@@ -1087,15 +897,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// An unqualified root: a local (function-body-level) binding wins if
-    /// there is one; otherwise this is a same-module top-level reference,
-    /// resolved exactly the way a qualified cross-module one is, with
-    /// `module_path` supplying the implicit prefix.
-    ///
-    /// Values never need the indirect/in-progress distinction type
-    /// resolution does -- only a named *type* can legitimately be
-    /// mid-collection when referenced (see `ModuleResolver::resolve_item`) --
-    /// so every item query from here passes `indirect = true`.
     fn resolve_unqualified_root(
         &mut self,
         node_id: HirId,
@@ -1113,10 +914,6 @@ impl<'r> Analyzer<'r> {
             return Some((root, binding.r#type.clone(), binding.mutable));
         }
 
-        // A bare, *uncalled* reference to a genuinely overloaded name --
-        // claimed here before the alias path below can eagerly commit to one
-        // arbitrary candidate (the same problem `resolve_bare_overload_
-        // candidates` exists to avoid for a *call*).
         if origin.0.is_none()
             && let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(ident)
         {
@@ -1187,11 +984,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// A bare reference to an overloaded name. Nothing about the name alone
-    /// picks a candidate and there are no argument types to disambiguate
-    /// with, so the only thing that can decide is an explicit function-typed
-    /// `expected` -- exactly the situation `resolve_qualified_value` handles
-    /// for the module-qualified shape.
     fn resolve_bare_overload_root(
         &mut self,
         node_id: HirId,
@@ -1224,10 +1016,6 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         };
-        // No post-winner visibility check needed -- see
-        // `resolve_overloaded_call`'s identical reasoning: `candidates` is
-        // already the final, decided set (filtered, or fully admitted by
-        // `import reveal`).
         let r#type = ResolvedType::Function(fn_type);
         let root = CheckedPlaceRoot::Variable {
             decl_id,
@@ -1237,11 +1025,6 @@ impl<'r> Analyzer<'r> {
         Some((root, r#type))
     }
 
-    /// `base[index]`. `Array` (the legacy thin-pointer unsized form, e.g.
-    /// `argv`) and `SizedArray` are indexable inline storage, leaving
-    /// mutability unchanged; a `Slice`/`Str` is a fat pointer whose own flag
-    /// resets it, exactly like a deref. Codegen tells the three apart itself
-    /// from this same type.
     fn project_index(
         &mut self,
         node_id: HirId,
@@ -1253,13 +1036,6 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let checked_index = self.analyze_expr(index, None)?;
         let item_type = match current_type {
-            // `SizedArray` is inline storage -- its writability is
-            // whatever binding/field it's already stored in, so `mutable`
-            // is deliberately left untouched here. `Array`, unlike
-            // `SizedArray`, is a real pointer value with its own
-            // type-level mutability (see `ResolvedType::Array`'s doc
-            // comment) -- so it needs the same treatment `Slice`/`Str`
-            // already get below, not the shared arm `SizedArray` gets.
             ResolvedType::SizedArray(item, _) => *item,
             ResolvedType::Array(item, array_mutable) => {
                 *mutable = array_mutable;
@@ -1272,9 +1048,6 @@ impl<'r> Analyzer<'r> {
                 *mutable = slice_mutable;
                 *item
             }
-            // Byte indexing, same as `*[u8]` -- symmetric with `Slice` above,
-            // no artificial restriction (unlike Rust's `str`, which
-            // disallows this entirely to avoid a byte/char-boundary footgun).
             ResolvedType::Str {
                 mutable: str_mutable,
             } => {

@@ -1,52 +1,36 @@
-//! What can go wrong during analysis, and how each reads as one line.
 
 use super::*;
 
 #[derive(Debug, Clone)]
 pub enum AnalysisErrorKind {
     UnresolvedType(TypeResolutionError),
-    /// An unqualified name that resolves to nothing visible. `similar` is a
-    /// close-enough visible name, when one exists.
     UndefinedVariable {
         name: Ident,
         similar: Option<Ident>,
     },
-    /// A qualified place/value path (`head::rest`) whose head names
-    /// nothing visible. Carries a "did you mean" candidate from each
-    /// world (module and type), only ever suggesting what actually exists.
     UndefinedPathHead {
         name: Ident,
         similar_module: Option<Ident>,
         similar_type: Option<Ident>,
     },
-    /// A field access on something that isn't a struct (after auto-deref).
     NotAStruct {
         found: ResolvedType,
     },
-    /// A field access naming a field `base` doesn't have.
     NoSuchField {
         field: Ident,
         base: ResolvedType,
     },
-    /// A field access (or literal initializer) naming a field that exists
-    /// on `base` but isn't visible from this module. Bypassed by `reveal`.
     FieldNotVisible {
         field: Ident,
         base: ResolvedType,
     },
-    /// A method call resolving to a method that exists on `base` but isn't
-    /// visible from this module -- same rule as `FieldNotVisible`, for
-    /// methods instead of data fields.
     MethodNotVisible {
         method: Ident,
         base: ResolvedType,
     },
-    /// An index projection on something that isn't an array/slice.
     NotAnArray {
         found: ResolvedType,
     },
-    /// A call supplying the wrong number of arguments (too many *or* too
-    /// few -- despite this once being named `TooManyArguments`).
     WrongArgumentCount {
         expected: usize,
         found: usize,
@@ -58,752 +42,390 @@ pub enum AnalysisErrorKind {
     UnresolvedCallee,
     InvalidNumberType(Ident),
     UnresolvedInnerExpression,
-    /// A name is declared twice in the same scope. Shadowing an *outer*
-    /// scope is fine and doesn't trigger this. `previous` is the first
-    /// declaration's span, when tracked -- a "first declared here" label.
     Redeclaration {
         name: Ident,
         previous: Option<Span>,
     },
-    /// An assignment's left-hand side isn't syntactically a place (e.g.
-    /// `5 = 3;`).
     AssignmentTargetNotAPlace,
-    /// An assignment's value doesn't have the same resolved type as its
-    /// target (e.g. assigning a pointer into an `i32` local).
     AssignmentTypeMismatch {
         target: ResolvedType,
         value: ResolvedType,
     },
-    /// A compound assignment's (`+= -= *= /= %= &= |= ^= <<= >>=`)
-    /// left-hand side isn't syntactically a place -- same reasoning as
-    /// `AssignmentTargetNotAPlace`.
     CompoundAssignTargetNotAPlace,
-    /// A number literal doesn't fit in its resolved type.
     NumberLiteralOutOfRange {
         literal: String,
         r#type: ResolvedType,
     },
-    /// `*expr` where `expr`'s resolved type isn't a pointer.
     NotAPointer {
         found: ResolvedType,
     },
-    /// `&expr` where `expr` isn't syntactically a place (e.g. `&5`).
     AddressOfNotAPlace,
-    /// A `+ - * / %` operand isn't numeric.
     InvalidBinaryOperand {
         op: BinaryOp,
         r#type: ResolvedType,
     },
-    /// Arithmetic/bitwise operators have no meaning for Unicode scalar
-    /// values; `char` remains comparable, but its codepoint must be cast
-    /// explicitly first.
     CharArithmeticNotAllowed {
         op: String,
     },
-    /// Two pointers may be compared or subtracted for their byte distance;
-    /// every other pointer-pair arithmetic operation is meaningless.
     PointerPairArithmetic {
         op: BinaryOp,
     },
-    /// A unary `-` operand isn't a signed integer or float.
     InvalidNegateOperand {
         r#type: ResolvedType,
     },
-    /// A unary `~` operand isn't a signed or unsigned integer.
     InvalidBitNotOperand {
         r#type: ResolvedType,
     },
-    /// A unary `!` operand isn't a `bool`. Unlike `~`, `!` is defined only
-    /// on `bool` -- there is no integer fallback.
     InvalidNotOperand {
         r#type: ResolvedType,
     },
-    /// An operand of `&&`/`||` isn't a `bool`.
     InvalidLogicalOperand {
         op: &'static str,
         r#type: ResolvedType,
     },
-    /// A `& | ^ << >>` operand is a float -- there's no native instruction
-    /// for any of these on floating-point operands.
     FloatBitwiseOperand,
-    /// `base[start..end]` where `base`'s resolved type is neither
-    /// `SizedArray` nor `Slice`.
     NotSliceable {
         found: ResolvedType,
     },
-    /// `base[start..end]` written without a leading `&`/`&mut` -- a slice
-    /// expression alone doesn't say whether it should be immutable or
-    /// mutable.
     SliceRequiresAddressOf,
-    /// `&mut base[start..end]` where `base` is itself an already-immutable
-    /// `Slice` value -- distinct from `NotMutableBinding`/
-    /// `NotMutablePointer`: the *binding* may well be `mut`, it's the
-    /// slice value's own flag that's immutable.
     ImmutableSliceSource,
-    /// A slice's `start`/`end` bound isn't `i32`.
     InvalidSliceBound {
         r#type: ResolvedType,
     },
-    /// `&arr[start..]` (an open-ended range) on a `*[]T` base -- unlike
-    /// `SizedArray`/`Slice`/`Str`, it carries no length anywhere to default
-    /// a missing end to.
     MissingSliceEnd,
-    /// `&comp_arr_binding[range]` -- a `comp`-bound `*[]T` has no
-    /// established const-promotion story; narrow and likely never hit in
-    /// practice, but rejected explicitly rather than silently mishandled.
     CompPointerSliceNotSupported,
-    /// Bare `..` has no type source outside an index or pattern.
     RangeNotAllowedHere,
     RangeNeedsBounded { r#type: ResolvedType },
-    /// `[]` -- there's no element to infer the array's item type from.
     EmptyArrayLiteral,
-    /// An array literal's elements don't all share the same resolved type
-    /// (the first element's type is what every other element is checked
-    /// against).
     ArrayElementTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// `ident : []T = value;` where `value` isn't an array literal (or
-    /// analyzed to a different item type than `T`) -- there's nothing to
-    /// infer the real length from.
     ArraySizeNotInferable,
-    /// `&mut [...]` -- a compile-time slice is always immutable, just like
-    /// a string literal (see `ConstValue::Slice`).
     ConstSliceCannotBeMutable,
-    /// An element of a `&[...]` compile-time slice isn't a literal constant
-    /// (the sibling of `EnumValueNotConstant`, worded for ordinary
-    /// expression position rather than an enum header value -- see
-    /// `Analyzer::const_eval_slice`'s doc comment for why these stay
-    /// separate).
     ConstSliceElementNotConstant,
-    /// The sibling of `EnumValueTypeMismatch`, for a `&[...]` element.
     ConstSliceElementTypeMismatch {
         expected: ResolvedType,
         found: String,
     },
-    /// A `+ - * / %` operand's types don't match each other (e.g. `i32 +
-    /// i64`) -- unlike `InvalidBinaryOperand`, both operands *are*
-    /// numeric, just not the same numeric type; this language has no
-    /// implicit numeric conversions, so it's always an error, never a
-    /// promotion.
     BinaryOperandTypeMismatch {
         left: ResolvedType,
         left_span: Span,
         right: ResolvedType,
         right_span: Span,
     },
-    /// `%` (`BinaryOp::Rem`) applied to a float operand -- there's no native
-    /// floating-point remainder instruction to lower this to (matching C,
-    /// which requires calling `fmod`/`fmodf` instead of using `%`).
     FloatRemainder,
-    /// An `if`/`while`/`for` condition doesn't resolve to `Bool`.
     NonBoolCondition {
         r#type: ResolvedType,
     },
-    /// An `if`/`else if`/`else` branch's resolved type doesn't match the
-    /// others (see `Analyzer::block_type`/the `HirExpr::If` arm for exactly
-    /// how "the others" is determined, including how a branch that diverges
-    /// via `return` is exempt).
     IfBranchTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// A function's body doesn't produce its declared return type -- no
-    /// tail expression of the right type, no unconditional trailing
-    /// `return`, nor (for `Void`) falling off the end with no tail. Also
-    /// used for `return <expr>;` whose type doesn't match.
     ReturnTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// `++expr`/`--expr` where `expr` isn't syntactically a place (e.g.
-    /// `++5`).
     IncrementTargetNotAPlace,
-    /// `++expr`/`--expr` where `expr`'s resolved type isn't numeric (e.g.
-    /// `bool`, `char`, or a pointer).
     InvalidIncrementOperand {
         r#type: ResolvedType,
     },
-    /// `for init;; post { ... }` -- the condition clause was omitted. Not
-    /// just a style choice -- see findings for why this is a real
-    /// compiler limitation, not merely a stylistic rejection.
     ForLoopMissingCondition,
-    /// `break;` outside any enclosing `while`/`for`.
     BreakOutsideLoop,
-    /// `continue;` outside any enclosing `while`/`for`.
     ContinueOutsideLoop,
-    /// A qualified place/value path (`mymodule::foo`) failed to resolve
-    /// across modules -- unknown module/item, not visible, or a cycle.
     ModuleResolution(crate::resolver::ResolveError),
-    /// A macro's public interface is wider than an item it references from
-    /// its body. The item must be at least as visible as the macro.
     MacroDependencyTooPrivate {
         item: Ident,
         macro_visibility: omega_parser::prelude::Visibility,
         item_visibility: omega_parser::prelude::Visibility,
     },
-    /// A qualified path resolved to a type (a struct), not a value, in a
-    /// position that requires a value (e.g. calling it, or using it as a
-    /// place).
     NotAValue(Vec<Ident>),
-    /// A generic function call's argument-driven type inference couldn't
-    /// deduce a concrete type for this declared generic parameter -- it
-    /// never appeared, in a structurally recognizable position, in any of
-    /// the call's arguments.
     UnresolvedGenericParam(Ident),
-    /// The specific "couldn't infer" case whose cause deserves teaching:
-    /// `f<T>(x: *T)` called with a fat pointer (`*[]u8`/`*str`). A
-    /// `Slice`/`Str` carries a runtime length, so it can never match the
-    /// thin pointer `*T`, and there is no `[]T` type for `T` to bind to.
-    /// Not an inference gap -- the rule is the point (take `x: T` by
-    /// value, or spell the slice out as `x: *[]T`).
     GenericParamFromFatPointer {
         parameter: Ident,
         found: ResolvedType,
     },
-    /// A generic literal or bare enum unit-variant reference was written
-    /// with no explicit `<...>` type arguments, and neither the field
-    /// values nor an available expected type pinned down every one of
-    /// `r#type`'s declared generic parameters -- `generics` names whichever
-    /// are still unresolved.
     UnresolvedLiteralGeneric {
         r#type: Ident,
         generics: Vec<Ident>,
     },
-    /// `defer` lexically inside a `while`/`for` loop body -- see findings
-    /// for why this is deferred future work, not a permanent restriction.
     DeferInsideLoopNotSupported,
-    /// `return` inside a `defer`'s own body. Deferred code only ever runs
-    /// from the enclosing function's shared epilogue, so a `return` here
-    /// would have to jump into that very epilogue from inside code the
-    /// epilogue itself is running.
     ReturnInsideDefer,
-    /// A `defer` statement nested inside another `defer`'s own body -- a
-    /// defer's body always runs at most once per function call already,
-    /// so there's no useful "defer whose scope is another defer's body".
     NestedDeferNotSupported,
-    /// `Name { field = value; ... }` where `Name` resolves to a type that
-    /// isn't a struct or union (a primitive, an array, ...).
     StructLiteralNotAStruct {
         found: ResolvedType,
     },
-    /// A struct literal setting the same field twice. `previous` is the
-    /// first initializer's span -- rendered as a "first set here" label.
     DuplicateFieldInitializer {
         field: Ident,
         previous: Span,
     },
-    /// A struct literal field's value doesn't have the field's declared
-    /// type.
     FieldTypeMismatch {
         field: Ident,
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// A struct literal that doesn't cover every declared field -- no
-    /// implicit zeroing, so partial initialization isn't allowed.
     MissingFieldInitializers {
         r#struct: Ident,
         missing: Vec<Ident>,
     },
-    /// `Struct::function` naming a function `Struct` doesn't have. `similar`
-    /// is a close-enough function name on that struct, when one exists.
     NoSuchStructFunction {
         r#struct: Ident,
         function: Ident,
         similar: Option<Ident>,
     },
-    /// `Struct::function(...)` where `function` takes `self` -- a member
-    /// function needs an instance to be called on.
     MemberFunctionWithoutInstance {
         r#struct: Ident,
         function: Ident,
     },
-    /// `value.function(...)` where `function` does *not* take `self` -- a
-    /// static function is called through the struct's name, not an instance.
     StaticFunctionOnInstance {
         r#struct: Ident,
         function: Ident,
     },
-    /// `Type::name` where `Type` is a real type but not a struct (e.g.
-    /// `i32::something`) -- only structs can have functions.
     StaticAccessOnNonStruct {
         found: ResolvedType,
     },
-    /// `Struct::function::more` -- a path trying to reach *through* a
-    /// struct's function; functions have no items of their own.
     StructPathTooDeep {
         r#struct: Ident,
         function: Ident,
     },
-    /// `head::item` where `head` names a *value* (a function or global) --
-    /// values have no items of their own; only modules and struct types do.
     NotAModule {
         name: Ident,
     },
-    /// An enum header entry named `tag` that isn't the *first* entry -- the
-    /// tag is required to lead the header (it's how the runtime layout
-    /// starts, and how the compiler tells variants apart).
     EnumTagNotFirst,
-    /// An explicit tag (`tag: T` leading the header) whose `T` isn't an
-    /// integer type -- tags are currently always numeric.
     EnumTagNotInteger {
         found: ResolvedType,
     },
-    /// A header field whose type has no compile-time-constant literal form
-    /// (a struct, an array, ...) -- header values are per-variant constants,
-    /// so every header field must be expressible as one.
     EnumHeaderFieldUnsupportedType {
         field: Ident,
         found: ResolvedType,
     },
-    /// A variant supplying the wrong number of header values. `expected`
-    /// counts the explicit tag when the enum declares one (`has_tag`), so
-    /// the message can spell out what the list must contain.
     EnumVariantArgCount {
         variant: Ident,
         expected: usize,
         found: usize,
         has_tag: bool,
     },
-    /// A variant's tag/header value that isn't a literal constant -- the
-    /// header is per-variant *constant* data, baked in at the definition.
     EnumValueNotConstant,
-    /// A variant's tag/header value whose literal kind can't be a value of
-    /// the field's declared type (e.g. a string where `u32` is expected).
-    /// `found` is a short description of what was written.
     EnumValueTypeMismatch {
         expected: ResolvedType,
         found: String,
     },
-    /// Two variants sharing one tag value -- tags are how variants are told
-    /// apart at runtime, so they must be unique per variant.
     DuplicateEnumTag {
         variant: Ident,
         value: String,
         previous_variant: Ident,
         previous: Span,
     },
-    /// A name already claimed elsewhere in the same enum's shared
-    /// `value.name` namespace -- tag, header fields, shared dynamic
-    /// fields, and (when `variant` is `Some`) a variant's own body fields
-    /// all draw from one namespace. `variant` is `None` for a collision
-    /// among the enum-wide fields themselves, `Some` for a variant's body
-    /// field colliding with one of those.
     EnumFieldNameCollision {
         field: Ident,
         variant: Option<Ident>,
     },
-    /// `Enum { ... }` -- an enum can't be built by naming just the enum; a
-    /// specific variant must be chosen. `example` is a real variant of this
-    /// enum, for the help text.
     EnumLiteralWithoutVariant {
         r#enum: Ident,
         example: Ident,
     },
-    /// `Enum::Name`/`Enum::Name { ... }` where `Name` is neither a variant
-    /// nor a function of the enum. Carries a "did you mean" candidate from
-    /// each namespace; only ever suggests what actually exists.
     NoSuchEnumMember {
         r#enum: Ident,
         name: Ident,
         similar_variant: Option<Ident>,
         similar_function: Option<Ident>,
     },
-    /// `Enum::Variant` (bare, no `{ ... }`) where the variant declares
-    /// body fields -- no implicit zeroing anywhere in this language.
     EnumVariantMissingBody {
         r#enum: Ident,
         variant: Ident,
         fields: Vec<Ident>,
     },
-    /// `Enum::Variant { ... }` where the variant declares *no* body fields.
     EnumVariantHasNoBody {
         r#enum: Ident,
         variant: Ident,
     },
-    /// `Struct::Name { ... }` -- a literal path reaching into a struct as
-    /// if it had variants.
     StructLiteralPathTooDeep {
         r#struct: Ident,
         name: Ident,
     },
-    /// A field access naming a *body* field of a different variant than the
-    /// one this value statically is.
     EnumFieldWrongVariant {
         field: Ident,
         owner: Ident,
         actual: Ident,
     },
-    /// A field access naming a body field on an enum value whose variant
-    /// isn't statically known -- without knowing the variant, the field may
-    /// not exist in the value at all. `owner` is the variant declaring it.
     EnumFieldVariantUnknown {
         field: Ident,
         r#enum: Ident,
         owner: Ident,
     },
-    /// A field access naming something that is neither the tag, a header
-    /// field, a shared dynamic field, nor any variant's body field.
     NoSuchEnumField {
         field: Ident,
         r#enum: Ident,
         similar: Option<Ident>,
     },
-    /// A path with explicit generic arguments (`Optional<u32>::...`)
-    /// continuing more than one segment past the instantiated type --
-    /// nothing nests deeper than a type's own members.
     GenericPathTooDeep {
         r#type: Ident,
     },
-    /// An assignment to an enum value's tag or one of its header fields --
-    /// both are per-variant constants; only a variant's own body fields and
-    /// shared dynamic fields are mutable.
     EnumFieldImmutable {
         field: Ident,
     },
-    /// A variant-body literal (`Enum::Variant { ... }`) trying to set a
-    /// *header* field -- header values are fixed per variant by the enum's
-    /// own definition, never supplied at a construction site.
     EnumHeaderFieldInLiteral {
         field: Ident,
     },
 
-    // -- match expressions --
-    /// A `match` pattern's value/range bound isn't a literal constant --
-    /// unlike an ordinary expression, a pattern is checked against the
-    /// scrutinee's whole domain at compile time, so its bounds have to be
-    /// known then too.
     PatternValueNotConstant,
-    /// `Enum::Name` as a match pattern where `Name` isn't one of `Enum`'s
-    /// variants. The pattern-position mirror of `NoSuchEnumMember` (patterns
-    /// only ever name a variant, never a function, so there's just one
-    /// candidate namespace here).
     NoSuchVariantInPattern {
         r#enum: Ident,
         name: Ident,
         similar: Option<Ident>,
     },
-    /// A value/range pattern (`100`, `0..<10`) matched against an enum
-    /// scrutinee -- an enum can only be matched by naming one of its
-    /// variants.
     PatternNotEnumVariant {
         r#enum: Ident,
     },
-    /// An `Enum::Variant` pattern matched against a non-enum scrutinee.
     PatternIsEnumVariant {
         r#enum: Ident,
         variant: Ident,
         scrutinee: ResolvedType,
     },
-    /// A value/range pattern's own type doesn't match the scrutinee's exact
-    /// type (e.g. a `u32` scrutinee matched against an `i32` literal --
-    /// this language has no implicit numeric conversions anywhere else
-    /// either).
     PatternTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    /// `match`'s scrutinee isn't a supported type -- scoped to enums,
-    /// integers, and `bool` for now (see `ResolvedType::integer_domain`).
     UnsupportedMatchScrutinee {
         r#type: ResolvedType,
     },
-    /// Two arms' patterns cover the same value -- an enum variant named by
-    /// more than one arm, or two numeric/`bool` patterns whose intervals
-    /// intersect. `previous` is whichever of the two was written *first*;
-    /// the error itself is anchored on the other.
     OverlappingMatchArm {
         previous: Span,
     },
-    /// An enum `match` covers only some variants and has no `else` --
-    /// `missing` lists every variant left uncovered.
     NonExhaustiveMatchEnum {
         r#enum: Ident,
         missing: Vec<Ident>,
     },
-    /// A numeric/`bool` `match` doesn't cover its scrutinee's whole domain
-    /// and has no `else` -- `gaps` describes each uncovered sub-range.
     NonExhaustiveMatchValue {
         r#type: ResolvedType,
         gaps: Vec<String>,
     },
-    /// A bare `..` catch-all arm on a numeric/`bool`/`char` match, but
-    /// what's left uncovered by every other arm isn't exactly one
-    /// contiguous range -- `gaps` (always 2 or more here; the zero-gap
-    /// case is `CatchAllPatternRedundant` instead) is how many disjoint
-    /// sub-ranges remain, genuinely ambiguous: `..` can't be stretched
-    /// across a hole. See `RangeExpr::is_catch_all`.
     CatchAllRangeNotInferable {
         gaps: usize,
     },
-    /// A bare `..` catch-all arm with nothing left for it to cover -- every
-    /// other arm (numeric/`bool`/`char` range, or enum variant) already
-    /// exhaustively covers the scrutinee on its own.
     CatchAllPatternRedundant,
-    /// A second bare `..` arm in the same `match` -- there's only one
-    /// "everything else" to have, and no principled way to split it
-    /// between two catch-alls.
     MultipleCatchAllPatterns {
         previous: Span,
     },
-    /// A `match` arm's (or `else`'s) resolved type doesn't match the others
-    /// -- the `match` analogue of `IfBranchTypeMismatch`.
     MatchArmTypeMismatch {
         expected: ResolvedType,
         found: ResolvedType,
     },
 
-    // -- mutability --
-    /// A binding not declared `mut` was used somewhere that requires write
-    /// access to it: an assignment, `++`/`--`, an explicit `&mut`, or the
-    /// implicit `mut self` auto-ref a mutating method call needs. `ident`
-    /// names the binding itself; the requiring expression's own span is
-    /// what this anchors to (the assignment, the `&mut`, the call, ...).
     NotMutableBinding {
         ident: Ident,
     },
-    /// Same requirement as `NotMutableBinding`, reached through a pointer
-    /// instead -- the *pointer's* type would need to be `*mut T`, not `*T`
-    /// (a `*T` pointer stays unwritable no matter how the binding holding
-    /// it was declared).
     NotMutablePointer,
-    /// A write to something that is not a place at all: the mutation would
-    /// land in a freshly-produced temporary that is immediately discarded.
-    /// Reachable from both shapes that produce a non-place root -- a
-    /// `*mut self` requirement against an rvalue receiver
-    /// (`Bump::bump(make())`) and an ordinary projected write through one
-    /// (`make().n = 5`) -- so its wording deliberately names neither a
-    /// receiver nor `*mut self`, which only one of the two has. Distinct
-    /// from `NotMutablePointer` (nothing is dereferenced here; naming a
-    /// pointer that does not appear in the source would be a lie) and from
-    /// `NotMutableBinding` (no binding to declare `mut`).
     MutateTemporary,
 
-    // -- unions --
-    /// `Union { }` -- a union literal setting no field at all; unlike a
-    /// struct, there's no "every field" to zero-init, and unlike an enum
-    /// variant, there's no tag to pick a default from -- exactly one field
-    /// must be named so the write actually has a well-defined shape.
     UnionLiteralMissingField {
         r#union: Ident,
     },
-    /// `Union { a = 1; b = 2; }` -- a union literal setting more than one
-    /// field; they'd overlap the same storage, so only one write is ever
-    /// meaningful. `fields` lists every field name that was set, in source
-    /// order.
     UnionLiteralTooManyFields {
         r#union: Ident,
         fields: Vec<Ident>,
     },
 
-    // -- casting --
-    /// `<Type>expr` where either side isn't castable at all -- scoped to
-    /// numeric types and pointers (see `ResolvedType::cast_class`);
-    /// structs/enums/unions/slices/`bool`/`char` have no cast support.
     InvalidCast {
         from: ResolvedType,
         to: ResolvedType,
     },
-    /// `<*mut T>expr` where `expr`'s own pointer type is immutable (`*T`,
-    /// not `*mut T`) -- the same directional rule `ResolvedType::accepts`
-    /// already applies to pointer coercion, checked here at a cast site
-    /// instead of a call/assignment site.
     CastToMutablePointer {
         from: ResolvedType,
         to: ResolvedType,
     },
 
-    // -- overload resolution --
-    /// A call (or a bare, uncalled reference) to an overloaded name where
-    /// no candidate's parameters accept the arguments given -- `candidates`
-    /// lists every overload's signature, so the message can show what
-    /// *would* have matched.
     NoMatchingOverload {
         name: Ident,
         candidates: Vec<ResolvedFunctionType>,
     },
-    /// A call (or a bare, uncalled reference) to an overloaded name where
-    /// two or more candidates are equally good a match -- see
-    /// `Analyzer::resolve_overload`'s scoring rule for what "equally good"
-    /// means (fewest literal arguments needing a non-default type).
-    /// `candidates` lists every *tied* candidate.
     AmbiguousOverload {
         name: Ident,
         candidates: Vec<ResolvedFunctionType>,
     },
-    /// Two methods on the same type share a name and, once `self` is set
-    /// aside, the exact same remaining parameter types -- ambiguous, since
-    /// a call site has no syntax to choose between "receives self by
-    /// value" and "receives self by pointer" (see
-    /// `Analyzer::check_overload_duplicates`). Unlike `Redeclaration`, this
-    /// is two deliberately distinct declarations, not a scope collision.
     AmbiguousSelfOverload {
         name: Ident,
         previous: Span,
     },
 
-    // -- specs --
-    /// A conform declaration requires `function` (from
-    /// `spec<spec_type_args>`, possibly via a dependency), but the type
-    /// provides neither a matching method nor does `spec` supply a
-    /// default. `spec_type_args` matters since the same spec can be
-    /// implemented more than once at different type arguments -- without
-    /// it, two missing requirements from different instantiations would
-    /// render identically.
     MissingSpecFunction {
         implementor: Ident,
         spec: Ident,
         spec_type_args: Vec<ResolvedType>,
         function: Ident,
     },
-    /// `for x in y { ... }` where `y`'s type doesn't *nominally* declare
-    /// `: ToIterator<T>` or `: Iterator<T>` directly, even if it happens
-    /// to have a same-shaped `to_iterator`/`next` method.
     ForLoopSourceNotIterable {
         r#type: ResolvedType,
     },
-    /// A source has more than one `ToIterator<T>` conformance; the loop
-    /// binding needs an explicit `: T` annotation to select one.
     AmbiguousForLoopElementType {
         candidates: Vec<ResolvedType>,
     },
-    /// `for x : u64 in source { }` where `source` conforms to
-    /// `ToIterator<T>`, but never at `u64`. Distinct from
-    /// [`Self::AmbiguousForLoopElementType`]: that one means "too many to
-    /// choose from", this one means "the one you named isn't there".
     ForLoopElementTypeMismatch {
         expected: ResolvedType,
         available: Vec<ResolvedType>,
     },
-    /// `base.name(...)` where `base`'s type is `spec *Spec` and `name`
-    /// isn't one of `Spec`'s (flattened, dependencies included) functions.
     NoSuchSpecFunction {
         spec: Ident,
         function: Ident,
     },
-    /// A spec function declared with by-value `self`/`mut self` --
-    /// rejected at the spec's own definition: `spec *T` dynamic dispatch
-    /// erases `Self` down to a single opaque data pointer, with no way to
-    /// carry or reconstruct a full by-value copy of the concrete type.
     SpecSelfMustBePointer {
         name: Ident,
     },
-    /// A spec function declared variadic (`f(*self, ...)`) -- rejected for
-    /// the same "nothing downstream could satisfy it" reason as
-    /// [`Self::SpecSelfMustBePointer`]. See findings for the deferred-work
-    /// note on lifting this once variadic definitions exist.
     VariadicSpecFunctionUnsatisfiable {
         name: Ident,
     },
-    /// An `extern` function declaration passes or returns an aggregate
-    /// (struct/union/enum) *by value*. Omega's calling convention is
-    /// internally consistent but is not the platform C ABI, so this shape
-    /// would silently miscompile against a real C caller/callee -- rejected
-    /// until the real C ABI lands (see `docs/issues/known-issues.md`). Scalars,
-    /// pointers, slices, and everything behind a pointer stay fine.
     ExternAggregateByValue {
         r#type: ResolvedType,
     },
-    /// A method call through a `spec *Spec` object where two of the
-    /// spec's members could be meant -- static dispatch through a
-    /// conjunction bound already rejects this shape, so dynamic dispatch
-    /// must too. A narrowing cast (`<spec *A>x`) disambiguates.
     AmbiguousSpecObjectMethod {
         function: Ident,
         specs: Vec<Ident>,
     },
-    /// A cast between two `spec *Spec` fat pointers that isn't a
-    /// narrowing onto one of the source object's own spec sections. Only
-    /// narrowing is offered: widening has no section to invent, and
-    /// unrelated specs have no vtable offset to apply.
     SpecObjectCastImpossible {
         from: Ident,
         to: Ident,
     },
-    /// `Spec::static_fn()` where nothing determines `Self` -- no expected
-    /// type at the call site to take it from. The fully-qualified form
-    /// (`<Type : Spec>::fn()`) or an unambiguous `Type::fn()` names it.
     SpecStaticNeedsExpectedType {
         spec: Ident,
         function: Ident,
     },
-    /// `Spec::static_fn()` where the declared return type is not exactly
-    /// `Self`, so even an expected type can't pin down which type
-    /// implements the spec. The fully-qualified form names it explicitly.
     SpecStaticReturnNotSelf {
         spec: Ident,
         function: Ident,
         return_type: String,
     },
-    /// `conform Target to Alias` -- an alias names a conjunction, satisfied
-    /// by conforming each member separately, never by one block conformed to
-    /// the alias itself.
     ConformToAliasSpec {
         alias: Ident,
     },
-    // -- annotations --
-    /// `@some_unknown_name(...)` -- not a recognized annotation at all
-    /// (most likely a typo). See `crate::annotations`'s applicability table.
     UnknownAnnotation {
         name: Ident,
     },
-    /// A recognized annotation used on an item kind it doesn't support
-    /// (e.g. `@inline` on a struct) -- `allowed` lists every item kind it
-    /// *is* valid on.
     AnnotationNotApplicable {
         name: Ident,
         found: crate::annotations::ItemKind,
         allowed: Vec<crate::annotations::ItemKind>,
     },
-    /// The same annotation name written twice on one item.
     DuplicateAnnotation {
         name: Ident,
     },
-    /// A recognized annotation whose argument(s) don't parse into anything
-    /// meaningful (wrong shape, an unrecognized mode word, a non-power-of-
-    /// two `align`, ...) -- `reason` is a short, already-formatted
-    /// explanation; the ways an argument can be malformed vary per
-    /// annotation and don't share one structured shape worth a dedicated
-    /// field each.
     InvalidAnnotationArgs {
         name: Ident,
         reason: String,
     },
-    /// `@mangling(disabled)` on a function with any generic parameters --
-    /// the `$$N` instantiation suffix mangling normally adds is the only
-    /// thing that keeps distinct instantiations from colliding on one
-    /// linker symbol once mangling is off.
     ManglingDisabledOnGeneric,
-    /// `@mangling(disabled)` on a struct/enum/union method -- rejected for
-    /// now: a bare method name has no owning-type prefix once mangling is
-    /// off, a much easier accidental collision than a top-level function's.
     ManglingDisabledOnMethod,
-    /// `@mangling(force = "...")` on a function with any generic
-    /// parameters -- unlike plain `disabled`, this isn't a *possible*
-    /// collision to avoid by naming carefully: every instantiation would
-    /// share the exact same hardcoded symbol.
     ManglingForcedOnGeneric,
-    /// A `glue` declaration targeted something other than a first-class
-    /// `gap` item.
     GlueTargetNotGap {
         target: Ident,
     },
-    /// A `glue` declaration omits one of its target gap's required
-    /// functions.
     GlueMissingFunction {
         gap: Ident,
         function: Ident,
     },
-    /// A `glue` declaration defines a function its target gap does not
-    /// require.
     GlueExtraFunction {
         gap: Ident,
         function: Ident,
     },
-    /// A `glue` function's parameter or return types differ from the
-    /// matching gap requirement.
     GlueFunctionSignatureMismatch {
         gap: Ident,
         function: Ident,
@@ -833,10 +455,6 @@ pub enum AnalysisErrorKind {
     ConformanceCycle {
         target: String,
         spec: Ident,
-        /// The goal chain that closes the cycle, outermost first, with the
-        /// re-entered goal repeated as the final link -- `(target string,
-        /// spec name, span)` per link. One `note:` is rendered per
-        /// consecutive pair ("proving 'S: A' requires 'S: B'").
         chain: Vec<(String, Ident, Span)>,
     },
     BlanketConformanceForeignSpec {
@@ -858,46 +476,18 @@ pub enum AnalysisErrorKind {
     MethodNotInScope {
         method: Ident,
         spec: Ident,
-        /// The receiver's own type -- the concrete half of the
-        /// fully-qualified spelling the renderer suggests
-        /// (`<Type : Spec>::method(recv, ...)`).
         r#type: ResolvedType,
     },
-    /// Two or more different `glue` declarations implement the same gap
-    /// -- exactly one glue is allowed per gap, project-wide. Anchored at
-    /// the gap's own declaration (a whole-program check run once at the
-    /// end of compilation), since neither `glue` site is more "at fault".
     MultipleGluesForGap {
         gap: Ident,
         glues: Vec<Ident>,
     },
-    /// `comp <expr>` couldn't be evaluated at compile time -- `reason`
-    /// names the specific construct that blocked it, and `trace` is the
-    /// call-site chain from the outermost `comp` down to where `reason`
-    /// happened, outermost first (empty for a direct failure). See
-    /// `docs/language/compile-time-evaluation.md`.
     CompEvalFailed {
         reason: String,
         trace: Vec<Span>,
     },
-    /// `mut comp a := ...;` -- a `comp` binding carries no storage of its
-    /// own (every reference is substituted with its known value at
-    /// compile time), so a later mutation could never be observed --
-    /// incoherent, not just discouraged.
     MutCompBinding,
-    /// `ident := value;` at item level (no `comp`) whose `value` doesn't
-    /// resolve to a compile-time-known constant -- a top-level binding
-    /// gets real storage, but its initial value still has to be known
-    /// before codegen runs; there's no runtime constructor/init-order
-    /// machinery. Fix: an explicit `comp <expr>` initializer. See
-    /// `docs/language/compile-time-evaluation.md`.
     TopLevelValueNotComp,
-    /// A `struct`/`union` whose fields (if any) all resolve to zero-sized
-    /// types -- unlike `marker`, a `struct`/`union` is meant to hold real
-    /// data. Checked against the type's full, recursively-flattened leaf
-    /// list, so this also catches a struct whose only field is itself
-    /// zero-sized, or a generic instantiation that happens to resolve that
-    /// way.
     ZeroSizedAggregate {
         name: Ident,
         is_union: bool,

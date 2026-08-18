@@ -1,9 +1,3 @@
-//! The one global, item-granular query behind same-module resolution,
-//! cross-module resolution, and generic instantiation alike.
-//!
-//! Every top-level item is its own independent, memoized query, so one bad
-//! item never poisons an unrelated sibling's, and declaration order never
-//! matters anywhere.
 
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
@@ -23,12 +17,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// One item query's identity: its owning module, its name, and the concrete
-/// type arguments it was instantiated with -- empty for an ordinary,
-/// non-generic item, or a generic item's instantiation-specific substitution
-/// (`List<u32>`'s `[u32]`). There is no architectural difference between "an
-/// ordinary item" and "a generic instantiation of one": both are this one key
-/// shape, just with different `type_args`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ItemKey {
     pub module: ModulePath,
@@ -45,11 +33,6 @@ impl ItemKey {
         }
     }
 
-    /// Whether this key addresses a *specific instantiation* of a generic
-    /// template rather than an ordinary item. Instantiations get their own
-    /// synthetic identities, are body-checked on demand instead of by
-    /// `compile`'s static sweep, and are compiled locally even when the
-    /// template they came from is extern-owned.
     pub fn is_instantiation(&self) -> bool {
         !self.type_args.is_empty()
     }
@@ -62,34 +45,20 @@ impl ItemKey {
     }
 }
 
-/// A spec's own canonical identity -- deliberately **not** an [`ItemKey`]: a
-/// spec's cell content never varies by type arguments (its
-/// `functions`/`dependencies` stay raw until a concrete implementor is
-/// known), so there is exactly one canonical cell per spec regardless of how
-/// many different concrete args reference it.
 type SpecKey = (ModulePath, Ident);
 
-/// One overload candidate's identity: an overload group's candidates all
-/// share a name, so only their position in the module distinguishes them.
 type OverloadKey = (ModulePath, usize);
 
-/// A query's memoized state -- the white/gray/black cycle guard. An item
-/// whose signature collection is already on the call stack is gray, and a
-/// second request for it before the first finishes is either fine (an
-/// indirect, pointer reference) or a genuine by-value cycle.
 pub(crate) enum QueryState {
     InProgress,
     Done,
 }
 
-/// One item's successfully resolved signature, with the declared visibility
-/// every *later* reference to it is checked against.
 struct ResolvedEntry {
     visibility: Visibility,
     item: ResolvedItem,
 }
 
-/// One item's fully checked body plus whatever warnings checking it produced.
 pub(crate) struct CheckedBody {
     pub item: CheckedItem,
     pub warnings: Vec<AnalysisWarning>,
@@ -111,17 +80,6 @@ impl CheckedBody {
     }
 }
 
-/// Every struct/enum/union's shared identity cell, decoupled from any one
-/// module's analysis: created the moment *anyone* (same-module or foreign)
-/// first asks about a given type, independent of whether its own module has
-/// started resolving it. This is what lets an indirect (pointer) reference to
-/// a type that's mid-collection be served immediately, without needing
-/// exclusive access to whatever is currently building it.
-///
-/// All three are `IndexMap`s so every whole-cache walk visits cells in the
-/// (deterministic) order they were created, rather than a `HashMap`'s
-/// per-process-random order -- what keeps repeated builds of identical source
-/// byte-for-byte identical.
 #[derive(Default)]
 pub(crate) struct TypeCells {
     structs: IndexMap<ItemKey, Rc<RefCell<ResolvedStructType>>>,
@@ -130,11 +88,6 @@ pub(crate) struct TypeCells {
 }
 
 impl TypeCells {
-    /// Gets (or creates) `key`'s struct cell. Always called with a real `id`
-    /// (the struct's own `HirId`, or a freshly minted synthetic one for an
-    /// instantiation) from `compute_item`, right before that same struct is
-    /// marked `InProgress` and analyzed -- so nothing can ever observe a
-    /// missing cell for a type that is actually in progress.
     pub fn struct_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedStructType>> {
         self.structs
             .entry(key.clone())
@@ -154,9 +107,6 @@ impl TypeCells {
             .clone()
     }
 
-    /// The enum counterpart of [`Self::struct_cell`]. The placeholder's tag
-    /// defaults to the implicit `u16`; `signature_of_enum` patches the real
-    /// shape in.
     pub fn enum_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedEnumType>> {
         self.enums
             .entry(key.clone())
@@ -178,7 +128,6 @@ impl TypeCells {
             .clone()
     }
 
-    /// The union counterpart of [`Self::struct_cell`].
     pub fn union_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedUnionType>> {
         self.unions
             .entry(key.clone())
@@ -196,8 +145,6 @@ impl TypeCells {
             .clone()
     }
 
-    /// `key`'s already-created struct cell. Phase 2 only ever asks for a cell
-    /// phase 1 built, so a miss is a driver bug.
     pub fn expect_struct(&self, key: &ItemKey) -> Rc<RefCell<ResolvedStructType>> {
         self.structs
             .get(key)
@@ -219,8 +166,6 @@ impl TypeCells {
             .clone()
     }
 
-    /// `key`'s existing cell as a type, whichever of the three kinds it is --
-    /// `None` when `key` has no cell at all (i.e. it isn't an aggregate).
     pub fn resolved_type(&self, key: &ItemKey) -> Option<ResolvedType> {
         if let Some(cell) = self.structs.get(key) {
             return Some(ResolvedType::Struct(cell.clone()));
@@ -248,8 +193,6 @@ impl TypeCells {
         self.unions.iter()
     }
 
-    /// Every cell's own method list, whichever kind it came from -- the three
-    /// are indistinguishable to a caller that only wants methods.
     pub fn all_methods(&self) -> impl Iterator<Item = (&ItemKey, Vec<(Ident, ResolvedMethod)>)> {
         self.structs
             .iter()
@@ -267,126 +210,29 @@ impl TypeCells {
     }
 }
 
-/// Every item query's memoized state and results.
 #[derive(Default)]
 pub(crate) struct ItemQueries {
     state: HashMap<ItemKey, QueryState>,
-    /// Every item that finished its query successfully -- absent for one
-    /// that's `Done` but failed; the real diagnostics for those live in the
-    /// diagnostic sink instead. `IndexMap`, because the end-of-compile sweep
-    /// for extern-owned references walks this whole map and its order reaches
-    /// codegen: insertion (resolution) order is deterministic, a `HashMap`'s
-    /// is per-process-random.
     resolved: IndexMap<ItemKey, ResolvedEntry>,
     pub cells: TypeCells,
     pub gaps: HashMap<ItemKey, Rc<omega_analyzer::resolved_type::ResolvedGap>>,
     pub glues: Vec<GlueSignature>,
     spec_cells: HashMap<SpecKey, Rc<RefCell<ResolvedSpecType>>>,
-    /// The `cells` counterpart of `state`, at spec granularity -- spec
-    /// declaration bypasses `ensure_item` entirely, so it needs its own guard
-    /// or a genuine `spec A : B; spec B : A;` cycle would recurse forever.
     spec_state: HashMap<SpecKey, QueryState>,
-    /// Every free (non-method) function's resolved `@inline`/`@mangling`/
-    /// `@suppress`, keyed by its own declaration id. Methods carry theirs
-    /// inline on `ResolvedMethod`; free functions have no equivalent
-    /// per-declaration record of their own (`ResolvedItem` is shared with
-    /// globals/externs), so they get this sibling cache. Resolving
-    /// annotations once, at signature time, is what lets an extern-owned
-    /// function's annotations be seen without ever checking its body.
     pub function_annotations: HashMap<HirId, ResolvedAnnotations>,
-    /// One overload candidate's resolved signature, memoized by position
-    /// rather than name. Unlike the aggregate cells, a function signature has
-    /// no self-referential-cycle risk of its own (nothing ever embeds a
-    /// function *by value* the way a struct field embeds another struct), so
-    /// this is a plain memo with no `InProgress` guard. `IndexMap` for the
-    /// same reason `resolved` above is one.
     pub overload_signatures: IndexMap<OverloadKey, ResolvedFunctionType>,
     pub overload_bodies: HashMap<OverloadKey, CheckedBody>,
-    /// Every generic instantiation's checked body, discovered and computed on
-    /// demand (see `Driver::ensure_item`) rather than by `compile`'s static
-    /// per-module sweep, since instantiations aren't statically enumerable.
-    /// Merged into their originating module only after both phases finish --
-    /// an instantiation can be discovered at any point during either, so
-    /// nothing may assume this map is complete any earlier. `IndexMap` for
-    /// deterministic (discovery-order) merging.
     pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
-    /// The *declared* bound sets established by this instantiation's generic
-    /// parameters, exactly as written -- one `(concrete, spec, spec_args)`
-    /// per member, **not** the bound context (which additionally contains
-    /// alias members and entailed derived conformances). Body analysis
-    /// consults these entries, expanding them through
-    /// `Driver::bound_context_for` when it builds the analyzer's bound
-    /// context -- see `check_generic_bounds`'s doc comment for why the
-    /// context is computed at body-check time instead of stored here.
     pub declared_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
-    /// Counter behind every synthetic `HirId`. Always paired with
-    /// `SYNTHETIC_MODULE`, a module id the lowerer never produces, so these
-    /// can never collide with a real per-file id.
     next_synthetic_id: u32,
-    /// Every non-generic, non-overload item's checked body, memoized the
-    /// first time anything asks for it -- either `compile`'s own per-module
-    /// phase-2 sweep (`check_module_bodies`), or a `comp` evaluation
-    /// reaching it early, out of that sweep's own order, via
-    /// `resolve_function_body`. Without this, whichever of the two asks
-    /// second would re-check (and, for a function, re-lower/re-codegen) the
-    /// exact same body, producing a duplicate-symbol link error -- the same
-    /// failure mode `overload_bodies`/`generic_instantiations` already exist
-    /// to avoid for their own cases. `ensure_item_body` (`bodies.rs`) is the
-    /// one entry point both callers now go through.
     pub checked_bodies: HashMap<ItemKey, CheckedBody>,
-    /// The reverse of an ordinary forward `ItemKey` lookup: given a
-    /// function/method's own already-decided identity (`identity_for`'s
-    /// return value), which item it belongs to. Exists purely for `comp`
-    /// evaluation (`resolve_function_body`), which is handed a bare
-    /// `HirId` -- the only identity a `CheckedPlaceRoot::Variable`'s
-    /// `Storage::Function` root carries -- and needs to work backwards to
-    /// "which `ItemKey` do I `ensure_item_body` to get this body checked".
-    /// A method's id maps to its *owner* aggregate's own key (methods have
-    /// no `ItemKey` of their own; their bodies are only ever checked as
-    /// part of their owner's), matching `identity_for`'s own call sites
-    /// (`method_identities` calls it once per method, but always with the
-    /// owner's `key`).
     pub decl_id_owner: HashMap<HirId, ItemKey>,
-    /// Every top-level `comp` binding's already-evaluated value
-    /// (`HirItem::Walrus`, always `comp` -- see `Analyzer::
-    /// analyze_comp_declaration`), keyed by its own `decl_id`. The driver-
-    /// level counterpart of `omega_analyzer::context::Context::
-    /// comp_values`, which only ever holds *local* bindings (scoped to one
-    /// throwaway per-item `Analyzer`) -- a global's value has to survive
-    /// past that, for every other item's own separate analysis to read
-    /// back via `ModuleResolver::resolve_comp_value`.
     pub comp_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
-    /// The identical cross-phase-survival need as `comp_values`, for a
-    /// non-`comp` top-level binding's compile-time-known initial value
-    /// (`HirItem::Walrus`, `w.comp == false`, with a value) -- `compute_item`
-    /// (signature resolution) is the only phase that actually runs
-    /// `Analyzer::analyze_global_walrus`; `check_item_body` (a separate,
-    /// possibly much later call) reads the result back from here to build
-    /// this global's `CheckedDeclaration` rather than re-analyzing the
-    /// initializer a second time. Unlike `comp_values`, absence here is
-    /// meaningful too (a `mut pqr : Thing;`-shaped global with no
-    /// initializer at all): `check_item_body` treats a missing entry as
-    /// `initial_value: None`, not an error.
     pub global_initial_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
-    /// The body-checking counterpart of `state`'s `InProgress` guard --
-    /// needed because body-checking (unlike signature resolution) can now
-    /// genuinely reenter itself: a `comp` expression inside function `f`'s
-    /// own body can call `resolve_function_body` on `f` itself (directly,
-    /// or through a `g` that calls back into `f`) before `f`'s own body has
-    /// finished checking, since `comp` evaluation runs *during* body-
-    /// checking rather than only after it. `ensure_item_body` reports this
-    /// as a failure (rather than reentering, which would recurse the real
-    /// Rust call stack without bound -- the interpreter's own fuel/depth
-    /// budget bounds *interpretation*, not this, a level below it) the
-    /// moment it finds `key` already present here.
     pub body_in_progress: std::collections::HashSet<ItemKey>,
 }
 
-
 impl ItemQueries {
-    /// A fresh, globally unique `HirId` for something with no HIR node of its
-    /// own: a generic instantiation's identity, or a spec-default method
-    /// instantiated for a concrete implementor.
     pub fn fresh_synthetic_id(&mut self) -> HirId {
         let id = HirId {
             module: SYNTHETIC_MODULE,
@@ -396,12 +242,6 @@ impl ItemQueries {
         id
     }
 
-    /// **Identity is decided exactly once, here, per fresh key, and never
-    /// again**: an ordinary item keeps its own declared `HirId`, while a
-    /// generic instantiation gets a fresh synthetic one. Both the cells and
-    /// the body phase read the decided id back out rather than recomputing
-    /// it, so `List<u32>` and `List<i64>` are guaranteed genuinely distinct
-    /// types/symbols with no risk of drift between the two phases.
     pub fn identity_for(&mut self, key: &ItemKey, declared: HirId) -> HirId {
         let id = if key.is_instantiation() {
             self.fresh_synthetic_id()
@@ -412,7 +252,6 @@ impl ItemQueries {
         id
     }
 
-    /// [`Self::identity_for`] over an item's whole method list.
     pub fn method_identities(
         &mut self,
         key: &ItemKey,
@@ -424,20 +263,14 @@ impl ItemQueries {
             .collect()
     }
 
-    /// Whether `key` is already resolved, still being resolved, or untouched.
     pub fn state(&self, key: &ItemKey) -> Option<&QueryState> {
         self.state.get(key)
     }
 
-    /// Marks `key` as being resolved right now -- the gray state every cycle
-    /// check keys off.
     pub fn begin(&mut self, key: &ItemKey) {
         self.state.insert(key.clone(), QueryState::InProgress);
     }
 
-    /// Marks `key` resolved, recording its signature when it succeeded. A
-    /// failed query stays `Done` but absent, which is exactly what tells a
-    /// later reference "this already failed" apart from "never asked".
     pub fn finish(&mut self, key: &ItemKey, visibility: Visibility, item: Option<&ResolvedItem>) {
         self.state.insert(key.clone(), QueryState::Done);
         if let Some(item) = item {
@@ -451,7 +284,6 @@ impl ItemQueries {
         }
     }
 
-    /// A finished query's outcome -- `None` when it finished by failing.
     pub fn finished(&self, key: &ItemKey) -> Option<(Visibility, ResolvedItem)> {
         self.resolved
             .get(key)
@@ -462,7 +294,6 @@ impl ItemQueries {
         self.spec_cells.get(key).cloned()
     }
 
-    /// [`Self::state`]'s spec-granular counterpart.
     pub fn spec_state(&self, key: &SpecKey) -> Option<&QueryState> {
         self.spec_state.get(key)
     }
@@ -471,8 +302,6 @@ impl ItemQueries {
         self.spec_state.insert(key.clone(), QueryState::InProgress);
     }
 
-    /// [`Self::finish`]'s spec-granular counterpart -- same "`Done` but
-    /// absent means it failed" convention.
     pub fn finish_spec(&mut self, key: &SpecKey, cell: Option<&Rc<RefCell<ResolvedSpecType>>>) {
         self.spec_state.insert(key.clone(), QueryState::Done);
         if let Some(cell) = cell {
@@ -480,8 +309,6 @@ impl ItemQueries {
         }
     }
 
-    /// One item's already-resolved signature. Phase 2 only runs after phase 1
-    /// produced it, so a miss is a driver bug.
     pub fn expect_resolved(&self, key: &ItemKey) -> &ResolvedItem {
         &self
             .resolved
@@ -490,18 +317,12 @@ impl ItemQueries {
             .item
     }
 
-    /// Every resolved item's key paired with its signature -- the whole-cache
-    /// walk `collect_extern_functions` needs.
     pub fn resolved_items(&self) -> impl Iterator<Item = (&ItemKey, &ResolvedItem)> {
         self.resolved.iter().map(|(key, entry)| (key, &entry.item))
     }
 }
 
 impl Driver {
-    /// `exposed`/`internal`/(default hidden)'s access decision --
-    /// `declaring`/`accessor` are absolute module paths. `Internal` is
-    /// package-wide (same root segment), Rust `pub(crate)`-style, rather than
-    /// the narrower "declaring module and its descendants only".
     pub(crate) fn visibility_allows(
         visibility: Visibility,
         declaring: &[Ident],
@@ -514,9 +335,6 @@ impl Driver {
         }
     }
 
-    /// One item's declared visibility, read straight off its HIR -- the
-    /// property of a *declaration*, so it's identical for every instantiation
-    /// of a generic template and needs no resolution to answer.
     pub(crate) fn declared_visibility(
         &mut self,
         module_path: &[Ident],
@@ -531,9 +349,6 @@ impl Driver {
             .map(item_visibility)
     }
 
-    /// Gates a resolved item behind its own declared visibility. `bypass`
-    /// (the `reveal` modifier) suppresses only this one check; it never
-    /// affects what is cached.
     fn gate_visibility(
         item: ResolvedItem,
         visibility: Visibility,
@@ -551,13 +366,6 @@ impl Driver {
         }
     }
 
-    /// What a request for an item that is *already being resolved* gets.
-    ///
-    /// A pointer reference never needs its pointee's layout, so it can be
-    /// served straight from the type's cell. Everything else is a genuine
-    /// cycle: a by-value reference closes an infinite-size type, and an
-    /// *import* (always indirect, whatever it names) looping back on an
-    /// in-progress non-type item is a real mutual item-import cycle.
     fn in_progress_result(
         &self,
         key: &ItemKey,
@@ -575,12 +383,6 @@ impl Driver {
         }
     }
 
-    /// The one global query behind same-module resolution, cross-module
-    /// resolution, and generic instantiation alike (see
-    /// `ModuleResolver::resolve_item`). A name already `Done` is a cache hit
-    /// (successful or not); one found `InProgress` is either a legitimate
-    /// indirect reference or a genuine cycle; anything else is analyzed right
-    /// here, on the spot, before this returns.
     pub(crate) fn ensure_item(
         &mut self,
         accessor_module_path: &[Ident],
@@ -635,18 +437,6 @@ impl Driver {
         Self::gate_visibility(result?, visibility, &key, accessor_module_path, bypass)
     }
 
-    /// Pads a short `type_args` up to `generic_params.len()` by resolving
-    /// each missing *trailing* parameter's own declared default, in order --
-    /// each default may itself reference an earlier parameter (`struct
-    /// Pair<A, B = A>`), so it's resolved under the substitution built from
-    /// every parameter already concrete at that point (mirrors
-    /// `check_generic_bounds`'s own substitution-building, just grown
-    /// incrementally instead of all at once). A too-long `type_args`, or a
-    /// missing parameter with no default, is `GenericArgCountMismatch`
-    /// exactly as before this feature existed -- the trailing-only rule
-    /// (enforced at parse time, see `omega_parser`'s
-    /// `DefaultGenericParamNotTrailing`) guarantees there's never a gap
-    /// *before* a still-explicit argument to worry about.
     fn pad_generic_defaults(
         &mut self,
         module_path: &[Ident],
@@ -701,32 +491,6 @@ impl Driver {
         Ok(padded)
     }
 
-    /// Checks every bound generic parameter (`T: Animal + Display`) against
-    /// the concrete argument it was instantiated with, returning exactly the
-    /// analyzer-bound context those satisfied bounds establish, plus the
-    /// declared bound set itself (one `(concrete, spec, spec_args)` triple
-    /// per member) -- the latter is what blanket-precedence and
-    /// bound-context derivation both compare, and it is deliberately kept
-    /// apart from the context (which also contains seeded entries). Both
-    /// named generic items and generic `conform` templates use this path: a
-    /// bound means the same thing at either instantiation site. A
-    /// conjunction requires *every* member to hold; the first unsatisfied
-    /// one is the one reported, by name.
-    ///
-    /// `None` means resolving a bound recorded its own ordinary analysis
-    /// error. `Some(Err(_))` is the structured `SpecNotImplemented` case,
-    /// whose caller chooses the appropriate declaration/use-site anchor.
-    ///
-    /// Returns only the *declared* bound set, one `(concrete, spec,
-    /// spec_args)` per member, exactly as written. The bound *context*
-    /// (alias members plus entailed derived conformances) is body-checking
-    /// information, deliberately not computed here -- see
-    /// `Driver::bound_context_for`, which the body-checking sites call
-    /// over the stored declared set. Computing it during signature
-    /// resolution made the query re-entrant: the context built a full
-    /// conformance sweep (`conformances_for_type`) in the middle of a
-    /// proof, which is what let a fourth unrelated blanket reproduce the
-    /// blanket-chain false cycle through a different door.
     pub(crate) fn check_generic_bounds(
         &mut self,
         module: &[Ident],
@@ -740,9 +504,6 @@ impl Driver {
             .zip(type_args.iter().cloned())
             .collect();
 
-        // Every bound is checked first so a derived-conformance seed (see
-        // `bound_context_for`) is admitted against the whole conjunction,
-        // never one member in isolation.
         let mut declared = Vec::new();
         for (param, concrete) in generic_params.iter().zip(type_args) {
             for bound in &param.bounds {
@@ -770,10 +531,6 @@ impl Driver {
         Some(Ok(declared))
     }
 
-    /// Stores a named generic item's declared bound set after the shared
-    /// checker has validated its concrete arguments. The bound *context*
-    /// (alias members, entailed derived conformances) is built at body-check
-    /// time -- see `check_generic_bounds`'s doc comment for why.
     fn check_item_generic_bounds(
         &mut self,
         key: &ItemKey,
@@ -795,9 +552,6 @@ impl Driver {
         Ok(())
     }
 
-    /// Resolves one item's signature -- the work `ensure_item` defers to the
-    /// first time a name is requested. Each kind gets its own throwaway
-    /// `Analyzer`, seeded with the instantiation's substitution.
     fn compute_item(
         &mut self,
         key: &ItemKey,
@@ -825,9 +579,6 @@ impl Driver {
                     mutable: c.mutable,
                 }),
 
-            // `ident : Type = value;` -- same "must be compile-time-known"
-            // rule as a non-`comp` `Walrus` below, with a written type
-            // instead of an inferred one.
             HirItem::DeclarationWithInit { decl, value, .. } => self
                 .analyze(module, &substitution, (decl.id, decl.span), |a| {
                     a.analyze_global_declaration_with_init(decl, value)
@@ -893,7 +644,6 @@ impl Driver {
                         ResolvedType::Function(_) => Storage::Function,
                         _ => Storage::Global,
                     };
-                    // `extern` declarations are always immutable for now.
                     ResolvedItem::Value {
                         r#type: c.r#type,
                         storage,
@@ -985,11 +735,6 @@ impl Driver {
                 })
             }
 
-            // A spec's cell is genuinely args-independent, so its
-            // construction is fully delegated (and its own diagnostics
-            // recorded) inside `resolve_spec_declaration`. This arm exists
-            // only to serve the ordinary, already-arg-count-validated
-            // reference path.
             HirItem::Spec(_) => {
                 let absolute: Vec<Ident> =
                     module.iter().cloned().chain([key.name.clone()]).collect();
@@ -1006,12 +751,6 @@ impl Driver {
         resolved.ok_or_else(|| key.failed())
     }
 
-    /// The shared spine of `compute_item`'s struct/enum/union arms: bind
-    /// `Self` to the cell and resolve the signature.
-    ///
-    /// The cell is created by the caller *before* this runs, so a self- or
-    /// mutually-referencing pointer field hit during field resolution finds
-    /// it already there (`in_progress_result` serves it).
     fn compute_aggregate(
         &mut self,
         key: &ItemKey,
@@ -1030,11 +769,6 @@ impl Driver {
         Some(ResolvedItem::Type(self_type))
     }
 
-    /// A spec's canonical, args-independent declaration (see
-    /// `ModuleResolver::spec_declaration`), cycle-guarded at spec
-    /// granularity. `Ok(None)` for anything that isn't a spec at all --
-    /// including a name that doesn't resolve -- deferring that diagnosis to
-    /// the ordinary reference path, which re-derives it identically.
     pub(crate) fn resolve_spec_declaration(
         &mut self,
         absolute_path: &[Ident],
@@ -1044,9 +778,6 @@ impl Driver {
         };
         let key: SpecKey = (module_path.to_vec(), name.clone());
         match self.items.spec_state(&key) {
-            // `Done` but absent means construction already failed (real
-            // diagnostics recorded then) -- report `ItemFailed` rather than
-            // a misleading "not a spec".
             Some(QueryState::Done) => {
                 return match self.items.spec_cell(&key) {
                     Some(cell) => Ok(Some(cell)),
@@ -1074,8 +805,6 @@ impl Driver {
         let sp = sp.clone();
 
         self.items.begin_spec(&key);
-        // Empty substitution: neither call needs `Self` or this spec's own
-        // generics bound to anything concrete yet.
         let run = self.with_analyzer(module_path, &[], (sp.id, sp.span), |analyzer| {
             (
                 analyzer.resolve_spec_dependencies(&sp),
@@ -1092,8 +821,6 @@ impl Driver {
             });
         }
         let (dependencies, (functions, annotations)) = run.result;
-        // Computed once, here: `functions`/`dependencies` are both already
-        // fully resolved by this point.
         let is_object_safe = functions
             .iter()
             .all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))

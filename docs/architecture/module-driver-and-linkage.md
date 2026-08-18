@@ -290,3 +290,17 @@ During checked -> MIR lowering, that ownership/provenance becomes:
 - `MirLinkage::Export` or `MirLinkage::Weak`.
 
 See [`symbol-mangling.md`](symbol-mangling.md).
+
+## Maintainer invariants that are easy to break
+
+The driver relies on a few ordering and memoization rules that are not obvious from the public query shape:
+
+- A module publishes its own local item index before import indexing begins. Import annotation resolution can re-enter lookup for that same module; publishing first turns that re-entry into a cache hit instead of unbounded recursion.
+- Concrete generic item keys are built only after omitted generic arguments have been filled with defaults. Equivalent call sites must therefore converge on the same structural `ItemKey` and share one instantiation.
+- A lazily discovered generic body is checked only after its signature has reached the completed query state. This keeps recursive calls from observing an unfinished body/signature state that the static whole-package sweep could not have enumerated.
+- Conformance-template solving is goal-directed and guarded by an in-flight goal stack. Only a failure of an outermost goal is safe to memoize permanently; a nested failure may become applicable when the enclosing proof unwinds and is retried from a clean stack.
+- A conformance sweep is not complete if a candidate was skipped because its goal was already in flight. Such a sweep must be eligible to run again later rather than publishing a false-complete memo.
+- Explicit/otherwise-higher-precedence conformances are selected before an overridden blanket/template body is analyzed. Diagnostics must not leak from a conformance body that can never be selected or emitted.
+- Local and extern modules have different emission ownership. A concrete generic instantiation whose template lives in an extern package is still materialized by the local compilation that requested it; it must not be dropped merely because its template module is absent from the local-module output map.
+
+These are implementation invariants, not language semantics. If the query/conformance architecture changes, update this section with the new invariant rather than recreating long explanatory comments throughout the driver.

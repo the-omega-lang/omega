@@ -1,14 +1,3 @@
-//! Every finding analysis can produce, and how each one renders.
-//!
-//! Findings are kept fully structured all the way to the CLI -- a variant
-//! with typed fields, never a pre-rendered string -- so a diagnostic can
-//! anchor real spans, suggest real names, and be reformatted freely. That
-//! split is why this module has three layers:
-//!
-//! - the finding itself ([`AnalysisErrorKind`], [`AnalysisWarningKind`]) --
-//!   data only;
-//! - its one-line headline (`Display`, in [`kind`]/[`warning`]);
-//! - its full annotated form (`to_diagnostic`, in [`render`]).
 
 mod kind;
 mod render;
@@ -32,10 +21,6 @@ fn join(path: &[Ident]) -> String {
         .join("::")
 }
 
-/// A raw (unresolved) `Type` spelled back for a diagnostic -- the shapes a
-/// reader wrote, not a resolved-type `Display` (the type never resolved, by
-/// definition). Kept here rather than on `Type` itself since nothing else
-/// needs it.
 pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     use omega_parser::prelude::Type;
     match ty {
@@ -65,10 +50,6 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     }
 }
 
-/// Renders a possibly-generic name for a diagnostic -- `"Name"` when
-/// `type_args` is empty, `"Name<Arg1, Arg2>"` otherwise. Used where
-/// `ResolvedType::Struct`/`Spec`'s own `Display` deliberately stays bare
-/// but the diagnostic needs to show *which* instantiation it's about.
 fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
     if type_args.is_empty() {
         return name.as_ref().to_string();
@@ -83,68 +64,22 @@ fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
 
 #[derive(Debug, Clone)]
 pub enum TypeResolutionError {
-    /// A bare type name that doesn't exist in scope. `similar` is a
-    /// close-enough visible type name, when one exists -- the "did you
-    /// mean" candidate (computed at error time, while the scope still
-    /// exists to search).
     UnrecognizedNamedType { name: Ident, similar: Option<Ident> },
-    /// A qualified reference (`mymodule::Foo`) whose head was never bound
-    /// by an `import` -- nothing is visible across modules without one.
     ModuleNotImported { name: Ident, similar: Option<Ident> },
-    /// `[T; N]`'s `N` doesn't fit `u32` -- kept as raw text by the parser
-    /// (same as `NumberExpr`'s integer literals) and only parsed/range-checked
-    /// here, during type resolution.
     InvalidArraySize(String),
-    /// A qualified type path (`mymodule::Foo`) failed to resolve across
-    /// modules -- unknown module/item, not visible, or a cycle. See
-    /// `crate::resolver::ModuleResolver`.
     ModuleResolution(ResolveError),
-    /// A qualified path resolved to a value (a function/extern/global), not
-    /// a type, in a position that requires a type.
     NotAType(Vec<Ident>),
-    /// `Enum::Name` in *type* position (e.g. `x: *Entity::Name`) where
-    /// `Name` isn't one of `Enum`'s variants -- the type-position mirror of
-    /// `AnalysisErrorKind::NoSuchEnumMember`.
     NoSuchVariantForType {
         r#enum: Ident,
         name: Ident,
         similar: Option<Ident>,
     },
-    /// `spec *Foo`/`spec *mut Foo` where `Foo` resolved to something other
-    /// than a spec (a struct, a primitive, ...) -- a dynamic-dispatch
-    /// pointer's pointee must always be a spec.
     NotASpec(Ident),
-    /// `spec *Foo`/`spec *mut Foo` where `Foo` has at least one `spec T`
-    /// (static-dispatch, associated-type-like) return requirement, directly
-    /// or through a dependency -- see `ResolvedSpecType::is_object_safe`'s
-    /// doc comment for why a spec shaped this way can never back a
-    /// dynamic-dispatch trait object.
     SpecNotObjectSafe(Ident),
-    /// `spec Foo` (no `*`, static dispatch) written somewhere other than a
-    /// parameter type or a return type inside a spec's own function
-    /// declaration -- the only two positions this sugar is defined for
-    /// (see `Type::SpecStatic`'s doc comment).
     SpecStaticNotAllowedHere(Ident),
-    /// A bare spec name (`Animal`, no `spec *`/`spec` prefix) resolved
-    /// somewhere a value's actual type is required -- a variable's
-    /// declaration, a field, a parameter, a return type, a cast/`sizeof`
-    /// target, a generic argument, and so on. A spec definition alone has
-    /// no size or representation; only `spec *Foo` (dynamic dispatch) or a
-    /// generic bound (`T: Foo`) give it one.
     SpecUsedAsValueType(Ident),
-    /// `never` resolved somewhere other than a function/method/extern/gap's
-    /// own declared return type. There is no `never`-typed value to store
-    /// anywhere, only a proof a return position is unreachable; a `(...) =>
-    /// never` function type used elsewhere is unaffected.
     NeverNotAllowedHere,
-    /// `[]T` reached ordinary type resolution directly -- inferred-size,
-    /// nothing here to give it a length. Only legal behind a leading `*`
-    /// (`*[]T`) or paired with an array-literal initializer that infers the
-    /// length (see `Analyzer::resolve_typed_decl_init`).
     BareUnsizedArray,
-    /// `[?]T` reached ordinary type resolution directly -- unlike `[]T`,
-    /// there is no standalone-legal case: a slice's length is only known
-    /// at runtime. Only legal behind a leading `*` (`*[?]T`).
     BareUnknownSizeArray,
 }
 
@@ -228,10 +163,6 @@ impl AnalysisError {
         }
     }
 
-    /// The renderable form of this error: a headline stating the problem, a
-    /// caret label localizing it, and -- where a language rule or a likely
-    /// fix genuinely helps -- a `note:`/`help:` footer. Advice is only
-    /// attached where it's always true; a wrong hint is worse than none.
     pub fn to_diagnostic(&self) -> Diagnostic {
         self.kind.to_diagnostic(self.span)
     }
@@ -253,9 +184,6 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-/// `'a'` / `'a' and 'b'` / `'a', 'b', and 'c'` -- the bare listing
-/// `field_list`/`NonExhaustiveMatchEnum`'s diagnostic build their own
-/// noun-prefixed message around.
 fn ident_list(names: &[Ident]) -> String {
     let names: Vec<String> = names.iter().map(|f| format!("'{}'", f.as_ref())).collect();
     match names.as_slice() {
@@ -266,8 +194,6 @@ fn ident_list(names: &[Ident]) -> String {
     }
 }
 
-/// `field 'a'` / `fields 'a' and 'b'` / `fields 'a', 'b', and 'c'` -- for
-/// `MissingFieldInitializers`' headline and label.
 fn field_list(fields: &[Ident]) -> String {
     format!("{} {}", plural(fields.len(), "field"), ident_list(fields))
 }

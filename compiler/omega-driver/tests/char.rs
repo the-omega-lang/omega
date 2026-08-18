@@ -1,11 +1,3 @@
-//! `char` as a complete primitive: its checked constructor, its classifiers,
-//! and the conformances that make it behave like every other type.
-//!
-//! Compiled against the *real* `runtime/core`, since the whole point is what
-//! `core` provides. What a classifier actually *returns*, and whether
-//! `from_u32` actually rejects a surrogate, cannot be asserted from here —
-//! those need execution and live in `examples/char_demo` behind
-//! `just test-char`. This file covers what the front end accepts and rejects.
 
 use omega_analyzer::Target;
 use omega_analyzer::error::AnalysisErrorKind;
@@ -82,10 +74,6 @@ fn has_analysis_error(
     })
 }
 
-// --- conversions ----------------------------------------------------------
-
-/// Every `u8` is a valid scalar value, so this direction is infallible and
-/// stays an ordinary cast. Casting *out* of `char` is likewise always fine.
 #[test]
 fn u8_casts_into_char_and_char_casts_out_to_any_integer() {
     TestPackage::new(
@@ -99,9 +87,6 @@ fn u8_casts_into_char_and_char_casts_out_to_any_integer() {
     .expect_ok();
 }
 
-/// Most `u32`s are not codepoints, so the direct cast stays refused and the
-/// diagnostic points at the checked constructor instead. This is a guardrail
-/// rather than an enforcement boundary — see `from_u32`'s own doc comment.
 #[test]
 fn an_arbitrary_integer_does_not_cast_into_char() {
     let package = TestPackage::new("main() => i32 { c := <char>65; <i32>c }");
@@ -124,11 +109,6 @@ fn from_u32_is_available_and_returns_an_option() {
     .expect_ok();
 }
 
-// --- the classifier surface ----------------------------------------------
-
-/// Every method the block declares must be callable on an ordinary `char`.
-/// Their *results* are asserted in `examples/char_demo`; this pins the
-/// signatures so a rename or a receiver-mode change cannot pass unnoticed.
 #[test]
 fn every_char_classifier_is_callable() {
     TestPackage::new(
@@ -149,10 +129,6 @@ fn every_char_classifier_is_callable() {
     .expect_ok();
 }
 
-// --- conformances ---------------------------------------------------------
-
-/// `char` supported `<` as an operator long before it conformed to anything,
-/// so it could not satisfy a bound. Both must work now.
 #[test]
 fn char_satisfies_an_ord_bound() {
     TestPackage::new(
@@ -184,12 +160,6 @@ fn char_conforms_to_bounded_and_successor() {
     .expect_ok();
 }
 
-// --- arithmetic is rejected, comparison is not ---------------------------
-
-/// Arithmetic and bitwise operators are rejected outright rather than
-/// coercing to `u32` — a codepoint sum has no meaning. Each spelling gets
-/// checked, because the ban lives in three separate places (binary ops,
-/// unary `-`, unary `~`).
 #[test]
 fn every_arithmetic_spelling_on_char_is_rejected() {
     for source in [
@@ -211,8 +181,6 @@ fn every_arithmetic_spelling_on_char_is_rejected() {
     }
 }
 
-/// The other half, and the likelier regression: banning arithmetic must not
-/// take comparison or `match` with it.
 #[test]
 fn char_comparison_and_match_ranges_still_work() {
     TestPackage::new(

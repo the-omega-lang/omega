@@ -39,11 +39,6 @@ impl<'r> Analyzer<'r> {
             }
         }
     }
-    /// What `alias` means as an import in this module, resolved lazily and
-    /// memoized by the driver per `(module_path, alias)` pair -- `Ok(None)`
-    /// means this module has no `import` statement binding `alias` at all,
-    /// the signal every caller's own "assume this is my own module's item"
-    /// fallback keys off.
     pub(super) fn resolve_alias(
         &mut self,
         alias: &Ident,
@@ -51,10 +46,6 @@ impl<'r> Analyzer<'r> {
         self.resolver.resolve_import_alias(&self.module_path, alias)
     }
 
-    /// `resolve_alias`, with a real resolution failure folded directly into
-    /// `self.errors`. Outer `None` means an error was already pushed and the
-    /// caller should give up (`?`); `Some(None)` means `alias` isn't an
-    /// import at all, the caller's own fallback applies.
     pub(super) fn resolve_alias_or_error(
         &mut self,
         node_id: HirId,
@@ -70,9 +61,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Resolves a path's first segment in the scope where that path was
-    /// written. A macro-body path therefore sees its definition module's
-    /// imports, while substituted source still sees the caller's imports.
     pub(super) fn resolve_path_alias_or_error(
         &mut self,
         node_id: HirId,
@@ -89,10 +77,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The alias (of any kind -- module, item, or generic item) this
-    /// module's own `import` statements bind that's most similar to
-    /// `target` -- the "did you mean" suggestion for a reference that named
-    /// nothing at all.
     pub(super) fn similar_import_alias(&mut self, target: &Ident) -> Option<Ident> {
         best_match(
             target,
@@ -100,12 +84,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// Resolves `absolute` (already a full `[module_path.., name]`) to a
-    /// place root -- shared by both of `analyze_place`'s non-local cases.
-    /// `unqualified` is the bare name the user actually wrote, when this
-    /// query is the implicit own-module fallback for one -- an
-    /// `UnknownItem` miss then means "no such variable" rather than a
-    /// confusing module-shaped error about a module the user never named.
     pub(super) fn resolve_qualified_value(
         &mut self,
         node_id: HirId,
@@ -119,11 +97,6 @@ impl<'r> Analyzer<'r> {
         if !self.check_macro_dependency_visibility(node_id, span, written_path, &absolute) {
             return None;
         }
-        // A bare (uncalled) reference to an overloaded name -- `resolve_item`
-        // has no way to pick one candidate. A call site can disambiguate by
-        // argument types; anywhere else, only an explicit function-typed
-        // `expected` that structurally matches exactly one candidate can --
-        // everything else is unconditionally ambiguous.
         if let Some((name, module_path)) = absolute.split_last()
             && let Ok(Some(candidates)) = self
                 .resolver
@@ -137,8 +110,6 @@ impl<'r> Analyzer<'r> {
                 && let Some((decl_id, fn_type)) =
                     Self::unique_overload_signature_match(expected_fn, &signatures)
             {
-                // Same post-winner visibility check as `resolve_overloaded_call`
-                // -- structural signature matching has no notion of visibility.
                 let visibility = candidates
                     .iter()
                     .find(|(id, ..)| *id == decl_id)
@@ -197,9 +168,6 @@ impl<'r> Analyzer<'r> {
             }
             Err(ResolveError::UnknownItem { .. }) if unqualified.is_some() => {
                 let name = unqualified.expect("checked by the guard").clone();
-                // Scope-level candidates first, then this module's own
-                // top-level values -- only the resolver holds a
-                // module-wide name list.
                 let similar = self.context.similar_variable_name(&name).or_else(|| {
                     self.resolver
                         .similar_item_name(accessor, &name, ItemNamespace::Value)
@@ -211,10 +179,6 @@ impl<'r> Analyzer<'r> {
                 );
                 None
             }
-            // `mymodule::MyStruct::do_thing` -- the "module" that failed to
-            // resolve may actually be a struct, with the last segment one of
-            // its static functions. Only attempted when the missing module
-            // is exactly this path minus its last segment.
             Err(ResolveError::UnknownModule(missing))
                 if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
             {
@@ -244,12 +208,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Finds the one candidate (if any) among an overloaded name's
-    /// signatures that structurally matches `expected` -- a function-typed
-    /// declaration/assignment annotation naming exactly which overload is
-    /// meant (`f : (a: u64) => void = f;`). Compared by shape only (param
-    /// types in order, return type, `is_variadic`/`self_mode`), never by
-    /// parameter name. Zero or 2+ matches both return `None`.
     pub(super) fn unique_overload_signature_match(
         expected: &ResolvedFunctionType,
         candidates: &[(HirId, ResolvedFunctionType)],
@@ -272,11 +230,6 @@ impl<'r> Analyzer<'r> {
         Some(first.clone())
     }
 
-    /// `Head::function` where `Head` isn't an imported module alias -- the
-    /// head may instead name a struct *type*, making this a static-function
-    /// reference. Reports `ModuleNotImported` only when the head is
-    /// genuinely unknown, never when it exists but is the wrong kind of
-    /// thing.
     pub(super) fn resolve_type_qualified_value(
         &mut self,
         node_id: HirId,
@@ -284,9 +237,6 @@ impl<'r> Analyzer<'r> {
         path: &omega_parser::prelude::Path,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        // `str` is deliberately absent from `defined_types` (see
-        // `Context::resolve_type`), so a `str::from_bytes_unchecked(...)`-
-        // style static call needs this narrow carve-out.
         if path.head.as_ref() == "str" {
             return self.resolve_type_member(
                 node_id,
@@ -299,9 +249,6 @@ impl<'r> Analyzer<'r> {
             return self.resolve_type_member(node_id, span, &head_type, &path.tail);
         }
 
-        // A plain (non-generic) *type* import alias resolves outright, same
-        // lazy-alias treatment `Context::resolve_type` gives an unqualified
-        // `Type::Named`.
         let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
         if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.resolve_type_member(node_id, span, &t, &path.tail);
@@ -320,9 +267,6 @@ impl<'r> Analyzer<'r> {
                 .chain(std::iter::once(path.head.clone()))
                 .collect(),
         };
-        // A bare reference to a generic enum's unit variant (`Option::None`,
-        // no fields to unify against) can still be inferred from an
-        // `expected` type -- see `infer_literal_type_args`.
         let variant = path.tail.first();
         let result = match self.generic_literal_signature_with_ambient(
             std::slice::from_ref(&path.head),
@@ -360,9 +304,6 @@ impl<'r> Analyzer<'r> {
             Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule {
                 name: path.head.clone(),
             },
-            // The head names nothing at all -- an unimported module, or a
-            // typo of a struct/module that does exist; suggest whichever
-            // actually does.
             Err(ResolveError::UnknownItem { .. }) => AnalysisErrorKind::UndefinedPathHead {
                 name: path.head.clone(),
                 similar_module: self.similar_import_alias(&path.head),
@@ -374,19 +315,12 @@ impl<'r> Analyzer<'r> {
                     )
                 }),
             },
-            // The head *does* name something here (a failed item, an
-            // uninstantiated generic, ...) -- report that, precisely.
             Err(e) => AnalysisErrorKind::ModuleResolution(e),
         };
         self.error(node_id, span, kind);
         None
     }
 
-    /// A place root whose path carries explicit generic arguments
-    /// (`Optional<u32>::Some`, `List<u8>::new`, `sum_generic<f64>`): the
-    /// argumented prefix resolves through `resolve_item`, and any trailing
-    /// segment resolves as a member of the result. An instantiated *value*
-    /// is legal only with nothing after it.
     pub(super) fn resolve_generic_args_place(
         &mut self,
         node_id: HirId,
@@ -450,8 +384,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Resolves an `ExprPath`'s written `<T, ...>` arguments -- always
-    /// indirect, same as `Type::Generic`'s in `Context::resolve_type`.
     pub(super) fn resolve_generic_arg_list(
         &mut self,
         node_id: HirId,
@@ -463,10 +395,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// The absolute item path of an expression path's generic-argumented
-    /// *prefix* (`Optional` in `Optional<u32>::Some`) -- same
-    /// alias-vs-own-module priority `Context::resolve_absolute_item_path`
-    /// applies to type positions.
     pub(super) fn generic_prefix_absolute(
         &mut self,
         node_id: HirId,
@@ -564,12 +492,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// `Type::member` -- resolves `rest` against `r#type`'s members. For a
-    /// struct that can only be a static function; for an enum it's a variant
-    /// (a body-less unit construction) or a static function. A function
-    /// declared without `self` is static. A static function resolves to an
-    /// ordinary `Storage::Function` place root; a unit variant resolves to a
-    /// `CheckedPlaceRoot::Expr` construction.
     fn resolve_type_member(
         &mut self,
         node_id: HirId,
@@ -633,9 +555,6 @@ impl<'r> Analyzer<'r> {
                     )
                 }
                 ResolvedType::Enum { cell, .. } => {
-                    // A variant wins over a same-named function -- analysis of
-                    // the definition would ideally forbid the collision, but
-                    // resolution still needs a deterministic order.
                     let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
                     if let Some((variant_index, variant)) = found {
                         return self.resolve_unit_variant(
@@ -664,8 +583,6 @@ impl<'r> Analyzer<'r> {
                     };
                     (e.name.clone(), method, missing, e.module_path.clone(), e.id)
                 }
-                // Built-in static functions come from core's `primitive`
-                // registry; instance functions go through `find_methods`.
                 other => {
                     let methods = match self.resolver.primitive_methods(other) {
                         Ok(methods) => methods,
@@ -698,8 +615,6 @@ impl<'r> Analyzer<'r> {
                         function: member.clone(),
                         similar,
                     };
-                    // Built-ins have no declaring item cell, so the empty
-                    // path/`node_id` stand in as the visibility owner.
                     (type_name, method, missing, Vec::new(), node_id)
                 }
             };
@@ -794,10 +709,6 @@ impl<'r> Analyzer<'r> {
         Some((root, fn_type))
     }
 
-    /// `Enum::Variant` in value position -- the unit construction. Only a
-    /// variant with no body fields and no shared dynamic fields has one
-    /// (there is no implicit zeroing); the result is an ordinary expression
-    /// place root whose type statically knows its variant.
     fn resolve_unit_variant(
         &mut self,
         node_id: HirId,

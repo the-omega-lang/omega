@@ -1,11 +1,3 @@
-//! Where per-module findings accumulate, and the one way a throwaway
-//! per-item `Analyzer` is ever run.
-//!
-//! Analysis is item-granular: a module's findings are produced by many short
-//! `Analyzer` runs spread across both phases (and, for a generic
-//! instantiation, at whatever arbitrary point some use site first triggers
-//! it), so they have to be collected somewhere module-wide and drained once
-//! at the end rather than returned from any single call.
 
 use crate::error::CompileError;
 use crate::{Driver, ModulePath};
@@ -18,16 +10,10 @@ use omega_hir::HirId;
 use omega_parser::prelude::Ident;
 use std::collections::HashMap;
 
-/// Every analysis finding produced so far, bucketed by the module it belongs
-/// to.
 #[derive(Default)]
 pub(crate) struct Diagnostics {
     errors: HashMap<ModulePath, Vec<AnalysisError>>,
     warnings: HashMap<ModulePath, Vec<AnalysisWarning>>,
-    /// Field/variant usage from every `Analyzer` run's `comp`-evaluated
-    /// subtrees, folded in by `with_analyzer` and drained once by
-    /// `compile::Driver::compile` to merge with its own whole-program
-    /// `dead_code::collect_module` walk before the unused-field sweep.
     comp_field_usage: FieldUsage,
 }
 
@@ -36,9 +22,6 @@ impl Diagnostics {
         self.errors.entry(module.to_vec()).or_default().push(error);
     }
 
-    /// Records a finished `Analyzer` run's errors, reporting whether it
-    /// produced any -- several callers treat "recorded an error" as "this
-    /// item failed" without needing the errors themselves.
     pub fn record_errors(&mut self, module: &[Ident], errors: Vec<AnalysisError>) -> bool {
         if errors.is_empty() {
             return false;
@@ -59,8 +42,6 @@ impl Diagnostics {
         }
     }
 
-    /// Drains every error recorded for a module in `scope`, in the
-    /// `CompileError` shape `compile` returns on failure.
     pub fn drain_errors(&mut self, scope: &[ModulePath]) -> Vec<CompileError> {
         scope
             .iter()
@@ -74,8 +55,6 @@ impl Diagnostics {
             .collect()
     }
 
-    /// `drain_errors`'s warning counterpart, tagging each warning with the
-    /// module it belongs to so the CLI can render it against the right file.
     pub fn drain_warnings(&mut self, scope: &[ModulePath]) -> Vec<(ModulePath, AnalysisWarning)> {
         scope
             .iter()
@@ -89,35 +68,18 @@ impl Diagnostics {
             .collect()
     }
 
-    /// Takes every `comp`-evaluation field/variant usage recorded so far,
-    /// leaving `FieldUsage::default()` behind -- `compile::Driver::compile`
-    /// calls this exactly once, after every module has finished checking,
-    /// to merge into its own post-hoc whole-program walk.
     pub fn take_comp_field_usage(&mut self) -> FieldUsage {
         std::mem::take(&mut self.comp_field_usage)
     }
 }
 
-/// What one throwaway `Analyzer` run produced besides its own result.
 pub(crate) struct AnalyzerRun<R> {
     pub result: R,
-    /// Whether the run recorded at least one error. The errors themselves are
-    /// already in the sink; this only answers "did this item fail".
     pub failed: bool,
-    /// Handed back rather than recorded, because a body check's warnings flow
-    /// straight out through `compile`'s own return value.
     pub warnings: Vec<AnalysisWarning>,
 }
 
 impl Driver {
-    /// Runs `f` against one throwaway `Analyzer` built for a single item,
-    /// seeded with `generics` (a generic instantiation's substitution, plus
-    /// `Self` where one applies), folding whatever errors it produced into
-    /// the sink.
-    ///
-    /// One `Analyzer` handles exactly one item: nothing is shared between two
-    /// of them except this driver, so an item's analysis can never be
-    /// polluted by a sibling's state.
     pub(crate) fn with_analyzer<R>(
         &mut self,
         module: &[Ident],
@@ -149,9 +111,6 @@ impl Driver {
         }
     }
 
-    /// [`Self::with_analyzer`] for a run whose warnings have no return path
-    /// of their own -- a signature is resolved once, memoized, and never
-    /// revisited, so its warnings must be captured the one time it runs.
     pub(crate) fn analyze<R>(
         &mut self,
         module: &[Ident],

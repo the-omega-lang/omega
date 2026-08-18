@@ -1,8 +1,3 @@
-//! What the analyzer asks the driver: everything module-tree-shaped.
-//!
-//! `omega-analyzer` never sees a filesystem or a cache -- it only ever asks
-//! the questions on [`ModuleResolver`], and this is the one place they are
-//! answered.
 
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
@@ -22,23 +17,14 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-/// One import alias's resolution state -- the same white/gray/black cycle
-/// guard items get, at `(module, alias)` granularity rather than whole-module:
-/// a whole-module guard would deadlock two modules whose unrelated items
-/// happen to cross-import each other. Per-alias, only a name that genuinely,
-/// directly needs itself reports a cycle.
 enum AliasState {
     InProgress,
     Done(Result<ImportTarget, ResolveError>),
 }
 
-/// Every import alias resolved so far, and every one anything ever asked for.
 #[derive(Default)]
 pub(crate) struct ImportState {
     resolved: HashMap<(ModulePath, Ident), AliasState>,
-    /// The single choke point every alias use funnels through, so this is a
-    /// complete record of "was this import ever actually used" by the time a
-    /// module finishes body-checking -- what `UnusedImport` diffs against.
     used: HashSet<(ModulePath, Ident)>,
 }
 
@@ -53,8 +39,6 @@ impl ImportState {
 }
 
 impl Driver {
-    /// `alias`'s resolved target in `module_path`, memoized and cycle-guarded
-    /// per `(module, alias)` pair.
     fn resolve_alias(
         &mut self,
         module_path: &[Ident],
@@ -81,9 +65,6 @@ impl Driver {
         result
     }
 
-    /// What an already-absolute import path names: a real module (a pure
-    /// filesystem check, no recursion), a generic item (deferred), or an
-    /// ordinary item (eagerly resolved).
     fn resolve_import_target(
         &mut self,
         accessor: &[Ident],
@@ -102,21 +83,14 @@ impl Driver {
             return Err(ResolveError::UnknownModule(segments.to_vec()));
         };
 
-        // A generic item import supplies no type arguments (those only
-        // appear at a use site), so eagerly instantiating here would always
-        // fail; defer, carrying just the absolute path.
         if self.is_generic_template(module_path, item_name)? {
             return Ok(ImportTarget::GenericItem(segments.to_vec()));
         }
 
-        // Always resolved indirect: the absolute path travels along with the
-        // snapshot so a consumer whose own `indirect` differs can re-resolve.
         let item = self.ensure_item(accessor, module_path, item_name, &[], true, reveal)?;
         Ok(ImportTarget::Item(segments.to_vec(), item))
     }
 
-    /// One import alias's own structural facts, or `None` when the module
-    /// binds no such alias.
     pub(crate) fn import_entry(
         &mut self,
         module_path: &[Ident],
@@ -127,8 +101,6 @@ impl Driver {
             return Ok(None);
         };
         let entry = (import.target.clone(), import.reveal);
-        // Querying an alias's target *is* using it, for `UnusedImport`'s
-        // purposes, regardless of which query got here.
         self.imports.mark_used(module_path, alias);
         Ok(Some(entry))
     }
@@ -157,10 +129,6 @@ impl ModuleResolver for Driver {
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
         let Some((target, reveal)) = self.import_entry(module_path, alias)? else {
-            // No explicit `import` binds this alias -- `core` is always
-            // implicitly available as a qualified-path prefix (see
-            // docs/architecture/module-driver-and-linkage.md's "core is a prelude"), except
-            // from within `core`'s own tree.
             if alias.as_ref() == crate::roots::CORE_MODULE
                 && !crate::roots::is_core_module(module_path)
                 && !self.roots.core_modules().is_empty()
@@ -185,8 +153,6 @@ impl ModuleResolver for Driver {
         }
         let mut candidates = Vec::new();
         for path in self.roots.core_modules() {
-            // Best-effort: a broken core module has its own real error
-            // recorded elsewhere, so just skip it here.
             if self.ensure_module_indexed(&path).is_err() {
                 continue;
             }
@@ -218,8 +184,6 @@ impl ModuleResolver for Driver {
     }
 
     fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident> {
-        // Purely advisory (typo suggestions) -- a module that can't be indexed
-        // reports its own failure elsewhere.
         if self.ensure_module_indexed(module_path).is_err() {
             return vec![];
         }
@@ -260,12 +224,6 @@ impl ModuleResolver for Driver {
         )
     }
 
-    /// Answered from the *declaration* rather than from any resolution cache:
-    /// visibility is a property of how an item was declared, identical for
-    /// every instantiation of a generic template, so no cache entry needs to
-    /// exist (or be searched) to answer it. `false` for a name that doesn't
-    /// resolve at all -- erring toward not claiming a bypass was unnecessary,
-    /// rather than risking a wrong `UnnecessaryReveal` warning.
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
         let Some((item_name, module_path)) = absolute_path.split_last() else {
             return false;
@@ -287,8 +245,6 @@ impl ModuleResolver for Driver {
         let Some((name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
-        // "Doesn't exist" is deferred to the ordinary call path, which
-        // re-derives and reports it identically.
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
@@ -315,8 +271,6 @@ impl ModuleResolver for Driver {
         let Some((name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
-        // "Doesn't exist"/"not generic" are deferred to the ordinary literal
-        // path, which re-derives and reports them identically.
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
@@ -368,9 +322,6 @@ impl ModuleResolver for Driver {
         let Some((name, module_path)) = owner_absolute.split_last() else {
             return Err(ResolveError::UnknownModule(owner_absolute.to_vec()));
         };
-        // "Doesn't exist"/"not generic"/"no such static function" are all
-        // deferred to the ordinary call path, which re-derives and reports
-        // them identically.
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
@@ -422,10 +373,6 @@ impl ModuleResolver for Driver {
         module_path: &[Ident],
         name: &Ident,
     ) -> Result<Option<Vec<(HirId, ResolvedFunctionType, Visibility)>>, ResolveError> {
-        // A module-resolution failure here doesn't mean this call is broken --
-        // it means `module_path` (the caller's naive "everything but the last
-        // segment" split) isn't a real module, which is exactly what a
-        // `Module::Type::function` static-call path looks like from here.
         if self.ensure_module_indexed(module_path).is_err() {
             return Ok(None);
         }
@@ -453,8 +400,6 @@ impl ModuleResolver for Driver {
         target: &Ident,
         namespace: ItemNamespace,
     ) -> Option<Ident> {
-        // Purely advisory -- a module that can't even be indexed just produces
-        // no suggestion (its own failure is reported elsewhere).
         if self.ensure_module_indexed(module_path).is_err() {
             return None;
         }
@@ -525,9 +470,6 @@ impl ModuleResolver for Driver {
         target: &ResolvedType,
         spec_ids: &[HirId],
     ) -> Result<Vec<ResolvedConformance>, ResolveError> {
-        // Goal-directed: `solve` per requested spec instantiates only the
-        // templates that can produce it. Entries are then filtered down to
-        // exactly the requested specs.
         for id in spec_ids {
             self.solve(target, Some(id));
         }
@@ -548,18 +490,6 @@ impl ModuleResolver for Driver {
             .collect())
     }
 
-    /// `decl_id`'s owning item, found via `items.decl_id_owner` (populated
-    /// by `ItemQueries::identity_for`, the one place a function/method's
-    /// identity is ever decided) then body-checked (or served from cache)
-    /// through `ensure_item_body` -- see its own doc comment for why this,
-    /// unlike every other query above, can run before `compile`'s ordinary
-    /// phase-2 sweep would otherwise have reached this item, and why that's
-    /// safe. A `decl_id` with no entry in `decl_id_owner` at all is
-    /// impossible for a real `comp` call in practice (see `comp_eval::
-    /// Interpreter::eval_call`'s own guard: it only ever calls this with a
-    /// `Storage::Function` place's `decl_id`, which `compute_item` always
-    /// records identity for) -- treated as `Ok(None)` rather than a panic
-    /// regardless, since nothing here can prove that guard holds.
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
@@ -575,45 +505,19 @@ impl ModuleResolver for Driver {
             });
         };
         Ok(match body.item {
-            // The ordinary case: `key` names the free function directly,
-            // and `identity_for` guarantees its own id is exactly `decl_id`.
             CheckedItem::FunctionDefinition(f) => Some(f),
-            // `key` names the *owning* struct/enum/union -- a method has no
-            // `ItemKey` of its own (see `decl_id_owner`'s doc comment), so
-            // its body is found by searching its owner's already-checked
-            // method list instead.
             CheckedItem::Struct(s) => s.functions.into_iter().find(|f| f.id == decl_id),
             CheckedItem::Enum(e) => e.functions.into_iter().find(|f| f.id == decl_id),
             CheckedItem::Union(u) => u.functions.into_iter().find(|f| f.id == decl_id),
-            // Neither ever gets a `Storage::Function` place root, so a real
-            // `comp` call can't actually reach this arm.
             CheckedItem::Declaration(_) | CheckedItem::ExternDeclaration(_) => None,
         })
     }
 
-    /// A plain lookup into `items.comp_values` -- unlike `resolve_function_
-    /// body`, nothing here can be "not yet computed but computable on
-    /// demand": a top-level `comp` binding's value is always produced
-    /// eagerly, during its own signature resolution (`compute_item`'s
-    /// `Walrus` arm), and `decl_id` only ever reaches this call at all
-    /// once the binding it names has already resolved successfully (its
-    /// own reference went through the ordinary `ModuleResolver::
-    /// resolve_item` -> `Storage::Comp` path first).
     fn resolve_comp_value(&mut self, decl_id: HirId) -> Option<ConstValue> {
         self.items.comp_values.get(&decl_id).cloned()
     }
 }
 
-/// Rewrites a `Self` leaf in a static function's declared return type to
-/// the owner's own generic spelling (`Self` -> `Box<T>`, written
-/// `Type::Generic` of the owner name path with each owner generic as an
-/// unqualified `Named` leaf), recursing through the same shapes
-/// `unify_generic_type` walks -- pointers, sized/inferred/unknown-size
-/// arrays, spec objects, function types, generic applications. Needed so
-/// `=> Self` unifies against an expected `Box<i32>` exactly the same way a
-/// written `=> Box<T>` does: `unify_generic_type` only binds a `Named`
-/// leaf whose name is one of the generics, and `Self` is not in that list
-/// -- it is the whole *application*, not a parameter.
 fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
     match ty {
         Type::Named(path)

@@ -4,17 +4,10 @@ use omega_parser::prelude::Ident;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// A root directory's default declared identity (its basename); overridden
-/// per-root by `--name=`/`--extern=<name>:<dir>`, applied via `relabel_root`.
-/// `None` for a path with no usable final component.
 pub fn basename(dir: &Path) -> Option<Ident> {
     dir.file_name()?.to_str().map(|s| Ident(s.to_string()))
 }
 
-/// Rewrites every path in a freshly discovered tree so it's addressed by
-/// `declared` instead of the root's on-disk name, extending the
-/// `--name=`/`--extern=<name>:<dir>` override to nested paths too. No-op if
-/// the tree has no single root segment, or already matches `declared`.
 pub fn relabel_root(
     tree: HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     declared: &Ident,
@@ -42,11 +35,6 @@ pub fn relabel_root(
         .collect()
 }
 
-/// Where a module's own content (if any) and children (if any) live on disk.
-/// A bare `name.omg` file is a leaf (`children_dir: None`); a directory
-/// `name/` is a module whose items come from `name/name.omg` if present
-/// (`own_file: Some`) or is namespace-only (`own_file: None`); either way
-/// its children live in `name/` (`children_dir: Some`).
 #[derive(Clone)]
 pub struct ModuleLocation {
     pub own_file: Option<PathBuf>,
@@ -55,11 +43,9 @@ pub struct ModuleLocation {
 
 enum SegmentError {
     NotFound,
-    /// Both `dir/name.omg` and `dir/name/` exist -- deliberately not tie-broken.
     Ambiguous,
 }
 
-/// Resolves one path segment inside `dir`, no recursion.
 fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentError> {
     let file_path = dir.join(format!("{}.omg", name.as_ref()));
     let dir_path = dir.join(name.as_ref());
@@ -78,8 +64,6 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
     }
 }
 
-/// Small local mirror of the lexer's identifier grammar, so a dotfile or
-/// other non-`Ident` name is skipped without depending on lexer internals.
 fn is_module_segment_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -89,14 +73,6 @@ fn is_module_segment_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Recursively discovers every module reachable under `root` (used for the
-/// local package root and every `--extern` root). Metadata-only --
-/// `read_dir`/`is_file`/`is_dir` only, no file ever opened.
-///
-/// A non-`Ident`-shaped entry name (dotfile, etc.) is skipped. An ambiguous
-/// segment (both `name.omg` and `name/` present) is recorded as
-/// `Err(AmbiguousModule)` rather than dropped, so lookup reports the real
-/// diagnostic instead of "doesn't exist".
 pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
     let mut out = HashMap::new();
     // `omgc` rejects a root with no usable final component up front, so this
@@ -105,9 +81,6 @@ pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, 
         return out;
     };
 
-    // The root follows the same directory-shaped-module convention as any
-    // nested directory: `<root>/<basename>.omg` is its own content, and a
-    // same-named child directory is the ordinary ambiguity case.
     let own_file = root.join(format!("{}.omg", name.as_ref()));
     let same_named_child = root.join(name.as_ref());
     let root_path = vec![name.clone()];
@@ -130,10 +103,6 @@ pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, 
     out
 }
 
-/// `skip`: the one entry name to ignore in `dir`, when `dir` is a
-/// directory-shaped module's own `children_dir` -- avoids double-counting
-/// that module's own `<name>.omg` as a spurious child of itself. `None`
-/// only at the top, after `discover_tree` registers the root module.
 fn discover_into(
     dir: &Path,
     prefix: &mut ModulePath,
@@ -164,7 +133,6 @@ fn discover_into(
                     discover_into(&children_dir, prefix, out, Some(&name));
                 }
             }
-            // Real on-disk collision -- kept, not dropped, for a proper diagnostic.
             Err(SegmentError::Ambiguous) => {
                 out.insert(prefix.clone(), Err(ResolveError::AmbiguousModule(prefix.clone())));
             }

@@ -1,15 +1,6 @@
-//! A compilation target, in Omega's own vocabulary -- deliberately
-//! decoupled from any backend's own target type (`target_lexicon::Triple`
-//! for Cranelift, LLVM's own `TargetTriple`), so the analyzer and every
-//! backend share one `Target` while each backend maps it to its own native
-//! vocabulary (see `cranelift::triple_for`). Layout math that depends on
-//! the target (`pointer_bytes` above all) lives here rather than
-//! backend-side.
 
 use std::fmt;
 
-/// `<arch>-<os>`, e.g. `x86_64-unknown-linux` -- structurally, not just a
-/// string forwarded to whichever backend happens to be compiled in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub arch: Arch,
@@ -29,9 +20,6 @@ pub enum Arch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
-    /// Freestanding -- no operating system at all. Object *emission* is
-    /// supported; linking a freestanding image needs a linker script and
-    /// an entry convention this language has not defined yet.
     None,
     Linux,
     MacOs,
@@ -39,14 +27,8 @@ pub enum Os {
 }
 
 impl Target {
-    /// `x86_64-unknown-linux` -- the default when `--target` isn't given.
     pub const DEFAULT: Target = Target { arch: Arch::X86_64, os: Os::Linux };
 
-    /// The width of a pointer/`usize`/`isize` on this target, in bytes --
-    /// the one piece of target-specific information layout math
-    /// (`omega_analyzer::layout`, `ResolvedType::numeric_kind`, ...) needs.
-    /// 64-bit for `x86_64`/`aarch64`/`riscv64`, 32-bit for `x86`/`armv7`/
-    /// `thumbv7em`/`riscv32`.
     pub fn pointer_bytes(self) -> u32 {
         match self.arch {
             Arch::X86_64 | Arch::Aarch64 | Arch::Riscv64 => 8,
@@ -54,15 +36,10 @@ impl Target {
         }
     }
 
-    /// `pointer_bytes`, in bits -- for call sites that already think in
-    /// bits (`numeric_kind`'s widths, integer-domain bounds).
     pub fn pointer_bits(self) -> u32 {
         self.pointer_bytes() * 8
     }
 
-    /// Parses `<arch>-<vendor>-<os>` or `<arch>-<os>` -- the vendor segment,
-    /// if present, is accepted but ignored. `none` and `freestanding` both
-    /// parse to `Os::None`.
     pub fn parse(s: &str) -> Result<Target, TargetParseError> {
         let segments: Vec<&str> = s.split('-').collect();
         let (arch_str, os_str) = match segments.as_slice() {
@@ -115,7 +92,6 @@ impl fmt::Display for Target {
 
 #[derive(Debug, Clone)]
 pub enum TargetParseError {
-    /// Not `<arch>-<os>` or `<arch>-<vendor>-<os>`.
     Malformed(String),
     UnknownArch(String),
     UnknownOs(String),

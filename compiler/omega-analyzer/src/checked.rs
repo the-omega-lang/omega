@@ -2,12 +2,6 @@ use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::{HirId, ModuleId};
 use omega_parser::prelude::{BinaryOp, Ident, SelfMode, Span};
 
-/// The output of semantic analysis: a fully resolved and verified tree, not a
-/// side-table report. By the time a `CheckedModule` exists, every
-/// enforcement point (assignment targets are places, types match, fields and
-/// indices exist, names aren't redeclared) has already been settled -- so
-/// codegen can synthesize IR by pure structural recursion with no
-/// re-validation of anything checked here.
 #[derive(Debug, Clone)]
 pub struct CheckedModule {
     pub id: ModuleId,
@@ -16,8 +10,6 @@ pub struct CheckedModule {
 
 #[derive(Debug, Clone)]
 pub enum CheckedItem {
-    /// A top-level `ident: type;` with no initializer syntax. See
-    /// `Storage::Global`'s doc comment for how codegen stores it.
     Declaration(CheckedDeclaration),
     ExternDeclaration(CheckedExternDeclaration),
     FunctionDefinition(CheckedFunctionDef),
@@ -26,39 +18,18 @@ pub enum CheckedItem {
     Union(CheckedUnionDef),
 }
 
-/// An extern-owned function/method a compilation actually referenced --
-/// `omega_driver::Driver::collect_extern_functions`'s output, and
-/// `omega_codegen::Codegen`'s input for declaring (never defining) a link
-/// against it. Lives here, in `omega-analyzer`, rather than in
-/// `omega-driver` (which constructs it) or `omega-codegen` (which consumes
-/// it) alone, since neither of those crates depends on the other -- the
-/// same reason `CheckedModule`/`CheckedItem` live here instead of in
-/// either.
 #[derive(Debug, Clone)]
 pub struct ExternFunctionRef {
     pub decl_id: HirId,
     pub module_path: Vec<Ident>,
     pub kind: ExternFunctionKind,
     pub fn_type: ResolvedFunctionType,
-    /// The extern declaration's *own* resolved `@mangling(...)` -- read
-    /// straight off the driver's own per-declaration annotation cache/`ResolvedMethod::
-    /// annotations` (see either's doc comment), the same signature-time-
-    /// resolved value a same-compilation reference to this function would
-    /// see. Without this, a consuming compilation would always assume
-    /// `Enabled` regardless of what the declaring compilation actually
-    /// mangled it as -- exactly the mismatch `omega_codegen::Codegen::
-    /// declare_extern_function` now avoids by checking this instead of
-    /// unconditionally calling `mangled_symbol`/`mangled_method_symbol`.
     pub mangling: crate::annotations::ManglingMode,
 }
 
 #[derive(Debug, Clone)]
 pub enum ExternFunctionKind {
-    /// A top-level function, named directly.
     Free(Ident),
-    /// A struct/enum/union method -- `type_name` is the owning type's own
-    /// name (needed alongside `module_path` for the mangled method symbol,
-    /// which is shaped differently from a free function's).
     Method {
         type_name: Ident,
         method_name: Ident,
@@ -75,41 +46,12 @@ pub enum ExternFunctionKind {
     },
 }
 
-/// Where a resolved variable reference's value physically lives. Attached
-/// only to *references* (`CheckedPlaceRoot::Variable`), not to declarations
-/// themselves -- which storage a declaration gets is implied by which
-/// checked node produced it (a `CheckedStmt::Declaration` is always `Local`,
-/// a `CheckedParam` is always `Parameter`, a function is always `Function`, a
-/// top-level `CheckedDeclaration`/data extern is `Global`). Carrying this
-/// inline at the use site is what lets codegen trace a declaration back to
-/// its storage without re-deriving it from a scope walk on every access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Storage {
-    /// A stack-resident local variable, declared inside a function body.
     Local,
-    /// A function parameter, materialized as SSA value(s) at function entry.
     Parameter,
-    /// A named function -- top-level, extern, or a struct method -- resolved
-    /// to a callable symbol.
     Function,
-    /// A top-level variable (`ident : Type;`, or a non-`comp` `ident :=
-    /// value;`), zero-initialized or, when `CheckedDeclaration::
-    /// initial_value` is `Some`, built from real bytes -- see
-    /// `Codegen::declare_item`'s `Declaration` arm. Extern *data* (a
-    /// non-function `extern`) is the one remaining gap here: still
-    /// `todo!()` in codegen, since its storage lives in another
-    /// translation unit entirely -- a genuinely separate question from an
-    /// ordinary global's.
     Global,
-    /// A `comp` binding (`comp a := comp expr;`) -- carries no storage at
-    /// all. Never reaches MIR lowering or codegen as a place: `Analyzer::
-    /// analyze_place_read` substitutes every reference straight into
-    /// `CheckedExpr::Const` with the binding's already-known value, the
-    /// moment it's read (see `Context::comp_value`). A `CheckedPlaceRoot`
-    /// with this storage escaping that substitution would be an analyzer
-    /// bug, not a real program state -- every downstream consumer that
-    /// matches on `Storage` exhaustively treats it as unreachable rather
-    /// than handling it.
     Comp,
 }
 
@@ -119,21 +61,7 @@ pub struct CheckedDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
-    /// Whether this global may be assigned to after its initial value (if
-    /// any) is set -- the top-level counterpart of `VarBinding::mutable`,
-    /// threaded all the way out to `ResolvedItem::Value` so a *reference*
-    /// to this global from any other item/module sees the real fact
-    /// instead of the `false` every such reference used to be hardcoded
-    /// to (see `Analyzer::resolve_unqualified_root`'s and
-    /// `resolve_qualified_value`'s own doc comments).
     pub mutable: bool,
-    /// `Some` for a non-`comp` top-level binding whose initializer is
-    /// present and compile-time-known (`ident := comp expr;`) -- the
-    /// binding still gets real `Storage::Global` storage (unlike a `comp`
-    /// binding, which never reaches this struct at all: see
-    /// `Analyzer::analyze_comp_declaration`), it just starts out with
-    /// this already-known value instead of zero bytes. `None` for a plain
-    /// `ident : Type;` declaration, which starts zero-initialized.
     pub initial_value: Option<ConstValue>,
 }
 
@@ -143,14 +71,6 @@ pub struct CheckedExternDeclaration {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
-    /// `Disabled` for every ordinary, hand-written `extern` declaration --
-    /// annotations are rejected outright on `extern` at parse time, so this
-    /// stays fixed at "keep the bare, unmangled name" (today's only actual
-    /// behavior) except for one synthesized case: a `gap` declaration's
-    /// required function, represented internally as exactly this same
-    /// `CheckedItem::ExternDeclaration` shape (see
-    /// `Driver::synthesize_gap_items`), gets `Glued` instead, so it links
-    /// against the identical symbol its `glue` implementation forces.
     pub mangling: crate::annotations::ManglingMode,
 }
 
@@ -167,37 +87,14 @@ pub struct CheckedFunctionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    /// The concrete generic arguments this instantiation was checked
-    /// with -- empty for a non-generic function/method. Populated by
-    /// `omega_driver::Driver::check_item_body`, the only place that has
-    /// both the `type_args` slice and the freshly-built `CheckedItem` in
-    /// scope at once; needed so `omega_codegen` can mangle *this*
-    /// declaration's own symbol with its generic arguments (see
-    /// `ResolvedStructType::type_args`'s doc comment for the analogous
-    /// problem on the *referenced*-type side).
     pub type_args: Vec<ResolvedType>,
-    /// See `ResolvedFunctionType::self_mode`.
     pub self_mode: Option<SelfMode>,
     pub is_variadic: bool,
     pub params: Vec<CheckedParam>,
     pub return_type: ResolvedType,
-    /// Guaranteed by `Analyzer::check_function_return` to either end in a
-    /// tail expression whose type matches `return_type`, or end in a
-    /// statement-level `return` -- codegen relies on this to know it never
-    /// has to fall off the end of a non-`Void` function.
     pub body: CheckedBlock,
-    /// `@inline(...)`'s resolved mode, if any -- `None` when no hint was
-    /// given at all. Purely a hint today (see
-    /// `crate::error::AnalysisWarningKind::InlineNotEnforced`); codegen has
-    /// no per-function inlining mechanism to act on it with yet.
     pub inline: Option<crate::annotations::InlineMode>,
-    /// `@mangling(...)`'s resolved mode -- `Enabled` unless overridden. See
-    /// `omega_codegen`'s `declare_item`/`declare_extern_function`.
     pub mangling: crate::annotations::ManglingMode,
-    /// `Some` for a function defined by a `conform Target to Spec` block.
-    /// Carries the target and spec identity used for deterministic symbol
-    /// mangling; conform functions otherwise travel through the ordinary
-    /// `CheckedItem::FunctionDefinition` path.
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
 }
@@ -208,21 +105,6 @@ pub struct ConformanceOwner {
     pub spec_module_path: Vec<Ident>,
     pub spec_name: Ident,
     pub spec_args: Vec<ResolvedType>,
-    /// Whether this body came from instantiating a non-concrete conform
-    /// (`conform<W> BufWriter<W> to Write` at `W = Stdout`) rather than a
-    /// directly-written concrete one (`conform Stdout to Write`).
-    ///
-    /// This is the conform counterpart of `MirFunctionDef::type_args` being
-    /// non-empty, and it exists because that test does not work here: a
-    /// conform method's genericity lives in its *target* (`Self`), never in
-    /// the function's own parameter list, so `type_args` is empty for both
-    /// kinds. Codegen needs the distinction for linkage — a template
-    /// instantiation is emitted independently by every package that uses it
-    /// and must be weak so the linker folds the copies, exactly like a
-    /// generic function's; a concrete conform is emitted once, by its
-    /// declaring package, and must stay strong so a genuine duplicate is
-    /// still an error. Without it, two packages that both use
-    /// `BufWriter<Stdout>` could not be linked together.
     pub monomorphized: bool,
 }
 
@@ -246,37 +128,26 @@ pub struct CheckedStructDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    /// See `CheckedFunctionDef::type_args`'s doc comment.
     pub type_args: Vec<ResolvedType>,
     pub fields: Vec<CheckedParam>,
     pub functions: Vec<CheckedFunctionDef>,
 }
 
-/// A checked union definition -- same shape as `CheckedStructDef`; field
-/// overlap is entirely a codegen-layout concern, not a checked-tree one.
 #[derive(Debug, Clone)]
 pub struct CheckedUnionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    /// See `CheckedFunctionDef::type_args`'s doc comment.
     pub type_args: Vec<ResolvedType>,
     pub fields: Vec<CheckedParam>,
     pub functions: Vec<CheckedFunctionDef>,
 }
 
-/// A checked enum definition. Deliberately *only* the functions: the
-/// tag/header/variant data codegen needs at every construction and
-/// field-access site travels inside `ResolvedType::Enum`'s shared cell (on
-/// the expressions themselves), so carrying a second copy here would just
-/// be a divergence risk. What's left is exactly what has a compiled
-/// artifact of its own -- the methods.
 #[derive(Debug, Clone)]
 pub struct CheckedEnumDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    /// See `CheckedFunctionDef::type_args`'s doc comment.
     pub type_args: Vec<ResolvedType>,
     pub functions: Vec<CheckedFunctionDef>,
 }
@@ -289,22 +160,12 @@ pub enum CheckedStmt {
     Return(CheckedExprNode),
     While(CheckedWhile),
     Loop(CheckedLoop),
-    /// Boxed: `CheckedFor` alone is by far the largest variant here (it
-    /// embeds a whole `CheckedBlock` for its body plus another for `init`'s
-    /// contribution), and would otherwise force every `CheckedStmt` -- most
-    /// of which are tiny -- to be sized for the rare large one.
     For(Box<CheckedFor>),
     Break(CheckedBreak),
     Continue(CheckedContinue),
     Defer(CheckedDefer),
 }
 
-/// `defer <statement>;` / `defer { ... }` -- see `omega_hir::hir::HirDefer`'s
-/// doc comment for the full semantics. `body` is checked as an ordinary
-/// block (with `Analyzer::in_defer_body` set, rejecting `return`/nested
-/// `defer` inside it); codegen never runs it inline at this position --
-/// only in the enclosing function's shared epilogue, guarded by a runtime
-/// flag set right here (see `Codegen`'s `defer_flags`/`defer_bodies`).
 #[derive(Debug, Clone)]
 pub struct CheckedDefer {
     pub id: HirId,
@@ -312,13 +173,6 @@ pub struct CheckedDefer {
     pub body: CheckedBlock,
 }
 
-/// `break;` -- `loop_id` is the enclosing loop's own `HirId` (from its
-/// `HirWhile`/`HirFor`), already resolved by analysis (see `Analyzer`'s
-/// `loop_stack`) to whichever loop this targets -- today always the
-/// innermost one, but codegen looks it up by id rather than assuming "the
-/// current loop," precisely so a future labeled `break 'outer;` only needs
-/// analysis's resolution rule to change (search the stack for a matching
-/// label instead of always taking the top), not codegen.
 #[derive(Debug, Clone)]
 pub struct CheckedBreak {
     pub id: HirId,
@@ -326,7 +180,6 @@ pub struct CheckedBreak {
     pub loop_id: HirId,
 }
 
-/// `continue;` -- see `CheckedBreak`.
 #[derive(Debug, Clone)]
 pub struct CheckedContinue {
     pub id: HirId,
@@ -334,23 +187,12 @@ pub struct CheckedContinue {
     pub loop_id: HirId,
 }
 
-/// A `{ ... }` block's statements plus its optional final expression (no
-/// trailing `;`), which is the block's own value. Shared by bare `{}`
-/// expressions, `if`/`else` branches, `while`/`for` bodies, and function
-/// bodies -- see `Analyzer::analyze_block`, which builds one uniformly for
-/// all of them, and `Analyzer::block_type`, which reads its effective type
-/// back out (`None` if it ends in a `return`, meaning "diverges, compatible
-/// with anything" -- the same reasoning behind Rust's `!` type, without a
-/// dedicated `ResolvedType` for it).
 #[derive(Debug, Clone)]
 pub struct CheckedBlock {
     pub stmts: Vec<CheckedStmt>,
     pub tail: Option<Box<CheckedExprNode>>,
 }
 
-/// `while cond { body }` -- `condition` is guaranteed `Bool`. `id` is what
-/// `CheckedBreak`/`CheckedContinue.loop_id` refers back to when this loop is
-/// their target.
 #[derive(Debug, Clone)]
 pub struct CheckedWhile {
     pub id: HirId,
@@ -359,15 +201,6 @@ pub struct CheckedWhile {
     pub body: CheckedBlock,
 }
 
-/// `loop { body }` -- no condition at all, unlike `CheckedWhile`. `id` is
-/// what `CheckedBreak`/`CheckedContinue.loop_id` refers back to, same as
-/// `CheckedWhile`'s. `has_break` is recorded once, right here, at analysis
-/// time (`Analyzer::analyze_stmt`'s `HirStmt::Loop` arm) -- whether any
-/// `break` anywhere in `body` targets *this* loop specifically (not a
-/// nested one) is exactly what `Analyzer::stmt_diverges` needs to prove a
-/// `loop` with no way out always diverges, and baking it into the checked
-/// node means that check (a plain, static `&CheckedStmt -> bool` function)
-/// never needs analyzer state of its own to answer it.
 #[derive(Debug, Clone)]
 pub struct CheckedLoop {
     pub id: HirId,
@@ -376,18 +209,6 @@ pub struct CheckedLoop {
     pub has_break: bool,
 }
 
-/// `for init; cond; post { body }` -- unlike the parser's `HirFor`,
-/// `condition` here is *not* optional: analysis rejects a `for` loop with no
-/// condition (`AnalysisErrorKind::ForLoopMissingCondition`) rather than
-/// treating an omitted one as "always true" -- this language has no
-/// constant-condition reasoning to prove such a loop's exit is ever actually
-/// reached (even with `break` now available, *some* path has to reach it),
-/// so requiring a real condition is what currently guarantees the exit
-/// block is a valid jump target for codegen (cranelift requires every block
-/// to end in a terminator). `init`/`post` stay optional; neither affects
-/// reachability the way a missing condition does. `id` is what
-/// `CheckedBreak`/`CheckedContinue.loop_id` refers back to when this loop is
-/// their target.
 #[derive(Debug, Clone)]
 pub struct CheckedFor {
     pub id: HirId,
@@ -406,11 +227,6 @@ pub struct CheckedExprNode {
     pub kind: CheckedExpr,
 }
 
-/// A number literal's already-parsed value, in the widest container that can
-/// hold any value of its kind -- the exact width/signedness to narrow it to
-/// when emitting IR comes from the node's own `r#type` (see
-/// `CheckedExprNode::r#type`), which analysis has already range-checked the
-/// value against, so codegen only ever narrows losslessly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NumberValue {
     Signed(i64),
@@ -421,149 +237,38 @@ pub enum NumberValue {
 #[derive(Debug, Clone)]
 pub enum CheckedExpr {
     Place(CheckedPlace),
-    /// The literal's value, already parsed and range-checked against its
-    /// resolved type by analysis -- codegen never re-parses source text.
     Number(NumberValue),
     Bool(bool),
-    /// A single Unicode scalar value (`ResolvedType::Char`) -- kept as a
-    /// `char`, not pre-converted to its `u32` codepoint, since it's still
-    /// meaningful source-level data until codegen actually needs the bits.
     Char(char),
     String(String),
-    /// `b"..."` -- see `Expression::ByteString`'s doc comment. Its
-    /// resolved type (`r#type` on the enclosing `CheckedExprNode`) is
-    /// always `ResolvedType::Slice { item: U8, .. }`, unlike `String`'s
-    /// always-`Pointer` type.
     ByteString(String),
     FunctionCall(CheckedFunctionCall),
     Assignment(CheckedAssignment),
     AddressOf(CheckedAddressOf),
     Negate(Box<CheckedExprNode>),
-    /// `~base` -- see `Expression::BitNot`'s doc comment.
     BitNot(Box<CheckedExprNode>),
-    /// `++base`/`--base` never survives past analysis as its own node --
-    /// `Analyzer::analyze_incr_decr` desugars it directly into an ordinary
-    /// `Assignment` of `base + 1`/`base - 1` (a `BinaryOp` over `base`'s own
-    /// place and a `Number` matching its exact resolved type), so codegen
-    /// needs no dedicated increment/decrement machinery at all.
     BinaryOp(CheckedBinaryOp),
-    /// A bare `{ ... }` used as an expression -- its value is its tail
-    /// expression (`Void` if it has none).
     Codeblock(CheckedBlock),
-    /// `if cond { ... } else if cond { ... } else { ... }` -- every branch
-    /// (and `else_branch`, if present) is guaranteed to agree on this node's
-    /// own `r#type` (see `Analyzer`'s `HirExpr::If` arm), except for a
-    /// branch that diverges (ends in `return`), which is exempt the same
-    /// way `CheckedBlock`'s tail-less-but-terminates-in-`return` case is.
     If(CheckedIf),
-    /// Elements are guaranteed to all share `item_type` by the time this is
-    /// constructed -- codegen never re-checks it. The literal's own type is
-    /// `ResolvedType::SizedArray(item_type, elements.len())`.
     ArrayLiteral(CheckedArrayLiteral),
-    /// `Name { field = value; ... }` -- the node's own `r#type` is always the
-    /// struct being built (`ResolvedType::Struct`); see
-    /// `CheckedStructLiteral`'s doc comment for the field guarantees.
     StructLiteral(CheckedStructLiteral),
-    /// `Enum::Variant` / `Enum::Variant { field = value; ... }` -- builds a
-    /// whole enum value. The node's own `r#type` is always the enum with
-    /// this exact variant statically known
-    /// (`ResolvedType::Enum { variant: Some(variant_index) }`); the tag and
-    /// header constants come from the enum's shared cell, so only the
-    /// variant's own body fields are carried here (with the same
-    /// exactly-once/-typed guarantees `CheckedStructLiteral` documents,
-    /// against the variant's field list).
     EnumConstruct(CheckedEnumConstruct),
     Slice(CheckedSlice),
-    /// `match scrutinee { pattern => body, ... } else { ... }` -- an
-    /// exhaustive switch, and (for an enum scrutinee) the proof mechanism
-    /// behind sum-type subtyping: each arm's `body` is analyzed with the
-    /// scrutinee's own binding narrowed to exactly the variant that arm's
-    /// pattern proved (see `Analyzer::analyze_match`), so this node itself
-    /// carries no narrowing information at all -- it's already baked into
-    /// each arm's `CheckedMatchArm.body` as ordinary (already-refined)
-    /// `ResolvedType`s on whatever place expressions appear there. Every
-    /// arm (and `else_branch`, if present) is guaranteed to agree on this
-    /// node's own `r#type`, exactly like `CheckedExpr::If`.
     Match(CheckedMatch),
-    /// `<Type>base` -- `target_type` is this node's own `r#type` too
-    /// (carried here as well since `CheckedCast` is also useful standalone
-    /// in codegen's dispatch); `kind` is exactly which conversion
-    /// (`Analyzer::resolve_cast_kind`) `base`'s value needs to become it.
     Cast(CheckedCast),
-    /// `sizeof<Type>` -- the node's own `r#type` is always `ResolvedType::
-    /// USize`; the resolved `Type` being sized is carried here directly
-    /// (no separate `Checked*` wrapper struct needed, unlike `Cast`, since
-    /// there's no `base`/`kind` to go with it).
     Sizeof(ResolvedType),
-    /// `Union { field = value; }` -- builds a whole union value by writing
-    /// exactly one field; analysis guarantees exactly one initializer was
-    /// given (see `AnalysisErrorKind::UnionLiteralMissingField`/
-    /// `UnionLiteralTooManyFields`). The node's own `r#type` is always the
-    /// union being built (`ResolvedType::Union`).
     UnionConstruct(CheckedUnionConstruct),
-    /// Any fully compile-time-known value -- a `&[...]` compile-time slice
-    /// literal (`ResolvedType::Slice { item, mutable: false }`, see
-    /// `ConstValue::Slice`), an enum's per-variant header/tag constant, or
-    /// (see `docs/language/compile-time-evaluation.md`) a `comp <expr>` that
-    /// evaluated successfully -- `crate::comp_eval::eval`'s result,
-    /// spliced in by `Analyzer::analyze_comp` in place of whatever tree
-    /// `<expr>` originally was, so nothing downstream of analysis (MIR
-    /// lowering, codegen) needs to know a value came from `comp` at all.
-    /// The node's own `r#type` is exactly `ConstValue`'s own type, whatever
-    /// that happens to be -- unlike this variant's earlier, narrower
-    /// `ConstSlice` name, not restricted to `Slice`.
     Const(ConstValue),
-    /// An implicit `*Concrete` -> `spec *Spec` dynamic-dispatch coercion
-    /// (see `Analyzer::coerce_to_expected`) -- unlike every other
-    /// coercion this language has (all representation-preserving, handled
-    /// by `ResolvedType::accepts` alone), this one genuinely changes the
-    /// value's runtime shape: a thin pointer becomes a fat one (a data
-    /// pointer plus a compiler-generated vtable pointer), so it needs an
-    /// explicit node here for codegen to act on. The node's own `r#type`
-    /// is always the target `ResolvedType::SpecObject`; `base`'s own
-    /// `r#type` (always a `Pointer` to a struct/enum/union) is what
-    /// codegen reads to know the *concrete* type a vtable is needed for.
-    /// See `CheckedSpecCoerce::slots` for the vtable's own contents.
     SpecCoerce(CheckedSpecCoerce),
-    /// `base.method(args)` where `base`'s type is `spec *Spec` -- a
-    /// dynamic-dispatch call through a vtable, rather than an ordinary
-    /// direct call to a statically-known symbol (`CheckedExpr::
-    /// FunctionCall`'s `callee` is always a `Storage::Function` place;
-    /// there is no such place here, since the concrete function differs
-    /// per underlying implementor at runtime). See `CheckedDynamicCall`.
     DynamicCall(CheckedDynamicCall),
 }
 
-/// See `CheckedExpr::SpecCoerce`.
 #[derive(Debug, Clone)]
 pub struct CheckedSpecCoerce {
     pub base: Box<CheckedExprNode>,
-    /// The concrete method satisfying each of the target spec's flattened
-    /// requirements, in `Analyzer::flatten_spec`'s deterministic order --
-    /// exactly the vtable's own slot order, precomputed here by
-    /// `Analyzer::type_implements_spec` (which already has to find each one
-    /// to confirm the coercion is even legal in the first place) rather than
-    /// re-derived by codegen. This matters now that two different concrete
-    /// methods can share a name (an implementor satisfying the same generic
-    /// spec at two different type arguments via two overloads, see
-    /// conformance checking): a bare name is no longer
-    /// enough to know which one a given slot needs, so codegen is handed
-    /// the already-resolved answer instead of a name to match on its own.
     pub slots: Vec<HirId>,
 }
 
-/// See `CheckedExpr::DynamicCall`. `base` is the `spec *Spec` fat-pointer
-/// value being called through (its own two leaves: a data pointer and a
-/// vtable pointer -- see `ResolvedType::SpecObject`'s doc comment);
-/// `slot_index` is this method's position in the spec's own flattened
-/// function list (`Analyzer::flatten_spec`), which is also the exact
-/// vtable slot order `Codegen`'s vtable builder uses, so the two always
-/// agree. `fn_type`'s `self` param (`params[0]`) has no meaningful
-/// pointee type (`Self` was resolved against a placeholder -- see
-/// `Analyzer::finish_dynamic_dispatch_call`) and must never be read for
-/// anything beyond "this is a single-leaf pointer"; codegen supplies the
-/// real `self` value itself, from `base`'s own data-pointer leaf, not
-/// from `args`.
 #[derive(Debug, Clone)]
 pub struct CheckedDynamicCall {
     pub base: CheckedPlace,
@@ -572,22 +277,12 @@ pub struct CheckedDynamicCall {
     pub args: Vec<CheckedExprNode>,
 }
 
-/// See `CheckedExpr::UnionConstruct`. `field_index` is the field's position
-/// in the union's own field list, exactly like `CheckedProjection::UnionField`
-/// -- codegen zeroes the union's storage, then stores `value`'s leaves at
-/// offset 0 (no tag/header, unlike `CheckedEnumConstruct`).
 #[derive(Debug, Clone)]
 pub struct CheckedUnionConstruct {
     pub field_index: usize,
     pub value: Box<CheckedExprNode>,
 }
 
-/// See `CheckedExpr::Cast`. Most castable types flatten to exactly one IR
-/// leaf (numeric or thin pointer), needing a single instruction (or none,
-/// for `CastKind::Reinterpret`) applied to `base`'s own one leaf -- the
-/// str/byte-slice family (`ResolvedType::Str`/`Slice{item:U8|I8}`) is the
-/// exception, at two leaves (`[ptr, len]`); see `CastKind::Reinterpret`/
-/// `DropLength`'s own doc comments for how each handles that.
 #[derive(Debug, Clone)]
 pub struct CheckedCast {
     pub kind: CastKind,
@@ -595,23 +290,8 @@ pub struct CheckedCast {
     pub base: Box<CheckedExprNode>,
 }
 
-/// Exactly which conversion a cast needs, resolved from either both sides'
-/// `ResolvedType::cast_class` (the numeric/pointer family) or the
-/// dedicated str/byte-slice family check (`Analyzer::byte_pointer_cast_kind`,
-/// since a fat pointer doesn't fit `cast_class`'s scalar-width model) --
-/// codegen never re-derives this, it just picks the one Cranelift
-/// instruction (or leaf-selection, for `Reinterpret`/`DropLength`) each
-/// variant maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
-    /// No instruction needed at all -- source and target already share the
-    /// same underlying IR representation. For the numeric/pointer family:
-    /// same-width int-family (regardless of Omega-level signedness --
-    /// Cranelift has no separate signed/unsigned integer *types*, only
-    /// signed/unsigned *operations*, and a pointer uses that same width-64
-    /// type too), or identical float width -- one leaf, unchanged. For the
-    /// str/byte-slice family (`*str`/`*[u8]`/`*[i8]`, all `[ptr, len]`):
-    /// both leaves, unchanged -- e.g. `<*[u8]>a_str_slice`.
     Reinterpret,
     IntExtend {
         signed: bool,
@@ -620,71 +300,27 @@ pub enum CastKind {
     IntToFloat {
         signed: bool,
     },
-    /// Saturating, not trapping (`fcvt_to_*_sat`, not `fcvt_to_*`) --
-    /// matches Rust's own `as` behavior; a numeric cast shouldn't be a
-    /// surprise trap source over an out-of-range or NaN value.
     FloatToInt {
         signed: bool,
     },
     FloatExtend,
     FloatTruncate,
-    /// A narrowing cast between two `spec *Spec` fat pointers (`<spec *A>x`
-    /// where `x: spec *AB` and `A` is one of `AB`'s specs): both leaves stay
-    /// two leaves, and the data half is untouched -- only the vtable half is
-    /// adjusted by a *compile-time-constant* offset (`slot_offset` slots ×
-    /// pointer width), pointing at `A`'s own section of `AB`'s sectioned
-    /// vtable. Zero runtime cost, no lookup, no concrete type needed -- the
-    /// offset is a pure function of the two specs' declared shapes. Widening
-    /// (a `spec *A` into a `spec *AB`) has no such constant: there is no
-    /// section to invent, so it is rejected at analysis time
-    /// (`AnalysisErrorKind::SpecObjectCastImpossible`), never represented
-    /// here.
     SpecNarrow { slot_offset: usize },
-    /// The str/byte-slice family's only other cast direction: fat pointer
-    /// (`*str`/`*[u8]`/`*[i8]`, `[ptr, len]`) down to a thin one (`*u8`/
-    /// `*i8`) -- keeps the pointer leaf, discards the length leaf. There is
-    /// no reverse for a *bare* pointer (`*T`/`*mut T`) -- that would need a
-    /// length from somewhere it genuinely doesn't carry, so it's not a cast
-    /// at all, just not offered. `Unsize` below is the one exception, and
-    /// only because its own source type isn't a bare pointer.
     DropLength,
-    /// `<*[?]T>ptr` where `ptr: *[N]T`/`*mut [N]T` -- widens a thin pointer
-    /// to a compile-time-sized array into a real `*[?]T`/`*mut [?]T`
-    /// slice. `base`'s own single leaf (the data pointer) is kept
-    /// unchanged; the second leaf (the length) is synthesized from `N`,
-    /// which is always known at compile time -- it's part of `base`'s own
-    /// type (`Pointer { pointee: SizedArray(_, N), .. }`), not fabricated
-    /// out of nothing the way a bare pointer's missing length would be.
-    /// Item type must match exactly (no implicit narrowing, matching every
-    /// other `CastKind`'s "shapes already agree" philosophy) -- checked by
-    /// `Analyzer::unsize_cast_kind`, this variant's only producer.
     Unsize,
 }
 
-/// See `CheckedExpr::EnumConstruct`.
 #[derive(Debug, Clone)]
 pub struct CheckedEnumConstruct {
     pub variant_index: usize,
-    /// Body-field initializers in *source* (evaluation) order, each tagged
-    /// with its declared position in the variant's own field list -- same
-    /// contract as `CheckedStructLiteral::fields`. Always empty for a
-    /// body-less variant.
     pub fields: Vec<CheckedStructLiteralField>,
 }
 
-/// A whole struct value built in one expression. `fields` is in *source*
-/// (evaluation) order -- the order the user wrote the initializers in, which
-/// is the order their side effects must run in -- with each entry carrying
-/// the field's declared position (`field_index`) in the struct's own field
-/// list. Analysis guarantees every declared field appears exactly once and
-/// every value already has its field's exact type, so codegen only has to
-/// evaluate in list order and emit leaves in `field_index` order.
 #[derive(Debug, Clone)]
 pub struct CheckedStructLiteral {
     pub fields: Vec<CheckedStructLiteralField>,
 }
 
-/// See `CheckedStructLiteral`.
 #[derive(Debug, Clone)]
 pub struct CheckedStructLiteralField {
     pub field_index: usize,
@@ -697,15 +333,6 @@ pub struct CheckedArrayLiteral {
     pub elements: Vec<CheckedExprNode>,
 }
 
-/// `base[range]` -- `base`'s resolved type is guaranteed to be `SizedArray`,
-/// `Slice`, `Str`, or `Pointer` (never anything else) by the time this is
-/// constructed, and `start`/`end` (when present) are guaranteed `I32`.
-/// `item_type` is `base`'s element type, carried the same way
-/// `CheckedProjection::Index`'s is, so codegen never has to re-derive it
-/// from `base`'s type. `inclusive` is `omega_hir::HirRange::inclusive()`'s
-/// answer, flattened back out alongside an `Option` end -- when `true` and
-/// `end` is present, codegen includes `end` itself in the slice (see
-/// `omega_parser::prelude::RangeExpr`'s doc comment for the range grammar).
 #[derive(Debug, Clone)]
 pub struct CheckedSlice {
     pub base: CheckedPlace,
@@ -719,10 +346,6 @@ pub struct CheckedSlice {
 pub struct CheckedPlace {
     pub root: CheckedPlaceRoot,
     pub projections: Vec<CheckedProjection>,
-    /// The place's *final* type, after every projection -- the value
-    /// `Analyzer::analyze_place` already computed as its own second return
-    /// (`current_type`), carried rather than left for MIR lowering or
-    /// codegen to re-derive by re-walking the projections.
     pub r#type: ResolvedType,
 }
 
@@ -733,17 +356,11 @@ pub enum CheckedPlaceRoot {
         storage: Storage,
         r#type: ResolvedType,
     },
-    /// The base of a projection chain that isn't a bare name, e.g.
-    /// `foo().bar` -- the root is the `foo()` call expression.
     Expr(Box<CheckedExprNode>),
 }
 
 #[derive(Debug, Clone)]
 pub enum CheckedProjection {
-    /// `index`/`r#type` are the field's resolved position and type within
-    /// the base struct, already looked up by name during analysis -- codegen
-    /// slices straight into the field list by index, no name search, no
-    /// "field doesn't exist" failure mode left to hit.
     FieldAccess {
         field: Ident,
         index: usize,
@@ -753,67 +370,26 @@ pub enum CheckedProjection {
         index_expr: Box<CheckedExprNode>,
         item_type: ResolvedType,
     },
-    /// `*expr` (explicit), or a seamless one-level pointer-to-struct
-    /// autoderef inserted by analysis before a `FieldAccess` projection --
-    /// `r#type` is the pointee type.
     Deref { r#type: ResolvedType },
-    /// `slice.length` or `str.size` -- reads the second leaf of a `Slice`'s
-    /// or `Str`'s shared fat-pointer layout. A dedicated projection rather
-    /// than a `FieldAccess` variant, since neither is a `Struct` and neither
-    /// name is a real field looked up by name/index; see
-    /// `Analyzer::project_slice_field`'s special case (including why the
-    /// two types spell this differently despite sharing one projection
-    /// kind).
     SliceLength,
-    /// `spec_obj.ptr` -- reads the data-pointer leaf of a `spec *Spec`/
-    /// `spec *mut Spec` fat pointer (see `ResolvedType::SpecObject`'s own
-    /// doc comment for the `[data_ptr, vtable_ptr]` leaf order codegen
-    /// already relies on), as an opaque `*u8`/`*mut u8`. `mutable` mirrors
-    /// the spec object's own `mutable` flag -- see
-    /// `Analyzer::project_spec_object_field`.
     SpecObjectPtr { mutable: bool },
-    /// `spec_obj.vtable` -- reads the second (vtable) leaf of the same fat
-    /// pointer, always as an immutable `*u8`: the vtable itself is always
-    /// compiler-generated, content-deduplicated read-only rodata (see
-    /// `Codegen::vtables`), regardless of the spec object's own mutability.
     SpecObjectVtable,
-    /// `value.tag` on an enum -- reads the tag, which every enum value has
-    /// (implicit-tag enums included). `r#type` is the enum's tag type.
     EnumTag { r#type: ResolvedType },
-    /// A shared header field on an enum value -- present on every variant,
-    /// so no static variant knowledge is required. `index` is the field's
-    /// position in `ResolvedEnumType::header`; `field` is its name, carried
-    /// for diagnostics only (header fields are per-variant constants, so an
-    /// assignment through this projection is rejected by name).
     EnumHeader {
         field: Ident,
         index: usize,
         r#type: ResolvedType,
     },
-    /// A shared *dynamic* field on an enum value -- `EnumHeader`'s sibling:
-    /// present on every variant, so no static variant knowledge is
-    /// required either, but (unlike `EnumHeader`) ordinary per-instance
-    /// storage, not a per-variant constant -- an assignment through this
-    /// projection is perfectly ordinary, exactly like `EnumBody`'s.
-    /// `index` is the field's position in `ResolvedEnumType::dynamic_fields`.
     EnumDynamicField {
         field: Ident,
         index: usize,
         r#type: ResolvedType,
     },
-    /// A body field of an enum value whose variant is statically known --
-    /// analysis guarantees the base's resolved type carries exactly
-    /// `variant_index` (see `ResolvedType::Enum`), so codegen can compute
-    /// the field's offset inside the union region with no runtime check.
     EnumBody {
         variant_index: usize,
         field_index: usize,
         r#type: ResolvedType,
     },
-    /// A field of a union value -- deliberately not `FieldAccess`: every
-    /// union field lives at offset 0 (they all overlap the same storage), so
-    /// codegen never needs (or wants) an index-based offset lookup here, the
-    /// way it does for a struct's sequentially laid out fields.
     UnionField {
         field: Ident,
         index: usize,
@@ -828,13 +404,6 @@ pub struct CheckedFunctionCall {
     pub args: Vec<CheckedExprNode>,
 }
 
-/// Both operands are guaranteed to share the same numeric resolved type by
-/// the time this is constructed -- codegen never re-checks it, and picks
-/// the concrete instruction (`iadd` vs `fadd`, `sdiv` vs `udiv`, ...) from
-/// that shared type. For a comparison op (`op.is_comparison()`), this
-/// node's own type is always `Bool` regardless of the (still-numeric,
-/// still-matching) operand type; for an arithmetic op, this node's type is
-/// the same as the operands'.
 #[derive(Debug, Clone)]
 pub struct CheckedBinaryOp {
     pub op: BinaryOp,
@@ -842,62 +411,30 @@ pub struct CheckedBinaryOp {
     pub right: Box<CheckedExprNode>,
 }
 
-/// See `CheckedExpr::If`'s doc comment.
 #[derive(Debug, Clone)]
 pub struct CheckedIf {
     pub branches: Vec<(CheckedExprNode, CheckedBlock)>,
     pub else_branch: Option<CheckedBlock>,
 }
 
-/// See `CheckedExpr::Match`'s doc comment.
 #[derive(Debug, Clone)]
 pub struct CheckedMatch {
     pub arms: Vec<CheckedMatchArm>,
-    /// `None` only when analysis already proved every value is covered by
-    /// `arms` (`Analyzer::analyze_match`'s exhaustiveness check) -- codegen
-    /// (`omega_codegen`'s `emit_match`) traps instead of falling through in
-    /// that case, since falling off the end is otherwise provably
-    /// unreachable, unlike `CheckedIf`'s "no `else`" case (which defaults to
-    /// producing `Void`).
     pub else_branch: Option<CheckedBlock>,
 }
 
-/// One arm: an OR of AND-groups (disjunctive normal form) -- this arm runs
-/// if *any* group's conditions all hold (short-circuiting within a group on
-/// the first `false`, then falling to the next group -- see `emit_match`).
-/// There is no boolean AND/OR operator anywhere in this language, so both
-/// levels of this are nested branching in codegen, never one merged boolean
-/// expression.
-///
-/// Every arm any *user*-written pattern produces has exactly one group: a
-/// value/enum-variant pattern's group has exactly one condition; a range
-/// pattern's group has one per bound actually present (so up to two).
-/// More than one group is purely a compiler-internal desugaring artifact --
-/// today, only an enum `match`'s `..` catch-all arm (`Analyzer::
-/// analyze_enum_match`) produces one, one group per variant the catch-all
-/// covers, since "any of these N variant tags" has no other way to be
-/// spelled without a real boolean OR. Never surfaces as user syntax.
 #[derive(Debug, Clone)]
 pub struct CheckedMatchArm {
     pub conditions: Vec<Vec<CheckedExprNode>>,
     pub body: CheckedBlock,
 }
 
-/// `target` is a `CheckedPlace`, not a general expression: analysis rejects
-/// (`AssignmentTargetNotAPlace`) any assignment whose left-hand side isn't
-/// syntactically a place before a `CheckedAssignment` is ever constructed, so
-/// this is an enforced invariant of the type, not a convention codegen has to
-/// trust.
 #[derive(Debug, Clone)]
 pub struct CheckedAssignment {
     pub target: CheckedPlace,
     pub value: Box<CheckedExprNode>,
 }
 
-/// `place` is a `CheckedPlace`, not a general expression, for the same
-/// reason `CheckedAssignment.target` is: analysis rejects
-/// (`AddressOfNotAPlace`) any `&expr` whose operand isn't syntactically a
-/// place before this is ever constructed.
 #[derive(Debug, Clone)]
 pub struct CheckedAddressOf {
     pub place: CheckedPlace,

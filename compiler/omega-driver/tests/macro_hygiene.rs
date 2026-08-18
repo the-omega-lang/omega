@@ -129,16 +129,6 @@ fn nested_macro_calls_use_the_definition_environment() {
     package.compile();
 }
 
-/// The other half of the same rule, and the one that regressed: an invocation
-/// that arrives inside a *substituted argument* was written by the caller, so
-/// it must resolve in the caller's environment -- not in the defining module of
-/// whatever macro it was passed to.
-///
-/// Selecting the environment for a whole expanded subtree (rather than per
-/// invocation, by the name token's own origin) makes `caller_macro$` here get
-/// looked up in `helper`, which does not define it. That is not a corner case:
-/// `println$("sum: ", sum_macro$(3, 4))` in `examples/dev/dev.omg` is exactly
-/// this shape, and it stopped compiling.
 #[test]
 fn a_macro_invocation_passed_as_an_argument_resolves_at_the_call_site() {
     let package = TestPackage::new(

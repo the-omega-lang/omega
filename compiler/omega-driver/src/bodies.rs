@@ -1,10 +1,3 @@
-//! Phase 2: checking one item's *body*, reading its already-resolved
-//! signature back rather than ever re-deriving it.
-//!
-//! Every entry point here is shared by both of the two ways a body is
-//! reached: `compile`'s static per-module sweep (never generic) and the
-//! on-demand trigger a fresh generic instantiation fires (a real
-//! substitution).
 
 use crate::Driver;
 use crate::items::{CheckedBody, ItemKey};
@@ -20,10 +13,6 @@ use omega_diagnostics::Span;
 use omega_hir::{HirGenericParam, HirId, HirItem};
 use omega_parser::prelude::Ident;
 
-/// The three checked aggregate shapes differ only in which `CheckedItem`
-/// they become; the two things phase 2 does to all of them -- appending the
-/// spec-default methods queued in phase 1, and stamping the instantiation's
-/// own type arguments -- are identical.
 trait CheckedAggregate: Sized {
     fn assemble(self, type_args: Vec<ResolvedType>) -> CheckedItem;
 }
@@ -50,29 +39,6 @@ impl CheckedAggregate for CheckedUnionDef {
 }
 
 impl Driver {
-    /// [`Self::check_item_body`], memoized by [`ItemKey`] -- the one entry
-    /// point both `compile`'s own per-module phase-2 sweep and a `comp`
-    /// evaluation's on-demand `resolve_function_body` now go through, so
-    /// whichever of the two reaches a given item *second* gets the cached
-    /// result instead of silently re-checking (and, downstream, re-
-    /// lowering/re-codegening) the same body a second time. `index` is the
-    /// item's position in its module's own list, needed only on a cache
-    /// miss, matching `check_generic_instantiation_body`'s identical shape.
-    ///
-    /// A generic instantiation reuses `generic_instantiations` (the cache
-    /// `ensure_item` itself already populates via `check_generic_
-    /// instantiation_body` the moment the instantiation's own signature
-    /// resolves) rather than `checked_bodies` -- so a `comp` call that
-    /// reaches an instantiation *before* `ensure_item` naturally would
-    /// still only computes it once, and `compile`'s own final-assembly
-    /// merge (which reads `generic_instantiations` specifically) still
-    /// finds it there either way.
-    ///
-    /// `None` on a self-referential cycle (`items.body_in_progress`) --
-    /// possible now in a way it never was before `comp`: body-checking can
-    /// reenter itself when a function's own body contains a `comp`
-    /// expression that (directly, or through another function) calls back
-    /// into the very item currently being checked.
     pub(crate) fn ensure_item_body(&mut self, key: &ItemKey, index: usize) -> Option<CheckedBody> {
         if key.is_instantiation() {
             if let Some(body) = self.items.generic_instantiations.get(key) {
@@ -106,15 +72,6 @@ impl Driver {
         Some(body)
     }
 
-    /// Checks one item's body, reading its already-`Done` signature straight
-    /// out of the query caches. `Declaration`/`ExternDeclaration` have no
-    /// body at all, so they need no `Analyzer` -- just their resolved type
-    /// paired with the identity already on the HIR node.
-    ///
-    /// Not memoized on its own -- see [`Self::ensure_item_body`], the entry
-    /// point every caller other than `check_generic_instantiation_body`
-    /// (whose own `generic_instantiations` cache already serves the same
-    /// purpose for an instantiation) should use instead.
     pub(crate) fn check_item_body(&mut self, key: &ItemKey, item: &HirItem) -> Option<CheckedBody> {
         match item {
             HirItem::Declaration { decl, .. } => {
@@ -133,8 +90,6 @@ impl Driver {
                 })
             }
 
-            // `ident : Type = value;` -- same shape as the non-`comp` `Walrus`
-            // arm below, sourced from a `HirDeclaration` instead.
             HirItem::DeclarationWithInit { decl, .. } => {
                 let r#type = self.resolved_value_type(key);
                 let initial_value = self.items.global_initial_values.get(&decl.id).cloned();
@@ -152,14 +107,6 @@ impl Driver {
                 })
             }
 
-            // A `comp` binding was already evaluated eagerly during signature
-            // resolution and recorded in `items.comp_values` -- `None`, not
-            // a `CheckedBody`: every reference substitutes its value
-            // directly, so MIR/codegen never see it as an item.
-            //
-            // A non-`comp` `Walrus` does need to reach MIR/codegen as a real
-            // `Storage::Global` place, same shape as `HirItem::Declaration`
-            // above.
             HirItem::Walrus { walrus: w, .. } if w.comp => None,
             HirItem::Walrus { walrus: w, .. } => {
                 let r#type = self.resolved_value_type(key);
@@ -264,8 +211,6 @@ impl Driver {
                 })
             }
 
-            // A spec declares no code of its own -- its functions only ever
-            // become real bodies through an implementor (or a `for` target).
             HirItem::Spec(_) => None,
             HirItem::Gap(_) | HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
                 None
@@ -274,9 +219,6 @@ impl Driver {
         }
     }
 
-    /// The shared spine of `check_item_body`'s struct/enum/union arms: bind
-    /// `Self` to the (already resolved) cell, check the bodies, then append
-    /// whatever spec-default methods phase 1 queued for this implementor.
     fn check_aggregate_body<C: CheckedAggregate>(
         &mut self,
         key: &ItemKey,
@@ -288,11 +230,6 @@ impl Driver {
         let mut substitution = Self::substitution(generics, &key.type_args);
         substitution.push((Ident("Self".to_string()), self_type.clone()));
 
-        // An aggregate's own generic bounds only -- a type's inherent
-        // methods are not a conform body, so nothing conformed onto this
-        // type belongs in their scope. The bound *context* (alias members,
-        // entailed derived conformances) is built here from the stored
-        // declared set rather than during signature resolution.
         let declared = self
             .items
             .declared_bounds
@@ -312,11 +249,6 @@ impl Driver {
         })
     }
 
-    /// Body-checks a *specific* generic instantiation the moment its own
-    /// signature finishes (triggered from `ensure_item`). Identical to the
-    /// ordinary per-module sweep except for *when* it runs (on demand, since
-    /// `compile` cannot enumerate instantiations up front) and *where the
-    /// result goes* (merged into its module during final assembly).
     pub(crate) fn check_generic_instantiation_body(&mut self, key: &ItemKey, index: usize) {
         let hir = self.modules.hir(&key.module);
         if let Some(body) = self.check_item_body(key, &hir.items[index]) {
@@ -324,8 +256,6 @@ impl Driver {
         }
     }
 
-    /// The resolved type of a bodyless value item (a global or an extern
-    /// declaration), which is always a `ResolvedItem::Value`.
     fn resolved_value_type(&self, key: &ItemKey) -> ResolvedType {
         match self.items.expect_resolved(key) {
             ResolvedItem::Value { r#type, .. } => r#type.clone(),
@@ -335,8 +265,6 @@ impl Driver {
         }
     }
 
-    /// A generic item's declared parameters zipped with the concrete
-    /// arguments this instantiation supplied -- empty for an ordinary item.
     fn substitution(
         generics: &[HirGenericParam],
         type_args: &[ResolvedType],
@@ -349,12 +277,6 @@ impl Driver {
     }
 }
 
-/// Overload candidates need their own signature/body caches, keyed by
-/// position rather than by name: an `ItemKey` can only ever address one item
-/// per name, so it would silently only ever reach the first-declared
-/// candidate. Every candidate is confirmed a plain, non-generic function when
-/// the module is indexed, so there's no instantiation identity to decide here
-/// the way `compute_item` has.
 impl Driver {
     pub(crate) fn ensure_overload_signature(
         &mut self,
@@ -370,9 +292,6 @@ impl Driver {
             unreachable!("only ever called with an index confirmed to be a function");
         };
 
-        // An overloaded free function doesn't yet support `spec T` return-
-        // type body inference either -- see the identical scope note on
-        // `collect_methods`'s own call site.
         let checked = self.analyze(module_path, &[], (f.id, f.span), |a| {
             a.collect_function_signature(f)
         });
@@ -386,8 +305,6 @@ impl Driver {
         Ok(fn_type)
     }
 
-    /// One overload candidate's checked body, reading its own already-
-    /// resolved signature back rather than recomputing it.
     pub(crate) fn ensure_overload_body(
         &mut self,
         module_path: &[Ident],
@@ -420,12 +337,6 @@ impl Driver {
         Some(body)
     }
 
-    /// Compares every pair of `name`'s overload candidates by param-type list,
-    /// ignoring parameter names -- an identical pair is a genuine duplicate
-    /// (no call could ever tell them apart), reported through the same
-    /// `Redeclaration` diagnostic a same-shaped non-function collision gets,
-    /// since the underlying meaning ("this name already exists here") is
-    /// identical.
     pub(crate) fn check_overload_duplicates(
         &mut self,
         module_path: &[Ident],

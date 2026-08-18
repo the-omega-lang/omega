@@ -1,22 +1,3 @@
-//! Whole-program dead-field/dead-variant usage collector -- powers
-//! `AnalysisWarningKind::UnusedField`/`NeverConstructedVariant`. Unlike
-//! every other warning in this crate, these two can't be decided per-item
-//! (a field/variant declared in one module may only ever be touched from
-//! another, and Omega has no visibility/`pub` system yet to rule that out
-//! statically), so they're computed once, after the whole program's every
-//! item is checked, by walking every `CheckedModule`'s every function/method
-//! body and recording which `(owner_id, field_or_variant_index)` pairs are
-//! actually touched. `omega_driver::Driver::compile` then diffs this against
-//! each struct/union/enum cell's own declared fields/variants.
-//!
-//! `Analyzer::eval_comp` runs this same walk eagerly over a `comp` subtree
-//! before it collapses into a `CheckedExpr::Const` (see docs/issues/known-issues.md
-//! for why that's needed), folding the result into the whole-program pass
-//! via `FieldUsage::merge`.
-//!
-//! The walk mirrors `omega_codegen`'s `collect_defer_ids` family (same
-//! four-function block/stmt/expr/place shape) since both must visit
-//! exactly the same tree.
 
 use crate::checked::{
     CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem, CheckedModule, CheckedPlace,
@@ -26,15 +7,6 @@ use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
 use std::collections::HashSet;
 
-/// Every `(owner_id, index)` pair actually touched anywhere in the whole
-/// compiled program, split by which kind of field/variant `index` indexes
-/// into -- a struct's `fields`, a union's `fields`, an enum's
-/// `dynamic_fields`, an enum variant's own body `fields` (keyed by both
-/// `variant_index` and `field_index`, since two different variants' body
-/// fields are entirely unrelated storage), or an enum's `variants` list
-/// itself. Enum *header* fields are deliberately never tracked here -- see
-/// `AnalysisWarningKind::UnusedField`'s doc comment for why they're exempt
-/// from this check entirely.
 #[derive(Default)]
 pub struct FieldUsage {
     pub struct_fields: HashSet<(HirId, usize)>,
@@ -45,8 +17,6 @@ pub struct FieldUsage {
 }
 
 impl FieldUsage {
-    /// Folds `other` into `self` -- how a `comp`-eval subtree's usage
-    /// (see `Analyzer::eval_comp`) reaches the driver-wide accumulator.
     pub fn merge(&mut self, other: FieldUsage) {
         self.struct_fields.extend(other.struct_fields);
         self.union_fields.extend(other.union_fields);
@@ -206,12 +176,6 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
     }
 }
 
-/// Walks a place's root and every projection, tracking the resolved type
-/// the *next* projection applies to as it goes -- a projection's own
-/// `r#type` is the field's type (what comes after it), so identifying which
-/// struct/union/enum owns the field a given projection reads requires the
-/// type one step *before* it, threaded through exactly like
-/// `Analyzer::analyze_place` itself threads its own running type.
 pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
     let mut current_type = match &place.root {
         CheckedPlaceRoot::Variable { r#type, .. } => Some(r#type.clone()),

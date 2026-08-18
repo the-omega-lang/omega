@@ -1,12 +1,3 @@
-//! `core::range` -- ranges as tangible values.
-//!
-//! Every case here compiles against the *real* `runtime/core`, not a stub:
-//! the feature is a claim about what `core` provides, so a synthesized
-//! stand-in would prove nothing about the shipped library. Runtime semantics
-//! (what a loop actually counts) live in `examples/range_demo` behind
-//! `just test-range`, because they need a link and an execution; this file
-//! covers what the front end accepts and rejects, and the diagnostics it
-//! produces when it rejects.
 
 use omega_analyzer::Target;
 use omega_analyzer::error::AnalysisErrorKind;
@@ -66,8 +57,6 @@ impl Drop for TestPackage {
     }
 }
 
-/// The shipped `runtime/core`, located from this crate rather than the
-/// process CWD so the tests do not depend on where cargo was invoked.
 fn core_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../runtime/core")
@@ -92,10 +81,6 @@ fn has_parse_error(errors: &[CompileError], kind: &ParseErrorKind) -> bool {
     })
 }
 
-// --- the headline feature -------------------------------------------------
-
-/// The whole point: a range survives being bound to a name and iterated
-/// later, through the ordinary `ToIterator` protocol.
 #[test]
 fn a_range_can_be_bound_to_a_name_and_iterated() {
     TestPackage::new(
@@ -124,9 +109,6 @@ fn ranges_are_inert_data_with_readable_fields() {
     .expect_ok();
 }
 
-/// A range is not its own cursor, so iterating one twice must be legal and
-/// must not require `mut`. This is the property that makes the value/cursor
-/// split worth having -- Rust's unified design cannot express it.
 #[test]
 fn the_same_range_value_can_be_iterated_twice() {
     TestPackage::new(
@@ -160,12 +142,6 @@ fn a_range_passes_through_a_function_boundary() {
     .expect_ok();
 }
 
-// --- the `{` ambiguity ----------------------------------------------------
-
-/// Regression: `expression_starts_here` once counted `{` unconditionally, so
-/// the loop body was consumed as the range's end bound and this failed with
-/// `expected '{'`. The `for` header restricts struct literals; range parsing
-/// has to honour that.
 #[test]
 fn an_open_ended_range_drives_a_for_loop() {
     TestPackage::new(
@@ -183,8 +159,6 @@ fn an_open_ended_range_drives_a_for_loop() {
     .expect_ok();
 }
 
-/// The same ambiguity from the other side: an *identifier* end bound sitting
-/// immediately before the body's `{` must not be read as `stop { ... }`.
 #[test]
 fn a_named_end_bound_is_not_read_as_a_struct_literal() {
     TestPackage::new(
@@ -201,12 +175,6 @@ fn a_named_end_bound_is_not_read_as_a_struct_literal() {
     .expect_ok();
 }
 
-// --- `..` is the inference operator, never a bounded range ----------------
-
-/// `..` means "infer this side" in every position. A range that writes both
-/// bounds must say which kind it is, so `a..b` is a syntax error -- and,
-/// critically, the *same* syntax error everywhere, rather than meaning one
-/// thing in an expression and another in a slice.
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_expression_position() {
     let package = TestPackage::new("main() => i32 { r := 1..10; 0 }");
@@ -238,8 +206,6 @@ fn a_dotdot_range_with_an_end_is_rejected_in_pattern_position() {
     ));
 }
 
-// --- domain inference vs contextual inference -----------------------------
-
 #[test]
 fn an_open_end_infers_the_element_types_domain_maximum() {
     TestPackage::new(
@@ -266,8 +232,6 @@ fn an_open_start_infers_the_element_types_domain_minimum() {
     .expect_ok();
 }
 
-/// Contextual inference wins in an index: `..` there means the container's
-/// own length, never `usize`'s domain maximum.
 #[test]
 fn a_slice_still_infers_its_end_from_the_container() {
     TestPackage::new(
@@ -282,8 +246,6 @@ fn a_slice_still_infers_its_end_from_the_container() {
     .expect_ok();
 }
 
-/// ... and a base with no length has nothing to infer from, which is why
-/// this stays an error rather than silently meaning `usize::MAX`.
 #[test]
 fn an_open_slice_end_needs_a_base_that_has_a_length() {
     let package = TestPackage::new(
@@ -301,7 +263,6 @@ fn an_open_slice_end_needs_a_base_that_has_a_length() {
     )));
 }
 
-/// Bare `..` infers *both* sides, so standalone it has no type source at all.
 #[test]
 fn a_bare_dotdot_is_rejected_with_no_context() {
     let package = TestPackage::new("main() => i32 { r := ..; 0 }");
@@ -311,7 +272,6 @@ fn a_bare_dotdot_is_rejected_with_no_context() {
     )));
 }
 
-/// An expected type *is* context, so this one resolves.
 #[test]
 fn a_bare_dotdot_resolves_against_an_expected_range_type() {
     TestPackage::new(
@@ -323,10 +283,6 @@ fn a_bare_dotdot_resolves_against_an_expected_range_type() {
     .expect_ok();
 }
 
-// --- user-extensibility ---------------------------------------------------
-
-/// Requirement: ranges are not a primitive-only privilege. A user type that
-/// conforms to `Successor` and `Bounded` is range-iterable on equal terms.
 #[test]
 fn a_user_type_conforming_to_successor_is_range_iterable() {
     TestPackage::new(
@@ -369,9 +325,6 @@ fn a_user_type_conforming_to_successor_is_range_iterable() {
     .expect_ok();
 }
 
-/// An open bound needs a domain to infer from, and that is `Bounded`'s job.
-/// The diagnostic must name `Bounded` rather than surfacing as a missing
-/// `max` method on the element type.
 #[test]
 fn an_open_bound_without_bounded_names_the_missing_spec() {
     let package = TestPackage::new(
@@ -402,29 +355,17 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
     )));
 }
 
-// --- element types and their range protocol -------------------------------
-
-/// `char` uses the ordinary `Successor` protocol. Its implementation skips
-/// the UTF-16 surrogate hole rather than doing raw codepoint arithmetic.
 #[test]
 fn char_is_range_iterable() {
     TestPackage::new("main() => i32 { for c in 'a'..<'z' { } 0 }").expect_ok();
 }
 
-/// Floats have `Eq` but no total order and no successor, so they build a
-/// `Range` value but cannot drive a loop.
 #[test]
 fn floats_are_not_range_iterable() {
     let package = TestPackage::new("main() => i32 { for f in 1.0..<2.0 { } 0 }");
     assert!(!package.expect_errors().is_empty());
 }
 
-// --- regression guard for the `cmp`/`numerics` reshuffle ------------------
-
-/// `isize` once lost every inherent method here, because its conformances
-/// were hand-expanded instead of going through `signed_integer$`, and that
-/// macro also emits the `primitive` block. Nothing else in the tree calls
-/// these, so only a direct test catches it.
 #[test]
 fn isize_keeps_its_inherent_primitive_methods() {
     TestPackage::new(
@@ -440,8 +381,6 @@ fn isize_keeps_its_inherent_primitive_methods() {
     .expect_ok();
 }
 
-/// The same for `usize`, whose `Bounded` maximum is derived from an all-ones
-/// bit pattern rather than a width-dependent literal.
 #[test]
 fn usize_ranges_iterate_and_keep_their_methods() {
     TestPackage::new(
@@ -458,9 +397,6 @@ fn usize_ranges_iterate_and_keep_their_methods() {
     .expect_ok();
 }
 
-/// The overflow case the old `$more` flag existed for: an inclusive range
-/// ending at the element type's own maximum must terminate without ever
-/// computing `max + 1`.
 #[test]
 fn an_inclusive_range_reaching_the_domain_maximum_compiles() {
     TestPackage::new(
@@ -476,12 +412,6 @@ fn an_inclusive_range_reaching_the_domain_maximum_compiles() {
     .expect_ok();
 }
 
-// --- `..` carries no end, but `..<`/`..=` are not `..` --------------------
-
-/// The rejection above is about an end following bare `..`, not about
-/// leading-open ranges in general. `..<b` and `..=b` are separate tokens and
-/// stay valid everywhere -- over-tightening the rule would silently delete
-/// the match arms and slices below.
 #[test]
 fn a_leading_open_range_is_valid_with_an_explicit_operator() {
     TestPackage::new(
@@ -500,8 +430,6 @@ fn a_leading_open_range_is_valid_with_an_explicit_operator() {
     .expect_ok();
 }
 
-/// `..5` is the same mistake as `a..b` seen from the other side: an end bound
-/// after the token that means "no bound written here".
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
     let package = TestPackage::new("main() => i32 { x := 5; match x { ..5 => { 1 } } else { 0 } }");
@@ -520,8 +448,6 @@ fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
         &ParseErrorKind::OpenRangeHasEnd
     ));
 }
-
-// --- chars use the same range protocol, with a scalar-value successor -----
 
 #[test]
 fn char_ranges_compile_through_the_ordinary_successor_protocol() {
@@ -543,6 +469,3 @@ fn char_ranges_compile_through_the_ordinary_successor_protocol() {
     .expect_ok();
 }
 
-// `char`'s own surface -- its constructor, classifiers and arithmetic rules --
-// lives in `tests/char.rs`; the pointer-pair operator rule lives in
-// `tests/pointer_arithmetic.rs`. Only range behaviour belongs here.

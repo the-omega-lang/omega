@@ -1,19 +1,6 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    /// `expected` is the concrete type this expression's result is about to
-    /// flow into, when the caller has one (a declaration's annotated type, an
-    /// assignment's target, a call argument's parameter, ...) -- `None`
-    /// otherwise. Only a handful of forms consult it: an unsuffixed number
-    /// literal adapts to it, and array/`if`/block/`-`/binary-operator forms
-    /// thread it down into sub-expressions that could themselves be
-    /// unsuffixed literals. This is deliberately not full bidirectional
-    /// inference, just enough top-down context for an unsuffixed literal to
-    /// adapt instead of defaulting to i32/f32.
-    ///
-    /// Every form with any real work of its own gets a named method below;
-    /// the arms that stay inline here are the ones whose whole analysis *is*
-    /// "this literal has this type".
     pub(super) fn analyze_expr(
         &mut self,
         node: &HirExprNode,
@@ -38,16 +25,11 @@ impl<'r> Analyzer<'r> {
             HirExpr::Bool(b) => literal(ResolvedType::Bool, CheckedExpr::Bool(*b)),
             HirExpr::Char(c) => literal(ResolvedType::Char, CheckedExpr::Char(*c)),
 
-            // A string literal is a `*str` -- raw UTF-8 bytes with a
-            // compile-time-known length and no null terminator, unlike
-            // `*char`. Immutable, like every literal.
             HirExpr::String(s) => literal(
                 ResolvedType::Str { mutable: false },
                 CheckedExpr::String(s.0.clone()),
             ),
 
-            // `b"..."` -- a raw byte run with a compile-time-known length,
-            // not a null-terminated C string: `*[?]u8`, never `*u8`.
             HirExpr::ByteString(s) => literal(
                 ResolvedType::Slice {
                     item: Box::new(ResolvedType::U8),
@@ -93,9 +75,6 @@ impl<'r> Analyzer<'r> {
             HirExpr::Match(m) => self.analyze_match(id, span, m),
             HirExpr::Cast(HirCast { target, base }) => self.analyze_cast(id, span, target, base),
 
-            // Reached only when *not* wrapped in `&`/`&mut` (see
-            // `analyze_address_of`) -- a slice expression alone can't say
-            // whether an immutable or mutable slice was meant.
             HirExpr::Slice(_) => {
                 self.error(id, span, AnalysisErrorKind::SliceRequiresAddressOf);
                 None
@@ -105,11 +84,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// An ordinary *read* of a place. This is the only path a read takes:
-    /// an assignment's own target is resolved separately (see
-    /// `require_mutable_place`'s `mark_written` for the write side), while a
-    /// compound assignment's or increment's synthesized read component
-    /// desugars to a `HirExpr::Place` and arrives back here.
     fn analyze_place_read(
         &mut self,
         id: HirId,
@@ -121,9 +95,6 @@ impl<'r> Analyzer<'r> {
         if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
             self.context.mark_used(decl_id);
         }
-        // A `comp` binding carries no storage -- every read substitutes its
-        // already-known value directly, so this never reaches MIR lowering
-        // as a `Storage::Comp` place.
         if let CheckedPlaceRoot::Variable {
             storage: Storage::Comp,
             ..
@@ -145,15 +116,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Resolves a `Storage::Comp` place root's already-known value and
-    /// applies every remaining projection against it -- shared by every
-    /// comp-binding read site (`analyze_place_read`, `analyze_address_of`,
-    /// and a comp-binding method receiver in `calls::adapt_self_argument`).
-    ///
-    /// Also records `checked_place`'s field/variant usage
-    /// (`crate::dead_code`): every call site collapses `checked_place` into
-    /// a bare `CheckedExpr::Const`, so it would otherwise never reach the
-    /// whole-program usage walk.
     pub(super) fn resolve_comp_place(
         &mut self,
         id: HirId,
@@ -169,9 +131,6 @@ impl<'r> Analyzer<'r> {
             unreachable!("resolve_comp_place is only ever called on a Storage::Comp place root");
         };
         crate::dead_code::collect_place(checked_place, &mut self.field_usage);
-        // A local comp binding's value lives in this `Analyzer`'s own
-        // `Context`; a top-level one's lives in the driver's cross-item
-        // state instead.
         let mut value = self
             .context
             .comp_value(decl_id)
@@ -184,11 +143,6 @@ impl<'r> Analyzer<'r> {
         Some(value)
     }
 
-    /// Applies one projection to an already-known `comp` value, producing
-    /// the projected-into `ConstValue` -- the analyzer-side counterpart of
-    /// `comp_eval::Interpreter::read_projection`, kept separate because the
-    /// two sides report errors through incompatible machinery
-    /// (`AnalysisErrorKind::CompEvalFailed` here vs. `CompError` there).
     pub(super) fn apply_comp_projection(
         &mut self,
         id: HirId,
@@ -264,9 +218,6 @@ impl<'r> Analyzer<'r> {
                 self,
                 "dereferencing a pointer inside a 'comp' binding projection isn't supported yet",
             ),
-            // A `spec *Self` value has no `ConstValue` shape at all --
-            // dynamic dispatch isn't comp-evaluable (see
-            // docs/language/compile-time-evaluation.md).
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
                 unsupported(
                     self,
@@ -276,8 +227,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `reveal base` -- fully transparent, with a `reveal_stack` frame
-    /// pushed around it. See `check_visibility`/`reveal_stack`.
     fn analyze_reveal(
         &mut self,
         id: HirId,
@@ -294,12 +243,6 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    /// `comp base` -- evaluates `base` at compile time (see
-    /// `docs/language/compile-time-evaluation.md`). `base` is analyzed completely
-    /// ordinarily first, then the checked tree is handed to
-    /// `crate::comp_eval`. On success the whole node collapses into
-    /// `CheckedExpr::Const`, so nothing downstream ever needs to know a
-    /// value came from `comp`.
     fn analyze_comp(
         &mut self,
         id: HirId,
@@ -318,16 +261,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Interprets an already-checked `expr` at compile time, reporting a
-    /// precise diagnostic and returning `None` on failure. Shared by
-    /// `analyze_comp` and a `comp`-bound binding's own initializer.
-    ///
-    /// `expr` is about to collapse into (or be discarded in favor of) a bare
-    /// `CheckedExpr::Const` at every call site, which would otherwise erase
-    /// any field access/enum construction it contains from
-    /// `crate::dead_code`'s whole-program usage walk -- recording `expr`'s
-    /// usage here, unconditionally, is what keeps a field/variant touched
-    /// only inside a `comp` evaluation from false-positiving as unused.
     pub(super) fn eval_comp(
         &mut self,
         id: HirId,
@@ -350,7 +283,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// An `if`/`else if`/`else` chain used as an expression.
     fn analyze_if(
         &mut self,
         node_id: HirId,
@@ -359,16 +291,8 @@ impl<'r> Analyzer<'r> {
         else_branch: Option<&HirBlock>,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        // No `else` at all forces `Void` regardless of branch content (the
-        // implicit else is `{}`) -- branches get no expected type threaded
-        // into them in that case, since there's no cross-branch value to
-        // unify toward.
         let has_else = else_branch.is_some();
 
-        // Earliest-wins unification: branch 0 is the anchor (the incoming
-        // `expected`, or else its own widened type), and every other
-        // branch/`else` is checked *against* it, never the reverse -- a
-        // later branch only has to agree with the anchor, never supply it.
         let mut checked_conds = Vec::with_capacity(branches.len());
         let mut checked_blocks: Vec<CheckedBlock> = Vec::with_capacity(branches.len());
         let mut anchor: Option<ResolvedType> = None;
@@ -411,17 +335,12 @@ impl<'r> Analyzer<'r> {
         let checked_branches: Vec<(CheckedExprNode, CheckedBlock)> =
             checked_conds.into_iter().zip(checked_blocks).collect();
 
-        // What the whole `if` resolves to: the first concrete
-        // (non-diverging) type among the branches and the `else`, if any --
-        // diverging branches (ending in `return`) are exempt below.
         let branch_kinds: Vec<Option<ResolvedType>> = checked_branches
             .iter()
             .map(|(_, b)| Self::block_type(b))
             .collect();
         let else_kind: Option<Option<ResolvedType>> = checked_else.as_ref().map(Self::block_type);
 
-        // Widened: branches producing different variants of one enum still
-        // agree on the enum itself, which is then the whole `if`'s type.
         let result_type = match &else_kind {
             Some(k) => branch_kinds
                 .iter()
@@ -463,8 +382,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// An ordinary call, after the four interceptors (overloaded,
-    /// overloaded-static, generic, generic-static) have each declined it.
     fn analyze_call(
         &mut self,
         node_id: HirId,
@@ -472,7 +389,6 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        // Tried in priority order; the first to claim the call answers it.
         let interceptors: [Interceptor<'r>; 5] = [
             Self::resolve_spec_qualified_call,
             Self::resolve_overloaded_call,
@@ -500,14 +416,8 @@ impl<'r> Analyzer<'r> {
         args.extend(implicit_self);
 
         match checked_args {
-            // Overload resolution already fully analyzed and type-checked
-            // every user-written argument to score candidates -- redoing
-            // that here would risk double-erroring.
             Some(overload_args) => args.extend(overload_args),
             None => {
-                // The counts shown to the user exclude an implicit `self`
-                // (which is all `args` holds at this point) -- the user
-                // never wrote it.
                 let implicit_count = args.len();
 
                 for arg in &call.args {
@@ -561,7 +471,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `target = value`.
     fn analyze_assignment(
         &mut self,
         node_id: HirId,
@@ -583,8 +492,6 @@ impl<'r> Analyzer<'r> {
             })?;
         self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
-        // Resolved before the value: the target's own type is the expected
-        // type an unsuffixed literal value should adapt to.
         let checked_value = self.analyze_expr(&assignment.value, Some(&target_type))?;
         let checked_value = self.coerce_to_expected(Some(&target_type), checked_value);
 
@@ -617,8 +524,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `&base`/`&mut base`, including the two shapes that aren't pointers
-    /// at all: `&base[range]` (a slice) and `&[...]` (a compile-time slice).
     fn analyze_address_of(
         &mut self,
         node_id: HirId,
@@ -642,8 +547,6 @@ impl<'r> Analyzer<'r> {
                 this.analyze_slice(node_id, span, slice_base, range, mutable)
             });
         }
-        // `&[...]`/`&mut [...]` -- a compile-time slice, not an ordinary
-        // place; see `analyze_const_slice`.
         if let HirExpr::ArrayLiteral(elements) = &base.expr {
             return self.with_reveal_bypass(was_reveal, node_id, span, |this| {
                 this.analyze_const_slice(node_id, span, elements, mutable, expected)
@@ -657,19 +560,9 @@ impl<'r> Analyzer<'r> {
             self.with_reveal_bypass(was_reveal, node_id, span, |this| {
                 this.analyze_place(base.id, base.span, place, None)
             })?;
-        // Taking a binding's address uses it. `analyze_place` only marks a
-        // root used when the place has projections (so a write-only `n = 5`
-        // still warns), but `&n` is a projection-less place that's
-        // unambiguously a read.
         if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
             self.context.mark_used(decl_id);
         }
-        // `&comp_binding` -- const promotion, mirroring Rust's `&SOME_CONST`
-        // (see docs/language/compile-time-evaluation.md). `&mut` on one is
-        // impossible since a `comp` binding is never mutable, so
-        // `require_mutable_place` below rejects it normally; plain `&` isn't
-        // gated by mutability, so it's handled here instead, wrapping the
-        // already-known value in `ConstValue::Ref`.
         if !mutable {
             if let CheckedPlaceRoot::Variable {
                 storage: Storage::Comp,
@@ -690,9 +583,6 @@ impl<'r> Analyzer<'r> {
         }
 
         let pointee_type = if mutable {
-            // `&mut` always produces a fully-widened pointee -- a mutable
-            // refined pointer can only ever exist as a `match`-narrowed view
-            // of an already-mutable place, never freshly minted here.
             self.require_mutable_place(node_id, span, &place.root, &checked_place, place_mutable)?;
             // De-assumption: a writable alias now exists, so any later
             // direct read of this place can no longer trust a narrower type.
@@ -701,10 +591,6 @@ impl<'r> Analyzer<'r> {
             }
             place_type.widened()
         } else {
-            // A variant refinement surviving `&` is sound when it's a
-            // permanent fact about the place (its declared/inferred type);
-            // a `match`-narrowed shadow's refinement only holds for that
-            // arm's lexical scope, so that case still widens.
             let narrowed_shadow = self.narrowable_place(place).is_some_and(|(ident, origin, ..)| {
                 self.context
                     .find_variable(&ident, origin)
@@ -730,10 +616,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Unary `-`. `expected` passes straight through: negation is
-    /// transparent to its own result type, so this node's own type context
-    /// is exactly right for `base` too (notably, `-100` is exactly as
-    /// adaptable as `100`).
     fn analyze_negate(
         &mut self,
         node_id: HirId,
@@ -776,12 +658,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `!base` -- desugared to `base ^ true` once `base` is known to be a
-    /// `bool`. `bool` is closed under `^` and `^` already has full
-    /// analysis/MIR/codegen support, so this costs nothing downstream: no
-    /// `CheckedExpr::Not`, no new `MirExpr` variant. Type checking still
-    /// happens here, so `!5` reports "`!` requires a `bool`" rather than
-    /// something about `^`.
     fn analyze_not(
         &mut self,
         node_id: HirId,
@@ -817,16 +693,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `a && b` / `a || b` -- desugared into an `if`-expression:
-    ///
-    /// ```text
-    /// a && b   ==>   if a { b } else { false }
-    /// a || b   ==>   if a { true } else { b }
-    /// ```
-    ///
-    /// The short-circuit is genuine control flow, not an operator each
-    /// backend special-cases. Both operands are checked here, so `b`'s
-    /// errors are reported even though it may not execute.
     fn analyze_logical(
         &mut self,
         node_id: HirId,
@@ -884,12 +750,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Unary `~`, transparent to its own result type like `analyze_negate`.
-    /// Pointers first coerce to their `arithmetic_repr`. `char` doesn't --
-    /// its codepoint must be cast explicitly first. `bool` isn't given
-    /// native treatment either: unlike `& | ^`, bitwise-NOT of `bool`'s
-    /// `0`/`1` representation doesn't stay within `{0,1}` (`~0u8 == 255`),
-    /// so there's no sound native meaning for it.
     fn analyze_bit_not(
         &mut self,
         node_id: HirId,
@@ -931,8 +791,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Resolves both operands, then checks the operator itself (see
-    /// `analyze_binary_op`).
     fn analyze_binary_expr(
         &mut self,
         node_id: HirId,
@@ -940,17 +798,6 @@ impl<'r> Analyzer<'r> {
         bin: &omega_hir::HirBinaryOp,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        // Two composed inference rules: (1) the outer `expected` flows to
-        // both operands, but only for a non-comparison op -- an
-        // arithmetic/bitwise result *is* its operand type, but a
-        // comparison's result is always `bool` regardless of its operands.
-        // (2) Left is analyzed first and, absent an outer `expected`, its
-        // own widened type becomes `expected` for the right operand (same
-        // "earliest operand is the anchor" rule `if`-expression branches
-        // use). Safe either way this ends up wrong for an operand: it's
-        // only consulted by genuinely adaptable things (a bare literal), and
-        // `analyze_binary_op` below still independently enforces exact
-        // operand-type equality.
         let operand_expected = if bin.op.is_comparison() {
             None
         } else {
@@ -970,7 +817,6 @@ impl<'r> Analyzer<'r> {
         self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
     }
 
-    /// `<Target>base`.
     fn analyze_cast(
         &mut self,
         node_id: HirId,
@@ -979,10 +825,6 @@ impl<'r> Analyzer<'r> {
         base: &HirExprNode,
     ) -> Option<CheckedExprNode> {
         let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
-        // `base` keeps its own natural (default, unsuffixed-literal) type --
-        // the cast's target is an instruction to convert, not context to
-        // infer `base`'s type from (`<f32>10` casts a genuine i32 `10`, it
-        // doesn't just relabel an already-f32 literal).
         let checked_base = self.analyze_expr(base, None)?;
 
         // Generalized over `Pointer`/`Slice`/`Str` alike, and checked before
@@ -1003,13 +845,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // `<spec *Spec>base` -- explicit dynamic-dispatch coercion, and
-        // `<spec *A>x` -- a narrowing cast from one spec object to a spec
-        // that is a member of it. A third family, separate from the numeric
-        // and byte-pointer paths below: these can only succeed by proving
-        // something (`pointee` genuinely implements `spec<type_args>`, or
-        // `A` really is one of `x`'s specs), not by a width/signedness
-        // computation, so they're checked and returned immediately.
         if let ResolvedType::SpecObject {
             spec,
             type_args,
@@ -1132,9 +967,6 @@ impl<'r> Analyzer<'r> {
             });
         }
 
-        // The str/byte-slice family and sized-array-to-slice widening are
-        // both tried first: fat pointers don't fit `cast_class`'s
-        // scalar-width model (`Str`/`Slice` both return `None` from it).
         let cast_kind = if let Some(kind) =
             Self::byte_pointer_cast_kind(&checked_base.r#type, &target_type)
         {
@@ -1193,13 +1025,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `++base`/`--base`: validates `base` is a place of a numeric type,
-    /// then desugars into `base = base <op> 1`. Building the literal `1`
-    /// directly, rather than through the parser's `HirExpr::Number` path, is
-    /// what lets this work for any numeric type -- an untyped `1` in source
-    /// would default to `i32` and fail `BinaryOp`'s "operands must match
-    /// exactly" rule for every other numeric type, but analysis already
-    /// knows `base`'s exact type here.
     fn analyze_incr_decr(
         &mut self,
         node_id: HirId,
@@ -1266,12 +1091,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// The type-checking core of `left op right`, shared by `HirExpr::
-    /// BinaryOp`'s arm and `analyze_compound_assign`'s desugaring (`target
-    /// op= value` -> `target = target op value`) -- both already have their
-    /// operands analyzed (a compound assignment's `left` is a synthetic
-    /// place-read, never itself re-analyzed here), so this only ever
-    /// type-checks and combines two already-`CheckedExprNode`s.
     fn analyze_binary_op(
         &mut self,
         node_id: HirId,
@@ -1280,8 +1099,6 @@ impl<'r> Analyzer<'r> {
         checked_left: CheckedExprNode,
         checked_right: CheckedExprNode,
     ) -> Option<CheckedExprNode> {
-        // These checks use the source types, before pointer coercion erases
-        // their identity into `usize`.
         if !op.is_comparison()
             && (checked_left.r#type == ResolvedType::Char
                 || checked_right.r#type == ResolvedType::Char)
@@ -1308,23 +1125,9 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // Coerce pointer operands to their `arithmetic_repr` first (see
-        // `coerce_for_binary_op`). Everything below only ever sees the
-        // coerced types.
         let checked_left = self.coerce_for_binary_op(op, checked_left);
         let checked_right = self.coerce_for_binary_op(op, checked_right);
 
-        // `char` is comparable (ordered by codepoint) but never
-        // arithmetic/bitwise: combining two `char`s that way can produce a
-        // codepoint that isn't a valid Unicode scalar value, and there's no
-        // fallible/validating path for that yet. So `char` is accepted only
-        // for a comparison op; everything else requires genuine
-        // `numeric_kind`.
-        //
-        // `bool` is closed under `== != & | ^` (any combination of `0`/`1`
-        // stays a valid `bool`), so those five stay natively `bool`, no
-        // coercion. Arithmetic/shifts still aren't offered, and neither is
-        // `~`.
         for operand in [&checked_left, &checked_right] {
             let is_valid = operand.r#type.numeric_kind(self.target.pointer_bits()).is_some()
                 || (op.is_comparison() && operand.r#type == ResolvedType::Char)
@@ -1350,8 +1153,6 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        // No implicit numeric conversions anywhere else in this language --
-        // arithmetic between two different numeric types is no exception.
         if checked_left.r#type != checked_right.r#type {
             self.error(
                 node_id,
@@ -1366,8 +1167,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // No native float remainder instruction, matching C, which requires
-        // `fmod`/`fmodf` instead of `%`.
         if op == BinaryOp::Rem
             && matches!(
                 checked_left.r#type.numeric_kind(self.target.pointer_bits()),
@@ -1378,8 +1177,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        // No native float bitwise/shift instructions either, same reasoning
-        // as `Rem` above.
         if matches!(
             op,
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr
@@ -1401,8 +1198,6 @@ impl<'r> Analyzer<'r> {
             );
         }
 
-        // A comparison always produces `bool`; an arithmetic op's result is
-        // the operand type.
         let r#type = if op.is_comparison() {
             ResolvedType::Bool
         } else {
@@ -1420,17 +1215,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Wraps `operand` in the implicit `Cast` its `arithmetic_repr` calls
-    /// for, if it has one -- built via the same `cast_class`/
-    /// `resolve_cast_kind` pair `analyze_cast` uses, so this needs no
-    /// codegen support of its own. A no-op for anything with no
-    /// `arithmetic_repr` (numeric types, `bool`, structs, ...).
-    ///
-    /// `char` has no arithmetic representation -- comparing two `char`s
-    /// uncoerced is what lets codegen keep special-casing `Char` as its own
-    /// 4-byte scalar. A pointer coerces unconditionally, including for a
-    /// comparison, which is what makes `*mut T == *T` type-check for free:
-    /// both sides become a plain `usize`.
     fn coerce_for_binary_op(&self, _op: BinaryOp, operand: CheckedExprNode) -> CheckedExprNode {
         match operand.r#type.arithmetic_repr() {
             Some(repr) => Self::coerce_to(operand, repr, self.target.pointer_bits()),
@@ -1438,7 +1222,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `coerce_for_binary_op`'s unary counterpart, for `~`.
     fn coerce_for_unary_op(&self, operand: CheckedExprNode) -> CheckedExprNode {
         match operand.r#type.arithmetic_repr() {
             Some(repr) => Self::coerce_to(operand, repr, self.target.pointer_bits()),
@@ -1446,9 +1229,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The shared mechanics behind both `coerce_for_*_op` above. `repr` is
-    /// always itself numeric, so both `cast_class` calls below are
-    /// infallible.
     fn coerce_to(operand: CheckedExprNode, repr: ResolvedType, pointer_bits: u32) -> CheckedExprNode {
         let source_class = operand
             .r#type
@@ -1470,8 +1250,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The operand's value as an `i128`, if it's a bare literal rather than
-    /// a runtime-varying place/expression.
     fn literal_i128(expr: &CheckedExprNode) -> Option<i128> {
         match &expr.kind {
             CheckedExpr::Number(NumberValue::Signed(n)) => Some(*n as i128),
@@ -1482,10 +1260,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A comparison whose truth value doesn't depend on its non-literal
-    /// operand at all -- e.g. `unsigned_var < 0` (always false) -- computed
-    /// via bound arithmetic against the operand type's `integer_domain()`.
-    /// Only fires when exactly one side is a literal.
     fn check_always_true_false_comparison(
         &mut self,
         node_id: HirId,
@@ -1505,10 +1279,6 @@ impl<'r> Analyzer<'r> {
                 _ => return,
             };
 
-        // `x op literal` if `literal_on_right`, else `literal op x` --
-        // each arm picks the bound that pins the result to `true`, then
-        // the one that pins it to `false`; anything left over genuinely
-        // depends on `x`'s runtime value.
         let fixed = if literal_on_right {
             match op {
                 BinaryOp::Lt => (hi < literal)
@@ -1556,10 +1326,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// `target op= value` -- desugars into `target = target op value`, same
-    /// pattern as `analyze_incr_decr`'s `++`/`--`. `value` is analyzed with
-    /// `expected = Some(&target_type)`, so `a *= 5` adapts an unsuffixed
-    /// literal `5` to `a`'s own type instead of defaulting to `i32`/`f32`.
     fn analyze_compound_assign(
         &mut self,
         node_id: HirId,
@@ -1603,13 +1369,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Whether `target` may be cast into at all, given `source` --
-    /// `cast_class` gives `char`/`bool` a class so they can be cast *out* to
-    /// any numeric type, but `resolve_cast_kind` has no notion of direction,
-    /// so casting arbitrary integers *in* needs a separate check: not every
-    /// `u32` is a valid Unicode scalar value, and there's no implicit
-    /// "nonzero is true". Mirrors Rust's `as`: only `u8 as char` is valid
-    /// (every byte is a valid codepoint); nothing casts into `bool`.
     fn allows_cast_into(source: &ResolvedType, target: &ResolvedType) -> bool {
         match target {
             ResolvedType::Char => matches!(source, ResolvedType::Char | ResolvedType::U8),
@@ -1618,18 +1377,12 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Picks the one `CastKind` a `(source, target)` `CastClass` pair needs,
-    /// purely from width/signedness -- no per-type-pair table (see
-    /// `CastClass`'s doc comment).
     fn resolve_cast_kind(source: CastClass, target: CastClass) -> CastKind {
         match (source, target) {
             (CastClass::Int { width: sw, signed }, CastClass::Int { width: tw, .. }) => {
                 if sw == tw {
                     CastKind::Reinterpret
                 } else if sw < tw {
-                    // Widening reproduces the *source's* value, so it's the
-                    // source's signedness that picks sign- vs zero-extend
-                    // (matches Rust's `as`: `-1i8 as u32 == u32::MAX`).
                     CastKind::IntExtend { signed }
                 } else {
                     CastKind::IntTruncate
@@ -1653,12 +1406,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The str/byte-slice family's cast resolution -- a fat pointer
-    /// (`Str`/`Slice{item:U8|I8}`) never has a `cast_class`, so this is
-    /// separate machinery from `resolve_cast_kind` above. Two directions
-    /// only: fat-to-fat is `Reinterpret` (identical `[ptr, len]` leaf
-    /// shape); fat-to-thin (`*u8`/`*i8`) is `DropLength`. No reverse --
-    /// fabricating a length from a bare pointer isn't offered.
     fn byte_pointer_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
         fn is_byte_run(t: &ResolvedType) -> bool {
             matches!(t, ResolvedType::Str { .. })
@@ -1677,10 +1424,6 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    /// `<*[?]T>ptr` where `ptr: *[N]T`/`*mut [N]T` -- the one thin-to-fat
-    /// cast this language offers, since a `SizedArray`'s type already
-    /// carries its length (`N`); nothing to fabricate. Item type must match
-    /// exactly -- no recursive/implicit narrowing.
     fn unsize_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
         let ResolvedType::Pointer { pointee, .. } = source else {
             return None;
@@ -1697,12 +1440,6 @@ impl<'r> Analyzer<'r> {
         (item.as_ref() == target_item.as_ref()).then_some(CastKind::Unsize)
     }
 
-    /// `<*[?]T>ptr` / `<*mut T>arr` -- `Pointer` and `Array` are both exactly
-    /// one `Leaf::Ptr`, so converting between them is a pure `Reinterpret`.
-    /// Deliberately not requiring pointee/item types to match, mirroring how
-    /// an ordinary `*Foo -> *Bar` cast doesn't require `Foo == Bar` either.
-    /// The mutable-widening check earlier in `analyze_cast` still applies on
-    /// top of this.
     fn array_pointer_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
         match (source, target) {
             (ResolvedType::Pointer { .. }, ResolvedType::Array(_, _))
@@ -1713,14 +1450,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A block's own effective type: its tail expression's type, or -- if it
-    /// has none -- `Void`, *unless* its last statement unconditionally
-    /// diverges (see `stmt_diverges`), in which case the block itself never
-    /// actually produces `Void` at its own position (control leaves the
-    /// function entirely) -- so it's exempt from whatever type is expected
-    /// there, the same way Rust's `!` (never) type unifies with anything.
-    /// `None` here means exactly that: "diverges, no constraint," not "has
-    /// no type."
     pub(super) fn block_type(block: &CheckedBlock) -> Option<ResolvedType> {
         match &block.tail {
             Some(tail) if Self::expr_diverges(tail) => None,
@@ -1732,16 +1461,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A range in *expression* position (`a..<b`, `a..=b`, `a..`, `..<b`,
-    /// and bare `..`) -- built here into an ordinary `core::range::Range<T>`
-    /// struct value. No range-specific machinery past this point: `for x in
-    /// <range>` reaches it through the same `ToIterator`/`Iterator`
-    /// conformances any other iterable uses.
-    ///
-    /// Index and match-pattern positions never arrive here -- they keep
-    /// consuming `HirRange` structurally (`analyze_slice`, `HirPattern::
-    /// Range`), since a missing bound there means something a value
-    /// couldn't carry. See docs/language/strings-casts-arrays-and-slices.md.
     fn analyze_range_value(
         &mut self,
         id: HirId,
@@ -1762,9 +1481,6 @@ impl<'r> Analyzer<'r> {
             (None, _) => None,
         };
 
-        // Whichever bound was actually written fixes the element type; an
-        // expected `Range<T>` is the last resort. Bare `..` has neither, so
-        // it's contextual-only.
         let element = match (&checked_start, &checked_end) {
             (Some(start), _) => start.r#type.clone(),
             (None, Some(end)) => end.r#type.clone(),
@@ -1777,9 +1493,6 @@ impl<'r> Analyzer<'r> {
             },
         };
 
-        // An absent bound is the element type's own domain limit, obtained
-        // through `Bounded` rather than a compiler-side table, so a user
-        // type's open-ended range works the same way a primitive's does.
         let start = match checked_start {
             Some(value) => self.coerce_to_expected(Some(&element), value),
             None => self.synthesize_bounded_call(id, span, &element, "min")?,
@@ -1826,9 +1539,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// `core::range::<name>`. Named by a fixed path rather than through
-    /// ordinary scope lookup, so a user package declaring its own `Range`
-    /// can't capture `1..<10`'s meaning.
     fn core_range_path(name: &str) -> Vec<Ident> {
         vec![
             Ident("core".to_string()),
@@ -1837,9 +1547,6 @@ impl<'r> Analyzer<'r> {
         ]
     }
 
-    /// The `T` of an expected `core::range::Range<T>`, if that is what is
-    /// expected here -- the only thing that can give bare `..` an element
-    /// type.
     fn expected_range_element(expected: Option<&ResolvedType>) -> Option<ResolvedType> {
         let ResolvedType::Struct(cell) = expected? else {
             return None;
@@ -1854,10 +1561,6 @@ impl<'r> Analyzer<'r> {
             .flatten()
     }
 
-    /// `T::min()` / `T::max()` for an omitted range bound. These are static
-    /// (receiverless) spec functions, so this resolves the conformance
-    /// directly rather than going through `synthesize_method_call`, which
-    /// only handles a call with a receiver.
     fn synthesize_bounded_call(
         &mut self,
         id: HirId,
@@ -1877,8 +1580,6 @@ impl<'r> Analyzer<'r> {
             .ok()
             .flatten()
         else {
-            // Named explicitly rather than left to surface as "no method
-            // `max`": the actionable fact is which spec is missing.
             self.error(
                 id,
                 span,

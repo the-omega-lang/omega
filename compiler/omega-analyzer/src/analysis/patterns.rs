@@ -1,17 +1,6 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    /// `match scrutinee { pattern => body, ... } else { ... }` -- both an
-    /// exhaustive switch and the proof mechanism behind sum-type subtyping.
-    /// For an enum scrutinee that is exactly a bare local/parameter
-    /// reference (`narrowable_scrutinee`), each arm that names a specific
-    /// variant re-declares that same binding, narrowed to that variant, for
-    /// the arm's body -- ordinary lexical shadowing, not a new mechanism.
-    /// `else` always analyzes against the un-narrowed type.
-    ///
-    /// Any other scrutinee shape still supports branching, just without
-    /// narrowing, and is evaluated exactly once into a synthesized local
-    /// first, so a side-effecting scrutinee isn't silently re-run per arm.
     pub(super) fn analyze_match(&mut self, node_id: HirId, span: Span, m: &HirMatch) -> Option<CheckedExprNode> {
         let narrow_target = self.narrowable_scrutinee(&m.scrutinee);
         let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
@@ -30,7 +19,6 @@ impl<'r> Analyzer<'r> {
                 span,
                 ident: Ident("$scrutinee".to_string()),
                 r#type: scrutinee_type.clone(),
-                // Unused by codegen for Storage::Local, but true is accurate.
                 mutable: true,
                 initial_value: None,
             });
@@ -75,12 +63,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A place that's exactly a bare local/parameter reference -- no
-    /// projections, no module qualification, no generic arguments. Only
-    /// this shape supports narrowing/de-assumption: its identity
-    /// (`decl_id`/`storage`) is what gets shadow-declared (match narrowing)
-    /// or widened in place (`Context::widen_variable`, `&mut`'s
-    /// de-assumption).
     pub(super) fn narrowable_place(
         &self,
         place: &HirPlace,
@@ -103,10 +85,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// `narrowable_place`, but for a scrutinee expression rather than an
-    /// already-unwrapped place -- `match`'s scrutinee doesn't have to be a
-    /// place at all, so this unwraps the one shape that's ever narrowable
-    /// before delegating.
     fn narrowable_scrutinee(
         &self,
         scrutinee: &HirExprNode,
@@ -115,10 +93,6 @@ impl<'r> Analyzer<'r> {
         self.narrowable_place(place)
     }
 
-    /// An arm's body: a `{ ... }` block analyzes as an ordinary codeblock; a
-    /// bare expression (`100 => "a hundred"`, no braces) is wrapped in a
-    /// trivial one-tail-expression block, so codegen only ever deals with
-    /// one shape.
     fn analyze_match_arm_body(&mut self, body: &HirExprNode) -> Option<CheckedBlock> {
         if let HirExpr::Codeblock(block) = &body.expr {
             self.analyze_block(block, None)
@@ -128,9 +102,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The `analyze_match` case where `scrutinee_type` is `Enum{..}` or
-    /// `Pointer(Enum{..})` -- through a pointer, a matched arm narrows the
-    /// pointer's own pointee refinement (`*Entity` -> `*Entity::Person`).
     fn analyze_enum_match(
         &mut self,
         node_id: HirId,
@@ -140,7 +111,6 @@ impl<'r> Analyzer<'r> {
         scrutinee_read: &CheckedExprNode,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
-        // Narrowing only ever refines the pointee, never the pointer's own mutability.
         let (cell, through_pointer) = match scrutinee_type {
             ResolvedType::Enum { cell, .. } => (cell.clone(), None),
             ResolvedType::Pointer { pointee, mutable } => match &**pointee {
@@ -150,7 +120,6 @@ impl<'r> Analyzer<'r> {
             _ => unreachable!("caller already confirmed this is an enum or pointer-to-enum"),
         };
 
-        // `.tag`: same read for every arm, built once and cloned per condition.
         let mut tag_projections = Vec::new();
         let tag_type = self.resolve_field_projection(
             node_id,
@@ -239,9 +208,6 @@ impl<'r> Analyzer<'r> {
                 self.error(node_id, arm.pattern.span(), AnalysisErrorKind::CatchAllPatternRedundant);
                 return None;
             }
-            // One OR-group per still-uncovered variant (see `CheckedMatchArm`'s
-            // doc comment on DNF). Body is analyzed once, unnarrowed -- "one of
-            // these N variants" has no single type to narrow to.
             let conditions = missing
                 .iter()
                 .map(|&idx| vec![Self::tag_variant_condition(&tag_read, &tag_type, &cell, idx, node_id, arm.pattern.span())])
@@ -268,9 +234,6 @@ impl<'r> Analyzer<'r> {
         Some((checked_arms, else_branch, result_type))
     }
 
-    /// `tag_read == <variant's own constant tag>` -- shared by an ordinary
-    /// enum-variant arm and, per still-uncovered variant, a `..` catch-all
-    /// arm's DNF groups.
     fn tag_variant_condition(
         tag_read: &CheckedExprNode,
         tag_type: &ResolvedType,
@@ -297,11 +260,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Resolves a match pattern that must name one of `cell`'s variants
-    /// (`Entity::Person`) -- deliberately its own lookup rather than reusing
-    /// `resolve_type_member`/`resolve_unit_variant`, since those reject a
-    /// variant with body fields (`EnumVariantMissingBody`); a pattern only
-    /// tests the tag, so a variant with a body is just as matchable.
     fn resolve_variant_pattern(&mut self, cell: &Rc<RefCell<ResolvedEnumType>>, expr: &HirExprNode) -> Option<usize> {
         let expr = Self::strip_reveal(expr).1;
         let shaped_as_variant_path = matches!(
@@ -357,13 +315,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The `analyze_match` case where `scrutinee_type` is an integer type or
-    /// `Bool` -- value and range patterns, checked for full-domain coverage
-    /// by `crate::exhaustiveness`. At most one arm may be a bare `..`
-    /// catch-all, held aside from the per-arm interval pass and resolved to
-    /// whichever single gap the other arms leave uncovered
-    /// (`CatchAllRangeNotInferable` if that isn't exactly one contiguous
-    /// range), then folded back in before the final coverage check.
     fn analyze_value_match(
         &mut self,
         node_id: HirId,
@@ -430,9 +381,6 @@ impl<'r> Analyzer<'r> {
         let coverage = crate::exhaustiveness::check(domain, intervals);
         if !coverage.overlaps.is_empty() {
             for (a, b) in &coverage.overlaps {
-                // Sweep finds the pair in interval order, not written order
-                // (a catch-all written last still sorts first) -- always blame
-                // whichever arm was written later.
                 let (earlier, later) =
                     if a.span.start <= b.span.start { (a.span, b.span) } else { (b.span, a.span) };
                 self.error(node_id, later, AnalysisErrorKind::OverlappingMatchArm { previous: earlier });
@@ -458,10 +406,6 @@ impl<'r> Analyzer<'r> {
         Some((checked_arms, else_branch, result_type))
     }
 
-    /// One value/range pattern's covered interval, plus the runtime
-    /// condition(s) that test it -- one condition per bound actually
-    /// present (an absent bound is already the domain's own edge, so it
-    /// needs no runtime check).
     fn analyze_value_pattern(
         &mut self,
         pattern: &HirPattern,
@@ -503,11 +447,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The runtime condition(s) that test a resolved `[lo, hi]` interval
-    /// against `scrutinee_read` -- shared between an ordinary range pattern
-    /// and a catch-all arm's gap-inferred bounds (which have no source
-    /// expression of their own). Skips a side whose bound already equals
-    /// the domain's own edge -- a tautological check, safe to skip.
     fn interval_conditions(
         scrutinee_read: &CheckedExprNode,
         scrutinee_type: &ResolvedType,
@@ -530,8 +469,6 @@ impl<'r> Analyzer<'r> {
         conditions
     }
 
-    /// The reverse of `const_value_as_i128`, for a bound with no source
-    /// expression of its own (a catch-all arm's gap-inferred interval).
     pub(super) fn i128_to_const_value(scrutinee_type: &ResolvedType, n: i128, pointer_bits: u32) -> ConstValue {
         match scrutinee_type {
             ResolvedType::Bool => ConstValue::Bool(n != 0),
@@ -546,13 +483,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The pattern-position sibling of `const_eval`: a literal constant (a
-    /// number, optionally negated, a bool, or a char), checked against
-    /// `expected`. Deliberately its own function rather than reusing
-    /// `const_eval` outright: that function's fallback error
-    /// (`EnumValueNotConstant`) is worded for enum header values, which
-    /// would confuse here; `const_number`'s own parsing/range-checking is
-    /// fully shared.
     fn const_eval_pattern(&mut self, expr: &HirExprNode, expected: &ResolvedType) -> Option<ConstValue> {
         match &expr.expr {
             HirExpr::Number(n) => self.const_number(expr.id, expr.span, n, expected, false).map(ConstValue::Number),
@@ -644,11 +574,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A gap's inclusive `[lo, hi]` bounds, formatted for
-    /// `NonExhaustiveMatchValue`'s diagnostic -- `bool` renders as
-    /// `true`/`false`; `char` renders as a quoted character for printable
-    /// ASCII and falls back to a `U+XXXX` label otherwise, rather than risk
-    /// printing an invisible or malformed glyph.
     fn describe_gap(scrutinee_type: &ResolvedType, lo: i128, hi: i128) -> String {
         let render = |n: i128| match scrutinee_type {
             ResolvedType::Bool => if n == 0 { "false".to_string() } else { "true".to_string() },
@@ -661,11 +586,6 @@ impl<'r> Analyzer<'r> {
         if lo == hi { render(lo) } else { format!("{}..={}", render(lo), render(hi)) }
     }
 
-    /// Unifies every arm's (and `else`'s, if present) resolved type like
-    /// `HirExpr::If` does -- first concrete type, widened, checked against
-    /// every other arm via `accepts`. Unlike `if`, an absent `else` never
-    /// forces `Void`: the caller has already guaranteed the arms are
-    /// exhaustive, so a real value always comes from some arm.
     fn unify_match_arm_types(
         &mut self,
         node_id: HirId,

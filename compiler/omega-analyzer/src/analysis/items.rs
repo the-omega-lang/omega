@@ -1,8 +1,5 @@
 use super::*;
 
-/// An enum's resolved shared header -- the tag type (explicit or the
-/// implicit `u16`), whether the tag was declared explicitly, and the
-/// per-variant constant fields following it.
 struct EnumHeader {
     tag_type: ResolvedType,
     has_tag: bool,
@@ -10,8 +7,6 @@ struct EnumHeader {
 }
 
 impl EnumHeader {
-    /// Whether `name` is already taken by the tag or a header field -- the
-    /// names no dynamic or body field may reuse.
     fn claims(&self, name: &Ident) -> bool {
         name.as_ref() == "tag" || self.fields.iter().any(|(field, _, _)| field == name)
     }
@@ -103,19 +98,10 @@ impl<'r> Analyzer<'r> {
             ident: decl.ident.clone(),
             r#type: resolved_type,
             mutable: decl.mutable,
-            // A local with an initializer goes through `DeclarationWithInit`
-            // instead; a top-level one is a `Walrus`, via
-            // `analyze_global_walrus` below.
             initial_value: None,
         })
     }
 
-    /// `comp ident := value;` at item level (`HirItem::Walrus`, `w.comp ==
-    /// true`). Unlike a local `comp` binding, this never calls
-    /// `declare_binding`/`Context::set_comp_value`: the binding's identity
-    /// and value must survive past this throwaway `Analyzer`, so
-    /// `Driver::compute_item` records them itself (`ItemQueries::
-    /// comp_values`) once this returns.
     pub fn analyze_comp_declaration(
         &mut self,
         w: &HirWalrusDeclaration,
@@ -130,13 +116,6 @@ impl<'r> Analyzer<'r> {
         Some((r#type, value))
     }
 
-    /// `ident := value;` at item level, without `comp` on the binding -- a
-    /// real `Storage::Global` place, but still requiring a compile-time-known
-    /// initial value (no runtime constructor/init-order machinery exists,
-    /// see `docs/language/compile-time-evaluation.md`). `value` must analyze to
-    /// `CheckedExpr::Const`; this checks the analyzed result's shape rather
-    /// than re-deriving "was `comp` written", so any already-const-
-    /// recognized shape qualifies, not just an explicit `comp <expr>`.
     pub fn analyze_global_walrus(
         &mut self,
         w: &HirWalrusDeclaration,
@@ -145,12 +124,6 @@ impl<'r> Analyzer<'r> {
         self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, &w.value, checked)
     }
 
-    /// `ident : Type = value;` at item level --
-    /// `analyze_global_walrus`'s explicitly-typed sibling. `value` is
-    /// analyzed with the declared type as an `expected` hint (so an
-    /// unsuffixed literal picks it up), coerced and checked exactly like the
-    /// local version, then run through `finish_global_binding`'s shared
-    /// "must already be compile-time-known" requirement.
     pub fn analyze_global_declaration_with_init(
         &mut self,
         decl: &HirDeclaration,
@@ -168,17 +141,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// Resolves `r#type` and analyzes `value` against it as one unit --
-    /// shared between the local (`analyze_declaration_with_init`, in
-    /// `stmts.rs`) and global (`analyze_global_declaration_with_init`
-    /// above) typed-declaration-with-initializer paths.
-    ///
-    /// Handles one shape ordinary `resolve_type` can't: `ident : []T =
-    /// [a, b, c];` (`Type::InferredArray`), where the array's real length is
-    /// inferred from `value` rather than written in the type -- reuses
-    /// `analyze_array_literal`'s existing `expected: Some(&SizedArray(item,
-    /// _))` handling (the placeholder size is never read) and returns the
-    /// real inferred size instead.
     pub(super) fn resolve_typed_decl_init(
         &mut self,
         decl_id: HirId,
@@ -188,7 +150,6 @@ impl<'r> Analyzer<'r> {
     ) -> Option<(ResolvedType, CheckedExprNode)> {
         if let Type::InferredArray(item) = r#type {
             let item_type = self.resolve_type_or_error(decl_id, decl_span, item, true)?;
-            // Size is a placeholder, never read back -- only the item type is.
             let expected = ResolvedType::SizedArray(Box::new(item_type.clone()), 0);
             let checked_value = self.analyze_expr(value, Some(&expected))?;
             let checked_value = self.coerce_to_expected(Some(&expected), checked_value);
@@ -221,14 +182,6 @@ impl<'r> Analyzer<'r> {
         Some((resolved_type, checked_value))
     }
 
-    /// The shared tail `analyze_global_walrus` and
-    /// `analyze_global_declaration_with_init` both need once `value` is
-    /// fully analyzed: enforce the one rule every non-`comp` top-level
-    /// binding shares (`value` must be compile-time-known), then build the
-    /// `CheckedDeclaration`. `raw_value` (the pre-analysis HIR node) is only
-    /// needed for `recognize_top_level_literal`'s fallback below --
-    /// `checked_value` alone can't tell "a bare `10`" apart from something
-    /// else that analyzed to the same type.
     fn finish_global_binding(
         &mut self,
         id: HirId,
@@ -241,9 +194,6 @@ impl<'r> Analyzer<'r> {
         let r#type = checked_value.r#type.clone();
         let const_value = match checked_value.kind {
             CheckedExpr::Const(v) => v,
-            // Not already `comp`-evaluated -- still worth checking whether
-            // it's a plain literal (`10`, `"hi"`, `&[1, 2]`, ...), which
-            // never needed evaluating (and so shouldn't need `comp`).
             _ => self.recognize_top_level_literal(raw_value, &r#type)?,
         };
         self.declare_binding(
@@ -265,19 +215,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Whether `expr`'s raw HIR shape is a literal already recognized as
-    /// inherently compile-time-known with no `comp` needed (a
-    /// number/string/bool/char, or an array/slice literal built from more of
-    /// the same, recursively) -- the fallback once `finish_global_binding`
-    /// has already established `expected` as this expression's validated
-    /// type.
-    ///
-    /// Deliberately not the same function as `const_eval`/`const_eval_slice`:
-    /// those also fall back to the general `comp` interpreter for any
-    /// unrecognized shape, since an enum header or `&[...]` position is
-    /// already unambiguously compile-time-only. A top-level binding isn't --
-    /// `10 + 20` or a function call is genuine computation that still needs
-    /// an explicit `comp`, so an unrecognized shape here is just rejected.
     fn recognize_top_level_literal(
         &mut self,
         expr: &HirExprNode,
@@ -319,9 +256,6 @@ impl<'r> Analyzer<'r> {
                 }
                 _ => not_comp(self),
             },
-            // `&[...]` is the only recognized spelling for a compile-time
-            // slice (matches `const_eval`/`const_eval_slice`); `&mut [...]`
-            // falls through to `not_comp`.
             HirExpr::AddressOf(HirAddressOf {
                 base,
                 mutable: false,
@@ -377,15 +311,11 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         }
-        // A function-typed extern imports a callable symbol; anything else
-        // is extern data (see `Storage::Global`'s doc comment).
         let storage = if matches!(resolved_type, ResolvedType::Function(_)) {
             Storage::Function
         } else {
             Storage::Global
         };
-        // `extern` declarations are always immutable for now; `mut extern`
-        // can be added later without breaking anything.
         self.declare_binding(
             extern_decl.id,
             extern_decl.span,
@@ -410,10 +340,6 @@ impl<'r> Analyzer<'r> {
         // cycle.
         let resolved_type =
             self.resolve_type_or_error(param.id, param.span, &param.r#type, true)?;
-        // Parameters (including `self`) are always immutable bindings; a
-        // local that needs to vary can be shadowed (`mut x := param;`).
-        // `self`'s pointee mutability (`mut self` vs `self`) is a separate
-        // `ResolvedType::Pointer` concern already baked into `resolved_type`.
         self.declare_binding(
             param.id,
             param.span,
@@ -431,9 +357,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Struct fields aren't scope-bound names, so unlike params they don't go
-    /// through `declare_binding` -- but duplicate field names are still
-    /// rejected, via a plain per-struct name set.
     fn analyze_struct_fields(&mut self, fields: &[HirParam]) -> Option<Vec<CheckedParam>> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
         self.analyze_all(fields, |this, field| {
@@ -461,11 +384,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// A function's declared return type must match its body's effective
-    /// type (see `block_type`) -- a tail expression of the right type, an
-    /// unconditional trailing `return` (already checked against
-    /// `current_return_type` when analyzed), or (only for `Void`) falling off
-    /// the end with no tail.
     fn check_function_return(
         &mut self,
         id: HirId,
@@ -490,13 +408,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// A function's *signature* only: param and return types, with no scope
-    /// entered and no param bound by name (binding is a body-analysis-time
-    /// concern). Also resolves its `@inline`/`@mangling`/`@suppress`
-    /// annotations -- always here, never at body-check time, since this is
-    /// the one point guaranteed to run for every function, including an
-    /// extern-owned one whose body is never checked at all (see
-    /// `omega_driver::Driver::collect_extern_functions`).
     pub fn collect_function_signature(
         &mut self,
         f: &HirFunctionDef,
@@ -504,8 +415,6 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
-        // Param/return types are a function's signature, never inline data --
-        // always indirect (see `analyze_param`'s identical reasoning).
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
                 .map(|t| (p.ident.clone(), t))
@@ -550,16 +459,6 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// Compares every pair of `functions`' signatures by param-type list,
-    /// ignoring parameter names: two methods sharing a name is a valid
-    /// overload as long as their signatures genuinely differ; an identical
-    /// pair is a real duplicate.
-    ///
-    /// A second test runs alongside: when both candidates are member
-    /// functions and their *non-self* parameters match, that's ambiguous
-    /// too, even though the full parameter lists differ -- a call site
-    /// (`obj.method(...)`) has no syntax to pick "self by value" vs. "by
-    /// pointer", so self's mode alone can never distinguish two overloads.
     pub fn check_overload_duplicates(
         &mut self,
         functions: &[HirFunctionDef],
@@ -580,9 +479,6 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, t)| t)
                     .eq(sig_j.params.iter().map(|(_, t)| t));
                 if same_params {
-                    // `name_span`, not `span`: a member function's `span` is
-                    // its enclosing type's, which would underline the whole
-                    // struct twice over.
                     self.error(
                         functions[i].id,
                         functions[i].name_span,
@@ -614,36 +510,21 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// One item's own `@...` annotations, resolved once here at signature
-    /// time so everything downstream (including a consumer that only ever
-    /// sees the signature, never the body) reads back the same values.
     fn item_annotations(
         &mut self,
         id: HirId,
         annotations: &[omega_hir::HirAnnotation],
         kind: crate::annotations::ItemKind,
     ) -> crate::annotations::ResolvedAnnotations {
-        // The two `false`s are `is_member_function`/`is_generic`, which only
-        // gate `@mangling(disabled)` on a *function*.
         crate::annotations::resolve(self, id, annotations, kind, false, false)
     }
 
-    /// The tail every aggregate's signature shares: resolve each declared
-    /// method's own signature, reject two that no call could tell apart,
-    /// and store only those inherent declarations on the type itself.
-    /// `method_ids` are the identities the driver already decided for this
-    /// instantiation (see `ModuleResolver::fresh_synthetic_id`).
-    ///
-    /// Returns the full method list to store on the cell, plus every
-    /// spec-default body still owed a phase-2 check.
     fn collect_methods(
         &mut self,
         functions: &[omega_hir::HirFunctionDef],
         method_ids: &[HirId],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         self.context.enter_scope();
-        // A method returning a bare `spec T` gets `SpecStaticNotAllowedHere`
-        // from ordinary type resolution, same as a free function.
         let signatures =
             self.analyze_all(functions, |this, f| this.collect_function_signature(f));
         self.context.leave_scope();
@@ -671,17 +552,6 @@ impl<'r> Analyzer<'r> {
         Some(own)
     }
 
-    /// A struct's fields and methods. `cell` is created and registered
-    /// (keyed by `(module_path, name)`) by the caller before this runs, so a
-    /// self- or mutually-referencing field resolves by finding this struct
-    /// already `InProgress` in the driver's global query state; this method
-    /// only populates `cell` in place via `RefCell`, so any earlier clone of
-    /// it observes the final result too. `method_ids` supplies, positionally,
-    /// the `HirId` each method's `ResolvedMethod.decl_id` gets stamped with;
-    /// `check_struct_body` reads these back rather than recomputing them, so
-    /// both phases agree on one identity per instantiation. `None` means
-    /// this struct's signature failed; its own diagnostics were already
-    /// recorded.
     pub fn signature_of_struct(
         &mut self,
         s: &HirStructDef,
@@ -697,10 +567,6 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().fields = self.resolve_declared_fields(&s.fields)?;
 
         let self_type = ResolvedType::Struct(cell.clone());
-        // A `marker` is exempt by design; an ordinary struct isn't. Checked
-        // against the full leaf list (`layout::is_zero_sized`), not just
-        // `s.fields.is_empty()`, so this also catches a struct whose only
-        // field is itself zero-sized.
         if !s.is_marker && crate::layout::is_zero_sized(&self_type) {
             self.error(
                 s.id,
@@ -717,9 +583,6 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    /// A union's fields and methods -- identical to a struct's apart from
-    /// having no layout annotation of its own (field overlap is a codegen
-    /// concern, not a declared one).
     pub fn signature_of_union(
         &mut self,
         u: &HirUnionDef,
@@ -733,7 +596,6 @@ impl<'r> Analyzer<'r> {
         cell.borrow_mut().fields = self.resolve_declared_fields(&u.fields)?;
 
         let self_type = ResolvedType::Union(cell.clone());
-        // Unions have no `marker` exemption, unlike `signature_of_struct`.
         if crate::layout::is_zero_sized(&self_type) {
             self.error(
                 u.id,
@@ -750,8 +612,6 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    /// One aggregate's declared fields, in the `(name, type, visibility)`
-    /// shape a cell stores.
     fn resolve_declared_fields(
         &mut self,
         fields: &[HirParam],
@@ -766,13 +626,6 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// An enum's shared header: the tag (explicit, or the implicit `u16`)
-    /// plus the per-variant constant fields following it.
-    ///
-    /// Every variant supplies one constant value per entry here, positionally
-    /// -- so a broken header makes every variant's expectations (argument
-    /// count, tag-ness, field types) unknowable, which is why resolving it
-    /// is all-or-nothing.
     fn resolve_enum_header(&mut self, e: &HirEnumDef) -> Option<EnumHeader> {
         let mut ok = true;
         let mut explicit_tag: Option<ResolvedType> = None;
@@ -799,8 +652,6 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             }
-            // Header fields are laid out inline in every enum value -- the
-            // same `indirect = false` a struct field passes.
             let Some(resolved) =
                 self.resolve_type_or_error(field.id, field.span, &field.r#type, false)
             else {
@@ -829,9 +680,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// The declared `tag:` entry's own type -- an integer, and only ever the
-    /// header's first entry (every variant's leading argument is its value,
-    /// so it has nowhere else to sit).
     fn resolve_tag_type(&mut self, field: &HirParam, position: usize) -> Option<ResolvedType> {
         if position != 0 {
             self.error(field.id, field.span, AnalysisErrorKind::EnumTagNotFirst);
@@ -852,10 +700,6 @@ impl<'r> Analyzer<'r> {
         Some(tag_type)
     }
 
-    /// The shared *dynamic* fields: present on every variant like the header,
-    /// but runtime-valued -- so this is header resolution's constant-free,
-    /// tag-free sibling. All-or-nothing for the same reason the header is:
-    /// the variant loop checks its own field names against this list.
     fn resolve_enum_dynamic_fields(
         &mut self,
         e: &HirEnumDef,
@@ -879,8 +723,6 @@ impl<'r> Analyzer<'r> {
                 continue;
             }
             seen.insert(field.ident.clone(), field.span);
-            // Laid out inline in every enum value, exactly like a header
-            // field -- the same `indirect = false` a struct field passes.
             let Some(resolved) =
                 self.resolve_type_or_error(field.id, field.span, &field.r#type, false)
             else {
@@ -893,8 +735,6 @@ impl<'r> Analyzer<'r> {
         ok.then_some(fields)
     }
 
-    /// Every variant: its tag (unique across the enum), its constant header
-    /// values, and its own body fields.
     fn resolve_enum_variants(
         &mut self,
         e: &HirEnumDef,
@@ -961,7 +801,6 @@ impl<'r> Analyzer<'r> {
             }
             seen_tags.insert(tag_key, (variant.name.clone(), variant.span));
 
-            // One constant per header field, positionally.
             let mut header_values = Vec::with_capacity(header.fields.len());
             let mut variant_ok = true;
             for ((_, field_type, _), arg) in header
@@ -992,10 +831,6 @@ impl<'r> Analyzer<'r> {
         ok.then_some(variants)
     }
 
-    /// One variant's tag: its leading argument when the enum declares an
-    /// explicit `tag:`, otherwise its own declared position (`u16`, counting
-    /// from 0 -- guaranteed in range, since `u16::MAX` variants is far past
-    /// any real declaration).
     fn resolve_variant_tag(
         &mut self,
         variant: &omega_hir::HirEnumVariant,
@@ -1011,9 +846,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// One variant's own body fields. They must not collide with the header,
-    /// the shared dynamic fields, or the reserved `tag` -- all three are
-    /// reached through the same `value.name` syntax.
     fn resolve_variant_fields(
         &mut self,
         variant: &omega_hir::HirEnumVariant,
@@ -1066,8 +898,6 @@ impl<'r> Analyzer<'r> {
         fields
     }
 
-    /// A method sharing a variant's name would make `Enum::name` ambiguous --
-    /// rejected outright, before any signature is collected.
     fn check_variant_name_collisions(&mut self, e: &HirEnumDef) -> bool {
         let mut ok = true;
         let mut variants: HashMap<&Ident, Span> = HashMap::new();
@@ -1090,7 +920,6 @@ impl<'r> Analyzer<'r> {
         ok
     }
 
-    /// An enum's tag, header, dynamic fields, variants, and methods.
     pub fn signature_of_enum(
         &mut self,
         e: &HirEnumDef,
@@ -1104,9 +933,6 @@ impl<'r> Analyzer<'r> {
 
         let header = self.resolve_enum_header(e)?;
         let dynamic_fields = self.resolve_enum_dynamic_fields(e, &header)?;
-        // Both of these run even when the other fails: a variant's own
-        // errors and a variant/method name collision are independent
-        // findings, and reporting only the first would hide the rest.
         let variants = self.resolve_enum_variants(e, &header, &dynamic_fields);
         let names_ok = self.check_variant_name_collisions(e);
         let variants = variants.filter(|_| names_ok)?;
@@ -1124,14 +950,6 @@ impl<'r> Analyzer<'r> {
         Some(())
     }
 
-    /// Checks a function's (or method's) *body* only -- its signature and
-    /// resolved annotations were already handled by
-    /// `collect_function_signature`. Enters a fresh scope to bind `f`'s
-    /// params by name (signature collection only resolved their types).
-    /// `id` is stamped onto the produced `CheckedFunctionDef` in place of
-    /// always reading `f.id`: for a generic instantiation it's the same
-    /// synthetic id the signature phase already decided, so codegen gets one
-    /// distinct compiled function per instantiation.
     pub fn check_function_body(
         &mut self,
         f: &HirFunctionDef,
@@ -1147,14 +965,9 @@ impl<'r> Analyzer<'r> {
         self.context.enter_scope();
         let params = self.analyze_all(&f.params, Self::analyze_param);
 
-        // One `Analyzer` checks exactly one top-level item at a time, so
-        // there's no nesting to protect against here -- just an ordinary
-        // reset before each independent body.
         self.current_return_type = (*fn_type.return_type).clone();
         self.loop_stack.clear();
         self.in_defer_body = false;
-        // The declared return type is the expected type for an implicit
-        // tail-expression return, same as an explicit `return 10;` gets.
         let body = self.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
 
         let scope = self.context.leave_scope();
@@ -1163,8 +976,6 @@ impl<'r> Analyzer<'r> {
 
         let params = params?;
         let body = body?;
-        // Anchored at the declared return type's own span, not `f.span`
-        // (which covers the entire definition).
         self.check_function_return(f.id, f.return_type_span, &fn_type.return_type, &body)?;
 
         Some(CheckedFunctionDef {
@@ -1184,21 +995,10 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// Checks one queued default-method instantiation's body (see
-    /// `PendingSpecMethod`) -- reconstructs a synthetic `HirFunctionDef`
-    /// straight out of the spec's own raw signature and reuses
-    /// `check_function_body` wholesale. The caller seeds `self` fresh with
-    /// `pending.substitution` (`Self` + the owning spec's generics); the
-    /// implementor's own generics are never relevant, since the spec's HIR
-    /// can't reference a name it doesn't know about.
     pub fn check_pending_spec_method(
         &mut self,
         pending: &PendingSpecMethod,
     ) -> Option<CheckedFunctionDef> {
-        // `current_owner` is deliberately not set: a default body is the
-        // spec's own code, not the implementor's, so it gets no hidden-field
-        // access to whatever `Self` turns out to be. A default body that
-        // needs a field must go through a method the spec itself declares.
         let body = pending
             .raw
             .default_body
@@ -1210,12 +1010,7 @@ impl<'r> Analyzer<'r> {
             name_span: pending.raw.name_span,
             signature_span: pending.raw.signature_span,
             return_type_span: pending.raw.return_type_span,
-            // Spec default methods carry no annotations of their own -- not
-            // yet part of the spec-function grammar.
             annotations: Vec::new(),
-            // Likewise no visibility modifier; this synthetic
-            // `HirFunctionDef` is never read through `item_visibility`, so
-            // the value is never actually consulted.
             visibility: Visibility::default(),
             name: pending.raw.name.clone(),
             generics: vec![],
@@ -1231,12 +1026,6 @@ impl<'r> Analyzer<'r> {
             &crate::annotations::ResolvedAnnotations::default(),
         )
     }
-    /// Every method body of one aggregate, checked with the aggregate's own
-    /// `@suppress` frame active.
-    ///
-    /// `methods` is read back off the cell, never re-derived: a generic
-    /// instantiation's methods must get the exact same synthetic ids the
-    /// signature phase already decided for them.
     fn check_method_bodies(
         &mut self,
         functions: &[omega_hir::HirFunctionDef],
@@ -1251,8 +1040,6 @@ impl<'r> Analyzer<'r> {
             match self.check_function_body(f, &method.fn_type, method.decl_id, &method.annotations)
             {
                 Some(body) => checked.push(body),
-                // Every method is checked even after one fails, so a broken
-                // method never hides its siblings' own errors.
                 None => ok = false,
             }
         }
@@ -1261,8 +1048,6 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked)
     }
 
-    /// One aggregate's checked field list, pairing each declared field with
-    /// the type the signature phase already resolved for it.
     fn checked_fields(
         declared: &[HirParam],
         resolved: &[(Ident, ResolvedType, Visibility)],
@@ -1279,9 +1064,6 @@ impl<'r> Analyzer<'r> {
             .collect()
     }
 
-    /// Checks a top-level struct's method bodies. Its fields have no body
-    /// work of their own -- they were fully resolved at signature time -- so
-    /// they are only carried through into the checked tree here.
     pub fn check_struct_body(
         &mut self,
         s: &HirStructDef,
@@ -1307,7 +1089,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// A union's bodies -- identical contract to `check_struct_body`.
     pub fn check_union_body(
         &mut self,
         u: &HirUnionDef,
@@ -1333,9 +1114,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// An enum's bodies. Unlike a struct or union, an enum's fields and
-    /// variants carry no checked form of their own at all -- their values
-    /// were fully evaluated during `signature_of_enum`.
     pub fn check_enum_body(
         &mut self,
         e: &HirEnumDef,

@@ -1,14 +1,7 @@
-//! Turning a finding into a fully annotated diagnostic: a headline, a
-//! primary label on the offending span, and -- only when it is *always*
-//! true -- a help or note.
 
 use super::*;
 
 impl AnalysisErrorKind {
-    /// See `AnalysisError::to_diagnostic`. `span` is the error's own anchor
-    /// span, which every primary label lands on unless the kind carries
-    /// something more precise (e.g. `BinaryOperandTypeMismatch`'s per-operand
-    /// spans).
     pub fn to_diagnostic(&self, span: Span) -> Diagnostic {
         let d = Diagnostic::error(self.to_string());
         match self {
@@ -85,8 +78,6 @@ impl AnalysisErrorKind {
                 let d = d
                     .with_label(span, format!("expected `{target}`, found `{value}`"))
                     .with_note("Omega has no implicit conversions; the value must have exactly the target's type");
-                // Both sides being refined variants of one enum means the
-                // variable was `:=`-inferred to one specific variant.
                 match (target, value) {
                     (
                         ResolvedType::Enum { cell: expected, variant: Some(_) },
@@ -632,8 +623,6 @@ impl AnalysisErrorKind {
                 .with_note(format!("neither conform is more specific for `{target}`")),
             Self::ConformanceCycle { chain, .. } => {
                 let mut d = d.with_label(span, "this bound re-enters a conformance already being checked");
-                // Each consecutive pair is one "requires" step; the final
-                // link repeats the first, showing the closure.
                 for pair in chain.windows(2) {
                     let (from_target, from_spec, _) = &pair[0];
                     let (to_target, to_spec, _) = &pair[1];
@@ -715,8 +704,6 @@ impl AnalysisErrorKind {
     }
 }
 
-/// See `AnalysisErrorKind::to_diagnostic` -- same shape, for the inner
-/// type-resolution errors.
 fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagnostic {
     let d = Diagnostic::error(error.to_string());
     match error {
@@ -776,9 +763,6 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
     }
 }
 
-/// The renderable form of a module-resolution failure. `span` is the
-/// referencing site (an `import` statement, a qualified path, ...) when the
-/// caller has one; a `None` renders headline/footers only.
 pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Diagnostic {
     let d = Diagnostic::error(error.to_string());
     let with_label = |d: Diagnostic, message: String| match span {
@@ -835,10 +819,6 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
     }
 }
 
-/// The inclusive value range of a numeric type, for
-/// `NumberLiteralOutOfRange`'s note -- `None` for floats. 64-bit
-/// `pointer_bits` is a diagnostic-only simplification: see findings for
-/// the resulting 32-bit-target inaccuracy.
 fn type_range(r#type: &ResolvedType) -> Option<String> {
     match r#type.numeric_kind(64)? {
         NumericKind::Signed(bits) => {

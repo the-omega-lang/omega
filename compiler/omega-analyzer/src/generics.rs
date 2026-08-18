@@ -2,19 +2,6 @@ use crate::resolved_type::ResolvedType;
 use omega_parser::prelude::{Ident, Type};
 use std::collections::HashMap;
 
-/// Structurally unifies `raw` (a generic function template's declared
-/// parameter type, still referencing its generic parameter names) against
-/// `concrete` (a call's already-resolved argument type) to deduce a binding
-/// for any of `generics` found at a `Type::Named` leaf -- the duck-typed,
-/// argument-driven inference behind `Analyzer::resolve_generic_call`.
-///
-/// The first binding found for a given generic name wins; unification is
-/// best-effort only, not full verification -- any real mismatch is left
-/// unbound and caught afterward by the ordinary argument-type-matching loop.
-///
-/// Recurses through `Pointer`/`SizedArray`/`Function`/`Generic` to find a
-/// generic parameter nested inside a compound shape (e.g. `item: *T`, or
-/// `item: Pair<T>`).
 pub fn unify_generic_type(
     generics: &[Ident],
     raw: &Type,
@@ -27,8 +14,6 @@ pub fn unify_generic_type(
                 .entry(path.head.clone())
                 .or_insert_with(|| concrete.clone());
         }
-        // `*[]T`/`*[?]T` only ever resolve to `Slice`/`Array`, matching
-        // `Context::resolve_pointer_type`'s own productions.
         (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
             if matches!(inner.as_ref(), Type::InferredArray(_)) =>
         {
@@ -73,22 +58,6 @@ pub fn unify_generic_type(
     }
 }
 
-/// Turns a completed `unify_generic_type` substitution into `generics`'
-/// own ordered `Vec<ResolvedType>`, or the first generic name that never
-/// got a binding and has no declared default either -- callers use the
-/// name to shape their own diagnostic.
-///
-/// An unbound generic that *does* have a declared default is left out of
-/// the returned vec (which is then shorter than `generics`); the caller
-/// hands it on to `ensure_item`'s default-padding gate
-/// (`omega_driver::items::ensure_item`), the one place a default `Type` is
-/// turned into a `ResolvedType`. Safe only because defaults are enforced
-/// trailing-only at parse time (`omega_parser`'s
-/// `DefaultGenericParamNotTrailing`).
-///
-/// Every deduced type is widened: a deduced `T` must never carry a
-/// caller-specific enum-variant refinement (`T = MyEnum::Second`), which
-/// would mint a spurious extra instantiation per variant.
 pub fn resolve_inferred_type_args(
     generics: &[Ident],
     defaults: &[Option<Type>],
@@ -105,8 +74,6 @@ pub fn resolve_inferred_type_args(
     Ok(type_args)
 }
 
-/// `concrete`'s generic type arguments, if it's a struct/enum/union
-/// instantiation -- `None` for anything else.
 fn owner_type_args(concrete: &ResolvedType) -> Option<Vec<ResolvedType>> {
     match concrete {
         ResolvedType::Struct(cell) => Some(cell.borrow().type_args.clone()),
