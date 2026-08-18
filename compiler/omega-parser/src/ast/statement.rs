@@ -128,7 +128,7 @@ pub struct WalrusStmt {
     /// evaluated value at compile time. Never `true` together with
     /// `mutable` in a checked tree (rejected during analysis, not parsing
     /// -- see `AnalysisErrorKind::MutCompBinding`). See
-    /// `docs/19-compile-time-evaluation.md`.
+    /// `docs/language/compile-time-evaluation.md`.
     pub comp: bool,
     /// `exposed`/`internal`/(default `Hidden`) -- see this type's own doc
     /// comment for when this is meaningful.

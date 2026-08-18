@@ -34,13 +34,18 @@ If the task is purely local/mechanical and does not require architectural decisi
 
 ### 2. Establish the initial context boundary
 
-Use `ARCHITECTURE.md` to identify the owning crate/subsystem and relevant current docs.
+Use `ARCHITECTURE.md` to identify the owning crate/subsystem, then choose documentation by responsibility:
+
+- language semantics: the relevant chapter(s) in `docs/language/`;
+- implementation architecture: relevant `docs/architecture/` only when needed;
+- known deviations/debt: relevant `docs/issues/` only when the task touches them or behavior contradicts the language docs;
+- `.omg` syntax/examples: `docs/guide/quick-reference.md` when the plan will require writing Omega source.
 
 Start closed:
 
 - owning subsystem;
 - directly consumed/produced interfaces;
-- relevant topic docs;
+- relevant normative/architecture docs selected by the routing rules above;
 - tests located by search when needed.
 
 Do not automatically include adjacent crates, both backends, historical plans, git history, all callers/callees, or all tests.
@@ -49,7 +54,7 @@ Do not automatically include adjacent crates, both backends, historical plans, g
 
 Exploration is question-driven, not exhaustive.
 
-1. Read the relevant current docs.
+1. Read the smallest relevant documentation layer. For language behavior, treat `docs/language/` as normative; do not substitute compiler behavior for a known specification rule.
 2. Search for the concrete symbols/behavior involved.
 3. Read the smallest useful source ranges around those sites.
 4. Follow a caller, callee, type, test, or neighboring module only when a concrete design question requires it.
@@ -59,6 +64,8 @@ Exploration is question-driven, not exhaustive.
 Do **not** recursively inspect dependencies "for completeness". Do **not** read large files in full when symbol/reference search or targeted ranges answer the question.
 
 `docs/plan/` and git history are cold historical context. Use them only when current source/docs leave a necessary rationale unresolved.
+
+If `docs/language/` and implementation behavior disagree, check the relevant `docs/issues/` entry and resolve which side is stale before planning around the mismatch. A compiler bug does not silently redefine Omega.
 
 Never invent file paths, symbols, APIs, or tests. Verify every concrete reference you put in the plan.
 

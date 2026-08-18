@@ -2262,7 +2262,7 @@ fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
 }
 
 /// A `*mut self` call on an rvalue receiver is rejected as `MutateTemporary`,
-/// not `NotMutablePointer` (see docs/14-known-issues.md).
+/// not `NotMutablePointer` (see docs/issues/known-issues.md).
 #[test]
 fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
     let package = TestPackage::new(
@@ -2307,7 +2307,7 @@ fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
 }
 
 /// `f<T>(x: *T)` against a fat pointer reports `GenericParamFromFatPointer`
-/// (see docs/14-known-issues.md). Both slice- and `*str`-shaped fat pointers
+/// (see docs/issues/known-issues.md). Both slice- and `*str`-shaped fat pointers
 /// reach it.
 #[test]
 fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {

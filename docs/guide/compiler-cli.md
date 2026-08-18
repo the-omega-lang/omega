@@ -1,0 +1,60 @@
+# `omgc` compiler CLI
+
+Typical shape:
+
+```text
+omgc <entry-dir> -o <output> [--name=<name>] [--extern=[<name>:]<dir>]...
+     [-O<0-3>] [--target=<triplet>] [--backend=<name>]
+     [--emit=<obj|ir|asm>] [-v]
+```
+
+`-o` is required. Package arguments are root **directories**, not individual `.omg` files.
+
+## Package identity
+
+`--name=<name>` overrides the local package's declared identity. `--extern=<dir>` registers an external package using the directory basename as its identity; `--extern=<name>:<dir>` supplies the identity explicitly.
+
+Source-level meaning is specified in [`../language/modules-and-imports.md`](../language/modules-and-imports.md).
+
+## Targets
+
+A target is written as `<arch>-<os>` or `<arch>-<vendor>-<os>`; the vendor segment is accepted but is not currently semantically significant.
+
+The compiler recognizes the target architectures/OS combinations supported by its target layer and selected backend. The default target is `x86_64-unknown-linux`.
+
+Not every backend supports every recognized target. An unsupported backend/target pair is reported as a compiler error before backend emission.
+
+## Backends
+
+- `cranelift` — default, optimized for compiler speed.
+- `llvm` — available when the compiler is built with LLVM support; broader target/optimization capability.
+
+Objects produced by different backends are intended to interoperate because symbol naming, linkage and Omega's shared ABI decisions live above the backend seam. See [`../architecture/mir-and-codegen.md`](../architecture/mir-and-codegen.md).
+
+## Emit modes
+
+```text
+--emit=obj     object file (default)
+--emit=ir      backend IR
+--emit=asm     assembly
+```
+
+Optimization levels are `-O0` through `-O3`, defaulting to `-O0`.
+
+## Separate compilation
+
+A normal multi-package build compiles each package in a separate `omgc` process and links the produced objects afterward:
+
+```sh
+omgc runtime/core/ -o target/core.o
+omgc examples/mathlib/ -o target/mathlib.o
+omgc examples/dev/ \
+    --extern=mathlib:examples/mathlib/ \
+    --extern=core:runtime/core/ \
+    -o target/main.o
+cc -Wl,--gc-sections target/main.o target/mathlib.o target/core.o -o example
+```
+
+Generated functions use independent object-file sections; repository build recipes link with section garbage collection so unused functions do not retain unrelated dependencies.
+
+There is no implicit libc/runtime requirement in this model. The selected package/glue objects determine what the final link requires.

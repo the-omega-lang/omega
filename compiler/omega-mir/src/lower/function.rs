@@ -3,7 +3,7 @@
 //! data-producing analogue of `omega_codegen::Codegen`'s
 //! `emit_block`/`emit_expr_stmt`/`emit_if`/`emit_match`/`emit_while`/
 //! `emit_for`/`process_statement`/`process_decl` -- see
-//! `docs/16-mir-and-codegen.md` for the full rationale.
+//! `docs/architecture/mir-and-codegen.md` for the full rationale.
 //!
 //! `FunctionLowerer` plays the role `Codegen`'s own per-function fields
 //! (`stack_slots`/`local_args`/`loop_stack`/`defer_flags`/`defer_bodies`/

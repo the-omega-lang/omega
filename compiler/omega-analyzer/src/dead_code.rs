@@ -10,7 +10,7 @@
 //! each struct/union/enum cell's own declared fields/variants.
 //!
 //! `Analyzer::eval_comp` runs this same walk eagerly over a `comp` subtree
-//! before it collapses into a `CheckedExpr::Const` (see docs/14-known-issues.md
+//! before it collapses into a `CheckedExpr::Const` (see docs/issues/known-issues.md
 //! for why that's needed), folding the result into the whole-program pass
 //! via `FieldUsage::merge`.
 //!

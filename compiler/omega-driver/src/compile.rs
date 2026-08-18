@@ -213,7 +213,7 @@ impl Driver {
     /// A parse or signature failure here is a real, fatal `CompileError`,
     /// not swallowed -- so a broken, wholly unrelated struct/spec anywhere
     /// in any registered extern can fail a build that never references it.
-    /// See docs/10-modules-and-linkage.md for the full rationale and cost.
+    /// See docs/architecture/module-driver-and-linkage.md for the full rationale and cost.
     fn collect_extern_signatures(&mut self) -> Result<Vec<ModulePath>, Vec<CompileError>> {
         let paths = self.roots.extern_modules();
         for path in &paths {

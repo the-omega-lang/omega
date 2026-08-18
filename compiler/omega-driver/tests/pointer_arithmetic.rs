@@ -138,7 +138,7 @@ fn offsetting_a_pointer_by_an_integer_is_still_allowed() {
 }
 
 /// Taking a binding's address is a *use* of it (see the `UnusedVariable`
-/// fix in docs/14-known-issues.md). This compiled with `warning: unused
+/// fix in docs/issues/known-issues.md). This compiled with `warning: unused
 /// variable 'a'` before the fix, which is why `core`'s `Bounded::max`
 /// looked like it needed a pointless `mut`.
 #[test]

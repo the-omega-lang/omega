@@ -266,7 +266,7 @@ impl<'r> Analyzer<'r> {
             ),
             // A `spec *Self` value has no `ConstValue` shape at all --
             // dynamic dispatch isn't comp-evaluable (see
-            // docs/19-compile-time-evaluation.md).
+            // docs/language/compile-time-evaluation.md).
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
                 unsupported(
                     self,
@@ -295,7 +295,7 @@ impl<'r> Analyzer<'r> {
     }
 
     /// `comp base` -- evaluates `base` at compile time (see
-    /// `docs/19-compile-time-evaluation.md`). `base` is analyzed completely
+    /// `docs/language/compile-time-evaluation.md`). `base` is analyzed completely
     /// ordinarily first, then the checked tree is handed to
     /// `crate::comp_eval`. On success the whole node collapses into
     /// `CheckedExpr::Const`, so nothing downstream ever needs to know a
@@ -665,7 +665,7 @@ impl<'r> Analyzer<'r> {
             self.context.mark_used(decl_id);
         }
         // `&comp_binding` -- const promotion, mirroring Rust's `&SOME_CONST`
-        // (see docs/19-compile-time-evaluation.md). `&mut` on one is
+        // (see docs/language/compile-time-evaluation.md). `&mut` on one is
         // impossible since a `comp` binding is never mutable, so
         // `require_mutable_place` below rejects it normally; plain `&` isn't
         // gated by mutability, so it's handled here instead, wrapping the
@@ -1741,7 +1741,7 @@ impl<'r> Analyzer<'r> {
     /// Index and match-pattern positions never arrive here -- they keep
     /// consuming `HirRange` structurally (`analyze_slice`, `HirPattern::
     /// Range`), since a missing bound there means something a value
-    /// couldn't carry. See docs/11-strings-casting-and-slices.md.
+    /// couldn't carry. See docs/language/strings-casts-arrays-and-slices.md.
     fn analyze_range_value(
         &mut self,
         id: HirId,

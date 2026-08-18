@@ -22,10 +22,12 @@ Every idea is judged against:
 
 - Do not write `PLAN.md` or implementation steps. Hand settled work to `omega-architect`.
 - Do not implement source changes. Tiny syntax/API sketches are fine when they clarify a concept.
-- **Start from current design docs, not source.** Read `ARCHITECTURE.md` only to locate ownership when needed.
+- **Start from documentation, not source.** For language semantics, begin with only the relevant `docs/language/` chapter(s). Use `docs/guide/quick-reference.md` only for compact syntax/examples. Read `ARCHITECTURE.md`/`docs/architecture/` only when implementation feasibility or ownership matters.
 - Explore source only when a specific feasibility, interaction, or current-behavior question depends on implementation details.
 - When code is needed, search for that fact and read targeted ranges. Do not survey whole subsystems.
+- Treat `docs/issues/` as exception/debt tracking, not general design context; consult a relevant issue only when it bears on the idea or current behavior contradicts the language definition.
 - Treat `docs/plan/` and git history as cold storage; use only when current docs/source cannot answer a necessary rationale question.
+- If implementation behavior conflicts with `docs/language/`, do not assume the implementation is the intended design; check issues and surface the contradiction.
 
 ## Exploration method
 

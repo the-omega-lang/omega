@@ -4,7 +4,7 @@
 //! the checked tree; here they're already flattened into an explicit graph
 //! of [`MirBlockData`]s ending in one [`MirTerminator`] each, exactly the
 //! shape both Cranelift and (eventually) an LLVM backend want. See
-//! `docs/16-mir-and-codegen.md` for the full rationale and worked
+//! `docs/architecture/mir-and-codegen.md` for the full rationale and worked
 //! examples of how each construct lowers.
 //!
 //! What's *not* flattened: ordinary computation (arithmetic, calls, casts,
@@ -58,7 +58,7 @@ pub struct MirLocalDecl {
 /// threaded through its `defer` exit chain) is an ordinary synthetic
 /// [`LocalId`] instead (see `MirPlaceRoot::Local`), written by an `Assign`
 /// in each producing block and read back by a `Place` wherever it's
-/// needed -- see [mir-and-codegen.md](../../../docs/16-mir-and-codegen.md)'s
+/// needed -- see [mir-and-codegen.md](../../../docs/architecture/mir-and-codegen.md)'s
 /// "Block-arguments were tried and rejected" for why.
 #[derive(Debug, Clone)]
 pub struct MirBlockData {
@@ -235,7 +235,7 @@ pub struct MirPlace {
     /// instead of being re-derived by each backend. A claim about the
     /// place's **base** address only; an access at a byte offset into it is
     /// weaker (see `llvm::place::offset_align`). Not yet a real guarantee
-    /// under `@layout(align = n)` -- see `docs/14-known-issues.md`'s
+    /// under `@layout(align = n)` -- see `docs/issues/known-issues.md`'s
     /// "`@layout(align = n)` is not yet a real address guarantee".
     pub align: u32,
 }
@@ -251,7 +251,7 @@ pub enum MirPlaceRoot {
     Function(HirId),
     /// A top-level variable, ordinary globals fully implemented; a
     /// non-function `extern` still has no storage story in codegen
-    /// (`todo!()`) -- see `docs/14-known-issues.md`.
+    /// (`todo!()`) -- see `docs/issues/known-issues.md`.
     Global { id: HirId, r#type: ResolvedType },
     /// The base of a projection chain that isn't a bare name, e.g.
     /// `foo().bar` -- the root is the `foo()` call expression.

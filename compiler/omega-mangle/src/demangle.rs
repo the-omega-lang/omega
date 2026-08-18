@@ -6,7 +6,7 @@
 //! and rejects malformed/adversarial input instead of looping.
 //!
 //! Rendering doesn't reconstruct Rust-style `<Owner>::method(...)`
-//! bracketing -- see `docs/16-mir-and-codegen.md`.
+//! bracketing -- see `docs/architecture/mir-and-codegen.md`.
 
 use crate::base62;
 use crate::grammar::*;

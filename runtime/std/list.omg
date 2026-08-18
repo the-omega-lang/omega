@@ -1,6 +1,6 @@
 # `std::list` -- `List<T>`, a growable heap-backed array (Rust's `Vec<T>`).
 # No RAII in this language (`defer` is the only structured cleanup, see
-# docs/03-control-flow.md), so every owning method has a real, explicit
+# docs/language/control-flow-and-operators.md), so every owning method has a real, explicit
 # `free`; the intended idiom:
 #
 #   list := List<i32>::new();
@@ -43,7 +43,7 @@ exposed struct List<T> {
 
     # `index`'s element address -- explicit byte math, since pointer
     # arithmetic here doesn't scale by `sizeof<T>` like C's does (see
-    # docs/01-primitives.md), and `ptr[i]` only works on a slice/array,
+    # docs/language/types-and-primitives.md), and `ptr[i]` only works on a slice/array,
     # never a raw pointer.
     elem_ptr(*self, index: usize) => *mut T {
         <*mut T>(<usize>self.data + index * sizeof<T>)
@@ -109,7 +109,7 @@ exposed struct List<T> {
 
     # `self.data` is a bare `*T` with no indexing/slicing of its own; cast
     # to `*mut [?]T` (Pointer <-> Array reinterpret) then range-slice to
-    # get a real runtime-length `*[]T`; see docs/11-strings-casting-and-slices.md.
+    # get a real runtime-length `*[]T`; see docs/language/strings-casts-arrays-and-slices.md.
     exposed as_slice(*self) => *[]T {
         count := <i32>self.count;
         &(<*mut [?]T>self.data)[0..<count]

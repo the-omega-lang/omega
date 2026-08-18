@@ -587,7 +587,7 @@ pub enum HirExpr {
     /// this off first -- see `Analyzer::strip_reveal`.
     Reveal(Box<HirExprNode>),
     /// `comp base` -- evaluate `base` at compile time (see
-    /// `docs/19-compile-time-evaluation.md`). Unlike `Reveal`, this *does*
+    /// `docs/language/compile-time-evaluation.md`). Unlike `Reveal`, this *does*
     /// get its own `CheckedExpr` -- but only transiently: `Analyzer::
     /// analyze_comp` analyzes `base` completely ordinarily (full type-
     /// checking, generic/overload/cross-module resolution, all reused

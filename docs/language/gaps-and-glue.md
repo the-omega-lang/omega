@@ -1,5 +1,7 @@
 # Gaps and glue
 
+This chapter is normative for current Omega language behavior. Known implementation limitations are tracked separately under [`../issues/`](../issues/).
+
 Some capabilities are requested by portable code but can only be supplied by
 the final program or its platform layer. A `gap` declares that capability as a
 named, static function set; exactly one `glue` declaration provides its
@@ -68,5 +70,5 @@ registry, object, or dynamic dispatch.
 
 `runtime/core/platform.omg` supplies the core gaps. `runtime/plat/libc/`
 is an ordinary external package that supplies the libc-backed glue for them.
-See [`plat`](22-platform-glue.md) for that implementation and
-[the core library](13-core-library.md) for the public core layout.
+See [`plat`](../guide/platform-glue.md) for that implementation and
+[the core library](../guide/core-library.md) for the public core layout.

@@ -274,7 +274,7 @@ pub trait ModuleResolver {
     ) -> Result<Option<ImportTarget>, ResolveError>;
 
     /// `core`'s ambient-prelude fallback for a bare name (see
-    /// `docs/10-modules-and-linkage.md`'s "core is a prelude" section),
+    /// `docs/architecture/module-driver-and-linkage.md`'s "core is a prelude" section),
     /// consulted only after ordinary local/import resolution fails.
     /// `Ok(None)`: no `core` submodule exposes `name` (or `accessor` is
     /// itself inside `core`, which never gets this fallback). `Ok(Some

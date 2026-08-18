@@ -202,7 +202,7 @@ pub enum AnalysisWarningKind {
     LargeStructByValue { r#type: ResolvedType, size: u32 },
     /// A `gap` with no `glue` anywhere in this compilation (local or
     /// `--extern`-visible) implementing it -- deliberately a warning, not an
-    /// error (see `docs/21-gaps-and-glue.md`: catching this precisely would
+    /// error (see `docs/language/gaps-and-glue.md`: catching this precisely would
     /// need whole-program reachability analysis through indirect calls,
     /// which this design specifically avoids by leaving it to the linker).
     /// `functions` names every one of the gap's own required functions, so

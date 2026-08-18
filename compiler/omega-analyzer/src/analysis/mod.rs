@@ -915,7 +915,7 @@ impl<'r> Analyzer<'r> {
     /// default, that default -- giving `analyze_expr` a real `expected` a
     /// bare literal can adapt to, the same "earliest position is the
     /// anchor" precedent `if`-branches and binary operands already use (see
-    /// `docs/03-control-flow.md`). The argument's own *actual* resolved type
+    /// `docs/language/control-flow-and-operators.md`). The argument's own *actual* resolved type
     /// -- not the tentative `expected` -- is what `unify_generic_type` then
     /// permanently pins the generic to: an explicit suffix/type on the
     /// argument always wins over `expected` regardless (see

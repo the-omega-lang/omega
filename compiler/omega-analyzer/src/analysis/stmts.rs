@@ -506,7 +506,7 @@ impl<'r> Analyzer<'r> {
 
     /// `for <mut>? binding in iterator { body }` -- desugars entirely at
     /// analysis time into a `while true { }` + `match` shape (see
-    /// docs/18-for-in-loops.md for the full desugaring, the nominal-
+    /// docs/language/iteration-and-ranges.md for the full desugaring, the nominal-
     /// conformance rule, and the `ToIterator`-vs-`Iterator` source
     /// disambiguation). The `to_iterator`/`next` calls are resolved through
     /// ordinary `analyze_expr` on synthesized HIR (`synthesize_method_call`);

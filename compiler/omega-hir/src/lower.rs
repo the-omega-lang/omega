@@ -576,7 +576,7 @@ impl Lowerer {
     /// Separate from `lower_field` below because the AST distinguishes the
     /// two -- a field carries a visibility modifier, a parameter cannot --
     /// even though both still land in `HirParam` today (see
-    /// `docs/14-known-issues.md`).
+    /// `docs/issues/known-issues.md`).
     fn lower_param(&mut self, param: &Param) -> HirParam {
         HirParam {
             id: self.ids.next(),

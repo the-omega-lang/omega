@@ -1,6 +1,6 @@
 # `core::primitives::char` -- Unicode scalar values and their core behavior.
 # `char::from_u32` is the supported checked path from a codepoint (rejects
-# out-of-range values and UTF-16 surrogates); see docs/14-known-issues.md
+# out-of-range values and UTF-16 surrogates); see docs/issues/known-issues.md
 # for why it is not an enforcement boundary.
 
 import root::cmp::Ord;
@@ -29,7 +29,7 @@ primitive char {
         cp := <u32>*self;
         if cp < 0x30u32 { false } else { cp <= 0x39u32 }
     }
-    # ASCII-only; see docs/14-known-issues.md.
+    # ASCII-only; see docs/issues/known-issues.md.
     exposed is_alphabetic(*self) => bool {
         cp := <u32>*self;
         if cp >= 0x41u32 {

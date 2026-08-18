@@ -9,14 +9,15 @@ Use it to answer two questions before exploring:
 
 ## Agent navigation rules
 
-- Start here, then read only the relevant topic docs, then search the source for concrete symbols.
-- Do **not** follow `docs/README.md`'s full reading order for an ordinary task; that sequence is for human onboarding.
+- Start here, then select the smallest documentation layer from `docs/README.md`, then search source for concrete symbols.
+- When writing `.omg`, consult `docs/guide/quick-reference.md`; do not infer Omega syntax from Rust/C/C++.
+- For exact language behavior, `docs/language/` is normative. For compiler mechanics, use `docs/architecture/`. `docs/issues/` tracks deviations/debt and is not default context.
 - Prefer symbol/reference search and targeted source reads over reading large files in full.
 - A crate boundary is a default context boundary. Cross it only when a concrete dependency requires it.
 - Do not recursively inspect callers, callees, neighboring modules, tests, or backends "for completeness".
 - Stop exploring once the behavior, affected interfaces, invariants, and verification path are clear enough to act safely.
-- `docs/` describes the current design. `docs/plan/` is historical planning material and should be treated as **cold storage**; inspect it only when current docs/source do not explain necessary rationale.
-- Source code is authoritative for current implementation details. Current docs are authoritative for intended/current design and known caveats.
+- `docs/plan/` is historical planning material and should be treated as **cold storage**; inspect it only when current docs/source do not explain necessary rationale.
+- Source is authoritative for what the compiler currently implements. `docs/language/` is authoritative for intended language semantics; known implementation mismatches belong in `docs/issues/`.
 
 ---
 
@@ -141,8 +142,8 @@ Key areas:
 
 **Primary docs:**
 
-- `docs/15-parsing-and-hir.md`
-- `docs/12-macros.md`
+- `docs/architecture/parsing-and-hir.md`
+- `docs/language/macros.md`
 - Topic-specific language docs for the syntax being changed.
 
 **Default context wall:** do not enter analyzer/MIR/codegen for a parser-only grammar change unless downstream representation or semantics actually change.
@@ -164,7 +165,7 @@ HIR lowering is intentionally **infallible** and performs syntax-only normalizat
 
 **Does not own:** name resolution, type checking, semantic validation, or backend concerns.
 
-**Primary doc:** `docs/15-parsing-and-hir.md`.
+**Primary doc:** `docs/architecture/parsing-and-hir.md`.
 
 **Look here when:** a syntax change must survive macro expansion with stable identity, or when a syntax-only desugaring should be represented consistently for all later phases.
 
@@ -210,12 +211,12 @@ Major areas:
 
 **Primary docs:** topic docs under `docs/`, especially:
 
-- `docs/06-generics.md`
-- `docs/07-visibility.md`
-- `docs/08-specs.md`
-- `docs/09-annotations.md`
-- `docs/19-compile-time-evaluation.md`
-- `docs/17-design-review.md`
+- `docs/language/generics.md`
+- `docs/language/visibility.md`
+- `docs/language/specs-and-conformance.md`
+- `docs/language/annotations-and-sizeof.md`
+- `docs/language/compile-time-evaluation.md`
+- `docs/issues/design-debt.md`
 
 **Default context wall:** for semantic work, begin inside `omega-analyzer`, the HIR types it consumes, and the relevant design docs. Parser, MIR, and codegen remain closed unless the semantic change affects their contracts.
 
@@ -243,8 +244,8 @@ Key files, roughly in dependency/order-of-work order:
 
 **Primary docs:**
 
-- `docs/10-modules-and-linkage.md`
-- `docs/06-generics.md`
+- `docs/architecture/module-driver-and-linkage.md`
+- `docs/language/generics.md`
 - Relevant feature docs when changes affect cross-module semantics.
 
 **Look here when:** changing module discovery/imports, package roots, declaration order/query behavior, cross-module resolution, compile orchestration, or how analyzer queries are memoized.
@@ -268,7 +269,7 @@ Key files:
 
 **Look here when:** changing linker identity, encoded type/path grammar, overload uniqueness, or demangling behavior.
 
-**Related doc:** `docs/10-modules-and-linkage.md`.
+**Related doc:** `docs/architecture/module-driver-and-linkage.md`.
 
 ---
 
@@ -301,7 +302,7 @@ Key files:
 - Shared backend facts such as final linker symbols/linkage are decided here once and read by all backends.
 - Modules lower independently; MIR lowering is not a whole-program semantic pass.
 
-**Primary doc:** `docs/16-mir-and-codegen.md`.
+**Primary doc:** `docs/architecture/mir-and-codegen.md`.
 
 **Default context wall:** backend internals are normally irrelevant to MIR changes unless changing the MIR/backend contract.
 
@@ -331,7 +332,7 @@ Each backend has mirrored areas such as `function.rs`, `expr.rs`, `place.rs`, `i
 - Aggregate layout is owned by `omega-analyzer::layout`, not independently by backends.
 - Backend-specific target vocabulary stays inside the corresponding backend; `omega-analyzer::Target` is the shared compiler vocabulary.
 
-**Primary doc:** `docs/16-mir-and-codegen.md`.
+**Primary doc:** `docs/architecture/mir-and-codegen.md`.
 
 **Default context wall:** when fixing one backend, do not automatically inspect the other. Compare both only when changing a shared contract or enforcing backend parity.
 
@@ -368,15 +369,15 @@ Includes primitives, comparison, iteration/ranges, `Option`, and the platform ca
 
 Relevant docs include:
 
-- `docs/13-core-library.md`
-- `docs/18-for-in-loops.md`
-- `docs/21-gaps-and-glue.md`
+- `docs/guide/core-library.md`
+- `docs/language/iteration-and-ranges.md`
+- `docs/language/gaps-and-glue.md`
 
 ## `runtime/plat`
 
 Default platform glue. Today it provides platform implementations on top of libc-facing declarations.
 
-Primary doc: `docs/22-platform-glue.md`.
+Primary doc: `docs/guide/platform-glue.md`.
 
 ## `runtime/std`
 
@@ -386,8 +387,8 @@ Includes allocation helpers, formatting/I/O, strings, lists, linked lists, hashi
 
 Primary docs:
 
-- `docs/23-standard-library.md`
-- `docs/24-console-io.md`
+- `docs/guide/standard-library.md`
+- `docs/guide/console-io.md`
 
 ## `runtime/shims`
 
@@ -412,27 +413,27 @@ When planning verification, prefer the narrowest existing test layer that proves
 
 | Task / question | Start here | Usually also relevant | Usually avoid initially |
 |---|---|---|---|
-| Lexing/token spelling | `omega-parser/src/lexer.rs` | parser diagnostics, `docs/15-*` | analyzer/MIR/codegen |
+| Lexing/token spelling | `omega-parser/src/lexer.rs` | parser diagnostics, `docs/language/grammar.md`, `docs/architecture/parsing-and-hir.md` | analyzer/MIR/codegen |
 | Grammar / syntax | `omega-parser/src/parser/` | AST, relevant language doc | MIR/backends |
-| Macro behavior | `omega-parser/src/macros.rs` | macro parser, `docs/12-*`, HIR boundary | analyzer unless semantics change |
-| Post-expansion representation | `omega-hir` | parser AST, `docs/15-*` | backends |
-| Name resolution | `omega-analyzer/src/analysis/paths.rs`, `resolver.rs` | driver resolver/module queries, `docs/10-*` | MIR/codegen |
+| Macro behavior | `omega-parser/src/macros.rs` | macro parser, `docs/language/macros.md`, HIR boundary | analyzer unless semantics change |
+| Post-expansion representation | `omega-hir` | parser AST, `docs/language/grammar.md`, `docs/architecture/parsing-and-hir.md` | backends |
+| Name resolution | `omega-analyzer/src/analysis/paths.rs`, `resolver.rs` | driver resolver/module queries, `docs/language/modules-and-imports.md`, `docs/architecture/module-driver-and-linkage.md` | MIR/codegen |
 | Types / semantic checking | `omega-analyzer` | HIR types, relevant feature docs | backend internals |
 | Calls / overload resolution | `analysis/calls.rs` | `resolved_type.rs`, generics/specs as required | parser/codegen unless contract changes |
-| Specs / conformances | `analysis/specs.rs` | driver conformances, `docs/08-*` | backends initially |
-| Generics / monomorphization | analyzer generics + driver item queries | `docs/06-*` | codegen unless representation changes |
-| Compile-time evaluation | `comp_eval.rs` | `docs/19-*` | backends |
-| Modules/imports/packages | `omega-driver` | analyzer resolver interface, `docs/10-*` | MIR/codegen |
+| Specs / conformances | `analysis/specs.rs` | driver conformances, `docs/language/specs-and-conformance.md` | backends initially |
+| Generics / monomorphization | analyzer generics + driver item queries | `docs/language/generics.md` | codegen unless representation changes |
+| Compile-time evaluation | `comp_eval.rs` | `docs/language/compile-time-evaluation.md` | backends |
+| Modules/imports/packages | `omega-driver` | analyzer resolver interface, `docs/language/modules-and-imports.md`, `docs/architecture/module-driver-and-linkage.md` | MIR/codegen |
 | Layout / ABI representation | analyzer `layout.rs` + codegen `abi.rs` | relevant type docs | parser unless syntax changes |
-| Control-flow lowering | `omega-mir/src/lower/` | checked tree, `docs/16-*` | backend internals initially |
+| Control-flow lowering | `omega-mir/src/lower/` | checked tree, `docs/architecture/mir-and-codegen.md` | backend internals initially |
 | Mangling / linker identity | `omega-mir/src/mangle.rs`, `omega-mangle` | module/linkage docs | parser |
 | Backend-independent codegen | codegen root/ABI/preflight | MIR | parser/HIR |
 | Cranelift bug | `omega-codegen/src/cranelift/` | MIR contract | LLVM unless shared issue |
 | LLVM bug | `omega-codegen/src/llvm/` | MIR contract | Cranelift unless shared issue |
 | CLI / compile invocation | `omgc/src/main.rs` | driver/codegen public APIs | compiler internals not implicated |
 | Core library behavior | `runtime/core` | relevant docs | compiler unless language behavior is involved |
-| Standard library behavior | `runtime/std` | `runtime/core`, `docs/23-*` | compiler unless necessary |
-| Platform glue | `runtime/plat`, `runtime/shims` | `docs/21-*`, `docs/22-*` | unrelated compiler passes |
+| Standard library behavior | `runtime/std` | `runtime/core`, `docs/guide/standard-library.md` | compiler unless necessary |
+| Platform glue | `runtime/plat`, `runtime/shims` | `docs/language/gaps-and-glue.md`, `docs/guide/platform-glue.md` | unrelated compiler passes |
 
 ---
 
@@ -451,35 +452,39 @@ These are established project-wide patterns; consult `docs/README.md` and the re
 
 # Documentation routing
 
-`docs/README.md` is the index for current technical documentation. For task work, select topic docs directly rather than reading the entire sequence.
+`docs/README.md` defines the documentation authority model. Do not read documentation sequentially; route by question:
 
-Common routes:
+| Question | Primary documentation |
+|---|---|
+| “How do I write valid Omega syntax?” | `docs/guide/quick-reference.md` |
+| “What does this Omega program mean?” | relevant `docs/language/` chapter |
+| “How does this compiler implement it?” | this file -> relevant `docs/architecture/` -> source |
+| “Is this broken/incomplete/known debt?” | relevant `docs/issues/` entry |
+| “How do I use/build core/std/platform facilities?” | `docs/guide/` |
+| “Why was an old implementation decision made?” | `docs/plan/` / git history, only if current sources are insufficient |
 
-- Functions/calls: `docs/00-functions.md`
-- Types/primitives/representation: `docs/01-primitives.md`
-- Mutability/storage semantics: `docs/02-variables-and-mutability.md`
-- Control flow: `docs/03-control-flow.md`
-- Structs/unions: `docs/04-structs-and-unions.md`
-- Enums/patterns: `docs/05-enums-and-pattern-matching.md`
-- Generics: `docs/06-generics.md`
-- Visibility: `docs/07-visibility.md`
-- Specs/conformance/dispatch: `docs/08-specs.md`
-- Annotations: `docs/09-annotations.md`
-- Modules/linkage/mangling: `docs/10-modules-and-linkage.md`
-- Strings/casts/slices: `docs/11-strings-casting-and-slices.md`
-- Macros: `docs/12-macros.md`
-- Core library: `docs/13-core-library.md`
-- Current known issues: `docs/14-known-issues.md`
-- Parser/HIR architecture: `docs/15-parsing-and-hir.md`
-- MIR/codegen architecture: `docs/16-mir-and-codegen.md`
-- Architectural/design audit notes: `docs/17-design-review.md`
-- Iteration: `docs/18-for-in-loops.md`
-- Compile-time evaluation: `docs/19-compile-time-evaluation.md`
-- Marker/zero-sized types: `docs/20-marker-types.md`
-- Gap/glue platform abstraction: `docs/21-gaps-and-glue.md`
-- Default platform layer: `docs/22-platform-glue.md`
-- Standard library: `docs/23-standard-library.md`
-- Console I/O: `docs/24-console-io.md`
+Common language routes:
+
+- lexical tokens/comments/literals: `docs/language/lexical-structure.md`
+- complete syntax shape: `docs/language/grammar.md`
+- functions: `docs/language/functions.md`
+- types/primitives/pointers/arrays: `docs/language/types-and-primitives.md`
+- bindings/mutability: `docs/language/bindings-and-mutability.md`
+- control flow/operators: `docs/language/control-flow-and-operators.md`
+- structs/unions: `docs/language/structs-and-unions.md`
+- enums/patterns: `docs/language/enums-and-pattern-matching.md`
+- generics: `docs/language/generics.md`
+- visibility/reveal: `docs/language/visibility.md`
+- specs/conformance/dispatch: `docs/language/specs-and-conformance.md`
+- annotations/sizeof: `docs/language/annotations-and-sizeof.md`
+- modules/imports: `docs/language/modules-and-imports.md`
+- FFI/extern: `docs/language/foreign-function-interface.md`
+- strings/casts/slices: `docs/language/strings-casts-arrays-and-slices.md`
+- macros: `docs/language/macros.md`
+- iteration/ranges: `docs/language/iteration-and-ranges.md`
+- compile-time evaluation: `docs/language/compile-time-evaluation.md`
+- zero-sized markers: `docs/language/marker-types.md`
+- gaps/glue: `docs/language/gaps-and-glue.md`
 
 `docs/plan/` contains historical implementation plans. Do not search or read it by default during feature work, cleanup, review, or debugging.
 

@@ -1,6 +1,6 @@
 //! Compile-time expression evaluation (`comp`) -- a tree-walking
 //! interpreter over an already fully-typed `CheckedExprNode`/`CheckedBlock`,
-//! producing a `ConstValue`. See `docs/19-compile-time-evaluation.md`.
+//! producing a `ConstValue`. See `docs/language/compile-time-evaluation.md`.
 //!
 //! Deliberately not MIR-based: MIR is a strictly later, per-function
 //! lowering pass that doesn't exist yet at analysis time, and a `comp`
@@ -193,7 +193,7 @@ struct Frame {
     /// only queues if that branch actually runs) -- run in reverse (FILO)
     /// when this frame's own function exits, whether via `return` or
     /// falling off the end, matching this language's real `defer`
-    /// semantics (see `docs/00-functions.md`'s `defer` section): scoped to
+    /// semantics (see `docs/language/functions.md`'s `defer` section): scoped to
     /// the whole *function*, not the block a `defer` statement happens to
     /// sit in, so this lives on the frame, not on any block-local state.
     /// Cloned out of the checked tree at the point each `defer` runs (see
@@ -695,7 +695,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     ),
                 )),
             },
-            // Not implemented in this pass -- see docs/19-compile-time-evaluation.md.
+            // Not implemented in this pass -- see docs/language/compile-time-evaluation.md.
             CastKind::Unsize => Err(self.err(
                 span,
                 CompErrorKind::Unsupported("a sized-array-to-slice cast of a comp value"),
@@ -823,7 +823,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             // Exhaustiveness was already proven by analysis; reaching here
             // means either a checked-tree invariant broke, or the
             // interpreter's own arm evaluation didn't reproduce analysis's
-            // coverage proof (see docs/19-compile-time-evaluation.md).
+            // coverage proof (see docs/language/compile-time-evaluation.md).
             None => Err(self.err(
                 span,
                 CompErrorKind::Unsupported("an exhaustive match with no matching arm"),

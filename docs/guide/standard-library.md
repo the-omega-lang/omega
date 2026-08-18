@@ -82,13 +82,4 @@ The generic collections route heap operations through the non-generic
 caller-owned buffering, `read_line`, `String` formatting, and the print
 macros. No old broad `Writer` or `Reader` type exists. The complete API and
 its exact short-transfer semantics are documented in
-[console I/O](24-console-io.md).
-
-## Caveats
-
-- Forgetting an owning value's `.free()` leaks it; there is no RAII or leak
-  detector.
-- `Result<T, E>` does not exist. The APIs use `Option<T>`, `bool`, or
-  out-parameters where appropriate.
-- The built-in formatter is allocation-free but float formatting is
-  fixed-precision rather than shortest-round-trip.
+[console I/O](console-io.md).

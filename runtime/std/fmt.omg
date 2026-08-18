@@ -16,7 +16,7 @@ write_byte(out: spec *mut Write, byte: u8) => void {
 # `[64]u8` fits a `u64` in base 2, the widest legal radix. An out-of-range
 # radix (base 0 or 1 would divide by zero / never terminate) writes nothing
 # rather than corrupting the stack -- a caller bug with no failure channel
-# to report through (see docs/24-console-io.md). Digits are reversed into
+# to report through (see docs/guide/console-io.md). Digits are reversed into
 # `output` and issued as one `write` to avoid a per-byte indirect call.
 exposed write_uint(out: spec *mut Write, value: u64, base: u32) => void {
     radix_ok := if base < 2u32 { false } else { base <= 36u32 };

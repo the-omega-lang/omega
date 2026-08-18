@@ -1,7 +1,7 @@
 # `std::alloc` -- a thin, deliberately non-generic wrapper around
 # `core::platform::GlobalAllocator`, used by every generic collection here
 # instead of calling the gap directly. Originally a workaround for a
-# codegen bug (now fixed, see docs/10-modules-and-linkage.md); kept because
+# codegen bug (now fixed, see docs/architecture/module-driver-and-linkage.md); kept because
 # calling the gap directly from each generic method empirically made gap
 # reachability worse, not better (more distinct symbol references baked
 # into `std.o`). Do not inline this back into the generic methods.

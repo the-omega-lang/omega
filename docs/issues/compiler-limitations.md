@@ -1,0 +1,73 @@
+# Compiler implementation limitations
+
+Implementation caveats migrated out of architecture chapters. These are non-normative and should be removed when resolved.
+
+
+## Parsing, macro expansion, and the HIR
+
+- **Recovery granularity is coarse.** `synchronize_to_item_boundary` and
+  `synchronize_to_statement_boundary` both treat any identifier as a
+  plausible boundary, so recovery often stops almost immediately after the
+  error. This is sufficient (one mistake yields one error) but it is not
+  precise, and a badly-malformed member can still swallow its enclosing
+  block's closing brace.
+- **`macros.rs` traverses the AST by hand.** `expand_expr` is ~180 lines of
+  which the substantive part is the first eight — find a
+  `MacroInvocation`, replace it; the rest reconstructs every node
+  field-by-field purely to recurse. It is correct, and exhaustive matching
+  keeps it correct, but it is boilerplate that grows with the AST.
+- **The `(defs, budget, state)` triple is threaded by hand** through fifteen
+  expansion functions; several signatures are longer than their bodies.
+- **HIR still mirrors the AST closely.** That is the cost of the identity
+  boundary described above, not an accident, but it does mean two node sets
+  to keep in step.
+- See [known-issues.md](known-issues.md) for the language-level
+  questions this area raises that are *not* bugs and were deliberately not
+  decided during refactoring.
+
+
+## The MIR, and how it reaches Cranelift
+
+- **No three-address form yet.** `MirExpr` stays tree-shaped on purpose
+  (see "What's still a tree" above); this is the natural next step for
+  whenever `omega-codegen` gets its own dedicated refactor, and would open
+  the door to real local optimizations (CSE, constant propagation across
+  statements) this MIR doesn't attempt today.
+- **Block-arguments were tried and rejected as the general mechanism for
+  threading an `if`/`match`'s value across its join** — a Cranelift-native
+  phi-equivalent, and the more "purely Rust-MIR" choice would be a mutable
+  temp local either way (Rust's own MIR has no block-argument mechanism at
+  all). The block-argument version broke the moment a *sibling*
+  expression built more blocks before the value was actually consumed — a
+  real, reproduced bug (a stale value read back from a since-abandoned
+  block), not a theoretical one — so every cross-block value in this MIR
+  (an `if`/`match` join's result, the function's own return value threaded
+  through its `defer` exit chain) is an ordinary local instead, with the
+  fast path above recovering the common case's cost back.
+- **`MirItem::Declaration`/`MirPlaceRoot::Global` are fully implemented**
+  (an ordinary top-level global, `mut` included, with or without a
+  compile-time-known initial value — see
+  [compile-time-evaluation.md](../language/compile-time-evaluation.md)). Extern
+  *data* (a non-function `extern`) is the one storage gap left, still
+  `todo!()` in `update_extern_decl` — its storage lives in another
+  translation unit, a genuinely separate question.
+- **Fixed: taking the address of a function parameter directly** (an
+  explicit `&param`, or the implicit auto-ref a `*self`/`*mut self` method
+  call needs on a by-value parameter, e.g. `key.hash()` where `key: K` is
+  a plain parameter) — found and fixed while building `std`'s own
+  `HashMap<K, V>`, whose `bucket_index` needs exactly this
+  (`key.hash()`). `Codegen::place_storage_address`'s `PlaceStorage::
+  Values` arm now lazily spills the parameter's own SSA leaf values into a
+  fresh stack slot on demand (the identical lazy-materialization
+  `MirPlaceRoot::Expr`/`MirProjection::UnionField` already used elsewhere
+  in the same file), sized directly from the leaves' own Cranelift IR
+  types rather than needing a `ResolvedType` threaded in.
+- **Still `todo!()`: assigning *into* a function parameter directly** (no
+  deref in between) — a different code path
+  (`Codegen::store_scalars`'s identical `PlaceStorage::Values` arm) than
+  the address-of case just above, not fixed by that change. An explicit
+  local copy (`mut p := param;`) still works around it today.
+
+## Compile-time evaluation fuel limit
+
+A single `comp` evaluation currently has a shared fuel budget of **1,000,000** steps across loop progress and nested calls. Exhaustion is diagnosed as runaway compile-time evaluation. This is an implementation safety limit, not a normative promise that programs below or above a particular step count must be accepted by every Omega implementation.

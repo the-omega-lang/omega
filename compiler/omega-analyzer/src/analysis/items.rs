@@ -133,7 +133,7 @@ impl<'r> Analyzer<'r> {
     /// `ident := value;` at item level, without `comp` on the binding -- a
     /// real `Storage::Global` place, but still requiring a compile-time-known
     /// initial value (no runtime constructor/init-order machinery exists,
-    /// see `docs/19-compile-time-evaluation.md`). `value` must analyze to
+    /// see `docs/language/compile-time-evaluation.md`). `value` must analyze to
     /// `CheckedExpr::Const`; this checks the analyzed result's shape rather
     /// than re-deriving "was `comp` written", so any already-const-
     /// recognized shape qualifies, not just an explicit `comp <expr>`.
@@ -357,7 +357,7 @@ impl<'r> Analyzer<'r> {
         )?;
         // Rejects an aggregate passed or returned by value across an
         // `extern` boundary rather than silently miscompiling against a C
-        // caller/callee (see docs/14-known-issues.md, "Omega's calling
+        // caller/callee (see docs/issues/known-issues.md, "Omega's calling
         // convention is not the platform C ABI").
         if let ResolvedType::Function(fn_type) = &resolved_type {
             let aggregate = fn_type

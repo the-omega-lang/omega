@@ -19,8 +19,16 @@ docs, in the code's own comments, and in the commit history; nothing is
 missing from this directory that ever existed here.
 
 
-For the language's *current* state, read [`docs/`](../README.md) instead; where
-a plan and the docs disagree, the docs are right.
+## Current documentation layout
+
+Current documentation is split by responsibility:
+
+- `docs/language/` — normative language semantics and grammar.
+- `docs/architecture/` — compiler/runtime implementation design.
+- `docs/guide/` — non-normative programmer guidance and examples.
+- `docs/issues/` — current bugs, implementation deviations, limitations, and design debt.
+
+Archived plans may refer to the former numbered flat documentation paths. Those references are historical and are intentionally not rewritten as if the old plan had been authored against the new layout.
 
 ## Agent use: cold storage
 

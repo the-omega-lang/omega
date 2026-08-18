@@ -1257,7 +1257,7 @@ main(argc : i32, argv : *[?]*u8) => i32 {
     println$();
 
     # Compile-time evaluation (`comp`) -- see
-    # docs/19-compile-time-evaluation.md. `comp` is a prefix on either an
+    # docs/language/compile-time-evaluation.md. `comp` is a prefix on either an
     # *expression* (`comp <expr>`, evaluate this now) or a *binding*
     # (`comp ident := ...`, this identifier carries no storage of its own).
     #
@@ -1445,7 +1445,7 @@ forward_declared_fn() => i32 {
 # An ordinary function -- nothing about its own declaration marks it as
 # usable at compile time. `comp comp_add(10, 20)` (in `main`, above) still
 # interprets this exact body: `comp` is never a function-level color (see
-# docs/19-compile-time-evaluation.md) -- any function can be *attempted* at
+# docs/language/compile-time-evaluation.md) -- any function can be *attempted* at
 # compile time, on demand, at the call site.
 comp_add(a: i32, b: i32) => i32 {
     a + b

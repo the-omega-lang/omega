@@ -14,7 +14,7 @@
 //!
 //! - **A node is identified by its `(HirId, Span)` pair**, threaded
 //!   explicitly rather than carried in the analyzer's state -- which is why
-//!   so many functions here take both (see docs/17-design-review.md).
+//!   so many functions here take both (see docs/issues/design-debt.md).
 //! - **Resolve once, at signature time; read back everywhere.** Annotations,
 //!   self-mode, method identities and spec visibility are all decided when a
 //!   signature is collected, and every later phase reads those decisions

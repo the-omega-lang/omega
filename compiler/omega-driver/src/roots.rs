@@ -259,7 +259,7 @@ impl ModuleRoots {
     /// project" uniformly) or a registered `--extern` (its own entry in
     /// `extern_trees`). Empty if `core` isn't registered at all. This is
     /// what makes `core` a true, always-available prelude (see
-    /// `docs/10-modules-and-linkage.md`), and the one package `primitive` blocks
+    /// `docs/architecture/module-driver-and-linkage.md`), and the one package `primitive` blocks
     /// may live in -- both still exclusive to `core`, unlike the eager
     /// *tree discovery* `extern_trees` itself now gives every extern.
     pub fn core_modules(&self) -> Vec<ModulePath> {

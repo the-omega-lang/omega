@@ -39,7 +39,14 @@ For each changed hunk:
 4. Do not review entire large files merely because they contain a changed hunk.
 5. Stop expanding context when the suspected issue is confirmed/refuted and the relevant contract is clear.
 
-Use current docs when the diff changes language/compiler semantics. Historical plans and git history are cold storage unless current rationale is genuinely missing.
+Use documentation according to responsibility when the diff changes behavior:
+
+- `docs/language/` for normative language semantics;
+- `docs/architecture/` for implementation architecture;
+- `docs/guide/quick-reference.md` when reviewing generated/changed `.omg` syntax;
+- relevant `docs/issues/` for known deviations/debt.
+
+Historical plans and git history are cold storage unless current rationale is genuinely missing. If implementation and `docs/language/` disagree, do not silently bless the implementation; check whether the mismatch is a known issue or an unintended semantic change.
 
 ## Three passes
 
@@ -86,7 +93,7 @@ Fix a finding yourself only when all are true:
 - it requires no new abstraction/module;
 - a focused test fits the existing structure.
 
-Otherwise defer it. Record a real current design/implementation issue in the appropriate current docs (usually `docs/14-known-issues.md` or the relevant topic caveat) only when it is genuinely worth persisting; do not create documentation noise for speculative concerns.
+Otherwise defer it. Record a real unresolved problem under the appropriate `docs/issues/` file only when it is genuinely worth persisting; do not add compiler bugs as caveats to normative `docs/language/` chapters and do not create documentation noise for speculative concerns.
 
 Every fix you apply must be reported individually.
 

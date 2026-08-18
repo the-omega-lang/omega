@@ -95,7 +95,7 @@ RUN apk add --no-cache \
         rustup
 
 # LLVM, for the second `omega-codegen` backend beside Cranelift (see that
-# crate's `BackendKind`, and docs/16-mir-and-codegen.md's "Multiple
+# crate's `BackendKind`, and docs/architecture/mir-and-codegen.md's "Multiple
 # backends"). Deliberately its own layer and its own apk invocation rather
 # than joining the block above, for two reasons: it is by far the largest
 # thing in this image (~700 MB installed -- /usr/lib/llvm<N> alone measures

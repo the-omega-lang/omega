@@ -332,7 +332,7 @@ impl<'ctx> Codegen<'ctx> {
     /// flattened aggregate, a field within a slot) must weaken that claim
     /// by whatever the offset itself destroys, or an over-aligned `align`
     /// on the resulting load/store is UB LLVM's optimizer can act on.
-    /// Only ever lowers the claim -- see `docs/14-known-issues.md`'s
+    /// Only ever lowers the claim -- see `docs/issues/known-issues.md`'s
     /// `@layout(align)` entry for the propagation gap this does not cover.
     fn offset_align(base_align: u32, byte_offset: u32) -> u32 {
         let base_align = base_align.max(1);

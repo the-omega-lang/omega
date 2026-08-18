@@ -701,7 +701,7 @@ pub enum AnalysisErrorKind {
     /// (struct/union/enum) *by value*. Omega's calling convention is
     /// internally consistent but is not the platform C ABI, so this shape
     /// would silently miscompile against a real C caller/callee -- rejected
-    /// until the real C ABI lands (see `docs/14-known-issues.md`). Scalars,
+    /// until the real C ABI lands (see `docs/issues/known-issues.md`). Scalars,
     /// pointers, slices, and everything behind a pointer stay fine.
     ExternAggregateByValue {
         r#type: ResolvedType,
@@ -875,7 +875,7 @@ pub enum AnalysisErrorKind {
     /// names the specific construct that blocked it, and `trace` is the
     /// call-site chain from the outermost `comp` down to where `reason`
     /// happened, outermost first (empty for a direct failure). See
-    /// `docs/19-compile-time-evaluation.md`.
+    /// `docs/language/compile-time-evaluation.md`.
     CompEvalFailed {
         reason: String,
         trace: Vec<Span>,
@@ -890,7 +890,7 @@ pub enum AnalysisErrorKind {
     /// gets real storage, but its initial value still has to be known
     /// before codegen runs; there's no runtime constructor/init-order
     /// machinery. Fix: an explicit `comp <expr>` initializer. See
-    /// `docs/19-compile-time-evaluation.md`.
+    /// `docs/language/compile-time-evaluation.md`.
     TopLevelValueNotComp,
     /// A `struct`/`union` whose fields (if any) all resolve to zero-sized
     /// types -- unlike `marker`, a `struct`/`union` is meant to hold real

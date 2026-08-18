@@ -504,7 +504,7 @@ pub enum CheckedExpr {
     /// Any fully compile-time-known value -- a `&[...]` compile-time slice
     /// literal (`ResolvedType::Slice { item, mutable: false }`, see
     /// `ConstValue::Slice`), an enum's per-variant header/tag constant, or
-    /// (see `docs/19-compile-time-evaluation.md`) a `comp <expr>` that
+    /// (see `docs/language/compile-time-evaluation.md`) a `comp <expr>` that
     /// evaluated successfully -- `crate::comp_eval::eval`'s result,
     /// spliced in by `Analyzer::analyze_comp` in place of whatever tree
     /// `<expr>` originally was, so nothing downstream of analysis (MIR

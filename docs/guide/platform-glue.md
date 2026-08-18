@@ -7,14 +7,14 @@ package, honestly named after what it physically is (`libc/` today), that
 level alias (`--name=`/`--extern=plat:...`) — the project's own files
 never lie about what they are; only the compiler's view of a root's
 identity can differ from its on-disk name. Unlike `core`
-([the core library](13-core-library.md)), `plat` gets no ambient-prelude
+([the core library](core-library.md)), `plat` gets no ambient-prelude
 treatment, no `primitive`-block privilege, and no eager-discovery exemption of
 its own; it's just an ordinary `--extern` package that happens to ship
 `glue` implementations for `core`'s own gaps (see
-[gaps and glue](21-gaps-and-glue.md)). Any consumer that registers it gets
+[gaps and glue](../language/gaps-and-glue.md)). Any consumer that registers it gets
 its glue discovered automatically, whether or not it ever `import`s `plat`
 itself — the same eager, whole-program struct/spec surface resolution
-every registered extern gets (see [modules & linkage](10-modules-and-linkage.md)'s
+every registered extern gets (see [modules & linkage](../language/modules-and-imports.md)'s
 "Eager local discovery").
 
 ## Layout

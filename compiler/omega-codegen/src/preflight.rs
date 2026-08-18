@@ -8,7 +8,7 @@
 //!
 //! This pass covers what remains unimplemented: assignment into a function
 //! parameter, and non-function `extern` data declarations (see
-//! `docs/14-known-issues.md`).
+//! `docs/issues/known-issues.md`).
 
 use crate::CodegenRequest;
 use omega_analyzer::resolved_type::ResolvedType;
@@ -22,7 +22,7 @@ pub(crate) fn preflight(request: &CodegenRequest) -> Result<(), String> {
     for (_, module) in &request.modules {
         for item in &module.items {
             match item {
-                // Extern *data* declarations have no storage story yet (docs/14-known-issues.md).
+                // Extern *data* declarations have no storage story yet (docs/issues/known-issues.md).
                 MirItem::ExternDeclaration(decl)
                     if !matches!(decl.r#type, ResolvedType::Function(_)) =>
                 {

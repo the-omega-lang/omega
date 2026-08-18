@@ -738,7 +738,7 @@ impl<'r> Analyzer<'r> {
 
         // `comp_binding[range]` -- const promotion, same as
         // `analyze_address_of`'s identical guard (see there, and
-        // docs/19-compile-time-evaluation.md's "calling a method on a
+        // docs/language/compile-time-evaluation.md's "calling a method on a
         // `comp` binding" section). `requested_mutable` is already ruled
         // out by this point: a comp binding's own `source_mutable` is
         // always `false` (never `mut`), so the check just above already

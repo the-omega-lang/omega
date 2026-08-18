@@ -1,5 +1,7 @@
 # Macros
 
+This chapter is normative for current Omega language behavior. Known implementation limitations are tracked separately under [`../issues/`](../issues/).
+
 Macros are Omega's purely syntactic, compile-time `SourceModule ->
 SourceModule` transform. They define a token template and use the ordinary
 grammar at each invocation site to determine what that template must mean.
@@ -68,19 +70,13 @@ $...( separator? ) { body }  repetition
 name$( arguments )    invocation
 ```
 
-## Mechanism
+## Expansion model
 
-A macro body is captured as a token tree at definition time, not parsed as
-an `Expression`/`Statement`/`Item` right away — it legitimately contains
-`$name` metavariables and syntax that becomes valid only after substitution.
-Expansion substitutes tokens directly into the ordinary parser's relevant
-entry point; there is no render-to-text-and-relex round trip. Every token
-therefore keeps its real originating span from either the definition or the
-invocation arguments.
+A macro body is a token template rather than an independently valid Omega expression/item. Metavariables and repetition syntax are substituted at a concrete invocation, and the resulting token sequence must then satisfy the grammar required by that invocation position.
 
-By the time macro expansion finishes, no macro-related node survives
-downstream: HIR lowering has `unreachable!()` arms for macro definitions and
-invocations, so nothing past `omega-parser` needs to know macros exist.
+Tokens originating in the macro definition retain definition-site origin; tokens substituted from invocation arguments retain caller origin. This origin distinction is part of macro name-resolution/hygiene behavior described below.
+
+Macro expansion is complete before ordinary semantic checking of the expanded declarations/statements/expressions.
 
 ## Duck-typed expansion
 
@@ -90,39 +86,22 @@ hand-written code. There is no macro-specific type checking pass.
 
 ## Definition-site hygiene
 
-Unlike Rust's own mangling scheme, `omega-mangle`'s v0 grammar deliberately
-has no disambiguator-index for macro expansion. Expanded items go through
-the same redeclaration and overload checks as hand-written declarations, and
-once a symbol's full signature is part of its mangled name, genuinely
-distinct declarations cannot collide. This is possible because macro
-expansion has no closures and no per-invocation hygiene scope to disambiguate.
+Macro-generated tokens follow a narrow origin-based hygiene model:
 
-Omega tracks the author of each expansion token. A path or local introduced by
-a macro body resolves in the macro's definition module and lexical scope;
-tokens substituted for a `$parameter` keep the caller's origin and resolve in
-the caller's scope. This prevents macro locals from capturing an argument and
-lets a macro use its own imports without making them part of every caller's
-interface.
+- names and paths written in the macro body resolve from the macro definition's module/lexical environment;
+- tokens substituted from a macro argument retain the caller's origin and resolve in the caller's environment;
+- a nested macro invocation written in the macro body resolves in the definition environment, while a nested invocation supplied as an argument resolves from the caller.
 
-That applies to *macro names* as well, and selection is per invocation rather
-than per expansion. A nested invocation written in a body resolves in the
-body's defining module, while one that arrives inside a substituted argument —
-`println$("sum: ", sum_macro$(3, 4))`, where `println` is `std`'s and
-`sum_macro` is the caller's — was written by the caller and resolves there.
+Generated declarations remain ordinary declarations and therefore participate in normal redeclaration/overload rules. Generic parameters and `Self` are substitution-bound rather than ordinary captured lexical names.
 
-This is deliberately a narrow hygiene rule. Declarations remain ordinary
-declarations, so generated items still follow normal redeclaration rules.
-Generic parameters and `Self` are substitution-bound rather than lexical
-bindings, and are intentionally not origin-partitioned. An `import` in a
-macro body is rejected: it would otherwise mutate the caller's namespace too
-late to affect the already definition-site-resolved body.
+An `import` inside a macro body is invalid. Definition-origin paths already resolve in the definition module, and expansion is not allowed to mutate the caller's import namespace.
 
 ## Where it's actually used
 
 `runtime/core/primitives/numerics.omg` uses three macros
 (`signed_integer`/`unsigned_integer`/`float_ops`) to generate numeric spec
 method and conformance declarations for every primitive type instead of
-hand-writing twelve near-identical groups. See [core library](13-core-library.md).
+hand-writing twelve near-identical groups. See [core library](../guide/core-library.md).
 
 ## Cross-file visibility
 

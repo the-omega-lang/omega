@@ -1209,7 +1209,7 @@ impl<'r> Analyzer<'r> {
     /// `resolve_comp_place`) instead of a real place, since a `comp` binding
     /// has no address of its own. A pointer-wanting `self` needs const
     /// promotion like a bare `&comp_binding` (see `analyze_address_of` and
-    /// docs/19-compile-time-evaluation.md); a value-wanting `self` needs
+    /// docs/language/compile-time-evaluation.md); a value-wanting `self` needs
     /// none. `*mut self`/`&mut` is never legal here: the promoted data is
     /// read-only rodata, so no writable pointer can ever come from it.
     fn adapt_comp_self_argument(

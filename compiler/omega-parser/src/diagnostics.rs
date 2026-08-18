@@ -263,7 +263,7 @@ pub enum ParseErrorKind {
     /// A `gap` function written with a body. Default-bodied gap functions
     /// are a deliberately deferred *feature*, not a shape rule -- see this
     /// error's own note in `ParseError::to_diagnostic` for what implementing
-    /// one would take, and `docs/14-known-issues.md`.
+    /// one would take, and `docs/issues/known-issues.md`.
     GapFunctionBody {
         name: Ident,
     },

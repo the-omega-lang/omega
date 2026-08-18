@@ -3,7 +3,7 @@
 ## Why this exists
 
 Through `omega-analyzer`, the pipeline is HIR → `CheckedModule`: a fully
-resolved, monomorphized tree (see [generics.md](06-generics.md) — a generic
+resolved, monomorphized tree (see [generics.md](../language/generics.md) — a generic
 is re-analyzed per concrete instantiation, so by the time a `CheckedModule`
 exists there are no type parameters left anywhere in it). Until this stage
 was added, `omega-codegen` walked that checked tree directly, doing
@@ -295,45 +295,3 @@ checking) answers with the *same* width codegen will lay out.
 places a `Leaf` becomes a native type; each backend is that one small
 mapping rather than another copy of ~250 lines of layout math. That claim
 has now actually been tested by a second backend, and it held.
-
-## Caveats
-
-- **No three-address form yet.** `MirExpr` stays tree-shaped on purpose
-  (see "What's still a tree" above); this is the natural next step for
-  whenever `omega-codegen` gets its own dedicated refactor, and would open
-  the door to real local optimizations (CSE, constant propagation across
-  statements) this MIR doesn't attempt today.
-- **Block-arguments were tried and rejected as the general mechanism for
-  threading an `if`/`match`'s value across its join** — a Cranelift-native
-  phi-equivalent, and the more "purely Rust-MIR" choice would be a mutable
-  temp local either way (Rust's own MIR has no block-argument mechanism at
-  all). The block-argument version broke the moment a *sibling*
-  expression built more blocks before the value was actually consumed — a
-  real, reproduced bug (a stale value read back from a since-abandoned
-  block), not a theoretical one — so every cross-block value in this MIR
-  (an `if`/`match` join's result, the function's own return value threaded
-  through its `defer` exit chain) is an ordinary local instead, with the
-  fast path above recovering the common case's cost back.
-- **`MirItem::Declaration`/`MirPlaceRoot::Global` are fully implemented**
-  (an ordinary top-level global, `mut` included, with or without a
-  compile-time-known initial value — see
-  [compile-time-evaluation.md](19-compile-time-evaluation.md)). Extern
-  *data* (a non-function `extern`) is the one storage gap left, still
-  `todo!()` in `update_extern_decl` — its storage lives in another
-  translation unit, a genuinely separate question.
-- **Fixed: taking the address of a function parameter directly** (an
-  explicit `&param`, or the implicit auto-ref a `*self`/`*mut self` method
-  call needs on a by-value parameter, e.g. `key.hash()` where `key: K` is
-  a plain parameter) — found and fixed while building `std`'s own
-  `HashMap<K, V>`, whose `bucket_index` needs exactly this
-  (`key.hash()`). `Codegen::place_storage_address`'s `PlaceStorage::
-  Values` arm now lazily spills the parameter's own SSA leaf values into a
-  fresh stack slot on demand (the identical lazy-materialization
-  `MirPlaceRoot::Expr`/`MirProjection::UnionField` already used elsewhere
-  in the same file), sized directly from the leaves' own Cranelift IR
-  types rather than needing a `ResolvedType` threaded in.
-- **Still `todo!()`: assigning *into* a function parameter directly** (no
-  deref in between) — a different code path
-  (`Codegen::store_scalars`'s identical `PlaceStorage::Values` arm) than
-  the address-of case just above, not fixed by that change. An explicit
-  local copy (`mut p := param;`) still works around it today.

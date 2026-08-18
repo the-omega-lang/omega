@@ -159,7 +159,7 @@ impl ModuleResolver for Driver {
         let Some((target, reveal)) = self.import_entry(module_path, alias)? else {
             // No explicit `import` binds this alias -- `core` is always
             // implicitly available as a qualified-path prefix (see
-            // docs/10-modules-and-linkage.md's "core is a prelude"), except
+            // docs/architecture/module-driver-and-linkage.md's "core is a prelude"), except
             // from within `core`'s own tree.
             if alias.as_ref() == crate::roots::CORE_MODULE
                 && !crate::roots::is_core_module(module_path)

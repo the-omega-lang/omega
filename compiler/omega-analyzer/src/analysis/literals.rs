@@ -776,7 +776,7 @@ impl<'r> Analyzer<'r> {
     /// Picks the concrete type an *unsuffixed* literal resolves to: `expected`
     /// if given and its numeric family agrees with the literal's own (`Float`
     /// iff a fractional part was written, never the other way), else the
-    /// plain `i32`/`f32` default -- see `docs/01-primitives.md` for why the
+    /// plain `i32`/`f32` default -- see `docs/language/types-and-primitives.md` for why the
     /// float default is `f32`, not `f64`. An explicit suffix always wins
     /// and never reaches this (see `analyze_number`).
     fn default_or_expected_number_type(n: &NumberExpr, expected: Option<&ResolvedType>, pointer_bits: u32) -> ResolvedType {

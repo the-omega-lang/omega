@@ -1,7 +1,6 @@
 //! Evaluating one [`MirExprNode`] into its scalar leaves -- the bulk of
 //! what this backend actually does, since every control-flow shape was
-//! already flattened away by `omega-mir` (see `docs/16-mir-and-
-//! codegen.md`); this is purely expression evaluation.
+//! already flattened away by `omega-mir` (see `docs/architecture/mir-and-codegen.md`); this is purely expression evaluation.
 
 use super::Codegen;
 use super::leaf::IntoCraneliftLeaves;

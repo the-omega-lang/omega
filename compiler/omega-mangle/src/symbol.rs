@@ -127,6 +127,6 @@ pub struct Symbol {
     /// `<vendor-specific-suffix>`, appended as `.` + this string. Meant
     /// for external tooling (e.g. an LTO pass appending `.llvm.1234`),
     /// not the compiler's own routine output -- see
-    /// `docs/16-mir-and-codegen.md`.
+    /// `docs/architecture/mir-and-codegen.md`.
     pub vendor_suffix: Option<String>,
 }

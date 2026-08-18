@@ -7,8 +7,8 @@ import option::Option;
 
 # `to_iterator` returns `spec Iterator<T>` (static dispatch): each
 # implementor returns its own concrete iterator type, checked against the
-# bound rather than an exact signature -- see docs/08-specs.md. This makes
-# `ToIterator<T>` not object-safe, a deliberate tradeoff (docs/08-specs.md's
+# bound rather than an exact signature -- see docs/language/specs-and-conformance.md. This makes
+# `ToIterator<T>` not object-safe, a deliberate tradeoff (docs/language/specs-and-conformance.md's
 # object-safety caveat).
 exposed spec Iterator<T> {
     next(*mut self) => Option<T>;

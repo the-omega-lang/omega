@@ -1,7 +1,7 @@
 # Parsing, macro expansion, and the HIR
 
 The front half of the pipeline, documented in the same style as
-[16-mir-and-codegen.md](16-mir-and-codegen.md) does the back half. Three
+[mir-and-codegen.md](mir-and-codegen.md) does the back half. Three
 crates: `omega-diagnostics` (the root of the dependency graph — spans,
 findings, the renderer), `omega-parser` (lexer, recursive-descent parser,
 macro expansion), and `omega-hir` (identity assignment and four
@@ -152,25 +152,3 @@ end" is unrepresentable rather than merely rejected at runtime. Lowering
 used to flatten it straight back into the rejected shape, so HIR could hold
 a state the grammar cannot produce. `HirRangeEnd` now mirrors it, and the
 guarantee holds the whole way down.
-
-## Caveats
-
-- **Recovery granularity is coarse.** `synchronize_to_item_boundary` and
-  `synchronize_to_statement_boundary` both treat any identifier as a
-  plausible boundary, so recovery often stops almost immediately after the
-  error. This is sufficient (one mistake yields one error) but it is not
-  precise, and a badly-malformed member can still swallow its enclosing
-  block's closing brace.
-- **`macros.rs` traverses the AST by hand.** `expand_expr` is ~180 lines of
-  which the substantive part is the first eight — find a
-  `MacroInvocation`, replace it; the rest reconstructs every node
-  field-by-field purely to recurse. It is correct, and exhaustive matching
-  keeps it correct, but it is boilerplate that grows with the AST.
-- **The `(defs, budget, state)` triple is threaded by hand** through fifteen
-  expansion functions; several signatures are longer than their bodies.
-- **HIR still mirrors the AST closely.** That is the cost of the identity
-  boundary described above, not an accident, but it does mean two node sets
-  to keep in step.
-- See [14-known-issues.md](14-known-issues.md) for the language-level
-  questions this area raises that are *not* bugs and were deliberately not
-  decided during refactoring.

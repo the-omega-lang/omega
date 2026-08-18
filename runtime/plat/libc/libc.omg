@@ -5,7 +5,7 @@
 # gap's signature has no failure channel.
 #
 # This directory is named `libc` but registers as package `plat` via
-# `--name=plat`/`--extern=plat:...` (see docs/22-platform-glue.md), not by
+# `--name=plat`/`--extern=plat:...` (see docs/guide/platform-glue.md), not by
 # renaming the file. The two `free`s below (raw extern and glue function)
 # are an intentional, confirmed-safe name collision.
 

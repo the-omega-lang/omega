@@ -1,10 +1,6 @@
-# Known issues tracker
+# Known issues
 
-A single consolidated list of every confirmed, currently-unfixed gap
-described in these docs, for tracking at a glance. Each entry links to its
-full writeup. Update this file whenever a gap here is fixed (move it to a
-"Fixed" note in the relevant topic file, don't just delete the line) or a
-new one is found.
+Concrete current compiler/library bugs and unsupported cases. Resolved issues are removed from this file; history remains in git and `docs/plan/`. Language semantics are normative in `docs/language/`, so an implementation deviation recorded here does not redefine the language.
 
 ## Codegen
 
@@ -34,12 +30,12 @@ new one is found.
   straight into a variadic call (any `-O` level), an enum body-field
   projection (`-O1`+ only), or even a plain local in a large enough
   function (previously believed safe; it isn't, it was just small
-  enough to not show it). [primitives.md](01-primitives.md)
+  enough to not show it). [primitives.md](../language/types-and-primitives.md)
 
 - **No real C-ABI aggregate-passing convention** — structs/enums pass as
   flattened positional scalars, fine Omega-to-Omega, not safely callable
   from hand-written C expecting real struct-passing rules.
-  [primitives.md](01-primitives.md)
+  [primitives.md](../language/types-and-primitives.md)
 
 - **Extern *data* declarations (a non-function `extern`) have no storage
   story** — fully resolved and type-checked like everything else, but
@@ -47,30 +43,14 @@ new one is found.
   `update_extern_decl`), since its storage genuinely lives in another
   translation unit. An ordinary top-level global (`ident: type;`, or a
   non-`comp` `ident := comp value;`) is *not* this gap anymore — both
-  are fully implemented, including `mut`. [mir-and-codegen.md](16-mir-and-codegen.md),
-  [compile-time-evaluation.md](19-compile-time-evaluation.md)
+  are fully implemented, including `mut`. [mir-and-codegen.md](../architecture/mir-and-codegen.md),
+  [compile-time-evaluation.md](../language/compile-time-evaluation.md)
 
 - **Assigning *into* a function parameter directly (no deref in between)
   is still `todo!()`** — taking a parameter's *address* is fixed (see
-  [mir-and-codegen.md](16-mir-and-codegen.md)'s own "Fixed" note); direct
+  [mir-and-codegen.md](../architecture/mir-and-codegen.md)'s own "Fixed" note); direct
   assignment is a separate, still-unfixed code path. An explicit local
-  copy works around it today. [mir-and-codegen.md](16-mir-and-codegen.md)
-
-- ~~**A monomorphized *conform* method gets strong linkage**~~ — **fixed.**
-  `linkage_for` decided weak vs. strong from the *function's* own `type_args`,
-  which is empty for a conform method: the genericity lives in the target
-  (`Self`), not the method. So two packages that each called `println$` — whose
-  expansion instantiates `conform<W: Write> BufWriter<W> to Write` at
-  `BufWriter<Stdout>` — failed to link with `multiple definition of
-  _omg_…BufWriterNtBb_6StdoutE5Write5write…`, while the type's *inherent*
-  methods and its vtable symbol were correctly weak.
-
-  `ConformanceOwner::from_template` now carries the missing bit (set from whether
-  `instantiate_conformance` was handed a substitution — only a template match
-  produces one), and codegen gives a template instantiation `Preemptible`
-  linkage while a directly-written concrete conform stays `Export`, so a
-  genuine duplicate is still an error. Guarded by `just test-multi-print`,
-  which links two printing packages and fails without the fix.
+  copy works around it today. [mir-and-codegen.md](../architecture/mir-and-codegen.md)
 
 ## Types
 
@@ -82,13 +62,13 @@ new one is found.
   load-bearing. `Param` already drops spans and `origin` from equality,
   following `Path`'s precedent; whether the *name* belongs in a function
   type's identity is the open question.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 
 - **`*str` is not actually guaranteed valid UTF-8** — casting between
   `*str` and `*[]u8`/`*[]i8` is unsound in both directions, no validation.
   Deliberately deferred pending a `core`-provided validating conversion.
-  [strings-casting-and-slices.md](11-strings-casting-and-slices.md)
+  [strings-casting-and-slices.md](../language/strings-casts-arrays-and-slices.md)
 
 - **`char`'s classifiers are ASCII-only, not Unicode.** `is_alphabetic`,
   `is_whitespace` and `to_ascii_*` cover the ASCII range and nothing beyond
@@ -97,7 +77,7 @@ new one is found.
   which do not belong in a freestanding `core` without a decision about where
   that data lives and what it costs in code size. The names are deliberately
   honest about the `to_ascii_*` half; the `is_*` half is the one that could
-  mislead. [primitives.md](01-primitives.md)
+  mislead. [primitives.md](../language/types-and-primitives.md)
 
 - **`char`'s validity is a supported path, not an enforced invariant.**
   `char::from_u32` rejects out-of-range values and UTF-16 surrogates, and the
@@ -107,35 +87,18 @@ new one is found.
   restricting pointer casts, which contradicts the honest-address model. It
   is recorded because several comments would otherwise be tempted to claim a
   `char` is always valid — the true statement is that the supported path
-  always produces a valid one. [primitives.md](01-primitives.md)
-
-- ~~**There is no `!` (logical-not) operator for `bool`**~~ — **fixed.**
-  `bool` now has `!`, `&&` and `||` alongside the existing `&`/`|`/`^`. It
-  turned out cheaper than the estimate here: all three desugar during
-  analysis into forms the language already had (`!x` to `x ^ true`, `&&`/`||`
-  to the `if`-expressions the idiom already used), so no `CheckedExpr`,
-  `MirExpr` or codegen variant was needed — only a token, a grammar tier and
-  an HIR node. [control-flow.md](03-control-flow.md)
+  always produces a valid one. [primitives.md](../language/types-and-primitives.md)
 
 - **`std::fmt`'s float output is fixed-precision, not round-trip** — six
   fractional digits, with a scientific fallback below `1e-6` and at or above
   `1e19` whose normalization loop (repeated multiply/divide by ten) is itself
   lossy. `nan`/`inf`/`-inf` are exact. A shortest-round-trip formatter
   (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
-  [console-io.md](24-console-io.md)
+  [console-io.md](../guide/console-io.md)
 
 ## Conformance and specs (`conform` / `primitive`)
 
-Every issue tracked here through plan 0014 is now fixed and verified; see
-[specs.md](08-specs.md) for the resulting behaviour — goal-directed
-conformance proving (blanket chains resolve in any declaration order, and a
-genuine cycle prints the chain that closes it), alias-transparent bounds
-(`T: AB` and `T: A + B` are interchangeable in precedence and in bound
-contexts), return-type-driven generic inference (a generic named only in a
-call's expected type is inferred from it, for free functions and generic
-statics alike), and the two diagnostics that no longer name constructs the
-author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
-`GenericParamFromFatPointer` for a thin `*T` against a slice). What remains:
+Remaining known conformance/spec issues:
 
 - **Blanket conform bodies are checked lazily**, and a blanket emits a body
   for every type it is *materialized* against, not every type that calls it.
@@ -147,51 +110,25 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   `check_conformance_bodies` is scheduled, not a local tweak. Not a
   correctness or binary-size problem: codegen puts each function in its own
   section and every link uses `--gc-sections`, so dead copies never reach
-  the executable. [specs.md](08-specs.md)
+  the executable. [specs.md](../language/specs-and-conformance.md)
 
-  **Measured**: `target/core.o` went from 226 defined symbols to 204 across
-  plan 0014 — the 22 removed are `Eq::equals`/`Eq::not_equals` for the 11
-  scalars, bodies `core::cmp`'s `conform<T: Ord> T to Eq` used to emit for
-  every scalar the compilation happened to query, and which `core` itself
-  never calls. This is a *reduction*, not a regression: a downstream package
-  that does call one materializes the blanket itself and emits its own weak
-  copy, which links and runs (verified). Anyone re-running an
-  `nm --defined-only` comparison against a pre-0014 object file should
-  expect this difference and no other; `target/std.o` is unchanged at 91.
 
 - **Latent blanket overlap is diagnosed at use, not declaration.** The
   compiler intentionally does not try to prove whether arbitrary spec bounds
   overlap. Two unrelated blankets become an `AmbiguousConformance` only when
   a concrete type satisfies both; this avoids rejecting declarations that
   can never apply together, at the cost of a downstream diagnostic.
-  [specs.md](08-specs.md)
-
-- **Design note: definition-site `spec T` return types are removed.**
-  `make() => spec Animal { ... }` is now `SpecStaticNotAllowedHere` on a
-  free function and a method alike, deliberately — the syntax promises "some
-  unknown type implementing XYZ", which is true of a spec *declaration*
-  (each implementor answers differently) and false at a definition site
-  (one body, one type, known to its author), and its only benefit was
-  hiding a name. The removed machinery was a phase inversion (body analysis
-  during the signature phase); the rule is now uniform: a return type is
-  either written concretely, or chosen by the *caller* through an ordinary
-  generic parameter (`f<T: Animal>() => T`). The spec-declaration position
-  (`to_iterator(*self) => spec Iterator<T>`) and the parameter position
-  (unchanged sugar) both stay — see [specs.md](08-specs.md). Reopening this
-  would need a compiler that can afford body analysis during the signature
-  phase in every compilation module; until then the workarounds are to name
-  the concrete type or take a bound generic parameter.
-  [specs.md](08-specs.md)
+  [specs.md](../language/specs-and-conformance.md)
 
 ## Gaps and glue
 
 - **No default-bodied `gap` function** — every gap function must
   currently be a bare requirement; a body is rejected outright
-  ([gaps-and-glue.md](21-gaps-and-glue.md)).
+  ([gaps-and-glue.md](../language/gaps-and-glue.md)).
 
 - **No "override" or test-only glue concept** — a second `glue` for the
   same gap is always a hard error project-wide, with no way to shadow one
-  intentionally. [gaps-and-glue.md](21-gaps-and-glue.md)
+  intentionally. [gaps-and-glue.md](../language/gaps-and-glue.md)
 
 - **`MultipleGluesForGap` cannot point at the conflicting glue blocks.**
   The error is anchored at the *gap*'s declaration (correctly — neither
@@ -218,12 +155,12 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   avoided, to keep anything downstream from branching on gap-level
   metadata) or teaching the whole-program sweeps to honour suppression and
   suppressing the note when a warning kind has no suppressible anchor.
-  [gaps-and-glue.md](21-gaps-and-glue.md)
+  [gaps-and-glue.md](../language/gaps-and-glue.md)
 
 ## Visibility
 
 - **No re-export / `pub use`-equivalent.** Matches the language having no
-  re-export concept at all today. [visibility.md](07-visibility.md)
+  re-export concept at all today. [visibility.md](../language/visibility.md)
 
 ## Macros
 
@@ -248,7 +185,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   expansion provenance so the renderer can show both. Pinning only the
   top-level statement node would fix the demonstrated case while leaving
   every nested expression inside an expansion still wrong.
-  [macros.md](12-macros.md)
+  [macros.md](../language/macros.md)
 
 - **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
   documents.** `macros.rs`'s budget is spent one unit per invocation and
@@ -260,7 +197,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   identically on the baseline commit with the old `a!()` syntax. Statement
   position adds a second recursion path (`expand_statements_invocation`)
   with the same shape. The fix is a *depth* limit rather than (or as well
-  as) a total-expansion budget. [macros.md](12-macros.md)
+  as) a total-expansion budget. [macros.md](../language/macros.md)
 
 - **Duplicate macro parameter names are silently accepted**, e.g.
   `macro m($a: expr, $a: expr)`; bindings are a `HashMap`, so the later
@@ -269,7 +206,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   variadic's `Many` binding shadows the fixed `One`. Pre-existing (the flat
   `Vec<MacroParam>` model had it too); the fix is one duplicate check in
   `parse_macro_signature` plus a `ParseErrorKind` variant.
-  [macros.md](12-macros.md)
+  [macros.md](../language/macros.md)
 
 - **A repetition separator is not restricted to tokens that can survive
   substitution.** `parse_repetition` only rejects brackets and multi-token
@@ -277,21 +214,21 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   `$name`/`$` token literally, and fails much later with a confusing
   expansion-site parse error rather than at the definition. Low impact
   (nobody writes it deliberately), but the diagnostic points at the wrong
-  place. [macros.md](12-macros.md)
+  place. [macros.md](../language/macros.md)
 
 - **Macro visibility is not transitive.** A module's macro environment is
   built from its *own* import statements and each target's *own* definitions;
   an imported module's imports are never followed. This matches the language
   having no re-export concept, and it is what keeps the pre-pass acyclic, but
   it means a package cannot curate a macro surface the way it can't curate an
-  item surface. [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+  item surface. [macros.md](../language/macros.md), [visibility.md](../language/visibility.md)
 
 - **Importing a macro leaves a spurious `unused import` warning.** Macro
   names are resolved and consumed by the pre-pass in `omega-driver`'s
   `Driver::macro_env`, entirely before HIR exists, so the ordinary
   import-usage tracking never observes the use and reports the import as
   dead. Every cross-package macro import warns today.
-  [macros.md](12-macros.md), [visibility.md](07-visibility.md)
+  [macros.md](../language/macros.md), [visibility.md](../language/visibility.md)
 
 ## Compiler internals
 
@@ -308,7 +245,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   by it, these desugarings start colliding silently. Worth settling
   deliberately during the `omega-analyzer` pass: either mint fresh ids in
   the analyzer, or state the invariant where it can be seen.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **Macro expansion still rebuilds the whole tree by value to recurse.**
   `omega_parser::macros::Expander::expand_expr` was given a context struct
@@ -324,7 +261,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   one consumer — worth deciding on its own rather than as the tail of a
   refactor. The cost of leaving it is ~70 lines of reconstruction that a new
   `Expression` variant must be added to in two places instead of one.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **Three of the spans added by the span-ownership pass have no reader.**
   `FunctionDefinitionStmt`/`SpecFunctionStmt`/`HirFunctionDef`/
@@ -340,7 +277,7 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   them now would only mean re-adding them. **Decision needed:** either
   narrow those anchors and consume these spans, or drop them and stop
   carrying a field the pipeline does not use.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **`Display for ParseErrorKind` builds and discards a whole `Diagnostic`.**
   Collapsing each parse error's definition to one site made
@@ -351,12 +288,12 @@ author never wrote (`MutateTemporary` for a `*mut self` call on a temporary,
   where it is rare, but it is a real cost paid for a wording guarantee.
   A `message_only` split inside `to_diagnostic` would remove it without
   reintroducing a second definition site.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 
 Shape problems in `omega-driver` and `omega-analyzer` that work today but each
 need a breaking change to fix — full writeups in
-[design-review.md](17-design-review.md#compiler-architecture).
+[design-review.md](design-debt.md#compiler-architecture).
 
 - **Overloading needs a whole parallel item pipeline** (two extra caches,
   two extra sweeps, two extra resolver methods) purely because the item
@@ -368,11 +305,6 @@ need a breaking change to fix — full writeups in
   likely `ensure_overload_signature` resolving a generic candidate's own
   signature with an empty substitution list.
 
-- ~~**Two independent pending-spec-method queues**~~ — **fixed.** With
-  conformance living only in the conform registry, an aggregate queues
-  nothing, so the `ItemKey`-keyed queue was deleted outright rather than
-  unified; `ConformanceEntry::pending` is the only one left.
-
 - **A directory sharing its package root's name is skipped without saying
   so.** `fs_resolve::discover_tree`'s `skip` matches by name, not by kind, so
   `<root>/<basename>/` is swallowed along with the `<root>/<basename>.omg` it
@@ -383,7 +315,7 @@ need a breaking change to fix — full writeups in
   entry module" expectation). What remains is that nothing reports the skipped
   directory itself, so a package with both a root file *and* a same-named
   subdirectory still loses the subdirectory quietly. Full writeup in
-  [modules and linkage](10-modules-and-linkage.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
+  [modules and linkage](../language/modules-and-imports.md#known-gap-a-same-named-subdirectory-hides-itself-silently).
 
 - **`ResolveError::Cycle` carries a chain it never populates** — it always
   prints one module, so the rendered message implies a cycle it never
@@ -415,7 +347,7 @@ need a breaking change to fix — full writeups in
   create a distinction that dies one layer later, when
   `analyze_struct_fields` re-merges both roles into `CheckedParam`. Fix the
   whole chain as one unit in the `omega-analyzer` pass.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 - **The contextual-keyword set grows with every feature, with no promotion
   policy.** Eighteen words are now position-dependent keywords
   (`parser::contextual`). Each one is a place where a lookahead can commit
@@ -423,7 +355,7 @@ need a breaking change to fix — full writeups in
   already done exactly that. The registry plus its generated test make the
   set visible and guarded, but there is no stated rule for when a word
   should graduate to a real reserved keyword instead.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 - **`CheckedSlice` still flattens a range end the way `HirRange` used to.**
   `omega_hir::HirRange` now carries a three-way `HirRangeEnd`
   (`Inclusive`/`Exclusive`/`Open`), so "an inclusive range with no end" is
@@ -433,7 +365,7 @@ need a breaking change to fix — full writeups in
   Not fixed with `HirRangeEnd` because the change reaches codegen's slice
   emission in both backends, which is out of scope for a parser/HIR pass.
   Fix with `omega-analyzer`'s own refactor.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **Omega's calling convention is not the platform C ABI.** The largest
   piece of deliberate debt in the compiler, and it was *deliberately
@@ -549,11 +481,11 @@ need a breaking change to fix — full writeups in
   "replace this span with this text" a tool could apply. Both are additive
   later, but every error site is a place that would need revisiting, so the
   shape is cheaper to decide early than late.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 - **A dangling annotation at end of file is silently dropped.** `@inline`
   with no item after it reports only `expected a top-level item, found end
   of input`; the annotation itself vanishes with no mention.
-  [annotations.md](09-annotations.md)
+  [annotations.md](../language/annotations-and-sizeof.md)
 - **Three anchors still point at more than the thing they are about.** The
   span-ownership pass fixed every *member*-level diagnostic (a duplicate
   field, method or spec function, and a return-type mismatch, all now
@@ -566,33 +498,8 @@ need a breaking change to fix — full writeups in
   offending name. All three now have a real span available
   (`HirFunctionDef::name_span`, `SpecFunctionStmt::name_span`); none was
   changed here because none was part of the reproduced defect.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
-
-- ~~**A method call's receiver, and any write through a projection, did not
-  count as reads**~~ — **fixed.** `Context::mark_used` was reached from a
-  single site (`analyze_expr`'s `HirExpr::Place` arm), which a *receiver*
-  never goes through — it is analyzed as a place instead — and which a
-  projected write (`*out = 5`, `s.v = 5`) does not reach either. So a
-  parameter used only as a receiver, or only as an out-pointer, reported
-  `UnusedParameter`: `write_bool(out: spec *mut Write, …)` used `out` twice
-  and still warned, and `List::pop(*mut self, out: *mut T)` did too.
-  Long-standing and not spec-object-specific — a concrete `d.get()` warned
-  identically — but the stdio redesign made it unmissable, since every
-  `write_*` helper uses its `out` parameter only as a receiver. Marked now in
-  `resolve_callee` (receivers) and in `analyze_place` when the place has at
-  least one projection (a projection must load its root to compute an
-  address). A bare, projection-less `n = 5` is deliberately still a pure
-  write, so `UnusedVariable` keeps firing on write-only bindings.
-
-- **An alias bound and its inline spelling are not interchangeable in blanket
-  precedence.** `conform<T: AB> T to X` and `conform<T: A + B> T to X`, where
-  `spec AB = A + B;`, describe the same bound set but compare as incomparable,
-  so a type satisfying both gets `AmbiguousConformance` rather than a duplicate
-  diagnosis. Alias members are not expanded before the subset comparison.
-  Conservative -- it errors rather than selecting silently -- but it does
-  contradict the mental model that an alias is only a name for its members.
-  The same non-expansion applies to the derivation subset test. [specs.md](08-specs.md)
 
 - **Type-level capture remains possible in macro-generated declarations.**
   Generic parameters and `Self` intentionally ignore macro origin, because
@@ -600,14 +507,14 @@ need a breaking change to fix — full writeups in
   parameter can therefore still capture a same-named type from a substituted
   argument. There is no in-tree instance; partitioning these bindings would
   break the `Self` uses in the primitive conformance macros.
-  [macros.md](12-macros.md)
+  [macros.md](../language/macros.md)
 
 - **Macro-authored unused locals are not linted.** Expansion spans are anchored
   at the invocation and carry no source-file identity, so reporting the lint
   would misleadingly blame the caller. Locals introduced by a macro are
   intentionally excluded from `unused variable`; caller-origin arguments are
   still use-tracked normally.
-  [macros.md](12-macros.md)
+  [macros.md](../language/macros.md)
 
 ## Control flow
 
@@ -619,7 +526,7 @@ need a breaking change to fix — full writeups in
   `analyze_if`'s existing rule for a condition rather than being new, and
   diverging-in-one-branch is rare in practice, but it is an inconsistency
   between two spellings the docs present as equivalent.
-  [control-flow.md](03-control-flow.md)
+  [control-flow.md](../language/control-flow-and-operators.md)
 
 
 - **`bool` now has two spellings for each connective, and both are
@@ -630,24 +537,24 @@ need a breaking change to fix — full writeups in
   reserved for integers. That is a breaking change to any `core`/`std` code
   using `&`/`|` on `bool`, so it was **not** taken unilaterally.
   **Decision needed:** keep both, or drop `&`/`|`/`^` on `bool`.
-  [control-flow.md](03-control-flow.md)
+  [control-flow.md](../language/control-flow-and-operators.md)
 - **Chained comparison is permanently a syntax error.** `a < b < c` now
   reports `comparison operators are non-associative` (it previously
   surfaced as a confusing `expected ';'`), matching Rust. Python chains it
   instead. **Decision needed:** is rejection the permanent answer, or should
   chaining eventually mean the conjunction?
-  [control-flow.md](03-control-flow.md)
+  [control-flow.md](../language/control-flow-and-operators.md)
 - **`&&` took a spelling that already meant something.** Adding the `&&`
   token silently changed the meaning of `a&&b` written without spaces: it
   used to lex as `&` `&` and mean "bitwise-and `a` with the address of `b`"
   — a program that compiles (an integer and a pointer both coerce for `&`,
-  see [primitives](01-primitives.md)) — and now parses as the logical
+  see [primitives](../language/types-and-primitives.md)) — and now parses as the logical
   connective and fails type checking. `a & &b` with the space is unaffected,
   and `||` has no such collision because `|` is infix-only. This was
   accepted rather than designed: the same trade C and C++ make. **Decision
   needed:** leave it (and say so in the docs), or require whitespace around
   binary `&` so the two readings can never be confused.
-  [control-flow.md](03-control-flow.md)
+  [control-flow.md](../language/control-flow-and-operators.md)
 - **`comp <` and `reveal <` are always the operator, never a comparison.**
   Both are contextual keywords, so `comp`/`reveal` are legal variable names,
   and both commit to the prefix-operator reading as soon as something that
@@ -657,11 +564,11 @@ need a breaking change to fix — full writeups in
   of a `<` comparison. No single-token lookahead separates the two readings.
   **Decision needed:** accept the asymmetry, promote these two words to real
   keywords, or give casts a spelling that does not start with `<`.
-  [parsing-and-hir.md](15-parsing-and-hir.md)
+  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
 - **A bare `return;` is a parse error**, so a `void` function cannot return
   early at all — `expected an expression, found ';'`. Every early exit in a
   `void` body has to be restructured around a sentinel flag, which
   old fixed-buffer I/O helpers had to do; the current `std::io::read_line`
   loops with a sentinel flag instead.
-  [control-flow.md](03-control-flow.md)
+  [control-flow.md](../language/control-flow-and-operators.md)

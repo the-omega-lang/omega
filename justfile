@@ -13,7 +13,7 @@ build-exe: build-core build-plat build-std
 # under it (just `libc/` today) is its own independent, honestly-named
 # package (`runtime/plat/libc/libc.omg`) that presents as the *same*
 # declared identity `plat` purely via `--name=`/`--extern=plat:...`, never
-# by renaming its own files (see docs/22-platform-glue.md). Picking a
+# by renaming its own files (see docs/guide/platform-glue.md). Picking a
 # platform is exactly choosing which directory these two flags point at --
 # there is no compiler-level selection mechanism, this is it. `plat` gets
 # no other privilege `core` has (no eager-discovery/ambient-prelude

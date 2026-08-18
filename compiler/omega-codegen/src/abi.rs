@@ -14,7 +14,7 @@
 //! (see [`AbiReturn`]'s doc comment), internally consistent for
 //! Omega-to-Omega calls on every target, and **not** the platform C ABI.
 //! That is recorded debt, not a bug to fix here -- see
-//! `docs/14-known-issues.md`'s "Design debt worth watching", and the
+//! `docs/issues/known-issues.md`'s "Design debt worth watching", and the
 //! aggregate-across-`extern` rejection in `omega_driver` that keeps the
 //! C boundary honest until the real C ABI lands.
 
@@ -34,7 +34,7 @@ pub enum AbiReturn {
     Direct(Vec<Leaf>),
     /// Returned through a hidden struct-return pointer (the caller
     /// allocates the slot and passes its address as an implicit first
-    /// parameter). See `docs/14-known-issues.md` for the threshold this
+    /// parameter). See `docs/issues/known-issues.md` for the threshold this
     /// is based on and its cross-arch caveat.
     Indirect,
 }

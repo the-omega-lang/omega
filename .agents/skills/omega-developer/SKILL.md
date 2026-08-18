@@ -38,11 +38,15 @@ For a plan, start with the files/symbols/docs it names. For a mechanical task, u
 
 Search before reading large files. Prefer targeted source ranges. Do not inspect neighboring modules or other backends "just in case".
 
+When writing or modifying `.omg`, read `docs/guide/quick-reference.md` first unless the exact syntax is already present in the immediately relevant source. Consult the relevant `docs/language/` chapter when exact semantics matter. Never guess Omega syntax from Rust/C/C++.
+
 ### 2. Verify the handoff cheaply
 
 Confirm that named files/symbols still exist and that the immediately surrounding code matches the plan's assumptions. This is a stale-plan check, not a second architecture phase.
 
 If a key assumption is wrong or the required work expands materially beyond the plan, stop and report the mismatch instead of broadening the investigation silently.
+
+For language behavior, `docs/language/` is the intended semantic authority. If source behavior contradicts it, check `docs/issues/` before treating either side as stale.
 
 ### 3. Implement step by step
 

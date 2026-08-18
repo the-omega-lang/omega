@@ -58,7 +58,7 @@ fn triple_for(target: OmegaTarget) -> String {
 
 /// `-O<n>` maps onto LLVM's own four levels natively -- unlike Cranelift,
 /// LLVM *has* four, so nothing collapses and nothing is invented; the
-/// difference is documented (`docs/16-mir-and-codegen.md`) rather than
+/// difference is documented (`docs/architecture/mir-and-codegen.md`) rather than
 /// papered over.
 fn llvm_opt_level(level: OptLevel) -> OptimizationLevel {
     match level {
@@ -201,7 +201,7 @@ impl<'ctx> Codegen<'ctx> {
     /// function's **entry block** no matter which block asked for it. LLVM's
     /// `alloca` allocates on every execution (unlike Cranelift's stack
     /// slots), so this is required, not stylistic -- see
-    /// `docs/16-mir-and-codegen.md`.
+    /// `docs/architecture/mir-and-codegen.md`.
     pub(super) fn entry_alloca(
         &self,
         bytes: u32,

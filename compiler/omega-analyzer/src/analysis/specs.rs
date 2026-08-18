@@ -364,7 +364,7 @@ impl<'r> Analyzer<'r> {
                 continue;
             }
             if f.is_variadic {
-                // See docs/08-specs.md's "Variadic spec functions are not
+                // See docs/language/specs-and-conformance.md's "Variadic spec functions are not
                 // planned" caveat.
                 self.error(
                     f.id,
@@ -589,7 +589,7 @@ impl<'r> Analyzer<'r> {
     /// A `=> spec Bound<...>` return type (`Type::SpecStatic`) is special-
     /// cased: `fn_type.return_type` is left as an inert placeholder, and the
     /// real answer -- `Bound`'s own resolved cell + type arguments -- is
-    /// returned alongside it instead (see docs/08-specs.md's "Return
+    /// returned alongside it instead (see docs/language/specs-and-conformance.md's "Return
     /// position, inside a spec's own function declaration").
     fn resolve_raw_spec_fn_type(
         &mut self,
@@ -652,14 +652,14 @@ impl<'r> Analyzer<'r> {
     /// implementor of type `self_type` -- walks the alias members
     /// depth-first, then this spec's own functions, substituting `Self ->
     /// self_type` and this spec's own generics -> `type_args` into every raw
-    /// signature. Nothing is merged by name (see docs/08-specs.md's
+    /// signature. Nothing is merged by name (see docs/language/specs-and-conformance.md's
     /// "Identity" section); the one dedup is *identity* dedup, keyed on
     /// `(spec_id, type_args, name)` (a diamond alias reaching the same spec
     /// twice).
     ///
     /// This ordered list is also dynamic dispatch's vtable slot order, and
     /// its per-spec sectioning is what makes a narrowing cast a constant
-    /// vtable offset -- see docs/08-specs.md's "Sectioned vtables" section.
+    /// vtable offset -- see docs/language/specs-and-conformance.md's "Sectioned vtables" section.
     pub(super) fn flatten_spec(
         &mut self,
         id: HirId,
@@ -794,7 +794,7 @@ impl<'r> Analyzer<'r> {
     /// actually *requires* -- every non-alias member, transitively. Mirrors
     /// `flatten_spec_into` for the same reason: `T: AB` and `T: A + B` must
     /// be interchangeable everywhere the bound set is compared (see
-    /// docs/08-specs.md's "alias bound" caveat).
+    /// docs/language/specs-and-conformance.md's "alias bound" caveat).
     ///
     /// The alias's *own* id deliberately never appears -- nothing ever
     /// conforms to an alias, so it is never a distinct requirement, only its
@@ -900,7 +900,7 @@ impl<'r> Analyzer<'r> {
                 // Each available method keeps its entry's spec identity and
                 // type arguments -- matched against exactly the spec that
                 // declared it, so a same-named method on an unrelated spec
-                // can never satisfy it (see docs/08-specs.md's "Identity"
+                // can never satisfy it (see docs/language/specs-and-conformance.md's "Identity"
                 // section).
                 let available: Vec<(HirId, Vec<ResolvedType>, Ident, ResolvedMethod)> =
                     candidates

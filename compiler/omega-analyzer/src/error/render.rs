@@ -529,7 +529,7 @@ impl AnalysisErrorKind {
                 .with_note(
                     "Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a C caller or callee",
                 )
-                .with_help("pass or return a pointer to it instead (see the ABI entry in docs/14-known-issues.md)"),
+                .with_help("pass or return a pointer to it instead (see the ABI entry in docs/issues/known-issues.md)"),
             Self::VariadicSpecFunctionUnsatisfiable { name } => d
                 .with_label(span, format!("`{}` is declared variadic", name.as_ref()))
                 .with_help(

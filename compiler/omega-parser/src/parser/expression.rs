@@ -501,7 +501,7 @@ fn expression_starts_here(p: &Parser) -> bool {
 /// The cost is that `comp`/`reveal` followed by `<` is always read as the
 /// operator, so a variable of either name can never be the left side of a
 /// `<` comparison. That ambiguity is inherent to a single-token lookahead
-/// and is recorded in `docs/14-known-issues.md`.
+/// and is recorded in `docs/issues/known-issues.md`.
 fn operand_follows(p: &Parser) -> bool {
     expression_starts_at(p, 1) || matches!(p.peek_at(1), TokenKind::Lt)
 }

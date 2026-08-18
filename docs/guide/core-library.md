@@ -126,5 +126,5 @@ separately compiled package do not make a capability reachable merely because
 another function in the same object uses it. A core-only executable therefore
 links with `core.o` and no `plat.o`; it provides no console or allocator glue.
 
-See [the standard library](23-standard-library.md) for the higher-level
-facilities and [gaps and glue](21-gaps-and-glue.md) for the capability model.
+See [the standard library](standard-library.md) for the higher-level
+facilities and [gaps and glue](../language/gaps-and-glue.md) for the capability model.

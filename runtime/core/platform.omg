@@ -1,11 +1,11 @@
 # Platform-capability gaps: functionality with no single portable answer --
 # the target platform or final application supplies one via a `glue` block.
-# See docs/21-gaps-and-glue.md. This file only adds gaps, never their glue.
+# See docs/language/gaps-and-glue.md. This file only adds gaps, never their glue.
 
 import option::Option;
 
 # The global heap allocator: every function required (no default body, see
-# docs/21-gaps-and-glue.md), self-less (called via
+# docs/language/gaps-and-glue.md), self-less (called via
 # `core::platform::GlobalAllocator::alloc(...)`, never through an instance).
 #
 # `alloc`/`realloc` return `*mut u8` since freshly allocated memory must be
