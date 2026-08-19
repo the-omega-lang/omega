@@ -17,9 +17,7 @@ pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) ->
         } => match storage {
             // Parameters and locals share the same MIR LocalId namespace.
             Storage::Local | Storage::Parameter => {
-                let id = *lowerer.local_of.get(&decl_id).unwrap_or_else(|| {
-                    panic!("checked module guarantees {decl_id:?} was declared before this use")
-                });
+                let id = lowerer.local_for_hir(decl_id);
                 MirPlaceRoot::Local { id, r#type }
             }
             Storage::Function => MirPlaceRoot::Function(decl_id),
@@ -29,7 +27,7 @@ pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) ->
             },
             Storage::Comp => {
                 unreachable!(
-                    "a comp binding is substituted into CheckedExpr::Const during analysis -- see Storage::Comp's doc comment"
+                    "analysis substitutes comp bindings into CheckedExpr::Const; see Storage::Comp"
                 )
             }
         },

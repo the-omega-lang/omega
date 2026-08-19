@@ -12,149 +12,158 @@ struct Encoder {
 }
 
 pub fn encode(symbol: &Symbol) -> String {
-    let mut enc = Encoder {
-        out: PREFIX.to_string(),
-        path_subs: HashMap::new(),
-        type_subs: HashMap::new(),
-    };
-    enc.encode_path(&symbol.path);
-    if let Some((params, ret)) = &symbol.signature {
-        for p in params {
-            enc.encode_type(p);
-        }
-        enc.out.push(TAG_LIST_END as char);
-        enc.encode_type(ret);
+    let mut encoder = Encoder::new();
+    encoder.encode_path(&symbol.path);
+
+    if let Some((params, return_type)) = &symbol.signature {
+        encoder.encode_types(params);
+        encoder.push_tag(TAG_LIST_END);
+        encoder.encode_type(return_type);
     }
+
     if let Some(suffix) = &symbol.vendor_suffix {
-        enc.out.push(VENDOR_SUFFIX_SEP as char);
-        enc.out.push_str(suffix);
+        encoder.push_tag(VENDOR_SUFFIX_SEP);
+        encoder.out.push_str(suffix);
     }
-    enc.out
+
+    encoder.out
 }
 
 impl Encoder {
-    fn emit_backref(&mut self, pos: usize) {
-        self.out.push(TAG_BACKREF as char);
-        self.out.push_str(&base62::encode(pos as u64));
+    fn new() -> Self {
+        Self {
+            out: PREFIX.to_owned(),
+            path_subs: HashMap::new(),
+            type_subs: HashMap::new(),
+        }
+    }
+
+    fn push_tag(&mut self, tag: u8) {
+        self.out.push(char::from(tag));
+    }
+
+    fn emit_backref(&mut self, position: usize) {
+        self.push_tag(TAG_BACKREF);
+        let offset = u64::try_from(position)
+            .expect("mangled symbol offsets must fit in the u64 backreference grammar");
+        self.out.push_str(&base62::encode(offset));
     }
 
     fn encode_ident(&mut self, name: &str) {
-        write!(self.out, "{}", name.len()).expect("String write is infallible");
-        if matches!(name.as_bytes().first(), Some(b) if b.is_ascii_digit() || *b == b'_') {
+        write!(self.out, "{}", name.len()).expect("writing to String cannot fail");
+        if matches!(name.as_bytes().first(), Some(byte) if byte.is_ascii_digit() || *byte == b'_') {
             self.out.push('_');
         }
         self.out.push_str(name);
     }
 
     fn encode_path(&mut self, path: &ManglePath) {
-        if let Some(&pos) = self.path_subs.get(path) {
-            self.emit_backref(pos);
+        if let Some(&position) = self.path_subs.get(path) {
+            self.emit_backref(position);
             return;
         }
+
         let start = self.out.len();
         match path {
             ManglePath::Root(name) => {
-                self.out.push(TAG_ROOT as char);
+                self.push_tag(TAG_ROOT);
                 self.encode_ident(name);
             }
-            ManglePath::Nested(parent, ns, name) => {
-                self.out.push(TAG_NESTED as char);
-                self.out.push(ns.tag());
+            ManglePath::Nested(parent, namespace, name) => {
+                self.push_tag(TAG_NESTED);
+                self.push_tag(namespace_tag(*namespace));
                 self.encode_path(parent);
                 self.encode_ident(name);
             }
             ManglePath::Generic(parent, args) => {
-                self.out.push(TAG_GENERIC as char);
+                self.push_tag(TAG_GENERIC);
                 self.encode_path(parent);
-                for arg in args {
-                    self.encode_type(arg);
-                }
-                self.out.push(TAG_LIST_END as char);
+                self.encode_types(args);
+                self.push_tag(TAG_LIST_END);
             }
             ManglePath::Type(ty) => {
-                self.out.push(TAG_TYPE_PATH as char);
+                self.push_tag(TAG_TYPE_PATH);
                 self.encode_type(ty);
             }
         }
         self.path_subs.insert(path.clone(), start);
     }
 
+    fn encode_types(&mut self, types: &[MangleType]) {
+        for ty in types {
+            self.encode_type(ty);
+        }
+    }
+
     fn encode_type(&mut self, ty: &MangleType) {
-        if let Some(letter) = basic_letter(ty) {
-            self.out.push(letter as char);
+        if let Some(tag) = basic_letter(ty) {
+            self.push_tag(tag);
             return;
         }
-        // Do not register `Str` as a substitution candidate; a backreference cannot beat its one-byte tag.
+
+        // A one-byte string tag is always shorter than a backreference.
         if let MangleType::Str(mutable) = ty {
-            self.out
-                .push(if *mutable { TAG_STR_MUT } else { TAG_STR } as char);
+            self.push_tag(if *mutable { TAG_STR_MUT } else { TAG_STR });
             return;
         }
-        if let Some(&pos) = self.type_subs.get(ty) {
-            self.emit_backref(pos);
+
+        if let Some(&position) = self.type_subs.get(ty) {
+            self.emit_backref(position);
             return;
         }
+
         let start = self.out.len();
         match ty {
-            MangleType::Pointer(inner, false) => {
-                self.out.push(TAG_POINTER as char);
-                self.encode_type(inner);
+            MangleType::Pointer(inner, mutable) => self.encode_wrapped_type(
+                if *mutable {
+                    TAG_POINTER_MUT
+                } else {
+                    TAG_POINTER
+                },
+                inner,
+            ),
+            MangleType::Slice(inner, mutable) => {
+                self.encode_wrapped_type(if *mutable { TAG_SLICE_MUT } else { TAG_SLICE }, inner)
             }
-            MangleType::Pointer(inner, true) => {
-                self.out.push(TAG_POINTER_MUT as char);
-                self.encode_type(inner);
-            }
-            MangleType::Slice(inner, false) => {
-                self.out.push(TAG_SLICE as char);
-                self.encode_type(inner);
-            }
-            MangleType::Slice(inner, true) => {
-                self.out.push(TAG_SLICE_MUT as char);
-                self.encode_type(inner);
-            }
-            MangleType::Array(inner, false) => {
-                self.out.push(TAG_ARRAY as char);
-                self.encode_type(inner);
-            }
-            MangleType::Array(inner, true) => {
-                self.out.push(TAG_ARRAY_MUT as char);
-                self.encode_type(inner);
+            MangleType::Array(inner, mutable) => {
+                self.encode_wrapped_type(if *mutable { TAG_ARRAY_MUT } else { TAG_ARRAY }, inner)
             }
             MangleType::SizedArray(inner, len) => {
-                self.out.push(TAG_SIZED_ARRAY as char);
+                self.push_tag(TAG_SIZED_ARRAY);
                 self.encode_type(inner);
                 self.out.push_str(&base62::encode(*len));
             }
-            MangleType::SpecObject(inner, false) => {
-                self.out.push(TAG_SPEC_OBJECT as char);
-                self.encode_type(inner);
-            }
-            MangleType::SpecObject(inner, true) => {
-                self.out.push(TAG_SPEC_OBJECT_MUT as char);
-                self.encode_type(inner);
-            }
-            MangleType::Function(params, ret, variadic) => {
-                self.out.push(TAG_FUNCTION as char);
+            MangleType::SpecObject(inner, mutable) => self.encode_wrapped_type(
+                if *mutable {
+                    TAG_SPEC_OBJECT_MUT
+                } else {
+                    TAG_SPEC_OBJECT
+                },
+                inner,
+            ),
+            MangleType::Function(params, return_type, variadic) => {
+                self.push_tag(TAG_FUNCTION);
                 if *variadic {
-                    self.out.push(TAG_VARIADIC as char);
+                    self.push_tag(TAG_VARIADIC);
                 }
-                for p in params {
-                    self.encode_type(p);
-                }
-                self.out.push(TAG_LIST_END as char);
-                self.encode_type(ret);
+                self.encode_types(params);
+                self.push_tag(TAG_LIST_END);
+                self.encode_type(return_type);
             }
-            MangleType::Named(path, None) => {
-                self.encode_path(path);
-            }
+            MangleType::Named(path, None) => self.encode_path(path),
             MangleType::Named(path, Some(variant)) => {
-                self.out.push(TAG_REFINED as char);
+                self.push_tag(TAG_REFINED);
                 self.encode_path(path);
-                self.out.push_str(&base62::encode(*variant as u64));
+                self.out.push_str(&base62::encode(u64::from(*variant)));
             }
-            _ => unreachable!("basic types and Str are handled by the early returns above"),
+            _ => unreachable!("basic and string types return before substitution encoding"),
         }
         self.type_subs.insert(ty.clone(), start);
+    }
+
+    fn encode_wrapped_type(&mut self, tag: u8, inner: &MangleType) {
+        self.push_tag(tag);
+        self.encode_type(inner);
     }
 }
 

@@ -270,7 +270,7 @@ impl Codegen {
         use cranelift::prelude::{InstBuilder, TrapCode};
         match terminator {
             MirTerminator::Goto(target) => {
-                builder.ins().jump(cranelift_blocks[target.0 as usize], &[]);
+                builder.ins().jump(cranelift_blocks[target.index()], &[]);
             }
             MirTerminator::Branch {
                 condition,
@@ -280,9 +280,9 @@ impl Codegen {
                 let cond_value = self.process_expr(builder, condition)[0];
                 builder.ins().brif(
                     cond_value,
-                    cranelift_blocks[then_block.0 as usize],
+                    cranelift_blocks[then_block.index()],
                     &[],
-                    cranelift_blocks[else_block.0 as usize],
+                    cranelift_blocks[else_block.index()],
                     &[],
                 );
             }

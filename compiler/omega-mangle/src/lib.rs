@@ -1,9 +1,11 @@
 mod base62;
-mod demangle;
+mod decode;
+mod display;
 mod encode;
 mod grammar;
 pub mod symbol;
 
-pub use demangle::{decode, demangle};
+pub use decode::decode;
+pub use display::demangle;
 pub use encode::encode;
 pub use symbol::{ManglePath, MangleType, Namespace, Symbol};

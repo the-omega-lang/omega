@@ -20,17 +20,21 @@ all backends consume same symbol + linkage
 
 ## `omega-mangle` is standalone
 
-The mangling grammar keeps encoder and decoder tag definitions centralized in `omega-mangle::grammar`. Backreferences are byte offsets into already-emitted mangled text and must always point strictly backward; the decoder rejects forward/self references rather than attempting recursive recovery.
-
+The mangling grammar keeps encoder and decoder tag definitions centralized in
+`omega-mangle::grammar`. Backreferences are byte offsets to previously completed
+path/type substitutions in already-emitted mangled text. The decoder resolves
+only completed substitutions and rejects forward, self, cyclic, or otherwise
+unresolved references.
 
 The `omega-mangle` crate intentionally does not depend on `omega-analyzer`, HIR, MIR, or a backend.
 
 It owns:
 
 - `symbol.rs` — generic symbol/path/type model;
-- `grammar.rs` — tag grammar;
+- `grammar.rs` — tag grammar, including namespace discriminators;
 - `encode.rs` — encoding + backreference compression;
-- `demangle.rs` — decode/human rendering;
+- `decode.rs` — grammar decoding + validation;
+- `display.rs` — human-readable rendering of the decoded model;
 - `base62.rs` — compact integer grammar;
 - `omg-demangle` — small CLI tool.
 
@@ -105,6 +109,8 @@ A conformance method's identity must include enough information to distinguish:
 - method/function signature.
 
 Unnamed target types cannot be represented as normal type paths, so `ManglePath::Type(MangleType)` provides a structural owner path.
+
+The current implementation still omits the spec's *module path* in conformance-method and vtable identity; that ABI bug is tracked explicitly in [`../issues/known-issues.md`](../issues/known-issues.md) and must be migrated as one cross-package mangling change.
 
 ## Gap/glue identity
 

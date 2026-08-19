@@ -12,6 +12,9 @@ pub fn lower_program(
 ) -> Vec<(Vec<Ident>, MirModule)> {
     modules
         .into_iter()
-        .map(|(path, module)| (path.clone(), item::lower_module(module, &path, entry)))
+        .map(|(path, module)| {
+            let module = item::lower_module(module, &path, entry);
+            (path, module)
+        })
         .collect()
 }

@@ -23,8 +23,8 @@ impl Codegen {
     ) -> (PlaceStorage, ResolvedType) {
         let (mut current, mut current_type) = match &place.root {
             MirPlaceRoot::Local { id, r#type } => {
-                let current = if (id.0 as usize) < self.arg_count {
-                    PlaceStorage::Values(self.local_args[id.0 as usize].clone())
+                let current = if id.index() < self.arg_count {
+                    PlaceStorage::Values(self.local_args[id.index()].clone())
                 } else {
                     // Use the shared frame slot plus precomputed local offset so zero-sized locals follow shared layout.
                     let slot = self
@@ -32,7 +32,7 @@ impl Codegen {
                         .expect("define_function_def always sets this before any block runs");
                     PlaceStorage::Slot {
                         slot,
-                        offset: self.local_offsets[id.0 as usize],
+                        offset: self.local_offsets[id.index()],
                     }
                 };
                 (current, r#type.clone())

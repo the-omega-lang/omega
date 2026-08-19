@@ -26,8 +26,8 @@ impl<'ctx> Codegen<'ctx> {
     ) -> (PlaceStorage<'ctx>, ResolvedType, u32) {
         let (mut current, mut current_type) = match &place.root {
             MirPlaceRoot::Local { id, r#type } => {
-                let current = if (id.0 as usize) < self.arg_count {
-                    PlaceStorage::Values(self.local_args[id.0 as usize].clone())
+                let current = if id.index() < self.arg_count {
+                    PlaceStorage::Values(self.local_args[id.index()].clone())
                 } else {
                     let slot = self.frame_slot.expect(
                         "define_function_def always sets this before any block runs (a zero-size \
@@ -35,7 +35,7 @@ impl<'ctx> Codegen<'ctx> {
                     );
                     PlaceStorage::Slot {
                         slot,
-                        offset: self.local_offsets[id.0 as usize],
+                        offset: self.local_offsets[id.index()],
                     }
                 };
                 (current, r#type.clone())

@@ -1,27 +1,27 @@
 use std::io::{self, BufRead, Write};
 
-fn print_demangled(line: &str, out: &mut impl Write) {
-    let trimmed = line.trim();
-    match omega_mangle::demangle(trimmed) {
-        Some(demangled) => writeln!(out, "{demangled}").ok(),
-        None => writeln!(out, "{trimmed}").ok(),
-    };
+fn write_demangled(line: &str, out: &mut impl Write) -> io::Result<()> {
+    let symbol = line.trim();
+    match omega_mangle::demangle(symbol) {
+        Some(demangled) => writeln!(out, "{demangled}"),
+        None => writeln!(out, "{symbol}"),
+    }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn main() -> io::Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
     if args.is_empty() {
-        let stdin = io::stdin();
-        for line in stdin.lock().lines() {
-            let Ok(line) = line else { break };
-            print_demangled(&line, &mut out);
+        for line in io::stdin().lock().lines() {
+            write_demangled(&line?, &mut out)?;
         }
     } else {
-        for arg in &args {
-            print_demangled(arg, &mut out);
+        for arg in args {
+            write_demangled(&arg, &mut out)?;
         }
     }
+
+    Ok(())
 }

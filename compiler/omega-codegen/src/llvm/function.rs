@@ -213,7 +213,7 @@ impl<'ctx> Codegen<'ctx> {
         match terminator {
             MirTerminator::Goto(target) => {
                 self.builder
-                    .build_unconditional_branch(blocks[target.0 as usize])
+                    .build_unconditional_branch(blocks[target.index()])
                     .expect("builder positioned");
             }
             MirTerminator::Branch {
@@ -227,8 +227,8 @@ impl<'ctx> Codegen<'ctx> {
                 self.builder
                     .build_conditional_branch(
                         cond,
-                        blocks[then_block.0 as usize],
-                        blocks[else_block.0 as usize],
+                        blocks[then_block.index()],
+                        blocks[else_block.index()],
                     )
                     .expect("builder positioned");
             }

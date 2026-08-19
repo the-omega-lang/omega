@@ -25,33 +25,46 @@ pub(crate) fn lower_module(module: CheckedModule, path: &[Ident], entry: &[Ident
 
 fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
     match item {
-        CheckedItem::Declaration(d) => MirItem::Declaration(lower_declaration(d)),
-        CheckedItem::ExternDeclaration(d) => {
-            MirItem::ExternDeclaration(lower_extern_declaration(d))
+        CheckedItem::Declaration(declaration) => {
+            MirItem::Declaration(lower_declaration(declaration))
         }
-        CheckedItem::FunctionDefinition(f) => {
-            MirItem::FunctionDefinition(lower_function_def(f, path, entry))
+        CheckedItem::ExternDeclaration(declaration) => {
+            MirItem::ExternDeclaration(lower_extern_declaration(declaration))
         }
-        CheckedItem::Struct(s) => MirItem::Struct(lower_struct_def(s, path, entry)),
-        CheckedItem::Enum(e) => MirItem::Enum(lower_enum_def(e, path, entry)),
-        CheckedItem::Union(u) => MirItem::Union(lower_union_def(u, path, entry)),
+        CheckedItem::FunctionDefinition(function) => {
+            MirItem::FunctionDefinition(lower_free_function(function, path, entry))
+        }
+        CheckedItem::Struct(definition) => MirItem::Struct(lower_struct_def(definition, path)),
+        CheckedItem::Enum(definition) => MirItem::Enum(lower_enum_def(definition, path)),
+        CheckedItem::Union(definition) => MirItem::Union(lower_union_def(definition, path)),
     }
 }
 
-fn lower_declaration(decl: CheckedDeclaration) -> MirDeclaration {
+fn lower_declaration(declaration: CheckedDeclaration) -> MirDeclaration {
     MirDeclaration {
-        id: decl.id,
-        span: decl.span,
-        ident: decl.ident,
-        r#type: decl.r#type,
-        initial_value: decl.initial_value,
+        id: declaration.id,
+        span: declaration.span,
+        ident: declaration.ident,
+        r#type: declaration.r#type,
+        initial_value: declaration.initial_value,
     }
 }
 
-fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclaration {
-    // `Disabled` externs keep their external name; glued gaps use the matching generated glue symbol.
-    let symbol = match (&decl.mangling, &decl.r#type) {
-        (ManglingMode::Disabled, _) => decl.ident.0.clone(),
+fn lower_extern_declaration(declaration: CheckedExternDeclaration) -> MirExternDeclaration {
+    let symbol = extern_declaration_symbol(&declaration);
+    MirExternDeclaration {
+        id: declaration.id,
+        span: declaration.span,
+        ident: declaration.ident,
+        r#type: declaration.r#type,
+        mangling: declaration.mangling,
+        symbol,
+    }
+}
+
+fn extern_declaration_symbol(declaration: &CheckedExternDeclaration) -> String {
+    match (&declaration.mangling, &declaration.r#type) {
+        (ManglingMode::Disabled, _) => declaration.ident.as_ref().to_owned(),
         (
             ManglingMode::Glued {
                 spec_module_path,
@@ -61,62 +74,41 @@ fn lower_extern_declaration(decl: CheckedExternDeclaration) -> MirExternDeclarat
             ResolvedType::Function(fn_type),
         ) => mangle::glued_symbol(spec_module_path, spec_name, function_name, fn_type),
         (ManglingMode::Glued { .. }, _) => {
-            unreachable!("only a gap function is Glued, and a gap function is always a function")
+            unreachable!("only function-valued gap declarations use glued mangling")
         }
         (ManglingMode::Enabled | ManglingMode::Forced(_), _) => {
-            unreachable!("'@mangling' is rejected on 'extern' declarations at parse time")
+            unreachable!("'@mangling' is rejected on extern declarations during parsing")
         }
-    };
-    MirExternDeclaration {
-        id: decl.id,
-        span: decl.span,
-        ident: decl.ident,
-        r#type: decl.r#type,
-        mangling: decl.mangling,
-        symbol,
     }
 }
 
-fn lower_function_def(f: CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> MirFunctionDef {
-    let (symbol, linkage) = free_function_symbol_and_linkage(&f, path, entry);
-    lower_function_def_inner(f, symbol, linkage)
+fn lower_free_function(
+    function: CheckedFunctionDef,
+    path: &[Ident],
+    entry: &[Ident],
+) -> MirFunctionDef {
+    let symbol = free_function_symbol(&function, path, entry);
+    let linkage = function_linkage(&function);
+    lower_function(function, symbol, linkage)
 }
 
-fn lower_method_def(
-    f: CheckedFunctionDef,
+fn lower_method(
+    function: CheckedFunctionDef,
     path: &[Ident],
     owner_name: &Ident,
     owner_type_args: &[ResolvedType],
 ) -> MirFunctionDef {
-    let symbol = match &f.mangling {
-        // Forced method symbols survive lowering; disabled method mangling was rejected earlier.
-        ManglingMode::Forced(name) => name.clone(),
-        ManglingMode::Glued {
-            spec_module_path,
-            spec_name,
-            function_name,
-        } => mangle::glued_symbol(spec_module_path, spec_name, function_name, &f.fn_type()),
-        ManglingMode::Disabled => {
-            unreachable!("'@mangling(disabled)' is rejected on methods at analysis time")
-        }
-        ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
-            path,
-            owner_name,
-            owner_type_args,
-            &f.name,
-            &f.fn_type(),
-        )),
-    };
+    let symbol = method_symbol(&function, path, owner_name, owner_type_args);
     let linkage = if owner_type_args.is_empty() {
         MirLinkage::Export
     } else {
         MirLinkage::Weak
     };
-    lower_function_def_inner(f, symbol, linkage)
+    lower_function(function, symbol, linkage)
 }
 
-fn lower_function_def_inner(
-    f: CheckedFunctionDef,
+fn lower_function(
+    function: CheckedFunctionDef,
     symbol: String,
     linkage: MirLinkage,
 ) -> MirFunctionDef {
@@ -134,9 +126,9 @@ fn lower_function_def_inner(
         mangling,
         conformance_owner,
         primitive_target,
-    } = f;
-    // Compute mangling before moving the resolved signature fields into MIR.
-    let mir_body = FunctionLowerer::lower(&params, body, &return_type, id, span);
+    } = function;
+    let body = FunctionLowerer::lower(&params, body, &return_type, id, span);
+
     MirFunctionDef {
         id,
         span,
@@ -152,17 +144,16 @@ fn lower_function_def_inner(
         primitive_target,
         symbol,
         linkage,
-        body: mir_body,
+        body,
     }
 }
 
-fn free_function_symbol_and_linkage(
-    f: &CheckedFunctionDef,
-    path: &[Ident],
-    entry: &[Ident],
-) -> (String, MirLinkage) {
-    // Only the designated root entry function receives the bare `main` symbol.
-    let symbol = match (&f.mangling, &f.conformance_owner, &f.primitive_target) {
+fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> String {
+    match (
+        &function.mangling,
+        &function.conformance_owner,
+        &function.primitive_target,
+    ) {
         (ManglingMode::Forced(name), _, _) => name.clone(),
         (
             ManglingMode::Glued {
@@ -172,84 +163,152 @@ fn free_function_symbol_and_linkage(
             },
             _,
             _,
-        ) => mangle::glued_symbol(spec_module_path, spec_name, function_name, &f.fn_type()),
-        (ManglingMode::Disabled, _, _) => f.name.as_ref().to_string(),
-        (ManglingMode::Enabled, _, _) if path == entry && f.name.as_ref() == "main" => {
-            "main".to_string()
-        }
+        ) => mangle::glued_symbol(
+            spec_module_path,
+            spec_name,
+            function_name,
+            &function.fn_type(),
+        ),
+        (ManglingMode::Disabled, _, _) => function.name.as_ref().to_owned(),
+        (ManglingMode::Enabled, _, _) if is_root_main(function, path, entry) => "main".to_owned(),
         (ManglingMode::Enabled, Some(owner), _) => {
             mangle::encode(&mangle::conformance_method_symbol(
                 &owner.target,
                 &owner.spec_name,
                 &owner.spec_args,
-                &f.name,
-                &f.fn_type(),
+                &function.name,
+                &function.fn_type(),
             ))
         }
         (ManglingMode::Enabled, None, Some(target)) => mangle::encode(
-            &mangle::primitive_method_symbol(target, &f.name, &f.fn_type()),
+            &mangle::primitive_method_symbol(target, &function.name, &function.fn_type()),
         ),
         (ManglingMode::Enabled, None, None) => mangle::encode(&mangle::free_function_symbol(
             path,
-            &f.name,
-            &f.type_args,
-            &f.fn_type(),
+            &function.name,
+            &function.type_args,
+            &function.fn_type(),
         )),
-    };
-    // Conformance-method identity comes from the instantiated target/spec context, not method-local generics.
-    let linkage = match &f.conformance_owner {
-        Some(owner) if owner.monomorphized => MirLinkage::Weak,
-        _ => {
-            if f.type_args.is_empty() {
-                MirLinkage::Export
-            } else {
-                MirLinkage::Weak
-            }
+    }
+}
+
+fn method_symbol(
+    function: &CheckedFunctionDef,
+    path: &[Ident],
+    owner_name: &Ident,
+    owner_type_args: &[ResolvedType],
+) -> String {
+    match &function.mangling {
+        ManglingMode::Forced(name) => name.clone(),
+        ManglingMode::Glued {
+            spec_module_path,
+            spec_name,
+            function_name,
+        } => mangle::glued_symbol(
+            spec_module_path,
+            spec_name,
+            function_name,
+            &function.fn_type(),
+        ),
+        ManglingMode::Disabled => {
+            unreachable!("'@mangling(disabled)' is rejected on methods during analysis")
         }
-    };
-    (symbol, linkage)
+        ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
+            path,
+            owner_name,
+            owner_type_args,
+            &function.name,
+            &function.fn_type(),
+        )),
+    }
 }
 
-fn lower_struct_def(s: CheckedStructDef, path: &[Ident], _entry: &[Ident]) -> MirStructDef {
-    let (name, type_args, functions) = (s.name, s.type_args, s.functions);
+fn function_linkage(function: &CheckedFunctionDef) -> MirLinkage {
+    if function
+        .conformance_owner
+        .as_ref()
+        .is_some_and(|owner| owner.monomorphized)
+        || !function.type_args.is_empty()
+    {
+        MirLinkage::Weak
+    } else {
+        MirLinkage::Export
+    }
+}
+
+fn is_root_main(function: &CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> bool {
+    path == entry && function.name.as_ref() == "main"
+}
+
+fn lower_methods(
+    functions: Vec<CheckedFunctionDef>,
+    path: &[Ident],
+    owner_name: &Ident,
+    owner_type_args: &[ResolvedType],
+) -> Vec<MirFunctionDef> {
+    functions
+        .into_iter()
+        .map(|function| lower_method(function, path, owner_name, owner_type_args))
+        .collect()
+}
+
+fn lower_struct_def(definition: CheckedStructDef, path: &[Ident]) -> MirStructDef {
+    let CheckedStructDef {
+        id,
+        span,
+        name,
+        type_args,
+        fields,
+        functions,
+    } = definition;
+    let functions = lower_methods(functions, path, &name, &type_args);
+
     MirStructDef {
-        id: s.id,
-        span: s.span,
-        name: name.clone(),
-        type_args: type_args.clone(),
-        fields: s.fields,
-        functions: functions
-            .into_iter()
-            .map(|f| lower_method_def(f, path, &name, &type_args))
-            .collect(),
+        id,
+        span,
+        name,
+        type_args,
+        fields,
+        functions,
     }
 }
 
-fn lower_union_def(u: CheckedUnionDef, path: &[Ident], _entry: &[Ident]) -> MirUnionDef {
-    let (name, type_args, functions) = (u.name, u.type_args, u.functions);
+fn lower_union_def(definition: CheckedUnionDef, path: &[Ident]) -> MirUnionDef {
+    let CheckedUnionDef {
+        id,
+        span,
+        name,
+        type_args,
+        fields,
+        functions,
+    } = definition;
+    let functions = lower_methods(functions, path, &name, &type_args);
+
     MirUnionDef {
-        id: u.id,
-        span: u.span,
-        name: name.clone(),
-        type_args: type_args.clone(),
-        fields: u.fields,
-        functions: functions
-            .into_iter()
-            .map(|f| lower_method_def(f, path, &name, &type_args))
-            .collect(),
+        id,
+        span,
+        name,
+        type_args,
+        fields,
+        functions,
     }
 }
 
-fn lower_enum_def(e: CheckedEnumDef, path: &[Ident], _entry: &[Ident]) -> MirEnumDef {
-    let (name, type_args, functions) = (e.name, e.type_args, e.functions);
+fn lower_enum_def(definition: CheckedEnumDef, path: &[Ident]) -> MirEnumDef {
+    let CheckedEnumDef {
+        id,
+        span,
+        name,
+        type_args,
+        functions,
+    } = definition;
+    let functions = lower_methods(functions, path, &name, &type_args);
+
     MirEnumDef {
-        id: e.id,
-        span: e.span,
-        name: name.clone(),
-        type_args: type_args.clone(),
-        functions: functions
-            .into_iter()
-            .map(|f| lower_method_def(f, path, &name, &type_args))
-            .collect(),
+        id,
+        span,
+        name,
+        type_args,
+        functions,
     }
 }

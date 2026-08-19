@@ -1,4 +1,4 @@
-use crate::symbol::MangleType;
+use crate::symbol::{MangleType, Namespace};
 
 pub const PREFIX: &str = "_omg_";
 
@@ -7,6 +7,9 @@ pub const TAG_NESTED: u8 = b'N';
 pub const TAG_GENERIC: u8 = b'I';
 pub const TAG_BACKREF: u8 = b'B';
 pub const TAG_LIST_END: u8 = b'E';
+
+pub const TAG_NAMESPACE_TYPE: u8 = b't';
+pub const TAG_NAMESPACE_VALUE: u8 = b'v';
 
 pub const TAG_POINTER: u8 = b'P';
 pub const TAG_POINTER_MUT: u8 = b'Q';
@@ -25,6 +28,21 @@ pub const TAG_STR_MUT: u8 = b'U';
 pub const TAG_TYPE_PATH: u8 = b'X';
 
 pub const VENDOR_SUFFIX_SEP: u8 = b'.';
+
+pub fn namespace_tag(namespace: Namespace) -> u8 {
+    match namespace {
+        Namespace::Type => TAG_NAMESPACE_TYPE,
+        Namespace::Value => TAG_NAMESPACE_VALUE,
+    }
+}
+
+pub fn namespace_from_tag(tag: u8) -> Option<Namespace> {
+    match tag {
+        TAG_NAMESPACE_TYPE => Some(Namespace::Type),
+        TAG_NAMESPACE_VALUE => Some(Namespace::Value),
+        _ => None,
+    }
+}
 
 pub fn basic_letter(ty: &MangleType) -> Option<u8> {
     Some(match ty {

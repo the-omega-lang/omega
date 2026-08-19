@@ -151,7 +151,7 @@ fn expr_parameter_assignment(expr: &MirExprNode, arg_count: usize) -> Option<Spa
 }
 
 fn place_targets_parameter(place: &MirPlace, arg_count: usize) -> bool {
-    matches!(&place.root, MirPlaceRoot::Local { id, .. } if (id.0 as usize) < arg_count)
+    matches!(&place.root, MirPlaceRoot::Local { id, .. } if id.index() < arg_count)
         && !place
             .projections
             .iter()

@@ -130,7 +130,7 @@ Fast paths can avoid a temporary where an expression is immediately assigned/ret
 root + typed projections + final type/alignment
 ```
 
-The final type and base alignment are carried from checked lowering so backends do not re-derive them independently. The alignment is a property of the place base; projected byte offsets can require weaker effective alignment. The current `@layout(align = n)` address-guarantee limitation remains tracked in `docs/issues/`.
+MIR carries the resolved final type plus an alignment claim so backends do not independently reconstruct place metadata. The current lowering derives that claim with `layout::type_alignment`; projected byte offsets can require weaker effective alignment. The current `@layout(align = n)` address-guarantee limitation remains tracked in `docs/issues/`.
 
 Roots include local/global/expression-derived storage; projections encode operations such as dereference, field, index, and related place transformations.
 
@@ -138,7 +138,7 @@ The analyzer already proved the operation legal and resolved field/type/mutabili
 
 ## Control-flow lowering
 
-`lower/function.rs` owns function CFG construction.
+Function lowering is split by responsibility: `lower/function.rs` owns builder state and invariants, `lower/function/control_flow.rs` owns CFG construction, `lower/function/expr.rs` owns ordinary expression translation, and `lower/function/defer.rs` owns the structural defer pre-pass.
 
 ### `if` / `match`
 
@@ -158,9 +158,13 @@ A pre-pass allocates a boolean flag for each supported defer. Reaching the sourc
 
 The language restrictions on where defer is currently allowed are semantic-analysis concerns and tracked in language/issues docs; MIR assumes checked input satisfies them.
 
+### `void` and effects
+
+`void` means that an expression produces no value slot; it does not mean the expression can be omitted. MIR still emits a `void`-typed tail or return expression so calls and other effects are preserved.
+
 ### `never`
 
-Expressions typed `never` have no usable fallthrough result. MIR terminates unreachable continuation appropriately rather than inventing a value for later blocks.
+Expressions typed `never` have no usable fallthrough result. MIR emits the expression for its effects and then terminates unreachable continuation rather than inventing a value for later blocks.
 
 ## Final symbols and linkage in MIR
 

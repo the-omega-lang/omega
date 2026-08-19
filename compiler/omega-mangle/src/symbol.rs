@@ -4,23 +4,6 @@ pub enum Namespace {
     Value,
 }
 
-impl Namespace {
-    pub(crate) fn tag(self) -> char {
-        match self {
-            Namespace::Type => 't',
-            Namespace::Value => 'v',
-        }
-    }
-
-    pub(crate) fn from_tag(c: char) -> Option<Self> {
-        match c {
-            't' => Some(Namespace::Type),
-            'v' => Some(Namespace::Value),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ManglePath {
     Root(String),

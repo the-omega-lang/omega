@@ -46,6 +46,32 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   are fully implemented, including `mut`. [mir-and-codegen.md](../architecture/mir-and-codegen.md),
   [compile-time-evaluation.md](../language/compile-time-evaluation.md)
 
+- **A function-local `extern` declaration is accepted by parsing and semantic
+  analysis but is not representable in MIR yet.** Top-level `extern` declarations
+  lower to `MirExternDeclaration` and are declared by both backends before body
+  emission. The statement form currently reaches `omega-mir` as
+  `CheckedStmt::ExternDeclaration` and hits the explicit unimplemented path in
+  function lowering instead. Fixing this cleanly means deciding whether local
+  externs are hoisted into module-level MIR declarations or whether `MirBody`
+  gains a declaration side table that codegen predeclares before compiling the
+  body; silently dropping the statement is not sound because calls still refer
+  to its `HirId`.
+  [mir-and-codegen.md](../architecture/mir-and-codegen.md)
+
+- **`defer` can currently slip into a repeatedly-evaluated loop condition or
+  C-style `for` post expression through a nested codeblock.** Analysis only
+  enters the loop scope while checking the loop *body*, so the existing
+  `DeferInsideLoopNotSupported` restriction does not cover those header
+  expressions. MIR intentionally gives each syntactic defer one flag/body pair,
+  which is only sound when that defer site can be activated at most once; a
+  repeated header evaluation violates that cardinality assumption. This should
+  be fixed in semantic analysis by checking repeated loop expressions under the
+  same defer-forbidden context as the body (or, as a larger language change, by
+  defining and implementing per-iteration defer instances). It is not patched
+  here because that policy belongs to analyzer/control-flow semantics rather
+  than MIR lowering.
+  [mir-and-codegen.md](../architecture/mir-and-codegen.md)
+
 - **Assigning *into* a function parameter directly (no deref in between)
   is still `todo!()`** — taking a parameter's *address* is fixed (see
   [mir-and-codegen.md](../architecture/mir-and-codegen.md)'s own "Fixed" note); direct
@@ -53,6 +79,17 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   copy works around it today. [mir-and-codegen.md](../architecture/mir-and-codegen.md)
 
 ## Types
+
+- **Ordinary indexing does not validate the index expression type during semantic
+  analysis.** `project_index` analyzes `container[index]` with no expected type
+  and records the resulting expression directly in `CheckedProjection::Index`.
+  Both native backends later assume that expression is an integer scalar
+  (Cranelift zero-extends it; LLVM converts it with `into_int_value()`), so a
+  non-integer index can survive checking and fail inside codegen instead of
+  producing a source diagnostic. The index domain/coercion policy belongs in
+  `omega-analyzer` and should be made explicit there before MIR; this refactor
+  intentionally does not add a backend-side type workaround.
+  [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md)
 
 - **`Type` equality compares parameter *names*.** Inside `FunctionType`,
   `params: Vec<Param>` and `Param`'s hand-written `PartialEq` compares
@@ -99,6 +136,20 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 ## Conformance and specs (`conform` / `primitive`)
 
 Remaining known conformance/spec issues:
+
+- **Conformance-method and vtable linker identity currently omits the spec's
+  module path.** `ConformanceOwner` retains `spec_module_path`, but
+  `omega-mir::mangle::conformance_method_symbol` and `vtable_symbol` currently
+  receive only the spec name + concrete spec arguments. `ExternFunctionKind::
+  Conform` also drops the module path before external references reach MIR. Two
+  distinct specs with the same name in different modules can therefore produce
+  the same conformance-method/vtable identity for the same target and signature.
+  This is deliberately not patched as a local refactor: adding the missing path
+  changes emitted linker names and is therefore an ABI/separate-compilation
+  migration. The fix must thread full spec identity through checked extern
+  references, conformance definitions, vtable construction, both backends, and
+  cross-package/mixed-backend linkage tests in one change.
+  [symbol-mangling.md](../architecture/symbol-mangling.md)
 
 - **Blanket conform bodies are checked lazily**, and a blanket emits a body
   for every type it is *materialized* against, not every type that calls it.
