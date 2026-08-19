@@ -39,8 +39,8 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 - **Extern *data* declarations (a non-function `extern`) have no storage
   story** — fully resolved and type-checked like everything else, but
-  codegen still has nothing sound to do with it (`todo!()` in
-  `update_extern_decl`), since its storage genuinely lives in another
+  codegen still has nothing sound to do with it and shared preflight rejects
+  it before backend selection, since its storage genuinely lives in another
   translation unit. An ordinary top-level global (`ident: type;`, or a
   non-`comp` `ident := comp value;`) is *not* this gap anymore — both
   are fully implemented, including `mut`. [mir-and-codegen.md](../architecture/mir-and-codegen.md),
@@ -72,11 +72,6 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   than MIR lowering.
   [mir-and-codegen.md](../architecture/mir-and-codegen.md)
 
-- **Assigning *into* a function parameter directly (no deref in between)
-  is still `todo!()`** — taking a parameter's *address* is fixed (see
-  [mir-and-codegen.md](../architecture/mir-and-codegen.md)'s own "Fixed" note); direct
-  assignment is a separate, still-unfixed code path. An explicit local
-  copy works around it today. [mir-and-codegen.md](../architecture/mir-and-codegen.md)
 
 ## Types
 

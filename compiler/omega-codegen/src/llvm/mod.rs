@@ -1,3 +1,4 @@
+mod constant;
 mod expr;
 mod function;
 mod item;
@@ -5,6 +6,7 @@ mod leaf;
 mod place;
 mod vtable;
 
+use crate::symbol::SymbolRegistry;
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
 use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
@@ -62,10 +64,10 @@ pub(crate) struct Codegen<'ctx> {
     vtables: HashMap<Vec<HirId>, inkwell::values::GlobalValue<'ctx>>,
     globals: HashMap<HirId, inkwell::values::GlobalValue<'ctx>>,
 
-    declared_symbols: HashMap<String, HirId>,
-    symbol_error: Option<String>,
+    symbols: SymbolRegistry,
 
     local_args: Vec<Vec<inkwell::values::BasicValueEnum<'ctx>>>,
+    parameter_slots: Vec<Option<inkwell::values::PointerValue<'ctx>>>,
     frame_slot: Option<inkwell::values::PointerValue<'ctx>>,
     entry_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     local_offsets: Vec<u32>,
@@ -119,20 +121,16 @@ impl<'ctx> Codegen<'ctx> {
             const_blobs: HashMap::new(),
             vtables: HashMap::new(),
             globals: HashMap::new(),
-            declared_symbols: HashMap::new(),
-            symbol_error: None,
+            symbols: SymbolRegistry::default(),
             local_args: Vec::new(),
+            parameter_slots: Vec::new(),
             frame_slot: None,
             entry_block: None,
             local_offsets: Vec::new(),
             arg_count: 0,
         };
 
-        codegen.update_all(modules, extern_functions);
-
-        if let Some(error) = codegen.symbol_error {
-            return Err(error);
-        }
+        codegen.update_all(modules, extern_functions)?;
 
         // Verify the finished LLVM module; verifier failures indicate an internal compiler bug.
         if let Err(errors) = codegen.module.verify() {
@@ -151,6 +149,7 @@ impl<'ctx> Codegen<'ctx> {
         self.entry_block = None;
         self.local_offsets.clear();
         self.local_args.clear();
+        self.parameter_slots.clear();
         self.arg_count = 0;
     }
 

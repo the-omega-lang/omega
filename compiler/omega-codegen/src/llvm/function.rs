@@ -1,6 +1,7 @@
 use super::Codegen;
 use super::leaf;
 use crate::abi::{AbiReturn, AbiSignature};
+use crate::storage::{ParameterHome, parameter_storage_plan};
 
 use inkwell::module::Linkage;
 use inkwell::types::{BasicType, BasicTypeEnum};
@@ -57,35 +58,23 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    pub(super) fn declare_function_def(&mut self, function_def: &MirFunctionDef) {
-        let symbol = function_def.symbol.clone();
-        if let Some(&existing_id) = self.declared_symbols.get(&symbol)
-            && existing_id != function_def.id
-        {
-            self.symbol_error.get_or_insert_with(|| {
-                format!(
-                    "two different functions both produce the linker symbol '{symbol}' -- this can \
-                     happen when '@mangling(disabled)' is used on more than one function with the same name, \
-                     or when '@mangling(force = \"...\")' gives two different functions the same forced name; \
-                     give one of them a different name, or re-enable mangling"
-                )
-            });
-            return;
-        }
-        self.declared_symbols
-            .insert(symbol.clone(), function_def.id);
-
+    pub(super) fn declare_function_def(
+        &mut self,
+        function_def: &MirFunctionDef,
+    ) -> Result<(), String> {
+        let symbol = &function_def.symbol;
+        self.symbols.register_function(symbol, function_def.id)?;
         let fn_type = self.llvm_function_type(&function_def.fn_type());
-        let function = self.module.add_function(&symbol, fn_type, None);
+        let function = self.module.add_function(symbol, fn_type, None);
         function.set_linkage(match function_def.linkage {
             omega_mir::MirLinkage::Export => Linkage::External,
             omega_mir::MirLinkage::Weak => Linkage::WeakODR,
         });
-        // Keep each function in its own section so linker GC can reclaim dead code.
         if self.target.os != omega_analyzer::Os::MacOs {
             function.set_section(Some(&format!(".text.{symbol}")));
         }
         self.functions.insert(function_def.id, function);
+        Ok(())
     }
 
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
@@ -109,10 +98,6 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
-        if self.symbol_error.is_some() {
-            return;
-        }
-
         let function = *self
             .functions
             .get(&function_def.id)
@@ -120,9 +105,11 @@ impl<'ctx> Codegen<'ctx> {
         let MirFunctionDef {
             return_type, body, ..
         } = function_def;
+        let parameter_storage = parameter_storage_plan(&body);
 
         self.arg_count = body.arg_count;
         self.local_args = vec![Vec::new(); body.locals.len()];
+        self.parameter_slots = vec![None; body.arg_count];
 
         let non_param_types: Vec<ResolvedType> = body.locals[body.arg_count..]
             .iter()
@@ -180,6 +167,22 @@ impl<'ctx> Codegen<'ctx> {
             .collect();
         for (i, arg) in declared_params.iter().enumerate() {
             self.local_args[argmap[i]].push(*arg);
+        }
+
+        for (index, home) in parameter_storage.into_iter().enumerate() {
+            if home == ParameterHome::Ssa {
+                continue;
+            }
+            let parameter_type = &body.locals[index].r#type;
+            let align = layout::type_alignment(parameter_type);
+            let slot = self.entry_alloca(
+                layout::total_bytes(parameter_type, self.pointer_bytes()),
+                align,
+                "param",
+            );
+            let values = self.local_args[index].clone();
+            self.store_scalars(&slot, 0, &values, align);
+            self.parameter_slots[index] = Some(slot);
         }
 
         // Keep the hidden sret destination available for the final return terminator.

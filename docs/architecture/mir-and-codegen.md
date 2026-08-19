@@ -192,11 +192,11 @@ EmitOutput
 generate(...)
 ```
 
-`CodegenRequest` contains the target, modules, entry path, extern-function references, optimization level, and requested output kind.
+`CodegenRequest` contains the translation-unit name, target, MIR modules, entry path, extern-function references, optimization level, and requested output kind. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by either native backend.
 
 ### Shared preflight
 
-`preflight.rs` rejects constructs that are currently unsupported and must fail identically regardless of backend (for example current parameter-assignment / extern-data gaps).
+`preflight.rs` rejects constructs that are currently unsupported and must fail identically regardless of backend. Today that shared codegen-only gap is extern data; parameter mutation/addressability is handled by the shared function-storage plan before either backend emits a body.
 
 If a new unsupported construct is common to all backends, put the rejection here or earlier in semantic analysis—not in two backend-specific `todo!()` branches.
 

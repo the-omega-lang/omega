@@ -1,12 +1,13 @@
 use super::Codegen;
 use super::leaf::{IntoCraneliftLeaves, cranelift_type};
 use crate::abi::{AbiReturn, AbiSignature};
+use crate::storage::{ParameterHome, parameter_storage_plan};
 use cranelift::codegen;
 use cranelift::codegen::ir::ArgumentPurpose;
 use cranelift::prelude::{
     AbiParam, FunctionBuilder, FunctionBuilderContext, Signature, StackSlotData, StackSlotKind, isa,
 };
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{Linkage, Module};
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
@@ -81,40 +82,17 @@ impl Codegen {
     pub(super) fn declare_function_def(
         &mut self,
         function_def: &MirFunctionDef,
-        symbol: String,
         linkage: Linkage,
-    ) -> FuncId {
+    ) -> Result<(), String> {
+        let symbol = &function_def.symbol;
+        self.symbols.register_function(symbol, function_def.id)?;
         let sig = self.function_signature(function_def);
-
-        if let Some(&existing_id) = self.declared_symbols.get(&symbol)
-            && existing_id != function_def.id
-        {
-            self.symbol_error.get_or_insert_with(|| {
-                format!(
-                    "two different functions both produce the linker symbol '{symbol}' -- this can \
-                     happen when '@mangling(disabled)' is used on more than one function with the same name, \
-                     or when '@mangling(force = \"...\")' gives two different functions the same forced name; \
-                     give one of them a different name, or re-enable mangling"
-                )
-            });
-            // Reuse the first FuncId after a detected symbol collision so Cranelift reports cleanly instead of panicking.
-            let existing_function_id = *self
-                .functions
-                .get(&existing_id)
-                .expect("a declared symbol's owner is always already in `functions`");
-            self.functions.insert(function_def.id, existing_function_id);
-            return existing_function_id;
-        }
-        self.declared_symbols
-            .insert(symbol.clone(), function_def.id);
-
         let function_id = self
             .module
-            .declare_function(&symbol, linkage, &sig)
-            .unwrap();
-
+            .declare_function(symbol, linkage, &sig)
+            .map_err(|error| format!("failed to declare function '{symbol}': {error}"))?;
         self.functions.insert(function_def.id, function_id);
-        function_id
+        Ok(())
     }
 
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
@@ -130,11 +108,6 @@ impl Codegen {
     }
 
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
-        // Skip definitions after a declaration collision; the whole Codegen result will be discarded.
-        if self.symbol_error.is_some() {
-            return;
-        }
-
         let function_id = *self
             .functions
             .get(&function_def.id)
@@ -143,6 +116,7 @@ impl Codegen {
         let MirFunctionDef {
             return_type, body, ..
         } = function_def;
+        let parameter_storage = parameter_storage_plan(&body);
 
         // Move the function context out temporarily so the builder does not block borrowing other Codegen state.
         let mut ctx = std::mem::replace(&mut self.ctx, codegen::Context::new());
@@ -154,6 +128,7 @@ impl Codegen {
 
         self.arg_count = body.arg_count;
         self.local_args = vec![Vec::new(); body.locals.len()];
+        self.parameter_slots = vec![None; body.arg_count];
 
         // Pack non-parameter locals into one frame slot so zero-sized offsets match shared layout.
         let non_param_types: Vec<ResolvedType> = body.locals[body.arg_count..]
@@ -201,8 +176,38 @@ impl Codegen {
             self.local_args[argmap[i]].push(*arg);
         }
 
-        for (mir_block, &cranelift_block) in body.blocks.into_iter().zip(&cranelift_blocks) {
-            builder.switch_to_block(cranelift_block);
+        builder.switch_to_block(entry_block);
+        for (index, home) in parameter_storage.into_iter().enumerate() {
+            if home == ParameterHome::Ssa {
+                continue;
+            }
+            let parameter_type = &body.locals[index].r#type;
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                layout::total_bytes(parameter_type, self.pointer_bytes()).max(1),
+                layout::stack_align_shift(layout::type_alignment(parameter_type)),
+            ));
+            let values = self.local_args[index].clone();
+            self.store_scalars(
+                &mut builder,
+                &super::place::PlaceStorage::Slot { slot, offset: 0 },
+                &values,
+            );
+            self.parameter_slots[index] = Some(slot);
+        }
+
+        for (block_index, (mir_block, &cranelift_block)) in body
+            .blocks
+            .into_iter()
+            .zip(&cranelift_blocks)
+            .enumerate()
+        {
+            // The entry block is already current because parameter homes are initialized
+            // above. Switching to it again after emitting a spill store violates
+            // FunctionBuilder's rule that the current block must be terminated first.
+            if block_index != 0 {
+                builder.switch_to_block(cranelift_block);
+            }
             for stmt in mir_block.statements {
                 self.process_expr(&mut builder, stmt);
             }

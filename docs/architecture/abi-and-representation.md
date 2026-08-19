@@ -108,7 +108,8 @@ A value can be held as SSA/register leaves or in addressable memory. Backend pla
 - reading leaves from memory;
 - storing leaves to memory;
 - projecting fields/slices/indexes;
-- spilling a parameter/temporary when its address is required;
+- giving a parameter one stable stack home when its own storage can be mutated or observed, while leaving ordinary parameters in SSA/register leaves;
+- materializing short-lived temporary values when an address is required;
 - materializing union/enum payload storage.
 
 The legality and resolved type of a place operation have already been decided by the analyzer. The backend handles storage realization only.

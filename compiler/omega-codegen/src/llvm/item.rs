@@ -5,23 +5,23 @@ use omega_mir::MirItem;
 use omega_parser::prelude::Ident;
 
 impl<'ctx> Codegen<'ctx> {
-    fn declare_item(&mut self, item: &MirItem, path: &[Ident]) {
+    fn declare_item(&mut self, item: &MirItem, path: &[Ident]) -> Result<(), String> {
         match item {
             MirItem::ExternDeclaration(extern_decl) => self.declare_extern_decl(extern_decl),
-            MirItem::FunctionDefinition(f) => self.declare_function_def(f),
+            MirItem::FunctionDefinition(f) => self.declare_function_def(f)?,
             MirItem::Struct(s) => {
                 for f in &s.functions {
-                    self.declare_function_def(f);
+                    self.declare_function_def(f)?;
                 }
             }
             MirItem::Enum(e) => {
                 for f in &e.functions {
-                    self.declare_function_def(f);
+                    self.declare_function_def(f)?;
                 }
             }
             MirItem::Union(u) => {
                 for f in &u.functions {
-                    self.declare_function_def(f);
+                    self.declare_function_def(f)?;
                 }
             }
             // Globals are declared before initialization so references are order-independent.
@@ -52,6 +52,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.globals.insert(decl.id, global);
             }
         }
+        Ok(())
     }
 
     fn define_item(&mut self, item: MirItem) {
@@ -80,10 +81,10 @@ impl<'ctx> Codegen<'ctx> {
         &mut self,
         modules: Vec<(Vec<Ident>, omega_mir::MirModule)>,
         extern_functions: Vec<ExternFunctionRef>,
-    ) {
+    ) -> Result<(), String> {
         for (path, module) in &modules {
             for item in &module.items {
-                self.declare_item(item, path);
+                self.declare_item(item, path)?;
             }
         }
         for extern_fn in &extern_functions {
@@ -94,5 +95,6 @@ impl<'ctx> Codegen<'ctx> {
                 self.define_item(item);
             }
         }
+        Ok(())
     }
 }

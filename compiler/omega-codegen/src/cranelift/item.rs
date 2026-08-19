@@ -13,27 +13,27 @@ fn cranelift_linkage(linkage: MirLinkage) -> Linkage {
 }
 
 impl Codegen {
-    fn declare_item(&mut self, item: &MirItem, path: &[Ident]) {
+    fn declare_item(&mut self, item: &MirItem, path: &[Ident]) -> Result<(), String> {
         match item {
             // Externs are fully handled during declaration; there is no definition pass.
             MirItem::ExternDeclaration(extern_decl) => self.update_extern_decl(extern_decl.clone()),
             MirItem::FunctionDefinition(f) => {
                 // Consume the MIR-provided symbol/linkage without backend-local renaming decisions.
-                self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
+                self.declare_function_def(f, cranelift_linkage(f.linkage))?;
             }
             MirItem::Struct(s) => {
                 for f in &s.functions {
-                    self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
+                    self.declare_function_def(f, cranelift_linkage(f.linkage))?;
                 }
             }
             MirItem::Enum(e) => {
                 for f in &e.functions {
-                    self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
+                    self.declare_function_def(f, cranelift_linkage(f.linkage))?;
                 }
             }
             MirItem::Union(u) => {
                 for f in &u.functions {
-                    self.declare_function_def(f, f.symbol.clone(), cranelift_linkage(f.linkage));
+                    self.declare_function_def(f, cranelift_linkage(f.linkage))?;
                 }
             }
             // Declare globals before materializing their initializer bytes.
@@ -57,6 +57,7 @@ impl Codegen {
                 self.globals.insert(decl.id, data_id);
             }
         }
+        Ok(())
     }
 
     fn define_item(&mut self, item: MirItem) {
@@ -88,10 +89,10 @@ impl Codegen {
         &mut self,
         modules: Vec<(Vec<Ident>, omega_mir::MirModule)>,
         extern_functions: Vec<ExternFunctionRef>,
-    ) {
+    ) -> Result<(), String> {
         for (path, module) in &modules {
             for item in &module.items {
-                self.declare_item(item, path);
+                self.declare_item(item, path)?;
             }
         }
         for extern_fn in &extern_functions {
@@ -102,5 +103,6 @@ impl Codegen {
                 self.define_item(item);
             }
         }
+        Ok(())
     }
 }

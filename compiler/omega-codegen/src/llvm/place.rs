@@ -27,7 +27,10 @@ impl<'ctx> Codegen<'ctx> {
         let (mut current, mut current_type) = match &place.root {
             MirPlaceRoot::Local { id, r#type } => {
                 let current = if id.index() < self.arg_count {
-                    PlaceStorage::Values(self.local_args[id.index()].clone())
+                    match self.parameter_slots[id.index()] {
+                        Some(slot) => PlaceStorage::Slot { slot, offset: 0 },
+                        None => PlaceStorage::Values(self.local_args[id.index()].clone()),
+                    }
                 } else {
                     let slot = self.frame_slot.expect(
                         "define_function_def always sets this before any block runs (a zero-size \
@@ -519,7 +522,7 @@ impl<'ctx> Codegen<'ctx> {
                     .iter()
                     .map(|v| leaf::value_byte_width(v.get_type(), self.pointer_bytes()))
                     .sum();
-                let slot = self.entry_alloca(size, 16, "param_addr");
+                let slot = self.entry_alloca(size, 16, "value_addr");
                 self.store_scalars(&slot, 0, values, 1);
                 slot
             }

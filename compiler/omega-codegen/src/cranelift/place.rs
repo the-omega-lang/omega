@@ -24,7 +24,10 @@ impl Codegen {
         let (mut current, mut current_type) = match &place.root {
             MirPlaceRoot::Local { id, r#type } => {
                 let current = if id.index() < self.arg_count {
-                    PlaceStorage::Values(self.local_args[id.index()].clone())
+                    match self.parameter_slots[id.index()] {
+                        Some(slot) => PlaceStorage::Slot { slot, offset: 0 },
+                        None => PlaceStorage::Values(self.local_args[id.index()].clone()),
+                    }
                 } else {
                     // Use the shared frame slot plus precomputed local offset so zero-sized locals follow shared layout.
                     let slot = self
@@ -383,7 +386,9 @@ impl Codegen {
     ) -> Value {
         let ptr_type = self.pointer_type();
         match storage {
-            // Spill address-taken parameters once and reuse the spill for subsequent projections.
+            // Parameters whose own storage can be observed already have a stable slot from
+            // the shared parameter-storage plan. Remaining value-backed places are transient
+            // expressions/projections, so materialize them on demand.
             PlaceStorage::Values(values) => {
                 let size: u32 = values
                     .iter()
@@ -391,7 +396,7 @@ impl Codegen {
                     .sum();
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    size,
+                    size.max(1),
                     4,
                 ));
                 let spilled = PlaceStorage::Slot { slot, offset: 0 };
@@ -452,9 +457,7 @@ impl Codegen {
             let leaf = builder.func.dfg.value_type(*value);
             match storage {
                 PlaceStorage::Values(_) => {
-                    unreachable!(
-                        "assignment into a function parameter is rejected by the shared preflight (crate::preflight) before any backend runs"
-                    );
+                    unreachable!("writes to SSA-backed places must be materialized before emission");
                 }
                 PlaceStorage::Slot { slot, offset } => {
                     builder

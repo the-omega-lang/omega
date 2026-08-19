@@ -1,3 +1,5 @@
+mod call;
+mod constant;
 mod expr;
 mod function;
 mod item;
@@ -5,6 +7,7 @@ mod leaf;
 mod place;
 mod vtable;
 
+use crate::symbol::SymbolRegistry;
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
 use cranelift::codegen;
 use cranelift::codegen::ir::StackSlot;
@@ -31,12 +34,12 @@ pub(crate) struct Codegen {
     globals: HashMap<HirId, DataId>,
 
     local_args: Vec<Vec<Value>>,
+    parameter_slots: Vec<Option<StackSlot>>,
     frame_slot: Option<StackSlot>,
     local_offsets: Vec<u32>,
     arg_count: usize,
 
-    declared_symbols: HashMap<String, HirId>,
-    symbol_error: Option<String>,
+    symbols: SymbolRegistry,
 }
 
 fn cranelift_opt_setting(level: OptLevel) -> &'static str {
@@ -103,19 +106,14 @@ impl Codegen {
             globals: HashMap::new(),
 
             local_args: Vec::new(),
+            parameter_slots: Vec::new(),
             frame_slot: None,
             local_offsets: Vec::new(),
             arg_count: 0,
-            declared_symbols: HashMap::new(),
-            symbol_error: None,
+            symbols: SymbolRegistry::default(),
         };
 
-        codegen.update_all(modules, extern_functions);
-
-        if let Some(error) = codegen.symbol_error {
-            return Err(error);
-        }
-
+        codegen.update_all(modules, extern_functions)?;
         Ok(codegen)
     }
 
@@ -124,6 +122,7 @@ impl Codegen {
         self.frame_slot = None;
         self.local_offsets.clear();
         self.local_args.clear();
+        self.parameter_slots.clear();
         self.arg_count = 0;
     }
 
