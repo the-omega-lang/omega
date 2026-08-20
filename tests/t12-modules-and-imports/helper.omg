@@ -1,0 +1,3 @@
+exposed greeting() => *str {
+	"hello from helper"
+}

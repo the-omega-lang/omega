@@ -1,0 +1,60 @@
+import extern::std::io::println;
+
+# --- declaration syntax and recursion -----------------------------------
+fibo(n: i32) => i32 {
+	if n <= 1 { return n; }
+	fibo(n - 2) + fibo(n - 1)
+}
+
+# --- return values: a void function needs no tail value -----------------
+announce(msg: *str) => void {
+	println$(msg);
+}
+
+# --- generics: type parameters follow the function name ------------------
+sum<T>(a: T, b: T) => T { a + b }
+
+# --- overloading: resolved by argument count -----------------------------
+combine(a: i32, b: i32) => i32 { a + b }
+combine(a: i32, b: i32, c: i32) => i32 { a + b + c }
+
+# --- overloading: resolved by which type a literal's family can adapt to -
+describe(v: i32) => *str { "int" }
+describe(v: f32) => *str { "float" }
+
+# --- an uncalled overloaded name is selected by an expected function type
+print_any(thing: *u8) => *str { "ptr" }
+print_any(thing: u32) => *str { "u32" }
+
+# --- static functions (no receiver) vs. instance methods -----------------
+struct Box {
+	exposed value: i32;
+
+	exposed make(v: i32) => Self {
+		Self { value = v; }
+	}
+
+	exposed get(*self) => i32 {
+		self.value
+	}
+}
+
+main() => i32 {
+	println$(fibo(10));
+
+	announce("void functions carry no value");
+
+	println$(sum(2, 3), sum(2.5f32, 1.5f32));
+
+	println$(combine(1, 2), combine(1, 2, 3));
+
+	println$(describe(5), describe(5.0));
+
+	handler: (thing: u32) => *str = print_any;
+	println$(handler(7u32));
+
+	box := Box::make(9);
+	println$(box.get());
+
+	return 0;
+}

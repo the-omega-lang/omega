@@ -1,0 +1,5 @@
+# A `gap` declares a capability as a named, static function set with no
+# body; exactly one `glue` elsewhere in the compilation supplies it.
+gap Multiplier {
+	multiply(a: i32, b: i32) => i32;
+}

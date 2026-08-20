@@ -1,0 +1,5 @@
+# Every module discovered under the local package root belongs to the
+# package's compilation set whether or not another local module imports it.
+exposed never_called() => i32 {
+	42
+}

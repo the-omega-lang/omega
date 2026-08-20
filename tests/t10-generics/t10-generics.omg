@@ -1,0 +1,85 @@
+import extern::std::io::println;
+import extern::core::option::Option;
+import extern::core::range::Bounded;
+
+# --- monomorphized generic aggregate and unbounded (duck-typed) function -
+struct Node<T> {
+	exposed value: T;
+	exposed next: *Node<T>;
+}
+
+sum<T>(a: T, b: T) => T { a + b }
+
+# --- a bounded generic parameter, and the `spec S` parameter-type sugar --
+exposed spec Describable {
+	describe(*self) => *str;
+}
+
+struct Widget {
+	exposed name: *str;
+}
+
+conform Widget to Describable {
+	describe(*self) => *str { self.name }
+}
+
+announce<T: Describable>(item: T) => *str {
+	item.describe()
+}
+
+announce_dyn(item: spec Describable) => *str {
+	item.describe()
+}
+
+# --- generic defaults, plain and function-call inference priority --------
+struct Pair<A, B = A> {
+	exposed a: A;
+	exposed b: B;
+
+	exposed new(a: A, b: B) => Self {
+		Self { a = a; b = b; }
+	}
+}
+
+add<T = u64>(a: T, b: T) => T { a + b }
+
+expect_u64(v: u64) => u64 { v }
+expect_u32(v: u32) => u32 { v }
+
+# --- expected result type inferring a generic that appears only there ----
+lowest<T: Bounded>() => T { T::min() }
+
+main() => i32 {
+	# --- generic aggregate, unbounded generic call ---------------------------
+	head := Node<i32> { value = 1; next = <*Node<i32>>0usize; };
+	println$(head.value, sum(2, 3), sum(2.5f32, 1.5f32));
+
+	# --- bounded generic parameter and `spec S` sugar -------------------------
+	gadget := Widget { name = "gadget"; };
+	println$(announce(gadget), announce_dyn(gadget));
+
+	# --- generic aggregate inference: expected type, fields, static call -----
+	opt := Option::Some { value = 42u32; };
+	none: Option<i32> = Option::None;
+	pair := Pair { a = 3; b = 4; };
+	pair2 := Pair::new(7, 8);
+	println$(opt.value, pair.a, pair.b, pair2.a, pair2.b);
+	match none {
+		Option::None => { println$("none is empty"); },
+	} else {}
+
+	# --- defaults: trailing parameter default, explicit positional prefix ----
+	explicit_pair: Pair<u64> = Pair { a = 1u64; b = 2; };
+	println$(explicit_pair.a, explicit_pair.b);
+
+	# --- function-call inference priority: default, then adapting literals ---
+	x := add(10, 20);         # T defaults to u64
+	y := add(10u32, 20);      # T = u32 from the first argument; 20 adapts
+	println$(expect_u64(x), expect_u32(y));
+
+	# --- expected result type supplies a generic with no other source --------
+	floor: i32 = lowest();
+	println$(floor);
+
+	return 0;
+}

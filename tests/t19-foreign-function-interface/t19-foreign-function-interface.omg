@@ -1,0 +1,37 @@
+import extern::std::io::println;
+import helper;
+
+# An extern declaration gives a name a function type with no Omega body;
+# calls use ordinary Omega call syntax.
+internal extern malloc : (size: usize) => *mut u8;
+internal extern free : (ptr: *u8) => void;
+
+# `...` exists only for foreign/C-style variadic function types.
+internal extern printf : (format: *u8, ...) => i32;
+internal extern fflush : (stream: *mut u8) => i32;
+
+@mangling(disabled)
+raw_add(a: i32, b: i32) => i32 { a + b }
+
+main() => i32 {
+	# --- extern function declarations: scalars/pointers are the practical
+	# interop boundary --------------------------------------------------------
+	block := malloc(4usize);
+	as_i32: *mut i32 = <*mut i32>block;
+	*as_i32 = 77;
+	println$(*as_i32);
+	free(<*u8>block);
+
+	# --- C-style variadic call: trailing arguments use the FFI ABI ------------
+	# `fflush(NULL)` forces C stdio's own buffer out immediately, so this
+	# output is not left racing Omega's independently-flushed `println$`.
+	printf(<*u8>b"fixed text, no variadic arguments\n\0");
+	fflush(<*mut u8>0usize);
+	printf(<*u8>b"sum = %d\n\0", raw_add(2, 3));
+	fflush(<*mut u8>0usize);
+
+	# --- program entry point: only root-module `main` is the C entry ---------
+	println$(helper::main());
+
+	return 0;
+}

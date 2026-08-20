@@ -1,0 +1,66 @@
+import extern::std::io::println;
+
+add(a: i32, b: i32) => i32 { a + b }
+
+# `comp` evaluation supports blocks, `if`, `while`, and ordinary control flow.
+factorial(n: i32) => i32 {
+	if n <= 1 { return 1; }
+	mut result := 1;
+	mut i := 2;
+	while i <= n {
+		result *= i;
+		i += 1;
+	}
+	result
+}
+
+make_point() => [2]i32 {
+	[3, 4]
+}
+
+# Intrinsically compile-time position: an enum header value, no `comp`
+# keyword required as long as the expression can be evaluated.
+compute_default_limit() => i32 { 10 + 5 }
+
+enum Setting(exposed limit: i32) {
+	Default(compute_default_limit());
+}
+
+# Module-scope storage-less compile-time bindings.
+comp SIZE := comp add(10, 20);
+comp FACT6 := comp factorial(6);
+comp DATA := comp make_point();
+
+# A non-`comp` binding may still have a `comp`-evaluated initializer.
+value := comp add(20, 30);
+
+# Ordinary globals: compile-time-known literal initializer, mutable, and
+# zero-initialized with no initializer at all.
+literal_global := 10;
+mut counter: i32 = 0;
+state: i32;
+
+main() => i32 {
+	println$(SIZE, FACT6, value, literal_global, state);
+
+	counter += 5;
+	println$(counter);
+
+	println$(DATA[0], DATA[1]);
+
+	# A `comp` binding has no runtime storage; `&DATA` materializes it as
+	# immutable static data to produce an addressable pointer.
+	ptr := &DATA;
+	println$((*ptr)[0]);
+
+	setting := Setting::Default;
+	println$(setting.limit);
+
+	println$(sizeof<[2]i32>);
+
+	# Nested `comp` evaluation.
+	nested := comp add(comp add(1, 2), comp add(3, 4));
+	println$(nested);
+
+	return 0;
+}

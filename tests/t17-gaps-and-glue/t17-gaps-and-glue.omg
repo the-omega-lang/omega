@@ -1,0 +1,18 @@
+import extern::std::io::println;
+import capability;
+import capability::Multiplier;
+
+# A glue names one qualified gap path and supplies its function set exactly.
+glue capability::Multiplier {
+	multiply(a: i32, b: i32) => i32 { a * b }
+}
+
+main() => i32 {
+	# A gap is a first-class item in the function namespace, called through
+	# a qualified path -- either the imported unqualified name or the full
+	# module-qualified path.
+	println$(Multiplier::multiply(6, 7));
+	println$(capability::Multiplier::multiply(3, 4));
+
+	return 0;
+}

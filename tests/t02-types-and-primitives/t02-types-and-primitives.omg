@@ -1,0 +1,128 @@
+import extern::std::io::println;
+import extern::core::option::Option;
+
+# --- numeric literal inference proofs ---------------------------------
+# These only compile if the unsuffixed literal actually took the inferred
+# / suffix-fixed type the spec promises; a wrong inference is a compile
+# error here rather than a silent narrowing.
+expect_i32(v: i32) => i32 { v }
+expect_f32(v: f32) => f32 { v }
+expect_u8(v: u8) => u8 { v }
+expect_f64(v: f64) => f64 { v }
+
+# `never` as a declared return type: must not complete normally. Never
+# called (calling it would spin forever), but it must still type-check.
+spin_forever() => never {
+	loop { }
+}
+
+# A diverging branch (`return`) is compatible with any expected type, so
+# this `if` still has type i32 even though one arm never produces a value.
+value_or_bail(cond: bool) => i32 {
+	x := if cond { 42 } else { return -1; };
+	x
+}
+
+# `*[?]T` is thin and unlengthed; it can be indexed given an external count.
+sum_unsized(values: *[?]i32, count: usize) => i32 {
+	mut total := 0;
+	mut i: usize = 0;
+	for ; i < count; i += 1 {
+		total += values[i];
+	}
+	total
+}
+
+fill_unsized(values: *mut [?]i32, count: usize, with: i32) => void {
+	mut i: usize = 0;
+	for ; i < count; i += 1 {
+		values[i] = with;
+	}
+}
+
+probe_char(value: u32) => i32 {
+	result := char::from_u32(value);
+	match result {
+		Option::Some => { <i32>result.value },
+	} else { -1 }
+}
+
+main() => i32 {
+	# --- primitive sizes, per the layout model ------------------------
+	println$(
+		sizeof<i8>, sizeof<i16>, sizeof<i32>, sizeof<i64>, sizeof<isize>,
+		sizeof<u8>, sizeof<u16>, sizeof<u32>, sizeof<u64>, sizeof<usize>,
+		sizeof<f32>, sizeof<f64>, sizeof<char>, sizeof<bool>, sizeof<void>
+	);
+
+	# --- literal inference: no compatible expected type ----------------
+	n := 5;
+	x := 1.0;
+	println$(expect_i32(n), expect_f32(x));
+
+	# --- literal inference: explicit suffix fixes the type -------------
+	small := 5u8;
+	wide := 1.0f64;
+	println$(expect_u8(small), expect_f64(wide));
+
+	# --- never: diverging branch inside a value-producing context ------
+	println$(value_or_bail(true), value_or_bail(false));
+
+	# --- pointer/array/slice type forms ---------------------------------
+	value: i32 = 10;
+	p: *i32 = &value;
+
+	mut other: i32 = 20;
+	pm: *mut i32 = &mut other;
+	*pm = 21;
+
+	# `*mut T` implicitly widens to `*T`.
+	widened: *i32 = pm;
+
+	mut arr: [3]i32 = [1, 2, 3];
+	parr: *[3]i32 = &arr;
+
+	inferred: []i32 = [100, 200, 300];
+
+	mut bytes: [4]u8 = [10, 20, 30, 40];
+	mview: *mut []u8 = &mut bytes[0..];
+	# mutable slice implicitly widens to immutable slice.
+	view: *[]u8 = mview;
+
+	greeting: *str = "hi";
+
+	println$(
+		*p, *pm, *widened,
+		arr[0] + arr[1] + arr[2], (*parr)[0] + (*parr)[1] + (*parr)[2],
+		inferred[0] + inferred[1] + inferred[2],
+		view.length, view[2],
+		greeting.size
+	);
+
+	println$(sum_unsized(<*[?]i32>&arr[0], 3usize));
+	fill_unsized(<*mut [?]i32>&mut arr[0], 3usize, 7);
+	println$(arr[0] + arr[1] + arr[2]);
+
+	# --- char: ordering, checked construction, casts --------------------
+	println$('a' < 'b', 'b' <= 'b', 'c' > 'b', 'c' >= 'd', 'a' == 'a', 'a' != 'b');
+	println$(probe_char(0x41u32), probe_char(0x110000u32), probe_char(0xD800u32));
+	from_byte := <char>65u8;
+	println$(from_byte == 'A', <i32>from_byte);
+
+	# --- bool: logical operators, no implicit numeric conversion --------
+	t := true;
+	f := false;
+	println$(t & f, t | f, t ^ f, t && f, t || f, !t);
+
+	# --- pointer arithmetic: byte-oriented, unscaled, produces usize ----
+	buffer: [4]u8 = [10, 20, 30, 40];
+	base: *u8 = &buffer[0];
+	offset := base + 2usize;
+	target := <*u8>offset;
+	println$(*target);
+
+	tail: *u8 = &buffer[3];
+	println$(tail - base);
+
+	return 0;
+}

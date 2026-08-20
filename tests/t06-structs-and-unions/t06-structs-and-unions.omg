@@ -1,0 +1,49 @@
+import extern::std::io::println;
+
+struct Point<T> {
+	exposed x: T;
+	exposed y: T;
+
+	# A method with no receiver is static: called as `Type::method(...)`.
+	exposed origin() => Point<T> {
+		Point<T> { x = 0; y = 0; }
+	}
+
+	# A method with a `*mut self` receiver mutates the caller's fields.
+	exposed translate(*mut self, dx: T, dy: T) => void {
+		self.x += dx;
+		self.y += dy;
+	}
+}
+
+union Raw {
+	exposed as_u32: u32;
+	exposed as_bytes: [4]u8;
+}
+
+union Value {
+	exposed as_i32: i32;
+	exposed as_f32: f32;
+}
+
+main() => i32 {
+	# A struct literal initializes every field exactly once.
+	p := Point<i32> { x = 10; y = 20; };
+	println$(p.x, p.y);
+
+	mut q := Point<i32>::origin();
+	q.translate(3, 4);
+	println$(q.x, q.y);
+
+	# A union's size is the size of its largest field; every field starts
+	# at offset zero, so writing one field is visible through another.
+	println$(sizeof<Raw>, sizeof<[4]u8>);
+
+	mut raw := Raw { as_u32 = 0x01020304u32; };
+	println$(raw.as_bytes[0], raw.as_bytes[1], raw.as_bytes[2], raw.as_bytes[3]);
+
+	v := Value { as_i32 = 42; };
+	println$(v.as_i32);
+
+	return 0;
+}

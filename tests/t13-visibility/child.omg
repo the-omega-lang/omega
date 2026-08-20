@@ -1,0 +1,57 @@
+exposed struct Public {
+	exposed data: i32;
+}
+
+internal struct PackageWide {
+	exposed data: i32;
+}
+
+# No modifier: hidden by default, visible only throughout this module.
+struct HiddenByDefault {
+	exposed data: i32;
+}
+
+exposed make_hidden(v: i32) => HiddenByDefault {
+	HiddenByDefault { data = v; }
+}
+
+# A hidden top-level item is visible throughout its exact declaring module.
+hidden_helper(v: i32) => i32 {
+	v * 2
+}
+
+exposed call_hidden_helper(v: i32) => i32 {
+	hidden_helper(v)
+}
+
+exposed struct Box {
+	exposed visible_field: i32;
+	hidden_field: i32;
+
+	exposed new(v: i32, h: i32) => Self {
+		Self { visible_field = v; hidden_field = h; }
+	}
+
+	# A hidden method is visible only from methods of its exact declaring
+	# owner; an unrelated free function in the same module cannot reach it
+	# without `reveal`.
+	hidden_double(*self) => i32 {
+		self.hidden_field * 2
+	}
+
+	exposed call_hidden_double(*self) => i32 {
+		self.hidden_double()
+	}
+}
+
+internal spec Mammal {
+	breathe(*self) => i32;
+}
+
+exposed struct Dog {
+	exposed id: i32;
+}
+
+conform Dog to Mammal {
+	breathe(*self) => i32 { 1 }
+}

@@ -1,0 +1,97 @@
+import extern::std::io::println;
+
+struct Counter {
+	exposed value: i32;
+
+	exposed new(start: i32) => Self {
+		Self { value = start; }
+	}
+
+	# By-value receiver: mutation stays local to this copy.
+	exposed bumped_copy(mut self) => i32 {
+		self.value += 1;
+		self.value
+	}
+
+	# By-value receiver, read-only: proves auto-deref-and-copy on a pointer.
+	exposed value_of(self) => i32 {
+		self.value
+	}
+
+	# Pointer receiver, immutable pointee: read-only.
+	exposed peek(*self) => i32 {
+		self.value
+	}
+
+	# Pointer receiver, mutable pointee: mutates the caller's value.
+	exposed bump(*mut self) => void {
+		self.value += 1;
+	}
+}
+
+main() => i32 {
+	# --- binding forms ----------------------------------------------------
+	mut a: i32;
+	a = 10;
+	b: i32 = 20;
+	c := 30;
+	mut d: i32 = 40;
+	mut e := 50;
+	d += 1;
+	e += 1;
+	println$(a, b, c, d, e);
+
+	# `mut` stays an ordinary identifier outside binding-modifier position.
+	mut mut := 5;
+	mut += 1;
+	println$(mut);
+
+	# --- receiver forms and their mutation scope ---------------------------
+	mut counter := Counter::new(0);
+
+	# `mut self` mutates only its local by-value copy.
+	copy_result := counter.bumped_copy();
+	println$(copy_result, counter.value);
+
+	# A pointer-receiver method called on a plain value takes the
+	# reference automatically.
+	println$(counter.peek());
+
+	# `*mut self` mutates the caller's value through the receiver pointer.
+	counter.bump();
+	counter.bump();
+	println$(counter.value);
+
+	# A by-value-receiver method called through a pointer dereferences
+	# and copies automatically.
+	ptr := &counter;
+	println$(ptr.value_of());
+
+	# --- mutable places: &place vs &mut place -------------------------------
+	value: i32 = 100;
+	immutable_ptr: *i32 = &value;
+
+	mut other: i32 = 200;
+	mutable_ptr: *mut i32 = &mut other;
+	*mutable_ptr += 1;
+	println$(*immutable_ptr, *mutable_ptr);
+
+	# --- compound assignment and increment/decrement ------------------------
+	mut n: i32 = 10;
+	n += 5;   # 15
+	n -= 2;   # 13
+	n *= 3;   # 39
+	n /= 2;   # 19
+	n %= 4;   # 3
+	n &= 6;   # 2
+	n |= 1;   # 3
+	n ^= 3;   # 0
+	n += 20;  # 20
+	n <<= 2;  # 80
+	n >>= 1;  # 40
+	++n;      # 41
+	--n;      # 40
+	println$(n);
+
+	return 0;
+}

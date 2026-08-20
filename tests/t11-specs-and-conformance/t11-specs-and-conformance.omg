@@ -1,0 +1,129 @@
+import extern::std::io::println;
+
+enum AnimalKind {
+	Dog,
+	Cat;
+}
+
+# A function without a body is required; one with a body is a default a
+# conformance may keep or replace.
+exposed spec Animal {
+	kind(*self) => AnimalKind;
+	make_sound(*self) => *str;
+
+	is_dog(*self) => bool {
+		self.kind().tag == AnimalKind::Dog.tag
+	}
+}
+
+struct Dog {
+	exposed id: i32;
+}
+
+conform Dog to Animal {
+	kind(*self) => AnimalKind { AnimalKind::Dog }
+	make_sound(*self) => *str { "woof" }
+}
+
+struct Cat {
+	exposed id: i32;
+}
+
+conform Cat to Animal {
+	kind(*self) => AnimalKind { AnimalKind::Cat }
+	make_sound(*self) => *str { "meow" }
+}
+
+# --- blanket conformance, specificity, and entailment ---------------------
+exposed spec Tagged {
+	tag_name(*self) => *str;
+}
+
+# Applies to every concrete type that conforms to `Animal`.
+conform<T: Animal> T to Tagged {
+	tag_name(*self) => *str { "animal" }
+}
+
+# A matching concrete conformance is more specific than the blanket above.
+conform Dog to Tagged {
+	tag_name(*self) => *str { "dog-specific" }
+}
+
+# Relies on the blanket's entailed `Tagged` conformance without declaring
+# `T: Animal + Tagged` explicitly.
+describe_tag<T: Animal>(value: *T) => *str {
+	Tagged::tag_name(value)
+}
+
+# --- qualification levels for calling conforming functions -----------------
+exposed spec Make {
+	make() => Self;
+}
+
+struct Widget {
+	exposed id: i32;
+}
+
+conform Widget to Make {
+	make() => Self { Self { id = 9; } }
+}
+
+# --- a concrete type conforming to several instantiations of one spec ------
+exposed spec Consumer<T> {
+	consume(*self, value: T) => i32;
+}
+
+struct Multi {
+	exposed tally: i32;
+}
+
+conform Multi to Consumer<i32> {
+	consume(*self, value: i32) => i32 { self.tally + value }
+}
+
+conform Multi to Consumer<*u8> {
+	consume(*self, value: *u8) => i32 { self.tally + <i32>*value }
+}
+
+main() => i32 {
+	dog := Dog { id = 1; };
+	cat := Cat { id = 2; };
+
+	# --- explicit conformance, and a spec default method's own logic -------
+	println$(
+		Animal::make_sound(&dog), Animal::make_sound(&cat),
+		Animal::is_dog(&dog), Animal::is_dog(&cat)
+	);
+
+	# --- three qualification levels for calling conforming functions -------
+	println$(Animal::make_sound(&dog));      # spec supplied, receiver given
+	direct := Widget::make();                # target type supplied
+	via_spec: Widget = Make::make();          # spec supplied, Self inferred
+	via_both := <Widget : Make>::make();      # both supplied explicitly
+	println$(direct.id, via_spec.id, via_both.id);
+
+	# --- blanket vs. concrete specificity, and entailment through a bound --
+	println$(Tagged::tag_name(&dog), Tagged::tag_name(&cat));
+	println$(describe_tag(&dog), describe_tag(&cat));
+
+	# --- multiple instantiations of a generic spec, disambiguated by type --
+	multi := Multi { tally = 10; };
+	byte: u8 = 5u8;
+	println$(Consumer<i32>::consume(&multi, 1), Consumer<*u8>::consume(&multi, &byte));
+
+	# --- dynamic dispatch: implicit coercion, explicit cast, pseudo-fields -
+	speak(&dog);
+	speak(&cat);
+
+	obj := <spec *Animal>&dog;
+	println$(obj.make_sound());
+	raw := obj.ptr;
+	vt := obj.vtable;
+	println$(<usize>raw != 0usize, <usize>vt != 0usize);
+
+	return 0;
+}
+
+speak(animal: spec *Animal) => void {
+	println$(animal.make_sound());
+}

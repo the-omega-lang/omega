@@ -1,0 +1,12 @@
+# Package-wide visibility, but not imported by name anywhere else; only
+# reachable here through the macro below.
+internal secret := 7;
+
+internal macro read_secret() => {
+	secret
+}
+
+# Item-position macro: splices a whole function declaration.
+exposed macro make_doubler($T: type, $name: ident) => {
+	$name(x: $T) => $T { x + x }
+}

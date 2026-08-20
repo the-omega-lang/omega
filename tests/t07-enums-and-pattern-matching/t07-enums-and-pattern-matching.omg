@@ -1,0 +1,107 @@
+import extern::std::io::println;
+
+enum Ordering {
+	Less,
+	Equal,
+	Greater;
+}
+
+enum Status(tag: u8, exposed label: *str) {
+	Ok(0, "ok"),
+	Err(1, "error") {
+		exposed code: i32;
+	};
+}
+
+enum Message(exposed description: *str) {
+	exposed timestamp: u64;
+
+	Info("info"),
+	Error("error") {
+		exposed code: i32;
+	};
+}
+
+compare(a: i32, b: i32) => Ordering {
+	if a < b { Ordering::Less }
+	else if a > b { Ordering::Greater }
+	else { Ordering::Equal }
+}
+
+order_label(o: Ordering) => *str {
+	match o {
+		Ordering::Less => "less",
+		Ordering::Equal => "equal",
+		Ordering::Greater => "greater",
+	}
+}
+
+# The parameter only carries the parent enum type; body fields require
+# re-proving the variant here, independent of any refinement the caller had.
+describe_status(s: Status) => *str {
+	match s {
+		Status::Ok => "all good",
+		Status::Err => {
+			"failed"
+		},
+	}
+}
+
+classify_value(n: u32) => *str {
+	match n {
+		0..<100 => "less than a hundred",
+		100 => "a hundred",
+		.. => "more than a hundred",
+	}
+}
+
+classify_char(c: char) => i32 {
+	match c {
+		'A'..='Z' => 1,
+		'a'..='z' => 2,
+		'0'..='9' => 3,
+	} else {
+		0
+	}
+}
+
+main() => i32 {
+	# --- basic enum: implicit tag, path construction, exhaustive match ----
+	less := Ordering::Less;
+	println$(order_label(less), order_label(compare(2, 5)), order_label(compare(5, 2)));
+
+	# --- header fields: compile-time-constant per variant, immutable ------
+	ok := Status::Ok;
+	err := Status::Err { code = 7; };
+	println$(ok.tag, ok.label, err.tag, err.label, err.code);
+
+	# --- shared dynamic fields + variant body fields -----------------------
+	info := Message::Info { timestamp = 100u64; };
+	trouble := Message::Error { timestamp = 200u64; code = 42; };
+	println$(info.description, info.timestamp, trouble.description, trouble.timestamp, trouble.code);
+
+	# --- match refinement: the body field is reachable only inside the arm -
+	match trouble {
+		Message::Error => {
+			println$(trouble.code);
+		},
+	} else {}
+
+	# --- widening: a refined value flows where only the parent type is known
+	println$(describe_status(ok), describe_status(err));
+
+	# --- value match: literal + range partition the domain, `..` covers rest
+	println$(classify_value(50u32), classify_value(100u32), classify_value(250u32));
+
+	# --- char ranges as match patterns --------------------------------------
+	println$(classify_char('Q'), classify_char('q'), classify_char('5'), classify_char('_'));
+
+	# --- bare `..` catch-all over the remaining enum variants ----------------
+	tag_of := match less {
+		Ordering::Equal => "equal",
+		.. => "not equal",
+	};
+	println$(tag_of);
+
+	return 0;
+}

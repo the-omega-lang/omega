@@ -1,0 +1,78 @@
+import extern::std::io::println;
+
+@suppress(unused_import)
+import extern::core::option::Option;
+
+# Default struct layout is `pack = 1, align = 1`: no natural-alignment
+# padding between fields.
+struct Packed {
+	exposed a: u8;
+	exposed b: u32;
+}
+
+@layout(pack = sizeof<u32>, align = sizeof<u32>)
+struct Aligned {
+	exposed a: u8;
+	exposed b: u32;
+}
+
+enum PlainTag {
+	A,
+	B;
+}
+
+@layout(pack = sizeof<usize>, align = sizeof<usize>)
+enum WideTag {
+	A,
+	B;
+}
+
+@suppress(unused_field, dead_code)
+union Scratch {
+	exposed as_i32: i32;
+	exposed as_u8: u8;
+}
+
+@suppress(inline_not_enforced)
+exposed spec Greeter {
+	greet(*self) => *str;
+}
+
+@inline
+@suppress(inline_not_enforced)
+fast_double(x: i32) => i32 { x * 2 }
+
+@inline(never)
+slow_triple(x: i32) => i32 { x * 3 }
+
+# `disabled` uses the bare function name as its linker symbol.
+@mangling(disabled)
+raw_add(a: i32, b: i32) => i32 { a + b }
+
+struct Adder {
+	exposed base: i32;
+
+	# `force = "..."` is allowed on methods and fixes the exact symbol.
+	@mangling(force = "adder_bump_exact_symbol")
+	exposed bump(*self, delta: i32) => i32 { self.base + delta }
+}
+
+main() => i32 {
+	# Explicit `@layout` changes the observable size relative to the
+	# packed-by-default struct/enum layout.
+	println$(sizeof<Packed>, sizeof<Aligned>);
+	println$(sizeof<PlainTag>, sizeof<WideTag>);
+
+	# `sizeof<Type>` is an ordinary usize expression outside annotations.
+	println$(sizeof<usize>, sizeof<*u8>);
+
+	# `@inline`/`@mangling` are hints/symbol control; program behavior is
+	# unaffected.
+	println$(fast_double(21), slow_triple(7));
+	println$(raw_add(2, 3));
+
+	adder := Adder { base = 10; };
+	println$(adder.bump(5));
+
+	return 0;
+}

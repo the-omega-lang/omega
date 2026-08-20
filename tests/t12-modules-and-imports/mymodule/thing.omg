@@ -1,0 +1,7 @@
+# `root::` explicitly starts at the current package root, independent of
+# how deeply nested the importing module is.
+import root::helper;
+
+exposed something() => *str {
+	helper::greeting()
+}

@@ -82,6 +82,12 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #     and stock Alpine ships neither; without them the download succeeds and
 #     the binary dies with relocation errors. build-base pulls them in as a
 #     side effect today, but omp needs them in its own right.
+#   * ruby -- interprets bin/test-runner, the root conformance-suite driver.
+#     Alpine's `ruby` package depends on the `libruby.so` shared object
+#     provided by `ruby-libs`, so apk resolves and installs that
+#     automatically; ruby-libs already carries fileutils/open3/pathname, the
+#     only stdlib the runner uses, so no separate stdlib subpackage is
+#     needed.
 # No Node.js and no Bun: Claude Code, Codex CLI, omp and opencode are all
 # installed below as their native single-file builds.
 RUN apk add --no-cache \
@@ -92,7 +98,8 @@ RUN apk add --no-cache \
         build-base binutils gdb \
         libstdc++ libgcc \
         just \
-        rustup
+        rustup \
+        ruby
 
 # LLVM, for the second `omega-codegen` backend beside Cranelift (see that
 # crate's `BackendKind`, and docs/architecture/mir-and-codegen.md's "Multiple
