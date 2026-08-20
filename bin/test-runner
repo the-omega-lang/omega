@@ -1,0 +1,262 @@
+#!/usr/bin/env ruby
+
+require "fileutils"
+require "open3"
+require "pathname"
+
+ROOT_DIR = Pathname.new(__dir__).join("..").expand_path
+TESTS_DIR = ROOT_DIR.join("tests")
+
+# Directories
+BIN_DIR = ROOT_DIR.join("bin")
+ARTIFACTS_DIR = ROOT_DIR.join("target")
+TEST_ARTIFACTS_DIR = ARTIFACTS_DIR.join("tests")
+
+# Dependencies
+RUNTIME_PACKAGES = {
+  "core" => ROOT_DIR.join("runtime", "core"),
+  "std"  => ROOT_DIR.join("runtime", "std"),
+  "plat" => ROOT_DIR.join("runtime", "plat", "libc")
+}.freeze
+RUNTIME_OBJECTS = RUNTIME_PACKAGES.keys.map{ |x| ARTIFACTS_DIR.join("#{x}.o") }.freeze
+
+# omgc
+OMGC = BIN_DIR.join("omgc-debug")
+OMGC_EXTERNS =RUNTIME_PACKAGES.map do |name, path|
+  "--extern=#{name}:#{path}"
+end.freeze
+
+class CommandResult
+  attr_reader :stdout, :stderr, :status
+
+  def initialize(stdout, stderr, status)
+    @stdout = stdout
+    @stderr = stderr
+    @status = status
+  end
+
+  def success?
+    @status.success?
+  end
+end
+
+class TestModule
+  attr_reader :name, :path
+
+  def initialize(path)
+    @path = Pathname.new(path)
+    @name = @path.basename.to_s
+  end
+
+  def expected_stdout_path
+    @path.join("expected.stdout")
+  end
+
+  def expected_stderr_path
+    @path.join("expected.stderr")
+  end
+end
+
+class TestResult
+  attr_reader :test, :failures
+
+  def initialize(test, failures)
+    @test = test
+    @failures = failures
+  end
+
+  def passed?
+    @failures.empty?
+  end
+end
+
+class TestRunner
+  def initialize(tests)
+    @tests = tests
+  end
+
+  def run
+    FileUtils.mkdir_p(TEST_ARTIFACTS_DIR)
+
+    results = @tests.map { |test| run_test(test) }
+
+    results.each do |result|
+      if result.passed?
+        puts "PASS #{result.test.name}"
+      else
+        puts "FAIL #{result.test.name}"
+        result.failures.each { |failure| puts failure }
+      end
+    end
+
+    failed = results.count { |result| !result.passed? }
+
+    puts
+    puts "#{results.length - failed}/#{results.length} tests passed"
+
+    failed.zero?
+  end
+
+  private
+
+  def run_test(test)
+    target_dir = TEST_ARTIFACTS_DIR.join(test.name)
+
+    FileUtils.rm_rf(target_dir)
+    FileUtils.mkdir_p(target_dir)
+
+    object = target_dir.join("#{test.name}.o")
+    executable = target_dir.join(test.name)
+
+    compile = capture(
+      OMGC.to_s,
+      test.path.to_s,
+      *OMGC_EXTERNS,
+      "-o", object.to_s
+    )
+
+    unless compile.success?
+      failures = compare_expected_output(
+        test,
+        compile.stdout,
+        compile.stderr
+      )
+
+      unless test.expected_stderr_path.file?
+        failures.unshift("  compilation failed unexpectedly")
+      end
+
+      return TestResult.new(test, failures)
+    end
+
+    link = capture(
+      "cc",
+      object.to_s,
+      *RUNTIME_OBJECTS.map(&:to_s),
+      "-o", executable.to_s
+    )
+
+    unless link.success?
+      return TestResult.new(test, [
+        "  linking failed",
+        format_command_output(link)
+      ])
+    end
+
+    execution = capture(executable.to_s)
+
+    failures = compare_expected_output(
+      test,
+      execution.stdout,
+      execution.stderr
+    )
+
+    unless execution.success?
+      failures.unshift(
+        "  program exited with status #{execution.status.exitstatus}"
+      )
+    end
+
+    TestResult.new(test, failures)
+  end
+
+  def compare_expected_output(test, stdout, stderr)
+    failures = []
+
+    compare_stream(
+      test.expected_stdout_path,
+      stdout,
+      "stdout",
+      failures
+    )
+
+    compare_stream(
+      test.expected_stderr_path,
+      stderr,
+      "stderr",
+      failures
+    )
+
+    failures
+  end
+
+  def compare_stream(expected_path, actual, name, failures)
+    return unless expected_path.file?
+
+    expected = File.binread(expected_path)
+
+    return if expected == actual.b
+
+    failures << <<~MESSAGE.chomp
+        #{name} did not match #{expected_path.basename}
+
+        expected:
+        #{indent(expected)}
+
+        actual:
+        #{indent(actual)}
+    MESSAGE
+  end
+
+  def capture(*command)
+    stdout, stderr, status = Open3.capture3(
+      *command,
+      chdir: ROOT_DIR.to_s,
+      binmode: true
+    )
+
+    CommandResult.new(stdout, stderr, status)
+  end
+
+  def format_command_output(result)
+    <<~OUTPUT.chomp
+      stdout:
+      #{indent(result.stdout)}
+
+      stderr:
+      #{indent(result.stderr)}
+    OUTPUT
+  end
+
+  def indent(text)
+    return "    <empty>" if text.empty?
+
+    text
+      .lines(chomp: false)
+      .map { |line| "    #{line}" }
+      .join
+      .chomp
+  end
+end
+
+def get_available_test_modules
+  return [] unless TESTS_DIR.directory?
+
+  TESTS_DIR
+    .children
+    .select(&:directory?)
+    .sort
+    .map { |path| TestModule.new(path) }
+end
+
+available_tests = get_available_test_modules
+tests_by_name = available_tests.to_h { |test| [test.name, test] }
+
+tests_to_run =
+  if ARGV.empty?
+    available_tests
+  else
+    unknown = ARGV.reject { |name| tests_by_name.key?(name) }
+
+    abort "Unknown test(s): #{unknown.join(", ")}" unless unknown.empty?
+
+    ARGV.map { |name| tests_by_name.fetch(name) }
+  end
+
+abort "No tests found in #{TESTS_DIR}" if tests_to_run.empty?
+
+puts "[Omega Test Runner]"
+puts "Tests to run: #{tests_to_run.map(&:name).join(", ")}"
+puts
+
+exit(TestRunner.new(tests_to_run).run ? 0 : 1)
