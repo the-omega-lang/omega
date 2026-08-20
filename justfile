@@ -10,7 +10,7 @@ test-all: build-omgc build-runtime
     @echo "[*] Starting test-runner..."
     ./bin/test-runner
 
-build-runtime: build-core build-std build-plat
+build-runtime: build-core build-plat build-std
     @echo "[*] Runtime built successfully"
 
 build-omgc:
@@ -19,7 +19,7 @@ build-omgc:
 
 build-core: build-omgc
     @echo "[*] Building 'core'..."
-    ./bin/omgc-debug -v runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat.o
+    ./bin/omgc-debug -v runtime/core/ -o target/core.o
 
 build-plat: build-omgc
     @echo "[*] Building 'plat'..."
