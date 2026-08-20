@@ -30,6 +30,31 @@ OMGC_EXTERNS =RUNTIME_PACKAGES.map do |name, path|
   "--extern=#{name}:#{path}"
 end.freeze
 
+module Color
+  extend self
+
+  ENABLED = $stdout.tty? && ENV["NO_COLOR"].nil?
+
+  CODES = {
+    reset: 0, bold: 1, dim: 2,
+    red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, cyan: 36, white: 37,
+    gray: 90
+  }.freeze
+
+  def paint(text, *styles)
+    return text.to_s unless ENABLED
+
+    codes = styles.map { |style| CODES.fetch(style) }.join(";")
+    "\e[#{codes}m#{text}\e[0m"
+  end
+
+  CODES.each_key do |name|
+    define_method(name) do |text|
+      paint(text, name)
+    end
+  end
+end
+
 class CommandResult
   attr_reader :stdout, :stderr, :status
 
@@ -62,11 +87,12 @@ class TestModule
 end
 
 class TestResult
-  attr_reader :test, :failures
+  attr_reader :test, :failures, :duration
 
-  def initialize(test, failures)
+  def initialize(test, failures, duration)
     @test = test
     @failures = failures
+    @duration = duration
   end
 
   def passed?
@@ -75,35 +101,115 @@ class TestResult
 end
 
 class TestRunner
+  PASS_ICON = "✓"
+  FAIL_ICON = "✗"
+  RUN_ICON  = "•"
+
   def initialize(tests)
     @tests = tests
+    @name_width = tests.map { |test| test.name.length }.max || 0
   end
 
   def run
     FileUtils.mkdir_p(TEST_ARTIFACTS_DIR)
 
-    results = @tests.map { |test| run_test(test) }
+    suite_start = now
+    results = @tests.map { |test| run_and_report(test) }
+    suite_duration = now - suite_start
 
-    results.each do |result|
-      if result.passed?
-        puts "PASS #{result.test.name}"
-      else
-        puts "FAIL #{result.test.name}"
-        result.failures.each { |failure| puts failure }
-      end
-    end
+    print_summary(results, suite_duration)
 
-    failed = results.count { |result| !result.passed? }
-
-    puts
-    puts "#{results.length - failed}/#{results.length} tests passed"
-
-    failed.zero?
+    results.all?(&:passed?)
   end
 
   private
 
+  def run_and_report(test)
+    live = Color::ENABLED
+    print "  #{Color.gray(RUN_ICON)} #{test.name.ljust(@name_width)}" if live
+    $stdout.flush if live
+
+    result = run_test(test)
+
+    print "\r\e[2K" if live
+    print_result_line(result)
+
+    unless result.passed?
+      result.failures.each { |failure| puts failure }
+      puts
+    end
+
+    result
+  end
+
+  def print_result_line(result)
+    time_str = Color.gray(format_duration(result.duration))
+
+    if result.passed?
+      icon = Color.paint(PASS_ICON, :bold, :green)
+      status = Color.green("PASS")
+    else
+      icon = Color.paint(FAIL_ICON, :bold, :red)
+      status = Color.red("FAIL")
+    end
+
+    puts "  #{icon} #{status}  #{result.test.name.ljust(@name_width)}  #{time_str}"
+  end
+
+  def print_summary(results, suite_duration)
+    failed = results.reject(&:passed?)
+    passed_count = results.length - failed.length
+
+    puts
+    puts Color.paint("─" * 40, :gray)
+
+    bar = progress_bar(passed_count, results.length)
+    counts = if failed.empty?
+      Color.bold(Color.green("#{passed_count}/#{results.length} passed"))
+    else
+      "#{Color.bold(Color.green("#{passed_count} passed"))}, " \
+        "#{Color.bold(Color.red("#{failed.length} failed"))} " \
+        "#{Color.gray("(#{results.length} total)")}"
+    end
+
+    puts "  #{bar}  #{counts}"
+    puts "  #{Color.gray("finished in #{format_duration(suite_duration)}")}"
+
+    unless failed.empty?
+      puts
+      puts "  #{Color.red("Failed:")}"
+      failed.each { |result| puts "    #{Color.red(TestRunner::FAIL_ICON)} #{result.test.name}" }
+    end
+
+    puts
+  end
+
+  def progress_bar(passed, total, width: 20)
+    return Color.gray("─" * width) if total.zero?
+
+    filled = (passed.to_f / total * width).round
+    filled = width if passed == total
+    bar_color = passed == total ? :green : :yellow
+
+    Color.paint("█" * filled, bar_color) + Color.gray("░" * (width - filled))
+  end
+
+  def format_duration(seconds)
+    ms = seconds * 1000.0
+
+    if ms < 1000
+      "%4dms" % ms.round
+    else
+      "%5.2fs" % seconds
+    end
+  end
+
+  def now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
   def run_test(test)
+    start = now
     target_dir = TEST_ARTIFACTS_DIR.join(test.name)
 
     FileUtils.rm_rf(target_dir)
@@ -127,10 +233,10 @@ class TestRunner
       )
 
       unless test.expected_stderr_path.file?
-        failures.unshift("  compilation failed unexpectedly")
+        failures.unshift(indent_message("compilation failed unexpectedly"))
       end
 
-      return TestResult.new(test, failures)
+      return TestResult.new(test, failures, now - start)
     end
 
     link = capture(
@@ -142,9 +248,9 @@ class TestRunner
 
     unless link.success?
       return TestResult.new(test, [
-        "  linking failed",
+        indent_message("linking failed"),
         format_command_output(link)
-      ])
+      ], now - start)
     end
 
     execution = capture(executable.to_s)
@@ -157,11 +263,15 @@ class TestRunner
 
     unless execution.success?
       failures.unshift(
-        "  program exited with status #{execution.status.exitstatus}"
+        indent_message("program exited with status #{execution.status.exitstatus}")
       )
     end
 
-    TestResult.new(test, failures)
+    TestResult.new(test, failures, now - start)
+  end
+
+  def indent_message(text)
+    "    #{Color.yellow(text)}"
   end
 
   def compare_expected_output(test, stdout, stderr)
@@ -192,13 +302,13 @@ class TestRunner
     return if expected == actual.b
 
     failures << <<~MESSAGE.chomp
-        #{name} did not match #{expected_path.basename}
+        #{Color.yellow("#{name} did not match #{expected_path.basename}")}
 
-        expected:
-        #{indent(expected)}
+        #{Color.gray("expected:")}
+        #{indent(expected, :green)}
 
-        actual:
-        #{indent(actual)}
+        #{Color.gray("actual:")}
+        #{indent(actual, :red)}
     MESSAGE
   end
 
@@ -214,20 +324,20 @@ class TestRunner
 
   def format_command_output(result)
     <<~OUTPUT.chomp
-      stdout:
+      #{Color.gray("stdout:")}
       #{indent(result.stdout)}
 
-      stderr:
+      #{Color.gray("stderr:")}
       #{indent(result.stderr)}
     OUTPUT
   end
 
-  def indent(text)
-    return "    <empty>" if text.empty?
+  def indent(text, color = nil)
+    return "    #{Color.gray("<empty>")}" if text.empty?
 
     text
       .lines(chomp: false)
-      .map { |line| "    #{line}" }
+      .map { |line| "    #{color ? Color.paint(line, color) : line}" }
       .join
       .chomp
   end
@@ -259,8 +369,8 @@ tests_to_run =
 
 abort "No tests found in #{TESTS_DIR}" if tests_to_run.empty?
 
-puts "[Omega Test Runner]"
-puts "Tests to run: #{tests_to_run.map(&:name).join(", ")}"
+puts Color.bold(Color.cyan("Omega Test Runner"))
+puts Color.gray("#{tests_to_run.length} test(s): #{tests_to_run.map(&:name).join(", ")}")
 puts
 
 exit(TestRunner.new(tests_to_run).run ? 0 : 1)
