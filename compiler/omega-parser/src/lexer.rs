@@ -235,6 +235,66 @@ fn is_ident_continue(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// Whether `text` is a spelling the lexer would tokenize as a single
+/// `TokenKind::Ident` -- i.e. a legal identifier start/continue run that is
+/// not one of the reserved keyword spellings. Callers that mint `Ident`s
+/// from outside the lexer (filesystem module discovery, CLI-declared module
+/// identities) use this so they never admit a spelling the parser itself
+/// could not name.
+pub fn is_valid_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !is_ident_start(first) || !chars.all(is_ident_continue) {
+        return false;
+    }
+    !FIXED_TOKENS
+        .iter()
+        .any(|token| token.class == FixedTokenClass::Keyword && token.spelling == text)
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::is_valid_identifier;
+
+    #[test]
+    fn accepts_ordinary_identifier_spellings() {
+        for name in ["foo", "_foo", "foo123", "foo_bar", "_", "A", "z9"] {
+            assert!(is_valid_identifier(name), "expected {name:?} to be valid");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_spellings() {
+        for name in [
+            "", "0123", "foo-bar", "foo.bar", "$foo", "foo bar", "foo/bar", "föö",
+        ] {
+            assert!(
+                !is_valid_identifier(name),
+                "expected {name:?} to be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_reserved_keyword_spellings() {
+        for name in ["if", "else", "struct", "for", "return", "macro"] {
+            assert!(
+                !is_valid_identifier(name),
+                "expected keyword {name:?} to be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn contextual_words_stay_valid_identifiers() {
+        // `mut` and other contextual keywords are still `Ident` tokens; only
+        // FIXED_TOKENS' `Keyword`-class spellings are reserved.
+        assert!(is_valid_identifier("mut"));
+    }
+}
+
 pub fn tokenize(source: &str) -> (Vec<Token>, Vec<ParseError>) {
     let lexed = lex(source);
     (lexed.tokens, lexed.errors)

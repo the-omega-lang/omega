@@ -32,6 +32,12 @@ pub fn relabel_root(
         .map(|(path, location)| {
             let location = location.map_err(|error| match error {
                 ResolveError::AmbiguousModule(path) => ResolveError::AmbiguousModule(relabel(path)),
+                ResolveError::InvalidModuleName { path, invalid } => {
+                    ResolveError::InvalidModuleName {
+                        path: relabel(path),
+                        invalid,
+                    }
+                }
                 other => other,
             });
             (relabel(path), location)
@@ -75,12 +81,27 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
 }
 
 fn is_module_segment_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
+    omega_parser::lexer::is_valid_identifier(name)
+}
+
+/// Whether `dir`'s subtree contains any `.omg` source, at any depth. Used to
+/// decide whether an invalid directory segment name is worth reporting: a
+/// directory that leads to no Omega source (e.g. `.git`, a build output
+/// directory) is simply irrelevant, not an error.
+fn contains_omg_source(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "omg") {
+            return true;
+        }
+        if path.is_dir() && contains_omg_source(&path) {
+            return true;
+        }
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    false
 }
 
 pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, ResolveError>> {
@@ -119,22 +140,46 @@ fn discover_into(
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut names: HashSet<Ident> = HashSet::new();
+    let mut candidates: HashSet<String> = HashSet::new();
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let Some(raw) = file_name.to_str() else {
             continue;
         };
         let candidate = raw.strip_suffix(".omg").unwrap_or(raw);
-        if is_module_segment_name(candidate) {
-            names.insert(Ident(candidate.to_string()));
-        }
+        candidates.insert(candidate.to_string());
     }
 
-    for name in names {
-        if skip.is_some_and(|s| s == &name) {
+    for candidate in candidates {
+        if skip.is_some_and(|s| s.as_ref() == candidate) {
             continue;
         }
+        if !is_module_segment_name(&candidate) {
+            // A malformed candidate must still be reported if it is
+            // source-bearing (a direct `.omg` file, or a directory that
+            // leads to `.omg` source at any depth): silently dropping it
+            // would compile a different module graph than what is on disk.
+            // A malformed name that owns no Omega source at all (`.git`, a
+            // build output directory, ...) is simply irrelevant.
+            let file_path = dir.join(format!("{candidate}.omg"));
+            let dir_path = dir.join(&candidate);
+            let is_source_bearing =
+                file_path.is_file() || (dir_path.is_dir() && contains_omg_source(&dir_path));
+            if is_source_bearing {
+                let mut key = prefix.clone();
+                key.push(Ident(candidate.clone()));
+                out.insert(
+                    key,
+                    Err(ResolveError::InvalidModuleName {
+                        path: prefix.clone(),
+                        invalid: candidate,
+                    }),
+                );
+            }
+            continue;
+        }
+
+        let name = Ident(candidate);
         prefix.push(name.clone());
         match resolve_segment(dir, &name) {
             Ok(location) => {
@@ -274,6 +319,52 @@ mod tests {
             tree.get(&vec![name]).expect("collision is retained"),
             Err(ResolveError::AmbiguousModule(_))
         ));
+    }
+
+    #[test]
+    fn an_invalid_direct_module_file_is_reported_not_dropped() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write("foo-bar.omg");
+
+        let tree = discover_tree(&root.0);
+        let key = vec![name, Ident("foo-bar".to_string())];
+        assert!(matches!(
+            tree.get(&key),
+            Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == "foo-bar"
+        ));
+    }
+
+    #[test]
+    fn an_invalid_source_bearing_ancestor_directory_is_reported() {
+        let root = TestDir::new();
+        let name = root.name();
+        // The `.omg` source is only in a deeper, validly-named descendant;
+        // the invalid ancestor segment must still be reported.
+        root.write("foo-bar/baz.omg");
+
+        let tree = discover_tree(&root.0);
+        let key = vec![name.clone(), Ident("foo-bar".to_string())];
+        assert!(matches!(
+            tree.get(&key),
+            Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == "foo-bar"
+        ));
+        // The subtree under an unreachable prefix is not separately walked.
+        assert!(!tree.contains_key(&vec![name, Ident("foo-bar".to_string()), Ident("baz".to_string())]));
+    }
+
+    #[test]
+    fn an_invalid_directory_with_no_omega_source_is_silently_irrelevant() {
+        let root = TestDir::new();
+        let name = root.name();
+        root.write(&format!("{}.omg", name.as_ref()));
+        std::fs::create_dir_all(root.0.join(".git").join("objects"))
+            .expect("create non-source dot-directory");
+        std::fs::write(root.0.join(".git").join("HEAD"), "ref: refs/heads/main")
+            .expect("write non-omega file");
+
+        let tree = discover_tree(&root.0);
+        assert!(!tree.keys().any(|path| path.iter().any(|i| i.as_ref() == ".git")));
     }
 
     #[test]

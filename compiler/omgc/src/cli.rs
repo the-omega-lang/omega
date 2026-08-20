@@ -47,12 +47,10 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
         if let Some(value) = arg.strip_prefix("--extern=") {
             externs.push(parse_extern(arg, value)?);
         } else if let Some(value) = arg.strip_prefix("--name=") {
-            if value.is_empty() {
-                return Err(format!(
-                    "invalid --name flag '{arg}': the name cannot be empty"
-                ));
-            }
-            name = Some(Ident(value.to_string()));
+            name = Some(
+                validate_module_name(value, "declared by --name")
+                    .map_err(|reason| format!("invalid --name flag '{arg}': {reason}"))?,
+            );
         } else if arg == "-o" {
             let file = iter
                 .next()
@@ -100,17 +98,44 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
 fn parse_extern(flag: &str, value: &str) -> Result<ExternRoot, String> {
     let (explicit_name, dir) = split_extern(value)
         .map_err(|reason| format!("invalid --extern flag '{flag}': {reason}"))?;
-    let Some(physical_name) = basename(&dir) else {
-        return Err(format!(
-            "invalid --extern flag '{flag}': '{}' has no usable directory name",
-            dir.display()
-        ));
+    let name = match explicit_name {
+        Some(raw) => validate_module_name(raw.as_ref(), "declared by --extern")
+            .map_err(|reason| format!("invalid --extern flag '{flag}': {reason}"))?,
+        None => {
+            let Some(physical_name) = basename(&dir) else {
+                return Err(format!(
+                    "invalid --extern flag '{flag}': '{}' has no usable directory name",
+                    dir.display()
+                ));
+            };
+            validate_module_name(
+                physical_name.as_ref(),
+                "inferred from the extern directory name; pass --extern=<name>:<dir> to override",
+            )
+            .map_err(|reason| format!("invalid --extern flag '{flag}': {reason}"))?
+        }
     };
 
-    Ok(ExternRoot {
-        name: explicit_name.unwrap_or(physical_name),
-        dir,
-    })
+    Ok(ExternRoot { name, dir })
+}
+
+/// The one place that turns a raw CLI-supplied or filesystem-inferred
+/// string into a trusted module-identity `Ident`: it must be a spelling the
+/// parser itself could tokenize as an identifier, matching
+/// `docs/language/modules-and-imports.md`'s no-normalization rule.
+pub(crate) fn validate_module_name(
+    name: &str,
+    context: impl std::fmt::Display,
+) -> Result<Ident, String> {
+    if omega_parser::lexer::is_valid_identifier(name) {
+        Ok(Ident(name.to_string()))
+    } else {
+        Err(format!(
+            "'{name}' ({context}) is not a valid Omega module name -- module names must be valid \
+             Omega identifiers (ASCII letters/digits/underscore, not starting with a digit, and \
+             not a reserved keyword); Omega does not normalize names automatically"
+        ))
+    }
 }
 
 fn split_extern(value: &str) -> Result<(Option<Ident>, PathBuf), String> {
@@ -248,6 +273,48 @@ mod tests {
     fn rejects_missing_output_and_extra_positionals() {
         assert!(parse(&args(&["src"])).is_err());
         assert!(parse(&args(&["src", "other", "-o", "out.o"])).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_name_flag() {
+        for invalid in ["foo-bar", "0abc", "if", ""] {
+            let Err(err) = parse(&args(&["src", "-o", "out.o", &format!("--name={invalid}")]))
+            else {
+                panic!("expected --name={invalid} to be rejected");
+            };
+            assert!(err.contains(invalid) || invalid.is_empty(), "{err}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_explicit_extern_name() {
+        let Err(err) = parse(&args(&["src", "-o", "out.o", "--extern=foo-bar:deps/core"])) else {
+            panic!("expected invalid explicit extern name to be rejected");
+        };
+        assert!(err.contains("foo-bar"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_inferred_extern_basename_without_an_override() {
+        let Err(err) = parse(&args(&["src", "-o", "out.o", "--extern=deps/foo-bar"])) else {
+            panic!("expected invalid inferred extern basename to be rejected");
+        };
+        assert!(err.contains("foo-bar"), "{err}");
+    }
+
+    #[test]
+    fn accepts_valid_name_and_extern_identities() {
+        let Ok(Command::Compile(parsed)) = parse(&args(&[
+            "src",
+            "-o",
+            "out.o",
+            "--name=my_pkg",
+            "--extern=core:deps/core",
+        ])) else {
+            panic!("expected compile command");
+        };
+        assert_eq!(parsed.name.as_ref().map(Ident::as_ref), Some("my_pkg"));
+        assert_eq!(parsed.externs[0].name.as_ref(), "core");
     }
 
     #[test]

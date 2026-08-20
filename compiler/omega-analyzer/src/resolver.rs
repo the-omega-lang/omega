@@ -42,6 +42,11 @@ pub enum ResolveError {
     },
     Cycle(Vec<Vec<Ident>>),
     AmbiguousModule(Vec<Ident>),
+    /// A filesystem module candidate whose `.omg` file stem or directory
+    /// segment is not a spelling the parser can tokenize as an identifier.
+    /// `path` is the valid ancestor prefix; `invalid` is the raw offending
+    /// segment (not wrapped in `Ident`, since it is by definition not one).
+    InvalidModuleName { path: Vec<Ident>, invalid: String },
     LoadFailed {
         path: Vec<Ident>,
         message: String,
@@ -121,6 +126,17 @@ impl fmt::Display for ResolveError {
                 "module '{}' is ambiguous (both a file and a directory claim this name)",
                 join(path)
             ),
+            Self::InvalidModuleName { path, invalid } => {
+                if path.is_empty() {
+                    write!(f, "'{invalid}' is not a valid Omega module name")
+                } else {
+                    write!(
+                        f,
+                        "'{invalid}' under module '{}' is not a valid Omega module name",
+                        join(path)
+                    )
+                }
+            }
             Self::LoadFailed { path, message } => {
                 write!(f, "failed to load module '{}': {message}", join(path))
             }

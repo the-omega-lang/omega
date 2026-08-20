@@ -39,8 +39,8 @@ The root `tests/` directory is the executable language-conformance suite. Each *
 
 ```text
 tests/
-  hello-world/
-    hello-world.omg
+  hello_world/
+    hello_world.omg
     expected.stdout
     expected.stderr
 ```
@@ -86,8 +86,8 @@ This is the normal repository entry point. The `justfile` builds the compiler/ru
 When `omgc` and the runtime objects are already built:
 
 ```text
-./bin/test-runner hello-world
-./bin/test-runner case-a case-b
+./bin/test-runner hello_world
+./bin/test-runner case_a case_b
 ```
 
 With no names, the runner executes every direct test package under `tests/`.
@@ -95,7 +95,7 @@ With no names, the runner executes every direct test package under `tests/`.
 If runtime objects live outside the default `target/` directory:
 
 ```text
-OMEGA_ARTIFACTS_DIR=/path/to/artifacts ./bin/test-runner hello-world
+OMEGA_ARTIFACTS_DIR=/path/to/artifacts ./bin/test-runner hello_world
 ```
 
 Direct runner invocation is intentionally a **test-only** operation: it does not build `omgc`, `core`, `std`, or `plat` for you.

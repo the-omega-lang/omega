@@ -789,6 +789,11 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
             with_label(d, "ambiguous module reference".to_string())
                 .with_help(format!("keep either the `{name}.omg` file or the `{name}/` directory, not both"))
         }
+        ResolveError::InvalidModuleName { invalid, .. } => {
+            with_label(d, "not a valid Omega identifier".to_string()).with_help(format!(
+                "rename `{invalid}` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit); Omega does not normalize module names automatically"
+            ))
+        }
         ResolveError::LoadFailed { .. } => with_label(d, "imported from here".to_string()),
         ResolveError::RecursiveTypeWithoutIndirection { item, .. } => {
             with_label(d, format!("`{}` includes itself by value, giving it infinite size", item.as_ref())).with_help(

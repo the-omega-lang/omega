@@ -8,6 +8,10 @@ A compilation is given a package root directory. Its declared root-module name d
 
 Two package roots in one compilation context must not claim the same declared identity.
 
+Every module identity -- a filesystem-discovered segment (an `.omg` file stem, or a directory segment that owns or leads to `.omg` source) as well as a declared identity (`--name=<name>`, an explicit `--extern=<name>:<dir>`, or an inferred package/extern root basename) -- must be a spelling the language's identifier grammar accepts as a single `Ident` token: it must not be a reserved keyword. A malformed candidate is a hard error, not a silently omitted module or a normalized substitute; Omega never rewrites `foo-bar` into `foo_bar` or otherwise reshapes an invalid name into a valid one. A directory that owns no Omega source, directly or in any descendant, is not a module candidate and is not subject to this rule regardless of its name.
+
+A package root's own declared identity is validated where it is decided (an explicit `--name`/`--extern` override, or the inferred physical basename), not by module discovery itself; declaring a valid override is the only way to compile a package whose physical directory basename is not spellable as an identifier.
+
 The root directory itself is the root module. It may have its own source file named after the directory's **physical basename**:
 
 ```text

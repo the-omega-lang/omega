@@ -43,15 +43,23 @@ fn compile(args: Args) -> Result<(), AppError> {
     let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
-    let physical_name = basename(&entry_dir).ok_or_else(|| {
-        AppError::Message(format!(
-            "'{}' has no usable directory name -- a package root's own module file is named after \
-             its directory, so name the directory explicitly ('--name=' renames the module, it \
-             cannot supply a missing directory name)",
-            entry_dir.display()
-        ))
-    })?;
-    let entry_name = name.clone().unwrap_or(physical_name);
+    let entry_name = match name.clone() {
+        Some(name) => name,
+        None => {
+            let physical_name = basename(&entry_dir).ok_or_else(|| {
+                AppError::Message(format!(
+                    "'{}' has no usable directory name -- a package root's own module file is \
+                     named after its directory, so name the directory explicitly ('--name=' \
+                     renames the module, it cannot supply a missing directory name)",
+                    entry_dir.display()
+                ))
+            })?;
+            cli::validate_module_name(
+                physical_name.as_ref(),
+                "inferred from the entry directory name; pass --name=<name> to override",
+            )?
+        }
+    };
 
     if verbose {
         verbose_step(

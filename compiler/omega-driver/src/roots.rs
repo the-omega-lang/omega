@@ -70,15 +70,31 @@ impl ModuleRoots {
         // on-disk basename (the common case -- `core`, `mathlib`, and
         // every existing extern), and there's no fallback convention to
         // protect for an extern the way there is for the local package.
-        let extern_trees = registered
-            .iter()
-            .map(|(name, root)| {
-                (
-                    name.clone(),
-                    fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name),
-                )
-            })
+        let extern_trees: IndexMap<Ident, HashMap<ModulePath, Result<ModuleLocation, ResolveError>>> =
+            registered
+                .iter()
+                .map(|(name, root)| {
+                    (
+                        name.clone(),
+                        fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name),
+                    )
+                })
+                .collect();
+
+        // Fail package discovery clearly, before any semantic compilation
+        // begins, rather than only when something happens to import the
+        // malformed path. Sorted by module path so the reported order does
+        // not depend on the trees' internal HashMap iteration order.
+        let mut invalid: Vec<(&ModulePath, CompileError)> = invalid_module_name_errors(&local_tree)
+            .chain(extern_trees.values().flat_map(invalid_module_name_errors))
             .collect();
+        if !invalid.is_empty() {
+            invalid.sort_by_key(|(path, _)| {
+                path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::")
+            });
+            return Err(invalid.into_iter().map(|(_, error)| error).collect());
+        }
+
         Ok(Self {
             local_tree,
             local_dir: local,
@@ -153,4 +169,19 @@ impl ModuleRoots {
             .flat_map(Self::real_modules)
             .collect()
     }
+}
+
+fn invalid_module_name_errors(
+    tree: &HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
+) -> impl Iterator<Item = (&ModulePath, CompileError)> {
+    tree.iter().filter_map(|(path, result)| match result {
+        Err(error @ ResolveError::InvalidModuleName { .. }) => Some((
+            path,
+            CompileError::Resolve {
+                error: error.clone(),
+                importer: None,
+            },
+        )),
+        _ => None,
+    })
 }
