@@ -72,6 +72,27 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   than MIR lowering.
   [mir-and-codegen.md](../architecture/mir-and-codegen.md)
 
+- **Compound assignment (`x op= y`) evaluates an indexed target place
+  twice, not once as documented.** `analyze_compound_assign`
+  (`omega-analyzer/src/analysis/exprs/operators.rs`) desugars the target into
+  two independent `CheckedPlace` trees: one becomes `CheckedAssignment::target`,
+  the other is `checked_place.clone()` wrapped in a `CheckedExpr::Place` and
+  used as the left operand of the synthesized `op` call. Both trees carry
+  their own copy of any `CheckedProjection::Index { index_expr, .. }`.
+  `lower_assignment_stmt` (`omega-mir/src/lower/function.rs`) then lowers the
+  target and the value as two separate calls into `lower_place`
+  (`omega-mir/src/lower/place.rs`), and `lower_projection` calls
+  `lower_expr` on `index_expr` every time it lowers an `Index` projection —
+  so `arr[f()] += 1` calls `f()` twice, and any side effect or aliasing
+  assumption in the index expression fires twice. The value itself still
+  ends up correct because both evaluations compute the same index, so this
+  is a semantics violation rather than an observed wrong-result bug today.
+  Fixing it means giving `analyze_compound_assign` a single shared place
+  (e.g. lowering the index once into a temporary before both the read and
+  the write), which is a place-model change rather than a local patch to
+  either the analyzer clone or the MIR lowering call sites.
+  [bindings-and-mutability.md](../language/bindings-and-mutability.md)
+
 
 ## Types
 
