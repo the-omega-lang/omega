@@ -29,6 +29,8 @@ Every idea is judged against:
 - Treat `docs/plan/` and git history as cold storage; use only when current docs/source cannot answer a necessary rationale question.
 - If implementation behavior conflicts with `docs/language/`, do not assume the implementation is the intended design; check issues and surface the contradiction.
 
+Root `tests/` cases are executable conformance evidence for current language behavior, not a second specification. Consult a relevant case when it helps expose an interaction, but never let an existing expectation override `docs/language/`. When settling new semantics, phrase the observable outcomes clearly enough that the architect can turn them into focused conformance cases.
+
 ## Exploration method
 
 ### Find the actual problem

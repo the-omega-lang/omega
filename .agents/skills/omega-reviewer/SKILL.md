@@ -94,11 +94,12 @@ Compare the diff with `PLAN.md`:
 - every requested step completed;
 - nothing substantial added outside scope;
 - explicit "Out of scope"/"What must not change" boundaries respected;
-- focused tests exist and pass;
-- negative tests fail for the intended reason/diagnostic;
+- focused tests exist at the correct layer and pass;
+- observable language changes have a root `tests/<case>/` conformance case tied to the relevant `docs/language/` rule, not only an internal Rust test;
+- negative tests fail for the intended reason/diagnostic and their expected compiler output is actually checked;
 - a test actually exercises the feature rather than passing when the feature is removed/stubbed.
 
-Run hosted/freestanding or multiple-backend coverage only when the plan/change affects those contracts.
+Use `./bin/test-runner <case>` for focused language cases when artifacts are already built and `just test-all` when the full prepared gate is warranted. Run hosted/freestanding or multiple-backend coverage only when the plan/change affects those contracts. When backend parity matters, confirm the compiler actually selected the backend under review rather than merely being built with support for it.
 
 ## Fix or defer
 

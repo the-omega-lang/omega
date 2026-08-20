@@ -55,6 +55,19 @@ For large tasks, prefer fresh contexts between thinking, planning, implementatio
 
 See `ARCHITECTURE.md` for the full ownership map.
 
+## Testing and validation
+
+Use [`docs/architecture/testing-and-validation.md`](docs/architecture/testing-and-validation.md) for the detailed test-layer map. The routine rules are:
+
+- **Compiler component behavior:** use the owning crate's Rust tests (`src/.../tests.rs` for implementation-detail tests, `<crate>/tests/` for black-box/component integration tests).
+- **Language conformance / executable semantics:** use the root [`tests/`](tests/) suite. Each direct child `tests/<case>/` is an Omega package consumed by [`bin/test-runner`](bin/test-runner); optional `expected.stdout` / `expected.stderr` files define exact expected output. Observable language behavior should be tested here against the rule in `docs/language/`, not only through a compiler-internal unit test.
+- **Focused conformance run:** after `omgc` and the runtime objects are already built, run `./bin/test-runner <case> [...]`. The runner uses `target/` by default; set `OMEGA_ARTIFACTS_DIR` when the built runtime objects live elsewhere.
+- **Normal full gate:** `just test-all` builds the required compiler/runtime artifacts and runs the conformance runner.
+- **Verification scope:** start with the smallest focused test that crosses the changed boundary, then expand only when the change affects wider contracts such as runtime/linking, separate compilation, or backend parity.
+- **Negative tests:** a compile failure only proves the intended behavior when the expected diagnostic output is checked; never accept "it failed" as sufficient.
+
+Do not infer language semantics from an existing test when it conflicts with `docs/language/`; the specification remains normative and the mismatch must be resolved as a compiler/test/docs issue.
+
 ## Omega invariants
 
 - No hidden behavior: no implicit allocation, invisible control flow, or surprise cost.

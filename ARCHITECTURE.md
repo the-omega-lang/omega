@@ -91,7 +91,7 @@ Deep overview: [`docs/architecture/compiler-overview.md`](docs/architecture/comp
 | symbol grammar/encoding/decoding | `omega-mangle` | [`symbol-mangling.md`](docs/architecture/symbol-mangling.md) |
 | CLI/output/toolchain orchestration | `omgc` | [`compiler-overview.md`](docs/architecture/compiler-overview.md) |
 | portable/runtime library layers | `runtime/` | [`runtime-and-platform.md`](docs/architecture/runtime-and-platform.md) |
-| architectural verification boundaries | tests + `justfile` recipes | [`testing-and-validation.md`](docs/architecture/testing-and-validation.md) |
+| architectural verification boundaries | crate tests + root `tests/` + `bin/test-runner` + `justfile` | [`testing-and-validation.md`](docs/architecture/testing-and-validation.md) |
 
 ## Compiler crates
 
@@ -197,6 +197,17 @@ runtime/shims      target-specific low-level assembly glue
 ```
 
 `core` owns primitives/inherent methods and ambient exposed names/macros. `std` and `plat` are ordinary explicitly registered packages. Platform capability composition uses Omega `gap`/`glue`, not an implicit native runtime registry.
+
+## Testing and validation
+
+Omega separates compiler-component testing from language conformance:
+
+- crate-local Rust tests verify parser/analyzer/driver/MIR/codegen/mangling behavior at the narrowest useful boundary;
+- root `tests/<case>/` directories are real Omega packages that exercise observable language behavior through the actual compiler, linker, runtime, and executable;
+- `bin/test-runner` discovers those root cases, compiles them with the registered runtime packages, links against the prebuilt runtime objects, executes successful compilations, and compares optional `expected.stdout` / `expected.stderr` files exactly;
+- `just test-all` is the normal top-level gate that prepares the required artifacts before invoking the runner; direct `bin/test-runner` invocation is the focused path when artifacts are already built.
+
+The language suite is conformance evidence for [`docs/language/`](docs/language/): tests should encode what the specification promises, not normalize accidental compiler behavior. See [`testing-and-validation.md`](docs/architecture/testing-and-validation.md) for test selection, negative-test rules, backend/separate-compilation coverage, and artifact conventions.
 
 ## Architectural invariants
 

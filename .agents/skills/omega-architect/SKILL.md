@@ -69,6 +69,8 @@ If `docs/language/` and implementation behavior disagree, check the relevant `do
 
 Never invent file paths, symbols, APIs, or tests. Verify every concrete reference you put in the plan.
 
+When the deliverable changes observable Omega language behavior, inspect the relevant root `tests/` conformance cases (if any) and plan a focused `tests/<case>/` package that proves the corresponding `docs/language/` rule. Use crate-local Rust tests for component contracts or implementation details; do not substitute them for end-to-end language conformance when observable semantics changed. The detailed test-layer and runner conventions live in `docs/architecture/testing-and-validation.md`.
+
 ### 4. Critique before planning
 
 Pressure-test the requested direction:
@@ -127,10 +129,11 @@ Use these four top-level sections:
 3. Include docs updates only when current documentation must change with the behavior.
 
 ## Testing
-- **New/changed cases:** behavior to prove.
+- **New/changed cases:** behavior to prove and the correct layer (implementation/component Rust test vs root `tests/<case>/` language conformance).
+- **Specification trace:** for observable language behavior, the relevant `docs/language/` rule the conformance case proves.
 - **Negative/diagnostic cases:** when applicable, expected failure and diagnostic intent.
 - **Regression coverage:** focused existing suites/cases likely to catch breakage.
-- **Target coverage:** hosted/freestanding/backend-specific verification only when relevant.
+- **Commands/target coverage:** focused `bin/test-runner` case(s), `just test-all`, and hosted/freestanding/backend-specific verification only when relevant.
 ```
 
 Do not make the plan self-sufficient by copying source code or entire design docs into it. It should point the developer to the smallest relevant context.

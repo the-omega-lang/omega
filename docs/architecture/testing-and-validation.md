@@ -1,121 +1,178 @@
 # Architectural testing and validation
 
-Omega uses several test layers. The right layer depends on which architectural boundary the change touches.
+Omega uses several test layers. Choose the narrowest layer that proves the contract being changed, and expand only when correctness crosses a wider boundary.
 
-## Rust unit/regression tests
+## Test layers
 
-Compiler crates contain focused tests near the implementation and/or under crate `tests/` directories.
+### Implementation-detail Rust tests
 
-Use these for facts that can be proven without linking/running a full Omega program, for example:
+Focused white-box tests may live beside the implementation (for example `src/<module>/tests.rs`) when correctness depends on private state, a local invariant, or an algorithm that is awkward to exercise through the crate API.
 
-- lexer/parser grammar;
-- macro expansion;
-- HIR lowering;
-- module discovery;
-- mangling round trips;
-- layout/ABI helpers;
-- focused driver semantic diagnostics;
-- MIR shape.
+Use these sparingly for things such as:
 
-A compiler error test should assert the intended diagnostic/reason, not merely “compilation failed”.
+- parser cursor/grammar helpers;
+- type/layout/ABI algorithms;
+- MIR construction invariants;
+- mangling internals;
+- backend-local lowering helpers.
 
-## Driver integration tests
+These tests answer **how the implementation works**, not whether Omega as a language conforms to its specification.
 
-`compiler/omega-driver/tests/` exercises source through package parsing/semantic compilation and often MIR lowering without requiring the whole external link/runtime stack.
+### Component integration tests
 
-This is a good boundary for language/compiler semantics that involve multiple frontend/semantic components.
+Cargo integration tests under `<crate>/tests/` exercise a compiler component through its intended public/component boundary. Existing examples include parser, HIR, driver, and mangling coverage.
 
-## End-to-end examples
+Use this layer for behavior that can be proven without compiling and executing a complete Omega program, such as:
 
-`examples/` contains actual Omega packages. The root `justfile` compiles selected examples into objects, links them, runs them, and checks exit/output/symbol properties.
+- source -> parser/HIR behavior;
+- semantic analysis and diagnostics;
+- module/package discovery;
+- MIR shape;
+- symbol encode/decode round trips;
+- codegen planning or backend-local contracts that do not require a linked program.
 
-Use this layer when correctness depends on one of:
+A compiler-error test must assert the intended diagnostic/reason, not merely that some error occurred.
 
-- generated native code;
-- runtime/core/std behavior;
-- object linking;
-- separate compilation;
-- gap/glue reachability;
-- symbol names/linkage;
-- backend equivalence.
+### Language conformance / end-to-end tests
 
-## Separate-compilation validation
+The root `tests/` directory is the executable language-conformance suite. Each **direct child directory** is one test package:
 
-Package identity/mangling/weak linkage bugs often cannot be caught by compiling one package in one process.
+```text
+tests/
+  hello-world/
+    hello-world.omg
+    expected.stdout
+    expected.stderr
+```
 
-Relevant recipes compile dependencies and applications through separate `omgc` processes, then link the objects. This protects:
+`bin/test-runner` discovers those directories and, for each selected case:
 
-- declared module identity;
+1. invokes `bin/omgc-debug` on the test package, registering the current `core`, `std`, and `plat` source packages as externs;
+2. if compilation succeeds, links the produced object with the prebuilt runtime objects;
+3. executes the resulting program;
+4. compares any present `expected.stdout` and `expected.stderr` files byte-for-byte with the relevant captured output.
+
+The runner keeps captured output in memory. Per-test object/executable artifacts live under `<artifacts>/tests/<case>/`, where `<artifacts>` defaults to `target/` and can be overridden with `OMEGA_ARTIFACTS_DIR`.
+
+These cases are **language conformance tests implemented end-to-end**. They should be derived from observable rules in `docs/language/`. A compiler bug must not be encoded as the expected language behavior merely because the current implementation happens to do it.
+
+Use this layer when the claim is about accepted/rejected Omega source or observable execution semantics, especially when correctness depends on multiple compiler stages, native code generation, linking, or runtime/library behavior.
+
+## Expected-output conventions
+
+Expectation files are optional and exact:
+
+- `expected.stdout` checks stdout;
+- `expected.stderr` checks stderr.
+
+If compilation fails, the current runner compares the compiler's stdout/stderr against the same expectation files. A compile failure without `expected.stderr` is treated as unexpected. If compilation succeeds, link failure is always a test failure, and a successfully linked program must exit successfully in addition to matching any expected streams.
+
+Because the same files can describe compiler output for a negative test or program output for a successful test, keep each case intentionally single-purpose. If future test needs make that convention ambiguous, extend the runner deliberately rather than inferring intent from filenames or compiler behavior.
+
+## Running the suite
+
+### Normal top-level gate
+
+```text
+just test-all
+```
+
+This is the normal repository entry point. The `justfile` builds the compiler/runtime artifacts required by the conformance runner, then invokes `bin/test-runner`.
+
+### Focused conformance cases
+
+When `omgc` and the runtime objects are already built:
+
+```text
+./bin/test-runner hello-world
+./bin/test-runner case-a case-b
+```
+
+With no names, the runner executes every direct test package under `tests/`.
+
+If runtime objects live outside the default `target/` directory:
+
+```text
+OMEGA_ARTIFACTS_DIR=/path/to/artifacts ./bin/test-runner hello-world
+```
+
+Direct runner invocation is intentionally a **test-only** operation: it does not build `omgc`, `core`, `std`, or `plat` for you.
+
+## Language-specification coverage
+
+`docs/language/` is normative. The root conformance suite is executable evidence that the implementation follows it.
+
+When adding or changing a language rule:
+
+1. identify the relevant specification statement;
+2. add/update a positive case when the construct is valid;
+3. add/update a negative case when rejection is part of the rule;
+4. execute the program when runtime semantics are part of the rule;
+5. prefer focused cases that prove one semantic claim clearly over large demo programs that happen to exercise many features.
+
+A component test may localize a bug, but it is not a substitute for an end-to-end conformance case when the user-visible language behavior changed.
+
+## Backend validation
+
+Shared language semantics, ABI, layout, symbols, and linkage are intended to agree across Cranelift and LLVM. When a change affects one of those shared contracts, verify the relevant conformance case through every affected backend configuration rather than assuming success in one backend proves parity.
+
+A backend-local instruction-selection/emission bug normally needs focused coverage for that backend plus the shared MIR contract. Do not run an unrelated backend matrix for every local change.
+
+Backend feature availability and backend selection are separate concerns: when performing backend-specific verification, confirm that the invoked compiler is actually selecting the intended backend rather than merely having support for it compiled in.
+
+## Separate-compilation and linking validation
+
+Package identity, mangling, ABI, and weak-linkage bugs can require more than a single package invocation. Use explicit multi-package/separate-process cases when the contract under test depends on:
+
+- declared package/module identity;
 - extern references;
-- generic instantiation ownership;
+- generic-instantiation ownership;
 - duplicate weak folding;
-- concrete strong-definition uniqueness.
+- concrete strong-definition uniqueness;
+- mixed objects produced by different backend configurations.
 
-## Mixed-backend validation
-
-Because ABI, layout, symbols, and linkage live above backend-specific emission, objects from Cranelift and LLVM are intended to interoperate.
-
-A change to a shared external contract should include a mixed-backend link/run gate where possible.
-
-A backend-local arithmetic/instruction bug normally needs only that backend plus the shared MIR contract; do not run an unrelated repo-wide matrix for every local backend fix.
+The root language runner is intentionally simple; workflows that need several independently compiled packages, custom linker assertions, `nm`/`readelf`, or deliberately different runtime subsets may justify a focused compiler/workflow test or a small dedicated recipe rather than complicating every language case.
 
 ## Runtime capability validation
 
-The just recipes deliberately link different subsets of runtime objects.
+When a change concerns `core`, `std`, platform glue, freestanding behavior, or section garbage collection, link/run coverage should reflect the actual capability boundary being claimed. Useful assertions include:
 
-Examples of architectural assertions include:
+- core-only code does not require std/platform objects;
+- allocator-using code does not retain unrelated console paths;
+- console code requires the appropriate platform glue;
+- unreachable capability references disappear under section garbage collection.
 
-- core-only code links without std/platform;
-- allocator-using std code can link without console platform code when console paths are unreachable;
-- console code requires the appropriate glue;
-- section garbage collection removes unreachable functions/capability references.
+Link success/failure itself may be the primary assertion; symbol inspection can provide secondary structural evidence.
 
-Link success/failure itself can be the primary assertion; symbol inspection (`nm`, `readelf`) can provide a secondary structural check.
+## Backend-native verification
 
-## Symbol/mangling validation
+LLVM modules are explicitly verified before output. Cranelift's construction APIs perform structural checks while building functions.
 
-Use `omega-mangle` encode/decode round-trip tests for grammar changes, plus object-level symbol inspection for compiler adapter changes.
-
-Especially test:
-
-- root `main` special case;
-- nested same-name functions;
-- overload signatures;
-- generic args;
-- conformance/primitive methods;
-- gap/glue identity;
-- weak duplicate instantiations.
-
-## Backend IR verification
-
-LLVM modules are explicitly verified before output. A verifier failure is treated as an internal compiler error.
-
-Cranelift's construction APIs perform their own structural validation during compilation.
-
-Backend-native verification is not a substitute for semantic tests: it proves IR well-formedness, not that the compiler emitted the intended program.
+Backend-native verification proves that emitted IR is structurally valid. It does **not** prove language semantics, ABI intent, or runtime behavior, so it does not replace conformance tests.
 
 ## Documentation consistency
 
-When architecture changes:
+When architecture or semantics change:
 
-1. update the owning deep architecture doc;
+1. update the owning deep architecture document when implementation ownership/contracts changed;
 2. update root `ARCHITECTURE.md` only if routing/ownership/pipeline changed;
-3. update `AGENTS.md` only if the general context workflow/authority rule changed;
-4. update language docs only if observable semantics changed;
-5. add/remove issue entries for unresolved/resolved deviations.
+3. update `AGENTS.md` / `CLAUDE.md` only if routine agent workflow or authority rules changed;
+4. update `docs/language/` when observable language semantics changed;
+5. add/update the corresponding root conformance case when a documented language rule changed;
+6. add/remove `docs/issues/` entries for unresolved/resolved deviations.
 
-Do not write the same implementation invariant into every layer.
+Do not duplicate the same invariant across every layer.
 
 ## Verification selection
 
 Prefer an expanding sequence:
 
 ```text
-focused unit/regression
-    -> owning crate tests
-    -> driver integration
-    -> one end-to-end recipe
-    -> cross-backend/separate-compilation matrix only if contract requires it
+focused implementation/component test
+    -> owning crate integration tests
+    -> focused root language-conformance case
+    -> full `just test-all` gate
+    -> backend/separate-compilation/runtime matrix only when the changed contract requires it
 ```
 
-The goal is not the maximum number of commands; it is the smallest validation set that actually crosses every changed boundary.
+The goal is not to run the maximum number of commands. It is to use the smallest validation set that actually crosses every changed boundary.

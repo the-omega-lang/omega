@@ -54,6 +54,8 @@ Search before reading large files. Prefer targeted source ranges. Do not inspect
 
 When writing or modifying `.omg`, read `docs/guide/quick-reference.md` first unless the exact syntax is already present in the immediately relevant source. Consult the relevant `docs/language/` chapter when exact semantics matter. Never guess Omega syntax from Rust/C/C++.
 
+For tests, use `docs/architecture/testing-and-validation.md` as the routing guide. Observable language behavior belongs in a root `tests/<case>/` Omega package run by `bin/test-runner`; component behavior belongs in the owning crate's Rust tests, with implementation-detail tests kept near the module when private access is necessary.
+
 ### 2. Verify the handoff cheaply
 
 Confirm that named files/symbols still exist and that the immediately surrounding code matches the plan's assumptions. This is a stale-plan check, not a second architecture phase.
@@ -76,7 +78,9 @@ If implementation reveals a missing design decision, ABI/public-surface change, 
 
 Run the plan's focused testing requirements and any directly affected regression tests. Do not run unrelated exhaustive suites unless required by the project's normal validation or the change's blast radius.
 
-For diagnostics, verify the intended error reason/message rather than accepting any compile failure.
+For a focused root language-conformance case, use `./bin/test-runner <case>` when `omgc` and runtime objects are already built. Use `just test-all` for the normal full gate that prepares those artifacts first. If the artifacts directory is non-default, preserve/pass `OMEGA_ARTIFACTS_DIR` rather than rebuilding into `target/` accidentally.
+
+For observable language-semantics changes, ensure the root conformance case proves the corresponding `docs/language/` rule through the real compiler/link/run path. For diagnostics, verify the intended error output/reason rather than accepting any compile failure. For shared backend/ABI/layout/linkage changes, verify every affected backend configuration; do not assume that compiling LLVM support automatically means the test selected LLVM.
 
 ### 6. Report
 
