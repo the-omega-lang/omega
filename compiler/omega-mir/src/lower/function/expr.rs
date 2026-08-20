@@ -66,6 +66,9 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
                 MirExpr::Assignment(MirAssignment { target, value }),
             )
         }
+        CheckedExpr::CompoundAssign(compound) => {
+            lower_compound_assign(lowerer, id, span, r#type, compound)
+        }
         CheckedExpr::AddressOf(address_of) => {
             let place = lowerer.lower_place(address_of.place);
             mir_node(id, span, r#type, MirExpr::AddressOf(MirAddressOf { place }))
@@ -214,6 +217,52 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
             )
         }
     }
+}
+
+fn lower_compound_assign(
+    lowerer: &mut FunctionLowerer,
+    id: HirId,
+    span: Span,
+    r#type: ResolvedType,
+    compound: omega_analyzer::checked::CheckedCompoundAssign,
+) -> MirExprNode {
+    // Lowered once here; `target` is reused below for both the read and the
+    // write, so any dynamic index/root expression it contains executes
+    // exactly once (see `lower_place_evaluated_once`).
+    let target = lowerer.lower_place_evaluated_once(compound.place);
+    let mut read = mir_node(id, span, target.r#type.clone(), MirExpr::Place(target.clone()));
+    if let Some((kind, target_type)) = compound.read_cast {
+        read = mir_node(
+            id,
+            span,
+            target_type.clone(),
+            MirExpr::Cast(MirCast {
+                kind,
+                target_type,
+                base: Box::new(read),
+            }),
+        );
+    }
+    let value = Box::new(lowerer.lower_expr(*compound.value));
+    let combined = mir_node(
+        id,
+        span,
+        compound.result_type,
+        MirExpr::BinaryOp(MirBinaryOp {
+            op: compound.op,
+            left: Box::new(read),
+            right: value,
+        }),
+    );
+    mir_node(
+        id,
+        span,
+        r#type,
+        MirExpr::Assignment(MirAssignment {
+            target,
+            value: Box::new(combined),
+        }),
+    )
 }
 
 fn lower_field_init(

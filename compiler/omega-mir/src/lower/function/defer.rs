@@ -71,6 +71,10 @@ fn collect_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) {
             collect_place(&assignment.target, out);
             collect_expr(&assignment.value, out);
         }
+        CheckedExpr::CompoundAssign(compound) => {
+            collect_place(&compound.place, out);
+            collect_expr(&compound.value, out);
+        }
         CheckedExpr::AddressOf(address_of) => collect_place(&address_of.place, out),
         CheckedExpr::Negate(inner) | CheckedExpr::BitNot(inner) => collect_expr(inner, out),
         CheckedExpr::BinaryOp(binary) => {

@@ -108,6 +108,10 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
             collect_place(&a.target, usage);
             collect_expr(&a.value, usage);
         }
+        CheckedExpr::CompoundAssign(a) => {
+            collect_place(&a.place, usage);
+            collect_expr(&a.value, usage);
+        }
         CheckedExpr::AddressOf(a) => collect_place(&a.place, usage),
         CheckedExpr::Negate(e) => collect_expr(e, usage),
         CheckedExpr::BitNot(e) => collect_expr(e, usage),

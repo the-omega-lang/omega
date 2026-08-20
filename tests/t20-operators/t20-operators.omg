@@ -95,13 +95,17 @@ main() => i32 {
 		and_op, " ", or_op, " ", xor_op, " ", shl_op, " ", shr_op
 	);
 
-	# `x op= y` must evaluate its target place exactly once (see
-	# docs/language/bindings-and-mutability.md). Known current deviation for
-	# an indexed place: docs/issues/known-issues.md.
+	# `x op= y` and `x++`/`x--` must evaluate their target place exactly once
+	# (see docs/language/bindings-and-mutability.md), even when the place is
+	# an indexed access whose index expression has a side effect.
 	mut counted: [4]i32 = [1, 2, 3, 4];
 	probe_calls = 0;
 	counted[next_index()] += 100;
 	println$("indexed-place-eval: ", probe_calls, " ", counted[1]);
+
+	probe_calls = 0;
+	++counted[next_index()];
+	println$("indexed-place-eval-incr: ", probe_calls, " ", counted[1]);
 
 	# --- operator precedence: enough spot checks to catch an obviously wrong
 	# reordering, not an exhaustive combinatorial sweep -------------------------

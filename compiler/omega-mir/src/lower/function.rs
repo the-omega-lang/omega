@@ -256,6 +256,17 @@ impl FunctionLowerer {
         self.current_block_mut().terminator = Some(terminator);
     }
 
+    /// Stores `value` into a fresh local and returns an expression reading
+    /// it back, so the caller can use the result more than once without
+    /// re-executing `value`.
+    pub(super) fn materialize_once(&mut self, value: MirExprNode) -> MirExprNode {
+        let id = value.id;
+        let span = value.span;
+        let local = self.declare_local(None, value.r#type.clone());
+        self.assign_local(id, span, local, value);
+        self.local_expr(local, id, span)
+    }
+
     fn assign_local(&mut self, id: HirId, span: Span, local: LocalId, value: MirExprNode) {
         let target = self.local_place(local);
         self.push_stmt(MirExprNode {
@@ -545,6 +556,10 @@ impl FunctionLowerer {
 
     fn lower_place(&mut self, place: CheckedPlace) -> MirPlace {
         super::place::lower_place(self, place)
+    }
+
+    pub(super) fn lower_place_evaluated_once(&mut self, place: CheckedPlace) -> MirPlace {
+        super::place::lower_place_evaluated_once(self, place)
     }
 }
 

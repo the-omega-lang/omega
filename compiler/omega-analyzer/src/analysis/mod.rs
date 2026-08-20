@@ -20,7 +20,8 @@ use crate::target::Target;
 use crate::{
     checked::{
         CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
-        CheckedBlock, CheckedBreak, CheckedCast, CheckedContinue, CheckedDeclaration, CheckedDefer,
+        CheckedBlock, CheckedBreak, CheckedCast, CheckedCompoundAssign, CheckedContinue,
+        CheckedDeclaration, CheckedDefer,
         CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
         CheckedExternDeclaration, CheckedField, CheckedFor, CheckedFunctionCall,
         CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam,

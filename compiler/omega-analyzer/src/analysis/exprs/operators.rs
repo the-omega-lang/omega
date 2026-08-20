@@ -450,30 +450,20 @@ impl<'r> Analyzer<'r> {
             r#type: place_type.clone(),
             kind: CheckedExpr::Number(one),
         };
-        let place_read = CheckedExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            r#type: place_type.clone(),
-            kind: CheckedExpr::Place(checked_place.clone()),
-        };
-        let sum = CheckedExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            r#type: place_type.clone(),
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
-                op,
-                left: Box::new(place_read),
-                right: Box::new(one_node),
-            }),
-        };
 
         Some(CheckedExprNode {
             id: node_id,
             span,
-            r#type: place_type,
-            kind: CheckedExpr::Assignment(CheckedAssignment {
-                target: checked_place,
-                value: Box::new(sum),
+            r#type: place_type.clone(),
+            kind: CheckedExpr::CompoundAssign(CheckedCompoundAssign {
+                place: checked_place,
+                // `place_type` is always a genuine `numeric_kind` type here
+                // (checked above), never `Pointer`, so `arithmetic_repr()`
+                // never applies and no read-side coercion is needed.
+                read_cast: None,
+                op,
+                value: Box::new(one_node),
+                result_type: place_type,
             }),
         })
     }
@@ -739,22 +729,48 @@ impl<'r> Analyzer<'r> {
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
         let checked_value = self.analyze_expr(value, Some(&place_type))?;
-        let place_read = CheckedExprNode {
+
+        // Type-check/coerce `place op value` exactly as an ordinary binary
+        // operator would. `place_read_for_types` is a throwaway placeholder
+        // used only so `analyze_binary_op` can validate/coerce the read
+        // side's type and produce diagnostics with the right spans; its
+        // cloned place is discarded below and never reaches MIR, so the
+        // real place is still read exactly once at lowering time (see
+        // `CheckedCompoundAssign`).
+        let place_read_for_types = CheckedExprNode {
             id: self.resolver.fresh_synthetic_id(),
             span,
             r#type: place_type.clone(),
             kind: CheckedExpr::Place(checked_place.clone()),
         };
         let combined_id = self.resolver.fresh_synthetic_id();
-        let combined = self.analyze_binary_op(combined_id, span, op, place_read, checked_value)?;
+        let combined =
+            self.analyze_binary_op(combined_id, span, op, place_read_for_types, checked_value)?;
+
+        // `analyze_binary_op` (defined above in this file) always returns
+        // `CheckedExpr::BinaryOp { left, right }`, with `left` being
+        // `coerce_for_binary_op(op, <passed-in left operand>)`: either the
+        // operand unchanged, or wrapped in exactly one `CheckedExpr::Cast`
+        // layer. Extract that coercion decision as data instead of keeping
+        // the cloned-place expression tree it was computed from.
+        let CheckedExpr::BinaryOp(binary) = combined.kind else {
+            unreachable!("analyze_binary_op always returns CheckedExpr::BinaryOp")
+        };
+        let read_cast = match binary.left.kind {
+            CheckedExpr::Cast(cast) => Some((cast.kind, cast.target_type)),
+            _ => None,
+        };
 
         Some(CheckedExprNode {
             id: node_id,
             span,
             r#type: place_type,
-            kind: CheckedExpr::Assignment(CheckedAssignment {
-                target: checked_place,
-                value: Box::new(combined),
+            kind: CheckedExpr::CompoundAssign(CheckedCompoundAssign {
+                place: checked_place,
+                read_cast,
+                op: binary.op,
+                value: binary.right,
+                result_type: combined.r#type,
             }),
         })
     }

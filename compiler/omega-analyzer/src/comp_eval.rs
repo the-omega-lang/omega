@@ -181,6 +181,33 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 self.write_place(&assign.target, value.clone(), node.span)?;
                 Ok(value)
             }
+            CheckedExpr::CompoundAssign(compound) => {
+                let read = self.read_place(&compound.place, node.span)?;
+                let read = match &compound.read_cast {
+                    Some((kind, target_type)) => self.apply_cast(*kind, target_type, read, node.span)?,
+                    None => read,
+                };
+                let rhs = self.eval_expr(&compound.value)?;
+                let result = match (read, rhs) {
+                    (ConstValue::Number(l), ConstValue::Number(r)) => {
+                        self.eval_numeric_binary_op(compound.op, l, r, node.span)?
+                    }
+                    (ConstValue::Bool(l), ConstValue::Bool(r)) => {
+                        self.eval_bool_binary_op(compound.op, l, r, node.span)?
+                    }
+                    (ConstValue::Char(l), ConstValue::Char(r)) => {
+                        self.eval_char_binary_op(compound.op, l, r, node.span)?
+                    }
+                    _ => {
+                        return Err(self.err(
+                            node.span,
+                            CompErrorKind::Unsupported("compound-assign operator on this comp value shape"),
+                        ));
+                    }
+                };
+                self.write_place(&compound.place, result.clone(), node.span)?;
+                Ok(result)
+            }
             CheckedExpr::AddressOf(addr) => {
                 let value = self.read_place(&addr.place, node.span)?;
                 Ok(ConstValue::Ref(Box::new(value)))
@@ -505,7 +532,17 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         span: Span,
     ) -> CompResult<ConstValue> {
         let base = self.eval_expr(&cast.base)?;
-        match cast.kind {
+        self.apply_cast(cast.kind, &cast.target_type, base, span)
+    }
+
+    fn apply_cast(
+        &mut self,
+        kind: CastKind,
+        target_type: &ResolvedType,
+        base: ConstValue,
+        span: Span,
+    ) -> CompResult<ConstValue> {
+        match kind {
             CastKind::Reinterpret => Ok(base),
             CastKind::DropLength => match base {
                 ConstValue::Str(s) => {
@@ -540,7 +577,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                         CompErrorKind::Unsupported("a numeric cast of a non-numeric comp value"),
                     ));
                 };
-                let Some(target) = cast.target_type.numeric_kind(self.target.pointer_bits()) else {
+                let Some(target) = target_type.numeric_kind(self.target.pointer_bits()) else {
                     return Err(self.err(
                         span,
                         CompErrorKind::Unsupported("a cast to a non-numeric type"),

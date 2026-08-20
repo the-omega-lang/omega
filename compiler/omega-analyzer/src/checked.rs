@@ -252,6 +252,7 @@ pub enum CheckedExpr {
     ByteString(String),
     FunctionCall(CheckedFunctionCall),
     Assignment(CheckedAssignment),
+    CompoundAssign(CheckedCompoundAssign),
     AddressOf(CheckedAddressOf),
     Negate(Box<CheckedExprNode>),
     BitNot(Box<CheckedExprNode>),
@@ -447,6 +448,23 @@ pub struct CheckedMatchArm {
 pub struct CheckedAssignment {
     pub target: CheckedPlace,
     pub value: Box<CheckedExprNode>,
+}
+
+/// `place op= value` / `place++` / `place--`, represented so `place` is
+/// owned exactly once: unlike `CheckedAssignment`, there is no second copy
+/// of the place embedded in `value` to read through. MIR lowers `place`
+/// once and reuses the resulting address for both the read and the write,
+/// per the language's "evaluate the target place only once" rule.
+#[derive(Debug, Clone)]
+pub struct CheckedCompoundAssign {
+    pub place: CheckedPlace,
+    /// The coercion `coerce_for_binary_op` would apply to the place's read
+    /// value before combining with `value` (e.g. `Pointer` -> `USize`),
+    /// mirrored here as data instead of as a cloned expression.
+    pub read_cast: Option<(CastKind, ResolvedType)>,
+    pub op: BinaryOp,
+    pub value: Box<CheckedExprNode>,
+    pub result_type: ResolvedType,
 }
 
 #[derive(Debug, Clone)]
