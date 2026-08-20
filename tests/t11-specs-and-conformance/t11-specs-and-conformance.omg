@@ -90,40 +90,40 @@ main() => i32 {
 	cat := Cat { id = 2; };
 
 	# --- explicit conformance, and a spec default method's own logic -------
-	println$(
+	println$("explicit-conformance: ",
 		Animal::make_sound(&dog), " ", Animal::make_sound(&cat), " ",
 		Animal::is_dog(&dog), " ", Animal::is_dog(&cat)
 	);
 
 	# --- three qualification levels for calling conforming functions -------
-	println$(Animal::make_sound(&dog));      # spec supplied, receiver given
+	println$("spec-supplied-receiver: ", Animal::make_sound(&dog));      # spec supplied, receiver given
 	direct := Widget::make();                # target type supplied
 	via_spec: Widget = Make::make();          # spec supplied, Self inferred
 	via_both := <Widget : Make>::make();      # both supplied explicitly
-	println$(direct.id, " ", via_spec.id, " ", via_both.id);
+	println$("qualification-levels: ", direct.id, " ", via_spec.id, " ", via_both.id);
 
 	# --- blanket vs. concrete specificity, and entailment through a bound --
-	println$(Tagged::tag_name(&dog), " ", Tagged::tag_name(&cat));
-	println$(describe_tag(&dog), " ", describe_tag(&cat));
+	println$("blanket-vs-concrete: ", Tagged::tag_name(&dog), " ", Tagged::tag_name(&cat));
+	println$("entailment-via-bound: ", describe_tag(&dog), " ", describe_tag(&cat));
 
 	# --- multiple instantiations of a generic spec, disambiguated by type --
 	multi := Multi { tally = 10; };
 	byte: u8 = 5u8;
-	println$(Consumer<i32>::consume(&multi, 1), " ", Consumer<*u8>::consume(&multi, &byte));
+	println$("multi-instantiation-spec: ", Consumer<i32>::consume(&multi, 1), " ", Consumer<*u8>::consume(&multi, &byte));
 
 	# --- dynamic dispatch: implicit coercion, explicit cast, pseudo-fields -
 	speak(&dog);
 	speak(&cat);
 
 	obj := <spec *Animal>&dog;
-	println$(obj.make_sound());
+	println$("dynamic-dispatch-call: ", obj.make_sound());
 	raw := obj.ptr;
 	vt := obj.vtable;
-	println$(<usize>raw != 0usize, " ", <usize>vt != 0usize);
+	println$("dispatch-pseudo-fields: ", <usize>raw != 0usize, " ", <usize>vt != 0usize);
 
 	return 0;
 }
 
 speak(animal: spec *Animal) => void {
-	println$(animal.make_sound());
+	println$("speak-dynamic-dispatch: ", animal.make_sound());
 }

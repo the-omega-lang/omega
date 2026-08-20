@@ -1,8 +1,8 @@
-zero
-has-x
-single digit double digit large or negative
-10 3 6 3
-16
+if-expr: zero
+if-brace-disambig: has-x
+match-expr: single digit double digit large or negative
+loop-forms: 10 3 6 3
+break-continue: 16
 defer-b
 defer-a
-10
+defer-return: 10

@@ -1,17 +1,17 @@
-156
+sum: 156
 line one
 line two	tabbed\backslash "quoted" it's
-12
+nul-string-size: 12
 omega: Ω, cafe: café
 
 first line, literal backslash-n next: \n
 second line
 
 raw	bytes
-A é Ω
+char-literals: A é Ω
 newline literal matches
-true false
-123 255 493 10
-1000000 65535
-1.000000 0.125000 5
-7 10 8 3 3.500000
+bool-literals: true false
+int-bases: 123 255 493 10
+underscore-digits: 1000000 65535
+float-lex: 1.000000 0.125000 5
+numeric-suffixes: 7 10 8 3 3.500000

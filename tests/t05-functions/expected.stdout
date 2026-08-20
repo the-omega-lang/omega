@@ -1,7 +1,7 @@
-55
+fibo-recursion: 55
 void functions carry no value
-5 4.000000
-3 6
-int float
-u32
-9
+generic-sum: 5 4.000000
+overload-arity: 3 6
+overload-literal-family: int float
+overload-fn-value: u32
+static-vs-method: 9

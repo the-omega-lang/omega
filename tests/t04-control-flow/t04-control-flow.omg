@@ -24,15 +24,15 @@ defer_demo() => i32 {
 main() => i32 {
 	# --- if as an expression, with else-if chaining ------------------------
 	label := if 0 > 0 { "positive" } else if 0 < 0 { "negative" } else { "zero" };
-	println$(label);
+	println$("if-expr: ", label);
 
 	# A `{` right after a condition starts the control-flow body, not a
 	# struct literal; parenthesize the literal to use it as the condition.
 	tag := if (Point { x = 1; }).x > 0 { "has-x" } else { "no-x" };
-	println$(tag);
+	println$("if-brace-disambig: ", tag);
 
 	# --- match as an expression, with a fallback `else` ---------------------
-	println$(classify(4), " ", classify(42), " ", classify(-1));
+	println$("match-expr: ", classify(4), " ", classify(42), " ", classify(-1));
 
 	# --- the four loop forms -------------------------------------------------
 	mut total := 0;
@@ -58,7 +58,7 @@ main() => i32 {
 		range_count += 1;
 	}
 
-	println$(total, " ", stop_at, " ", classic_sum, " ", range_count);
+	println$("loop-forms: ", total, " ", stop_at, " ", classic_sum, " ", range_count);
 
 	# --- break / continue -----------------------------------------------------
 	mut odds_below_eight := 0;
@@ -67,11 +67,11 @@ main() => i32 {
 		if m > 7 { break; }
 		odds_below_eight += m;
 	}
-	println$(odds_below_eight);
+	println$("break-continue: ", odds_below_eight);
 
 	# --- defer: FILO order, return value fixed before defers run --------------
 	returned := defer_demo();
-	println$(returned);
+	println$("defer-return: ", returned);
 
 	return 0;
 }

@@ -30,24 +30,24 @@ main() => i32 {
 	mut b_sum := 0;
 	for v in 1..=5 { b_sum += v; }
 
-	println$(a_sum, " ", b_sum);
+	println$("range-exclusive-inclusive: ", a_sum, " ", b_sum);
 
 	# --- a range is a storable, copyable value, not just loop syntax -------
 	stored: Range<i32> = 1..<4;
 	copy := stored;
 	mut stored_sum := 0;
 	for v in copy { stored_sum += v; }
-	println$(stored_sum, " ", stored.start, " ", stored.end, " ", stored.inclusive);
+	println$("range-value-copy: ", stored_sum, " ", stored.start, " ", stored.end, " ", stored.inclusive);
 
 	# --- an inclusive range terminates at the maximum without overflow ------
 	mut near_max_hits := 0;
 	for v in 2147483645..=2147483647 { near_max_hits += 1; }
-	println$(near_max_hits);
+	println$("range-max-no-overflow: ", near_max_hits);
 
 	# --- char ranges: Successor skips the UTF-16 surrogate interval --------
 	mut boundary_hits := 0;
 	for c in '\u{D7FE}'..='\u{E001}' { boundary_hits += 1; }
-	println$(boundary_hits);
+	println$("char-range-surrogate: ", boundary_hits);
 
 	# --- `for ... in` grammar: plain, `mut`, and explicitly typed bindings --
 	mut plain_sum := 0;
@@ -62,7 +62,7 @@ main() => i32 {
 	mut typed_sum: i64 = 0;
 	for x : i64 in 0i64..<3i64 { typed_sum += x; }
 
-	println$(plain_sum, " ", mutated_sum, " ", typed_sum);
+	println$("for-in-bindings: ", plain_sum, " ", mutated_sum, " ", typed_sum);
 
 	# --- break / continue against a protocol-driven loop --------------------
 	mut collected := 0;
@@ -71,13 +71,13 @@ main() => i32 {
 		if x > 6 { break; }
 		collected += x;
 	}
-	println$(collected);
+	println$("break-continue-loop: ", collected);
 
 	# --- a type conforming only to Iterator<T> is itself the cursor --------
 	mut counter := CountUp { current = 0; limit = 4; };
 	mut total := 0;
 	for x in counter { total += x; }
-	println$(total);
+	println$("iterator-conform-cursor: ", total);
 
 	return 0;
 }

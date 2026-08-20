@@ -1,8 +1,8 @@
-10 20 30 41 51
-6
-1 0
-0
-2
-2
-100 201
-40
+binding-forms: 10 20 30 41 51
+mut-identifier: 6
+bumped-copy: 1 0
+peek-auto-ref: 0
+bump-mut-self: 2
+value-of-deref: 2
+mutable-places: 100 201
+compound-assign: 40

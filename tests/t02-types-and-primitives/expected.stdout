@@ -1,13 +1,13 @@
-1 2 4 8 8 1 2 4 8 8 4 8 4 1 0
-5 1.000000
-5 1.000000
-42 -1
-10 21 21 6 6 600 4 30 2
-6
-21
-true true true false true true
-65 -1 -1
-true 65
-false true true false true false
-30
-3
+sizeof: 1 2 4 8 8 1 2 4 8 8 4 8 4 1 0
+infer-no-expected: 5 1.000000
+infer-suffix: 5 1.000000
+diverging-branch: 42 -1
+ptr-array-slice: 10 21 21 6 6 600 4 30 2
+sum-unsized: 6
+fill-unsized: 21
+char-ordering: true true true false true true
+char-from-u32: 65 -1 -1
+char-cast: true 65
+bool-ops: false true true false true false
+ptr-arith-deref: 30
+ptr-diff: 3

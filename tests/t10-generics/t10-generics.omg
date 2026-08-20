@@ -52,34 +52,34 @@ lowest<T: Bounded>() => T { T::min() }
 main() => i32 {
 	# --- generic aggregate, unbounded generic call ---------------------------
 	head := Node<i32> { value = 1; next = <*Node<i32>>0usize; };
-	println$(head.value, " ", sum(2, 3), " ", sum(2.5f32, 1.5f32));
+	println$("generic-aggregate-call: ", head.value, " ", sum(2, 3), " ", sum(2.5f32, 1.5f32));
 
 	# --- bounded generic parameter and `spec S` sugar -------------------------
 	gadget := Widget { name = "gadget"; };
-	println$(announce(gadget), " ", announce_dyn(gadget));
+	println$("bounded-generic-spec: ", announce(gadget), " ", announce_dyn(gadget));
 
 	# --- generic aggregate inference: expected type, fields, static call -----
 	opt := Option::Some { value = 42u32; };
 	none: Option<i32> = Option::None;
 	pair := Pair { a = 3; b = 4; };
 	pair2 := Pair::new(7, 8);
-	println$(opt.value, " ", pair.a, " ", pair.b, " ", pair2.a, " ", pair2.b);
+	println$("generic-aggregate-infer: ", opt.value, " ", pair.a, " ", pair.b, " ", pair2.a, " ", pair2.b);
 	match none {
 		Option::None => { println$("none is empty"); },
 	} else {}
 
 	# --- defaults: trailing parameter default, explicit positional prefix ----
 	explicit_pair: Pair<u64> = Pair { a = 1u64; b = 2; };
-	println$(explicit_pair.a, " ", explicit_pair.b);
+	println$("generic-defaults: ", explicit_pair.a, " ", explicit_pair.b);
 
 	# --- function-call inference priority: default, then adapting literals ---
 	x := add(10, 20);         # T defaults to u64
 	y := add(10u32, 20);      # T = u32 from the first argument; 20 adapts
-	println$(expect_u64(x), " ", expect_u32(y));
+	println$("call-inference-priority: ", expect_u64(x), " ", expect_u32(y));
 
 	# --- expected result type supplies a generic with no other source --------
 	floor: i32 = lowest();
-	println$(floor);
+	println$("expected-type-infers-generic: ", floor);
 
 	return 0;
 }

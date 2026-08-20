@@ -1,8 +1,8 @@
-less less greater
-0 ok 1 error 7
-info 100 error 200 42
-42
-all good failed
-less than a hundred a hundred more than a hundred
-1 2 3 0
-not equal
+enum-basic-match: less less greater
+enum-header-fields: 0 ok 1 error 7
+enum-shared-body-fields: info 100 error 200 42
+match-refinement: 42
+enum-widening: all good failed
+value-match: less than a hundred a hundred more than a hundred
+char-range-match: 1 2 3 0
+catch-all-match: not equal

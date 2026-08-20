@@ -1,7 +1,7 @@
-0
-20
-42
-tagged-marker
-pong
-pong
-true 5
+marker-zero-size: 0
+marker-method-call: 20
+marker-by-value: 42
+generic-marker: tagged-marker
+marker-static-dispatch: pong
+marker-dynamic-dispatch: pong
+zero-sized-offset: true 5

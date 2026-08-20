@@ -40,21 +40,21 @@ struct Box {
 }
 
 main() => i32 {
-	println$(fibo(10));
+	println$("fibo-recursion: ", fibo(10));
 
 	announce("void functions carry no value");
 
-	println$(sum(2, 3), " ", sum(2.5f32, 1.5f32));
+	println$("generic-sum: ", sum(2, 3), " ", sum(2.5f32, 1.5f32));
 
-	println$(combine(1, 2), " ", combine(1, 2, 3));
+	println$("overload-arity: ", combine(1, 2), " ", combine(1, 2, 3));
 
-	println$(describe(5), " ", describe(5.0));
+	println$("overload-literal-family: ", describe(5), " ", describe(5.0));
 
 	handler: (thing: u32) => *str = print_any;
-	println$(handler(7u32));
+	println$("overload-fn-value: ", handler(7u32));
 
 	box := Box::make(9);
-	println$(box.get());
+	println$("static-vs-method: ", box.get());
 
 	return 0;
 }

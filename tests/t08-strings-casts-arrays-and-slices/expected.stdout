@@ -1,10 +1,10 @@
-5 6
-44 300 2147483647 -2147483648
-4607182418800017408
-5 104 6
-104
-3 7 8 9
-4 10 40
-12 7
-3 bob 2
-3 2 4 3 3 3 3
+str-bytes-size: 5 6
+numeric-casts: 44 300 2147483647 -2147483648
+ptr-bitcast: 4607182418800017408
+fat-ptr-cast: 5 104 6
+fat-to-thin-ptr: 104
+ptr-to-slice: 3 7 8 9
+thin-ptr-slice: 4 10 40
+array-len-decl: 12 7
+slice-vs-array-literal: 3 bob 2
+range-slice-bounds: 3 2 4 3 3 3 3

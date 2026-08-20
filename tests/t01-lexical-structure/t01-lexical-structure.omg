@@ -31,7 +31,7 @@ main() => i32 {
 
 	sum := describe(1, 2, 3) + type + root + glue + gap + marker
 		+ conform + primitive + internal + exposed + comp + expr + in;
-	println$(sum);
+	println$("sum: ", sum);
 
 	# String escapes.
 	println$("line one\nline two\ttabbed\\backslash \"quoted\" it\'s");
@@ -40,7 +40,7 @@ main() => i32 {
 	# it away from the end of a printed string; here it just proves the
 	# escape decodes without breaking the surrounding literal.
 	with_nul := "before\0after";
-	println$(with_nul.size);
+	println$("nul-string-size: ", with_nul.size);
 
 	# Unicode escapes and literal Unicode source text both work.
 	println$("omega: \u{03A9}, cafe: caf\u{00E9}");
@@ -61,25 +61,25 @@ second line
 	accented: char = 'é';
 	newline: char = '\n';
 	omega: char = '\u{03A9}';
-	println$(letter, " ", accented, " ", omega);
+	println$("char-literals: ", letter, " ", accented, " ", omega);
 	if newline == '\n' { println$("newline literal matches"); }
 
 	# Boolean literals are keyword tokens, not identifiers.
 	flag := true;
 	other := false;
-	println$(flag, " ", other);
+	println$("bool-literals: ", flag, " ", other);
 
 	# Integer literal bases.
 	dec := 123;
 	hex := 0xFF;
 	oct := 0o755;
 	bin := 0b1010;
-	println$(dec, " ", hex, " ", oct, " ", bin);
+	println$("int-bases: ", dec, " ", hex, " ", oct, " ", bin);
 
 	# Underscores inside a digit run do not change the value.
 	million := 1_000_000;
 	hex_grouped := 0xFF_FF;
-	println$(million, " ", hex_grouped);
+	println$("underscore-digits: ", million, " ", hex_grouped);
 
 	# A decimal point only starts a fractional part when a digit follows it,
 	# which keeps `0..5` from being lexed as `0.` followed by `.5`.
@@ -87,7 +87,7 @@ second line
 	small := 0.125f32;
 	mut hits := 0;
 	for i in 0..<5 { hits += 1; }
-	println$(one, " ", small, " ", hits);
+	println$("float-lex: ", one, " ", small, " ", hits);
 
 	# Numeric suffixes: usize, isize, i<N>, u<N>, f<N>.
 	byte_lit := 7u32;
@@ -95,7 +95,7 @@ second line
 	size_lit := 8usize;
 	signed_size := 3isize;
 	ratio := 3.5f32;
-	println$(byte_lit, " ", wide, " ", size_lit, " ", signed_size, " ", ratio);
+	println$("numeric-suffixes: ", byte_lit, " ", wide, " ", size_lit, " ", signed_size, " ", ratio);
 
 	return 0;
 }

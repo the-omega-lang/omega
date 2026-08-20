@@ -1,4 +1,4 @@
-hello from helper
-mymodule root
-hello from helper
-7
+helper-greeting: hello from helper
+mymodule-label: mymodule root
+something-import: hello from helper
+ambient-option: 7

@@ -1,7 +1,7 @@
-1 5 4.000000
-gadget gadget
-42 3 4 7 8
+generic-aggregate-call: 1 5 4.000000
+bounded-generic-spec: gadget gadget
+generic-aggregate-infer: 42 3 4 7 8
 none is empty
-1 2
-30 30
--2147483648
+generic-defaults: 1 2
+call-inference-priority: 30 30
+expected-type-infers-generic: -2147483648

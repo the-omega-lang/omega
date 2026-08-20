@@ -19,7 +19,7 @@ main() => i32 {
 	block := malloc(4usize);
 	as_i32: *mut i32 = <*mut i32>block;
 	*as_i32 = 77;
-	println$(*as_i32);
+	println$("malloc-deref: ", *as_i32);
 	free(<*u8>block);
 
 	# --- C-style variadic call: trailing arguments use the FFI ABI ------------
@@ -31,7 +31,7 @@ main() => i32 {
 	fflush(<*mut u8>0usize);
 
 	# --- program entry point: only root-module `main` is the C entry ---------
-	println$(helper::main());
+	println$("helper-main: ", helper::main());
 
 	return 0;
 }

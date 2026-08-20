@@ -1,7 +1,7 @@
-1 2
-3 8
-5 12
-6
-99
-1
-1
+cross-module-fields: 1 2
+hidden-accessor: 3 8
+box-visible-hidden: 5 12
+reveal-hidden-field: 6
+reveal-after-mutate: 99
+spec-req-visibility: 1
+dynamic-dispatch-visibility: 1

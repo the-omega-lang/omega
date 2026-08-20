@@ -69,6 +69,8 @@ If compilation fails, the current runner compares the compiler's stdout/stderr a
 
 Because the same files can describe compiler output for a negative test or program output for a successful test, keep each case intentionally single-purpose. If future test needs make that convention ambiguous, extend the runner deliberately rather than inferring intent from filenames or compiler behavior.
 
+Give a `println$` call a short kebab-case label as its first argument (for example `println$("range-sum: ", total, " ", stop_at);`) whenever its output is not already self-identifying, so a mismatched `expected.stdout` line can be traced straight back to the call that produced it. Skip the label only when the call's sole argument is already fixed, descriptive text (for example `println$("newline literal matches");`); a label there would just repeat what the line already says.
+
 ## Running the suite
 
 ### Normal top-level gate

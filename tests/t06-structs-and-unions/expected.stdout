@@ -1,5 +1,5 @@
-10 20
-3 4
-4 4
-4 3 2 1
-42
+struct-literal: 10 20
+origin-translate: 3 4
+union-size: 4 4
+union-overlap: 4 3 2 1
+union-basic: 42

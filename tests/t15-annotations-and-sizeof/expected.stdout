@@ -1,6 +1,6 @@
-5 8
-2 8
-8 8
-42 21
-5
-15
+layout-struct-size: 5 8
+layout-enum-size: 2 8
+sizeof-primitive: 8 8
+inline-hints: 42 21
+mangling-disabled: 5
+mangling-force-symbol: 15

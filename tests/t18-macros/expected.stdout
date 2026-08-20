@@ -1,9 +1,9 @@
-42
-first
-second
-30
-1
-2
-3
-6
-7
+double-i32: 42
+log-two-a: first
+log-two-b: second
+sum-macro: 30
+print-each: 1
+print-each: 2
+print-each: 3
+call-with-args: 6
+read-secret: 7

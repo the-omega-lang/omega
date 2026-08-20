@@ -6,8 +6,8 @@ make_doubler$(i32, double_i32);
 
 # Statement-position macro: splices zero or more statements.
 macro log_two($a: expr, $b: expr) => {
-	println$($a);
-	println$($b);
+	println$("log-two-a: ", $a);
+	println$("log-two-b: ", $b);
 }
 
 # Expression-position macro: the expansion must parse as one expression.
@@ -17,7 +17,7 @@ macro sum_macro($a: expr, $b: expr) => {
 
 # Variadic repetition with no separator: one statement per argument.
 macro print_each($args: expr...) => {
-	$...(){ println$($args); }
+	$...(){ println$("print-each: ", $args); }
 }
 
 sum_all(a: i32, b: i32, c: i32) => i32 { a + b + c }
@@ -28,22 +28,22 @@ macro call_with_args($f: ident, $args: expr...) => {
 }
 
 main() => i32 {
-	println$(double_i32(21));
+	println$("double-i32: ", double_i32(21));
 
 	log_two$("first", "second");
 
 	value := sum_macro$(10, 20);
-	println$(value);
+	println$("sum-macro: ", value);
 
 	print_each$(1, 2, 3);
 
 	total := call_with_args$(sum_all, 1, 2, 3);
-	println$(total);
+	println$("call-with-args: ", total);
 
 	# `secret` cannot be named directly here, yet the imported macro still
 	# reaches it: names written in a macro body resolve in the macro's own
 	# definition environment, not the caller's.
-	println$(read_secret$());
+	println$("read-secret: ", read_secret$());
 
 	return 0;
 }

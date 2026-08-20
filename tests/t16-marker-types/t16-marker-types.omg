@@ -31,28 +31,28 @@ take_marker(sink: NullSink) => i32 {
 
 main() => i32 {
 	# A marker's value size is exactly zero.
-	println$(sizeof<NullSink>);
+	println$("marker-zero-size: ", sizeof<NullSink>);
 
 	x := NullSink {};
 	sink := x;
-	println$(sink.write(10));
-	println$(take_marker(x));
+	println$("marker-method-call: ", sink.write(10));
+	println$("marker-by-value: ", take_marker(x));
 
 	tagged := Tagged<i32> {};
-	println$(tagged.identify());
+	println$("generic-marker: ", tagged.identify());
 
 	# A marker may conform to a spec and dispatch statically or dynamically.
 	beacon := Beacon {};
-	println$(Pingable::ping(&beacon));
+	println$("marker-static-dispatch: ", Pingable::ping(&beacon));
 	obj := <spec *Pingable>&beacon;
-	println$(obj.ping());
+	println$("marker-dynamic-dispatch: ", obj.ping());
 
 	# A zero-sized field does not advance the containing object's offset,
 	# so an adjacent zero-sized and non-zero-sized field may share an
 	# address even though each has its own real place.
 	hv := HasMarkerField { m = NullSink {}; x = 5; };
 	same_address := <usize>&hv.m == <usize>&hv.x;
-	println$(same_address, " ", hv.x);
+	println$("zero-sized-offset: ", same_address, " ", hv.x);
 
 	return 0;
 }

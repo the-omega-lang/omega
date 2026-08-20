@@ -1,10 +1,10 @@
-woof meow true false
-woof
-9 9 9
-dog-specific animal
-dog-specific animal
-11 15
-woof
-meow
-woof
-true true
+explicit-conformance: woof meow true false
+spec-supplied-receiver: woof
+qualification-levels: 9 9 9
+blanket-vs-concrete: dog-specific animal
+entailment-via-bound: dog-specific animal
+multi-instantiation-spec: 11 15
+speak-dynamic-dispatch: woof
+speak-dynamic-dispatch: meow
+dynamic-dispatch-call: woof
+dispatch-pseudo-fields: true true

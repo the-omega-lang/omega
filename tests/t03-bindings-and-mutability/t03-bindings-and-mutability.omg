@@ -39,33 +39,33 @@ main() => i32 {
 	mut e := 50;
 	d += 1;
 	e += 1;
-	println$(a, " ", b, " ", c, " ", d, " ", e);
+	println$("binding-forms: ", a, " ", b, " ", c, " ", d, " ", e);
 
 	# `mut` stays an ordinary identifier outside binding-modifier position.
 	mut mut := 5;
 	mut += 1;
-	println$(mut);
+	println$("mut-identifier: ", mut);
 
 	# --- receiver forms and their mutation scope ---------------------------
 	mut counter := Counter::new(0);
 
 	# `mut self` mutates only its local by-value copy.
 	copy_result := counter.bumped_copy();
-	println$(copy_result, " ", counter.value);
+	println$("bumped-copy: ", copy_result, " ", counter.value);
 
 	# A pointer-receiver method called on a plain value takes the
 	# reference automatically.
-	println$(counter.peek());
+	println$("peek-auto-ref: ", counter.peek());
 
 	# `*mut self` mutates the caller's value through the receiver pointer.
 	counter.bump();
 	counter.bump();
-	println$(counter.value);
+	println$("bump-mut-self: ", counter.value);
 
 	# A by-value-receiver method called through a pointer dereferences
 	# and copies automatically.
 	ptr := &counter;
-	println$(ptr.value_of());
+	println$("value-of-deref: ", ptr.value_of());
 
 	# --- mutable places: &place vs &mut place -------------------------------
 	value: i32 = 100;
@@ -74,7 +74,7 @@ main() => i32 {
 	mut other: i32 = 200;
 	mutable_ptr: *mut i32 = &mut other;
 	*mutable_ptr += 1;
-	println$(*immutable_ptr, " ", *mutable_ptr);
+	println$("mutable-places: ", *immutable_ptr, " ", *mutable_ptr);
 
 	# --- compound assignment and increment/decrement ------------------------
 	mut n: i32 = 10;
@@ -91,7 +91,7 @@ main() => i32 {
 	n >>= 1;  # 40
 	++n;      # 41
 	--n;      # 40
-	println$(n);
+	println$("compound-assign: ", n);
 
 	return 0;
 }

@@ -1,7 +1,7 @@
-30 720 50 10 0
-5
-3 4
-3
-15
-8
-10
+comp-globals: 30 720 50 10 0
+counter: 5
+comp-array-data: 3 4
+comp-materialized-ptr: 3
+enum-comp-default: 15
+sizeof-array: 8
+nested-comp: 10

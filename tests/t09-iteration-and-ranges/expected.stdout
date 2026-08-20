@@ -1,7 +1,7 @@
-10 15
-6 1 4 false
-3
-4
-3 33 3
-9
-6
+range-exclusive-inclusive: 10 15
+range-value-copy: 6 1 4 false
+range-max-no-overflow: 3
+char-range-surrogate: 4
+for-in-bindings: 3 33 3
+break-continue-loop: 9
+iterator-conform-cursor: 6
