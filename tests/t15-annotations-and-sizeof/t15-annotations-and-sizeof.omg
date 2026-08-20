@@ -60,15 +60,15 @@ struct Adder {
 main() => i32 {
 	# Explicit `@layout` changes the observable size relative to the
 	# packed-by-default struct/enum layout.
-	println$(sizeof<Packed>, sizeof<Aligned>);
-	println$(sizeof<PlainTag>, sizeof<WideTag>);
+	println$(sizeof<Packed>, " ", sizeof<Aligned>);
+	println$(sizeof<PlainTag>, " ", sizeof<WideTag>);
 
 	# `sizeof<Type>` is an ordinary usize expression outside annotations.
-	println$(sizeof<usize>, sizeof<*u8>);
+	println$(sizeof<usize>, " ", sizeof<*u8>);
 
 	# `@inline`/`@mangling` are hints/symbol control; program behavior is
 	# unaffected.
-	println$(fast_double(21), slow_triple(7));
+	println$(fast_double(21), " ", slow_triple(7));
 	println$(raw_add(2, 3));
 
 	adder := Adder { base = 10; };

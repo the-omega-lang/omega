@@ -27,50 +27,50 @@ main() => i32 {
 	a := 17;
 	b := 5;
 	println$(
-		expect_i32(a + b), expect_i32(a - b), expect_i32(a * b),
-		expect_i32(a / b), expect_i32(a % b), expect_i32(-a)
+		expect_i32(a + b), " ", expect_i32(a - b), " ", expect_i32(a * b), " ",
+		expect_i32(a / b), " ", expect_i32(a % b), " ", expect_i32(-a)
 	);
 
 	fa := 17.5f32;
 	fb := 5.0f32;
 	println$(
-		expect_f32(fa + fb), expect_f32(fa - fb), expect_f32(fa * fb),
-		expect_f32(fa / fb), expect_f32(-fa)
+		expect_f32(fa + fb), " ", expect_f32(fa - fb), " ", expect_f32(fa * fb), " ",
+		expect_f32(fa / fb), " ", expect_f32(-fa)
 	);
 
 	# --- logical: !, &&, ||, and short-circuit evaluation order ---------------
 	t := true;
 	f := false;
-	println$(expect_bool(!t), expect_bool(t && f), expect_bool(t || f));
+	println$(expect_bool(!t), " ", expect_bool(t && f), " ", expect_bool(t || f));
 
 	side_effect_calls = 0;
 	r1 := false && record_call();          # right side not evaluated
-	println$(side_effect_calls, r1);
+	println$(side_effect_calls, " ", r1);
 
 	r2 := true || record_call();           # right side not evaluated
-	println$(side_effect_calls, r2);
+	println$(side_effect_calls, " ", r2);
 
 	r3 := true && record_call();           # right side evaluated
-	println$(side_effect_calls, r3);
+	println$(side_effect_calls, " ", r3);
 
 	r4 := false || record_call();          # right side evaluated
-	println$(side_effect_calls, r4);
+	println$(side_effect_calls, " ", r4);
 
 	# --- bitwise: ~, &, |, ^, <<, >> -------------------------------------------
 	bx: u8 = 0b00001100u8;   # 12
 	by: u8 = 0b00001010u8;   # 10
 	println$(
-		expect_u8(bx & by), expect_u8(bx | by), expect_u8(bx ^ by),
-		expect_u8(~bx), expect_u8(bx << 2u8), expect_u8(bx >> 2u8)
+		expect_u8(bx & by), " ", expect_u8(bx | by), " ", expect_u8(bx ^ by), " ",
+		expect_u8(~bx), " ", expect_u8(bx << 2u8), " ", expect_u8(bx >> 2u8)
 	);
 
 	# Two's complement identity: `~x` equals `-x - 1`.
-	println$(expect_i32(~5), expect_i32(-5 - 1));
+	println$(expect_i32(~5), " ", expect_i32(-5 - 1));
 
 	# --- dereference: `*<ident>` reads through a pointer, prefix position -----
 	value: i32 = 55;
 	p: *i32 = &value;
-	println$(expect_i32(*p), expect_i32(*p * 2));
+	println$(expect_i32(*p), " ", expect_i32(*p * 2));
 
 	# --- operate-and-assign: same result as `x = x op y` ----------------------
 	mut add_op := 23; add_op += 7;             mut add_plain := 23; add_plain = add_plain + 7;
@@ -85,14 +85,14 @@ main() => i32 {
 	mut shr_op := 23; shr_op >>= 2;            mut shr_plain := 23; shr_plain = shr_plain >> 2;
 
 	println$(
-		add_op == add_plain, sub_op == sub_plain, mul_op == mul_plain,
-		div_op == div_plain, rem_op == rem_plain, and_op == and_plain,
-		or_op == or_plain, xor_op == xor_plain, shl_op == shl_plain,
+		add_op == add_plain, " ", sub_op == sub_plain, " ", mul_op == mul_plain, " ",
+		div_op == div_plain, " ", rem_op == rem_plain, " ", and_op == and_plain, " ",
+		or_op == or_plain, " ", xor_op == xor_plain, " ", shl_op == shl_plain, " ",
 		shr_op == shr_plain
 	);
 	println$(
-		add_op, sub_op, mul_op, div_op, rem_op,
-		and_op, or_op, xor_op, shl_op, shr_op
+		add_op, " ", sub_op, " ", mul_op, " ", div_op, " ", rem_op, " ",
+		and_op, " ", or_op, " ", xor_op, " ", shl_op, " ", shr_op
 	);
 
 	# `x op= y` must evaluate its target place exactly once (see
@@ -101,7 +101,7 @@ main() => i32 {
 	mut counted: [4]i32 = [1, 2, 3, 4];
 	probe_calls = 0;
 	counted[next_index()] += 100;
-	println$(probe_calls, counted[1]);
+	println$(probe_calls, " ", counted[1]);
 
 	# --- operator precedence: enough spot checks to catch an obviously wrong
 	# reordering, not an exhaustive combinatorial sweep -------------------------
@@ -117,8 +117,8 @@ main() => i32 {
 	and_vs_shift := 12 & 4 << 1;          # 12 & (4 << 1)
 
 	println$(
-		additive_first, grouped, bitwise_vs_cmp, or_vs_additive, range_check,
-		shift_vs_additive, shift_vs_mul, unary_vs_additive, not_vs_and, and_vs_shift
+		additive_first, " ", grouped, " ", bitwise_vs_cmp, " ", or_vs_additive, " ", range_check, " ",
+		shift_vs_additive, " ", shift_vs_mul, " ", unary_vs_additive, " ", not_vs_and, " ", and_vs_shift
 	);
 
 	# `&` is address-of in prefix position and `*` is dereference in prefix

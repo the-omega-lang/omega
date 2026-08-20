@@ -91,8 +91,8 @@ main() => i32 {
 
 	# --- explicit conformance, and a spec default method's own logic -------
 	println$(
-		Animal::make_sound(&dog), Animal::make_sound(&cat),
-		Animal::is_dog(&dog), Animal::is_dog(&cat)
+		Animal::make_sound(&dog), " ", Animal::make_sound(&cat), " ",
+		Animal::is_dog(&dog), " ", Animal::is_dog(&cat)
 	);
 
 	# --- three qualification levels for calling conforming functions -------
@@ -100,16 +100,16 @@ main() => i32 {
 	direct := Widget::make();                # target type supplied
 	via_spec: Widget = Make::make();          # spec supplied, Self inferred
 	via_both := <Widget : Make>::make();      # both supplied explicitly
-	println$(direct.id, via_spec.id, via_both.id);
+	println$(direct.id, " ", via_spec.id, " ", via_both.id);
 
 	# --- blanket vs. concrete specificity, and entailment through a bound --
-	println$(Tagged::tag_name(&dog), Tagged::tag_name(&cat));
-	println$(describe_tag(&dog), describe_tag(&cat));
+	println$(Tagged::tag_name(&dog), " ", Tagged::tag_name(&cat));
+	println$(describe_tag(&dog), " ", describe_tag(&cat));
 
 	# --- multiple instantiations of a generic spec, disambiguated by type --
 	multi := Multi { tally = 10; };
 	byte: u8 = 5u8;
-	println$(Consumer<i32>::consume(&multi, 1), Consumer<*u8>::consume(&multi, &byte));
+	println$(Consumer<i32>::consume(&multi, 1), " ", Consumer<*u8>::consume(&multi, &byte));
 
 	# --- dynamic dispatch: implicit coercion, explicit cast, pseudo-fields -
 	speak(&dog);
@@ -119,7 +119,7 @@ main() => i32 {
 	println$(obj.make_sound());
 	raw := obj.ptr;
 	vt := obj.vtable;
-	println$(<usize>raw != 0usize, <usize>vt != 0usize);
+	println$(<usize>raw != 0usize, " ", <usize>vt != 0usize);
 
 	return 0;
 }

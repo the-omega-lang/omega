@@ -41,12 +41,12 @@ mut counter: i32 = 0;
 state: i32;
 
 main() => i32 {
-	println$(SIZE, FACT6, value, literal_global, state);
+	println$(SIZE, " ", FACT6, " ", value, " ", literal_global, " ", state);
 
 	counter += 5;
 	println$(counter);
 
-	println$(DATA[0], DATA[1]);
+	println$(DATA[0], " ", DATA[1]);
 
 	# A `comp` binding has no runtime storage; `&DATA` materializes it as
 	# immutable static data to produce an addressable pointer.

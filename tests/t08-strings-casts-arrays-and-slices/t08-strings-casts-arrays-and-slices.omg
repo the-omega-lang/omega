@@ -4,7 +4,7 @@ main() => i32 {
 	# --- strings and byte strings: distinct fat/thin pointer types --------
 	s: *str = "hello";
 	bytes: *[]u8 = b"world!";
-	println$(s.size, bytes.length);
+	println$(s.size, " ", bytes.length);
 
 	# --- numeric casts: widen, truncate, saturate --------------------------
 	small: i32 = 300;
@@ -12,7 +12,7 @@ main() => i32 {
 	widened := <i64>small;
 	huge_positive := <i32>100000000000000000000.0; # float-to-int is saturating
 	huge_negative := <i32>(-100000000000000000000.0);
-	println$(truncated, widened, huge_positive, huge_negative);
+	println$(truncated, " ", widened, " ", huge_positive, " ", huge_negative);
 
 	# --- pointer-to-pointer casts: explicit bit-level reinterpretation -----
 	value: f64 = 1.0;
@@ -22,7 +22,7 @@ main() => i32 {
 	# --- fat-pointer casts: *str <-> *[]u8 ----------------------------------
 	as_bytes := <*[]u8>s;
 	back_to_str := <*str>bytes;
-	println$(as_bytes.length, as_bytes[0], back_to_str.size);
+	println$(as_bytes.length, " ", as_bytes[0], " ", back_to_str.size);
 
 	# --- fat pointer -> thin pointer: keeps the address, drops the count ---
 	thin: *u8 = <*u8>as_bytes;
@@ -32,7 +32,7 @@ main() => i32 {
 	fixed: [3]i32 = [7, 8, 9];
 	fixed_ptr: *[3]i32 = &fixed;
 	as_slice := <*[]i32>fixed_ptr;
-	println$(as_slice.length, as_slice[0], as_slice[1], as_slice[2]);
+	println$(as_slice.length, " ", as_slice[0], " ", as_slice[1], " ", as_slice[2]);
 
 	# --- thin *T -> *[?]T -> explicit range slice ---------------------------
 	mut storage: [4]i32 = [10, 20, 30, 40];
@@ -40,24 +40,24 @@ main() => i32 {
 	array_ptr := <*mut [?]i32>first;
 	count: i32 = 4;
 	rebuilt := &array_ptr[0..<count];
-	println$(rebuilt.length, rebuilt[0], rebuilt[3]);
+	println$(rebuilt.length, " ", rebuilt[0], " ", rebuilt[3]);
 
 	# --- fixed array literal vs. inferred-length declaration ----------------
 	explicit_len: [3]i32 = [1, 2, 3];
 	inferred_len: []i32 = [4, 5, 6];
-	println$(sizeof<[3]i32>, explicit_len[0] + inferred_len[2]);
+	println$(sizeof<[3]i32>, " ", explicit_len[0] + inferred_len[2]);
 
 	# --- compile-time slice literal vs. a bare fixed-array literal ----------
 	names := &["alice", "bob", "carol"];
 	plain_array := [1, 2, 3];
-	println$(names.length, names[1], plain_array[1]);
+	println$(names.length, " ", names[1], " ", plain_array[1]);
 
 	# --- indexing and slicing: explicit and open range bounds ---------------
 	data: [5]i32 = [1, 2, 3, 4, 5];
 	mid := &data[1..<4];
 	tail := &data[2..];
 	head := &data[..<3];
-	println$(mid.length, mid[0], mid[2], tail.length, tail[0], head.length, head[2]);
+	println$(mid.length, " ", mid[0], " ", mid[2], " ", tail.length, " ", tail[0], " ", head.length, " ", head[2]);
 
 	return 0;
 }

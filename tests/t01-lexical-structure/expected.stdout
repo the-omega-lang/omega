@@ -8,10 +8,10 @@ first line, literal backslash-n next: \n
 second line
 
 raw	bytes
-AéΩ
+A é Ω
 newline literal matches
-truefalse
-12325549310
-100000065535
-1.0000000.1250005
-710833.500000
+true false
+123 255 493 10
+1000000 65535
+1.000000 0.125000 5
+7 10 8 3 3.500000

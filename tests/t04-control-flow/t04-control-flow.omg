@@ -32,7 +32,7 @@ main() => i32 {
 	println$(tag);
 
 	# --- match as an expression, with a fallback `else` ---------------------
-	println$(classify(4), classify(42), classify(-1));
+	println$(classify(4), " ", classify(42), " ", classify(-1));
 
 	# --- the four loop forms -------------------------------------------------
 	mut total := 0;
@@ -58,7 +58,7 @@ main() => i32 {
 		range_count += 1;
 	}
 
-	println$(total, stop_at, classic_sum, range_count);
+	println$(total, " ", stop_at, " ", classic_sum, " ", range_count);
 
 	# --- break / continue -----------------------------------------------------
 	mut odds_below_eight := 0;

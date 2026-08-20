@@ -52,7 +52,7 @@ main() => i32 {
 	# address even though each has its own real place.
 	hv := HasMarkerField { m = NullSink {}; x = 5; };
 	same_address := <usize>&hv.m == <usize>&hv.x;
-	println$(same_address, hv.x);
+	println$(same_address, " ", hv.x);
 
 	return 0;
 }

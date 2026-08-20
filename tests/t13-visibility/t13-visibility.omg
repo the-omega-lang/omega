@@ -8,18 +8,18 @@ main() => i32 {
 	# same top-level package.
 	p := child::Public { data = 1; };
 	pw := child::PackageWide { data = 2; };
-	println$(p.data, pw.data);
+	println$(p.data, " ", pw.data);
 
 	# `HiddenByDefault` cannot be *named* here, but a value of that type can
 	# still be obtained through an exposed accessor, and its own exposed
 	# field is reachable directly -- visibility is per-declaration.
 	h := child::make_hidden(3);
-	println$(h.data, child::call_hidden_helper(4));
+	println$(h.data, " ", child::call_hidden_helper(4));
 
 	# The hidden field/method require an exposed accessor from inside the
 	# owning type, or an explicit `reveal` at this use site.
 	mut box := child::Box::new(5, 6);
-	println$(box.visible_field, box.call_hidden_double());
+	println$(box.visible_field, " ", box.call_hidden_double());
 	println$(reveal box.hidden_field);
 	reveal box.hidden_field = 99;
 	println$(reveal box.hidden_field);

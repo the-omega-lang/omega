@@ -39,7 +39,7 @@ main() => i32 {
 	mut e := 50;
 	d += 1;
 	e += 1;
-	println$(a, b, c, d, e);
+	println$(a, " ", b, " ", c, " ", d, " ", e);
 
 	# `mut` stays an ordinary identifier outside binding-modifier position.
 	mut mut := 5;
@@ -51,7 +51,7 @@ main() => i32 {
 
 	# `mut self` mutates only its local by-value copy.
 	copy_result := counter.bumped_copy();
-	println$(copy_result, counter.value);
+	println$(copy_result, " ", counter.value);
 
 	# A pointer-receiver method called on a plain value takes the
 	# reference automatically.
@@ -74,7 +74,7 @@ main() => i32 {
 	mut other: i32 = 200;
 	mutable_ptr: *mut i32 = &mut other;
 	*mutable_ptr += 1;
-	println$(*immutable_ptr, *mutable_ptr);
+	println$(*immutable_ptr, " ", *mutable_ptr);
 
 	# --- compound assignment and increment/decrement ------------------------
 	mut n: i32 = 10;

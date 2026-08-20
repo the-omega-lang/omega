@@ -68,17 +68,17 @@ classify_char(c: char) => i32 {
 main() => i32 {
 	# --- basic enum: implicit tag, path construction, exhaustive match ----
 	less := Ordering::Less;
-	println$(order_label(less), order_label(compare(2, 5)), order_label(compare(5, 2)));
+	println$(order_label(less), " ", order_label(compare(2, 5)), " ", order_label(compare(5, 2)));
 
 	# --- header fields: compile-time-constant per variant, immutable ------
 	ok := Status::Ok;
 	err := Status::Err { code = 7; };
-	println$(ok.tag, ok.label, err.tag, err.label, err.code);
+	println$(ok.tag, " ", ok.label, " ", err.tag, " ", err.label, " ", err.code);
 
 	# --- shared dynamic fields + variant body fields -----------------------
 	info := Message::Info { timestamp = 100u64; };
 	trouble := Message::Error { timestamp = 200u64; code = 42; };
-	println$(info.description, info.timestamp, trouble.description, trouble.timestamp, trouble.code);
+	println$(info.description, " ", info.timestamp, " ", trouble.description, " ", trouble.timestamp, " ", trouble.code);
 
 	# --- match refinement: the body field is reachable only inside the arm -
 	match trouble {
@@ -88,13 +88,13 @@ main() => i32 {
 	} else {}
 
 	# --- widening: a refined value flows where only the parent type is known
-	println$(describe_status(ok), describe_status(err));
+	println$(describe_status(ok), " ", describe_status(err));
 
 	# --- value match: literal + range partition the domain, `..` covers rest
-	println$(classify_value(50u32), classify_value(100u32), classify_value(250u32));
+	println$(classify_value(50u32), " ", classify_value(100u32), " ", classify_value(250u32));
 
 	# --- char ranges as match patterns --------------------------------------
-	println$(classify_char('Q'), classify_char('q'), classify_char('5'), classify_char('_'));
+	println$(classify_char('Q'), " ", classify_char('q'), " ", classify_char('5'), " ", classify_char('_'));
 
 	# --- bare `..` catch-all over the remaining enum variants ----------------
 	tag_of := match less {

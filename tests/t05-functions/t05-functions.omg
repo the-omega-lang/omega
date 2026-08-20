@@ -44,11 +44,11 @@ main() => i32 {
 
 	announce("void functions carry no value");
 
-	println$(sum(2, 3), sum(2.5f32, 1.5f32));
+	println$(sum(2, 3), " ", sum(2.5f32, 1.5f32));
 
-	println$(combine(1, 2), combine(1, 2, 3));
+	println$(combine(1, 2), " ", combine(1, 2, 3));
 
-	println$(describe(5), describe(5.0));
+	println$(describe(5), " ", describe(5.0));
 
 	handler: (thing: u32) => *str = print_any;
 	println$(handler(7u32));
