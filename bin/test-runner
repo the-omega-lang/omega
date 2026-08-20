@@ -298,18 +298,64 @@ class TestRunner
     return unless expected_path.file?
 
     expected = File.binread(expected_path)
+    actual = actual.b
 
-    return if expected == actual.b
+    return if expected == actual
+
+    line, column = first_difference_location(expected, actual)
 
     failures << <<~MESSAGE.chomp
         #{Color.yellow("#{name} did not match #{expected_path.basename}")}
 
+        #{code_frame(expected_path.basename.to_s, line, column, line_at(expected, line))}
+        #{code_frame("actual #{name}", line, column, line_at(actual, line))}
+
         #{Color.gray("expected:")}
-        #{indent(expected, :green)}
+        #{indent(expected, :green, line_numbers: true)}
 
         #{Color.gray("actual:")}
-        #{indent(actual, :red)}
+        #{indent(actual, :red, line_numbers: true)}
     MESSAGE
+  end
+
+  # Finds the first byte at which the two streams diverge and reports it as a
+  # 1-indexed (line, column) pair, matching the compiler's own diagnostic
+  # coordinates. Column is counted in characters (decoding the line as UTF-8)
+  # rather than bytes, so it points at the right spot even past multibyte text.
+  def first_difference_location(expected, actual)
+    limit = [expected.bytesize, actual.bytesize].min
+
+    index = 0
+    index += 1 while index < limit && expected.getbyte(index) == actual.getbyte(index)
+
+    prefix = expected.byteslice(0, index)
+    last_newline = prefix.rindex("\n")
+    line_start = last_newline ? last_newline + 1 : 0
+
+    line = prefix.count("\n") + 1
+    column = expected.byteslice(line_start, index - line_start)
+      .force_encoding(Encoding::UTF_8)
+      .length + 1
+
+    [line, column]
+  end
+
+  def line_at(text, line_no)
+    text.split("\n", -1)[line_no - 1]
+  end
+
+  def code_frame(label, line_no, column, source_line)
+    gutter = line_no.to_s
+    pad = " " * gutter.length
+    content = source_line.nil? ? Color.gray("<no such line>") : source_line
+    caret = "#{" " * [column - 1, 0].max}#{Color.paint("^", :bold, :red)}"
+
+    <<~FRAME.chomp
+      #{pad}#{Color.gray("-->")} #{Color.bold("#{label}:#{line_no}:#{column}")}
+      #{pad} #{Color.gray("|")}
+      #{Color.gray(gutter)} #{Color.gray("|")} #{content}
+      #{pad} #{Color.gray("|")} #{caret}
+    FRAME
   end
 
   def capture(*command)
@@ -332,12 +378,27 @@ class TestRunner
     OUTPUT
   end
 
-  def indent(text, color = nil)
+  def indent(text, color = nil, line_numbers: false)
     return "    #{Color.gray("<empty>")}" if text.empty?
 
-    text
-      .lines(chomp: false)
-      .map { |line| "    #{color ? Color.paint(line, color) : line}" }
+    lines = text.lines(chomp: false)
+
+    unless line_numbers
+      return lines
+        .map { |line| "    #{color ? Color.paint(line, color) : line}" }
+        .join
+        .chomp
+    end
+
+    width = lines.length.to_s.length
+
+    lines
+      .each_with_index
+      .map do |line, idx|
+        gutter = Color.gray((idx + 1).to_s.rjust(width))
+        painted = color ? Color.paint(line, color) : line
+        "    #{gutter} #{Color.gray("|")} #{painted}"
+      end
       .join
       .chomp
   end
