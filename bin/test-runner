@@ -9,7 +9,11 @@ TESTS_DIR = ROOT_DIR.join("tests")
 
 # Directories
 BIN_DIR = ROOT_DIR.join("bin")
-ARTIFACTS_DIR = ROOT_DIR.join("target")
+ARTIFACTS_DIR = if ENV["OMEGA_ARTIFACTS_DIR"]
+  Pathname.new(ENV["OMEGA_ARTIFACTS_DIR"]).expand_path
+else
+  ROOT_DIR.join("target")
+end
 TEST_ARTIFACTS_DIR = ARTIFACTS_DIR.join("tests")
 
 # Dependencies

@@ -6,8 +6,8 @@ run-exec DEBUGGER="": build-asm build-exe
 build-exe: build-core build-plat build-std
     rm target/example || true
     RUST_BACKTRACE=1 cargo build
-    ./target/debug/omgc -v examples/mathlib/ -o target/mathlib.o
-    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/mathlib/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/main.o
+    ./target/debug/omgc -v oldtests/examples/mathlib/ -o target/mathlib.o
+    ./target/debug/omgc -v oldtests/examples/dev/ --extern=mathlib:oldtests/examples/mathlib/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/main.o
 
 # `runtime/plat/` is a plain directory, not a package -- each subdirectory
 # under it (just `libc/` today) is its own independent, honestly-named
@@ -17,9 +17,9 @@ build-exe: build-core build-plat build-std
 # platform is exactly choosing which directory these two flags point at --
 # there is no compiler-level selection mechanism, this is it. `plat` gets
 # no other privilege `core` has (no eager-discovery/ambient-prelude
-# exemption); registering it is enough for `examples/dev`'s reference to
+# exemption); registering it is enough for `oldtests/examples/dev`'s reference to
 # `core::platform::GlobalAllocator` to find its glue, even though nothing in
-# `examples/dev` ever imports `plat` itself.
+# `oldtests/examples/dev` ever imports `plat` itself.
 build-plat: build-core
     ./target/debug/omgc -v runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat.o
 
@@ -37,23 +37,23 @@ build-std: build-core
     ./target/debug/omgc -v runtime/std/ --extern=core:runtime/core/ -o target/std.o
 
 build-io-demo: build-std build-plat
-    ./target/debug/omgc -v examples/io_demo/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/io_demo.o
+    ./target/debug/omgc -v oldtests/examples/io_demo/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/io_demo.o
     cc -Wl,--gc-sections target/io_demo.o target/core.o target/std.o target/plat.o -o target/io_demo
 
 test-io: build-io-demo
-    ./target/io_demo < tests/io_demo.stdin > target/io_demo.stdout
-    diff tests/io_demo.expected target/io_demo.stdout
+    ./target/io_demo < oldtests/tests/io_demo.stdin > target/io_demo.stdout
+    diff oldtests/tests/io_demo.expected target/io_demo.stdout
 
 build-stdio-contract: build-std build-plat
-    ./target/debug/omgc -v examples/stdio_contract/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/stdio_contract.o
+    ./target/debug/omgc -v oldtests/examples/stdio_contract/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/stdio_contract.o
     cc -Wl,--gc-sections target/stdio_contract.o target/core.o target/std.o target/plat.o -o target/stdio_contract
 
 test-stdio-contract: build-stdio-contract
     ./target/stdio_contract > target/stdio_contract.stdout
-    diff tests/stdio_contract.expected target/stdio_contract.stdout
+    diff oldtests/tests/stdio_contract.expected target/stdio_contract.stdout
 
 build-core-only: build-core
-    ./target/debug/omgc -v examples/core_only/ --extern=core:runtime/core/ -o target/core_only.o
+    ./target/debug/omgc -v oldtests/examples/core_only/ --extern=core:runtime/core/ -o target/core_only.o
     cc -Wl,--gc-sections target/core_only.o target/core.o -o target/core_only
 
 test-core-only: build-core-only
@@ -64,7 +64,7 @@ test-core-only: build-core-only
 # is itself the assertion that range iteration implies no allocator and no
 # platform glue. `range_demo` returns a distinct exit code per failed case.
 build-range: build-core
-    ./target/debug/omgc -v examples/range_demo/ --extern=core:runtime/core/ -o target/range_demo.o
+    ./target/debug/omgc -v oldtests/examples/range_demo/ --extern=core:runtime/core/ -o target/range_demo.o
     cc -Wl,--gc-sections target/range_demo.o target/core.o -o target/range_demo
 
 test-range: build-range
@@ -74,7 +74,7 @@ test-range: build-range
 # actually rejects a surrogate, whether `Successor` skips the hole. Needs only
 # `core`, which is also the assertion that none of it pulls in an allocator.
 build-char: build-core
-    ./target/debug/omgc -v examples/char_demo/ --extern=core:runtime/core/ -o target/char_demo.o
+    ./target/debug/omgc -v oldtests/examples/char_demo/ --extern=core:runtime/core/ -o target/char_demo.o
     cc -Wl,--gc-sections target/char_demo.o target/core.o -o target/char_demo
 
 test-char: build-char
@@ -87,7 +87,7 @@ test-char: build-char
 # returns a distinct exit code per failed one. Needs only `core`: specs,
 # blankets and narrowing casts must imply no allocator and no platform glue.
 build-spec-dispatch: build-core
-    ./target/debug/omgc -v examples/spec_dispatch/ --extern=core:runtime/core/ -o target/spec_dispatch.o
+    ./target/debug/omgc -v oldtests/examples/spec_dispatch/ --extern=core:runtime/core/ -o target/spec_dispatch.o
     cc -Wl,--gc-sections target/spec_dispatch.o target/core.o -o target/spec_dispatch
 
 test-spec-dispatch: build-spec-dispatch
@@ -98,7 +98,7 @@ test-spec-dispatch: build-spec-dispatch
 # conform's body a spelling reaches is a runtime fact. Needs `std` for the
 # real `Default::default()` case; everything else is `core`-only.
 build-spec-calls: build-core build-std
-    ./target/debug/omgc -v examples/spec_calls/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/spec_calls.o
+    ./target/debug/omgc -v oldtests/examples/spec_calls/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/spec_calls.o
     cc -Wl,--gc-sections target/spec_calls.o target/core.o target/std.o -o target/spec_calls
 
 test-spec-calls: build-spec-calls
@@ -111,7 +111,7 @@ test-spec-calls: build-spec-calls
 build-root-layout:
     mkdir -p target
     RUST_BACKTRACE=1 cargo build
-    ./target/debug/omgc -v examples/root_layout/ -o target/root_layout.o
+    ./target/debug/omgc -v oldtests/examples/root_layout/ -o target/root_layout.o
 
 # The second assertion spells the child's *whole* mangled path out on
 # purpose: a bare `4main` match would still pass if discovery regressed to
@@ -125,7 +125,7 @@ test-root-layout: build-root-layout
 # `std` allocation works with only allocator glue; this target deliberately
 # omits `plat.o`, so any retained console path is a link failure.
 build-allocator-only: build-std
-    ./target/debug/omgc -v examples/allocator_only/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/allocator_only.o
+    ./target/debug/omgc -v oldtests/examples/allocator_only/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/allocator_only.o
     cc -Wl,--gc-sections target/allocator_only.o target/core.o target/std.o -o target/allocator_only
 
 # The link above is the primary assertion: it omits `plat.o`, so a retained
@@ -156,13 +156,13 @@ clean:
 # from a template gets strong linkage. The `cc` below is the assertion; the
 # diff then confirms both packages' output actually survived folding.
 build-multi-print: build-std build-plat
-    ./target/debug/omgc -v examples/multi_print/printlib/ --name=printlib --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/printlib.o
-    ./target/debug/omgc -v examples/multi_print/app/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=printlib:examples/multi_print/printlib/ -o target/multi_print.o
+    ./target/debug/omgc -v oldtests/examples/multi_print/printlib/ --name=printlib --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/printlib.o
+    ./target/debug/omgc -v oldtests/examples/multi_print/app/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=printlib:oldtests/examples/multi_print/printlib/ -o target/multi_print.o
     cc -Wl,--gc-sections target/multi_print.o target/printlib.o target/std.o target/core.o target/plat.o -o target/multi_print
 
 test-multi-print: build-multi-print
     ./target/multi_print > target/multi_print.stdout
-    diff tests/multi_print.expected target/multi_print.stdout
+    diff oldtests/tests/multi_print.expected target/multi_print.stdout
 
 # --- the LLVM backend's own gates -----------------------------------------
 
@@ -191,65 +191,65 @@ build-plat-llvm: build-core-llvm
 # reason) and never `|| test $? = 69` either (`||` never runs when the
 # program *succeeds*, so a program that wrongly exited 0 would pass too).
 run-exec-llvm: build-std-llvm build-plat-llvm
-    ./target/debug/omgc -v examples/mathlib/ -o target/mathlib-llvm.o --backend=llvm {{llvm-opt}}
-    ./target/debug/omgc -v examples/dev/ --extern=mathlib:examples/mathlib/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/main-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/mathlib/ -o target/mathlib-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/dev/ --extern=mathlib:oldtests/examples/mathlib/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/main-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/main-llvm.o target/mathlib-llvm.o target/core-llvm.o target/std-llvm.o target/plat-llvm.o -o target/example-llvm
     ./target/example-llvm firstarg secondarg; test $? = 69
 
 test-core-only-llvm: build-core-llvm
-    ./target/debug/omgc -v examples/core_only/ --extern=core:runtime/core/ -o target/core_only-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/core_only/ --extern=core:runtime/core/ -o target/core_only-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/core_only-llvm.o target/core-llvm.o -o target/core_only-llvm
     ./target/core_only-llvm
 
 test-range-llvm: build-core-llvm
-    ./target/debug/omgc -v examples/range_demo/ --extern=core:runtime/core/ -o target/range_demo-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/range_demo/ --extern=core:runtime/core/ -o target/range_demo-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/range_demo-llvm.o target/core-llvm.o -o target/range_demo-llvm
     ./target/range_demo-llvm
 
 test-char-llvm: build-core-llvm
-    ./target/debug/omgc -v examples/char_demo/ --extern=core:runtime/core/ -o target/char_demo-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/char_demo/ --extern=core:runtime/core/ -o target/char_demo-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/char_demo-llvm.o target/core-llvm.o -o target/char_demo-llvm
     ./target/char_demo-llvm
 
 test-spec-dispatch-llvm: build-core-llvm
-    ./target/debug/omgc -v examples/spec_dispatch/ --extern=core:runtime/core/ -o target/spec_dispatch-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/spec_dispatch/ --extern=core:runtime/core/ -o target/spec_dispatch-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/spec_dispatch-llvm.o target/core-llvm.o -o target/spec_dispatch-llvm
     ./target/spec_dispatch-llvm
 
 test-spec-calls-llvm: build-core-llvm build-std-llvm
-    ./target/debug/omgc -v examples/spec_calls/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/spec_calls-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/spec_calls/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/spec_calls-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/spec_calls-llvm.o target/core-llvm.o target/std-llvm.o -o target/spec_calls-llvm
     ./target/spec_calls-llvm
 
 test-root-layout-llvm: build-llvm
-    ./target/debug/omgc -v examples/root_layout/ -o target/root_layout-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/root_layout/ -o target/root_layout-llvm.o --backend=llvm {{llvm-opt}}
     test "$(nm --defined-only target/root_layout-llvm.o | rg -c ' main$')" = 1
     nm --defined-only target/root_layout-llvm.o | rg '_omg_NvNtC11root_layout6nested4main'
 
 test-allocator-only-llvm: build-std-llvm
-    ./target/debug/omgc -v examples/allocator_only/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/allocator_only-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/allocator_only/ --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/allocator_only-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/allocator_only-llvm.o target/core-llvm.o target/std-llvm.o -o target/allocator_only-llvm
     ./target/allocator_only-llvm
     ! nm --defined-only target/allocator_only-llvm | rg 'Std(out|err|in).*(Write5write|Read4read)'
 
 test-io-llvm: build-std-llvm build-plat-llvm
-    ./target/debug/omgc -v examples/io_demo/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/io_demo-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/io_demo/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/io_demo-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/io_demo-llvm.o target/core-llvm.o target/std-llvm.o target/plat-llvm.o -o target/io_demo-llvm
-    ./target/io_demo-llvm < tests/io_demo.stdin > target/io_demo-llvm.stdout
-    diff tests/io_demo.expected target/io_demo-llvm.stdout
+    ./target/io_demo-llvm < oldtests/tests/io_demo.stdin > target/io_demo-llvm.stdout
+    diff oldtests/tests/io_demo.expected target/io_demo-llvm.stdout
 
 test-stdio-contract-llvm: build-std-llvm build-plat-llvm
-    ./target/debug/omgc -v examples/stdio_contract/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/stdio_contract-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/stdio_contract/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=plat:runtime/plat/libc/ -o target/stdio_contract-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/stdio_contract-llvm.o target/core-llvm.o target/std-llvm.o target/plat-llvm.o -o target/stdio_contract-llvm
     ./target/stdio_contract-llvm > target/stdio_contract-llvm.stdout
-    diff tests/stdio_contract.expected target/stdio_contract-llvm.stdout
+    diff oldtests/tests/stdio_contract.expected target/stdio_contract-llvm.stdout
 
 test-multi-print-llvm: build-std-llvm build-plat-llvm
-    ./target/debug/omgc -v examples/multi_print/printlib/ --name=printlib --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/printlib-llvm.o --backend=llvm {{llvm-opt}}
-    ./target/debug/omgc -v examples/multi_print/app/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=printlib:examples/multi_print/printlib/ -o target/multi_print-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/multi_print/printlib/ --name=printlib --extern=core:runtime/core/ --extern=std:runtime/std/ -o target/printlib-llvm.o --backend=llvm {{llvm-opt}}
+    ./target/debug/omgc -v oldtests/examples/multi_print/app/ --extern=core:runtime/core/ --extern=std:runtime/std/ --extern=printlib:oldtests/examples/multi_print/printlib/ -o target/multi_print-llvm.o --backend=llvm {{llvm-opt}}
     cc -Wl,--gc-sections target/multi_print-llvm.o target/printlib-llvm.o target/std-llvm.o target/core-llvm.o target/plat-llvm.o -o target/multi_print-llvm
     ./target/multi_print-llvm > target/multi_print-llvm.stdout
-    diff tests/multi_print.expected target/multi_print-llvm.stdout
+    diff oldtests/tests/multi_print.expected target/multi_print-llvm.stdout
 
 # A Cranelift `core.o` linked against an LLVM `main.o` -- the mixed-backend
 # link, which is the whole point of the shared seam (symbols, linkage, and
@@ -257,7 +257,7 @@ test-multi-print-llvm: build-std-llvm build-plat-llvm
 # let alone run).
 build-mixed: build-core
     RUST_BACKTRACE=1 cargo build --features llvm
-    ./target/debug/omgc -v examples/core_only/ --extern=core:runtime/core/ -o target/core_only-mixed.o --backend=llvm
+    ./target/debug/omgc -v oldtests/examples/core_only/ --extern=core:runtime/core/ -o target/core_only-mixed.o --backend=llvm
 
 test-mixed: build-mixed
     cc -Wl,--gc-sections target/core_only-mixed.o target/core.o -o target/core_only-mixed
