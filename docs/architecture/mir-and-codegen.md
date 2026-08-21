@@ -222,13 +222,20 @@ See [`abi-and-representation.md`](abi-and-representation.md).
 - `expr.rs` — computation/calls/casts/aggregate construction;
 - `place.rs` — address/storage/projection loads and stores;
 - `leaf.rs` — abstract leaf -> LLVM types;
-- `vtable.rs` — dynamic-spec table materialization.
+- `vtable.rs` — dynamic-spec table materialization;
+- `inline_asm.rs` — `MirExpr::InlineAsm` lowering: register-class/constraint selection and `$name`/`$N` -> LLVM template-slot binding.
 
 `Codegen` keeps caches for functions, data blobs, globals, vtables, and symbol-collision detection plus per-function local/stack state.
 
 LLVM `alloca` placement is deliberately centralized in the function entry block because allocating in a loop block would allocate on each execution. The backend temporarily repositions its builder to the entry before emitting scratch/local allocations.
 
 The completed LLVM module is always verified before output. A verifier failure is reported as an internal compiler bug because program-invalid inputs should already have been rejected upstream/shared preflight.
+
+### Inline assembly
+
+`MirExpr::InlineAsm` (always `void`-typed, carrying `reg`/`const` operands, `clobber` strings, and the raw template) is the only MIR node whose associated text is never optimized or reinterpreted by Omega. `inline_asm.rs` lowers each `reg` to an early-clobber read-write LLVM constraint (`+&<class>` or `+&{<physical>}`) so the register allocator never assumes an unread value survives past the asm, discards every resulting SSA value, and appends conservative `~{memory}` plus (on X86/X86-64) the `~{dirflag},~{fpsr},~{flags}` status clobbers alongside any user-declared `clobber(...)`. `$name`/`$N` bindings are rewritten directly in the template string: a `reg` becomes the LLVM operand's own `$N` slot (numbered by constraint order, independent of Omega's source binding numbering -- see [`inline-assembly.md`](../language/inline-assembly.md)), and a `const` becomes the analyzer's pre-rendered literal text. `$$` is left untouched because LLVM's own inline-asm template syntax already defines it as one literal `$`. The resulting `inkwell::create_inline_asm` value is always invoked through `build_indirect_call`, matching the LLVM 15+ callable-value requirement for inline asm.
+
+Register-class selection is centralized in `inline_asm.rs` as the one place with target-conditional (`Arch`) codegen logic; every `Arch` Omega currently supports (`X86_64`, `X86`, `Armv7`, `Thumbv7em`, `Aarch64`, `Riscv32`, `Riscv64`) maps each accepted scalar/pointer leaf to a generic LLVM constraint letter. X86/X86-64 asm is always parsed as LLVM's Intel dialect; other targets use their LLVM backend's one defined dialect. Object/assembly emission failure (an integrated-assembler rejection of user-authored instructions/registers) is a `Result` propagated out of `Codegen::finish`, not a panic -- unlike the rest of codegen, invalid inline-asm text is a legitimate user error, not a compiler-bug precondition violation.
 
 ## Declare before define
 

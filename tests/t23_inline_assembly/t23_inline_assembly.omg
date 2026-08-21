@@ -1,0 +1,27 @@
+import extern::std::io::println;
+
+main() => void {
+	# By-value reg + explicit address mutation: `y` is a snapshot with no
+	# implicit writeback, so the only way the body affects Omega storage is
+	# through the pointer bound by `reg(&mut x, "rcx")`.
+	mut x : i32 = 0;
+	y := 20i32;
+	asm(reg(&mut x, "rcx"), reg(y)) => {
+		add $y, 22
+		mov dword ptr [$x], $y
+	}
+	println$("reg-writeback: ", x);
+
+	# Undeclared scratch registers the body destroys must be named via
+	# `clobber(...)`; `mul` implicitly writes edx, which no `reg` operand
+	# supplies, so both eax and edx are declared as clobbers instead.
+	a := 6i32;
+	b := 700000i32;
+	mut z : i32 = 0;
+	asm(reg(a), reg(b), reg(&mut z), clobber("rax"), clobber("rdx")) => {
+		mov eax, $a
+		mul $b
+		mov dword ptr [$z], eax
+	}
+	println$("clobber-product: ", z);
+}

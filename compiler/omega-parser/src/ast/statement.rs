@@ -23,6 +23,7 @@ pub enum Statement {
     For(Box<ForStmt>),
     ForIn(Box<ForInStmt>),
     Defer(DeferStmt),
+    InlineAsm(InlineAsmStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +98,34 @@ pub struct ForInStmt {
 #[derive(Debug, Clone)]
 pub struct DeferStmt {
     pub body: Box<Statement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InlineAsmStmt {
+    pub descriptors: Vec<AsmDescriptorNode>,
+    pub body: String,
+    pub body_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsmDescriptorNode {
+    pub kind: AsmDescriptorKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum AsmDescriptorKind {
+    Reg {
+        expr: ExpressionNode,
+        physical: Option<String>,
+    },
+    Const {
+        name: Ident,
+        origin: Origin,
+    },
+    Clobber {
+        register: String,
+    },
 }
 
 #[derive(Debug, Clone)]

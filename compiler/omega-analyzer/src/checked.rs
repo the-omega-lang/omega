@@ -172,6 +172,40 @@ pub enum CheckedStmt {
     Break(CheckedBreak),
     Continue(CheckedContinue),
     Defer(CheckedDefer),
+    InlineAsm(CheckedInlineAsm),
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedInlineAsm {
+    pub id: HirId,
+    pub span: Span,
+    pub descriptors: Vec<CheckedAsmDescriptor>,
+    pub body: String,
+    pub body_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedAsmDescriptor {
+    pub span: Span,
+    /// The source `$name` this descriptor is reachable by, when one can be
+    /// inferred (`reg(x)`/`reg(&x)`/`reg(&mut x)` -> `x`; `const(NAME)` ->
+    /// `NAME`). `clobber` descriptors are never bindable and always `None`.
+    pub binding_name: Option<Ident>,
+    pub kind: CheckedAsmDescriptorKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum CheckedAsmDescriptorKind {
+    Reg {
+        expr: CheckedExprNode,
+        physical: Option<String>,
+    },
+    Const {
+        text: String,
+    },
+    Clobber {
+        register: String,
+    },
 }
 
 #[derive(Debug, Clone)]

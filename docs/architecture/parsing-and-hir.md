@@ -47,6 +47,12 @@ A contextual word must be treated as syntax only after the surrounding shape pro
 
 This rule matters because committing on the word alone silently shrinks the identifier namespace instead of merely producing a local parse error.
 
+### Inline-assembly raw-body capture
+
+`asm(...) => { ... }` is the one place the lexer itself commits structurally rather than leaving commitment to the parser. While scanning, `Lexer::at_asm_body_open` looks backward over already-emitted tokens: a fat arrow whose balanced preceding parens open on an `asm` identifier is unambiguous (no other grammar production places a code block directly after `=>`). Once committed, `Lexer::scan_asm_body` switches from ordinary tokenization to verbatim character capture up to the matching outer `}`, tracking only literal brace depth -- no comment stripping, no string-literal scanning, no keyword recognition. The captured text becomes a single `TokenKind::AsmBody` token so the parser can treat the body as opaque while still using ordinary `LBrace`/`RBrace` bracketing for structure. See [`inline-assembly.md`](../language/inline-assembly.md) for the language-level contract this protects: Omega comments/tokenization do not exist inside the body at all.
+
+Everything before the body (the `asm(...)` descriptor list) is ordinary Omega grammar and macro-expands normally; only the raw body stays atomic through macro expansion (`macros/expander.rs`).
+
 ## Parser organization
 
 The recursive-descent parser is split by syntactic concern. `parser/mod.rs` owns the shared parser facade and a private token cursor; grammar modules do not manipulate token positions directly:
@@ -150,6 +156,8 @@ HIR remains close to syntax. It still carries unresolved:
 - declaration and expression structure.
 
 This is intentional. HIR is an **identity + structural normalization boundary**, not a typed IR.
+
+`HirStmt::InlineAsm` follows the same rule: it carries the raw asm body text and per-descriptor source structure (spans, optional physical-register strings, `reg` expressions still HIR-typed for later analysis) but does no target-syntax interpretation. Semantic analysis owns type-checking `reg` expressions, resolving `const` to a `comp` value, and validating `$name`/`$N` source bindings against the descriptor list.
 
 ## Places
 

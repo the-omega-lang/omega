@@ -799,6 +799,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 self.frame().defers.push(d.body.clone());
                 Ok(())
             }
+            CheckedStmt::InlineAsm(asm) => {
+                Err(self.err(asm.span, CompErrorKind::Unsupported("an 'asm' block")))
+            }
         }
     }
 

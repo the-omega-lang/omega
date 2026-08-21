@@ -67,6 +67,36 @@ pub enum MirExpr {
     Const(ConstValue),
     SpecCoerce(MirSpecCoerce),
     DynamicCall(MirDynamicCall),
+    InlineAsm(MirInlineAsm),
+}
+
+#[derive(Debug, Clone)]
+pub struct MirInlineAsm {
+    /// `reg`/`const` descriptors in source order. `clobber` never binds, so
+    /// it is not represented as an operand at all -- see `clobbers` below.
+    pub operands: Vec<MirAsmOperand>,
+    pub clobbers: Vec<String>,
+    /// Raw backend assembly text with `$name`/`$N`/`$$` markers unresolved;
+    /// the LLVM backend owns turning these into template slots/literal text.
+    pub template: String,
+    pub template_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct MirAsmOperand {
+    pub binding_name: Option<Ident>,
+    pub kind: MirAsmOperandKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum MirAsmOperandKind {
+    Reg {
+        value: MirExprNode,
+        physical: Option<String>,
+    },
+    Const {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone)]

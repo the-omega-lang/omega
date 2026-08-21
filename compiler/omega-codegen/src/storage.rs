@@ -1,6 +1,7 @@
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_mir::{
-    MirBody, MirExpr, MirExprNode, MirPlace, MirPlaceRoot, MirProjection, MirTerminator,
+    MirAsmOperandKind, MirBody, MirExpr, MirExprNode, MirPlace, MirPlaceRoot, MirProjection,
+    MirTerminator,
 };
 
 /// Backend-neutral function-local storage decisions.
@@ -99,6 +100,13 @@ fn scan_expr(expr: &MirExprNode, arg_count: usize, homes: &mut [ParameterHome]) 
             scan_place_exprs(&call.base, arg_count, homes);
             for arg in &call.args {
                 scan_expr(arg, arg_count, homes);
+            }
+        }
+        MirExpr::InlineAsm(asm) => {
+            for operand in &asm.operands {
+                if let MirAsmOperandKind::Reg { value, .. } = &operand.kind {
+                    scan_expr(value, arg_count, homes);
+                }
             }
         }
         MirExpr::Number(_)

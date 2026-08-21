@@ -13,11 +13,17 @@ use omega_mir::{
     MirStructLiteral, MirUnionConstruct,
 };
 
+
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn process_expr(&mut self, node: &MirExprNode) -> Vec<BasicValueEnum<'ctx>> {
         match &node.kind {
             MirExpr::String(s) | MirExpr::ByteString(s) => self.emit_bytes(s.clone()),
             MirExpr::Const(value) => self.emit_const_value(value, &node.r#type),
+
+            MirExpr::InlineAsm(asm) => {
+                self.process_inline_asm(asm);
+                vec![]
+            }
 
             MirExpr::FunctionCall(MirFunctionCall {
                 callee,

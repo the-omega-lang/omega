@@ -1,8 +1,9 @@
 use crate::ast::expression::Expression;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{
-    DeclarationStmt, DeferStmt, ExternDeclarationStmt, ForInStmt, ForStmt, LoopStmt, ReturnStmt,
-    Statement, StatementNode, WalrusStmt, WhileStmt,
+    AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ExternDeclarationStmt,
+    ForInStmt, ForStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode, WalrusStmt,
+    WhileStmt,
 };
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
@@ -76,6 +77,9 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
         TokenKind::Continue => {
             p.advance();
             Some((Statement::Continue, false))
+        }
+        TokenKind::Ident(_) if p.at_contextual(contextual::ASM) && asm_statement_follows(p) => {
+            Some((Statement::InlineAsm(parse_inline_asm(p)?), true))
         }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Dollar) => {
             let mark = p.mark();
@@ -312,6 +316,132 @@ fn parse_for_init(p: &mut Parser) -> Option<Statement> {
     parse_expression(p).map(Statement::Expression)
 }
 
+/// Confirms the committed `asm(...) => {` shape by structurally matching the
+/// balanced descriptor-list parens and checking what follows them, mirroring
+/// the lexer's own `at_asm_body_open` check that decided whether the `{`
+/// afterward opened a raw-capture asm body.
+fn asm_statement_follows(p: &Parser) -> bool {
+    if !matches!(p.peek_at(1), TokenKind::LParen) {
+        return false;
+    }
+    let mut depth = 0i32;
+    let mut offset = 1usize;
+    loop {
+        match p.peek_at(offset) {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return matches!(p.peek_at(offset + 1), TokenKind::FatArrow)
+                        && matches!(p.peek_at(offset + 2), TokenKind::LBrace);
+                }
+            }
+            TokenKind::Eof => return false,
+            _ => {}
+        }
+        offset += 1;
+    }
+}
+
+fn parse_inline_asm(p: &mut Parser) -> Option<InlineAsmStmt> {
+    p.expect_contextual(contextual::ASM);
+    p.expect(&TokenKind::LParen, "'('");
+    let mut descriptors = Vec::new();
+    if !p.check(&TokenKind::RParen) {
+        loop {
+            descriptors.push(parse_asm_descriptor(p)?);
+            if !p.eat(&TokenKind::Comma) || p.check(&TokenKind::RParen) {
+                break;
+            }
+        }
+    }
+    p.expect(&TokenKind::RParen, "')'");
+    p.expect(&TokenKind::FatArrow, "'=>'");
+    p.expect(&TokenKind::LBrace, "'{'");
+    let body_span = p.peek_span();
+    let body = if let TokenKind::AsmBody(_) = p.peek() {
+        let TokenKind::AsmBody(text) = p.advance().kind else {
+            unreachable!()
+        };
+        text
+    } else {
+        p.error(ParseErrorKind::Expected {
+            expected: "raw assembly text",
+            found: p.peek().describe(),
+        });
+        String::new()
+    };
+    p.expect(&TokenKind::RBrace, "'}'");
+    Some(InlineAsmStmt {
+        descriptors,
+        body,
+        body_span,
+    })
+}
+
+fn parse_asm_descriptor(p: &mut Parser) -> Option<AsmDescriptorNode> {
+    let start = p.peek_span();
+    match p.peek() {
+        TokenKind::Ident(_) if p.at_contextual(contextual::REG) => {
+            p.advance();
+            p.expect(&TokenKind::LParen, "'('");
+            let expr = parse_expression(p)?;
+            let physical = if p.eat(&TokenKind::Comma) {
+                Some(expect_asm_string_literal(p)?)
+            } else {
+                None
+            };
+            p.expect(&TokenKind::RParen, "')'");
+            Some(AsmDescriptorNode {
+                kind: AsmDescriptorKind::Reg { expr, physical },
+                span: start.to(p.last_span()),
+            })
+        }
+        TokenKind::Ident(_) if p.at_contextual(contextual::CONST) => {
+            p.advance();
+            p.expect(&TokenKind::LParen, "'('");
+            let (name, origin) = p.expect_ident_with_origin()?;
+            p.expect(&TokenKind::RParen, "')'");
+            Some(AsmDescriptorNode {
+                kind: AsmDescriptorKind::Const { name, origin },
+                span: start.to(p.last_span()),
+            })
+        }
+        TokenKind::Ident(_) if p.at_contextual(contextual::CLOBBER) => {
+            p.advance();
+            p.expect(&TokenKind::LParen, "'('");
+            let register = expect_asm_string_literal(p)?;
+            p.expect(&TokenKind::RParen, "')'");
+            Some(AsmDescriptorNode {
+                kind: AsmDescriptorKind::Clobber { register },
+                span: start.to(p.last_span()),
+            })
+        }
+        _ => {
+            p.error(ParseErrorKind::Expected {
+                expected: "'reg', 'const', or 'clobber'",
+                found: p.peek().describe(),
+            });
+            None
+        }
+    }
+}
+
+fn expect_asm_string_literal(p: &mut Parser) -> Option<String> {
+    if let TokenKind::Str(_) = p.peek() {
+        let TokenKind::Str(s) = p.advance().kind else {
+            unreachable!()
+        };
+        Some(s)
+    } else {
+        p.error(ParseErrorKind::Expected {
+            expected: "a string literal",
+            found: p.peek().describe(),
+        });
+        None
+    }
+}
+
 fn recover_for_header(p: &mut Parser) -> Option<ForStmt> {
     let mut depth = 0usize;
     loop {
@@ -336,3 +466,6 @@ fn recover_for_header(p: &mut Parser) -> Option<ForStmt> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -305,6 +305,7 @@ statement = local-declaration, ";"
           | while-statement
           | loop-statement
           | for-statement
+          | asm-statement
           | expression-statement ;
 
 local-declaration = [ "mut" ], identifier, ":", type, [ "=", expression ] ;
@@ -340,6 +341,19 @@ for-in = "for", [ "mut" ], identifier, [ ":", type ], "in", expression-no-leadin
 The parser can represent an omitted classic-`for` condition for recovery, but semantic analysis requires one. Thus `for ;; { ... }` is not a valid Omega program; use `loop { ... }` for an unconditional loop.
 
 Condition-bearing contexts syntactically restrict a leading struct literal so that `if flag { ... }` cannot be misread as a literal `flag { ... }`. See [`control-flow-and-operators.md`](control-flow-and-operators.md) and [`iteration-and-ranges.md`](iteration-and-ranges.md).
+
+## Inline assembly
+
+```ebnf
+asm-statement = "asm", "(", [ asm-descriptor, { ",", asm-descriptor }, [ "," ] ], ")",
+                "=>", "{", asm-body, "}" ;
+
+asm-descriptor = "reg", "(", expression, [ ",", string-literal ], ")"
+                | "const", "(", identifier, ")"
+                | "clobber", "(", string-literal, ")" ;
+```
+
+`asm-body` is opaque backend assembly text, not Omega syntax; it is delimited only by architecture-neutral brace balancing. See [`inline-assembly.md`](inline-assembly.md).
 
 ## Expressions
 

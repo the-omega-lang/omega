@@ -1,3 +1,4 @@
+mod asm;
 mod calls;
 mod consts;
 mod exprs;
@@ -21,14 +22,14 @@ use crate::{
     checked::{
         CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
         CheckedBlock, CheckedBreak, CheckedCast, CheckedCompoundAssign, CheckedContinue,
-        CheckedDeclaration, CheckedDefer,
+        CheckedAsmDescriptor, CheckedAsmDescriptorKind, CheckedDeclaration, CheckedDefer,
         CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
         CheckedExternDeclaration, CheckedField, CheckedFor, CheckedFunctionCall,
-        CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedMatchArm, CheckedParam,
-        CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedSlice,
-        CheckedSpecCoerce, CheckedStmt, CheckedStructDef, CheckedStructLiteral,
-        CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef, CheckedWhile,
-        NumberValue, Storage,
+        CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop, CheckedMatch,
+        CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+        CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
+        CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef,
+        CheckedWhile, NumberValue, Storage,
     },
     context::{Context, LexicalScope, VarBinding},
     error::{
@@ -48,12 +49,12 @@ use crate::{
     similarity::best_match,
 };
 use omega_hir::{
-    BinaryOp, HirAddressOf, HirBlock, HirCast, HirCompoundAssign, HirDeclaration, HirEnumDef,
-    HirExpr, HirExprNode, HirExternDeclaration, HirField, HirFor, HirForIn, HirFunctionCall,
-    HirFunctionDef, HirId, HirIf, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace,
-    HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt,
-    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
-    LogicalOp,
+    BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
+    HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirExternDeclaration,
+    HirField, HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm,
+    HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection,
+    HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
+    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
     ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span, Type,

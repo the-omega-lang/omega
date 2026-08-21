@@ -128,6 +128,31 @@ fn expands_in_all_three_positions() {
 }
 
 #[test]
+fn asm_reg_expr_macro_expands_but_body_stays_opaque() {
+    let module = expand(
+        r#"
+        macro wrap($v: expr) => { f() => void { asm(reg($v)) => { mov $v, 1 } } }
+        wrap$(42);
+    "#,
+    );
+    let Item::FunctionDefinition(f) = &module.nodes[0].item else {
+        panic!("expected expanded function");
+    };
+    let Statement::InlineAsm(asm) = &f.codeblock.statements[0].statement else {
+        panic!("expected an inline-asm statement");
+    };
+    let omega_parser::prelude::AsmDescriptorKind::Reg { expr, .. } = &asm.descriptors[0].kind
+    else {
+        panic!("expected a reg descriptor");
+    };
+    // The macro parameter substituted into the `reg(...)` expression...
+    assert!(matches!(expr.expression, Expression::Number(_)));
+    // ...but the literal `$v` inside the raw body is not macro syntax at
+    // all -- it survives untouched as asm-operand-binding text.
+    assert_eq!(asm.body.trim(), "mov $v, 1");
+}
+
+#[test]
 fn statement_invocation_inside_an_expression_is_not_spliced() {
     let module = expand(
         r#"

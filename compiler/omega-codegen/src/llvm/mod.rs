@@ -1,6 +1,7 @@
 mod constant;
 mod expr;
 mod function;
+mod inline_asm;
 mod item;
 mod leaf;
 mod place;
@@ -190,22 +191,28 @@ impl<'ctx> Codegen<'ctx> {
         self.target.pointer_bytes()
     }
 
-    fn finish(self) -> EmitOutput {
+    /// Object/assembly emission can fail on a validated target machine when
+    /// user-authored inline assembly is rejected by the integrated
+    /// assembler (bad instruction syntax, unknown register names, impossible
+    /// constraints); that must surface as a normal compiler error, not a panic.
+    fn finish(self) -> Result<EmitOutput, String> {
         match self.emit {
             EmitKind::Obj => {
                 let buffer = self
                     .target_machine
                     .write_to_memory_buffer(&self.module, FileType::Object)
-                    .expect("object emission cannot fail for a validated target machine");
-                EmitOutput::Object(buffer.as_slice().to_vec())
+                    .map_err(|e| format!("failed to emit an object file: {e}"))?;
+                Ok(EmitOutput::Object(buffer.as_slice().to_vec()))
             }
-            EmitKind::Ir => EmitOutput::Text(self.module.print_to_string().to_string()),
+            EmitKind::Ir => Ok(EmitOutput::Text(self.module.print_to_string().to_string())),
             EmitKind::Asm => {
                 let buffer = self
                     .target_machine
                     .write_to_memory_buffer(&self.module, FileType::Assembly)
-                    .expect("assembly emission cannot fail for a validated target machine");
-                EmitOutput::Text(String::from_utf8_lossy(buffer.as_slice()).into_owned())
+                    .map_err(|e| format!("failed to emit assembly: {e}"))?;
+                Ok(EmitOutput::Text(
+                    String::from_utf8_lossy(buffer.as_slice()).into_owned(),
+                ))
             }
         }
     }
@@ -213,5 +220,5 @@ impl<'ctx> Codegen<'ctx> {
 
 pub(crate) fn generate(request: CodegenRequest) -> Result<EmitOutput, String> {
     let context = Context::create();
-    Codegen::generate(&context, request).map(Codegen::finish)
+    Codegen::generate(&context, request).and_then(Codegen::finish)
 }

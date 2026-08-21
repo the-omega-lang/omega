@@ -137,6 +137,9 @@ impl ParseError {
                 .with_label(self.span, "imports are not allowed in macro bodies")
                 .with_note("macro-body names resolve in the macro's definition module")
                 .with_help("import this name beside the macro definition instead"),
+            ParseErrorKind::UnterminatedAsmBody => Diagnostic::error("unterminated inline assembly body")
+                .with_label(self.span, "this asm body never closes")
+                .with_help("add a closing `}` that matches the opening `{` after `=>`"),
             ParseErrorKind::ChainedComparison => Diagnostic::error("comparison operators are non-associative")
                 .with_label(self.span, "comparisons do not chain")
                 .with_help("parenthesize the comparison you intend to evaluate first"),
@@ -209,6 +212,7 @@ pub enum ParseErrorKind {
     InvalidMacroSeparator,
     NestedMacroRepetition,
     ImportInMacroBody,
+    UnterminatedAsmBody,
 }
 
 impl fmt::Display for ParseErrorKind {

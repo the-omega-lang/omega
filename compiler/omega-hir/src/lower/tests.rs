@@ -1,5 +1,5 @@
 use super::lower_module;
-use crate::hir::HirItem;
+use crate::hir::{HirAsmDescriptorKind, HirItem, HirStmt};
 use crate::ids::ModuleId;
 use omega_parser::SourceModule;
 
@@ -47,4 +47,31 @@ fn gap_function_hir_span_is_its_signature() {
         &source[function.span.start..function.span.end],
         "f() => void"
     );
+}
+
+#[test]
+fn inline_asm_lowers_descriptors_and_raw_body_in_source_order() {
+    let source = "f() => void { asm(reg(x), const(SIZE), clobber(\"rax\")) => { mov $x, $SIZE } }";
+    let hir = lower(source);
+    let HirItem::FunctionDefinition(f) = &hir.items[0] else {
+        panic!("expected a function");
+    };
+    let HirStmt::InlineAsm(asm) = &f.body.stmts[0] else {
+        panic!("expected an inline-asm statement");
+    };
+    assert_eq!(asm.descriptors.len(), 3);
+    assert!(matches!(
+        asm.descriptors[0].kind,
+        HirAsmDescriptorKind::Reg { .. }
+    ));
+    assert!(matches!(
+        asm.descriptors[1].kind,
+        HirAsmDescriptorKind::Const { .. }
+    ));
+    assert!(matches!(
+        asm.descriptors[2].kind,
+        HirAsmDescriptorKind::Clobber { .. }
+    ));
+    assert_eq!(asm.body.trim(), "mov $x, $SIZE");
+    assert_eq!(&source[asm.span.start..asm.span.start + 3], "asm");
 }

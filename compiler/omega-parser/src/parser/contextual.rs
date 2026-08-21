@@ -17,8 +17,12 @@ pub const ROOT: &str = "root";
 pub const EXPR: &str = "expr";
 pub const TYPE: &str = "type";
 pub const IDENT: &str = "ident";
+pub const ASM: &str = "asm";
+pub const REG: &str = "reg";
+pub const CONST: &str = "const";
+pub const CLOBBER: &str = "clobber";
 
 pub const ALL: &[&str] = &[
     MUT, COMP, SELF, REVEAL, SIZEOF, IN, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, CONFORM, TO,
-    PRIMITIVE, ROOT, EXPR, TYPE, IDENT,
+    PRIMITIVE, ROOT, EXPR, TYPE, IDENT, ASM, REG, CONST, CLOBBER,
 ];

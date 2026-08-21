@@ -705,6 +705,21 @@ impl AnalysisErrorKind {
                     "a {kind} must hold at least one field with nonzero size -- use 'marker' to declare a type with no data"
                 ))
             }
+            Self::AsmRegNotOneRegisterOperand { .. } => d
+                .with_label(span, "cannot occupy a single register")
+                .with_help("pass an aggregate through 'reg(&x)'/'reg(&mut x)' instead of by value"),
+            Self::AsmConstNotComp => d
+                .with_label(span, "not a 'comp' binding")
+                .with_help("'const(...)' only substitutes a compile-time-known 'comp' value"),
+            Self::AsmConstUnsupportedShape => {
+                d.with_label(span, "cannot render this value as assembler text")
+            }
+            Self::AsmUnknownBinding { .. } => {
+                d.with_label(span, "no 'reg'/'const' descriptor matches this binding")
+            }
+            Self::AsmAmbiguousBinding { .. } => {
+                d.with_label(span, "more than one descriptor infers this name")
+            }
         }
     }
 }

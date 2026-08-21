@@ -1,9 +1,11 @@
 use super::Lowerer;
 use crate::hir::{
-    HirBlock, HirBreak, HirContinue, HirDefer, HirFor, HirForIn, HirLoop, HirStmt,
-    HirWalrusDeclaration, HirWhile,
+    HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirBreak, HirContinue, HirDefer, HirFor,
+    HirForIn, HirInlineAsm, HirLoop, HirStmt, HirWalrusDeclaration, HirWhile,
 };
-use omega_parser::prelude::{CodeblockExpr, Span, Statement, StatementNode};
+use omega_parser::prelude::{
+    AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode,
+};
 
 impl Lowerer {
     fn lower_stmt(&mut self, node: &StatementNode) -> HirStmt {
@@ -86,6 +88,41 @@ impl Lowerer {
                     span,
                 },
             }),
+            Statement::InlineAsm(asm) => HirStmt::InlineAsm(HirInlineAsm {
+                id: self.ids.next(),
+                span,
+                descriptors: asm
+                    .descriptors
+                    .iter()
+                    .map(|d| self.lower_asm_descriptor(d))
+                    .collect(),
+                body: asm.body.clone(),
+                body_span: asm.body_span,
+            }),
+        }
+    }
+
+    fn lower_asm_descriptor(
+        &mut self,
+        descriptor: &omega_parser::prelude::AsmDescriptorNode,
+    ) -> HirAsmDescriptor {
+        let kind = match &descriptor.kind {
+            AsmDescriptorKind::Reg { expr, physical } => HirAsmDescriptorKind::Reg {
+                expr: self.lower_expr(expr),
+                physical: physical.clone(),
+            },
+            AsmDescriptorKind::Const { name, origin } => HirAsmDescriptorKind::Const {
+                name: name.clone(),
+                origin: *origin,
+            },
+            AsmDescriptorKind::Clobber { register } => HirAsmDescriptorKind::Clobber {
+                register: register.clone(),
+            },
+        };
+        HirAsmDescriptor {
+            id: self.ids.next(),
+            span: descriptor.span,
+            kind,
         }
     }
 

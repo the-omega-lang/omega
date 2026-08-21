@@ -1,6 +1,7 @@
 use crate::checked::{
-    CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem, CheckedModule, CheckedPlace,
-    CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedStmt,
+    CheckedAsmDescriptorKind, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem,
+    CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd,
+    CheckedStmt,
 };
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -85,6 +86,13 @@ fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
             collect_block(&f.body, usage);
         }
         CheckedStmt::Defer(d) => collect_block(&d.body, usage),
+        CheckedStmt::InlineAsm(asm) => {
+            for descriptor in &asm.descriptors {
+                if let CheckedAsmDescriptorKind::Reg { expr, .. } = &descriptor.kind {
+                    collect_expr(expr, usage);
+                }
+            }
+        }
     }
 }
 

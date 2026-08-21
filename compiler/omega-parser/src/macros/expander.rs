@@ -435,7 +435,33 @@ impl<'a> Expander<'a> {
             Statement::Defer(d) => Statement::Defer(DeferStmt {
                 body: Box::new(self.expand_statement(*d.body)?),
             }),
+            Statement::InlineAsm(asm) => Statement::InlineAsm(InlineAsmStmt {
+                descriptors: asm
+                    .descriptors
+                    .into_iter()
+                    .map(|d| self.expand_asm_descriptor(d))
+                    .collect::<Result<_, _>>()?,
+                ..asm
+            }),
         })
+    }
+
+    /// The raw asm body is opaque to macro expansion; only the ordinary
+    /// Omega expression inside a `reg(...)` descriptor may reference macro
+    /// parameters, since `const`/`clobber` carry no expression.
+    fn expand_asm_descriptor(
+        &mut self,
+        descriptor: AsmDescriptorNode,
+    ) -> Result<AsmDescriptorNode, MacroError> {
+        let span = descriptor.span;
+        let kind = match descriptor.kind {
+            AsmDescriptorKind::Reg { expr, physical } => AsmDescriptorKind::Reg {
+                expr: self.expand_expr(expr)?,
+                physical,
+            },
+            other @ (AsmDescriptorKind::Const { .. } | AsmDescriptorKind::Clobber { .. }) => other,
+        };
+        Ok(AsmDescriptorNode { kind, span })
     }
 
     fn expand_expr(&mut self, node: ExpressionNode) -> Result<ExpressionNode, MacroError> {

@@ -499,6 +499,17 @@ pub enum AnalysisErrorKind {
         name: Ident,
         is_union: bool,
     },
+    AsmRegNotOneRegisterOperand {
+        r#type: ResolvedType,
+    },
+    AsmConstNotComp,
+    AsmConstUnsupportedShape,
+    AsmUnknownBinding {
+        text: String,
+    },
+    AsmAmbiguousBinding {
+        text: String,
+    },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -1267,6 +1278,25 @@ impl fmt::Display for AnalysisErrorKind {
                 let kind = if *is_union { "union" } else { "struct" };
                 write!(f, "{kind} '{}' has no sized fields", name.as_ref())
             }
+            Self::AsmRegNotOneRegisterOperand { r#type } => write!(
+                f,
+                "'reg' operand of type '{}' cannot occupy a single register",
+                r#type
+            ),
+            Self::AsmConstNotComp => {
+                write!(f, "'const' in 'asm' must name a 'comp' binding")
+            }
+            Self::AsmConstUnsupportedShape => write!(
+                f,
+                "'const' in 'asm' only supports values that convert deterministically to assembler text"
+            ),
+            Self::AsmUnknownBinding { text } => {
+                write!(f, "'{text}' does not refer to any 'reg'/'const' descriptor")
+            }
+            Self::AsmAmbiguousBinding { text } => write!(
+                f,
+                "'{text}' is ambiguous: more than one descriptor infers this name"
+            ),
         }
     }
 }

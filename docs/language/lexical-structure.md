@@ -37,9 +37,12 @@ The following are lexed as ordinary identifiers and acquire special meaning only
 mut comp self reveal sizeof in exposed shared hidden
 marker gap glue conform to primitive root
 expr type ident
+asm reg const clobber
 ```
 
 An implementation must therefore not globally reserve contextual keywords; they remain usable as identifiers where the grammar does not consume them contextually.
+
+`asm`, `reg`, `const`, and `clobber` are recognized only as the head of an inline-assembly statement/descriptor; see [`inline-assembly.md`](inline-assembly.md). The raw text inside an `asm` body is not tokenized by this chapter's rules at all — see that chapter for its opaque capture behavior.
 
 ## Comments
 

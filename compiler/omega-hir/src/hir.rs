@@ -301,6 +301,38 @@ pub enum HirStmt {
     Break(HirBreak),
     Continue(HirContinue),
     Defer(HirDefer),
+    InlineAsm(HirInlineAsm),
+}
+
+#[derive(Debug, Clone)]
+pub struct HirInlineAsm {
+    pub id: HirId,
+    pub span: Span,
+    pub descriptors: Vec<HirAsmDescriptor>,
+    pub body: String,
+    pub body_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirAsmDescriptor {
+    pub id: HirId,
+    pub span: Span,
+    pub kind: HirAsmDescriptorKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirAsmDescriptorKind {
+    Reg {
+        expr: HirExprNode,
+        physical: Option<String>,
+    },
+    Const {
+        name: Ident,
+        origin: Origin,
+    },
+    Clobber {
+        register: String,
+    },
 }
 
 #[derive(Debug, Clone)]

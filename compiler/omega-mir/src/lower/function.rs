@@ -4,14 +4,14 @@ mod expr;
 
 use super::place::place_align;
 use crate::body::{
-    MirAssignment, MirBlockData, MirBody, MirExpr, MirExprNode, MirLocalDecl, MirPlace,
-    MirPlaceRoot, MirTerminator,
+    MirAsmOperand, MirAsmOperandKind, MirAssignment, MirBlockData, MirBody, MirExpr, MirExprNode,
+    MirInlineAsm, MirLocalDecl, MirPlace, MirPlaceRoot, MirTerminator,
 };
 use crate::ids::{BlockId, LocalId};
 use omega_analyzer::checked::{
-    CheckedAssignment, CheckedBlock, CheckedBreak, CheckedContinue, CheckedDefer, CheckedExpr,
-    CheckedExprNode, CheckedFor, CheckedLoop, CheckedParam, CheckedPlace, CheckedStmt,
-    CheckedWhile,
+    CheckedAsmDescriptorKind, CheckedAssignment, CheckedBlock, CheckedBreak, CheckedContinue,
+    CheckedDefer, CheckedExpr, CheckedExprNode, CheckedFor, CheckedInlineAsm, CheckedLoop,
+    CheckedParam, CheckedPlace, CheckedStmt, CheckedWhile,
 };
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -398,7 +398,47 @@ impl FunctionLowerer {
                     "omega-mir lowering bug: duplicate defer HirId in one function"
                 );
             }
+            CheckedStmt::InlineAsm(asm) => self.lower_inline_asm(asm),
         }
+    }
+
+    /// `reg` operands are lowered in source order, evaluating each exactly
+    /// once -- `clobber` carries no expression and is kept separate so it
+    /// can never accidentally participate in `$name`/`$N` binding.
+    fn lower_inline_asm(&mut self, asm: CheckedInlineAsm) {
+        let mut operands = Vec::with_capacity(asm.descriptors.len());
+        let mut clobbers = Vec::new();
+        for descriptor in asm.descriptors {
+            match descriptor.kind {
+                CheckedAsmDescriptorKind::Reg { expr, physical } => {
+                    operands.push(MirAsmOperand {
+                        binding_name: descriptor.binding_name,
+                        kind: MirAsmOperandKind::Reg {
+                            value: self.lower_expr(expr),
+                            physical,
+                        },
+                    });
+                }
+                CheckedAsmDescriptorKind::Const { text } => {
+                    operands.push(MirAsmOperand {
+                        binding_name: descriptor.binding_name,
+                        kind: MirAsmOperandKind::Const { text },
+                    });
+                }
+                CheckedAsmDescriptorKind::Clobber { register } => clobbers.push(register),
+            }
+        }
+        self.push_stmt(MirExprNode {
+            id: asm.id,
+            span: asm.span,
+            r#type: ResolvedType::Void,
+            kind: MirExpr::InlineAsm(MirInlineAsm {
+                operands,
+                clobbers,
+                template: asm.body,
+                template_span: asm.body_span,
+            }),
+        });
     }
 
     fn lower_return(&mut self, expr: CheckedExprNode) {

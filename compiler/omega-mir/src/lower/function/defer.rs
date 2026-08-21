@@ -25,7 +25,8 @@ fn collect_stmt(stmt: &CheckedStmt, out: &mut Vec<(HirId, Span)>) {
         CheckedStmt::Declaration(_)
         | CheckedStmt::ExternDeclaration(_)
         | CheckedStmt::Break(_)
-        | CheckedStmt::Continue(_) => {}
+        | CheckedStmt::Continue(_)
+        | CheckedStmt::InlineAsm(_) => {}
         CheckedStmt::Expression(expr) | CheckedStmt::Return(expr) => collect_expr(expr, out),
         CheckedStmt::While(while_loop) => {
             collect_expr(&while_loop.condition, out);

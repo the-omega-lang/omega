@@ -254,6 +254,19 @@ defer {
 
 `defer` is function-exit cleanup; exact behavior is specified in [`../language/functions.md`](../language/functions.md).
 
+## Inline assembly
+
+```omega
+mut x : i32 = 0;
+y := 20i32;
+asm(reg(&mut x, "rcx"), reg(y)) => {
+    add $y, 22
+    mov dword ptr [$x], $y
+}
+```
+
+`reg(expr)` is a by-value snapshot with no implicit writeback; mutate Omega storage explicitly with `reg(&mut x)`. `const(NAME)` substitutes a `comp` value as literal assembler text. The body is raw backend assembly (X86/X86-64 uses Intel syntax), not Omega syntax -- full rules, including `$$`/`clobber`/dialect/optimization-opacity, are in [`../language/inline-assembly.md`](../language/inline-assembly.md).
+
 ## Generics
 
 ```omega

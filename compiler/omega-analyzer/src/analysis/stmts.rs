@@ -47,6 +47,7 @@ impl<'r> Analyzer<'r> {
             CheckedStmt::Break(b) => (b.id, b.span),
             CheckedStmt::Continue(c) => (c.id, c.span),
             CheckedStmt::Defer(d) => (d.id, d.span),
+            CheckedStmt::InlineAsm(a) => (a.id, a.span),
         }
     }
 
@@ -348,6 +349,7 @@ impl<'r> Analyzer<'r> {
                     body,
                 })])
             }
+            HirStmt::InlineAsm(asm) => self.analyze_inline_asm(asm),
         }
     }
 

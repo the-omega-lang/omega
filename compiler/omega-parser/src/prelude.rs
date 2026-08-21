@@ -18,8 +18,9 @@ pub use crate::ast::item::{
 pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
-    DeclarationStmt, DeferStmt, ExternDeclarationStmt, ForInStmt, ForStmt, FunctionDefinitionStmt,
-    LoopStmt, ReturnStmt, Statement, StatementNode, WhileStmt,
+    AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ExternDeclarationStmt,
+    ForInStmt, ForStmt, FunctionDefinitionStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement,
+    StatementNode, WhileStmt,
 };
 pub use crate::ast::r#type::{FunctionType, Param, Type};
 pub use crate::ast::visibility::Visibility;

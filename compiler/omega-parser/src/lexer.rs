@@ -11,6 +11,9 @@ pub enum TokenKind {
     ByteStr(String),
     Char(char),
     Metavar(String),
+    /// Raw backend assembly text captured verbatim between the braces of an
+    /// `asm(...) => { ... }` statement. Never produced by ordinary tokenization.
+    AsmBody(String),
 
     // Contextual words stay `Ident` tokens so they remain usable as names.
     True,
@@ -111,6 +114,7 @@ impl TokenKind {
             Self::ByteStr(_) => "a binary string literal".to_string(),
             Self::Char(_) => "a character literal".to_string(),
             Self::Metavar(s) => format!("'${s}'"),
+            Self::AsmBody(_) => "raw assembly text".to_string(),
             Self::Eof => "end of input".to_string(),
             _ => format!("'{}'", self.spelling().expect("fixed token has a spelling")),
         }
@@ -359,6 +363,14 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             let Some(c) = self.peek() else { break };
             match self.scan_token(c, start) {
+                Ok(TokenKind::LBrace) if self.at_asm_body_open() => {
+                    self.tokens.push(Token {
+                        kind: TokenKind::LBrace,
+                        span: self.span_from(start),
+                        origin: Origin::default(),
+                    });
+                    self.scan_asm_body();
+                }
                 Ok(kind) => self.tokens.push(Token {
                     kind,
                     span: self.span_from(start),
@@ -372,6 +384,90 @@ impl<'a> Lexer<'a> {
             span: Span::new(self.pos, self.pos),
             origin: Origin::default(),
         });
+    }
+
+    /// Detects the committed `asm(...) => {` shape by walking already-emitted
+    /// tokens backward from a fat arrow through the balanced descriptor-list
+    /// parens to their opening `asm` identifier. No other Omega grammar
+    /// places a code block directly after `=>`, so this is unambiguous.
+    fn at_asm_body_open(&self) -> bool {
+        let n = self.tokens.len();
+        if n < 2 {
+            return false;
+        }
+        if !matches!(self.tokens[n - 1].kind, TokenKind::FatArrow) {
+            return false;
+        }
+        if !matches!(self.tokens[n - 2].kind, TokenKind::RParen) {
+            return false;
+        }
+        let mut depth = 0i32;
+        let mut i = n - 2;
+        loop {
+            match &self.tokens[i].kind {
+                TokenKind::RParen => depth += 1,
+                TokenKind::LParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i > 0
+                            && matches!(&self.tokens[i - 1].kind, TokenKind::Ident(name) if name == "asm");
+                    }
+                }
+                _ => {}
+            }
+            if i == 0 {
+                return false;
+            }
+            i -= 1;
+        }
+    }
+
+    /// Captures backend assembly text verbatim, tracking only literal `{`/`}`
+    /// depth. Omega comments/strings/tokenization do not apply inside; the
+    /// text is forwarded to the backend unchanged.
+    fn scan_asm_body(&mut self) {
+        let start = self.pos;
+        let mut depth = 1i32;
+        loop {
+            match self.peek() {
+                None => {
+                    self.errors.push(ParseError::new(
+                        self.span_from(start),
+                        ParseErrorKind::UnterminatedAsmBody,
+                    ));
+                    break;
+                }
+                Some('{') => {
+                    depth += 1;
+                    self.advance();
+                }
+                Some('}') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    self.advance();
+                }
+                Some(_) => {
+                    self.advance();
+                }
+            }
+        }
+        let end = self.pos;
+        self.tokens.push(Token {
+            kind: TokenKind::AsmBody(self.source[start..end].to_string()),
+            span: Span::new(start, end),
+            origin: Origin::default(),
+        });
+        if self.peek() == Some('}') {
+            let rbrace_start = self.pos;
+            self.advance();
+            self.tokens.push(Token {
+                kind: TokenKind::RBrace,
+                span: self.span_from(rbrace_start),
+                origin: Origin::default(),
+            });
+        }
     }
 
     fn skip_trivia(&mut self) {
